@@ -386,6 +386,10 @@ struct BackendState {
 #[derive(Clone, Default)]
 struct BackendManager {
     inner: Arc<Mutex<BackendState>>,
+    /// Canonicalized workspace roots reported by the connected backend — the
+    /// containment boundary for every host-path command. See
+    /// `require_authorized_host_path`.
+    host_roots: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl BackendManager {
@@ -533,6 +537,11 @@ impl BackendManager {
                             ));
                         }
                         if let Some(connection) = self.publish_connection(&pending, &connection) {
+                            // Best-effort warm-up of the authorized host-root
+                            // set. Host-path commands re-fetch lazily on a
+                            // containment miss, so a failure here (registry
+                            // still building) must not fail the connection.
+                            let _ = self.refresh_host_roots();
                             return Ok(connection);
                         }
                     }
@@ -965,34 +974,209 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn write_host_file_text(path: PathBuf, text: String) -> Result<(), String> {
-    if !path.is_absolute() {
-        return Err("Host file path must be absolute".to_string());
-    }
-    fs::write(&path, text)
-        .map_err(|error| format!("Cannot write host file {}: {error}", path.display()))
+fn write_host_file_text(
+    path: PathBuf,
+    text: String,
+    manager: State<'_, BackendManager>,
+) -> Result<(), String> {
+    manager.write_host_file_text(&path, &text)
 }
 
-/// Narrow host-opener pair behind the session/file context menus. Both reject
-/// relative paths and spawn the platform shell without waiting: `explorer`
-/// exits non-zero even on success, so spawn success is the whole contract.
-fn require_absolute_host_path(path: &Path) -> Result<(), String> {
-    if !path.is_absolute() {
-        return Err("Host path must be absolute".to_string());
-    }
-    Ok(())
+/// Narrow host-opener pair behind the session/file context menus. Both are
+/// gated by `require_authorized_host_path` and spawn the platform shell
+/// without waiting: `explorer` exits non-zero even on success, so spawn
+/// success is the whole contract.
+#[tauri::command]
+fn reveal_host_path(path: PathBuf, manager: State<'_, BackendManager>) -> Result<(), String> {
+    manager.reveal_host_path(&path)
 }
 
 #[tauri::command]
-fn reveal_host_path(path: PathBuf) -> Result<(), String> {
-    require_absolute_host_path(&path)?;
-    reveal_in_file_manager(&path)
+fn open_host_path(path: PathBuf, manager: State<'_, BackendManager>) -> Result<(), String> {
+    manager.open_host_path(&path)
 }
 
-#[tauri::command]
-fn open_host_path(path: PathBuf) -> Result<(), String> {
-    require_absolute_host_path(&path)?;
-    open_with_default_app(&path)
+/// What the caller intends to do with a host path: writes tolerate a missing
+/// final component, and `open` additionally refuses executable files.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HostPathOp {
+    Open,
+    Reveal,
+    Write,
+}
+
+impl BackendManager {
+    fn current_connection(&self) -> Result<DesktopConnection, String> {
+        self.inner
+            .lock()
+            .map_err(|_| "Kiki backend lifecycle lock was poisoned".to_string())?
+            .backend
+            .as_ref()
+            .and_then(|backend| backend.connection.clone())
+            .ok_or_else(|| "Kiki backend is not connected".to_string())
+    }
+
+    /// Re-pull the backend's workspace registry into the authorized host-root
+    /// set. A fetch failure leaves the previous set in place.
+    fn refresh_host_roots(&self) -> Result<(), String> {
+        let connection = self.current_connection()?;
+        let roots = fetch_workspace_roots(&connection)?;
+        let mut set = self
+            .host_roots
+            .lock()
+            .map_err(|_| "Kiki host-root lock was poisoned".to_string())?;
+        *set = roots;
+        Ok(())
+    }
+
+    fn host_roots_contain(&self, canonical: &Path) -> bool {
+        self.host_roots
+            .lock()
+            .is_ok_and(|roots| roots.iter().any(|root| canonical.starts_with(root)))
+    }
+
+    /// The boundary every host-path command shares: the target must
+    /// canonicalize inside one of the workspace roots the backend itself
+    /// reported — the renderer never declares roots, so transcript or menu
+    /// content cannot widen the boundary. A containment miss retries once
+    /// against a fresh registry pull (a workspace registered since the last
+    /// fetch must not be rejected), then fails closed. The CHECK uses the
+    /// canonical path while the ACTION keeps the caller's path verbatim; the
+    /// residual symlink-swap race is accepted on this local single-user
+    /// shell.
+    fn require_authorized_host_path(&self, path: &Path, op: HostPathOp) -> Result<(), String> {
+        reject_remote_or_device_host_path(path)?;
+        if op == HostPathOp::Open && is_executable_host_path(path) {
+            return Err(format!(
+                "Refusing to open executable host path {}",
+                path.display()
+            ));
+        }
+        if !path.is_absolute() {
+            return Err("Host path must be absolute".to_string());
+        }
+        let canonical = canonicalize_host_path(path, op == HostPathOp::Write)?;
+        if self.host_roots_contain(&canonical) {
+            return Ok(());
+        }
+        self.refresh_host_roots()?;
+        if self.host_roots_contain(&canonical) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Host path {} is outside every workspace root registered with the backend",
+                path.display()
+            ))
+        }
+    }
+
+    fn open_host_path(&self, path: &Path) -> Result<(), String> {
+        self.require_authorized_host_path(path, HostPathOp::Open)?;
+        open_with_default_app(path)
+    }
+
+    fn reveal_host_path(&self, path: &Path) -> Result<(), String> {
+        self.require_authorized_host_path(path, HostPathOp::Reveal)?;
+        reveal_in_file_manager(path)
+    }
+
+    fn write_host_file_text(&self, path: &Path, text: &str) -> Result<(), String> {
+        self.require_authorized_host_path(path, HostPathOp::Write)?;
+        fs::write(path, text)
+            .map_err(|error| format!("Cannot write host file {}: {error}", path.display()))
+    }
+
+    #[cfg(test)]
+    fn authorize_host_roots_for_tests(&self, roots: &[&Path]) {
+        let canonical: Vec<PathBuf> = roots
+            .iter()
+            .filter_map(|root| fs::canonicalize(root).ok())
+            .collect();
+        *self.host_roots.lock().unwrap() = canonical;
+    }
+}
+
+/// Extensions the platform opener would EXECUTE rather than view (`open` on
+/// macOS, ShellExecuteW on Windows). Opening one from transcript or menu
+/// content would be code execution, so `open` refuses them outright —
+/// reveal-in-folder stays allowed since selecting a file executes nothing.
+/// `.js` is listed because stock Windows associates "open" with wscript.
+const EXECUTABLE_HOST_EXTENSIONS: &[&str] = &[
+    "exe", "com", "pif", "scr", "cpl", "msi", "msp", "msc", "bat", "cmd", "ps1", "vbs", "vbe",
+    "js", "jse", "wsf", "wsh", "hta", "lnk", "reg",
+];
+
+fn is_executable_host_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            EXECUTABLE_HOST_EXTENSIONS
+                .iter()
+                .any(|denied| extension.eq_ignore_ascii_case(denied))
+        })
+}
+
+/// UNC (`\\server\share`), device-namespace (`\\.\…`), and verbatim (`\\?\…`)
+/// paths are refused outright: verbatim prefixes skip path normalization,
+/// device paths would let a write touch raw disks, and UNC leaves the local
+/// trust zone. Only plain `C:\…` drive paths carry a prefix on Windows; other
+/// platforms have no prefix component and pass through.
+fn reject_remote_or_device_host_path(path: &Path) -> Result<(), String> {
+    use std::path::{Component, Prefix};
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return Ok(());
+    };
+    match prefix.kind() {
+        Prefix::Disk(_) => Ok(()),
+        _ => Err(format!(
+            "Host path {} must be a plain local drive path (no UNC, device, or verbatim prefix)",
+            path.display()
+        )),
+    }
+}
+
+/// Canonicalize so symlinks/junctions and `..` resolve BEFORE the root check.
+/// Writes may target a file that does not exist yet; then the deepest
+/// existing ancestor is canonicalized and the missing tail re-attached.
+fn canonicalize_host_path(path: &Path, allow_missing_tail: bool) -> Result<PathBuf, String> {
+    match fs::canonicalize(path) {
+        Ok(canonical) => Ok(canonical),
+        Err(error) if allow_missing_tail => canonicalize_missing_tail(path, &error),
+        Err(error) => Err(format!(
+            "Cannot resolve host path {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn canonicalize_missing_tail(path: &Path, original: &io::Error) -> Result<PathBuf, String> {
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut ancestor = path;
+    loop {
+        match fs::canonicalize(ancestor) {
+            Ok(canonical) => {
+                let mut resolved = canonical;
+                for component in tail.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(_) => {
+                // file_name() is None for a trailing `..` — those tails are
+                // refused here rather than resolved textually.
+                let Some(name) = ancestor.file_name() else {
+                    return Err(format!(
+                        "Cannot resolve host path {}: {original}",
+                        path.display()
+                    ));
+                };
+                tail.push(name);
+                ancestor = ancestor
+                    .parent()
+                    .expect("a path with a file name always has a parent");
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2157,32 +2341,122 @@ fn sidecar_version_matches(expected: &str, actual: &str) -> bool {
 }
 
 fn authenticated_server_version(port: u16, token: &str) -> Result<String, String> {
+    let response = http_get_body(port, "/api/v1/meta", token, MAX_META_RESPONSE_BYTES)?;
+    parse_meta_server_version_response(&response)
+}
+
+/// Authenticated GET against the loopback backend; returns the raw response
+/// (status line through body), capped at `max_bytes`.
+fn http_get_body(port: u16, path: &str, token: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))
         .map_err(|error| format!("Cannot connect to Kiki backend on port {port}: {error}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(1)))
-        .map_err(|error| format!("Cannot configure Kiki backend metadata probe: {error}"))?;
+        .map_err(|error| format!("Cannot configure Kiki backend request: {error}"))?;
     stream
         .set_write_timeout(Some(Duration::from_secs(1)))
-        .map_err(|error| format!("Cannot configure Kiki backend metadata probe: {error}"))?;
+        .map_err(|error| format!("Cannot configure Kiki backend request: {error}"))?;
 
     let request = format!(
-        "GET /api/v1/meta HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
-        .map_err(|error| format!("Cannot write Kiki backend metadata request: {error}"))?;
+        .map_err(|error| format!("Cannot write Kiki backend request: {error}"))?;
 
     let mut response = Vec::new();
     stream
-        .take((MAX_META_RESPONSE_BYTES + 1) as u64)
+        .take((max_bytes + 1) as u64)
         .read_to_end(&mut response)
-        .map_err(|error| format!("Cannot read Kiki backend metadata response: {error}"))?;
-    if response.len() > MAX_META_RESPONSE_BYTES {
-        return Err("Kiki backend metadata response is unexpectedly large".to_string());
+        .map_err(|error| format!("Cannot read Kiki backend response: {error}"))?;
+    if response.len() > max_bytes {
+        return Err("Kiki backend response is unexpectedly large".to_string());
     }
-    parse_meta_server_version_response(&response)
+    Ok(response)
+}
+
+/// Max size of the backend's workspace registry response.
+const MAX_WORKSPACES_RESPONSE_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+struct WorkspacesEnvelope {
+    data: WorkspacesData,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspacesData {
+    items: Vec<WorkspaceRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceRecord {
+    root: String,
+}
+
+/// Pull the backend's workspace registry over authenticated loopback HTTP.
+/// The server is the authority on which directories the user registered as
+/// workspaces, so host-path commands derive their boundary from IT — never
+/// from a renderer-reported path.
+fn fetch_workspace_roots(connection: &DesktopConnection) -> Result<Vec<PathBuf>, String> {
+    let port = connection_port(connection)?;
+    let response = http_get_body(
+        port,
+        "/api/v1/workspaces",
+        &connection.token,
+        MAX_WORKSPACES_RESPONSE_BYTES,
+    )?;
+    parse_workspaces_registry_response(&response)
+}
+
+fn parse_workspaces_registry_response(response: &[u8]) -> Result<Vec<PathBuf>, String> {
+    let status_end = response
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .ok_or_else(|| {
+            "Kiki backend returned an incomplete workspace registry status line".to_string()
+        })?;
+    match parse_http_status_line(&response[..=status_end]) {
+        StatusLineParse::Complete(200) => {}
+        StatusLineParse::Complete(_) => {
+            return Err(
+                "Kiki backend rejected the authenticated workspace registry request".to_string(),
+            )
+        }
+        StatusLineParse::Incomplete | StatusLineParse::Invalid => {
+            return Err(
+                "Kiki backend returned an invalid workspace registry status line".to_string(),
+            )
+        }
+    }
+
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "Kiki backend returned incomplete workspace registry headers".to_string())?;
+    let envelope: WorkspacesEnvelope = serde_json::from_slice(&response[header_end + 4..])
+        .map_err(|error| {
+            format!("Kiki backend returned invalid workspace registry JSON: {error}")
+        })?;
+    let mut roots = Vec::with_capacity(envelope.data.items.len());
+    for item in envelope.data.items {
+        let root = PathBuf::from(&item.root);
+        if !root.is_absolute() {
+            continue;
+        }
+        // Roots join the containment check canonicalized, so a workspace root
+        // reached through a symlink still matches its resolved children.
+        match fs::canonicalize(&root) {
+            Ok(canonical) => roots.push(canonical),
+            Err(error) => {
+                eprintln!(
+                    "Kiki skips workspace root {} that no longer resolves: {error}",
+                    root.display()
+                );
+            }
+        }
+    }
+    Ok(roots)
 }
 
 fn parse_meta_server_version_response(response: &[u8]) -> Result<String, String> {
@@ -2212,13 +2486,21 @@ fn parse_meta_server_version_response(response: &[u8]) -> Result<String, String>
     Ok(envelope.data.server_version)
 }
 
-fn shutdown_request(connection: &DesktopConnection) -> Result<(), String> {
-    let port = connection
+fn connection_port(connection: &DesktopConnection) -> Result<u16, String> {
+    connection
         .url
         .rsplit_once(':')
         .and_then(|(_, value)| value.parse::<u16>().ok())
-        .ok_or_else(|| "Kiki desktop connection contained an invalid port".to_string())?;
-    http_request(port, "POST", "/api/v1/shutdown", &connection.token)
+        .ok_or_else(|| "Kiki desktop connection contained an invalid port".to_string())
+}
+
+fn shutdown_request(connection: &DesktopConnection) -> Result<(), String> {
+    http_request(
+        connection_port(connection)?,
+        "POST",
+        "/api/v1/shutdown",
+        &connection.token,
+    )
 }
 
 fn http_request(port: u16, method: &str, path: &str, token: &str) -> Result<(), String> {
@@ -3408,27 +3690,244 @@ mod tests {
     }
 
     #[test]
-    fn host_file_write_requires_an_absolute_path_and_writes_utf8() {
+    fn host_file_write_requires_an_authorized_root_and_writes_utf8() {
         let root = env::temp_dir().join(format!(
             "kiki-host-file-write-test-{}-{}",
             std::process::id(),
             unix_epoch_millis().unwrap()
         ));
         fs::create_dir_all(&root).unwrap();
+        let manager = BackendManager::default();
+        manager.authorize_host_roots_for_tests(&[root.as_path()]);
         let path = root.join("note.txt");
 
-        write_host_file_text(path.clone(), "hello 世界".to_string()).unwrap();
+        manager.write_host_file_text(&path, "hello 世界").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello 世界");
-        assert!(write_host_file_text(PathBuf::from("relative.txt"), "no".to_string()).is_err());
+        assert!(manager
+            .write_host_file_text(Path::new("relative.txt"), "no")
+            .is_err());
 
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn host_path_openers_reject_relative_paths() {
-        assert!(reveal_host_path(PathBuf::from("relative.txt")).is_err());
-        assert!(open_host_path(PathBuf::from("relative.txt")).is_err());
-        assert!(require_absolute_host_path(Path::new("nested/file.md")).is_err());
+        let manager = BackendManager::default();
+        assert!(manager.reveal_host_path(Path::new("relative.txt")).is_err());
+        assert!(manager.open_host_path(Path::new("relative.txt")).is_err());
+    }
+
+    #[test]
+    fn host_paths_outside_authorized_roots_fail_closed() {
+        let millis = unix_epoch_millis().unwrap();
+        let pid = std::process::id();
+        let allowed = env::temp_dir().join(format!("kiki-root-allowed-{pid}-{millis}"));
+        let other = env::temp_dir().join(format!("kiki-root-other-{pid}-{millis}"));
+        fs::create_dir_all(&allowed).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("secret.txt"), "x").unwrap();
+
+        let manager = BackendManager::default();
+        manager.authorize_host_roots_for_tests(&[allowed.as_path()]);
+
+        // Inside the authorized root all three ops pass the gate (calling the
+        // gate directly never reaches ShellExecute/explorer in tests).
+        let inside = allowed.join("note.txt");
+        fs::write(&inside, "x").unwrap();
+        manager
+            .require_authorized_host_path(&inside, HostPathOp::Open)
+            .unwrap();
+        manager
+            .require_authorized_host_path(&inside, HostPathOp::Reveal)
+            .unwrap();
+        // Writes also cover a file that does not exist yet.
+        manager
+            .write_host_file_text(&allowed.join("created.txt"), "new")
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(allowed.join("created.txt")).unwrap(),
+            "new"
+        );
+
+        // Outside the root everything is rejected; with no backend connected
+        // the miss-triggered registry refresh fails too — the gate fails
+        // CLOSED either way.
+        let outside = other.join("secret.txt");
+        assert!(manager
+            .require_authorized_host_path(&outside, HostPathOp::Open)
+            .is_err());
+        assert!(manager
+            .require_authorized_host_path(&outside, HostPathOp::Reveal)
+            .is_err());
+        assert!(manager
+            .write_host_file_text(&other.join("pwned.txt"), "no")
+            .is_err());
+        assert!(!other.join("pwned.txt").exists());
+
+        fs::remove_dir_all(allowed).unwrap();
+        fs::remove_dir_all(other).unwrap();
+    }
+
+    #[test]
+    fn open_refuses_executables_even_inside_an_authorized_root() {
+        let root = env::temp_dir().join(format!(
+            "kiki-root-exec-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let manager = BackendManager::default();
+        manager.authorize_host_roots_for_tests(&[root.as_path()]);
+
+        for name in [
+            "runme.exe",
+            "script.BAT",
+            "evil.ps1",
+            "x.cmd",
+            "x.msi",
+            "x.lnk",
+            "x.js",
+        ] {
+            let path = root.join(name);
+            fs::write(&path, "x").unwrap();
+            assert!(
+                manager
+                    .require_authorized_host_path(&path, HostPathOp::Open)
+                    .is_err(),
+                "{name} must be refused"
+            );
+            // Reveal stays allowed: selecting a file in Explorer runs nothing.
+            manager
+                .require_authorized_host_path(&path, HostPathOp::Reveal)
+                .unwrap();
+        }
+        let document = root.join("readme.md");
+        fs::write(&document, "x").unwrap();
+        manager
+            .require_authorized_host_path(&document, HostPathOp::Open)
+            .unwrap();
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn executable_extension_detection_is_case_insensitive() {
+        assert!(is_executable_host_path(Path::new("C:/work/Evil.EXE")));
+        assert!(is_executable_host_path(Path::new("C:/work/run.Ps1")));
+        assert!(!is_executable_host_path(Path::new("C:/work/notes.txt")));
+        assert!(!is_executable_host_path(Path::new("C:/work/no-extension")));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn unc_device_and_verbatim_prefixes_are_rejected_before_any_io() {
+        let manager = BackendManager::default();
+        for raw in [
+            r"\\server\share\file.txt",
+            r"\\.\PhysicalDrive0",
+            r"\\?\C:\Windows\notepad.exe",
+        ] {
+            let path = Path::new(raw);
+            assert!(path.is_absolute(), "{raw}");
+            for op in [HostPathOp::Open, HostPathOp::Reveal, HostPathOp::Write] {
+                assert!(
+                    manager.require_authorized_host_path(path, op).is_err(),
+                    "{raw} must be refused for {op:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn symlink_escape_outside_an_authorized_root_is_rejected() {
+        let millis = unix_epoch_millis().unwrap();
+        let pid = std::process::id();
+        let root = env::temp_dir().join(format!("kiki-root-link-{pid}-{millis}"));
+        let outside = env::temp_dir().join(format!("kiki-root-link-target-{pid}-{millis}"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "x").unwrap();
+
+        let link = root.join("link");
+        #[cfg(target_os = "windows")]
+        let linked = std::os::windows::fs::symlink_dir(&outside, &link);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, &link);
+        let Ok(()) = linked else {
+            // No symlink privilege (stock Windows without developer mode):
+            // nothing to test on this host.
+            fs::remove_dir_all(root).unwrap();
+            fs::remove_dir_all(outside).unwrap();
+            return;
+        };
+
+        let manager = BackendManager::default();
+        manager.authorize_host_roots_for_tests(&[root.as_path()]);
+        let escape = link.join("secret.txt");
+        assert!(escape.exists());
+        assert!(manager
+            .require_authorized_host_path(&escape, HostPathOp::Open)
+            .is_err());
+        // ...including a not-yet-created file reached through the symlink.
+        assert!(manager
+            .write_host_file_text(&link.join("new.txt"), "no")
+            .is_err());
+        assert!(!outside.join("new.txt").exists());
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn dotdot_segments_cannot_escape_an_authorized_root() {
+        let base = env::temp_dir().join(format!(
+            "kiki-root-dotdot-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        let root = base.join("root");
+        let sub = root.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let manager = BackendManager::default();
+        manager.authorize_host_roots_for_tests(&[root.as_path()]);
+
+        let escape = sub.join("..").join("..").join("escape.txt");
+        assert!(manager.write_host_file_text(&escape, "no").is_err());
+        assert!(!base.join("escape.txt").exists());
+
+        // A `..` that stays INSIDE the root keeps working.
+        let within = sub.join("..").join("ok.txt");
+        manager.write_host_file_text(&within, "yes").unwrap();
+        assert_eq!(fs::read_to_string(root.join("ok.txt")).unwrap(), "yes");
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn workspaces_registry_response_yields_canonical_absolute_roots() {
+        let root = env::temp_dir().join(format!(
+            "kiki-root-registry-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let body = serde_json::json!({
+            "data": { "items": [
+                { "id": "w1", "root": root.to_string_lossy() },
+                { "id": "w2", "root": "relative/not-absolute" },
+            ] }
+        });
+        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{body}");
+        let roots = parse_workspaces_registry_response(response.as_bytes()).unwrap();
+        assert_eq!(roots, vec![fs::canonicalize(&root).unwrap()]);
+
+        assert!(
+            parse_workspaces_registry_response(b"HTTP/1.1 401 Unauthorized\r\n\r\n{}").is_err()
+        );
+        assert!(parse_workspaces_registry_response(b"HTTP/1.1 200 OK\r\n\r\n{not json").is_err());
+        assert!(parse_workspaces_registry_response(b"garbage").is_err());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(target_os = "windows")]
