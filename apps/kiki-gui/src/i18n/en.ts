@@ -374,6 +374,7 @@ export const en = {
   'transcript.toolCalls.other': '{count} tool calls',
   'transcript.thinkingSuffix': '{effort} thinking',
   'transcript.turnWorking': 'Working',
+  'transcript.durationUnknown': 'duration unknown',
   'transcript.turnRetrying': 'Provider error ({cause}) — retry {attempt}/{max} in {delay}',
   'transcript.stopped': 'Stopped',
   'transcript.stoppedAria': 'stopped',

@@ -112,8 +112,23 @@ export interface ToolBlock {
   readonly status: ToolStatus;
   readonly output: unknown;
   readonly isError: boolean | undefined;
-  readonly startedAt: number;
+  /**
+   * Epoch ms when the call started, taken from the tool frame's real
+   * `startedAt` only — never from step/turn boundaries. `undefined` means the
+   * timing is genuinely unknown (e.g. cold replay without frame timestamps) —
+   * never a sentinel like 0, which would render as a fake 0ms duration.
+   */
+  readonly startedAt?: number;
+  /**
+   * Wall-clock duration. When `durationSource` is `'frame'` this is the real
+   * per-tool duration computed from the frame's start/end timestamps; when it
+   * is `'turn'` this is the enclosing turn's `durationMs` fallback and must
+   * not be presented as the tool's own duration. `undefined` when nothing is
+   * known.
+   */
   readonly durationMs: number | undefined;
+  /** Where `durationMs` came from: real frame endpoints or a turn-level fallback. */
+  readonly durationSource?: 'frame' | 'turn';
   readonly progressText: string | undefined;
   readonly agentRefs?: readonly ToolAgentRef[];
   readonly turnId?: string;
@@ -148,7 +163,12 @@ export interface SubagentBlock {
   readonly summary: string | undefined;
   readonly error: string | undefined;
   readonly usage?: TokenUsage;
-  readonly startedAt: string;
+  /**
+   * ISO start time from the task / tool-frame contract. `undefined` means the
+   * start time is unknown — consumers must render "unknown" rather than
+   * parsing an empty string into a NaN → fake 0ms duration.
+   */
+  readonly startedAt?: string;
   readonly endedAt: string | undefined;
   readonly toolCallCount: number;
   readonly transcript: readonly Block[];

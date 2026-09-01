@@ -49,6 +49,7 @@ import {
 } from '../state/__fixtures__/canonicalTranscript';
 import { Markdown } from './Markdown';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { ToolCard } from './ToolCard';
 import {
   splitPrefixSegments,
   splitStreamingText,
@@ -494,6 +495,102 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[role="log"]')).not.toBeNull();
   });
 
+  it('shows no clock on the working status when the turn start is unknown', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <Transcript
+        state={{ ...transcriptState([]), busy: true, turnStartedAt: undefined }}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+      />,
+    );
+    const status = container.querySelector('[data-turn-status]');
+    expect(status).not.toBeNull();
+    // The label is there, but no cumulative clock may be fabricated from the
+    // component's mount time.
+    expect(status?.textContent).toContain('Working');
+    expect(/\d/.test(status?.textContent ?? '')).toBe(false);
+  });
+
+  it('shows the cumulative clock once a known-started turn passes 15s', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <Transcript
+        state={{ ...transcriptState([]), busy: true, turnStartedAt: Date.now() - 16_000 }}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+      />,
+    );
+    const status = container.querySelector('[data-turn-status]');
+    expect(status).not.toBeNull();
+    expect(/\d/.test(status?.textContent ?? '')).toBe(true);
+  });
+
+  it('drops the working status as soon as busy clears (turn ended)', async () => {
+    const { root, container } = makeRoot();
+    const state = {
+      ...transcriptState([assistantBlock('assistant-m2-0', 'answer')]),
+      busy: true,
+      turnStartedAt: Date.now() - 16_000,
+    };
+    const props = {
+      onLoadOlder: () => Promise.resolve(false),
+      onResolveApproval: () => noopActions(),
+      onAnswerQuestion: () => noopActions(),
+      onDismissQuestion: () => noopActions(),
+    };
+    await renderSettled(root, <Transcript state={state} {...props} />);
+    expect(container.querySelector('[data-turn-status]')).not.toBeNull();
+    await renderSettled(
+      root,
+      <Transcript
+        state={{
+          ...state,
+          busy: false,
+          turnStartedAt: undefined,
+          turnTail: {
+            turnId: 't1',
+            endedAt: new Date().toISOString(),
+            durationMs: 16_000,
+            ttftMs: undefined,
+            usage: undefined,
+            tokensPerSecond: undefined,
+          },
+        }}
+        {...props}
+      />,
+    );
+    expect(container.querySelector('[data-turn-status]')).toBeNull();
+    expect(container.querySelector('[data-turn-tail]')).not.toBeNull();
+  });
+
+  it('hides the working status while assistant text streams even when busy', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <Transcript
+        state={{
+          ...transcriptState([
+            { kind: 'assistant', id: 'assistant-live', text: 'typing', streaming: true, createdAt: undefined },
+          ]),
+          busy: true,
+          turnStartedAt: Date.now() - 20_000,
+        }}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+      />,
+    );
+    expect(container.querySelector('[data-turn-status]')).toBeNull();
+  });
+
   it('keeps loaded skills compact until their details are explicitly expanded', async () => {
     const container = await renderTranscript([
       {
@@ -548,6 +645,150 @@ describe('live and event chrome', () => {
     });
     expect(trigger?.getAttribute('aria-expanded')).toBe('true');
     expect(shell?.querySelector('pre')?.textContent).toContain('first line');
+  });
+});
+
+describe('explicit unknown timing', () => {
+  function subagentBlock(
+    overrides: Partial<Extract<Block, { kind: 'subagent' }>> & { subagentId: string },
+  ): Block {
+    return {
+      kind: 'subagent',
+      id: `subagent-${overrides.subagentId}`,
+      parentAgentId: undefined,
+      parentToolCallId: undefined,
+      name: overrides.subagentId,
+      description: undefined,
+      model: undefined,
+      thinkingEffort: undefined,
+      status: 'completed',
+      summary: undefined,
+      error: undefined,
+      startedAt: undefined,
+      endedAt: undefined,
+      toolCallCount: 0,
+      transcript: [],
+      ...overrides,
+    };
+  }
+
+  it('shows an explicit dash instead of 0ms when a subagent start or end is unknown', async () => {
+    const container = await renderTranscript([
+      subagentBlock({ subagentId: 'agent-no-times' }),
+      subagentBlock({
+        subagentId: 'agent-no-end',
+        startedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    ]);
+    for (const id of ['agent-no-times', 'agent-no-end']) {
+      const card = container.querySelector(`[data-subagent-id="${id}"]`);
+      expect(card, id).not.toBeNull();
+      expect(card?.textContent, id).toContain('—');
+      expect(card?.textContent, id).not.toContain('0ms');
+    }
+  });
+
+  it('shows the real duration when a subagent has both true endpoints', async () => {
+    const container = await renderTranscript([
+      subagentBlock({
+        subagentId: 'agent-timed',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        endedAt: '2026-01-01T00:01:30.000Z',
+      }),
+    ]);
+    const card = container.querySelector('[data-subagent-id="agent-timed"]');
+    expect(card?.textContent).toContain('1m 30s');
+    expect(card?.textContent).not.toContain('—');
+  });
+
+  it('ticks a live duration for a running subagent with a real start', async () => {
+    const container = await renderTranscript([
+      subagentBlock({
+        subagentId: 'agent-live',
+        status: 'running',
+        startedAt: new Date(Date.now() - 5_000).toISOString(),
+      }),
+    ]);
+    const card = container.querySelector('[data-subagent-id="agent-live"]');
+    expect(card?.textContent).toMatch(/\d\.\ds/);
+    expect(card?.textContent).not.toContain('—');
+  });
+
+  function toolBlock(
+    overrides: Partial<Extract<Block, { kind: 'tool' }>> & { toolCallId: string },
+  ): Block {
+    return {
+      kind: 'tool',
+      id: `tool-${overrides.toolCallId}`,
+      name: 'Read',
+      argsText: '',
+      args: { path: 'a.ts' },
+      display: undefined,
+      description: undefined,
+      status: 'done',
+      output: 'ok',
+      isError: undefined,
+      startedAt: undefined,
+      durationMs: undefined,
+      progressText: undefined,
+      ...overrides,
+    };
+  }
+
+  async function renderToolCard(block: Block): Promise<HTMLDivElement> {
+    const { root, container } = makeRoot();
+    await renderSettled(root, <ToolCard block={block as Extract<Block, { kind: 'tool' }>} />);
+    return container;
+  }
+
+  it('marks a settled tool duration as unknown instead of showing the turn-level fallback', async () => {
+    // The projection falls back to the TURN's durationMs when frame-level
+    // timing is missing (startedAt undefined / legacy 0 sentinel) — the card
+    // must not present that as this tool's own runtime.
+    const container = await renderToolCard(
+      toolBlock({ toolCallId: 't-unknown', durationMs: 5_000 }),
+    );
+    expect(container.textContent).toContain('—');
+    expect(container.textContent).not.toContain('5.0s');
+    expect(container.querySelector('[title="duration unknown"]')).not.toBeNull();
+  });
+
+  it('marks the legacy 0-start sentinel as unknown even when a duration rides along', async () => {
+    const container = await renderToolCard(
+      toolBlock({ toolCallId: 't-zero', startedAt: 0, durationMs: 5_000 }),
+    );
+    expect(container.textContent).toContain('—');
+    expect(container.textContent).not.toContain('5.0s');
+  });
+
+  it('shows the per-tool duration when both frame endpoints are real', async () => {
+    const container = await renderToolCard(
+      toolBlock({ toolCallId: 't-timed', startedAt: 1_767_225_600_000, durationMs: 2_300, durationSource: 'frame' }),
+    );
+    expect(container.textContent).toContain('2.3s');
+    expect(container.textContent).not.toContain('—');
+  });
+
+  it('marks a turn-level fallback as unknown when only the frame start exists', async () => {
+    // Half a frame timestamp pair: the start is real, the end is missing, so
+    // the projected durationMs is the enclosing turn's — never this tool's.
+    const container = await renderToolCard(
+      toolBlock({
+        toolCallId: 't-half',
+        startedAt: 1_767_225_600_000,
+        durationMs: 9_000,
+        durationSource: 'turn',
+      }),
+    );
+    expect(container.textContent).toContain('—');
+    expect(container.textContent).not.toContain('9.0s');
+  });
+
+  it('shows no duration marker at all on a still-running tool', async () => {
+    const container = await renderToolCard(
+      toolBlock({ toolCallId: 't-running', status: 'running', output: undefined }),
+    );
+    expect(container.textContent).not.toContain('—');
   });
 });
 
