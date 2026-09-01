@@ -1915,6 +1915,269 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       expect(projected.blocks.indexOf(events[1]!)).toBeLessThan(t2Index);
       expect(projected.blocks.indexOf(events[2]!)).toBeGreaterThan(t2Index);
     });
+
+    it('addresses resume/send refs by the explicit spawn name, never the shared profile label', () => {
+      const spawnFrame = (
+        frameId: string,
+        toolCallId: string,
+        name: string,
+        agentId: string,
+        startedAt: string,
+      ) => ({
+        kind: 'tool' as const,
+        frameId,
+        toolCallId,
+        name: 'AgentRun',
+        state: 'done' as const,
+        input: { profile: 'coder', name, prompt: 'work' },
+        agentRefs: [{ agentId, role: 'child' as const }],
+        startedAt,
+      });
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'delegate',
+              startedAt: '2026-01-01T00:00:00.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'completed',
+                  startedAt: '2026-01-01T00:00:01.000Z',
+                  frames: [
+                    spawnFrame('frame-spawn-1', 'call-spawn-1', 'alpha', 'agent-1', '2026-01-01T00:00:01.000Z'),
+                    spawnFrame('frame-spawn-2', 'call-spawn-2', 'beta', 'agent-2', '2026-01-01T00:00:02.000Z'),
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-resume',
+                      toolCallId: 'call-resume-1',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { resume: 'beta', prompt: 'one more pass' },
+                      startedAt: '2026-01-01T00:00:05.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-send',
+                      toolCallId: 'call-send-1',
+                      name: 'AgentSend',
+                      state: 'done',
+                      input: { target: 'alpha', message: 'ping' },
+                      startedAt: '2026-01-01T00:00:06.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-alpha',
+              kind: 'subagent',
+              state: 'running',
+              detached: false,
+              agentId: 'agent-1',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              taskId: 'task-beta',
+              kind: 'subagent',
+              state: 'running',
+              detached: false,
+              agentId: 'agent-2',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:02.000Z',
+            },
+          ],
+        }),
+      );
+      // Both cards carry the shared profile label — display-name matching
+      // alone would cross-wire the two agents.
+      const names = projected.blocks
+        .filter((block) => block.kind === 'subagent')
+        .map((block) => (block.kind === 'subagent' ? block.name : ''));
+      expect(names).toEqual(['coder', 'coder']);
+      const resumed = projected.blocks.find(
+        (block) => block.kind === 'subagent-event' && block.event === 'resumed',
+      );
+      const sent = projected.blocks.find(
+        (block) => block.kind === 'subagent-event' && block.event === 'sent',
+      );
+      expect(resumed).toMatchObject({ subagentId: 'agent-2', at: '2026-01-01T00:00:05.000Z' });
+      expect(sent).toMatchObject({ subagentId: 'agent-1', at: '2026-01-01T00:00:06.000Z' });
+    });
+
+    it('emits no card or lifecycle events for a roster task whose run never entered the page', () => {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'just chatting',
+              startedAt: '2026-01-01T00:00:30.000Z',
+              steps: [],
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-off-page',
+              kind: 'subagent',
+              state: 'completed',
+              detached: false,
+              agentId: 'agent-1',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:01.000Z',
+              endedAt: '2026-01-01T00:00:20.000Z',
+              resultSummary: 'done long ago',
+            },
+          ],
+        }),
+      );
+      expect(projected.blocks.some((block) => block.kind === 'subagent')).toBe(false);
+      expect(projected.blocks.some((block) => block.kind === 'subagent-event')).toBe(false);
+    });
+
+    it('renders a resume-only page without a fake spawned entry until the older page loads', () => {
+      const resumeTurn = {
+        kind: 'turn' as const,
+        turnId: 't2',
+        ordinal: 2,
+        state: 'completed' as const,
+        origin: { kind: 'user' as const },
+        prompt: 'resume it',
+        startedAt: '2026-01-01T00:00:29.000Z',
+        steps: [
+          {
+            kind: 'step' as const,
+            stepId: 't2.1',
+            turnId: 't2',
+            ordinal: 1,
+            state: 'completed' as const,
+            startedAt: '2026-01-01T00:00:30.000Z',
+            frames: [
+              {
+                kind: 'tool' as const,
+                frameId: 'frame-resume',
+                toolCallId: 'call-resume-1',
+                name: 'AgentRun',
+                state: 'done' as const,
+                input: { resume: 'agent-1', prompt: 'one more pass' },
+                startedAt: '2026-01-01T00:00:30.000Z',
+              },
+            ],
+          },
+        ],
+      };
+      const resumeTaskref = {
+        kind: 'taskref' as const,
+        refId: 'ref-run-2',
+        taskId: 'task-agent-1-run-2',
+        at: '2026-01-01T00:00:30.000Z',
+      };
+      const tasks = [
+        {
+          taskId: 'task-agent-1-run-1',
+          kind: 'subagent' as const,
+          state: 'completed' as const,
+          detached: false,
+          agentId: 'agent-1',
+          outputTail: '',
+          startedAt: '2026-01-01T00:00:01.000Z',
+          endedAt: '2026-01-01T00:00:20.000Z',
+        },
+        {
+          taskId: 'task-agent-1-run-2',
+          kind: 'subagent' as const,
+          state: 'completed' as const,
+          detached: false,
+          agentId: 'agent-1',
+          outputTail: '',
+          startedAt: '2026-01-01T00:00:30.000Z',
+          endedAt: '2026-01-01T00:00:45.000Z',
+        },
+      ];
+      // Fresh window: only the resume turn + its taskref are in `items`.
+      const pageTwo = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({ items: [resumeTurn, resumeTaskref], tasks }),
+      );
+      const pageTwoEvents = pageTwo.blocks.filter((block) => block.kind === 'subagent-event');
+      expect(pageTwoEvents.map((block) => block.id)).toEqual([
+        'subagent-event-agent-1-resume-call-resume-1',
+        'subagent-event-agent-1-completed-task-agent-1-run-2',
+      ]);
+
+      // After the older page loads, the original run's spawn + terminal appear.
+      const olderItems = [
+        {
+          kind: 'turn' as const,
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed' as const,
+          origin: { kind: 'user' as const },
+          prompt: 'delegate',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          steps: [
+            {
+              kind: 'step' as const,
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed' as const,
+              startedAt: '2026-01-01T00:00:01.000Z',
+              frames: [
+                {
+                  kind: 'tool' as const,
+                  frameId: 'frame-spawn',
+                  toolCallId: 'call-spawn-1',
+                  name: 'AgentRun',
+                  state: 'done' as const,
+                  input: { profile: 'Researcher', prompt: 'map the surface' },
+                  agentRefs: [{ agentId: 'agent-1', role: 'child' as const }],
+                  startedAt: '2026-01-01T00:00:01.000Z',
+                },
+              ],
+            },
+          ],
+        },
+        {
+          kind: 'taskref' as const,
+          refId: 'ref-run-1',
+          taskId: 'task-agent-1-run-1',
+          at: '2026-01-01T00:00:01.000Z',
+        },
+      ];
+      const full = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({ items: [...olderItems, resumeTurn, resumeTaskref], tasks }),
+      );
+      const fullEvents = full.blocks.filter((block) => block.kind === 'subagent-event');
+      expect(fullEvents.map((block) => block.id)).toEqual([
+        'subagent-event-agent-1-spawned-task-agent-1-run-1',
+        'subagent-event-agent-1-completed-task-agent-1-run-1',
+        'subagent-event-agent-1-resume-call-resume-1',
+        'subagent-event-agent-1-completed-task-agent-1-run-2',
+      ]);
+    });
   });
 
   it('does not invent page-global cards from snapshot.subagents alone', () => {
