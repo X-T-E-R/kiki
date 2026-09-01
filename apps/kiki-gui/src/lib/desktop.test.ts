@@ -6,6 +6,8 @@ import {
   importNativeKimiConfig,
   migrateNativeCompatibilityCategory,
   onTrayNewSession,
+  selectDirectoriesNative,
+  selectDirectoryNative,
   selectFilesNative,
   type SessionsMigrationPlan,
 } from './desktop';
@@ -154,6 +156,19 @@ describe('native desktop bridge', () => {
     expect(invoke).toHaveBeenCalledWith('migrate_compatibility_category', {
       category: 'userSkills',
     });
+  });
+
+  it('routes directory picks through the native dialog with the directory flags', async () => {
+    open.mockResolvedValueOnce(['C:/alpha', 'C:/beta']);
+    await expect(selectDirectoriesNative()).resolves.toEqual(['C:/alpha', 'C:/beta']);
+    expect(open).toHaveBeenCalledWith({ directory: true, multiple: true });
+
+    open.mockResolvedValueOnce('C:/single');
+    await expect(selectDirectoryNative()).resolves.toBe('C:/single');
+    expect(open).toHaveBeenLastCalledWith({ directory: true, multiple: false });
+
+    open.mockResolvedValueOnce(null);
+    await expect(selectDirectoriesNative()).resolves.toBeNull();
   });
 
   it('stats native file picks without reading their contents eagerly', async () => {

@@ -451,6 +451,61 @@ describe('Sidebar entry distribution', () => {
   });
 });
 
+describe('Sidebar semantic structure', () => {
+  it('names the landmark, labels each group, and marks the active session', async () => {
+    const active = session('active');
+    const other = session('other');
+    const groups: SessionGroup[] = [
+      { key: 'today', label: 'Today', items: [active, other] },
+      { key: 'week', label: 'Past 7 days', items: [session('older')] },
+    ];
+    const { container } = await mount({
+      activeSessionId: 'active',
+      sessions: [active, other, ...groups[1]!.items],
+      sessionGroups: groups,
+    });
+
+    const aside = container.querySelector('aside');
+    expect(aside?.getAttribute('aria-label')).toBe('Session navigation');
+
+    // Region is a landmark whose accessible name is computed from aria-label;
+    // querying role + name together (the no-testing-library getByRole
+    // equivalent) proves the name actually reaches the a11y tree — a bare
+    // aria-label on a generic div would be dropped from the name computation.
+    const regions = container.querySelectorAll<HTMLElement>('[role="region"][aria-label]');
+    expect(regions).toHaveLength(1);
+    expect(regions[0]?.getAttribute('aria-label')).toBe('Session list');
+    expect(regions[0]?.hasAttribute('data-session-list')).toBe(true);
+
+    const labelledGroups = [
+      ...container.querySelectorAll<HTMLElement>('[role="group"][aria-label]'),
+    ].map((node) => node.getAttribute('aria-label'));
+    expect(labelledGroups).toEqual(['Today', 'Past 7 days']);
+
+    const rows = [...container.querySelectorAll<HTMLButtonElement>('[data-session-title]')].map(
+      (title) => title.closest('button'),
+    );
+    const activeRow = rows.find(
+      (row) => row?.textContent?.includes('active') === true,
+    );
+    const otherRow = rows.find((row) => row?.textContent?.includes('other') === true);
+    expect(activeRow?.getAttribute('aria-current')).toBe('page');
+    expect(otherRow?.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('exposes the search results as a named region while a query is active', async () => {
+    searchMessages.mockResolvedValue(page([A1, A2], false));
+    const { container } = await mount();
+    await typeQuery(container, 'alpha');
+    await waitForText(container, 'alpha one');
+
+    const regions = [...container.querySelectorAll<HTMLElement>('[role="region"][aria-label]')];
+    expect(regions.map((node) => node.getAttribute('aria-label'))).toEqual(['Search sessions']);
+    expect(regions[0]?.hasAttribute('data-search-results')).toBe(true);
+    expect(container.querySelector('[data-session-list]')).toBeNull();
+  });
+});
+
 describe('Sidebar view menu', () => {
   const wsA = workspace('wd_a_000000000000', 'workshop', true);
   const wsB = workspace('wd_b_000000000000', 'another-ws');

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  IAgentActivityView,
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentPromptService,
@@ -108,6 +109,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     feed(
       ev({
         type: 'tool.call.started',
+        time: 1_700_000_001_000,
         turnId: 1,
         toolCallId: 'call_1',
         name: 'Bash',
@@ -115,7 +117,15 @@ describe('AgentTranscriptLiveAdapter', () => {
         display: { kind: 'command', command: 'ls' },
       }),
     );
-    feed(ev({ type: 'tool.result', turnId: 1, toolCallId: 'call_1', output: 'file.txt' }));
+    feed(
+      ev({
+        type: 'tool.result',
+        time: 1_700_000_003_000,
+        turnId: 1,
+        toolCallId: 'call_1',
+        output: 'file.txt',
+      }),
+    );
     feed(ev({ type: 'turn.step.completed', turnId: 1, step: 1, stepId: 'u1' }));
     feed(ev({ type: 'turn.ended', turnId: 1, reason: 'completed' }));
 
@@ -148,6 +158,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       input: { command: 'ls' },
       output: 'file.txt',
       display: { kind: 'command', command: 'ls' },
+      startedAt: '2023-11-14T22:13:21.000Z',
+      endedAt: '2023-11-14T22:13:23.000Z',
     });
   });
 
@@ -524,6 +536,37 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(step.frames).toContainEqual(
       expect.objectContaining({ kind: 'text', text: 'partial' }),
     );
+  });
+
+  it('closes every running tool frame in the turn when turn.ended arrives', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
+
+    feed(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+    feed(ev({ type: 'turn.step.started', turnId: 1, step: 1 }));
+    feed(ev({ type: 'tool.call.started', turnId: 1, toolCallId: 'c1', name: 'Read', args: {} }));
+    feed(ev({ type: 'turn.step.completed', turnId: 1, step: 1 }));
+    feed(ev({ type: 'turn.step.started', turnId: 1, step: 2 }));
+    feed(ev({ type: 'tool.call.started', turnId: 1, toolCallId: 'c2', name: 'Bash', args: {} }));
+    feed(ev({ type: 'turn.ended', time: 1_700_000_005_000, turnId: 1, reason: 'cancelled' }));
+
+    const tools = turnOps('t1', tx.getItems()).steps.flatMap((step) =>
+      step.frames.filter((frame) => frame.kind === 'tool'),
+    );
+    expect(tools).toHaveLength(2);
+    expect(tools).toEqual([
+      expect.objectContaining({
+        toolCallId: 'c1',
+        state: 'interrupted',
+        endedAt: '2023-11-14T22:13:25.000Z',
+      }),
+      expect.objectContaining({
+        toolCallId: 'c2',
+        state: 'interrupted',
+        endedAt: '2023-11-14T22:13:25.000Z',
+      }),
+    ]);
   });
 
   it('marks a user-cancelled turn with an interruption marker, but not programmatic aborts', () => {
@@ -1933,12 +1976,25 @@ describe('AgentTranscriptLiveAdapter', () => {
     const tx = new AgentTranscript('main');
     const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
 
-    feed(ev({ type: 'subagent.started', subagentId: 'agent-1' }));
-    expect(tx.getTask('agent-1')).toMatchObject({ kind: 'subagent', state: 'running' });
-    feed(ev({ type: 'subagent.suspended', subagentId: 'agent-1', reason: 'approval' }));
-    expect(tx.getTask('agent-1')).toMatchObject({ state: 'running', stateReason: 'approval' });
-    feed(ev({ type: 'subagent.failed', subagentId: 'agent-1', error: 'boom' }));
-    expect(tx.getTask('agent-1')).toMatchObject({ state: 'failed', error: 'boom' });
+    feed(ev({ type: 'subagent.started', time: 1_700_000_001_000, subagentId: 'agent-1' }));
+    expect(tx.getTask('agent-1')).toMatchObject({
+      kind: 'subagent',
+      state: 'running',
+      startedAt: '2023-11-14T22:13:21.000Z',
+    });
+    feed(ev({ type: 'subagent.suspended', time: 1_700_000_002_000, subagentId: 'agent-1', reason: 'approval' }));
+    expect(tx.getTask('agent-1')).toMatchObject({
+      state: 'running',
+      stateReason: 'approval',
+      startedAt: '2023-11-14T22:13:21.000Z',
+    });
+    feed(ev({ type: 'subagent.failed', time: 1_700_000_004_000, subagentId: 'agent-1', error: 'boom' }));
+    expect(tx.getTask('agent-1')).toMatchObject({
+      state: 'failed',
+      error: 'boom',
+      startedAt: '2023-11-14T22:13:21.000Z',
+      endedAt: '2023-11-14T22:13:24.000Z',
+    });
 
     feed(
       ev({
@@ -2016,6 +2072,16 @@ describe('bindSessionTranscript', () => {
             if (token === IEventBus) return bus;
             if (token === IAgentLoopService) {
               return { status: () => opts?.loopStatus ?? { state: 'idle' } };
+            }
+            if (token === IAgentActivityView) {
+              const status = opts?.loopStatus as
+                | { state?: unknown; activeTurnId?: unknown }
+                | undefined;
+              const turnId =
+                status?.state === 'running' && typeof status.activeTurnId === 'number'
+                  ? status.activeTurnId
+                  : undefined;
+              return { state: () => ({ turn: turnId === undefined ? undefined : { turnId, step: 1 } }) };
             }
             if (token === IAgentTaskService) {
               return { list: () => opts?.tasks ?? [] };
@@ -2184,19 +2250,18 @@ describe('bindSessionTranscript', () => {
 
   it('seeds pre-attach Agent task mappings so a late-bound liveAdapter folds the lifecycle', () => {
     const agents = new FakeAgents();
-    agents.add('main', {
-      tasks: [
-        {
-          taskId: 'task-9',
-          kind: 'agent',
-          agentId: 'agent-1',
-          status: 'running',
-          description: 'Inspect',
-          detached: false,
-          startedAt: 1_700_000_000_000,
-        },
-      ],
-    });
+    const tasks = [
+      {
+        taskId: 'task-9',
+        kind: 'agent',
+        agentId: 'agent-1',
+        status: 'running',
+        description: 'Inspect',
+        detached: false,
+        startedAt: 1_700_000_000_000,
+      },
+    ];
+    agents.add('main', { tasks });
     const store = new TranscriptStore('s1');
     const binding = bindSessionTranscript(
       store,
@@ -2213,6 +2278,7 @@ describe('bindSessionTranscript', () => {
 
     binding.seedRunningTasks('main');
     expect(store.getAgent('main')?.getTask('task-9')?.state).toBe('running');
+    tasks.length = 0;
 
     agents.get('main')!.bus.emit(ev({ type: 'subagent.completed', subagentId: 'agent-1', resultSummary: 'done' }));
 
@@ -2220,6 +2286,79 @@ describe('bindSessionTranscript', () => {
       state: 'completed',
       resultSummary: 'done',
       detached: false,
+    });
+    expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
+    binding.dispose();
+  });
+
+  it('routes task notifications and subagent lifecycle through one live owner', () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+
+    main.bus.emit(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' } }));
+    main.bus.emit(ev({ type: 'turn.step.started', turnId: 0, step: 1, stepId: 'step-1' }));
+    main.bus.emit(
+      ev({
+        type: 'tool.call.started',
+        turnId: 0,
+        toolCallId: 'call-agent',
+        name: 'Agent',
+        args: {},
+      }),
+    );
+    main.bus.emit(
+      ev({
+        type: 'subagent.spawned',
+        time: 2_000,
+        subagentId: 'agent-1',
+        subagentName: 'explore',
+        parentToolCallId: 'call-agent',
+        description: 'Inspect',
+        runInBackground: true,
+        taskId: 'task-9',
+      }),
+    );
+    main.bus.emit(ev({ type: 'subagent.started', time: 3_000, subagentId: 'agent-1' }));
+    main.bus.emit(
+      ev({
+        type: 'task.notified',
+        time: 4_000,
+        notificationType: 'completed',
+        title: 'Agent completed',
+        body: 'done',
+        severity: 'info',
+        sourceKind: 'agent',
+        sourceId: 'task-9',
+      }),
+    );
+    main.bus.emit(
+      ev({
+        type: 'subagent.completed',
+        time: 5_000,
+        subagentId: 'agent-1',
+        resultSummary: 'done',
+      }),
+    );
+
+    const turn = store.getAgent('main')?.getTurn('t0');
+    const notificationFrames = turn?.steps
+      .flatMap((step) => step.frames)
+      .filter((frame) => frame.kind === 'text' && frame.taskId === 'task-9');
+    const tool = turn?.steps
+      .flatMap((step) => step.frames)
+      .find((frame) => frame.kind === 'tool' && frame.toolCallId === 'call-agent');
+    expect(notificationFrames).toHaveLength(1);
+    expect(tool).toMatchObject({ agentRefs: [{ agentId: 'agent-1', role: 'child' }] });
+    expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
+      state: 'completed',
+      resultSummary: 'done',
+      startedAt: new Date(3_000).toISOString(),
+      endedAt: new Date(5_000).toISOString(),
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
     binding.dispose();
@@ -2369,7 +2508,7 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
-  it('terminal turn.upsert inherits the backfilled header when the liveAdapter missed turn.started', () => {
+  it('deduplicates wire and live terminal turn.upserts while preserving the backfilled header', () => {
     const agents = new FakeAgents();
     const store = new TranscriptStore('s1');
     const ops: TranscriptOperation[] = [];
@@ -2406,7 +2545,9 @@ describe('bindSessionTranscript', () => {
       },
     ]);
 
-    main.bus.emit(ev({ type: 'turn.ended', turnId: 0, reason: 'completed' }));
+    main.bus.emit(
+      ev({ type: 'turn.ended', time: 1_700_000_000_000, turnId: 0, reason: 'completed' }),
+    );
 
     const terminal = ops.filter((op) => op.op === 'turn.upsert');
     expect(terminal).toHaveLength(1);
@@ -2418,6 +2559,7 @@ describe('bindSessionTranscript', () => {
         prompt: 'hi',
         attachmentIds: ['att_1'],
         startedAt: '2026-08-04T00:00:00.000Z',
+        endedAt: '2023-11-14T22:13:20.000Z',
       },
     });
     expect(store.getAgent('main')?.getTurn('t0')).toMatchObject({
@@ -2481,11 +2623,11 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
-  async function seedWireHomeWithTool(): Promise<string> {
+  async function seedWireHomeWithTool(includeResult: boolean = true): Promise<string> {
     const home = await mkdtemp(join(tmpdir(), 'transcript-backfill-live-'));
     const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
     await mkdir(wireDir, { recursive: true });
-    const records = [
+    const records: Record<string, unknown>[] = [
       {
         type: 'turn.prompt',
         turnId: 0,
@@ -2523,7 +2665,9 @@ describe('bindSessionTranscript', () => {
         },
         time: 4_000,
       },
-      {
+    ];
+    if (includeResult) {
+      records.push({
         type: 'context.append_loop_event',
         event: {
           type: 'tool.result',
@@ -2531,8 +2675,8 @@ describe('bindSessionTranscript', () => {
           result: { output: 'a.txt', isError: false },
         },
         time: 5_000,
-      },
-    ];
+      });
+    }
     await writeFile(join(wireDir, 'wire.jsonl'), `${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
     return home;
   }
@@ -2586,21 +2730,108 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
-  it('overlays the in-flight turn as running after a backfill', async () => {
-    const home = await seedWireHome();
+  it('preserves the full in-flight turn and closes it at the real live end time', async () => {
+    const home = await seedWireHomeWithTool(false);
     try {
       const agents = new FakeAgents();
-      agents.add('main', { loopStatus: { state: 'running', activeTurnId: 0 } });
+      const loopStatus = { state: 'running', activeTurnId: 0 };
+      const main = agents.add('main', { loopStatus });
       const service = new TranscriptService({
         homeDir: home,
         core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
       });
       const store = service.forSessionLive('s1');
-      await service.whenReady('s1');
-      expect(store?.getAgent('main')?.getTurn('t0')).toMatchObject({
-        state: 'running',
-        prompt: 'hi',
+      const observedStates: string[] = [];
+      service.onSessionOps('s1', (event) => {
+        for (const op of event.ops) {
+          if (op.op === 'turn.upsert' && op.turn.turnId === 't0') observedStates.push(op.turn.state);
+        }
       });
+      await service.whenReady('s1');
+
+      const running = store?.getAgent('main')?.getTurn('t0');
+      const runningTool = running?.steps[0]?.frames.find((frame) => frame.kind === 'tool');
+      expect(running).toMatchObject({ state: 'running', prompt: 'hi' });
+      expect(running?.steps[0]).toMatchObject({ state: 'running' });
+      expect(running?.steps[0]?.endedAt).toBeUndefined();
+      expect(runningTool).toMatchObject({
+        state: 'running',
+        startedAt: new Date(4_000).toISOString(),
+      });
+      expect(runningTool?.endedAt).toBeUndefined();
+      expect(observedStates).toContain('running');
+      expect(observedStates).not.toContain('cancelled');
+
+      loopStatus.state = 'idle';
+      main.bus.emit(ev({ type: 'turn.ended', time: 9_000, turnId: 0, reason: 'completed' }));
+      const completed = store?.getAgent('main')?.getTurn('t0');
+      expect(completed).toMatchObject({ state: 'completed', endedAt: new Date(9_000).toISOString() });
+      expect(completed?.steps[0]).toMatchObject({
+        state: 'interrupted',
+        endedAt: new Date(9_000).toISOString(),
+      });
+      expect(completed?.steps[0]?.frames.find((frame) => frame.kind === 'tool')).toMatchObject({
+        state: 'interrupted',
+        endedAt: new Date(9_000).toISOString(),
+      });
+      service.dropSession('s1');
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('preserves the initially active turn when it ends during the async backfill read', async () => {
+    const home = await seedWireHomeWithTool(false);
+    try {
+      const agents = new FakeAgents();
+      const loopStatus: { state: string; activeTurnId?: number } = {
+        state: 'running',
+        activeTurnId: 0,
+      };
+      const main = agents.add('main', { loopStatus });
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      });
+      const store = service.forSessionLive('s1');
+      loopStatus.state = 'idle';
+      main.bus.emit(ev({ type: 'turn.ended', time: 9_000, turnId: 0, reason: 'completed' }));
+
+      await service.whenReady('s1');
+      const turn = store?.getAgent('main')?.getTurn('t0');
+      expect(turn).toMatchObject({ state: 'completed', endedAt: new Date(9_000).toISOString() });
+      expect(turn?.steps[0]).toMatchObject({
+        state: 'interrupted',
+        endedAt: new Date(9_000).toISOString(),
+      });
+      expect(turn?.steps[0]?.frames.find((frame) => frame.kind === 'tool')).toMatchObject({
+        state: 'interrupted',
+        endedAt: new Date(9_000).toISOString(),
+      });
+      service.dropSession('s1');
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('uses the active turn sampled after the async backfill read when a turn starts mid-read', async () => {
+    const home = await seedWireHome();
+    try {
+      const agents = new FakeAgents();
+      const loopStatus: { state: string; activeTurnId?: number } = { state: 'idle' };
+      const main = agents.add('main', { loopStatus });
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      });
+      const store = service.forSessionLive('s1');
+      loopStatus.state = 'running';
+      loopStatus.activeTurnId = 1;
+      main.bus.emit(ev({ type: 'turn.started', time: 6_000, turnId: 1, origin: { kind: 'user' } }));
+
+      await service.whenReady('s1');
+      expect(store?.getAgent('main')?.getTurn('t0')).toMatchObject({ state: 'cancelled' });
+      expect(store?.getAgent('main')?.getTurn('t1')).toMatchObject({ state: 'running' });
       service.dropSession('s1');
     } finally {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -2898,7 +3129,9 @@ describe('bindSessionTranscript', () => {
       const seen: number[] = [];
       service.onSessionOps('s1', (_event, cursor) => seen.push(cursor.seq));
       main.bus.emit(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' } }));
-      main.bus.emit(ev({ type: 'turn.ended', turnId: 0, reason: 'completed' }));
+      main.bus.emit(
+        ev({ type: 'turn.ended', time: 1_700_000_000_000, turnId: 0, reason: 'completed' }),
+      );
 
       expect(seen).toEqual([base + 1, base + 2]);
       expect(service.getSeqWatermark('s1', 'main')).toBe(base + 2);

@@ -31,6 +31,23 @@ export function applyTheme(resolved: ResolvedTheme): void {
 }
 
 /**
+ * Fire `listener` whenever the resolved theme on `<html data-theme>` flips.
+ * Surfaces that cannot follow CSS variables (xterm.js resolves colors itself)
+ * re-read the tokens from this hook instead of waiting for a remount.
+ */
+export function onThemeChange(listener: () => void): () => void {
+  if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') {
+    return () => {};
+  }
+  const observer = new MutationObserver(() => { listener(); });
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme'],
+  });
+  return () => { observer.disconnect(); };
+}
+
+/**
  * Mirror the resolved theme onto the native window so the title bar and any
  * native chrome match. Desktop-only; no-ops in the browser build.
  */

@@ -43,7 +43,7 @@ export interface ThinkingFrame {
   readonly text: string;
 }
 
-export type ToolFrameState = 'running' | 'done' | 'error';
+export type ToolFrameState = 'running' | 'done' | 'error' | 'interrupted';
 
 /**
  * The latest progress update of a running tool call (`tool.progress`),
@@ -89,6 +89,10 @@ export interface ToolCallFrame {
   readonly inputText?: string;
   /** Newest `tool.progress` update. */
   readonly progress?: ToolFrameProgress;
+  /** ISO timestamp when the tool call started (per-tool, not turn-level). */
+  readonly startedAt?: string;
+  /** ISO timestamp when the tool call reached a terminal state. */
+  readonly endedAt?: string;
   /** Execution entity (backgroundable shell / subagent run) behind this call. */
   readonly taskId?: TaskId;
   /** Interaction (approval/question) that gated this call, if any. */

@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { writeSettings } from './settings';
-import { applyTheme, resolveTheme, startThemeSync } from './theme';
+import { applyTheme, onThemeChange, resolveTheme, startThemeSync } from './theme';
 
 type MediaListener = (event: MediaQueryListEvent) => void;
 
@@ -86,5 +86,42 @@ describe('startThemeSync', () => {
     stop();
     media.flip(false);
     expect(document.documentElement.dataset['theme']).toBe('dark');
+  });
+});
+
+describe('onThemeChange', () => {
+  it('fires when the resolved theme flips and stops after teardown', async () => {
+    stubMatchMedia(false);
+    writeSettings({ theme: 'system' });
+    const stopSync = startThemeSync();
+
+    const seen: string[] = [];
+    const stop = onThemeChange(() => {
+      seen.push(document.documentElement.dataset['theme'] ?? '');
+    });
+
+    applyTheme('dark');
+    await vi.waitFor(() => { expect(seen).toEqual(['dark']); });
+
+    applyTheme('dark');
+    applyTheme('light');
+    await vi.waitFor(() => { expect(seen).toEqual(['dark', 'light']); });
+
+    stop();
+    applyTheme('dark');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(seen).toEqual(['dark', 'light']);
+    stopSync();
+  });
+
+  it('ignores unrelated attribute writes on the document element', async () => {
+    const listener = vi.fn();
+    const stop = onThemeChange(listener);
+
+    document.documentElement.dataset['locale'] = 'en';
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(listener).not.toHaveBeenCalled();
+    stop();
+    delete document.documentElement.dataset['locale'];
   });
 });

@@ -12,6 +12,13 @@ import { EventBusService } from '#/app/event/eventBusService';
 import { noopTelemetryService } from '#/app/telemetry/telemetry';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { IAgentStateService } from '#/agent/state/agentState';
+import {
+  SubagentCompleted,
+  SubagentFailed,
+  SubagentSpawned,
+  SubagentStarted,
+} from '#/session/subagent/mirrorAgentRun';
+import { SubagentSuspended } from '#/features/swarm/session/sessionSwarmService';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -117,6 +124,63 @@ describe('durable observable events', () => {
     expect(published).toEqual(['hello']);
     expect(journal).toEqual([
       { type: 'store-event.note.added', text: 'hello', time: expect.any(Number) },
+    ]);
+  });
+
+  it('persists the flat subagent lifecycle payloads in dispatch order', async () => {
+    setup();
+    const published: string[] = [];
+    disposables.add(bus.subscribe((event) => published.push(event.type)));
+    const usage = { inputOther: 10, output: 5, inputCacheRead: 2, inputCacheCreation: 1 };
+    const spawned = {
+      subagentId: 'child-1',
+      subagentName: 'explore',
+      parentToolCallId: 'call-1',
+      parentToolCallUuid: 'part-1',
+      parentAgentId: 'main',
+      callerAgentId: 'main',
+      description: 'Inspect files',
+      userLabel: 'scanner',
+      swarmIndex: 0,
+      runInBackground: true,
+      model: 'k3',
+      thinkingEffort: 'high',
+      taskId: 'task-1',
+    };
+
+    await dispatcher.dispatch(new SubagentSpawned(spawned, 1_000));
+    await dispatcher.dispatch(new SubagentStarted({ subagentId: 'child-1' }, 2_000));
+    await dispatcher.dispatch(
+      new SubagentCompleted(
+        { subagentId: 'child-1', resultSummary: 'done', usage, contextTokens: 42 },
+        3_000,
+      ),
+    );
+    await dispatcher.dispatch(new SubagentFailed({ subagentId: 'child-2', error: 'boom' }, 4_000));
+    await dispatcher.dispatch(
+      new SubagentSuspended({ subagentId: 'child-3', reason: 'approval' }, 5_000),
+    );
+
+    expect(journal).toEqual([
+      { type: 'subagent.spawned', ...spawned, time: 1_000 },
+      { type: 'subagent.started', subagentId: 'child-1', time: 2_000 },
+      {
+        type: 'subagent.completed',
+        subagentId: 'child-1',
+        resultSummary: 'done',
+        usage,
+        contextTokens: 42,
+        time: 3_000,
+      },
+      { type: 'subagent.failed', subagentId: 'child-2', error: 'boom', time: 4_000 },
+      { type: 'subagent.suspended', subagentId: 'child-3', reason: 'approval', time: 5_000 },
+    ]);
+    expect(published).toEqual([
+      'subagent.spawned',
+      'subagent.started',
+      'subagent.completed',
+      'subagent.failed',
+      'subagent.suspended',
     ]);
   });
 
