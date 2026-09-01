@@ -1477,20 +1477,23 @@ describe('AgentRun and dispatch parity golden', () => {
     ).toBe(view.dispatchId);
   });
 
-  it('P11 keeps non-native executors and unbound models fail-closed', async () => {
+  it('P11 allows non-native executors while keeping unbound models fail-closed', async () => {
     const nonNative = createLane(disposables, 'external', {
       profile: normalizeAgentProfile({
         ...parityProfile,
-        executor: 'codex',
+        executor: 'fake-executor',
       }),
     });
-    await expect(nonNative.external.dispatch({
+    const view = await nonNative.external.dispatch({
       authority,
       target: 'named',
       taskName: 'non_native',
       profileName: 'coder',
-      message: 'reject',
-    })).rejects.toThrow(/External executors are unsupported/);
+      message: 'dispatch',
+    });
+    expect(view.status).toBe('queued');
+    expect(nonNative.metadataAgents['agent_child_1']?.executor).toBe('fake-executor');
+    await completeExternal(nonNative, view.dispatchId, 0);
 
     const unbound = createLane(disposables, 'external', {
       profile: normalizeAgentProfile({

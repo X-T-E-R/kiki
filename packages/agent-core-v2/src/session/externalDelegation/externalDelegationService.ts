@@ -606,7 +606,6 @@ export class SessionExternalDelegationService
         runtime: runtimeLease.runtime,
         workDir: view.workDir,
         signal: controller.signal,
-        executorPolicy: 'native',
         onCreated: async (child) => {
           doc.children[taskName] = {
             taskName,
@@ -636,13 +635,6 @@ export class SessionExternalDelegationService
       }
       if (isError2(error) && error.code === ErrorCodes.AGENT_TYPE_NOT_ALLOWED) {
         throw invalid('Named-agent profile is not admitted.');
-      }
-      if (
-        isError2(error) &&
-        error.code === ErrorCodes.REQUEST_INVALID &&
-        error.message.includes('Harness executors')
-      ) {
-        throw invalid('External executors are unsupported for external delegation.');
       }
       throw error;
     } finally {
