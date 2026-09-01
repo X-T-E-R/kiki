@@ -18,6 +18,7 @@ import {
   isError2,
   resumeSessionById,
   type ExternalAuthority,
+  type ExternalInteractionResponse,
   type ISessionScopeHandle,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
@@ -83,8 +84,8 @@ const approvalResponseSchema = z.object({
   decision: z.enum(['approved', 'rejected', 'cancelled']),
   scope: z.literal('session').optional(),
   feedback: z.string().optional(),
-  selectedLabel: z.string().optional(),
-  selectedOptionId: z.string().optional(),
+  selected_label: z.string().optional(),
+  selected_option_id: z.string().optional(),
 }).strict();
 const questionAnswersSchema = z.record(z.string(), z.union([z.string(), z.literal(true)]));
 const questionResponseSchema = z.object({
@@ -148,7 +149,7 @@ export function registerV2ExternalDelegationRoutes(
     service.respond({
       authority,
       interactionId: body.interaction_id,
-      response: body.response,
+      response: normalizeInteractionResponse(body.response),
     }),
   );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/status', lookupSchema, async (service, authority, body) =>
@@ -185,6 +186,18 @@ export function registerV2ExternalDelegationRoutes(
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/cancel', lookupSchema, async (service, authority, body) =>
     service.cancel({ authority, dispatchId: body.dispatch_id }),
   );
+}
+
+function normalizeInteractionResponse(response: unknown): ExternalInteractionResponse {
+  const approval = approvalResponseSchema.safeParse(response);
+  if (!approval.success) return response as ExternalInteractionResponse;
+  return {
+    decision: approval.data.decision,
+    scope: approval.data.scope,
+    feedback: approval.data.feedback,
+    selectedLabel: approval.data.selected_label,
+    selectedOptionId: approval.data.selected_option_id,
+  };
 }
 
 function command<T extends z.ZodTypeAny>(

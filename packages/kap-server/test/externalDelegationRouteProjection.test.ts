@@ -159,7 +159,7 @@ describe('external delegation route projection', () => {
     const interactions = await invoke('interactions', { cursor: 2 });
     const responded = await invoke('respond', {
       interaction_id: 'approval-1',
-      response: { decision: 'approved' },
+      response: { decision: 'approved', selected_option_id: 'allow' },
     });
 
     expect(sent.code).toBe(0);
@@ -172,7 +172,7 @@ describe('external delegation route projection', () => {
     expect(service.interactions).toHaveBeenCalledWith(expect.objectContaining({ cursor: 2 }));
     expect(service.respond).toHaveBeenCalledWith(expect.objectContaining({
       interactionId: 'approval-1',
-      response: { decision: 'approved' },
+      response: { decision: 'approved', selectedOptionId: 'allow' },
     }));
   });
 

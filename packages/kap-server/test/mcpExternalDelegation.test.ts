@@ -461,7 +461,10 @@ describe('Kiki external delegation MCP server', () => {
     });
     const responded = await client.callTool({
       name: 'kiki_respond',
-      arguments: { interaction_id: 'approval-1', response: { decision: 'approved' } },
+      arguments: {
+        interaction_id: 'approval-1',
+        response: { decision: 'approved', selected_option_id: 'allow' },
+      },
     });
     await client.callTool({
       name: 'kiki_events',
@@ -488,7 +491,13 @@ describe('Kiki external delegation MCP server', () => {
     expect(requests).toEqual([
       { action: 'send', body: { task_name: 'probe', message: 'check this', idempotency_key: idempotencyKey } },
       { action: 'interactions', body: { cursor: 1 } },
-      { action: 'respond', body: { interaction_id: 'approval-1', response: { decision: 'approved' } } },
+      {
+        action: 'respond',
+        body: {
+          interaction_id: 'approval-1',
+          response: { decision: 'approved', selected_option_id: 'allow' },
+        },
+      },
       { action: 'events', body: { dispatch_id: 'dispatch-1', detail: 'turn' } },
       { action: 'transcript', body: { dispatch_id: 'dispatch-1', detail: 'items' } },
     ]);

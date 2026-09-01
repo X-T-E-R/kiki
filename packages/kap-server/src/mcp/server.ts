@@ -73,8 +73,8 @@ const approvalResponseInput = z.object({
   decision: z.enum(['approved', 'rejected', 'cancelled']),
   scope: z.literal('session').optional(),
   feedback: z.string().optional(),
-  selectedLabel: z.string().optional(),
-  selectedOptionId: z.string().optional(),
+  selected_label: z.string().optional(),
+  selected_option_id: z.string().optional(),
 }).strict();
 const questionAnswersInput = z.record(z.string(), z.union([z.string(), z.literal(true)]));
 const questionResponseInput = z.object({
