@@ -486,6 +486,7 @@ describe('SessionExternalDelegationService', () => {
     await expect(service.respond({
       authority,
       interactionId: 'approval-main',
+      kind: 'approval',
       response: { decision: 'approved' },
     })).rejects.toMatchObject({
       code: EXTERNAL_INTERACTION_NOT_OWNED_CODE,
@@ -494,15 +495,33 @@ describe('SessionExternalDelegationService', () => {
     await expect(service.respond({
       authority,
       interactionId: 'approval-owned',
+      kind: 'question',
+      response: { decision: 'approved' },
+    })).rejects.toThrow(/kind does not match/);
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-owned',
+      kind: 'approval',
+      response: { answers: { 'Continue?': 'Yes' } },
+    } as never)).rejects.toThrow(/invalid for an approval/);
+    expect(interaction.listPending('approval').map((entry) => entry.id)).toEqual([
+      'approval-owned',
+      'approval-main',
+    ]);
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-owned',
+      kind: 'approval',
       response: { decision: 'approved' },
     })).resolves.toEqual({ interactionId: 'approval-owned', status: 'resolved' });
     await expect(service.respond({
       authority,
       interactionId: 'question-owned',
-      response: { answers: { 'Continue?': 'Yes' } },
+      kind: 'question',
+      response: { decision: 'continue' },
     })).resolves.toEqual({ interactionId: 'question-owned', status: 'resolved' });
     await expect(childApproval).resolves.toEqual({ decision: 'approved' });
-    await expect(childQuestion).resolves.toEqual({ answers: { 'Continue?': 'Yes' } });
+    await expect(childQuestion).resolves.toEqual({ decision: 'continue' });
 
     completions[0]!.resolve({ summary: 'done' });
     await vi.waitFor(async () => {
