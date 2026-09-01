@@ -371,7 +371,7 @@ export function GeneralSection() {
       </SectionCard>
 
       <SectionCard id="st-card-defaults" title={t('st.defaults.title')}>
-        <div className="space-y-4">
+        <div className="space-y-3">
           <div>
             <span id="default-permission-mode-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">{t('st.defaults.permissionMode')}</span>
             <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="default-permission-mode-label">
@@ -393,10 +393,8 @@ export function GeneralSection() {
               <SavedTick show={tick} />
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <Toggle label={t('st.defaults.planMode')} checked={planMode} disabled={saving} onChange={(checked) => void applyDefaults(permissionMode, checked)} />
-          </div>
-          <div className="flex items-center gap-3">
             <Toggle
               label={t('st.defaults.planGate')}
               checked={planGate === 'gated'}
@@ -404,8 +402,8 @@ export function GeneralSection() {
               onChange={(checked) => void applyPlanGate(checked ? 'gated' : 'free')}
             />
           </div>
-          <div>
-            <label htmlFor="plan-gate-timeout" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <label htmlFor="plan-gate-timeout" className="text-[11px] font-medium text-ink-soft">
               {t('st.defaults.planGateTimeout')}
             </label>
             <input
@@ -414,7 +412,7 @@ export function GeneralSection() {
               min={5}
               step={1}
               disabled={saving}
-              className={SMALL_INPUT}
+              className={`${SMALL_INPUT} py-1`}
               value={planGateTimeoutS}
               onChange={(event) => { setPlanGateTimeoutS(event.target.value); }}
               onBlur={() => void commitPlanGateTimeout()}
@@ -423,17 +421,16 @@ export function GeneralSection() {
               }}
             />
           </div>
-          <Hint>{t('st.defaults.planGateHint')}</Hint>
-          <Hint>{t('st.defaults.hint')}</Hint>
+          <Hint>{t('st.defaults.planGateHint')} {t('st.defaults.hint')}</Hint>
           <FeedbackLine feedback={feedback} />
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         </div>
       </SectionCard>
 
       <SectionCard id="st-card-composer" title={t('st.composer.title')}>
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="send-shortcut-select" className="mb-1.5 block text-[11px] font-medium text-ink-soft">{t('st.composer.sendShortcut')}</label>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <label htmlFor="send-shortcut-select" className="text-[11px] font-medium text-ink-soft">{t('st.composer.sendShortcut')}</label>
             <select
               id="send-shortcut-select"
               className={SMALL_INPUT}

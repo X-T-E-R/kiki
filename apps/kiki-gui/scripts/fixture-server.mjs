@@ -1417,6 +1417,16 @@ class FixtureServer {
       session.older = [];
       session.messages = keep;
       session.record.message_count = keep.length;
+      // Mirror the real undo path (context.undo → items.remove fanout): the
+      // transcript store must lose the truncated turns, then a reset pushes
+      // the rebased snapshot so open views converge without waiting on the
+      // client's follow-up resync.
+      session.transcript.ingestFrame(
+        { type: 'event.session.history_rewritten', payload: { reason: 'edit_resend', target_message_id: all[lastUserIndex].id } },
+        {},
+      );
+      seedMessages(session.transcript, session.messages, { older: session.older, hasMore: session.hasMore });
+      this.fanoutTranscriptReset(session, 'main');
       return this.envelope(res, {
         messages: { items: keep.slice(-50), has_more: keep.length > 50 },
         status: {
@@ -1561,6 +1571,10 @@ class FixtureServer {
         }
         session.lastMessageAction = { action: actionName, message_id: messageId, body };
         truncateBefore(targetIndex);
+        // Mirror kap-server reconcileAfterRewrite: the rewrite rotates the
+        // transcript ops epoch (the session journal epoch stays), so a client
+        // holding a rewrite-hold accepts the reset below as post-rewrite truth.
+        session.transcript.epoch = `ep_fixture_tx_${Date.now().toString(36)}`;
         const promptId = nextId('msg');
         const createdAt = now();
         session.messages.push({
@@ -1609,6 +1623,7 @@ class FixtureServer {
         return this.envelope(res, null, 40936, 'message.action_unavailable');
       }
       truncateBefore(targetIndex);
+      session.transcript.epoch = `ep_fixture_tx_${Date.now().toString(36)}`;
       session.record.message_count = session.older.length + session.messages.length;
       session.lastMessageAction = { action: actionName, message_id: messageId, body };
       this.emit(session.record.id, {

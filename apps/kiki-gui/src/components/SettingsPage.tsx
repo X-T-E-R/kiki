@@ -91,7 +91,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               }
             />
           </div>
-          <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-8"><div className="mx-auto max-w-[760px] space-y-4">{pane}</div></div>
+          <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto px-4 py-3 lg:px-8"><div className="mx-auto max-w-[760px] space-y-3">{pane}</div></div>
         </div>
       </main>
     </SettingsFlashContext.Provider>

@@ -104,16 +104,11 @@ const STRINGS = {
     overridesBuiltinNote: 'overrides the built-in profile',
     shadowedNote: 'Not in effect',
     dirtyDiscard: 'Discard and leave',
-    subagentGovernanceTitle: 'Subagent model governance',
     modelProfileLabel: 'model profile',
     promptModeLabel: 'prompt mode',
     delegationNoticeLabel: 'delegation notice',
     scopedBadgeLabel: 'Scoped',
-    addPoolModel: 'Add model',
-    poolModelIdAria1: 'Subagent model 1 ID',
-    poolModelIdAria2: 'Subagent model 2 ID',
-    saveSubagentSettings: 'Save subagent settings',
-    duplicatePoolModel: 'Each pool model ID must be unique.',
+    planGateTimeoutInvalid: 'Timeout must be at least 5 seconds.',
     loadMore: 'Load more sessions',
     searchLoadMore: 'Load more results',
     workspaceFilterAll: 'All workspaces',
@@ -244,16 +239,11 @@ const STRINGS = {
     overridesBuiltinNote: '已覆盖同名的内置档',
     shadowedNote: '未生效',
     dirtyDiscard: '丢弃并离开',
-    subagentGovernanceTitle: '子代理模型治理',
     modelProfileLabel: '模型档',
     promptModeLabel: '提示词模式',
     delegationNoticeLabel: '委派通知',
     scopedBadgeLabel: '专用',
-    addPoolModel: '添加模型',
-    poolModelIdAria1: '子代理模型 1 ID',
-    poolModelIdAria2: '子代理模型 2 ID',
-    saveSubagentSettings: '保存子代理设置',
-    duplicatePoolModel: '模型池中的模型 ID 不能重复。',
+    planGateTimeoutInvalid: '超时时间最短为 5 秒。',
     loadMore: '加载更多会话',
     searchLoadMore: '加载更多结果',
     workspaceFilterAll: '全部工作区',
@@ -1390,19 +1380,23 @@ async function scenarioSettingsWrite() {
 }
 
 async function scenarioSettingsInvalid() {
-  await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  // Client-side validation with no server round-trip: the plan-enter approval
+  // timeout floor (5s) rejects an under-floor draft with an inline alert and
+  // reverts the field to the server-known value. (The pool-model governance
+  // editor this scenario originally exercised was removed in 2ffdfd8e5.)
+  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector(`text=${S.subagentGovernanceTitle}`, { timeout: 10_000 });
-  // Client-side governance validation: two pool rows sharing one model ID
-  // must surface an inline error instead of hitting the server.
-  await page.click(`button:has-text("${S.addPoolModel}")`);
-  await page.click(`button:has-text("${S.addPoolModel}")`);
-  await page.fill(`[aria-label="${S.poolModelIdAria1}"]`, 'dup-model');
-  await page.fill(`[aria-label="${S.poolModelIdAria2}"]`, 'dup-model');
-  await page.click(`button:has-text("${S.saveSubagentSettings}")`);
+  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
+  const timeout = page.locator('#plan-gate-timeout');
+  await timeout.fill('2');
+  await timeout.press('Enter');
   await page.waitForSelector('[role="alert"]', { timeout: 5000 });
-  await waitForText(S.duplicatePoolModel);
+  await waitForText(S.planGateTimeoutInvalid);
+  const reverted = await timeout.inputValue();
+  if (reverted !== '60') {
+    throw new Error(`invalid timeout draft did not revert to the server value, saw "${reverted}"`);
+  }
   await shot('settings-invalid-inline-error');
 }
 
