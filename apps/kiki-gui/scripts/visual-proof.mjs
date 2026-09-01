@@ -397,30 +397,79 @@ async function waitForPortFree(port, timeoutMs = 10_000) {
 }
 
 /**
- * Free a TCP port (Windows: netstat → taskkill; no-op elsewhere — the proof
- * runner is a Windows dev tool). Needed because shell-spawned vite children
- * orphan their grandchild (the actual listener) when killed.
+ * Find PIDs LISTENING on a loopback TCP port (Windows; empty elsewhere).
+ * The local-address column is compared exactly — a substring match on
+ * "127.0.0.1:5173" would also match 51730-51739 and has killed unrelated
+ * host processes in the past. Read-only: never kills anything.
  */
-function killPort(port) {
-  if (process.platform !== 'win32') return;
+function portHolderPids(port) {
+  if (process.platform !== 'win32') return new Set();
+  let out;
   try {
-    const out = execSync(`netstat -ano | findstr "127.0.0.1:${port}" & netstat -ano | findstr "[::1]:${port}"`, {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      shell: 'cmd.exe',
-    }).toString();
-    const pids = new Set();
-    for (const line of out.split(/\r?\n/)) {
-      if (!line.includes('LISTENING')) continue;
-      const parts = line.trim().split(/\s+/);
-      const pid = parts[parts.length - 1];
-      if (pid !== undefined && /^\d+$/.test(pid) && pid !== '0') pids.add(pid);
-    }
-    for (const pid of pids) {
-      execSync(`taskkill /PID ${pid} /F /T`, { stdio: 'ignore' });
-      console.log(`[proof] freed port ${port} (pid ${pid})`);
+    out = execSync('netstat -ano -p tcp', { stdio: ['ignore', 'pipe', 'ignore'], shell: 'cmd.exe' }).toString();
+  } catch {
+    return new Set();
+  }
+  const pids = new Set();
+  for (const line of out.split(/\r?\n/)) {
+    if (!line.includes('LISTENING')) continue;
+    const parts = line.trim().split(/\s+/);
+    const local = parts[1];
+    const pid = parts[parts.length - 1];
+    if (local !== `127.0.0.1:${port}` && local !== `[::1]:${port}` && local !== `0.0.0.0:${port}`) continue;
+    if (pid !== undefined && /^\d+$/.test(pid) && pid !== '0') pids.add(Number(pid));
+  }
+  return pids;
+}
+
+/**
+ * True when `pid` is `rootPid` itself or one of its descendants (Windows,
+ * via CIM parent walk). Used to ensure the proof runner only ever kills
+ * processes it spawned itself.
+ */
+function isDescendantOf(pid, rootPid) {
+  if (pid === rootPid) return true;
+  const parentByPid = new Map();
+  try {
+    const out = execSync(
+      'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"',
+      { stdio: ['ignore', 'pipe', 'ignore'], shell: 'cmd.exe' },
+    ).toString();
+    const rows = JSON.parse(out);
+    for (const row of Array.isArray(rows) ? rows : [rows]) {
+      parentByPid.set(Number(row.ProcessId), Number(row.ParentProcessId));
     }
   } catch {
-    // findstr exits 1 when nothing matches — the port is free
+    return false;
+  }
+  let current = pid;
+  for (let depth = 0; depth < 64; depth += 1) {
+    const parent = parentByPid.get(current);
+    if (parent === undefined || parent === 0 || parent === current) return false;
+    if (parent === rootPid) return true;
+    current = parent;
+  }
+  return false;
+}
+
+/**
+ * Kill a port holder only when it belongs to our own spawned tree
+ * (the vite dev server we started). Foreign processes are never touched;
+ * the caller must re-probe a different port or fail instead.
+ */
+function killOwnPortHolder(port, rootPid) {
+  if (process.platform !== 'win32' || rootPid === undefined) return;
+  for (const pid of portHolderPids(port)) {
+    if (!isDescendantOf(pid, rootPid)) {
+      console.warn(`[proof] port ${port} held by foreign pid ${pid} — NOT killing it`);
+      continue;
+    }
+    try {
+      execSync(`taskkill /PID ${pid} /F /T`, { stdio: 'ignore' });
+      console.log(`[proof] freed port ${port} (own pid ${pid})`);
+    } catch {
+      // already gone
+    }
   }
 }
 
@@ -3099,12 +3148,27 @@ rmSync(SHOTS, { recursive: true, force: true });
 mkdirSync(SHOTS, { recursive: true });
 
 async function main() {
-  if (FIXTURE_PORT === 0) FIXTURE_PORT = await freePort();
-  if (WEB_PORT === 0) WEB_PORT = await freePort();
+  const fixturePinned = FIXTURE_PORT !== 0;
+  const webPinned = WEB_PORT !== 0;
+  if (!fixturePinned) FIXTURE_PORT = await freePort();
+  if (!webPinned) WEB_PORT = await freePort();
+  // Never kill foreign processes: an OS-assigned port that turns out held is
+  // re-probed; a pinned port that is held fails with instructions.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const fixtureHolders = portHolderPids(FIXTURE_PORT);
+    const webHolders = portHolderPids(WEB_PORT);
+    if (fixtureHolders.size === 0 && webHolders.size === 0) break;
+    if (fixturePinned && fixtureHolders.size > 0) {
+      throw new Error(`fixture port ${FIXTURE_PORT} is held by pid(s) ${[...fixtureHolders].join(', ')} — free it yourself or unset KIKI_PROOF_FIXTURE_PORT`);
+    }
+    if (webPinned && webHolders.size > 0) {
+      throw new Error(`web port ${WEB_PORT} is held by pid(s) ${[...webHolders].join(', ')} — free it yourself or unset KIKI_PROOF_WEB_PORT`);
+    }
+    if (fixtureHolders.size > 0) FIXTURE_PORT = await freePort();
+    if (webHolders.size > 0) WEB_PORT = await freePort();
+  }
   FIXTURE_URL = `http://127.0.0.1:${FIXTURE_PORT}`;
   WEB_URL = `http://127.0.0.1:${WEB_PORT}`;
-  killPort(FIXTURE_PORT);
-  killPort(WEB_PORT);
   await waitForPortFree(FIXTURE_PORT);
   await waitForPortFree(WEB_PORT);
   const fixture = await startFixtureServer({ port: FIXTURE_PORT, scenario: 'basic-stream' });
@@ -3136,7 +3200,7 @@ async function main() {
       }
     }
     vite.kill();
-    killPort(WEB_PORT);
+    killOwnPortHolder(WEB_PORT, vite.pid);
     await fixture.stop();
   };
   process.on('SIGINT', () => void cleanup().then(() => process.exit(130)));
