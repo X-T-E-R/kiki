@@ -1095,10 +1095,7 @@ describe('AgentRun tool execution contract', () => {
         binding: expect.objectContaining({ profile: 'explore' }),
       }),
     );
-    expect(result.output).toEqual({
-      result: 'child result',
-      usage: { input: 0, output: 0 },
-    });
+    expect(result.output).toContain('actual_profile: explore');
   });
 
   it('declares no resource accesses so concurrent AgentRun calls can run in parallel', async () => {
@@ -1173,10 +1170,9 @@ describe('AgentRun tool execution contract', () => {
       { kind: 'prompt', prompt: expect.stringContaining('Investigate') },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(result.output).toEqual({
-      result: 'child result',
-      usage: { input: 0, output: 0 },
-    });
+    expect(result.output).toContain('agent_id: agent-child');
+    expect(result.output).toContain('actual_profile: explore');
+    expect(result.output).toContain('child result');
   });
 
   it('spawns the subagent on the model_alias passed with the dispatch', async () => {
@@ -1428,10 +1424,9 @@ describe('AgentRun tool execution contract', () => {
       { kind: 'prompt', prompt: 'Continue' },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(result.output).toEqual({
-      result: 'resumed result',
-      usage: { input: 0, output: 0 },
-    });
+    expect(result.output).toContain('agent_id: agent-existing');
+    expect(result.output).toContain('actual_profile: explore');
+    expect(result.output).toContain('resumed result');
   });
 
   it('stamps the requested name on the new subagent', async () => {
@@ -1480,10 +1475,8 @@ describe('AgentRun tool execution contract', () => {
       { kind: 'prompt', prompt: 'Continue' },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(result.output).toEqual({
-      result: 'resumed result',
-      usage: { input: 0, output: 0 },
-    });
+    expect(result.output).toContain('agent_id: agent-existing');
+    expect(result.output).toContain('resumed result');
   });
 
   it('refuses a name already used in this session', async () => {

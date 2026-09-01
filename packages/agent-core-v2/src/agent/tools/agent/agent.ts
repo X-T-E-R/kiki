@@ -104,20 +104,6 @@ export const SubagentToolInputSchema = z.preprocess(
 
 export type SubagentToolInput = z.infer<typeof SubagentToolInputSchema>;
 
-export const SubagentToolOutputSchema = z.object({
-  result: z.string().describe('Aggregated text output from the subagent'),
-  usage: z
-    .object({
-      input: z.number().int().nonnegative(),
-      output: z.number().int().nonnegative(),
-      cache_read: z.number().int().nonnegative().optional(),
-      cache_write: z.number().int().nonnegative().optional(),
-    })
-    .describe('Cumulative token usage'),
-});
-
-export type SubagentToolOutput = z.infer<typeof SubagentToolOutputSchema>;
-
 export const BACKGROUND_AGENT_UNAVAILABLE =
   'Background agent execution is not available for this agent because TaskList, TaskOutput, and TaskStop are not enabled.';
 export const RESUME_WITH_TYPE_UNAVAILABLE =

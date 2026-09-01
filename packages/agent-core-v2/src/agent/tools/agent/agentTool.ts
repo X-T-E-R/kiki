@@ -18,7 +18,6 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import {
   ToolAccesses,
   type ExecutableToolContext,
-  type ExecutableToolOutput,
   type ExecutableToolResult,
   type ToolExecution,
 } from '#/tool/toolContract';
@@ -37,7 +36,6 @@ import { listAvailableSubagentTargets } from '#/app/agentProfileCatalog/subagent
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
 import { IModelService } from '#/kosong/model/model';
-import { inputTotal } from '#/kosong/contract/usage';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -64,7 +62,6 @@ import {
   SubagentToolInputSchema,
   USER_INTERRUPTED_SUBAGENT_MESSAGE,
   type SubagentToolInput,
-  type SubagentToolOutput,
 } from './agent';
 import { SubagentTask, type SubagentHandle } from './subagent-task';
 import {
@@ -475,7 +472,7 @@ export class SubagentTool implements ISubagentTool {
     const info = this.tasks.getTask(taskId);
     if (info?.status === 'completed') {
       return {
-        output: structuredSubagentOutput(await handle.completion) as unknown as ExecutableToolOutput,
+        output: formatForegroundAgentSuccess(handle, await this.tasks.readOutput(taskId)),
       };
     }
     const timedOut = info?.status === 'timed_out';
@@ -517,21 +514,15 @@ function formatBackgroundAgentResult(
   ].join('\n');
 }
 
-function structuredSubagentOutput(
-  completion: Awaited<SubagentHandle['completion']>,
-): SubagentToolOutput {
-  return {
-    result: completion.result,
-    usage:
-      completion.usage === undefined
-        ? { input: 0, output: 0 }
-        : {
-            input: inputTotal(completion.usage),
-            output: completion.usage.output,
-            cache_read: completion.usage.inputCacheRead,
-            cache_write: completion.usage.inputCacheCreation,
-          },
-  };
+function formatForegroundAgentSuccess(handle: SubagentHandle, result: string): string {
+  return [
+    `agent_id: ${handle.agentId}`,
+    `actual_profile: ${handle.profileName}`,
+    'status: completed',
+    '',
+    '[summary]',
+    result,
+  ].join('\n');
 }
 
 function formatForegroundAgentFailure(

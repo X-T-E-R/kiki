@@ -866,11 +866,7 @@ function coerceToolResult(value: unknown, toolName: string): ExecutableToolResul
     };
   }
   const candidate = value as { output?: unknown };
-  if (
-    typeof candidate.output !== 'string' &&
-    !Array.isArray(candidate.output) &&
-    (typeof candidate.output !== 'object' || candidate.output === null)
-  ) {
+  if (typeof candidate.output !== 'string' && !Array.isArray(candidate.output)) {
     return {
       output: `Tool "${toolName}" returned a result with a missing or malformed "output" field.`,
       isError: true,
@@ -883,8 +879,6 @@ function normalizeToolResult(result: ExecutableToolResult): ToolResult {
   let output: ToolResult['output'];
   if (typeof result.output === 'string') {
     output = result.output.length > 0 ? result.output : TOOL_OUTPUT_EMPTY;
-  } else if (!Array.isArray(result.output)) {
-    output = JSON.stringify(result.output);
   } else if (result.output.length === 0) {
     output = TOOL_OUTPUT_EMPTY;
   } else {
