@@ -3,6 +3,7 @@ import { McpSectionSchema } from '@moonshot-ai/agent-core-v2/app/mcpConfig/confi
 import { ThreadCommunicationConfigSchema } from '@moonshot-ai/agent-core-v2/app/threadCommunication/configSection';
 import { ImageConfigSchema } from '@moonshot-ai/agent-core-v2/agent/media/configSection';
 import { AgentTaskConfigSchema } from '@moonshot-ai/agent-core-v2/agent/task/configSection';
+import { PlanConfigSchema } from '@moonshot-ai/agent-core-v2/features/plan/configSection';
 import {
   TokenCountingConfigSchema,
   type TokenCountingConfig,
@@ -18,6 +19,12 @@ import { RequestIdentityPolicyWireSchema } from '@moonshot-ai/agent-core-v2/koso
 import { z } from 'zod';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
+const planConfigRequestSchema = z
+  .object({
+    gate: PlanConfigSchema.shape.gate.optional(),
+    enter_approval_timeout_ms: PlanConfigSchema.shape.enterApprovalTimeoutMs.optional(),
+  })
+  .strict();
 
 const cronConfigResponseSchema = z.object({
   debug: z.boolean(),
@@ -100,6 +107,7 @@ export const configResponseSchema = z.object({
   default_model: z.string().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   thinking: z.unknown().optional(),
+  plan: PlanConfigSchema.optional(),
   plan_mode: z.boolean().optional(),
   yolo: z.boolean().optional(),
   default_permission_mode: z.string().optional(),
@@ -140,6 +148,7 @@ export const patchConfigRequestSchema = z.object({
   default_model: z.string().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   thinking: z.unknown().optional(),
+  plan: planConfigRequestSchema.optional(),
   plan_mode: z.boolean().optional(),
   yolo: z.boolean().optional(),
   default_permission_mode: z.string().optional(),

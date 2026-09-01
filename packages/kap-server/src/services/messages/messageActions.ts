@@ -355,6 +355,9 @@ async function applyExecutionOverrides(
   if (overrides.permission_mode !== undefined) {
     agent.accessor.get(IAgentPermissionModeService).setMode(overrides.permission_mode);
   }
+  if (overrides.plan_gate !== undefined) {
+    agent.accessor.get(IAgentPlanService).setGate(overrides.plan_gate);
+  }
   if (overrides.disabled_tools !== undefined) {
     try {
       await agent.accessor

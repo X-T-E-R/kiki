@@ -100,6 +100,25 @@ describe('server-v2 /api/v1/config', () => {
     expect(after.yolo).toBe(false);
   });
 
+  it('reads and patches the global plan gate configuration', async () => {
+    await boot('[plan]\ngate = "free"\nenter_approval_timeout_ms = 60000\n');
+    expect((await getConfig()).plan).toEqual({
+      gate: 'free',
+      enterApprovalTimeoutMs: 60_000,
+    });
+
+    const patched = await patchConfig({
+      plan: { gate: 'gated', enter_approval_timeout_ms: 5000 },
+    });
+    expect(patched.plan).toEqual({
+      gate: 'gated',
+      enterApprovalTimeoutMs: 5000,
+    });
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).toContain(
+      'enter_approval_timeout_ms = 5000',
+    );
+  });
+
   it('GET omits request_identity when no global layer is authored', async () => {
     await boot();
     expect(await getConfig()).not.toHaveProperty('request_identity');

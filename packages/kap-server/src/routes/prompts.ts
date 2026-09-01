@@ -5,6 +5,7 @@ import {
   IBootstrapService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
+  IAgentPlanService,
   IAgentProfileService,
   IAgentToolPolicyService,
   IAgentPromptService,
@@ -120,6 +121,7 @@ async function resolvePromptFromSession(session: ISessionScopeHandle, agentId?: 
     profile: agent.accessor.get(IAgentProfileService),
     toolPolicy: agent.accessor.get(IAgentToolPolicyService),
     permissionMode: agent.accessor.get(IAgentPermissionModeService),
+    plan: agent.accessor.get(IAgentPlanService),
   };
 }
 
@@ -278,6 +280,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
                 thinking: req.body.thinking,
               };
         if (req.body.permission_mode !== undefined) resolved.permissionMode.setMode(req.body.permission_mode);
+        if (req.body.plan_gate !== undefined) resolved.plan.setGate(req.body.plan_gate);
         let deferredDisabledTools: readonly string[] | undefined;
         if (req.body.disabled_tools !== undefined) {
           if (execution !== undefined && !resolved.profile.isRunnable()) {

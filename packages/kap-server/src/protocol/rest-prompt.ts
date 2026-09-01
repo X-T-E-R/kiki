@@ -4,11 +4,16 @@ import { isoDateTimeSchema } from '@moonshot-ai/agent-core-v2/_base/utils/isoDat
 import { messageContentSchema } from './message';
 import {
   promptPermissionModeSchema,
+  promptPlanGateSchema,
   promptThinkingSchema,
 } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
-export { promptPermissionModeSchema, promptThinkingSchema };
-export type { PromptPermissionMode, PromptThinking } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
+export { promptPermissionModeSchema, promptPlanGateSchema, promptThinkingSchema };
+export type {
+  PromptPermissionMode,
+  PromptPlanGate,
+  PromptThinking,
+} from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
 export const promptSkillActivationSchema = z.object({
   name: z.string().min(1),
@@ -24,6 +29,7 @@ export const promptSubmissionSchema = z.object({
   model: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
+  plan_gate: promptPlanGateSchema.optional(),
   plan_mode: z.boolean().optional(),
   swarm_mode: z.boolean().optional(),
   goal_objective: z.string().optional(),
@@ -39,6 +45,7 @@ export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
   model: true,
   thinking: true,
   permission_mode: true,
+  plan_gate: true,
   plan_mode: true,
   swarm_mode: true,
   disabled_tools: true,

@@ -76,6 +76,9 @@ export const ToolInputDisplaySchema = z.discriminatedUnion('kind', [
       .optional(),
   }),
   z.object({
+    kind: z.literal('plan_enter'),
+  }),
+  z.object({
     kind: z.literal('goal_start'),
     objective: z.string(),
     completionCriterion: z.string().optional(),

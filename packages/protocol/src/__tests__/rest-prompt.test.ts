@@ -20,6 +20,7 @@ describe('promptSubmissionSchema', () => {
     expect(parsed.model).toBeUndefined();
     expect(parsed.thinking).toBeUndefined();
     expect(parsed.permission_mode).toBeUndefined();
+    expect(parsed.plan_gate).toBeUndefined();
     expect(parsed.plan_mode).toBeUndefined();
   });
 
@@ -85,11 +86,13 @@ describe('promptSubmissionSchema', () => {
       model: 'kimi-code/k2',
       thinking: 'off',
       permission_mode: 'manual',
+      plan_gate: 'gated',
       plan_mode: false,
     });
     expect(parsed.model).toBe('kimi-code/k2');
     expect(parsed.thinking).toBe('off');
     expect(parsed.permission_mode).toBe('manual');
+    expect(parsed.plan_gate).toBe('gated');
     expect(parsed.plan_mode).toBe(false);
   });
 
@@ -145,6 +148,15 @@ describe('promptSubmissionSchema', () => {
       promptSubmissionSchema.safeParse({
         content: [{ type: 'text', text: 'hi' }],
         permission_mode: 'unrestricted' as unknown,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects unknown plan_gate', () => {
+    expect(
+      promptSubmissionSchema.safeParse({
+        content: [{ type: 'text', text: 'hi' }],
+        plan_gate: 'automatic' as unknown,
       }).success,
     ).toBe(false);
   });
