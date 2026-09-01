@@ -1,3 +1,4 @@
+import '#/_base/utils/fsWatchGuard';
 import { watch as fsWatch } from 'node:fs';
 import { basename, isAbsolute, join, relative } from 'node:path';
 

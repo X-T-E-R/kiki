@@ -5,6 +5,8 @@
  * outer update preflight, then delegates to the requested UI runner.
  */
 
+import './native/fs-watch-guard';
+
 import {
   createKimiHarness,
   flushDiagnosticLogs,

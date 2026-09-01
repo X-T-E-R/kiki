@@ -1,3 +1,4 @@
+import '#/_base/utils/fsWatchGuard';
 import { createReadStream, mkdirSync } from 'node:fs';
 import { mkdir, open, readFile, readdir, stat, unlink } from 'node:fs/promises';
 import { FSWatcher } from 'chokidar';
