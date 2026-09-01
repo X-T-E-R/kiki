@@ -118,10 +118,15 @@ describe('kimi doctor', () => {
 
   it('checks only config.toml when the config target is selected', async () => {
     const { deps, stdout, stderr } = makeDeps();
+    const loadAgentProfileModules = vi.fn(() => Promise.reject(new Error('validator unavailable')));
 
-    const code = await handleDoctor(deps, { target: 'config' });
+    const code = await handleDoctor(
+      { ...deps, loadAgentProfileModules },
+      { target: 'config' },
+    );
 
     expect(code).toBe(0);
+    expect(loadAgentProfileModules).not.toHaveBeenCalled();
     expect(stderr.join('')).toBe('');
     const out = stdout.join('');
     expect(out).toContain('SKIP config.toml');
@@ -554,7 +559,7 @@ model_preference: secondary
     expect(err).toContain('model_preference');
   });
 
-  it('degrades to a warning when the agent profile modules cannot load', async () => {
+  it('fails when the agent profile validator modules cannot load', async () => {
     await writeValidConfig();
     const { deps, stdout, stderr } = makeDeps();
 
@@ -571,13 +576,13 @@ model_preference: secondary
       {},
     );
 
-    expect(code).toBe(0);
-    expect(stderr.join('')).toBe('');
-    const out = stdout.join('');
-    expect(out).toContain('OK config.toml');
-    expect(out).toContain('WARN agents');
-    expect(out).toContain('agent profile check unavailable');
-    expect(out).toContain('All checked config files are valid, 1 warning.');
+    expect(code).toBe(1);
+    expect(stdout.join('')).toBe('');
+    const err = stderr.join('');
+    expect(err).toContain('OK config.toml');
+    expect(err).toContain('ERROR agents');
+    expect(err).toContain('agent profile check unavailable');
+    expect(err).toContain('Kimi doctor found 1 issue.');
   });
 
   it('surfaces parser conflict warnings and counts them in the summary', async () => {
