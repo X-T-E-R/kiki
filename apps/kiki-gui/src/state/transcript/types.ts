@@ -175,6 +175,35 @@ export interface SubagentBlock {
   readonly orphaned?: boolean;
 }
 
+export type SubagentLifecycleEvent =
+  | 'spawned'
+  | 'resumed'
+  | 'sent'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+/**
+ * Compact one-line lifecycle entry for a subagent (G-4 dual-form timeline):
+ * status dot + name + event + time, click jumps to the agent page. Each
+ * lifecycle event lands in place at its own timestamp; the full SubagentBlock
+ * card coexists for the currently active run and collapses to its own compact
+ * form once terminal. GUI-local model — the wire contract only carries task
+ * entities, taskrefs, and tool-frame agentRefs; events are derived at
+ * projection time.
+ */
+export interface SubagentEventBlock {
+  readonly kind: 'subagent-event';
+  readonly id: string;
+  readonly subagentId: string;
+  readonly parentAgentId: string | undefined;
+  readonly name: string;
+  readonly event: SubagentLifecycleEvent;
+  readonly status: SubagentBlock['status'];
+  readonly at: string | undefined;
+  readonly turnId?: string;
+}
+
 export interface NoticeBlock {
   readonly kind: 'notice';
   readonly id: string;
@@ -221,6 +250,7 @@ export type Block =
   | ToolBlock
   | ShellBlock
   | SubagentBlock
+  | SubagentEventBlock
   | NoticeBlock
   | ApprovalBlock
   | QuestionBlock;

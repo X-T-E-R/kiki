@@ -15,6 +15,8 @@ export {
   type SkillBlock,
   type SpawnInstruction,
   type SubagentBlock,
+  type SubagentEventBlock,
+  type SubagentLifecycleEvent,
   type SystemBlock,
   type SystemReminderBlock,
   type SystemVariant,

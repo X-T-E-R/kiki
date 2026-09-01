@@ -19,6 +19,8 @@ import {
 
 import type { AgentTranscriptResponse } from '../lib/client';
 
+import { buildAgentForest } from './agentTree';
+
 import {
   appendLocalUserMessage,
   agentTranscriptToBlocks,
@@ -28,6 +30,7 @@ import {
   buildFloorEntries,
   classifyTranscriptText,
   createViewState,
+  filterBlocksToDirectChildren,
   floorPreview,
   latestFinalAssistantBlockId,
   liveSourcesFromAgentSnapshots,
@@ -1508,6 +1511,272 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     );
 
     expect(projected.blocks.some((block) => block.id === 'subagent-agent-outside-page')).toBe(false);
+  });
+
+  describe('subagent lifecycle event blocks', () => {
+    it('emits in-place spawned and terminal compact entries for a taskref-backed subagent', () => {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'delegate',
+              startedAt: '2026-01-01T00:00:00.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'completed',
+                  startedAt: '2026-01-01T00:00:01.000Z',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-spawn',
+                      toolCallId: 'call-spawn-1',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { profile: 'Researcher', prompt: 'map the surface' },
+                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
+                      startedAt: '2026-01-01T00:00:01.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              kind: 'taskref',
+              refId: 'ref-agent-1',
+              taskId: 'task-agent-1',
+              at: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              kind: 'turn',
+              turnId: 't2',
+              ordinal: 2,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'meanwhile',
+              startedAt: '2026-01-01T00:00:10.000Z',
+              steps: [],
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-agent-1',
+              kind: 'subagent',
+              state: 'completed',
+              detached: false,
+              agentId: 'agent-1',
+              description: 'map the surface',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:01.000Z',
+              endedAt: '2026-01-01T00:00:20.000Z',
+              resultSummary: 'Surface mapped.',
+            },
+          ],
+        }),
+      );
+      const spawned = projected.blocks.find((block) => block.id === 'subagent-event-agent-1-spawned');
+      const terminal = projected.blocks.find((block) => block.id === 'subagent-event-agent-1-terminal');
+      expect(spawned).toMatchObject({
+        kind: 'subagent-event',
+        subagentId: 'agent-1',
+        name: 'Researcher',
+        event: 'spawned',
+        status: 'completed',
+        at: '2026-01-01T00:00:01.000Z',
+      });
+      expect(terminal).toMatchObject({
+        kind: 'subagent-event',
+        subagentId: 'agent-1',
+        event: 'completed',
+        at: '2026-01-01T00:00:20.000Z',
+      });
+      // In-place accounting: spawned lands before the intervening turn, the
+      // terminal entry lands after it (its own end timestamp).
+      const t2Index = projected.blocks.findIndex(
+        (block) => block.kind === 'user' && block.turnId === 't2',
+      );
+      expect(projected.blocks.indexOf(spawned!)).toBeLessThan(t2Index);
+      expect(projected.blocks.indexOf(terminal!)).toBeGreaterThan(t2Index);
+    });
+
+    it('emits send-injection and resume entries from parent tool frames', () => {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'delegate',
+              startedAt: '2026-01-01T00:00:00.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'completed',
+                  startedAt: '2026-01-01T00:00:01.000Z',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-spawn',
+                      toolCallId: 'call-spawn-1',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { profile: 'Researcher', prompt: 'map the surface' },
+                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
+                      startedAt: '2026-01-01T00:00:01.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-send',
+                      toolCallId: 'call-send-1',
+                      name: 'AgentSend',
+                      state: 'done',
+                      input: { target: 'Researcher', message: 'also check the wire envelope' },
+                      startedAt: '2026-01-01T00:00:03.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-resume',
+                      toolCallId: 'call-resume-1',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { resume_agent_ids: { 'agent-1': 'keep going' } },
+                      startedAt: '2026-01-01T00:00:05.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-stray-send',
+                      toolCallId: 'call-send-stray',
+                      name: 'AgentSend',
+                      state: 'done',
+                      input: { target: 'nobody-known', message: 'hi' },
+                      startedAt: '2026-01-01T00:00:06.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-agent-1',
+              kind: 'subagent',
+              state: 'running',
+              detached: false,
+              agentId: 'agent-1',
+              description: 'map the surface',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:01.000Z',
+            },
+          ],
+        }),
+      );
+      const sent = projected.blocks.find(
+        (block) => block.kind === 'subagent-event' && block.event === 'sent',
+      );
+      const resumed = projected.blocks.find(
+        (block) => block.kind === 'subagent-event' && block.event === 'resumed',
+      );
+      expect(sent).toMatchObject({
+        id: 'subagent-event-agent-1-send-call-send-1',
+        subagentId: 'agent-1',
+        at: '2026-01-01T00:00:03.000Z',
+        turnId: 't1',
+      });
+      expect(resumed).toMatchObject({
+        id: 'subagent-event-agent-1-resume-call-resume-1',
+        subagentId: 'agent-1',
+        at: '2026-01-01T00:00:05.000Z',
+      });
+      // Unknown send targets produce no entry; a running agent has no terminal entry.
+      expect(
+        projected.blocks.some(
+          (block) => block.kind === 'subagent-event' && block.id.includes('call-send-stray'),
+        ),
+      ).toBe(false);
+      expect(
+        projected.blocks.some(
+          (block) => block.kind === 'subagent-event' && block.event === 'completed',
+        ),
+      ).toBe(false);
+    });
+
+    it('scopes compact entries to direct children when filtering a page', () => {
+      const state = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'taskref',
+              refId: 'ref-agent-1',
+              taskId: 'task-agent-1',
+              at: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              kind: 'taskref',
+              refId: 'ref-agent-2',
+              taskId: 'task-agent-2',
+              at: '2026-01-01T00:00:02.000Z',
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-agent-1',
+              kind: 'subagent',
+              state: 'running',
+              detached: false,
+              agentId: 'agent-1',
+              outputTail: '',
+            },
+            {
+              taskId: 'task-agent-2',
+              kind: 'subagent',
+              state: 'running',
+              detached: false,
+              agentId: 'agent-2',
+              outputTail: '',
+            },
+          ],
+        }),
+      );
+      const forest = buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'main' },
+          { agentId: 'agent-1', parentAgentId: 'main', name: 'Child' },
+          { agentId: 'agent-2', parentAgentId: 'agent-1', name: 'Grandchild' },
+        ],
+      );
+      const filtered = filterBlocksToDirectChildren(state.blocks, forest, 'main');
+      expect(
+        filtered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-1'),
+      ).toBe(true);
+      expect(
+        filtered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-2'),
+      ).toBe(false);
+      const childFiltered = filterBlocksToDirectChildren(state.blocks, forest, 'agent-1');
+      expect(
+        childFiltered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-2'),
+      ).toBe(true);
+    });
   });
 
   it('does not invent page-global cards from snapshot.subagents alone', () => {

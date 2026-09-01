@@ -54,6 +54,7 @@ import {
   type ShellBlock,
   type SkillBlock,
   type SubagentBlock,
+  type SubagentEventBlock,
   type SystemBlock,
   type SystemReminderBlock,
   type SystemVariant,
@@ -634,6 +635,8 @@ function blockTimelineMs(block: Block): number | undefined {
       return block.startedAt !== undefined && block.startedAt > 0 ? block.startedAt : undefined;
     case 'subagent':
       return timestampMs(block.startedAt);
+    case 'subagent-event':
+      return timestampMs(block.at);
     case 'approval':
       return timestampMs(block.request.created_at);
     case 'question':
@@ -669,6 +672,8 @@ function blockTurnId(block: Block): string | undefined {
       return block.turnId;
     case 'subagent':
       return block.parentTurnId;
+    case 'subagent-event':
+      return block.turnId;
     case 'approval':
       return normalizeTurnId(block.request.turn_id);
     case 'question':
@@ -727,10 +732,38 @@ function insertByTimeline(blocks: Block[], block: Block): void {
   blocks.push(block);
 }
 
+type RawSubagentEvent = {
+  readonly id: string;
+  readonly subagentId: string;
+  readonly event: SubagentEventBlock['event'];
+  readonly at: string | undefined;
+  readonly turnId?: string;
+};
+
+function resumeTargetsFromToolArgs(args: unknown): readonly string[] {
+  if (typeof args !== 'object' || args === null) return [];
+  const resumeMap = (args as Record<string, unknown>)['resume_agent_ids'];
+  if (typeof resumeMap !== 'object' || resumeMap === null) return [];
+  return Object.keys(resumeMap as Record<string, unknown>).filter((key) => key !== '');
+}
+
+function sendTargetFromToolArgs(args: unknown): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined;
+  const target = (args as Record<string, unknown>)['target'];
+  return typeof target === 'string' && target.trim() !== '' ? target.trim() : undefined;
+}
+
+function terminalEventForStatus(
+  status: SubagentBlock['status'],
+): Extract<SubagentEventBlock['event'], 'completed' | 'failed' | 'cancelled'> | undefined {
+  if (status === 'completed' || status === 'failed' || status === 'cancelled') return status;
+  return undefined;
+}
+
 function subagentBlocksFromSnapshot(
   response: AgentTranscriptProjectionSource,
   parentAgentId: string,
-): SubagentBlock[] {
+): { blocks: SubagentBlock[]; events: SubagentEventBlock[] } {
   const tasks = response.tasks ?? [];
   const taskById = new Map(tasks.map((task) => [task.taskId, task]));
   const taskByAgent = new Map(
@@ -741,6 +774,8 @@ function subagentBlocksFromSnapshot(
     ),
   );
   const byAgent = new Map<string, SubagentBlock>();
+  const rawEvents: RawSubagentEvent[] = [];
+  const spawnMarked = new Set<string>();
   let previousTurnId: string | undefined;
   for (const item of response.items) {
     if (item.kind === 'taskref') {
@@ -770,13 +805,57 @@ function subagentBlocksFromSnapshot(
         toolCallCount: existing?.toolCallCount ?? 0,
         transcript: [],
       });
+      if (!spawnMarked.has(task.agentId)) {
+        spawnMarked.add(task.agentId);
+        rawEvents.push({
+          id: `subagent-event-${task.agentId}-spawned`,
+          subagentId: task.agentId,
+          event: 'spawned',
+          at: startedAt,
+          turnId: previousTurnId,
+        });
+      }
       continue;
     }
     if (item.kind !== 'turn') continue;
     previousTurnId = item.turnId;
     for (const step of item.steps) {
       for (const frame of step.frames) {
-        if (frame.kind !== 'tool' || frame.agentRefs === undefined) continue;
+        if (frame.kind !== 'tool') continue;
+        const frameAt = frame.startedAt ?? step.startedAt ?? item.startedAt;
+        // Mid-run lifecycle: a resume call re-prompts an existing agent, an
+        // AgentSend call injects a message into it. Neither carries agentRefs
+        // on the wire, so both are recognized by tool args against the agents
+        // this page already knows (spawn taskref / frame refs / task roster).
+        for (const targetId of resumeTargetsFromToolArgs(frame.input)) {
+          if (!byAgent.has(targetId) && !taskByAgent.has(targetId)) continue;
+          rawEvents.push({
+            id: `subagent-event-${targetId}-resume-${frame.toolCallId}`,
+            subagentId: targetId,
+            event: 'resumed',
+            at: frameAt,
+            turnId: item.turnId,
+          });
+        }
+        if (frame.name === 'AgentSend') {
+          const target = sendTargetFromToolArgs(frame.input);
+          const targetId =
+            target === undefined
+              ? undefined
+              : byAgent.has(target) || taskByAgent.has(target)
+                ? target
+                : [...byAgent.values()].find((block) => block.name === target)?.subagentId;
+          if (targetId !== undefined) {
+            rawEvents.push({
+              id: `subagent-event-${targetId}-send-${frame.toolCallId}`,
+              subagentId: targetId,
+              event: 'sent',
+              at: frameAt,
+              turnId: item.turnId,
+            });
+          }
+        }
+        if (frame.agentRefs === undefined) continue;
         for (const ref of frame.agentRefs) {
           const existing = byAgent.get(ref.agentId);
           const task = taskByAgent.get(ref.agentId);
@@ -819,7 +898,31 @@ function subagentBlocksFromSnapshot(
       }
     }
   }
-  return [...byAgent.values()];
+  for (const block of byAgent.values()) {
+    const terminal = terminalEventForStatus(block.status);
+    if (terminal === undefined) continue;
+    rawEvents.push({
+      id: `subagent-event-${block.subagentId}-terminal`,
+      subagentId: block.subagentId,
+      event: terminal,
+      at: block.endedAt,
+    });
+  }
+  const events: SubagentEventBlock[] = rawEvents.map((raw) => {
+    const owner = byAgent.get(raw.subagentId);
+    return {
+      kind: 'subagent-event',
+      id: raw.id,
+      subagentId: raw.subagentId,
+      parentAgentId,
+      name: owner?.name ?? raw.subagentId,
+      event: raw.event,
+      status: owner?.status ?? 'unknown',
+      at: raw.at,
+      turnId: raw.turnId,
+    };
+  });
+  return { blocks: [...byAgent.values()], events };
 }
 
 function compareSubagentTimeline(left: SubagentBlock, right: SubagentBlock): number {
@@ -927,6 +1030,26 @@ function insertSubagentBlocks(
     const placed = parentTurnId === undefined ? subagent : { ...subagent, parentTurnId };
     if (parentTurnId === undefined && insertAtPreviousPosition(blocks, placed, previous)) continue;
     insertSubagentByTimeline(blocks, placed);
+  }
+  return blocks;
+}
+
+/**
+ * Lifecycle compact entries land by their own event timestamp (in-place
+ * accounting); a timestamp-less event keeps its previous position when the
+ * last publish already placed it, else sinks to the live edge.
+ */
+function insertSubagentEventBlocks(
+  source: readonly Block[],
+  events: readonly SubagentEventBlock[],
+  previous: readonly Block[],
+): Block[] {
+  const blocks = source.filter((block) => block.kind !== 'subagent-event');
+  for (const event of events) {
+    if (blockTimelineMs(event) === undefined && insertAtPreviousPosition(blocks, event, previous)) {
+      continue;
+    }
+    insertByTimeline(blocks, event);
   }
   return blocks;
 }
@@ -1803,13 +1926,11 @@ export function agentTranscriptToBlocks(
     }
     insertByTimeline(withTaskBlocks, block);
   }
-  const withSubagents = insertSubagentBlocks(
-    withTaskBlocks,
-    subagentBlocksFromSnapshot(response, response.agent_id),
-    previous,
-  );
+  const projectedSubagents = subagentBlocksFromSnapshot(response, response.agent_id);
+  const withSubagents = insertSubagentBlocks(withTaskBlocks, projectedSubagents.blocks, previous);
+  const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
   return insertInteractionBlocks(
-    withSubagents,
+    withSubagentEvents,
     response.interactions ?? [],
     response.agent_id,
     previous,

@@ -1902,3 +1902,142 @@ describe('external executor badge', () => {
   });
 });
 
+
+describe('subagent timeline dual form (G-4)', () => {
+  function lifecycleSubagentBlock(
+    subagentId: string,
+    overrides: Partial<Extract<Block, { kind: 'subagent' }>> = {},
+  ): Block {
+    return {
+      kind: 'subagent',
+      id: `subagent-${subagentId}`,
+      subagentId,
+      parentAgentId: 'main',
+      parentToolCallId: `call-${subagentId}`,
+      name: subagentId,
+      description: undefined,
+      model: undefined,
+      thinkingEffort: undefined,
+      status: 'completed',
+      summary: undefined,
+      error: undefined,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      endedAt: '2026-01-01T00:01:30.000Z',
+      toolCallCount: 3,
+      transcript: [],
+      ...overrides,
+    };
+  }
+
+  function eventBlock(
+    subagentId: string,
+    event: Extract<Block, { kind: 'subagent-event' }>['event'],
+  ): Block {
+    return {
+      kind: 'subagent-event',
+      id: `subagent-event-${subagentId}-${event}`,
+      subagentId,
+      parentAgentId: 'main',
+      name: subagentId,
+      event,
+      status: 'completed',
+      at: '2026-01-01T00:00:05.000Z',
+    };
+  }
+
+  async function renderWithAgents(
+    blocks: Block[],
+    opened: string[],
+  ): Promise<HTMLDivElement> {
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <Transcript
+        state={transcriptState(blocks)}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+        onOpenAgent={(agentId) => { opened.push(agentId); }}
+      />,
+    );
+    return container;
+  }
+
+  it('renders a compact lifecycle row that jumps to the agent page', async () => {
+    const opened: string[] = [];
+    const container = await renderWithAgents(
+      [eventBlock('agent-1', 'sent'), eventBlock('agent-1', 'completed')],
+      opened,
+    );
+    const rows = [...container.querySelectorAll('[data-subagent-event]')];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toContain('Input sent');
+    expect(rows[1]?.textContent).toContain('Completed');
+    await act(async () => {
+      flushSync(() => { click(rows[0]!); });
+    });
+    expect(opened).toEqual(['agent-1']);
+  });
+
+  it('collapses a terminal card to compact with summary, duration, and tools', async () => {
+    const opened: string[] = [];
+    const container = await renderWithAgents(
+      [
+        lifecycleSubagentBlock('agent-done', {
+          name: 'Researcher',
+          summary: 'Mapped the whole protocol surface.',
+        }),
+      ],
+      opened,
+    );
+    const card = container.querySelector('[data-subagent-id="agent-done"]');
+    expect(card?.getAttribute('data-card-form')).toBe('compact');
+    expect(card?.textContent).toContain('Mapped the whole protocol surface.');
+    expect(card?.textContent).toContain('1m 30s');
+    expect(card?.textContent).toContain('3 tool');
+    // The compact row jumps; the full body (description line) stays folded.
+    await act(async () => {
+      flushSync(() => { click(card!.querySelector('[data-agent-open]')!); });
+    });
+    expect(opened).toEqual(['agent-done']);
+  });
+
+  it('keeps an active run full and lets the user collapse it by hand', async () => {
+    const container = await renderWithAgents(
+      [
+        lifecycleSubagentBlock('agent-live', {
+          status: 'running',
+          endedAt: undefined,
+          summary: undefined,
+        }),
+      ],
+      [],
+    );
+    const card = () => container.querySelector('[data-subagent-id="agent-live"]');
+    expect(card()?.getAttribute('data-card-form')).toBe('full');
+    await act(async () => {
+      flushSync(() => { click(card()!.querySelector('[data-card-collapse]')!); });
+    });
+    expect(card()?.getAttribute('data-card-form')).toBe('compact');
+    // Manual override wins over the auto rule: still compact after republish.
+    await act(async () => {
+      flushSync(() => { click(card()!.querySelector('[data-card-expand]')!); });
+    });
+    expect(card()?.getAttribute('data-card-form')).toBe('full');
+  });
+
+  it('lets the user expand a terminal card and keeps it expanded', async () => {
+    const container = await renderWithAgents(
+      [lifecycleSubagentBlock('agent-done', { description: 'the task brief' })],
+      [],
+    );
+    const card = () => container.querySelector('[data-subagent-id="agent-done"]');
+    expect(card()?.getAttribute('data-card-form')).toBe('compact');
+    await act(async () => {
+      flushSync(() => { click(card()!.querySelector('[data-card-expand]')!); });
+    });
+    expect(card()?.getAttribute('data-card-form')).toBe('full');
+    expect(card()?.textContent).toContain('the task brief');
+  });
+});

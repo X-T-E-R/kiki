@@ -2325,6 +2325,34 @@ export function SessionView({
 
   if (selectedAgentId !== undefined) {
     const capturedBlocks = agentLiveState.blocks;
+    // Pending approvals/questions waiting on THIS agent — feeds the rail's
+    // Needs-input badge. (agentState.pendingInteraction below stays 'none':
+    // that flag gates the main session's composer chrome, not this count.)
+    const agentPendingInteractionCount = capturedBlocks.filter(
+      (block) =>
+        (block.kind === 'approval' && block.resolution === undefined) ||
+        (block.kind === 'question' && block.outcome === undefined),
+    ).length;
+    // Parent jump-back: navigate to the spawning agent's timeline, then
+    // smooth-scroll to this agent's card there (retried briefly while the
+    // target view mounts and publishes its first blocks).
+    const handleJumpToSpawn = (): void => {
+      const parentId = selectedNode?.parentAgentId ?? selectedSubagent?.parentAgentId;
+      const path =
+        parentId === undefined || parentId === MAIN_AGENT_ID
+          ? `/s/${sessionId}`
+          : agentDetailPath(sessionId, parentId);
+      if (location.pathname !== path) void navigate(path);
+      const scrollToCard = (attemptsLeft: number): void => {
+        const target = document.querySelector(`[data-subagent-id="${CSS.escape(selectedAgentId)}"]`);
+        if (target !== null) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          return;
+        }
+        if (attemptsLeft > 0) window.setTimeout(() => { scrollToCard(attemptsLeft - 1); }, 150);
+      };
+      window.setTimeout(() => { scrollToCard(12); }, 150);
+    };
     const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
     const statusLabel =
       selectedNode !== undefined
@@ -2486,9 +2514,15 @@ export function SessionView({
           ? createPortal(
               <RightRail
                 className={`app-rail ${railOpen ? 'open' : ''}`}
-                state={state}
+                state={agentState}
                 forest={forest}
                 selectedAgentId={selectedAgentId}
+                subagent={{
+                  agentId: selectedAgentId,
+                  block: selectedSubagent,
+                  pendingInteractionCount: agentPendingInteractionCount,
+                  onJumpToSpawn: handleJumpToSpawn,
+                }}
                 onCancelTask={(taskId) => actions?.cancelTask(taskId)}
                 onOpenSubagent={openAgent}
               />,
