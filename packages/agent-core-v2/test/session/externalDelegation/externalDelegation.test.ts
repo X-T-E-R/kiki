@@ -94,6 +94,7 @@ describe('SessionExternalDelegationService', () => {
   let messagesByKey: Map<string, AgentMessageAcceptance>;
   let wireRecords: Map<string, WireRecord[]>;
   let journalYield: (() => Promise<void>) | undefined;
+  let fakeExecutorApprovalResponses: unknown[];
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -113,6 +114,7 @@ describe('SessionExternalDelegationService', () => {
     messagesByKey = new Map();
     wireRecords = new Map();
     journalYield = undefined;
+    fakeExecutorApprovalResponses = [];
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -185,6 +187,7 @@ describe('SessionExternalDelegationService', () => {
       modelAlias = 'model',
       thinkingLevel = 'off',
       profileDefinitionId?: string,
+      executorId = 'native',
     ): IAgentScopeHandle => {
       const agent = new TestInstantiationService();
       disposables.add(agent);
@@ -203,7 +206,7 @@ describe('SessionExternalDelegationService', () => {
       });
       agent.stub(IAgentProfileService, {
         _serviceBrand: undefined,
-        data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', subagents: ['coder'] }),
+        data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', executorId, subagents: ['coder'] }),
       });
       agent.stub(IAgentPermissionModeService, { mode: 'auto', setMode: () => {} });
       agent.stub(IAgentUserToolService, { list: () => [], inheritUserTools: () => {} });
@@ -236,6 +239,7 @@ describe('SessionExternalDelegationService', () => {
           opts?.binding?.model,
           opts?.binding?.thinking,
           opts?.binding?.resolvedProfile?.definitionId,
+          opts?.binding?.resolvedProfile?.executor,
         );
         handles.set(handle.id, handle);
         agentMetas[handle.id] = {
@@ -256,6 +260,21 @@ describe('SessionExternalDelegationService', () => {
         const gate = nextRunHandleGate;
         nextRunHandleGate = undefined;
         if (gate !== undefined) await gate;
+        const binding = handles.get(agentId)!.accessor.get(IAgentProfileService).data();
+        if (binding.executorId === 'fake-executor') {
+          const response = await ix.get(ISessionApprovalService).request({
+            id: `fake-executor-permission-${agentId}`,
+            agentId,
+            toolName: 'external',
+            action: 'run',
+            display: {
+              kind: 'external_permission',
+              summary: 'Run fake external tool',
+              options: [{ id: 'allow-once', label: 'Allow once', kind: 'allow_once' }],
+            },
+          });
+          fakeExecutorApprovalResponses.push(response);
+        }
         let resolve!: (value: { summary: string; usage?: TokenUsage }) => void;
         let reject!: (error: unknown) => void;
         const completion = new Promise<{ summary: string; usage?: TokenUsage }>((res, rej) => { resolve = res; reject = rej; });
@@ -514,6 +533,78 @@ describe('SessionExternalDelegationService', () => {
     expect(interaction.listPending('approval').map((entry) => entry.id)).toEqual(['approval-main']);
     interaction.releaseConsumer('gui');
     await expect(mainApproval).resolves.toEqual({ decision: 'cancelled' });
+  });
+
+  it('runs an external-executor named child and round-trips its permission through the external root', async () => {
+    const fakeExecutorProfile: AgentProfile = {
+      ...profile,
+      name: 'external-harness',
+      executor: 'fake-executor',
+    };
+    vi.spyOn(handles.get('main')!.accessor.get(IAgentProfileService), 'data').mockReturnValue({
+      modelAlias: 'model',
+      modelCapabilities: UNKNOWN_CAPABILITY,
+      profileName: 'agent',
+      thinkingLevel: 'off',
+      systemPrompt: '',
+      subagents: [fakeExecutorProfile.name],
+    });
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => name === fakeExecutorProfile.name ? fakeExecutorProfile : undefined,
+      getDefault: () => profile,
+      list: () => [fakeExecutorProfile],
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'external_harness_child',
+      profileName: fakeExecutorProfile.name,
+      message: 'inspect',
+    });
+
+    expect(dispatch).toMatchObject({
+      status: 'queued',
+      taskName: 'external_harness_child',
+      profileName: fakeExecutorProfile.name,
+    });
+    expect(createdWith[0]).toMatchObject({
+      binding: { resolvedProfile: { executor: 'fake-executor' } },
+    });
+    await vi.waitFor(async () => {
+      expect(await service.interactions({ authority })).toMatchObject({
+        items: [{
+          interactionId: 'fake-executor-permission-external-child',
+          kind: 'approval',
+          taskName: 'external_harness_child',
+          payload: { display: { kind: 'external_permission' } },
+        }],
+      });
+    });
+
+    await expect(service.respond({
+      authority,
+      interactionId: 'fake-executor-permission-external-child',
+      kind: 'approval',
+      response: { decision: 'approved', selectedOptionId: 'allow-once' },
+    })).resolves.toEqual({
+      interactionId: 'fake-executor-permission-external-child',
+      status: 'resolved',
+    });
+    await vi.waitFor(() => {
+      expect(fakeExecutorApprovalResponses).toEqual([
+        { decision: 'approved', selectedOptionId: 'allow-once' },
+      ]);
+      expect(completions).toHaveLength(1);
+    });
+
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
   });
 
   it('projects latest child status and usage from the dispatch ledger', async () => {
