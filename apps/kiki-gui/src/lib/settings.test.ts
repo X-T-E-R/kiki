@@ -805,9 +805,11 @@ describe('settings nav groups (redesign batch 1)', () => {
       }
     }
     // General mixes device prefs with server-side session defaults;
-    // Capabilities mixes server config with per-workspace MCP.
+    // Capabilities mixes server config with per-workspace MCP; Agents mixes
+    // server-wide governance with workspace-sourced profiles.
     expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'server']);
     expect(SETTINGS_SECTION_META['capabilities']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['models']?.scopes).toEqual(['server']);
   });
 });

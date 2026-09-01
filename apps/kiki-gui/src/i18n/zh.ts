@@ -858,7 +858,7 @@ export const zh: Record<I18nKey, string> = {
   'st.purpose.general': '本设备的语言、外观、输入框行为与桌面集成；新会话默认值写入已连接的 Server。',
   'st.purpose.models': '已连接 Server 上的模型目录、全局默认模型、thinking 与请求身份。',
   'st.purpose.providers': '已连接 Server 上的登录认证、API key 与提供商连接。',
-  'st.purpose.agents': '已连接 Server 上的主 Agent、子代理 Profiles 与模型治理。',
+  'st.purpose.agents': 'Server 全局治理（主 Agent、子代理模型策略、超时）；Workspace 来源的 Profile 按工作区编辑。',
   'st.purpose.capabilities': '已连接 Server 上的 Skills、工具策略、运行时、实验性功能与高级配置；MCP 服务器按工作区配置。',
   'st.purpose.workspaces': '已连接 Server 上注册的工作区：置顶、重命名、打开、注销。',
   'st.purpose.connection': '本应用的 Server 地址、令牌、连接状态与随附本机服务。',

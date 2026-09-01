@@ -873,7 +873,7 @@ export const en = {
   'st.purpose.general': 'Language, appearance, composer behavior, and desktop integration for this device; new-session defaults are written to the connected Server.',
   'st.purpose.models': 'Model catalog, global default model, thinking, and request identity on the connected Server.',
   'st.purpose.providers': 'Sign-in, API keys, and provider connections on the connected Server.',
-  'st.purpose.agents': 'Main agents, subagent profiles, and model governance on the connected Server.',
+  'st.purpose.agents': 'Server-wide agent governance: main agents, subagent model policy, timeouts; workspace-sourced profiles are edited per workspace.',
   'st.purpose.capabilities': 'Skills, tool policy, runtime, experimental flags, and advanced config on the connected Server; MCP servers are configured per workspace.',
   'st.purpose.workspaces': 'Workspaces registered on the connected Server: pin, rename, open, remove.',
   'st.purpose.connection': 'Server address, token, connection state, and the bundled local server for this app.',

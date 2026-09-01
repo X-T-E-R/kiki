@@ -23,6 +23,7 @@ import { SearchableSelect, type SearchableSelectOption } from '../SearchableSele
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { McpConfigManager } from './McpConfigManager';
 import { SectionCard, SettingsFlashContext, SettingsGroup } from './SectionCard';
+import { SettingsWorkspaceScopeContext } from './workspaceScope';
 
 function ExperimentalFlagsCard() {
   const { client } = useConnection();
@@ -160,6 +161,15 @@ export function CapabilitiesSection() {
   useEffect(() => {
     if (workspaceId === '' && sortedWorkspaces[0] !== undefined) setWorkspaceId(sortedWorkspaces[0].id);
   }, [workspaceId, sortedWorkspaces]);
+
+  // The scope header names the workspace this section's MCP edits target;
+  // switching the card-level selector updates the page header in lockstep.
+  const reportWorkspaceScope = useContext(SettingsWorkspaceScopeContext);
+  const workspaceScopeName = sortedWorkspaces.find((workspace) => workspace.id === workspaceId)?.name ?? null;
+  useEffect(() => {
+    reportWorkspaceScope(workspaceScopeName);
+    return () => { reportWorkspaceScope(null); };
+  }, [reportWorkspaceScope, workspaceScopeName]);
   useEffect(() => {
     const config = configQuery.data;
     if (config === undefined) return;

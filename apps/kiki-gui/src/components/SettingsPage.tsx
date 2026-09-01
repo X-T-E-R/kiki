@@ -21,13 +21,14 @@ import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsFlashContext } from './settings/SectionCard';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
 import { UnknownSettingsSection } from './settings/UnknownSection';
+import { SettingsWorkspaceScopeContext } from './settings/workspaceScope';
 import { WorkspacesSection } from './settings/WorkspacesSection';
 
 export { mcpConfigFromDraft } from './settings/McpConfigManager';
 export { parseNamedAgentTools } from './settings/AgentsSection';
 
 /** Page-top signpost: what this page is for and whose behavior its edits change. */
-function ScopeHeader({ section }: { section: SectionId }) {
+function ScopeHeader({ section, workspaceName }: { section: SectionId; workspaceName: string | null }) {
   const { t } = useI18n();
   const meta = SETTINGS_SECTION_META[section];
   if (meta === undefined) return null;
@@ -39,14 +40,17 @@ function ScopeHeader({ section }: { section: SectionId }) {
           {labelKey === undefined ? section : t(labelKey)}
         </h2>
         {/* Until the batches 2/3 split lands a page can write more than one
-            scope; show every one of them instead of a flattering single badge. */}
+            scope; show every one of them instead of a flattering single badge.
+            A workspace scope with a known selection upgrades to the named form. */}
         {meta.scopes.map((scope) => (
           <span
             key={scope}
             className="rounded-full border border-hairline bg-paper px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-ink-faint"
             title={t('st.scope.label')}
           >
-            {t(`st.scope.${scope}` as I18nKey)}
+            {scope === 'workspace' && workspaceName !== null
+              ? `${t('st.scope.workspace')} · ${workspaceName}`
+              : t(`st.scope.${scope}` as I18nKey)}
           </span>
         ))}
       </div>
@@ -115,6 +119,11 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const resolution = resolveSettingsRoute(section, hash);
   const active: SectionId | null =
     resolution.status === 'ok' ? (resolution.section as SectionId) : null;
+  // Workspace-scoped sections (Capabilities' MCP card today) report the
+  // workspace their edits target; the scope header names it. Reset on page
+  // change — the next section reports its own selection.
+  const [workspaceScopeName, setWorkspaceScopeName] = useState<string | null>(null);
+  useEffect(() => { setWorkspaceScopeName(null); }, [active]);
 
   // Canonicalize legacy / card-moved targets in place: replace, never push,
   // and bypass the dirty guard — this is a redirect, not a user navigation.
@@ -178,6 +187,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   return (
     <SettingsFlashContext.Provider value={focusCard?.cardId ?? null}>
+    <SettingsWorkspaceScopeContext.Provider value={setWorkspaceScopeName}>
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
         <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"><span aria-hidden>☰</span></button>
         <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">{t('st.title')}</h1>
@@ -225,13 +235,14 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
           ) : (
             <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto px-4 py-3 lg:px-8">
               <div className="mx-auto max-w-[760px]">
-                <ScopeHeader section={active} />
+                <ScopeHeader section={active} workspaceName={workspaceScopeName} />
                 <div className="space-y-3">{pane}</div>
               </div>
             </div>
           )}
         </div>
       </main>
+    </SettingsWorkspaceScopeContext.Provider>
     </SettingsFlashContext.Provider>
   );
 }

@@ -1240,7 +1240,7 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   general: { scopes: ['app', 'server'], purposeKey: 'st.purpose.general' },
   models: { scopes: ['server'], purposeKey: 'st.purpose.models' },
   providers: { scopes: ['server'], purposeKey: 'st.purpose.providers' },
-  agents: { scopes: ['server'], purposeKey: 'st.purpose.agents' },
+  agents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.agents' },
   capabilities: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.capabilities' },
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
