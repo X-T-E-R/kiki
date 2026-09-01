@@ -9,6 +9,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import { ErrorCodes } from '#/errors';
 import type { AgentMessageAcceptance } from '#/session/agentCollaboration/messageMailbox';
 import type { DispatchProfileCatalogEntry } from '#/session/dispatch/profileCatalogProjection';
+import type { NormalizedExecutorEvent } from '@moonshot-ai/protocol';
 
 export type ExternalDispatchStatus =
   | 'queued'
@@ -197,6 +198,10 @@ export interface ExternalResultPage {
   readonly nextCursor?: number;
 }
 
+export interface ExternalEventsLookup extends ExternalPageLookup {
+  readonly detail?: 'lifecycle' | 'turn';
+}
+
 export interface ExternalEventView {
   readonly seq: number;
   readonly dispatchId: string;
@@ -205,19 +210,122 @@ export interface ExternalEventView {
   readonly message?: string;
 }
 
+export interface ExternalTurnEventView {
+  readonly seq: number;
+  readonly dispatchId: string;
+  readonly at: number;
+  readonly event: NormalizedExecutorEvent;
+}
+
 export interface ExternalEventPage {
   readonly items: readonly ExternalEventView[];
   readonly nextCursor?: number;
+  readonly truncated_before_seq?: number;
 }
 
-export interface ExternalTranscriptItem {
+export interface ExternalTurnEventPage {
+  readonly items: readonly ExternalTurnEventView[];
+  readonly nextCursor?: number;
+}
+
+export interface ExternalTranscriptLookup extends ExternalPageLookup {
+  readonly detail?: 'text' | 'items';
+}
+
+export interface ExternalTranscriptTextItem {
   readonly index: number;
   readonly role: 'user' | 'assistant' | 'system' | 'tool';
   readonly text: string;
 }
 
+export interface ExternalTranscriptTextFrame {
+  readonly kind: 'text';
+  readonly frameId: string;
+  readonly role: 'assistant' | 'user';
+  readonly text: string;
+}
+
+export interface ExternalTranscriptThinkingFrame {
+  readonly kind: 'thinking';
+  readonly frameId: string;
+  readonly text: string;
+}
+
+export interface ExternalTranscriptToolFrame {
+  readonly kind: 'tool';
+  readonly frameId: string;
+  readonly toolCallId: string;
+  readonly name: string;
+  readonly state: 'running' | 'done' | 'error' | 'interrupted';
+  readonly input?: unknown;
+  readonly output?: unknown;
+  readonly display?: unknown;
+  readonly progress?: unknown;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+}
+
+export interface ExternalTranscriptStep {
+  readonly kind: 'step';
+  readonly stepId: string;
+  readonly turnId: string;
+  readonly ordinal: number;
+  readonly state: 'running' | 'completed' | 'interrupted' | 'failed';
+  readonly frames: readonly (
+    | ExternalTranscriptTextFrame
+    | ExternalTranscriptThinkingFrame
+    | ExternalTranscriptToolFrame
+  )[];
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+  readonly usage?: {
+    readonly inputOther: number;
+    readonly output: number;
+    readonly inputCacheRead: number;
+    readonly inputCacheCreation: number;
+  };
+}
+
+export interface ExternalTranscriptTurn {
+  readonly kind: 'turn';
+  readonly turnId: string;
+  readonly ordinal: number;
+  readonly state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  readonly origin: unknown;
+  readonly prompt?: string;
+  readonly steps: readonly ExternalTranscriptStep[];
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+  readonly usage?: unknown;
+}
+
+export interface ExternalTranscriptMarker {
+  readonly kind: 'marker';
+  readonly markerId: string;
+  readonly marker: string;
+  readonly payload?: unknown;
+  readonly at?: string;
+}
+
+export interface ExternalTranscriptTaskRef {
+  readonly kind: 'taskref';
+  readonly refId: string;
+  readonly taskId: string;
+  readonly at?: string;
+}
+
+export type ExternalTranscriptL1Item =
+  | ExternalTranscriptTurn
+  | ExternalTranscriptMarker
+  | ExternalTranscriptTaskRef;
+
 export interface ExternalTranscriptPage {
-  readonly items: readonly ExternalTranscriptItem[];
+  readonly items: readonly ExternalTranscriptTextItem[];
+  readonly nextCursor?: number;
+}
+
+export interface ExternalTranscriptItemsPage {
+  readonly items: readonly ExternalTranscriptL1Item[];
   readonly nextCursor?: number;
 }
 
@@ -230,8 +338,10 @@ export interface ISessionExternalDelegationService {
   status(request: ExternalDispatchLookup): Promise<ExternalDispatchView>;
   wait(request: DispatchWaitRequest): Promise<DispatchWaitView>;
   result(request: ExternalPageLookup): Promise<ExternalResultPage>;
-  events(request: ExternalPageLookup): Promise<ExternalEventPage>;
-  transcript(request: ExternalPageLookup): Promise<ExternalTranscriptPage>;
+  events(request: ExternalEventsLookup & { readonly detail: 'turn' }): Promise<ExternalTurnEventPage>;
+  events(request: ExternalEventsLookup): Promise<ExternalEventPage>;
+  transcript(request: ExternalTranscriptLookup & { readonly detail: 'items' }): Promise<ExternalTranscriptItemsPage>;
+  transcript(request: ExternalTranscriptLookup): Promise<ExternalTranscriptPage>;
   cancel(request: ExternalDispatchLookup): Promise<ExternalDispatchView>;
 }
 

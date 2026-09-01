@@ -10,15 +10,30 @@ import type { ErrorCode } from '#/errors';
 import { ILogService } from '#/_base/log/log';
 import { IFlagService } from '#/app/flag/flag';
 import { IConfigService } from '#/app/config/config';
+import { IEventBus } from '#/app/event/eventBus';
+import { Event2 } from '#/app/event/event2';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import {
+  AssistantDelta,
+  TurnStarted,
+  TurnStepCompleted,
+  TurnStepStarted,
+} from '#/agent/loop/turnEvents';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import {
+  ToolCallStarted,
+  ToolProgress,
+  ToolResultEvent,
+} from '#/agent/toolExecutor/toolExecutorEvents';
+import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
@@ -63,6 +78,10 @@ const profile: AgentProfile = {
   renderSystemPrompt: () => ({ text: 'coder', environment: { cwd: '', date: { disclosed: false } } }),
 };
 
+class TranscriptUnknownEvent extends Event2<Record<string, never>> {
+  static override readonly type = 'transcript.unmapped';
+}
+
 describe('SessionExternalDelegationService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
@@ -79,6 +98,7 @@ describe('SessionExternalDelegationService', () => {
   let logCalls: Array<{ msg: string; payload: unknown }>;
   let sentMessages: Parameters<IAgentCollaborationMessagingService['send']>[0][];
   let messagesByKey: Map<string, AgentMessageAcceptance>;
+  let agentEvents: Map<string, Emitter<Event2<any>>>;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -95,6 +115,7 @@ describe('SessionExternalDelegationService', () => {
     logCalls = [];
     sentMessages = [];
     messagesByKey = new Map();
+    agentEvents = new Map();
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -170,6 +191,15 @@ describe('SessionExternalDelegationService', () => {
     ): IAgentScopeHandle => {
       const agent = new TestInstantiationService();
       disposables.add(agent);
+      const eventEmitter = disposables.add(new Emitter<Event2<any>>());
+      agentEvents.set(id, eventEmitter);
+      agent.set(IEventBus, {
+        _serviceBrand: undefined,
+        publish: (event: Event2<any>) => eventEmitter.fire(event),
+        subscribe: (...args: unknown[]) => eventEmitter.event(
+          (typeof args[0] === 'function' ? args[0] : args[1]) as (event: Event2<any>) => void,
+        ),
+      } as IEventBus);
       agent.stub(IAgentProfileService, {
         _serviceBrand: undefined,
         data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', subagents: ['coder'] }),
@@ -421,6 +451,167 @@ describe('SessionExternalDelegationService', () => {
     ).resolves.toEqual({ items: [], nextCursor: undefined });
     const events = await service.events({ authority, dispatchId: dispatch.dispatchId });
     expect(events.items.map((event) => event.type)).toContain('queued');
+  });
+
+  it('projects turn detail into the normalized executor vocabulary and L1 items', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'turn_reader',
+      profileName: 'coder',
+      message: 'work',
+    });
+    const events = agentEvents.get('external-child')!;
+
+    events.fire(new TurnStarted({ turnId: 1, origin: { kind: 'user' }, prompt: 'work' }));
+    events.fire(new TurnStepStarted({ turnId: 1, step: 1, stepId: 's1' }));
+    events.fire(new AssistantDelta({ turnId: 1, step: 1, stepId: 's1', partId: 'm1', delta: 'hello' }));
+    events.fire(new ToolCallStarted({ turnId: 1, toolCallId: 'tool-1', name: 'Read', args: { path: 'a.ts' } }));
+    events.fire(new ToolProgress({ turnId: 1, toolCallId: 'tool-1', update: { kind: 'status', text: 'reading' } }));
+    events.fire(new ToolResultEvent({ turnId: 1, toolCallId: 'tool-1', output: 'done' }));
+    events.fire(new TurnStepCompleted({
+      turnId: 1,
+      step: 1,
+      stepId: 's1',
+      usage: { inputOther: 10, output: 4, inputCacheRead: 2, inputCacheCreation: 1 },
+    }));
+    events.fire(new AgentStatusUpdated({ contextTokens: 13, maxContextTokens: 128 }));
+    events.fire(new TranscriptUnknownEvent({}));
+    events.fire(new TurnStarted({ turnId: 2, origin: { kind: 'user' }, prompt: 'next' }));
+
+    const turnEvents = await service.events({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'turn',
+    });
+    expect(turnEvents.items.map((item) => item.event.type)).toEqual([
+      'message.delta',
+      'tool.call',
+      'tool.update',
+      'tool.update',
+      'usage',
+      'unknown',
+    ]);
+    expect(turnEvents.items[1]?.event).toMatchObject({
+      type: 'tool.call',
+      toolCallId: 'tool-1',
+      title: 'Read',
+      rawInput: { path: 'a.ts' },
+    });
+
+    const first = await service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+      limit: 1,
+    });
+    expect(first.items).toHaveLength(1);
+    expect(first.items[0]).toMatchObject({
+      kind: 'turn',
+      turnId: 't1',
+      prompt: 'work',
+      steps: [{
+        stepId: 's1',
+        frames: [
+          { kind: 'text', text: 'hello' },
+          { kind: 'tool', toolCallId: 'tool-1', state: 'done', output: 'done' },
+        ],
+      }],
+    });
+    expect(first.nextCursor).toBeDefined();
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+      cursor: first.nextCursor,
+      limit: 1,
+    })).resolves.toMatchObject({ items: [{ kind: 'turn', turnId: 't2', prompt: 'next' }] });
+  });
+
+  it('migrates transcriptStart to transcript seq while preserving text paging', async () => {
+    const main = handles.get('main')!;
+    const messages: ContextMessage[] = [{
+      role: 'user',
+      content: [{ type: 'text' as const, text: 'before' }],
+      toolCalls: [],
+    }];
+    vi.spyOn(main.accessor.get(IAgentContextMemoryService), 'get').mockImplementation(() => messages as never);
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    messages.push({
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: 'after' }],
+      toolCalls: [],
+    });
+
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'text',
+    })).resolves.toEqual({
+      items: [{ index: 1, role: 'assistant', text: 'after' }],
+      nextCursor: undefined,
+    });
+    const stored = documents.get('root') as {
+      dispatches: Record<string, {
+        transcriptStart: number;
+        transcriptCursorVersion: number;
+        legacyTranscriptStart: number;
+      }>;
+    };
+    expect(stored.dispatches[dispatch.dispatchId]).toMatchObject({
+      transcriptStart: 0,
+      transcriptCursorVersion: 2,
+      legacyTranscriptStart: 1,
+    });
+  });
+
+  it('signals lifecycle ring truncation without reusing event seq', async () => {
+    documents.set('root', {
+      version: 1,
+      delegationId: 'delegation_ring',
+      principalFingerprint: authority.principalFingerprint,
+      authorityFingerprint: authority.authorityFingerprint,
+      configFingerprint: authority.configFingerprint,
+      lifecycle: 'active',
+      createdAt: 1,
+      children: {},
+      dispatches: {
+        dispatch_ring: {
+          dispatchId: 'dispatch_ring',
+          target: 'main',
+          agentId: 'main',
+          status: 'running',
+          createdAt: 1,
+          startedAt: 2,
+          transcriptStart: 0,
+        },
+      },
+      events: Array.from({ length: 5_000 }, (_, index) => ({
+        seq: index + 1,
+        dispatchId: 'dispatch_ring',
+        type: index === 0 ? 'queued' : 'started',
+        at: index + 1,
+      })),
+      nextEventSeq: 5_001,
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    expect((await service.status({ authority, dispatchId: 'dispatch_ring' })).status).toBe('interrupted');
+    const page = await service.events({ authority, dispatchId: 'dispatch_ring', cursor: 0, limit: 1 });
+    expect(page).toMatchObject({
+      items: [{ seq: 2 }],
+      nextCursor: 2,
+      truncated_before_seq: 2,
+    });
+    expect((await service.events({
+      authority,
+      dispatchId: 'dispatch_ring',
+      cursor: 5_000,
+    })).items).toEqual([
+      expect.objectContaining({ seq: 5_001, type: 'interrupted' }),
+    ]);
   });
 
   it('rejects dispatch while the target loop has a queued prompt', async () => {

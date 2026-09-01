@@ -12,6 +12,7 @@ import { ulid } from 'ulid';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
+import { IEventBus } from '#/app/event/eventBus';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes, isError2, toKimiErrorPayload } from '#/errors';
@@ -60,15 +61,20 @@ import {
   type ExternalDispatchStatus,
   type ExternalDispatchView,
   type ExternalEventPage,
+  type ExternalEventsLookup,
   type ExternalEventView,
   type ExternalFailureCategory,
   type ExternalPageLookup,
   type ExternalResultPage,
   type ExternalRootView,
   type ExternalSendRequest,
+  type ExternalTranscriptItemsPage,
+  type ExternalTranscriptLookup,
   type ExternalTranscriptPage,
+  type ExternalTurnEventPage,
   ISessionExternalDelegationService,
 } from './externalDelegation';
+import { DispatchTurnProjection } from './turnProjection';
 
 interface StoredChild {
   taskName: string;
@@ -84,6 +90,8 @@ interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedA
   startedAt?: number;
   endedAt?: number;
   transcriptStart: number;
+  transcriptCursorVersion?: 2;
+  legacyTranscriptStart?: number;
   result?: string;
   error?: string;
   errorCode?: ExternalFailureCategory;
@@ -110,6 +118,7 @@ interface ExternalDelegationDocument {
   dispatchKeys?: Record<string, StoredDispatchKey>;
   events: ExternalEventView[];
   nextEventSeq: number;
+  truncatedBeforeEventSeq?: number;
 }
 
 const STORE_KEY = 'root';
@@ -127,6 +136,7 @@ export class SessionExternalDelegationService
   private readonly controllers = new Map<string, AbortController>();
   private readonly changed = new Emitter<void>();
   private readonly dispatchKeys = new KeyReservationRegistry<string>();
+  private readonly turnProjections = new Map<string, DispatchTurnProjection>();
   private document: ExternalDelegationDocument | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
   private operationQueue: Promise<void> = Promise.resolve();
@@ -163,6 +173,8 @@ export class SessionExternalDelegationService
       dispose: () => {
         for (const controller of this.controllers.values()) controller.abort(new Error('Session closed'));
         this.controllers.clear();
+        for (const projection of this.turnProjections.values()) projection.dispose();
+        this.turnProjections.clear();
         void this.interruptActive('Session closed');
       },
     });
@@ -364,25 +376,45 @@ export class SessionExternalDelegationService
     };
   }
 
-  async events(request: ExternalPageLookup): Promise<ExternalEventPage> {
+  events(request: ExternalEventsLookup & { readonly detail: 'turn' }): Promise<ExternalTurnEventPage>;
+  events(request: ExternalEventsLookup): Promise<ExternalEventPage>;
+  async events(request: ExternalEventsLookup): Promise<ExternalEventPage | ExternalTurnEventPage> {
     const doc = await this.authorize(request.authority);
     this.lookup(doc, request.dispatchId);
     const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
     const limit = boundedLimit(request.limit, 100);
+    if (request.detail === 'turn') {
+      return this.turnProjections.get(request.dispatchId)?.eventPage(cursor, limit) ?? { items: [] };
+    }
     const matches = doc.events.filter(
       (event) => event.dispatchId === request.dispatchId && event.seq > cursor,
     );
     const items = matches.slice(0, limit);
-    return { items, nextCursor: matches.length > items.length ? items.at(-1)?.seq : undefined };
+    return {
+      items,
+      nextCursor: matches.length > items.length ? items.at(-1)?.seq : undefined,
+      truncated_before_seq: doc.truncatedBeforeEventSeq,
+    };
   }
 
-  async transcript(request: ExternalPageLookup): Promise<ExternalTranscriptPage> {
+  transcript(request: ExternalTranscriptLookup & { readonly detail: 'items' }): Promise<ExternalTranscriptItemsPage>;
+  transcript(request: ExternalTranscriptLookup): Promise<ExternalTranscriptPage>;
+  async transcript(
+    request: ExternalTranscriptLookup,
+  ): Promise<ExternalTranscriptPage | ExternalTranscriptItemsPage> {
     const doc = await this.authorize(request.authority);
     const dispatch = this.lookup(doc, request.dispatchId);
+    const limit = boundedLimit(request.limit, 50);
+    if (request.detail === 'items') {
+      const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
+      return this.turnProjections.get(request.dispatchId)?.itemPage(cursor, limit) ?? { items: [] };
+    }
     const handle = await this.materializeDispatchAgent(doc, dispatch);
     const all = handle.accessor.get(IAgentContextMemoryService).get();
-    const cursor = Math.max(dispatch.transcriptStart, boundedCursor(request.cursor, all.length));
-    const limit = boundedLimit(request.limit, 50);
+    const legacyStart = dispatch.transcriptCursorVersion === 2
+      ? dispatch.legacyTranscriptStart!
+      : dispatch.transcriptStart;
+    const cursor = Math.max(legacyStart, boundedCursor(request.cursor, all.length));
     const window = all.slice(cursor, cursor + limit);
     const items = window.map((message, offset) => ({
       index: cursor + offset,
@@ -631,6 +663,12 @@ export class SessionExternalDelegationService
     dispatchKey: string | undefined,
     reservation: ActiveDispatchKeyReservation,
   ): Promise<void> {
+    const legacyTranscriptStart = target.agent.accessor.get(IAgentContextMemoryService).get().length;
+    const projection = new DispatchTurnProjection(
+      dispatchId,
+      target.agent.accessor.get(IEventBus),
+    );
+    this.turnProjections.set(dispatchId, projection);
     const dispatch: StoredDispatch = {
       dispatchId,
       target: target.taskName === undefined ? 'main' : 'named',
@@ -648,7 +686,9 @@ export class SessionExternalDelegationService
           : `dispatch:${target.taskName}`,
       createdAt: Date.now(),
       continuationOf,
-      transcriptStart: target.agent.accessor.get(IAgentContextMemoryService).get().length,
+      transcriptStart: projection.cursor,
+      transcriptCursorVersion: 2,
+      legacyTranscriptStart,
     };
     doc.dispatches[dispatchId] = dispatch;
     if (target.taskName !== undefined) {
@@ -772,7 +812,10 @@ export class SessionExternalDelegationService
     message?: string,
   ): void {
     doc.events.push({ seq: doc.nextEventSeq++, dispatchId, type, at: Date.now(), message });
-    if (doc.events.length > 5_000) doc.events.splice(0, doc.events.length - 5_000);
+    if (doc.events.length > 5_000) {
+      doc.events.splice(0, doc.events.length - 5_000);
+      doc.truncatedBeforeEventSeq = doc.events[0]!.seq;
+    }
   }
 
   private persist(): Promise<void> {
