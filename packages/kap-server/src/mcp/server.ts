@@ -9,6 +9,7 @@
 
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
+  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   renderProfileCatalogEntries,
   type DispatchProfileCatalogEntry,
 } from '@moonshot-ai/agent-core-v2';
@@ -62,6 +63,28 @@ const continueInput = z
     message: z.string().trim().min(1).max(1_000_000),
   })
   .strict();
+const sendInput = z.object({
+  task_name: z.string().regex(/^(?!root$)[a-z0-9_]+$/),
+  message: z.string().trim().min(1).max(1_000_000),
+  idempotency_key: z.string().trim().min(1).optional(),
+}).strict();
+const interactionsInput = z.object({ cursor: z.number().int().nonnegative().optional() }).strict();
+const approvalResponseInput = z.object({
+  decision: z.enum(['approved', 'rejected', 'cancelled']),
+  scope: z.literal('session').optional(),
+  feedback: z.string().optional(),
+  selectedLabel: z.string().optional(),
+  selectedOptionId: z.string().optional(),
+}).strict();
+const questionAnswersInput = z.record(z.string(), z.union([z.string(), z.literal(true)]));
+const questionResponseInput = z.object({
+  answers: questionAnswersInput,
+  method: z.enum(['enter', 'space', 'number_key']).optional(),
+}).strict();
+const respondInput = z.object({
+  interaction_id: z.string().min(1),
+  response: z.union([approvalResponseInput, questionResponseInput, questionAnswersInput, z.null()]),
+}).strict();
 const lookupInput = z.object({ dispatch_id: z.string().min(1) }).strict();
 const waitInput = z
   .object({
@@ -70,6 +93,8 @@ const waitInput = z
   })
   .strict();
 const pageInput = lookupInput.extend({ cursor: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(100).optional() }).strict();
+const eventsInput = pageInput.extend({ detail: z.enum(['lifecycle', 'turn']).optional() }).strict();
+const transcriptInput = pageInput.extend({ detail: z.enum(['text', 'items']).optional() }).strict();
 const resultInput = lookupInput.extend({ cursor: z.number().int().nonnegative().optional(), max_bytes: z.number().int().min(4).optional() }).strict();
 const emptyInput = z.object({}).strict();
 const dispatchStatus = z.enum(['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted']);
@@ -83,30 +108,17 @@ const dispatchView = z
     status: dispatchStatus,
   })
   .passthrough();
-const eventPage = z
-  .object({
-    items: z.array(
-      z
-        .object({
-          seq: z.number().int().nonnegative(),
-          type: z.enum(['queued', 'started', 'completed', 'failed', 'cancelled', 'interrupted']),
-        })
-        .passthrough(),
-    ),
-  })
-  .passthrough();
-const transcriptPage = z
-  .object({
-    items: z.array(
-      z
-        .object({
-          index: z.number().int().nonnegative(),
-          role: z.enum(['user', 'assistant', 'system', 'tool']),
-        })
-        .passthrough(),
-    ),
-  })
-  .passthrough();
+const turnEventPage = z.object({
+  items: z.array(z.object({
+    seq: z.number().int().nonnegative(),
+    event: z.object({
+      type: z.string(),
+      toolCallId: z.string().optional(),
+      title: z.string().optional(),
+      status: z.string().optional(),
+    }).passthrough(),
+  }).passthrough()),
+}).passthrough();
 const profileCatalogEntry = z.object({
   profileName: z.string().min(1),
   description: z.string().optional(),
@@ -139,6 +151,7 @@ const EXTERNAL_FAILURE_CATEGORIES = new Set([
   'network',
   'invalid_input',
   'internal',
+  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
 ]);
 const KIKI_LIST_DESCRIPTION = 'List admitted main/named dispatchables and owned continuations.';
 const KIKI_DISPATCH_DESCRIPTION =
@@ -220,6 +233,36 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
       }),
   );
   server.registerTool(
+    'kiki_send',
+    { description: 'Queue a message for an owned named child at its next run boundary.', inputSchema: sendInput },
+    async (input) =>
+      toolResult(async () => {
+        const parsed = sendInput.parse(input);
+        const idempotencyKey = parsed.idempotency_key ?? randomUUID();
+        const acceptance = await client.call<Record<string, unknown>>('send', {
+          ...parsed,
+          idempotency_key: idempotencyKey,
+        });
+        return { ...acceptance, idempotency_key: idempotencyKey };
+      }),
+  );
+  server.registerTool(
+    'kiki_interactions',
+    {
+      description: 'List pending approvals and questions from owned children for external answering with kiki_respond.',
+      inputSchema: interactionsInput,
+    },
+    async (input) => toolResult(() => client.call('interactions', interactionsInput.parse(input))),
+  );
+  server.registerTool(
+    'kiki_respond',
+    {
+      description: 'Answer an owned child approval or question on behalf of the external caller.',
+      inputSchema: respondInput,
+    },
+    async (input) => toolResult(() => client.call('respond', respondInput.parse(input))),
+  );
+  server.registerTool(
     'kiki_status',
     { description: 'Read status for an owned dispatch handle.', inputSchema: lookupInput },
     async (input) => toolResult(() => client.call('status', lookupInput.parse(input))),
@@ -251,13 +294,13 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
   );
   server.registerTool(
     'kiki_events',
-    { description: 'Read a bounded event page for an owned dispatch.', inputSchema: pageInput },
-    async (input) => toolResult(() => client.call('events', pageInput.parse(input))),
+    { description: 'Read lifecycle or turn-detail events for an owned dispatch.', inputSchema: eventsInput },
+    async (input) => toolResult(() => client.call('events', eventsInput.parse(input))),
   );
   server.registerTool(
     'kiki_transcript',
-    { description: 'Read a bounded transcript page for an owned dispatch.', inputSchema: pageInput },
-    async (input) => toolResult(() => client.call('transcript', pageInput.parse(input))),
+    { description: 'Read text or structured transcript items for an owned dispatch.', inputSchema: transcriptInput },
+    async (input) => toolResult(() => client.call('transcript', transcriptInput.parse(input))),
   );
   server.registerTool(
     'kiki_cancel',
@@ -366,10 +409,10 @@ async function followDelegationProgress(
 
   let dispatch = dispatchView.parse(initial);
   let eventCursor = 0;
-  let transcriptCursor = 0;
-  let toolCallCount = 0;
   let progress = 0;
   let turnStarted = false;
+  let reportedTool: string | undefined;
+  const toolTitles = new Map<string, string>();
   const notify = (message: string) =>
     context.sendNotification({
       method: 'notifications/progress',
@@ -378,46 +421,49 @@ async function followDelegationProgress(
 
   if (dispatch.status === 'running') {
     turnStarted = true;
-    await notify(progressMessage('started', toolCallCount));
+    await notify(progressMessage('started'));
   } else if (isTerminalDispatchStatus(dispatch.status)) {
-    await notify(progressMessage(dispatch.status, toolCallCount));
+    await notify(progressMessage(dispatch.status));
     return dispatch;
   }
 
   while (true) {
     context.signal.throwIfAborted();
-    const [rawEvents, rawTranscript] = await Promise.all([
-      client.call('events', { dispatch_id: dispatch.dispatchId, cursor: eventCursor, limit: 100 }),
-      client.call('transcript', { dispatch_id: dispatch.dispatchId, cursor: transcriptCursor, limit: 50 }),
+    const [rawEvents, rawStatus] = await Promise.all([
+      client.call('events', {
+        dispatch_id: dispatch.dispatchId,
+        cursor: eventCursor,
+        limit: 100,
+        detail: 'turn',
+      }),
+      client.call('status', { dispatch_id: dispatch.dispatchId }),
     ]);
-    const events = eventPage.parse(rawEvents);
-    const transcript = transcriptPage.parse(rawTranscript);
-    let terminal = false;
+    const events = turnEventPage.parse(rawEvents);
+    dispatch = dispatchView.parse(rawStatus);
+    let currentTool: string | undefined;
 
-    for (const event of events.items) {
-      eventCursor = Math.max(eventCursor, event.seq);
-      if (event.type === 'started' && !turnStarted) {
-        turnStarted = true;
-        await notify(progressMessage('started', toolCallCount));
-      }
-      if (event.type === 'completed' || event.type === 'failed' || event.type === 'cancelled' || event.type === 'interrupted') {
-        terminal = true;
+    for (const item of events.items) {
+      eventCursor = Math.max(eventCursor, item.seq);
+      const event = item.event;
+      if (event.type === 'tool.call' && event.toolCallId !== undefined && event.title !== undefined) {
+        toolTitles.set(event.toolCallId, event.title);
+        currentTool = event.title;
+      } else if (event.type === 'tool.update' && event.toolCallId !== undefined) {
+        if (event.title !== undefined) toolTitles.set(event.toolCallId, event.title);
+        currentTool = event.title ?? toolTitles.get(event.toolCallId);
       }
     }
 
-    const newToolCalls = transcript.items.filter((item) => item.role === 'tool').length;
-    const lastTranscriptItem = transcript.items.at(-1);
-    if (lastTranscriptItem !== undefined) transcriptCursor = lastTranscriptItem.index + 1;
-    if (newToolCalls > 0) {
-      toolCallCount += newToolCalls;
-      await notify(progressMessage('running', toolCallCount));
+    if (!turnStarted && dispatch.status === 'running') {
+      turnStarted = true;
+      await notify(progressMessage('started'));
     }
-
-    if (terminal) {
-      dispatch = dispatchView.parse(
-        await client.call('status', { dispatch_id: dispatch.dispatchId }),
-      );
-      await notify(progressMessage(dispatch.status, toolCallCount));
+    if (currentTool !== undefined && currentTool !== reportedTool) {
+      reportedTool = currentTool;
+      await notify(progressMessage('running', currentTool));
+    }
+    if (isTerminalDispatchStatus(dispatch.status)) {
+      await notify(progressMessage(dispatch.status));
       return dispatch;
     }
 
@@ -431,12 +477,11 @@ function isTerminalDispatchStatus(status: z.infer<typeof dispatchStatus>): boole
 
 function progressMessage(
   status: 'started' | z.infer<typeof dispatchStatus>,
-  toolCallCount: number,
+  tool?: string,
 ): string {
-  const toolCalls = `${toolCallCount} tool call${toolCallCount === 1 ? '' : 's'} completed`;
-  return status === 'started'
-    ? `Delegation turn started (${toolCalls}).`
-    : `Delegation ${status} (${toolCalls}).`;
+  if (status === 'started') return 'Delegation turn started.';
+  if (status === 'running' && tool !== undefined) return `Delegation running tool: ${tool}.`;
+  return `Delegation ${status}.`;
 }
 
 function withDispatchReceipt(value: unknown, dispatchKey: string): Record<string, unknown> {
