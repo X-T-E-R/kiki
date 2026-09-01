@@ -437,6 +437,7 @@ export class SessionExternalDelegationService
       const projection = await this.refreshTurnProjection(handle);
       const start = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
       const end = dispatch.transcriptEnd ?? projection.cursor;
+      if (cursor > end) throw invalid('cursor is invalid.');
       return projection.eventPage(dispatch.dispatchId, start, end, cursor, limit);
     }
     const matches = doc.events.filter(
@@ -464,6 +465,7 @@ export class SessionExternalDelegationService
       const projection = await this.refreshTurnProjection(handle);
       const start = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
       const end = dispatch.transcriptEnd ?? projection.cursor;
+      if (cursor > end) throw invalid('cursor is invalid.');
       return projection.itemPage(start, end, cursor, limit);
     }
     const handle = await this.materializeDispatchAgent(doc, dispatch);

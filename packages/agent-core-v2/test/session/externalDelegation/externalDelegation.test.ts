@@ -10,30 +10,16 @@ import type { ErrorCode } from '#/errors';
 import { ILogService } from '#/_base/log/log';
 import { IFlagService } from '#/app/flag/flag';
 import { IConfigService } from '#/app/config/config';
-import { IEventBus } from '#/app/event/eventBus';
-import { Event2 } from '#/app/event/event2';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import {
-  AssistantDelta,
-  TurnStarted,
-  TurnStepCompleted,
-  TurnStepStarted,
-} from '#/agent/loop/turnEvents';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
-import {
-  ToolCallStarted,
-  ToolProgress,
-  ToolResultEvent,
-} from '#/agent/toolExecutor/toolExecutorEvents';
-import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
@@ -89,10 +75,6 @@ const profile: AgentProfile = {
   renderSystemPrompt: () => ({ text: 'coder', environment: { cwd: '', date: { disclosed: false } } }),
 };
 
-class TranscriptUnknownEvent extends Event2<Record<string, never>> {
-  static override readonly type = 'transcript.unmapped';
-}
-
 describe('SessionExternalDelegationService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
@@ -109,7 +91,6 @@ describe('SessionExternalDelegationService', () => {
   let logCalls: Array<{ msg: string; payload: unknown }>;
   let sentMessages: Parameters<IAgentCollaborationMessagingService['send']>[0][];
   let messagesByKey: Map<string, AgentMessageAcceptance>;
-  let agentEvents: Map<string, Emitter<Event2<any>>>;
   let wireRecords: Map<string, WireRecord[]>;
 
   beforeEach(() => {
@@ -127,7 +108,6 @@ describe('SessionExternalDelegationService', () => {
     logCalls = [];
     sentMessages = [];
     messagesByKey = new Map();
-    agentEvents = new Map();
     wireRecords = new Map();
 
     ix.stub(IFlagService, { enabled: () => true });
@@ -204,15 +184,6 @@ describe('SessionExternalDelegationService', () => {
     ): IAgentScopeHandle => {
       const agent = new TestInstantiationService();
       disposables.add(agent);
-      const eventEmitter = disposables.add(new Emitter<Event2<any>>());
-      agentEvents.set(id, eventEmitter);
-      agent.set(IEventBus, {
-        _serviceBrand: undefined,
-        publish: (event: Event2<any>) => eventEmitter.fire(event),
-        subscribe: (...args: unknown[]) => eventEmitter.event(
-          (typeof args[0] === 'function' ? args[0] : args[1]) as (event: Event2<any>) => void,
-        ),
-      } as IEventBus);
       wireRecords.set(id, []);
       agent.set(IWireService, {
         _serviceBrand: undefined,
@@ -597,32 +568,123 @@ describe('SessionExternalDelegationService', () => {
     expect(events.items.map((event) => event.type)).toContain('queued');
   });
 
-  it('projects turn detail into the normalized executor vocabulary and L1 items', async () => {
+  it('uses one durable cursor for live updates, rebuilds, and item watermarks', async () => {
     const service = ix.get(ISessionExternalDelegationService);
-    const dispatch = await service.dispatch({
-      authority,
-      target: 'named',
-      taskName: 'turn_reader',
-      profileName: 'coder',
-      message: 'work',
-    });
-    const events = agentEvents.get('external-child')!;
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    const records = wireRecords.get('main')!;
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'hello ' },
+        },
+      },
+    );
 
-    events.fire(new TurnStarted({ turnId: 1, origin: { kind: 'user' }, prompt: 'work' }));
-    events.fire(new TurnStepStarted({ turnId: 1, step: 1, stepId: 's1' }));
-    events.fire(new AssistantDelta({ turnId: 1, step: 1, stepId: 's1', partId: 'm1', delta: 'hello' }));
-    events.fire(new ToolCallStarted({ turnId: 1, toolCallId: 'tool-1', name: 'Read', args: { path: 'a.ts' } }));
-    events.fire(new ToolProgress({ turnId: 1, toolCallId: 'tool-1', update: { kind: 'status', text: 'reading' } }));
-    events.fire(new ToolResultEvent({ turnId: 1, toolCallId: 'tool-1', output: 'done' }));
-    events.fire(new TurnStepCompleted({
-      turnId: 1,
-      step: 1,
-      stepId: 's1',
-      usage: { inputOther: 10, output: 4, inputCacheRead: 2, inputCacheCreation: 1 },
-    }));
-    events.fire(new AgentStatusUpdated({ contextTokens: 13, maxContextTokens: 128 }));
-    events.fire(new TranscriptUnknownEvent({}));
-    events.fire(new TurnStarted({ turnId: 2, origin: { kind: 'user' }, prompt: 'next' }));
+    const first = await service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+      limit: 1,
+    });
+    expect(first).toMatchObject({
+      items: [{ kind: 'turn', turnId: 't1', steps: [{ frames: [{ text: 'hello ' }] }] }],
+      cursor: expect.any(Number),
+    });
+    expect(first.cursor).toBeGreaterThan(0);
+
+    records.push(
+      {
+        type: 'context.append_loop_event',
+        time: 4,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'world' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 5,
+        event: {
+          type: 'tool.call',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          toolCallId: 'tool-1',
+          name: 'Read',
+          args: { path: 'a.ts' },
+        },
+      },
+      {
+        type: 'tool.progress',
+        time: 6,
+        turnId: 1,
+        toolCallId: 'tool-1',
+        update: { kind: 'status', text: 'reading' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 7,
+        event: {
+          type: 'step.end',
+          uuid: 's1',
+          turnId: '1',
+          step: 1,
+          usage: { inputOther: 10, output: 4, inputCacheRead: 2, inputCacheCreation: 1 },
+        },
+      },
+    );
+
+    const second = await service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+      cursor: first.cursor,
+      limit: 1,
+    });
+    expect(second).toMatchObject({
+      items: [{
+        kind: 'turn',
+        turnId: 't1',
+        steps: [{
+          frames: [
+            { kind: 'text', text: 'hello world' },
+            { kind: 'tool', toolCallId: 'tool-1', progress: { text: 'reading' } },
+          ],
+        }],
+      }],
+      cursor: expect.any(Number),
+    });
+    expect(second.cursor).toBeGreaterThan(first.cursor);
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+      cursor: second.cursor,
+      limit: 1,
+    })).resolves.toEqual({ items: [], cursor: second.cursor, nextCursor: undefined });
 
     const turnEvents = await service.events({
       authority,
@@ -631,46 +693,107 @@ describe('SessionExternalDelegationService', () => {
     });
     expect(turnEvents.items.map((item) => item.event.type)).toEqual([
       'message.delta',
+      'message.delta',
       'tool.call',
       'tool.update',
-      'tool.update',
       'usage',
-      'unknown',
     ]);
-    expect(turnEvents.items[1]?.event).toMatchObject({
-      type: 'tool.call',
-      toolCallId: 'tool-1',
-      title: 'Read',
-      rawInput: { path: 'a.ts' },
+    const repeated = await service.events({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'turn',
+    });
+    expect(repeated.items).toEqual(turnEvents.items);
+  });
+
+  it('freezes each dispatch slice across later runs and journal rebuilds', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const first = await service.dispatch({ authority, target: 'main', message: 'first' });
+    const records = wireRecords.get('main')!;
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'first' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'first result' },
+        },
+      },
+      { type: 'turn.ended', time: 4, turnId: 1, reason: 'completed' },
+    );
+    completions[0]!.resolve({ summary: 'first done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: first.dispatchId })).status).toBe('completed');
     });
 
-    const first = await service.transcript({
+    const second = await service.continue({
       authority,
-      dispatchId: dispatch.dispatchId,
-      detail: 'items',
-      limit: 1,
+      dispatchId: first.dispatchId,
+      message: 'second',
     });
-    expect(first.items).toHaveLength(1);
-    expect(first.items[0]).toMatchObject({
-      kind: 'turn',
-      turnId: 't1',
-      prompt: 'work',
-      steps: [{
-        stepId: 's1',
-        frames: [
-          { kind: 'text', text: 'hello' },
-          { kind: 'tool', toolCallId: 'tool-1', state: 'done', output: 'done' },
-        ],
-      }],
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 5,
+        turnId: 2,
+        input: [{ type: 'text', text: 'second' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 6,
+        event: { type: 'step.begin', uuid: 's2', turnId: '2', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 7,
+        event: {
+          type: 'content.part',
+          stepUuid: 's2',
+          turnId: '2',
+          step: 1,
+          uuid: 'm2',
+          part: { type: 'text', text: 'second result' },
+        },
+      },
+      { type: 'turn.ended', time: 8, turnId: 2, reason: 'completed' },
+    );
+    completions[1]!.resolve({ summary: 'second done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: second.dispatchId })).status).toBe('completed');
     });
-    expect(first.nextCursor).toBeDefined();
-    await expect(service.transcript({
-      authority,
-      dispatchId: dispatch.dispatchId,
-      detail: 'items',
-      cursor: first.nextCursor,
-      limit: 1,
-    })).resolves.toMatchObject({ items: [{ kind: 'turn', turnId: 't2', prompt: 'next' }] });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const page = await service.transcript({
+        authority,
+        dispatchId: first.dispatchId,
+        detail: 'items',
+      });
+      expect(page.items).toMatchObject([{ kind: 'turn', turnId: 't1' }]);
+      expect(page.items).not.toEqual(expect.arrayContaining([expect.objectContaining({ turnId: 't2' })]));
+      const events = await service.events({
+        authority,
+        dispatchId: first.dispatchId,
+        detail: 'turn',
+      });
+      expect(JSON.stringify(events)).not.toContain('second result');
+    }
   });
 
   it('migrates transcriptStart to transcript seq while preserving text paging', async () => {

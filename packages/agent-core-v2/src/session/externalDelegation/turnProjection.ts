@@ -1,4 +1,3 @@
-import type { IEventBus } from '#/app/event/eventBus';
 import type { NormalizedExecutorEvent } from '@moonshot-ai/protocol';
 
 import type { WireRecord } from '#/wire/record';
@@ -17,52 +16,57 @@ interface SequencedItem {
   readonly item: ExternalTranscriptL1Item;
 }
 
-export class DispatchTurnProjection {
+export class AgentTurnProjection {
   private nextSeq = 1;
   private readonly events: ExternalTurnEventView[] = [];
   private readonly items: SequencedItem[] = [];
-  private readonly subscription: { dispose(): void };
-
-  constructor(
-    private readonly dispatchId: string,
-    bus: IEventBus,
-  ) {
-    this.subscription = bus.subscribe((event) => this.record(event as unknown as ProjectedEvent));
-  }
 
   get cursor(): number {
     return this.nextSeq - 1;
   }
 
-  dispose(): void {
-    this.subscription.dispose();
-  }
-
-  async replay(records: AsyncIterable<WireRecord>): Promise<void> {
+  async rebuild(records: AsyncIterable<WireRecord>): Promise<void> {
+    this.nextSeq = 1;
+    this.events.length = 0;
+    this.items.length = 0;
     for await (const record of records) this.replayRecord(record);
   }
 
-  eventPage(cursor: number, limit: number): {
+  eventPage(
+    dispatchId: string,
+    start: number,
+    end: number,
+    cursor: number,
+    limit: number,
+  ): {
     readonly items: readonly ExternalTurnEventView[];
     readonly nextCursor?: number;
   } {
-    const matches = this.events.filter((event) => event.seq > cursor);
-    const items = matches.slice(0, limit);
+    const matches = this.events.filter(
+      (event) => event.seq > Math.max(start, cursor) && event.seq <= end,
+    );
+    const items = matches.slice(0, limit).map((event) => ({ ...event, dispatchId }));
     return {
       items,
       nextCursor: matches.length > items.length ? items.at(-1)?.seq : undefined,
     };
   }
 
-  itemPage(cursor: number, limit: number): {
+  itemPage(start: number, end: number, cursor: number, limit: number): {
     readonly items: readonly ExternalTranscriptL1Item[];
     readonly nextCursor?: number;
+    readonly cursor: number;
   } {
-    const matches = this.items.filter((entry) => entry.seq > cursor);
+    const matches = this.items.filter(
+      (entry) => entry.seq > Math.max(start, cursor) && entry.seq <= end,
+    );
     const page = matches.slice(0, limit);
+    const hasMore = matches.length > page.length;
+    const watermark = hasMore ? page.at(-1)!.seq : end;
     return {
       items: page.map((entry) => entry.item),
-      nextCursor: matches.length > page.length ? page.at(-1)?.seq : undefined,
+      nextCursor: hasMore ? watermark : undefined,
+      cursor: watermark,
     };
   }
 
@@ -256,13 +260,24 @@ export class DispatchTurnProjection {
       usage: usage ?? existing.usage,
     };
     this.putItem(turnId, { ...turn, steps: replaceStep(turn.steps, step) });
+    if (usage !== undefined) {
+      this.emit({
+        type: 'usage',
+        used:
+          usage.inputOther +
+          usage.inputCacheRead +
+          usage.inputCacheCreation +
+          usage.output,
+        size: 0,
+      }, event.time);
+    }
   }
 
   private appendText(event: ProjectedEvent, kind: 'text' | 'thinking'): void {
     const turnId = turnIdOf(event);
     const step = this.requireStep(turnId, event);
     if (step === undefined) return;
-    const partId = readString(event, 'partId') ?? `${kind}-${step.frames.length}`;
+    const partId = readString(event, 'partId') ?? readString(event, 'uuid') ?? `${kind}-${step.frames.length}`;
     const frameId = `${step.stepId}.${partId}`;
     const delta = readString(event, 'delta') ?? '';
     const frame = step.frames.find((candidate) => candidate.frameId === frameId);
@@ -397,7 +412,7 @@ export class DispatchTurnProjection {
   }
 
   private emit(event: NormalizedExecutorEvent, at: number): void {
-    this.events.push({ seq: this.nextSeq++, dispatchId: this.dispatchId, at, event });
+    this.events.push({ seq: this.nextSeq++, dispatchId: '', at, event });
   }
 }
 
