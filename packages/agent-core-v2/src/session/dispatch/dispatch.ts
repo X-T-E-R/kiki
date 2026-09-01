@@ -40,10 +40,13 @@ export interface DispatchLaunchInput {
   readonly onCreated?: (child: DispatchChild) => Promise<void>;
 }
 
+export type DispatchIdlePolicy = 'execution' | 'quiescent';
+
 export interface DispatchRunOptions {
   readonly signal: AbortSignal;
   readonly onReady?: () => void;
   readonly lineage?: string;
+  readonly idlePolicy?: DispatchIdlePolicy;
   readonly onBeforeRun?: (child: DispatchChild) => Promise<void>;
 }
 

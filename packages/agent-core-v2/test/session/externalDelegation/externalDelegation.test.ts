@@ -255,6 +255,43 @@ describe('SessionExternalDelegationService', () => {
     expect(createdWith).toHaveLength(1);
   });
 
+  it('reads transcript and events while a named dispatch is running', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'running_reader',
+      profileName: 'coder',
+      message: 'work',
+    });
+    const child = handles.get('external-child')!;
+    vi.spyOn(child.accessor.get(IAgentExecutionService), 'status').mockReturnValue({
+      state: 'running',
+      turnId: 1,
+    });
+
+    await expect(
+      service.transcript({ authority, dispatchId: dispatch.dispatchId }),
+    ).resolves.toEqual({ items: [], nextCursor: undefined });
+    const events = await service.events({ authority, dispatchId: dispatch.dispatchId });
+    expect(events.items.map((event) => event.type)).toContain('queued');
+  });
+
+  it('rejects dispatch while the target loop has a queued prompt', async () => {
+    const main = handles.get('main')!;
+    vi.spyOn(main.accessor.get(IAgentLoopService), 'status').mockReturnValue({
+      state: 'idle',
+      pendingTurnIds: [1],
+      hasPendingRequests: false,
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    await expect(
+      service.dispatch({ authority, target: 'main', message: 'work' }),
+    ).rejects.toThrow(/already running/);
+    expect(runAgentIds).toEqual([]);
+  });
+
   it('binds profiles that reference user tools inherited from the main agent', async () => {
     const lookupTool = {
       name: 'ExternalLookup',

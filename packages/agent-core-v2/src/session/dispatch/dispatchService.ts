@@ -4,6 +4,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes } from '#/errors';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
@@ -45,6 +46,7 @@ import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagen
 import {
   ISessionDispatchService,
   type DispatchChild,
+  type DispatchIdlePolicy,
   type DispatchLaunchInput,
   type DispatchResolvedBinding,
   type DispatchRun,
@@ -224,7 +226,6 @@ export class SessionDispatchService implements ISessionDispatchService {
         labels: labelsFromAgentMeta(meta),
         delegator: delegatorRef(meta),
       }));
-    this.requireIdle(child);
     const data = child.accessor.get(IAgentProfileService).data();
     return this.childView(
       child,
@@ -241,7 +242,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     requestInput: string | Extract<AgentRunRequest, { kind: 'retry' }>,
     options: DispatchRunOptions,
   ): Promise<DispatchRun> {
-    this.requireIdle(child.agent);
+    this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
     await options.onBeforeRun?.(child);
     const request: AgentRunRequest =
       typeof requestInput === 'string'
@@ -408,14 +409,17 @@ export class SessionDispatchService implements ISessionDispatchService {
     return handle;
   }
 
-  private requireIdle(child: IAgentScopeHandle): void {
-    if (child.accessor.get(IAgentExecutionService).status().state !== 'idle') {
-      throw new Error2(
-        ErrorCodes.AGENT_ALREADY_RUNNING,
-        `Agent instance "${child.id}" is already running and cannot run concurrently`,
-        { details: { agentId: child.id } },
-      );
-    }
+  private requireIdle(child: IAgentScopeHandle, policy: DispatchIdlePolicy): void {
+    const idle =
+      policy === 'execution'
+        ? child.accessor.get(IAgentExecutionService).status().state === 'idle'
+        : quiescent(child.accessor.get(IAgentLoopService).status());
+    if (idle) return;
+    throw new Error2(
+      ErrorCodes.AGENT_ALREADY_RUNNING,
+      `Agent instance "${child.id}" is already running and cannot run concurrently`,
+      { details: { agentId: child.id } },
+    );
   }
 }
 
@@ -443,6 +447,14 @@ function nextWake(
       if (timeout !== undefined) clearTimeout(timeout);
     },
   };
+}
+
+function quiescent(status: ReturnType<IAgentLoopService['status']>): boolean {
+  return (
+    status.state === 'idle' &&
+    status.pendingTurnIds.length === 0 &&
+    !status.hasPendingRequests
+  );
 }
 
 function sameDelegator(left: DelegatorRef | undefined, right: DelegatorRef): boolean {

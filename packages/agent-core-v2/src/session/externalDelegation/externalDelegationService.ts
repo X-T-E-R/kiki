@@ -582,6 +582,7 @@ export class SessionExternalDelegationService
     const run = await this.dispatchDomain.runOnExisting(target, message, {
       signal: controller.signal,
       lineage: continuationOf,
+      idlePolicy: 'quiescent',
       onBeforeRun: async () => {
         await this.queueDispatch(
           doc,
