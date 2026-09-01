@@ -402,6 +402,7 @@ describe('server-v2 /api/v1/config', () => {
     const invalidPatches: Record<string, unknown>[] = [
       { thread_communication: { enabled: 'yes' } },
       { token_counting: { strategy: 'approximate' } },
+      { plan: { enter_approval_timeout_ms: 4999 } },
       { workspace_instance: { idle_ttl_ms: -1 } },
       { image: { max_edge_px: 0 } },
       { task: { max_running_tasks: 0 } },
