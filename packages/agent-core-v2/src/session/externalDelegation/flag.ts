@@ -11,7 +11,7 @@ export const externalDelegationFlag: FlagDefinitionInput = {
   title: 'External delegation over MCP',
   description: 'Allow an authenticated external principal to own durable session work.',
   env: 'KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP',
-  default: false,
+  default: true,
   surface: 'core',
 };
 

@@ -1,9 +1,8 @@
 # KAP server
 
-## Experimental Kiki MCP edge
+## Kiki MCP edge
 
-External delegation is off by default. Start KAP with both
-`KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP=true`, one admitted
+External delegation is on by default. Start KAP with one admitted
 `KIKI_EXTERNAL_PRINCIPAL_ID`, `KIKI_EXTERNAL_SESSION_ID`, and a dedicated
 `KIKI_EXTERNAL_DELEGATION_TOKEN`. A host may also provision that exact Session
 at startup by passing `KIKI_EXTERNAL_WORKSPACE_PATH`,
