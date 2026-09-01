@@ -130,3 +130,40 @@ export function clearComposerState(sessionId: string): void {
 export function resetComposerMemoryForTests(): void {
   composerMemory.clear();
 }
+
+// ---- per-session input history (memory-only) ----
+
+/**
+ * Sent prompts, newest last, for the composer's ArrowUp/ArrowDown recall.
+ * Mirrors the chrome map's scope rules: memory-only (a restart starts every
+ * composer fresh), per session (the /new draft keys on its workspace), and
+ * capped like opencode's history store.
+ */
+export const INPUT_HISTORY_LIMIT = 50;
+
+const historyMemory = new Map<string, string[]>();
+
+/**
+ * Record a submitted prompt. Empty text is ignored; repeating the last entry
+ * is a no-op (shell-style consecutive dedupe), and the oldest entries fall
+ * off past INPUT_HISTORY_LIMIT.
+ */
+export function pushInputHistory(key: string, text: string): void {
+  const trimmed = text.trim();
+  if (trimmed === '') return;
+  const list = historyMemory.get(key) ?? [];
+  if (list.at(-1) !== trimmed) list.push(trimmed);
+  while (list.length > INPUT_HISTORY_LIMIT) list.shift();
+  historyMemory.set(key, list);
+}
+
+/** Newest-last recall order; the composer walks it backwards from the end. */
+export function readInputHistory(key: string): readonly string[] {
+  return historyMemory.get(key) ?? [];
+}
+
+/** Test-only: forget every recorded prompt. */
+export function resetInputHistoryForTests(): void {
+  historyMemory.clear();
+}
+

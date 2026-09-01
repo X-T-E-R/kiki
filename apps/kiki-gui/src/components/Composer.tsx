@@ -49,6 +49,7 @@ import {
   type SlashItem,
 } from '../lib/slashCommands';
 import { isDesktopRuntime, selectFilesNative } from '../lib/desktop';
+import { pushInputHistory, readInputHistory } from '../lib/drafts';
 import { registerOverlay } from '../lib/uiBusy';
 import type { SelectionAnnotation } from '../lib/selectionQuote';
 import {
@@ -121,6 +122,15 @@ export function buildAgentProfileOptions(
 type ComposerMenu =
   | { kind: 'slash'; start: number; end: number; query: string; inline: boolean }
   | { kind: 'mention'; start: number; query: string };
+
+/** One undoable composer state: the text plus the caret that sat with it. */
+interface ComposerUndoEntry {
+  readonly text: string;
+  readonly cursor: number;
+}
+
+/** anything-llm's PromptInput caps its local stack at 100; so does this one. */
+const UNDO_STACK_LIMIT = 100;
 
 export function Composer({
   busy,
@@ -334,6 +344,28 @@ export function Composer({
     reason: 'unknown' | 'disabled';
   } | null>(null);
 
+  // C-1 input history: per-scope (session, or the /new draft's workspace),
+  // memory-only, recorded at send time (see lib/drafts.ts). Browsing state is
+  // refs — the recalled text renders through the controlled draft, so no UI
+  // state needs a rerender of its own. `historySnapshotRef` holds the
+  // pre-browse draft that Escape / ArrowDown-past-the-end restores.
+  const historyKey = sessionId ?? (workspaceId !== undefined ? `workspace:${workspaceId}` : undefined);
+  const inputHistory = historyKey !== undefined ? readInputHistory(historyKey) : [];
+  const historyIndexRef = useRef<number | null>(null);
+  const historySnapshotRef = useRef('');
+
+  // C-3 composer-local undo/redo: the controlled value defeats the native
+  // textarea undo stack, so Ctrl+Z / Ctrl+Shift+Z walk these (text + caret).
+  // `lastCursorRef` tracks the caret across select/change events so snapshots
+  // know where the caret sat before an edit.
+  const undoStackRef = useRef<ComposerUndoEntry[]>([]);
+  const redoStackRef = useRef<ComposerUndoEntry[]>([]);
+  const lastCursorRef = useRef(0);
+
+  // C-2 skill preview: the slash row under the pointer wins over the
+  // keyboard-active row; null falls back to activeIndex.
+  const [slashHoverIndex, setSlashHoverIndex] = useState<number | null>(null);
+
   const modelsQuery = useQuery({
     queryKey: ['models'],
     queryFn: () => client.listModels(),
@@ -391,6 +423,11 @@ export function Composer({
     previousSessionIdRef.current = sessionId;
     setMenu(null);
     setSlashConfirm(null);
+    // Session-scoped recall/undo state would otherwise leak A's entries into
+    // B's draft surface (the composer mount survives route changes).
+    historyIndexRef.current = null;
+    undoStackRef.current = [];
+    redoStackRef.current = [];
   }, [sessionId]);
 
   // Skill catalog for the slash menu. Live sessions use GET /sessions/{id}/skills;
@@ -444,7 +481,19 @@ export function Composer({
   const menuQuery = menu?.query ?? null;
   useEffect(() => {
     setActiveIndex(0);
+    setSlashHoverIndex(null);
   }, [menuQuery, menu?.kind]);
+
+  // C-2: the preview card follows the hovered row, else the keyboard-active
+  // row; actions already show their whole one-liner inline, and a skill with
+  // an empty description degrades to no card at all.
+  const slashPreviewItem = useMemo(() => {
+    if (menu?.kind !== 'slash') return null;
+    const index = slashHoverIndex ?? activeIndex;
+    const item = filteredSlashItems[Math.min(index, filteredSlashItems.length - 1)];
+    if (item === undefined || item.kind !== 'skill' || item.description.trim() === '') return null;
+    return item;
+  }, [menu, filteredSlashItems, slashHoverIndex, activeIndex]);
 
   // Overlay registration keeps Escape scoped to the menu (not turn-abort).
   useEffect(() => {
@@ -481,6 +530,98 @@ export function Composer({
     attachmentError !== null ||
     slashConfirm !== null;
 
+  /**
+   * Snapshot the pre-edit state. Any genuine edit clears the redo lane —
+   * only undo/redo themselves may push without clearing.
+   */
+  const pushUndoSnapshot = (snapshot: ComposerUndoEntry) => {
+    undoStackRef.current.push(snapshot);
+    if (undoStackRef.current.length > UNDO_STACK_LIMIT) undoStackRef.current.shift();
+    redoStackRef.current = [];
+  };
+
+  /** Write a new draft value and land the caret once the controlled value renders. */
+  const applyTextChange = (nextText: string, cursor: number) => {
+    setMenu(null);
+    onChange(nextText);
+    lastCursorRef.current = cursor;
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node !== null) {
+        const at = Math.min(cursor, node.value.length);
+        node.focus();
+        node.setSelectionRange(at, at);
+      }
+    });
+  };
+
+  const undoEdit = () => {
+    const entry = undoStackRef.current.pop();
+    if (entry === undefined) return;
+    redoStackRef.current.push({ text, cursor: lastCursorRef.current });
+    historyIndexRef.current = null;
+    applyTextChange(entry.text, entry.cursor);
+  };
+
+  const redoEdit = () => {
+    const entry = redoStackRef.current.pop();
+    if (entry === undefined) return;
+    undoStackRef.current.push({ text, cursor: lastCursorRef.current });
+    historyIndexRef.current = null;
+    applyTextChange(entry.text, entry.cursor);
+  };
+
+  /**
+   * C-1 recall walk. ArrowUp enters from an empty draft or a caret on the
+   * first line; once browsing, ↑ ages and ↓ youthens, and ↓ past the newest
+   * entry hands the pre-browse draft back. Returns false when the keypress is
+   * not ours (no history, caret mid-text) so the caret keeps its native move.
+   */
+  const recallHistory = (delta: -1 | 1): boolean => {
+    if (inputHistory.length === 0) return false;
+    if (historyIndexRef.current === null) {
+      if (delta !== -1) return false;
+      const caret = textareaRef.current?.selectionStart ?? 0;
+      const firstLineEnd = text.indexOf('\n');
+      if (text !== '' && firstLineEnd !== -1 && caret > firstLineEnd) return false;
+      historySnapshotRef.current = text;
+      historyIndexRef.current = inputHistory.length - 1;
+    } else {
+      const next = historyIndexRef.current + delta;
+      if (next >= inputHistory.length) {
+        historyIndexRef.current = null;
+        applyTextChange(historySnapshotRef.current, historySnapshotRef.current.length);
+        return true;
+      }
+      if (next < 0) return true;
+      historyIndexRef.current = next;
+    }
+    const entry = inputHistory[historyIndexRef.current] ?? '';
+    applyTextChange(entry, entry.length);
+    return true;
+  };
+
+  /** Escape while browsing: exit and restore the pre-browse draft. */
+  const exitHistoryRecall = (): boolean => {
+    if (historyIndexRef.current === null) return false;
+    const snapshot = historySnapshotRef.current;
+    historyIndexRef.current = null;
+    applyTextChange(snapshot, snapshot.length);
+    return true;
+  };
+
+  /**
+   * Every real hand-off (prompt or skill activation) records the submitted
+   * text for ↑ recall and snapshots it so Ctrl+Z right after a send can
+   * resurrect the prompt. Local shortcut actions (/plan …) are not sent, so
+   * they never land here.
+   */
+  const recordSubmission = () => {
+    if (historyKey !== undefined) pushInputHistory(historyKey, text);
+    historyIndexRef.current = null;
+    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+  };
+
   const runAction = (action: SlashActionId) => {
     switch (action) {
       case 'plan':
@@ -509,7 +650,9 @@ export function Composer({
     if (item.kind === 'skill') {
       if (trigger === null) return;
       const completed = completeSlashTrigger(text, trigger, item.name);
+      pushUndoSnapshot({ text, cursor: lastCursorRef.current });
       onChange(completed.text);
+      lastCursorRef.current = completed.cursor;
       // Caret to the end of the completed token after the controlled value lands.
       requestAnimationFrame(() => {
         const node = textareaRef.current;
@@ -532,7 +675,9 @@ export function Composer({
     const node = textareaRef.current;
     const cursor = node?.selectionStart ?? text.length;
     const next = text.slice(0, trigger.start) + text.slice(cursor);
+    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
     onChange(next);
+    lastCursorRef.current = trigger.start;
     const currentAttachments = attachmentBaselineRef.current;
     if (!hasMention(currentAttachments, hit.path)) {
       updateAttachments([
@@ -698,6 +843,7 @@ export function Composer({
         return;
       }
       if (classified.item.kind === 'skill' && onActivateSkill !== undefined) {
+        recordSubmission();
         onActivateSkill(classified.item.name, classified.args, attachments);
         return;
       }
@@ -707,6 +853,7 @@ export function Composer({
         return;
       }
     }
+    recordSubmission();
     onSend(text.trim(), attachments);
   };
 
@@ -715,6 +862,7 @@ export function Composer({
     if (!canSend) return;
     setSlashConfirm(null);
     setMenu(null);
+    recordSubmission();
     onSend(text.trim(), attachments);
   };
 
@@ -760,7 +908,30 @@ export function Composer({
       setMenu(null);
       return;
     }
+    if (event.key === 'Escape' && exitHistoryRecall()) {
+      event.preventDefault();
+      return;
+    }
     if (event.nativeEvent.isComposing) return;
+    // Composer-local undo/redo: the controlled value defeats the native
+    // textarea undo stack, so these walk our snapshot lane instead.
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      if (event.shiftKey) redoEdit();
+      else undoEdit();
+      return;
+    }
+    // History recall lives strictly below the menu branches: an open slash or
+    // mention menu keeps owning ↑/↓ exactly as before.
+    if (
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+      menu === null &&
+      !event.ctrlKey && !event.metaKey && !event.altKey &&
+      recallHistory(event.key === 'ArrowUp' ? -1 : 1)
+    ) {
+      event.preventDefault();
+      return;
+    }
     // An open menu always owns plain Enter (accept the row), even when the
     // send shortcut is ⌘/Ctrl+Enter.
     if (menu !== null && menuRowCount > 0 && event.key === 'Enter' && !event.shiftKey) {
@@ -1115,6 +1286,7 @@ export function Composer({
                 className="anim-enter absolute right-0 bottom-full left-0 z-30 mb-1 max-h-72 overflow-y-auto rounded-xl border border-hairline bg-panel p-1 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
                 // Keep textarea focus while rows are clicked.
                 onMouseDown={(event) => { event.preventDefault(); }}
+                onMouseLeave={() => { setSlashHoverIndex(null); }}
               >
                 {menu.kind === 'slash' ? (
                   <SlashMenuBody
@@ -1123,6 +1295,7 @@ export function Composer({
                     skillsFailed={skillsQuery.isError}
                     hasSession={skillCatalogReady}
                     onAccept={acceptSlashItem}
+                    onHoverRow={setSlashHoverIndex}
                   />
                 ) : (
                   <MentionMenuBody
@@ -1136,6 +1309,9 @@ export function Composer({
                 )}
               </div>
             ) : null}
+            {slashPreviewItem !== null ? (
+              <SkillPreviewCard item={slashPreviewItem} />
+            ) : null}
             <textarea
               ref={textareaRef}
               rows={1}
@@ -1144,7 +1320,13 @@ export function Composer({
               data-autofocus={autoFocus === true ? '' : undefined}
               disabled={disabled}
               onChange={(event) => {
+                // User edits only: programmatic value writes never fire this.
+                pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+                // An edit while browsing history ends the browse; the edited
+                // text stands (the pre-browse draft is superseded by it).
+                historyIndexRef.current = null;
                 onChange(event.target.value);
+                lastCursorRef.current = event.target.selectionStart;
                 setSlashConfirm(null);
                 refreshMenu(event.target.value, event.target.selectionStart);
               }}
@@ -1156,6 +1338,9 @@ export function Composer({
                 }
               }}
               onClick={(event) => { refreshMenu(text, event.currentTarget.selectionStart); }}
+              onSelect={(event) => {
+                lastCursorRef.current = event.currentTarget.selectionStart;
+              }}
               onContextMenu={onComposerContextMenu}
               onBlur={(event) => {
                 setMenu(null);
@@ -1319,6 +1504,7 @@ export function Composer({
                 {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
                 {t(skillCatalogReady ? 'composer.footerSkills' : 'composer.footerShortcuts')}
                 {fsSearch !== undefined ? t('composer.footerFiles') : ''}
+                {inputHistory.length > 0 ? t('composer.footerHistory') : ''}
               </p>
             ) : null}
           </div>
@@ -1342,12 +1528,15 @@ function SlashMenuBody({
   skillsFailed,
   hasSession,
   onAccept,
+  onHoverRow,
 }: {
   items: readonly SlashItem[];
   activeIndex: number;
   skillsFailed: boolean;
   hasSession: boolean;
   onAccept: (item: SlashItem) => void;
+  /** Row hover feeds the skill preview card (index into `items`). */
+  onHoverRow: (index: number) => void;
 }) {
   const { t } = useI18n();
   const skills = items.filter((item) => item.kind === 'skill');
@@ -1365,6 +1554,7 @@ function SlashMenuBody({
         aria-selected={active}
         aria-disabled={item.disabled === true}
         onClick={() => { onAccept(item); }}
+        onMouseEnter={() => { onHoverRow(index); }}
         className={`flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
           item.disabled === true ? 'opacity-50' : ''
         } ${active ? 'bg-accent-soft' : 'hover:bg-paper'}`}
@@ -1414,6 +1604,50 @@ function SlashMenuBody({
         </p>
       ) : null}
     </>
+  );
+}
+
+/**
+ * SkillPreviewCard — C-2: the full descriptor for the slash row under the
+ * pointer (or the keyboard-active row), which the menu itself can only show
+ * truncated. Docks to the right of the menu; on viewports too narrow to have
+ * genuine room beside the composer it stays hidden rather than clipping.
+ * Skills with an empty description never reach here (the caller degrades).
+ */
+function SkillPreviewCard({ item }: { item: SlashItem }) {
+  const { t } = useI18n();
+  const skill = item.skill;
+  return (
+    <div
+      data-skill-preview
+      role="tooltip"
+      aria-label={t('composer.slash.previewAria')}
+      className="anim-enter pointer-events-none absolute right-0 bottom-full z-40 mb-1 hidden w-72 translate-x-[calc(100%+0.5rem)] rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] min-[1360px]:block"
+    >
+      <div className="flex items-baseline gap-2">
+        <span className="shrink-0 font-mono text-[12px] font-medium text-accent">
+          /{item.name}
+        </span>
+        {skill !== undefined ? (
+          <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[9.5px] text-ink-faint">
+            {skill.source}
+          </span>
+        ) : null}
+        {item.disabled === true ? (
+          <span className="shrink-0 text-[9.5px] text-ink-faint">
+            {t('composer.slash.notActivatable')}
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-1.5 max-h-36 overflow-y-auto text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+        {item.description}
+      </p>
+      {skill !== undefined ? (
+        <p title={skill.path} className="mt-2 truncate font-mono text-[9.5px] text-ink-faint">
+          {skill.path}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
