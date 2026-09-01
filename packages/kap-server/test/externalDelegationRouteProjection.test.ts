@@ -159,6 +159,7 @@ describe('external delegation route projection', () => {
     const interactions = await invoke('interactions', { cursor: 2 });
     const responded = await invoke('respond', {
       interaction_id: 'approval-1',
+      kind: 'approval',
       response: { decision: 'approved', selected_option_id: 'allow' },
     });
 
@@ -172,7 +173,32 @@ describe('external delegation route projection', () => {
     expect(service.interactions).toHaveBeenCalledWith(expect.objectContaining({ cursor: 2 }));
     expect(service.respond).toHaveBeenCalledWith(expect.objectContaining({
       interactionId: 'approval-1',
+      kind: 'approval',
       response: { decision: 'approved', selectedOptionId: 'allow' },
+    }));
+  });
+
+  it('uses respond kind to disambiguate decision-shaped question answers', async () => {
+    service.respond.mockResolvedValue({ interactionId: 'question-1', status: 'resolved' });
+
+    const question = await invoke('respond', {
+      interaction_id: 'question-1',
+      kind: 'question',
+      response: { decision: 'continue' },
+    });
+    const invalidApproval = await invoke('respond', {
+      interaction_id: 'approval-1',
+      kind: 'approval',
+      response: { answers: { Continue: 'Yes' } },
+    });
+
+    expect(question.code).toBe(0);
+    expect(invalidApproval.code).not.toBe(0);
+    expect(service.respond).toHaveBeenCalledOnce();
+    expect(service.respond).toHaveBeenCalledWith(expect.objectContaining({
+      interactionId: 'question-1',
+      kind: 'question',
+      response: { decision: 'continue' },
     }));
   });
 
@@ -216,6 +242,7 @@ describe('external delegation route projection', () => {
 
     const response = await invoke('respond', {
       interaction_id: 'approval-foreign',
+      kind: 'approval',
       response: { decision: 'approved' },
     });
 

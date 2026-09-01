@@ -81,10 +81,18 @@ const questionResponseInput = z.object({
   answers: questionAnswersInput,
   method: z.enum(['enter', 'space', 'number_key']).optional(),
 }).strict();
-const respondInput = z.object({
-  interaction_id: z.string().min(1),
-  response: z.union([approvalResponseInput, questionResponseInput, questionAnswersInput, z.null()]),
-}).strict();
+const respondInput = z.discriminatedUnion('kind', [
+  z.object({
+    interaction_id: z.string().min(1),
+    kind: z.literal('approval'),
+    response: approvalResponseInput,
+  }).strict(),
+  z.object({
+    interaction_id: z.string().min(1),
+    kind: z.literal('question'),
+    response: z.union([questionResponseInput, questionAnswersInput, z.null()]),
+  }).strict(),
+]);
 const lookupInput = z.object({ dispatch_id: z.string().min(1) }).strict();
 const waitInput = z
   .object({

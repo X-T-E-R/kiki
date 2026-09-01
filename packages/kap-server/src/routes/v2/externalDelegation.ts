@@ -18,7 +18,6 @@ import {
   isError2,
   resumeSessionById,
   type ExternalAuthority,
-  type ExternalInteractionResponse,
   type ISessionScopeHandle,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
@@ -92,10 +91,18 @@ const questionResponseSchema = z.object({
   answers: questionAnswersSchema,
   method: z.enum(['enter', 'space', 'number_key']).optional(),
 }).strict();
-const respondSchema = z.object({
-  interaction_id: z.string().min(1),
-  response: z.union([approvalResponseSchema, questionResponseSchema, questionAnswersSchema, z.null()]),
-}).strict();
+const respondSchema = z.discriminatedUnion('kind', [
+  z.object({
+    interaction_id: z.string().min(1),
+    kind: z.literal('approval'),
+    response: approvalResponseSchema,
+  }).strict(),
+  z.object({
+    interaction_id: z.string().min(1),
+    kind: z.literal('question'),
+    response: z.union([questionResponseSchema, questionAnswersSchema, z.null()]),
+  }).strict(),
+]);
 const lookupSchema = z.object({ dispatch_id: z.string().min(1) }).strict();
 const waitSchema = z
   .object({
@@ -146,11 +153,19 @@ export function registerV2ExternalDelegationRoutes(
     service.interactions({ authority, cursor: body.cursor }),
   );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/respond', respondSchema, async (service, authority, body) =>
-    service.respond({
-      authority,
-      interactionId: body.interaction_id,
-      response: normalizeInteractionResponse(body.response),
-    }),
+    body.kind === 'approval'
+      ? service.respond({
+          authority,
+          interactionId: body.interaction_id,
+          kind: 'approval',
+          response: normalizeApprovalResponse(body.response),
+        })
+      : service.respond({
+          authority,
+          interactionId: body.interaction_id,
+          kind: 'question',
+          response: body.response,
+        }),
   );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/status', lookupSchema, async (service, authority, body) =>
     service.status({ authority, dispatchId: body.dispatch_id }),
@@ -188,15 +203,13 @@ export function registerV2ExternalDelegationRoutes(
   );
 }
 
-function normalizeInteractionResponse(response: unknown): ExternalInteractionResponse {
-  const approval = approvalResponseSchema.safeParse(response);
-  if (!approval.success) return response as ExternalInteractionResponse;
+function normalizeApprovalResponse(response: z.infer<typeof approvalResponseSchema>) {
   return {
-    decision: approval.data.decision,
-    scope: approval.data.scope,
-    feedback: approval.data.feedback,
-    selectedLabel: approval.data.selected_label,
-    selectedOptionId: approval.data.selected_option_id,
+    decision: response.decision,
+    scope: response.scope,
+    feedback: response.feedback,
+    selectedLabel: response.selected_label,
+    selectedOptionId: response.selected_option_id,
   };
 }
 

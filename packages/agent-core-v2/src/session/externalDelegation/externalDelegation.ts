@@ -192,11 +192,19 @@ export interface ExternalInteractionPage {
 
 export type ExternalInteractionResponse = ApprovalResponse | QuestionResult;
 
-export interface ExternalRespondRequest {
-  readonly authority: ExternalAuthority;
-  readonly interactionId: string;
-  readonly response: ExternalInteractionResponse;
-}
+export type ExternalRespondRequest =
+  | {
+      readonly authority: ExternalAuthority;
+      readonly interactionId: string;
+      readonly kind: 'approval';
+      readonly response: ApprovalResponse;
+    }
+  | {
+      readonly authority: ExternalAuthority;
+      readonly interactionId: string;
+      readonly kind: 'question';
+      readonly response: QuestionResult;
+    };
 
 export interface ExternalRespondView {
   readonly interactionId: string;
@@ -361,6 +369,7 @@ export interface ExternalTranscriptPage {
 
 export interface ExternalTranscriptItemsPage {
   readonly items: readonly ExternalTranscriptL1Item[];
+  readonly cursor: number;
   readonly nextCursor?: number;
 }
 

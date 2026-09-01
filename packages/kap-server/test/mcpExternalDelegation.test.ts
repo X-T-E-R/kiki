@@ -463,7 +463,24 @@ describe('Kiki external delegation MCP server', () => {
       name: 'kiki_respond',
       arguments: {
         interaction_id: 'approval-1',
+        kind: 'approval',
         response: { decision: 'approved', selected_option_id: 'allow' },
+      },
+    });
+    const questionResponded = await client.callTool({
+      name: 'kiki_respond',
+      arguments: {
+        interaction_id: 'question-1',
+        kind: 'question',
+        response: { decision: 'continue' },
+      },
+    });
+    const invalidApproval = await client.callTool({
+      name: 'kiki_respond',
+      arguments: {
+        interaction_id: 'approval-1',
+        kind: 'approval',
+        response: { answers: { Continue: 'Yes' } },
       },
     });
     await client.callTool({
@@ -488,6 +505,8 @@ describe('Kiki external delegation MCP server', () => {
     expect(sent.structuredContent).toMatchObject({ idempotency_key: idempotencyKey });
     expect(interactions.structuredContent).toMatchObject({ items: [{ interactionId: 'approval-1' }] });
     expect(responded.structuredContent).toEqual({ interactionId: 'approval-1', status: 'resolved' });
+    expect(questionResponded.isError).not.toBe(true);
+    expect(invalidApproval.isError).toBe(true);
     expect(requests).toEqual([
       { action: 'send', body: { task_name: 'probe', message: 'check this', idempotency_key: idempotencyKey } },
       { action: 'interactions', body: { cursor: 1 } },
@@ -495,7 +514,16 @@ describe('Kiki external delegation MCP server', () => {
         action: 'respond',
         body: {
           interaction_id: 'approval-1',
+          kind: 'approval',
           response: { decision: 'approved', selected_option_id: 'allow' },
+        },
+      },
+      {
+        action: 'respond',
+        body: {
+          interaction_id: 'question-1',
+          kind: 'question',
+          response: { decision: 'continue' },
         },
       },
       { action: 'events', body: { dispatch_id: 'dispatch-1', detail: 'turn' } },

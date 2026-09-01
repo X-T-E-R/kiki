@@ -12,7 +12,6 @@ import { ulid } from 'ulid';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
-import { IEventBus } from '#/app/event/eventBus';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes, isError2, toKimiErrorPayload, type ErrorCode } from '#/errors';
@@ -87,7 +86,7 @@ import {
   type ExternalTurnEventPage,
   ISessionExternalDelegationService,
 } from './externalDelegation';
-import { DispatchTurnProjection } from './turnProjection';
+import { AgentTurnProjection } from './turnProjection';
 
 interface StoredChild {
   taskName: string;
@@ -103,6 +102,7 @@ interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedA
   startedAt?: number;
   endedAt?: number;
   transcriptStart: number;
+  transcriptEnd?: number;
   transcriptCursorVersion?: 2;
   legacyTranscriptStart?: number;
   result?: string;
@@ -149,7 +149,7 @@ export class SessionExternalDelegationService
   private readonly controllers = new Map<string, AbortController>();
   private readonly changed = new Emitter<void>();
   private readonly dispatchKeys = new KeyReservationRegistry<string>();
-  private readonly turnProjections = new Map<string, DispatchTurnProjection>();
+  private readonly turnProjections = new Map<string, AgentTurnProjection>();
   private readonly interactionConsumerId: string;
   private interactionConsumerActive = false;
   private document: ExternalDelegationDocument | undefined;
@@ -192,7 +192,6 @@ export class SessionExternalDelegationService
       dispose: () => {
         for (const controller of this.controllers.values()) controller.abort(new Error('Session closed'));
         this.controllers.clear();
-        for (const projection of this.turnProjections.values()) projection.dispose();
         this.turnProjections.clear();
         this.releaseInteractionConsumer();
         void this.interruptActive('Session closed');
@@ -371,10 +370,13 @@ export class SessionExternalDelegationService
     const interactionId = requireNonblank(request.interactionId, 'interaction_id');
     const doc = await this.authorize(request.authority);
     const interaction = this.requireOwnedInteraction(doc, interactionId);
+    if (request.kind !== interaction.kind) throw invalid('response kind does not match the interaction.');
     if (interaction.kind === 'approval') {
-      this.approvals.decide(interactionId, request.response as ApprovalResponse);
+      if (!isApprovalResponse(request.response)) throw invalid('response is invalid for an approval interaction.');
+      this.approvals.decide(interactionId, request.response);
     } else {
-      this.questions.answer(interactionId, request.response as QuestionResult);
+      if (!isQuestionResult(request.response)) throw invalid('response is invalid for a question interaction.');
+      this.questions.answer(interactionId, request.response);
     }
     return { interactionId, status: 'resolved' };
   }
@@ -431,9 +433,11 @@ export class SessionExternalDelegationService
     const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
     const limit = boundedLimit(request.limit, 100);
     if (request.detail === 'turn') {
-      const projection = await this.ensureTurnProjection(doc, dispatch);
-      const floor = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
-      return projection.eventPage(Math.max(floor, cursor), limit);
+      const handle = await this.materializeDispatchAgent(doc, dispatch);
+      const projection = await this.refreshTurnProjection(handle);
+      const start = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
+      const end = dispatch.transcriptEnd ?? projection.cursor;
+      return projection.eventPage(dispatch.dispatchId, start, end, cursor, limit);
     }
     const matches = doc.events.filter(
       (event) => event.dispatchId === request.dispatchId && event.seq > cursor,
@@ -456,9 +460,11 @@ export class SessionExternalDelegationService
     const limit = boundedLimit(request.limit, 50);
     if (request.detail === 'items') {
       const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
-      const projection = await this.ensureTurnProjection(doc, dispatch);
-      const floor = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
-      return projection.itemPage(Math.max(floor, cursor), limit);
+      const handle = await this.materializeDispatchAgent(doc, dispatch);
+      const projection = await this.refreshTurnProjection(handle);
+      const start = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
+      const end = dispatch.transcriptEnd ?? projection.cursor;
+      return projection.itemPage(start, end, cursor, limit);
     }
     const handle = await this.materializeDispatchAgent(doc, dispatch);
     const all = handle.accessor.get(IAgentContextMemoryService).get();
@@ -672,20 +678,24 @@ export class SessionExternalDelegationService
     ).agent;
   }
 
-  private async ensureTurnProjection(
+  private async refreshTurnProjection(handle: IAgentScopeHandle): Promise<AgentTurnProjection> {
+    let projection = this.turnProjections.get(handle.id);
+    if (projection === undefined) {
+      projection = new AgentTurnProjection();
+      this.turnProjections.set(handle.id, projection);
+    }
+    const wire = handle.accessor.get(IWireService);
+    await wire.flush();
+    await projection.rebuild(wire.readJournal());
+    return projection;
+  }
+
+  private async captureTranscriptEnd(
     doc: ExternalDelegationDocument,
     dispatch: StoredDispatch,
-  ): Promise<DispatchTurnProjection> {
-    const existing = this.turnProjections.get(dispatch.dispatchId);
-    if (existing !== undefined) return existing;
+  ): Promise<void> {
     const handle = await this.materializeDispatchAgent(doc, dispatch);
-    const projection = new DispatchTurnProjection(
-      dispatch.dispatchId,
-      handle.accessor.get(IEventBus),
-    );
-    await projection.replay(handle.accessor.get(IWireService).readJournal());
-    this.turnProjections.set(dispatch.dispatchId, projection);
-    return projection;
+    dispatch.transcriptEnd = (await this.refreshTurnProjection(handle)).cursor;
   }
 
   private async startExistingDispatch(
@@ -731,12 +741,7 @@ export class SessionExternalDelegationService
     reservation: ActiveDispatchKeyReservation,
   ): Promise<void> {
     const legacyTranscriptStart = target.agent.accessor.get(IAgentContextMemoryService).get().length;
-    const projection = new DispatchTurnProjection(
-      dispatchId,
-      target.agent.accessor.get(IEventBus),
-    );
-    await projection.replay(target.agent.accessor.get(IWireService).readJournal());
-    this.turnProjections.set(dispatchId, projection);
+    const projection = await this.refreshTurnProjection(target.agent);
     const dispatch: StoredDispatch = {
       dispatchId,
       target: target.taskName === undefined ? 'main' : 'named',
@@ -848,6 +853,7 @@ export class SessionExternalDelegationService
     const doc = this.document;
     const dispatch = doc?.dispatches[dispatchId];
     if (doc === undefined || dispatch === undefined || !ACTIVE.has(dispatch.status)) return;
+    await this.captureTranscriptEnd(doc, dispatch);
     dispatch.status = status;
     dispatch.endedAt = Date.now();
     dispatch.result = result;
@@ -866,6 +872,7 @@ export class SessionExternalDelegationService
     let changed = false;
     for (const dispatch of Object.values(doc.dispatches)) {
       if (!ACTIVE.has(dispatch.status)) continue;
+      await this.captureTranscriptEnd(doc, dispatch);
       dispatch.status = 'interrupted';
       dispatch.endedAt = Date.now();
       dispatch.error = safeFailureText(message);
@@ -1195,6 +1202,43 @@ function contextText(content: unknown): string {
     )
     .map((part) => part.text)
     .join('');
+}
+
+function isApprovalResponse(value: unknown): value is ApprovalResponse {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['decision', 'scope', 'feedback', 'selectedLabel', 'selectedOptionId'])) {
+    return false;
+  }
+  if (value['decision'] !== 'approved' && value['decision'] !== 'rejected' && value['decision'] !== 'cancelled') {
+    return false;
+  }
+  return (value['scope'] === undefined || value['scope'] === 'session') &&
+    (value['feedback'] === undefined || typeof value['feedback'] === 'string') &&
+    (value['selectedLabel'] === undefined || typeof value['selectedLabel'] === 'string') &&
+    (value['selectedOptionId'] === undefined || typeof value['selectedOptionId'] === 'string');
+}
+
+function isQuestionResult(value: unknown): value is QuestionResult {
+  if (value === null) return true;
+  if (!isRecord(value)) return false;
+  if (isQuestionAnswers(value)) return true;
+  if (!hasOnlyKeys(value, ['answers', 'method']) || !isQuestionAnswers(value['answers'])) return false;
+  return value['method'] === undefined ||
+    value['method'] === 'enter' ||
+    value['method'] === 'space' ||
+    value['method'] === 'number_key';
+}
+
+function isQuestionAnswers(value: unknown): value is Record<string, string | true> {
+  return isRecord(value) && Object.values(value).every((answer) => typeof answer === 'string' || answer === true);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const admitted = new Set(keys);
+  return Object.keys(value).every((key) => admitted.has(key));
 }
 
 function interactionNotOwned(): Error2 {
