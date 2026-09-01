@@ -27,6 +27,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
+
 import { I18nProvider } from '../i18n';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import type { KikiSocket } from '../lib/ws';
@@ -65,6 +67,57 @@ vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
 
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
+const originalElementDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
+const elementHeights = new WeakMap<Element, number>();
+const resizeObservers = new Set<TestResizeObserver>();
+
+class TestResizeObserver {
+  readonly observed = new Set<Element>();
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    resizeObservers.add(this);
+  }
+
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.observed.delete(target);
+  }
+
+  disconnect(): void {
+    this.observed.clear();
+    resizeObservers.delete(this);
+  }
+
+  trigger(target: Element, blockSize: number): void {
+    if (!this.observed.has(target)) return;
+    this.callback([
+      {
+        target,
+        borderBoxSize: [{ blockSize, inlineSize: 760 }],
+      } as unknown as ResizeObserverEntry,
+    ], this as unknown as ResizeObserver);
+  }
+}
+
+function resizeElement(target: Element, blockSize: number): void {
+  elementHeights.set(target, blockSize);
+  for (const observer of resizeObservers) observer.trigger(target, blockSize);
+}
+
+function installElementProperty(key: PropertyKey, descriptor: PropertyDescriptor): void {
+  originalElementDescriptors.set(key, Object.getOwnPropertyDescriptor(HTMLElement.prototype, key));
+  Object.defineProperty(HTMLElement.prototype, key, { configurable: true, ...descriptor });
+}
+
+function restoreElementProperties(): void {
+  for (const [key, descriptor] of originalElementDescriptors) {
+    if (descriptor === undefined) delete (HTMLElement.prototype as unknown as Record<PropertyKey, unknown>)[key];
+    else Object.defineProperty(HTMLElement.prototype, key, descriptor);
+  }
+}
 
 function makeRoot(): { root: Root; container: HTMLDivElement } {
   const container = document.createElement('div');
@@ -183,14 +236,43 @@ function repeatTo(unit: string, minLength: number): string {
 beforeAll(() => {
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  vi.stubGlobal(
-    'ResizeObserver',
-    class NoopResizeObserver {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
+  installElementProperty('offsetHeight', {
+    get(this: HTMLElement) {
+      if (this.hasAttribute('data-transcript-scroll')) return 320;
+      if (this.hasAttribute('data-transcript-virtual-item')) return elementHeights.get(this) ?? 96;
+      return 0;
     },
-  );
+  });
+  installElementProperty('offsetWidth', {
+    get(this: HTMLElement) {
+      return this.hasAttribute('data-transcript-scroll') ? 760 : 0;
+    },
+  });
+  installElementProperty('clientHeight', {
+    get(this: HTMLElement) {
+      return this.hasAttribute('data-transcript-scroll') ? 320 : 0;
+    },
+  });
+  installElementProperty('scrollHeight', {
+    get(this: HTMLElement) {
+      if (!this.hasAttribute('data-transcript-scroll')) return 0;
+      const content = this.querySelector<HTMLElement>('[data-transcript-virtual-content]');
+      let height = Math.max(320, Number.parseFloat(content?.style.height ?? '0'));
+      for (const item of this.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')) {
+        height = Math.max(height, virtualItemStart(item) + item.offsetHeight + 60);
+      }
+      this.scrollTop = Math.min(this.scrollTop, height - 320);
+      return height;
+    },
+  });
+  installElementProperty('scrollTo', {
+    value(this: HTMLElement, options: ScrollToOptions | number, y?: number) {
+      const requested = typeof options === 'number' ? (y ?? 0) : (options.top ?? this.scrollTop);
+      this.scrollTop = Math.max(0, Math.min(requested, this.scrollHeight - this.clientHeight));
+      this.dispatchEvent(new Event('scroll'));
+    },
+  });
+  vi.stubGlobal('ResizeObserver', TestResizeObserver);
 });
 
 afterAll(async () => {
@@ -202,6 +284,7 @@ afterAll(async () => {
     });
   }
   for (const container of containers) container.remove();
+  restoreElementProperties();
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   vi.unstubAllGlobals();
 });
@@ -428,9 +511,9 @@ describe('media preview wiring', () => {
 
 // ---------------------------------------------------------------------------
 // Message-closure row actions + collapsible user messages. These render the
-// full Transcript; the ResizeObserver noop stub from beforeAll covers both
-// use-stick-to-bottom and the collapse hook's observer path (the hook's
-// synchronous first measure is what the collapse tests drive).
+// full Transcript; the ResizeObserver stub from beforeAll covers both the
+// virtualizer and the collapse hook's observer path (the hook's synchronous
+// first measure is what the collapse tests drive).
 
 function transcriptState(blocks: Block[]): SessionViewState {
   return { ...createViewState('session_test'), loaded: true, blocks };
@@ -1125,10 +1208,495 @@ async function renderController(
   return { root, container };
 }
 
+function virtualBlocks(count: number, prefix = 'block'): Block[] {
+  return Array.from({ length: count }, (_, index) => assistantBlock(`${prefix}-${index}`, `message ${index}`));
+}
+
+function virtualTranscript(
+  state: SessionViewState,
+  onLoadOlder: () => Promise<boolean> = () => Promise.resolve(false),
+): ReactNode {
+  return (
+    <Transcript
+      state={state}
+      onLoadOlder={onLoadOlder}
+      onResolveApproval={() => noopActions()}
+      onAnswerQuestion={() => noopActions()}
+      onDismissQuestion={() => noopActions()}
+    />
+  );
+}
+
+function interactiveVirtualTranscript(
+  state: SessionViewState,
+  options: {
+    rowActions?: TranscriptRowActions;
+    onResolveApproval?: (
+      approvalId: string,
+      decision: ApprovalDecision,
+      scope?: 'session',
+      selectedOptionId?: string,
+    ) => Promise<void>;
+    onAnswerQuestion?: (
+      questionId: string,
+      answers: Record<string, QuestionAnswer>,
+    ) => Promise<void>;
+  } = {},
+): ReactNode {
+  return (
+    <Transcript
+      state={state}
+      onLoadOlder={() => Promise.resolve(false)}
+      onResolveApproval={options.onResolveApproval ?? (() => noopActions())}
+      onAnswerQuestion={options.onAnswerQuestion ?? (() => noopActions())}
+      onDismissQuestion={() => noopActions()}
+      rowActions={options.rowActions}
+    />
+  );
+}
+
+function pendingVoid(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function virtualApprovalBlock(id = 'approval-a1'): Block {
+  return {
+    kind: 'approval',
+    id,
+    request: {
+      approval_id: id,
+      session_id: 'session_test',
+      tool_call_id: `call-${id}`,
+      tool_name: 'Bash',
+      action: 'Run command',
+      tool_input_display: { command: 'pnpm test' },
+      created_at: '2026-01-01T00:00:00.000Z',
+      expires_at: '2026-01-02T00:00:00.000Z',
+    },
+    resolution: undefined,
+  };
+}
+
+function virtualQuestionBlock(id = 'question-q1'): Block {
+  return {
+    kind: 'question',
+    id,
+    request: {
+      question_id: id,
+      session_id: 'session_test',
+      questions: [{
+        id: 'choice',
+        question: 'Pick one',
+        options: [
+          { id: 'alpha', label: 'Alpha' },
+          { id: 'beta', label: 'Beta' },
+        ],
+      }],
+      created_at: '2026-01-01T00:00:00.000Z',
+    },
+    outcome: undefined,
+  };
+}
+
+function virtualItemStart(item: Element): number {
+  return Number.parseFloat((item as HTMLElement).style.top || '0');
+}
+
+function currentVirtualAnchor(container: HTMLDivElement): { blockId: string; offset: number } {
+  const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+  const items = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')];
+  const item = items
+    .filter((candidate) => virtualItemStart(candidate) <= scroll.scrollTop)
+    .sort((left, right) => virtualItemStart(right) - virtualItemStart(left))[0] ?? items[0]!;
+  return {
+    blockId: item.querySelector<HTMLElement>('[data-block-id]')!.dataset['blockId']!,
+    offset: virtualItemStart(item) - scroll.scrollTop,
+  };
+}
+
+async function setTranscriptScroll(scroll: HTMLElement, top: number): Promise<void> {
+  await act(async () => {
+    scroll.scrollTop = top;
+    scroll.dispatchEvent(new Event('scroll'));
+  });
+}
+
+async function settleVirtualizer(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 35));
+  });
+}
+
+function transcriptDistanceFromEnd(scroll: HTMLElement): number {
+  const max = scroll.scrollHeight - scroll.clientHeight;
+  return max - scroll.scrollTop;
+}
+
+describe('virtualized transcript scrolling', () => {
+  it('keeps the mounted block DOM bounded for a large transcript', async () => {
+    const blocks = virtualBlocks(1000);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+
+    const rows = container.querySelectorAll('[data-block-id]');
+    expect(rows.length).toBeLessThan(24);
+    expect(container.querySelector('[data-block-id="block-0"]')).toBeNull();
+    expect(container.querySelector('[data-block-id="block-999"]')).not.toBeNull();
+  });
+
+  it('keeps an inline edit draft mounted while scrolling away and back', async () => {
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const edited = userBlock({
+      id: 'user-edit-pinned',
+      text: 'original draft',
+      userMessageId: 'edit-pinned',
+    });
+    const state = transcriptState([...virtualBlocks(100, 'edit-history'), edited]);
+    const { root, container } = makeRoot();
+    await renderSettled(root, interactiveVirtualTranscript(state, { rowActions }));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    const row = container.querySelector<HTMLElement>('[data-block-id="user-edit-pinned"]')!;
+
+    await act(async () => { click(row.querySelector('[data-row-action="edit"]')!); });
+    await settleVirtualizer();
+    const textarea = row.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(textarea, 'draft survives virtualization');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    expect(container.querySelector('[data-block-id="user-edit-pinned"]')).toBe(row);
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    expect(row.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')).toBe(textarea);
+    expect(textarea.value).toBe('draft survives virtualization');
+  });
+
+  it('keeps question selections mounted while scrolling away and back', async () => {
+    const question = virtualQuestionBlock();
+    const state = transcriptState([...virtualBlocks(100, 'question-history'), question]);
+    const { root, container } = makeRoot();
+    await renderSettled(root, interactiveVirtualTranscript(state));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    const row = container.querySelector<HTMLElement>('[data-block-id="question-q1"]')!;
+    const option = row.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
+
+    await act(async () => { click(option); });
+    expect(option.getAttribute('aria-pressed')).toBe('true');
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    expect(container.querySelector('[data-block-id="question-q1"]')).toBe(row);
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    expect(row.querySelector('button[aria-pressed="true"]')).toBe(option);
+  });
+
+  it('keeps submitting approvals and questions mounted without reopening submission', async () => {
+    const approvalPending = pendingVoid();
+    const questionPending = pendingVoid();
+    const onResolveApproval = vi.fn(() => approvalPending.promise);
+    const onAnswerQuestion = vi.fn(() => questionPending.promise);
+    const state = transcriptState([
+      ...virtualBlocks(100, 'submit-history'),
+      virtualApprovalBlock(),
+      virtualQuestionBlock(),
+    ]);
+    const { root, container } = makeRoot();
+    await renderSettled(root, interactiveVirtualTranscript(state, {
+      onResolveApproval,
+      onAnswerQuestion,
+    }));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    const approvalRow = container.querySelector<HTMLElement>('[data-block-id="approval-a1"]')!;
+    const questionRow = container.querySelector<HTMLElement>('[data-block-id="question-q1"]')!;
+    const approvalSubmit = [...approvalRow.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('Approve') === true)!;
+    const remember = approvalRow.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const questionOption = questionRow.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
+    await act(async () => {
+      remember.click();
+      click(questionOption);
+    });
+    const questionSubmit = [...questionRow.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('Submit') === true)!;
+
+    await act(async () => {
+      click(approvalSubmit);
+      click(questionSubmit);
+    });
+    expect(onResolveApproval).toHaveBeenCalledTimes(1);
+    expect(onResolveApproval).toHaveBeenCalledWith('approval-a1', 'approved', 'session', undefined);
+    expect(onAnswerQuestion).toHaveBeenCalledTimes(1);
+    expect(approvalSubmit.disabled).toBe(true);
+    expect(questionSubmit.disabled).toBe(true);
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    expect(container.querySelector('[data-block-id="approval-a1"]')).toBe(approvalRow);
+    expect(container.querySelector('[data-block-id="question-q1"]')).toBe(questionRow);
+    expect(remember.checked).toBe(true);
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    approvalSubmit.click();
+    questionSubmit.click();
+    expect(onResolveApproval).toHaveBeenCalledTimes(1);
+    expect(onAnswerQuestion).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      approvalPending.resolve();
+      questionPending.resolve();
+      await Promise.all([approvalPending.promise, questionPending.promise]);
+    });
+  });
+
+  it('follows append only while the viewport was already at the end', async () => {
+    const initial = virtualBlocks(120);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(initial)));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+
+    await renderSettled(root, virtualTranscript(transcriptState([...initial, assistantBlock('append-1', 'latest')])));
+    await settleVirtualizer();
+    expect(transcriptDistanceFromEnd(scroll)).toBe(0);
+
+    await setTranscriptScroll(scroll, scroll.scrollTop - 500);
+    const readingTop = scroll.scrollTop;
+    await renderSettled(
+      root,
+      virtualTranscript(transcriptState([...initial, assistantBlock('append-1', 'latest'), assistantBlock('append-2', 'newer')])),
+    );
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(readingTop);
+  });
+
+  it('keeps the same reading anchor when older blocks prepend', async () => {
+    const current = virtualBlocks(160, 'current');
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(current)));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 6000);
+    const before = currentVirtualAnchor(container);
+
+    await renderSettled(
+      root,
+      virtualTranscript(transcriptState([...virtualBlocks(20, 'older'), ...current])),
+    );
+    await settleVirtualizer();
+    const after = currentVirtualAnchor(container);
+    expect(after.blockId).toBe(before.blockId);
+    expect(after.offset).toBe(before.offset);
+  });
+
+  it('loads older history when the virtual first row mounts at the top edge', async () => {
+    const onLoadOlder = vi.fn(async () => false);
+    const state = { ...transcriptState(virtualBlocks(100, 'history')), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores the end or reading anchor after a full measurement reset', async () => {
+    const blocks = virtualBlocks(160, 'reset');
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+
+    await renderSettled(
+      root,
+      virtualTranscript({ ...transcriptState(blocks), transcriptResetVersion: 1 }),
+    );
+    await settleVirtualizer();
+    expect(transcriptDistanceFromEnd(scroll)).toBe(0);
+
+    await setTranscriptScroll(scroll, 7000);
+    const before = currentVirtualAnchor(container);
+    const resetBlocks = blocks.map((block) => block.kind === 'assistant' ? { ...block } : block);
+    await renderSettled(
+      root,
+      virtualTranscript({ ...transcriptState(resetBlocks), transcriptResetVersion: 2 }),
+    );
+    await settleVirtualizer();
+    const row = container.querySelector<HTMLElement>(`[data-block-id="${before.blockId}"]`)!;
+    const item = row.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    expect(virtualItemStart(item) - scroll.scrollTop).toBe(before.offset);
+  });
+
+  it('finishes reset restoration when a same-version delta lands before its frame', async () => {
+    const blocks = virtualBlocks(160, 'reset-race');
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 7000);
+    const before = currentVirtualAnchor(container);
+
+    let nextFrame = 1;
+    const frames = new Map<number, FrameRequestCallback>();
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      const id = nextFrame;
+      nextFrame += 1;
+      frames.set(id, callback);
+      return id;
+    });
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+      frames.delete(id);
+    });
+    try {
+      const resetBlocks = blocks.map((block) => block.kind === 'assistant' ? { ...block } : block);
+      await renderSettled(
+        root,
+        virtualTranscript({ ...transcriptState(resetBlocks), transcriptResetVersion: 1 }),
+      );
+      expect(frames.size).toBeGreaterThan(0);
+      const deltaBlocks = resetBlocks.slice();
+      const tail = deltaBlocks.at(-1)! as Extract<Block, { kind: 'assistant' }>;
+      deltaBlocks[deltaBlocks.length - 1] = { ...tail, text: `${tail.text} delta` };
+      await renderSettled(
+        root,
+        virtualTranscript({ ...transcriptState(deltaBlocks), transcriptResetVersion: 1 }),
+      );
+      expect(frames.size).toBeGreaterThan(0);
+
+      await act(async () => {
+        for (let iteration = 0; iteration < 10 && frames.size > 0; iteration += 1) {
+          const batch = [...frames.entries()];
+          frames.clear();
+          for (const [, callback] of batch) callback(performance.now());
+        }
+      });
+      const after = currentVirtualAnchor(container);
+      expect(after.blockId).toBe(before.blockId);
+      expect(after.offset).toBe(before.offset);
+    } finally {
+      raf.mockRestore();
+      cancel.mockRestore();
+    }
+  });
+
+  it('inherits the original anchor across consecutive full resets before restoration', async () => {
+    const blocks = virtualBlocks(160, 'double-reset');
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 7000);
+    const before = currentVirtualAnchor(container);
+    const mounted = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')];
+    mounted.forEach((item, index) => {
+      elementHeights.set(item, index % 2 === 0 ? 40 : 280);
+    });
+
+    let nextFrame = 1;
+    const frames = new Map<number, FrameRequestCallback>();
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      const id = nextFrame;
+      nextFrame += 1;
+      frames.set(id, callback);
+      return id;
+    });
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+      frames.delete(id);
+    });
+    try {
+      const firstReset = blocks.map((block) => block.kind === 'assistant' ? { ...block } : block);
+      await renderSettled(
+        root,
+        virtualTranscript({ ...transcriptState(firstReset), transcriptResetVersion: 1 }),
+      );
+      expect(frames.size).toBeGreaterThan(0);
+      const secondReset = firstReset.map((block) => block.kind === 'assistant' ? { ...block } : block);
+      await renderSettled(
+        root,
+        virtualTranscript({ ...transcriptState(secondReset), transcriptResetVersion: 2 }),
+      );
+      expect(frames.size).toBeGreaterThan(0);
+
+      await act(async () => {
+        for (let iteration = 0; iteration < 10 && frames.size > 0; iteration += 1) {
+          const batch = [...frames.entries()];
+          frames.clear();
+          for (const [, callback] of batch) callback(performance.now());
+        }
+      });
+      const after = currentVirtualAnchor(container);
+      expect(after.blockId).toBe(before.blockId);
+      expect(after.offset).toBe(before.offset);
+    } finally {
+      raf.mockRestore();
+      cancel.mockRestore();
+    }
+  });
+
+  it('remeasures only the streaming row and keeps end pinning', async () => {
+    const blocks = virtualBlocks(80, 'stream');
+    const live = { ...blocks.at(-1)!, streaming: true } as Extract<Block, { kind: 'assistant' }>;
+    const initial = [...blocks.slice(0, -1), live];
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(initial)));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    const content = container.querySelector<HTMLElement>('[data-transcript-virtual-content]')!;
+    const liveRow = container.querySelector<HTMLElement>('[data-block-id="stream-79"]')!;
+    const liveItem = liveRow.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    const sibling = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')].at(-2)!;
+    const siblingStart = virtualItemStart(sibling);
+    const beforeSize = Number.parseFloat(content.style.height);
+
+    await renderSettled(
+      root,
+      virtualTranscript(transcriptState([...initial.slice(0, -1), { ...live, text: `${live.text} delta` }])),
+    );
+    expect(container.querySelector('[data-block-id="stream-79"]')?.closest('[data-transcript-virtual-item]')).toBe(liveItem);
+
+    await act(async () => {
+      resizeElement(liveItem, 180);
+      await new Promise((resolve) => setTimeout(resolve, 35));
+    });
+    expect(Number.parseFloat(content.style.height)).toBe(beforeSize + 84);
+    expect(virtualItemStart(sibling)).toBe(siblingStart);
+    expect(transcriptDistanceFromEnd(scroll)).toBe(0);
+  });
+
+  it('jumps to an unmounted floor through the virtual index', async () => {
+    const blocks = Array.from({ length: 100 }, (_, index) => userBlock({
+      id: `floor-${index}`,
+      text: `floor ${index}`,
+    }));
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    expect(container.querySelector('[data-block-id="floor-0"]')).toBeNull();
+
+    await act(async () => {
+      click(container.querySelector('[data-floor-tick]')!);
+      await new Promise((resolve) => setTimeout(resolve, 35));
+    });
+    expect(container.querySelector('[data-block-id="floor-0"]')).not.toBeNull();
+  });
+});
+
 describe('canonical mount and key stability', () => {
   it('keeps the same DOM node across consecutive deltas', async () => {
     const { controller, flush } = await openLiveTranscript();
     controller.handleTranscript(resetEvent('main', userTurnSnapshot({ streaming: true, assistantText: 'He' }), 1));
+    expect(controller.getState().transcriptResetVersion).toBe(1);
     const { root, container } = await renderController(controller);
     const before = container.querySelector(`[data-block-id="agent-frame-${ASSISTANT_FRAME_ID}"]`);
     expect(before).not.toBeNull();

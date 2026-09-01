@@ -27,6 +27,7 @@ const UPDATE_WARMUPS = 5;
 const UPDATE_SAMPLES = 40;
 const LONG_MARKDOWN_SAMPLES = 30;
 const TIMESTAMP = '2026-01-01T00:00:00.000Z';
+const ORIGINAL_SCROLL_TO = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTo');
 
 const loadOlder = async () => false;
 const resolveApproval = async () => {};
@@ -229,7 +230,7 @@ function measureDeltaUpdates(
     if (iteration >= warmups) measured.push({ wallMs, profilerMs: currentProfilerMs });
   }
 
-  expect(container.querySelectorAll('[data-block-id]').length).toBe(state.blocks.length);
+  expect(container.querySelectorAll('[data-block-id]').length).toBeLessThan(24);
   dispose(container, root);
   return measured;
 }
@@ -247,6 +248,29 @@ function printRow(label: string, samples: readonly Sample[]): void {
 
 beforeAll(() => {
   localStorage.setItem('kiki.locale', 'en');
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    if (this.hasAttribute('data-transcript-scroll')) return 600;
+    return this.hasAttribute('data-transcript-virtual-item') ? 96 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute('data-transcript-scroll') ? 760 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute('data-transcript-scroll') ? 600 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    if (!this.hasAttribute('data-transcript-scroll')) return 0;
+    const content = this.querySelector<HTMLElement>('[data-transcript-virtual-content]');
+    return Math.max(600, Number.parseFloat(content?.style.height ?? '0'));
+  });
+  Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+    configurable: true,
+    value(this: HTMLElement, options: ScrollToOptions | number, y?: number) {
+      const requested = typeof options === 'number' ? (y ?? 0) : (options.top ?? this.scrollTop);
+      this.scrollTop = Math.max(0, Math.min(requested, this.scrollHeight - this.clientHeight));
+      this.dispatchEvent(new Event('scroll'));
+    },
+  });
   vi.stubGlobal(
     'ResizeObserver',
     class NoopResizeObserver {
@@ -258,6 +282,11 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  vi.restoreAllMocks();
+  if (ORIGINAL_SCROLL_TO === undefined) {
+    delete (HTMLElement.prototype as unknown as { scrollTo?: unknown }).scrollTo;
+  }
+  else Object.defineProperty(HTMLElement.prototype, 'scrollTo', ORIGINAL_SCROLL_TO);
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
@@ -282,7 +311,7 @@ it(
       const fixture = buildSession(blockCount);
       fixtures.set(blockCount, fixture);
       const samples = Array.from({ length: MOUNT_SAMPLES }, () => measureMount(fixture.state));
-      expect(samples.every((sample) => sample.domBlocks === blockCount)).toBe(true);
+      expect(samples.every((sample) => sample.domBlocks > 0 && sample.domBlocks < 24)).toBe(true);
       printRow(String(blockCount).padStart(6), samples);
     }
 

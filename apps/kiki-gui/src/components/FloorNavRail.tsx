@@ -6,28 +6,13 @@
  * Clicking a tick smooth-scrolls the row into view.
  */
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useStickToBottomContext } from 'use-stick-to-bottom';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { Virtualizer } from '@tanstack/react-virtual';
 
 import { useI18n } from '../i18n';
-import {
-  buildFloorEntries,
-  resolveActiveFloorId,
-  type FloorEntry,
-} from '../state/transcript';
-import type { Block } from '../state/transcript';
+import { buildFloorEntries, type Block, type FloorEntry } from '../state/transcript';
 
 const REVEAL_IDLE_MS = 1400;
-
-type FloorPosition = { blockId: string; top: number };
-
-function findRowElement(content: HTMLElement | null, blockId: string): HTMLElement | null {
-  if (content === null) return null;
-  const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-    ? CSS.escape(blockId)
-    : blockId.replace(/"/g, '\\"');
-  return content.querySelector<HTMLElement>(`[data-block-id="${escaped}"]`);
-}
 
 function sameFloorEntries(left: readonly FloorEntry[], right: readonly FloorEntry[]): boolean {
   if (left.length !== right.length) return false;
@@ -49,67 +34,64 @@ function useStableFloorEntries(blocks: readonly Block[]): readonly FloorEntry[] 
   }, [blocks]);
 }
 
-export function FloorNavRail({ blocks }: { blocks: readonly Block[] }) {
+function resolveVirtualFloorId(
+  entries: readonly FloorEntry[],
+  nodeIndexes: ReadonlyMap<string, number>,
+  virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  viewportTop: number,
+): string | undefined {
+  const target = viewportTop + 80;
+  let low = 0;
+  let high = entries.length - 1;
+  let candidate: string | undefined;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const entry = entries[middle]!;
+    const top = virtualizer.measurementsCache[nodeIndexes.get(entry.blockId)!]!.start;
+    if (top <= target) {
+      candidate = entry.blockId;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return candidate ?? entries[0]?.blockId;
+}
+
+export function FloorNavRail({
+  blocks,
+  nodeIndexes,
+  scrollRef,
+  virtualizer,
+}: {
+  blocks: readonly Block[];
+  nodeIndexes: ReadonlyMap<string, number>;
+  scrollRef: { readonly current: HTMLDivElement | null };
+  virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
+}) {
   const { t } = useI18n();
-  const { scrollRef, contentRef } = useStickToBottomContext();
   const entries = useStableFloorEntries(blocks);
-  const entriesRef = useRef(entries);
-  entriesRef.current = entries;
-  const positionsRef = useRef<readonly FloorPosition[]>([]);
   const [revealed, setRevealed] = useState(false);
   const [hovering, setHovering] = useState(false);
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const rebuildPositions = useCallback((): void => {
-    const scroll = scrollRef.current;
-    const content = contentRef.current;
-    if (scroll === null || content === null) {
-      positionsRef.current = [];
-      return;
-    }
-    const wanted = new Set(entriesRef.current.map((entry) => entry.blockId));
-    const viewportTop = scroll.getBoundingClientRect().top;
-    const positions: FloorPosition[] = [];
-    for (const row of content.querySelectorAll<HTMLElement>('[data-block-id]')) {
-      const blockId = row.getAttribute('data-block-id');
-      if (blockId !== null && wanted.has(blockId)) {
-        positions.push({
-          blockId,
-          top: row.getBoundingClientRect().top - viewportTop + scroll.scrollTop,
-        });
-      }
-    }
-    positionsRef.current = positions;
-    const next = resolveActiveFloorId(positions, scroll.scrollTop);
-    setActiveId((previous) => (previous === next ? previous : next));
-  }, [contentRef, scrollRef]);
-
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (scroll === null || entries.length < 2) {
-      positionsRef.current = [];
       setActiveId(undefined);
       return;
     }
-    rebuildPositions();
-    const resizeObserver = typeof ResizeObserver === 'undefined'
-      ? undefined
-      : new ResizeObserver(rebuildPositions);
-    resizeObserver?.observe(scroll);
-    window.addEventListener('resize', rebuildPositions);
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener('resize', rebuildPositions);
-    };
-  }, [entries, rebuildPositions, scrollRef]);
+    const next = resolveVirtualFloorId(entries, nodeIndexes, virtualizer, scroll.scrollTop);
+    setActiveId((previous) => (previous === next ? previous : next));
+  }, [entries, nodeIndexes, scrollRef, virtualizer]);
 
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (scroll === null || entries.length < 2) return;
     const onScroll = () => {
       setRevealed(true);
-      const next = resolveActiveFloorId(positionsRef.current, scroll.scrollTop);
+      const next = resolveVirtualFloorId(entries, nodeIndexes, virtualizer, scroll.scrollTop);
       setActiveId((previous) => (previous === next ? previous : next));
       if (idleTimer.current !== null) clearTimeout(idleTimer.current);
       idleTimer.current = setTimeout(() => { setRevealed(false); }, REVEAL_IDLE_MS);
@@ -119,7 +101,7 @@ export function FloorNavRail({ blocks }: { blocks: readonly Block[] }) {
       scroll.removeEventListener('scroll', onScroll);
       if (idleTimer.current !== null) clearTimeout(idleTimer.current);
     };
-  }, [entries, scrollRef]);
+  }, [entries, nodeIndexes, scrollRef, virtualizer]);
 
   const ticks = useMemo(
     () => entries.map((entry, index) => {
@@ -134,8 +116,10 @@ export function FloorNavRail({ blocks }: { blocks: readonly Block[] }) {
           aria-label={t('transcript.floorTickAria', { index: index + 1, preview: entry.preview })}
           onClick={() => {
             setActiveId(entry.blockId);
-            findRowElement(contentRef.current, entry.blockId)
-              ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            virtualizer.scrollToIndex(nodeIndexes.get(entry.blockId)!, {
+              align: 'start',
+              behavior: 'smooth',
+            });
           }}
           className={`h-[3px] rounded-full transition-all duration-150 ${
             active ? 'w-[18px] bg-accent' : 'w-[10px] bg-ink-faint/40 hover:bg-ink-faint/70'
@@ -143,7 +127,7 @@ export function FloorNavRail({ blocks }: { blocks: readonly Block[] }) {
         />
       );
     }),
-    [activeId, contentRef, entries, t],
+    [activeId, entries, nodeIndexes, t, virtualizer],
   );
 
   if (entries.length < 2) return null;
