@@ -158,7 +158,7 @@ export function filterBlocksToDirectChildren(
   const parent = forest.byId[parentAgentId];
   const visible = parent === undefined ? undefined : new Set(parent.childIds);
   return blocks.filter((block) => {
-    if (block.kind !== 'subagent') return true;
+    if (block.kind !== 'subagent' && block.kind !== 'subagent-event') return true;
     if (visible !== undefined) return visible.has(block.subagentId);
     const hinted = forest.byId[block.subagentId]?.parentAgentId ?? block.parentAgentId;
     return hinted === undefined || hinted === parentAgentId;

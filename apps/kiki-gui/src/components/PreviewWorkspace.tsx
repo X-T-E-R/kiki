@@ -12,7 +12,11 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import { useI18n } from '../i18n';
+import { mentionToken } from '../lib/attachments';
+import { copyTextToClipboard } from '../lib/clipboard';
 import { isDesktopRuntime, saveBlobNative } from '../lib/desktop';
+import { appendToDraft } from '../lib/drafts';
+import { hostFileOpsSupported, openHostPath, revealHostPath } from '../lib/hostFileOps';
 import { hostFileWriteSupported, writeHostFileText } from '../lib/hostFileWrite';
 import { basenameOf, formatBytes, previewKindOf } from '../lib/media';
 import type { KikiClient } from '../lib/client';
@@ -40,6 +44,10 @@ export interface PreviewWorkspaceProps {
   readonly onOpenImage: (src: string, name?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
   readonly overlay?: boolean;
+  /** Session workspace cwd — anchors "Copy relative path" and the @-mention. */
+  readonly cwd?: string;
+  /** Owning session — the @-mention target composer. Absent without a session. */
+  readonly sessionId?: string;
 }
 
 const MIN_WIDTH = 320;
@@ -47,6 +55,36 @@ const MAX_WIDTH = 760;
 
 export function clampPreviewWidth(width: number, viewport: number): number {
   return Math.max(MIN_WIDTH, Math.min(width, Math.min(MAX_WIDTH, Math.floor(viewport * 0.6))));
+}
+
+/**
+ * Path relative to the session cwd (posix-style, case-insensitive prefix
+ * match for Windows drives); falls back to the untouched absolute path when
+ * the file lives outside the workspace.
+ */
+export function relativeToCwd(path: string, cwd: string | undefined): string {
+  if (cwd === undefined) return path;
+  const normPath = path.replaceAll('\\', '/');
+  const normCwd = cwd.replaceAll('\\', '/').replace(/\/+$/, '');
+  const prefix = `${normCwd}/`;
+  if (normPath.toLowerCase().startsWith(prefix.toLowerCase())) {
+    return normPath.slice(prefix.length);
+  }
+  return path;
+}
+
+/**
+ * Composer `@`-token for a previewed file — delegates whitespace quoting to
+ * the shared mention formatter so spaced paths arrive as `@"…"`, exactly the
+ * shape the TUI's mention autocomplete produces.
+ */
+function mentionTokenFor(path: string, cwd: string | undefined): string {
+  return mentionToken({
+    kind: 'file',
+    path: relativeToCwd(path, cwd),
+    name: basenameOf(path),
+    isDir: false,
+  });
 }
 
 export function PreviewWorkspace({
@@ -64,6 +102,8 @@ export function PreviewWorkspace({
   onOpenImage,
   reportDirty,
   overlay = false,
+  cwd,
+  sessionId,
 }: PreviewWorkspaceProps) {
   const { t } = useI18n();
   const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
@@ -107,6 +147,12 @@ export function PreviewWorkspace({
               path={path}
               active={path === active}
               dirty={dirtyPaths.has(path)}
+              mentionable={sessionId !== undefined}
+              onMention={
+                sessionId === undefined
+                  ? undefined
+                  : () => { appendToDraft(sessionId, mentionTokenFor(path, cwd)); }
+              }
               onActivate={() => { onActivate(path); }}
               onClose={() => { onClose(path); }}
               onContextMenu={(x, y) => { setMenu({ path, x, y }); }}
@@ -147,6 +193,7 @@ export function PreviewWorkspace({
       {menu !== null ? (
         <TabContextMenu
           menu={menu}
+          cwd={cwd}
           onCloseMenu={() => { setMenu(null); }}
           onCloseTab={() => { onClose(menu.path); }}
           onCloseOthers={() => { onCloseOthers(menu.path); }}
@@ -161,6 +208,8 @@ function PreviewTab({
   path,
   active,
   dirty,
+  mentionable,
+  onMention,
   onActivate,
   onClose,
   onContextMenu,
@@ -170,6 +219,9 @@ function PreviewTab({
   readonly path: string;
   readonly active: boolean;
   readonly dirty: boolean;
+  /** A mention button only renders when the workspace has an owning session. */
+  readonly mentionable: boolean;
+  readonly onMention: (() => void) | undefined;
   readonly onActivate: () => void;
   readonly onClose: () => void;
   readonly onContextMenu: (x: number, y: number) => void;
@@ -217,6 +269,23 @@ function PreviewTab({
         />
       ) : null}
       <span className="min-w-0 truncate">{name}</span>
+      {mentionable && onMention !== undefined ? (
+        <button
+          type="button"
+          data-mention-file={path}
+          aria-label={t('preview.addToChat')}
+          title={t('preview.addToChat')}
+          onClick={(event) => {
+            event.stopPropagation();
+            onMention();
+          }}
+          className={`shrink-0 rounded-sm px-0.5 font-mono text-[11px] leading-none transition-colors hover:text-accent ${
+            active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+          }`}
+        >
+          @
+        </button>
+      ) : null}
       <button
         type="button"
         aria-label={`${t('common.close')} ${name}`}
@@ -236,28 +305,37 @@ function PreviewTab({
 
 function TabContextMenu({
   menu,
+  cwd,
   onCloseMenu,
   onCloseTab,
   onCloseOthers,
   onCloseAll,
 }: {
   readonly menu: { path: string; x: number; y: number };
+  readonly cwd: string | undefined;
   readonly onCloseMenu: () => void;
   readonly onCloseTab: () => void;
   readonly onCloseOthers: () => void;
   readonly onCloseAll: () => void;
 }) {
   const { t } = useI18n();
+  // Stable single attach: the parent passes inline callbacks, so depending on
+  // `onCloseMenu` would churn detach/attach on every parent render and an
+  // Escape landing in the gap would be swallowed (observed live: the trusted
+  // keydown missed the just-reattached listener). A ref keeps the handler
+  // current without re-subscribing.
+  const closeRef = useRef(onCloseMenu);
+  closeRef.current = onCloseMenu;
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCloseMenu();
+      if (event.key === 'Escape') closeRef.current();
     };
     const onPointerDown = (event: PointerEvent) => {
       if (
         !(event.target instanceof HTMLElement) ||
         event.target.closest('[data-preview-tab-menu]') === null
       ) {
-        onCloseMenu();
+        closeRef.current();
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -266,7 +344,7 @@ function TabContextMenu({
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [onCloseMenu]);
+  }, []);
 
   const itemClass =
     'w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
@@ -274,11 +352,14 @@ function TabContextMenu({
     onCloseMenu();
     run();
   };
+  const path = menu.path;
+  const relative = relativeToCwd(path, cwd);
+  const openers = hostFileOpsSupported();
   return (
     <div
       data-preview-tab-menu
       role="menu"
-      className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]"
+      className="anim-enter fixed z-50 w-52 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]"
       style={{ left: menu.x, top: menu.y }}
     >
       <button type="button" role="menuitem" className={itemClass} onClick={() => { pick(onCloseTab); }}>
@@ -290,6 +371,47 @@ function TabContextMenu({
       <button type="button" role="menuitem" className={itemClass} onClick={() => { pick(onCloseAll); }}>
         {t('preview.closeAll')}
       </button>
+      <div className="mx-1 my-1 border-t border-hairline" />
+      <button
+        type="button"
+        role="menuitem"
+        data-menu-item="copy-relative"
+        className={itemClass}
+        onClick={() => { pick(() => { void copyTextToClipboard(relative).catch(() => {}); }); }}
+      >
+        {t('file.copyRelativePath')}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        data-menu-item="copy-absolute"
+        className={itemClass}
+        onClick={() => { pick(() => { void copyTextToClipboard(path).catch(() => {}); }); }}
+      >
+        {t('file.copyAbsolutePath')}
+      </button>
+      {openers ? (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="show-in-folder"
+            className={itemClass}
+            onClick={() => { pick(() => { void revealHostPath(path).catch(() => {}); }); }}
+          >
+            {t('file.showInFolder')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="open-default-app"
+            className={itemClass}
+            onClick={() => { pick(() => { void openHostPath(path).catch(() => {}); }); }}
+          >
+            {t('file.openDefaultApp')}
+          </button>
+        </>
+      ) : null}
     </div>
   );
 }

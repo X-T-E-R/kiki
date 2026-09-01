@@ -5,6 +5,8 @@ macro_rules! app_commands {
             cancel_desktop_startup,
             show_main_window,
             write_host_file_text,
+            reveal_host_path,
+            open_host_path,
             read_desktop_prefs,
             read_kimi_home_paths,
             write_desktop_prefs,

@@ -675,6 +675,68 @@ describe('Sidebar filter chips', () => {
   });
 });
 
+describe('Sidebar session menu location & link group', () => {
+  const listed = (): { sessions: Session[]; sessionGroups: SessionGroup[] } => {
+    const one = session('one');
+    return { sessions: [one], sessionGroups: [{ key: 'today', label: 'Today', items: [one] }] };
+  };
+  const writeText = vi.fn(async () => {});
+
+  beforeEach(() => {
+    writeText.mockClear();
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+  });
+
+  async function openSessionMenu(container: HTMLDivElement): Promise<HTMLElement> {
+    const row = container.querySelector('[data-session-title]');
+    if (row === null) throw new Error('session row not rendered');
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const menu = container.querySelector<HTMLElement>('[data-session-menu]');
+    if (menu === null) throw new Error('session menu did not open');
+    return menu;
+  }
+
+  it('copies the in-app route and the session cwd from the new group', async () => {
+    const { container } = await mount(listed());
+    const menu = await openSessionMenu(container);
+    expect(menu.querySelector('[data-menu-item="copy-link"]')?.textContent).toBe('Copy link');
+    expect(menu.querySelector('[data-menu-item="copy-path"]')?.textContent).toBe('Copy path');
+    await act(async () => {
+      menu.querySelector<HTMLButtonElement>('[data-menu-item="copy-link"]')?.click();
+    });
+    expect(writeText).toHaveBeenCalledWith('/s/one');
+    // The menu closes after a copy action.
+    expect(container.querySelector('[data-session-menu]')).toBeNull();
+    const again = await openSessionMenu(container);
+    await act(async () => {
+      again.querySelector<HTMLButtonElement>('[data-menu-item="copy-path"]')?.click();
+    });
+    expect(writeText).toHaveBeenCalledWith('C:/tmp');
+  });
+
+  it('hides the desktop opener entries in the browser runtime', async () => {
+    const { container } = await mount(listed());
+    const menu = await openSessionMenu(container);
+    expect(menu.querySelector('[data-menu-item="open-folder"]')).toBeNull();
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+  });
+
+  it('keeps the link entries below the action group and above pin/rename', async () => {
+    const { container } = await mount(listed());
+    const menu = await openSessionMenu(container);
+    const labels = [...menu.querySelectorAll('[role="menuitem"]')].map(
+      (element) => element.textContent,
+    );
+    expect(labels.indexOf('Copy link')).toBeGreaterThan(labels.indexOf('Undo last turn…'));
+    expect(labels.indexOf('Copy link')).toBeLessThan(labels.indexOf('Pin to top'));
+  });
+});
+
 describe('mergeSearchPages', () => {
   it('appends pages in server order and keeps a duplicate re-ranked across a page boundary', () => {
     const p1 = hit({ session_id: 'x', turn: 0 });

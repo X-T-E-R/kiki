@@ -973,6 +973,121 @@ fn write_host_file_text(path: PathBuf, text: String) -> Result<(), String> {
         .map_err(|error| format!("Cannot write host file {}: {error}", path.display()))
 }
 
+/// Narrow host-opener pair behind the session/file context menus. Both reject
+/// relative paths and spawn the platform shell without waiting: `explorer`
+/// exits non-zero even on success, so spawn success is the whole contract.
+fn require_absolute_host_path(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("Host path must be absolute".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_host_path(path: PathBuf) -> Result<(), String> {
+    require_absolute_host_path(&path)?;
+    reveal_in_file_manager(&path)
+}
+
+#[tauri::command]
+fn open_host_path(path: PathBuf) -> Result<(), String> {
+    require_absolute_host_path(&path)?;
+    open_with_default_app(&path)
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    // explorer.exe reads its own argv — no shell parses this argument — and an
+    // OsString keeps non-UTF-8 paths intact (display() would lossy them).
+    let mut select = std::ffi::OsString::from("/select,");
+    select.push(path.as_os_str());
+    std::process::Command::new("explorer")
+        .arg(select)
+        .spawn()
+        .map_err(|error| format!("Cannot reveal host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Cannot reveal host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    // No portable "select this file" on Linux; open the containing folder.
+    let folder = path.parent().unwrap_or(path);
+    std::process::Command::new("xdg-open")
+        .arg(folder)
+        .spawn()
+        .map_err(|error| format!("Cannot reveal host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
+/// NUL-terminated UTF-16 view of an OS string — the shape every Win32 W API
+/// expects. Plain transcoding: no quoting, no escaping, no shell anywhere in
+/// the pipeline.
+#[cfg(target_os = "windows")]
+fn wide_null(value: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    value.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn open_with_default_app(path: &Path) -> Result<(), String> {
+    // ShellExecuteW resolves the file association directly — no cmd.exe
+    // intermediary, so `& | < > ^ %` in the path are bytes, not shell syntax.
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let verb = wide_null(std::ffi::OsStr::new("open"));
+    let file = wide_null(path.as_os_str());
+    // SAFETY: both pointers are NUL-terminated UTF-16 buffers that outlive the
+    // call; the rest are null. ShellExecuteW with the "open" verb is callable
+    // from any thread.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Per MSDN, a return value of 32 or less is an error code, not a handle.
+    if (result as usize) <= 32 {
+        return Err(format!(
+            "Cannot open host path {}: shell error {}",
+            path.display(),
+            result as usize
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_with_default_app(path: &Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Cannot open host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_with_default_app(path: &Path) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Cannot open host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn read_desktop_prefs() -> DesktopPrefs {
     read_desktop_prefs_file()
@@ -3307,5 +3422,27 @@ mod tests {
         assert!(write_host_file_text(PathBuf::from("relative.txt"), "no".to_string()).is_err());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_path_openers_reject_relative_paths() {
+        assert!(reveal_host_path(PathBuf::from("relative.txt")).is_err());
+        assert!(open_host_path(PathBuf::from("relative.txt")).is_err());
+        assert!(require_absolute_host_path(Path::new("nested/file.md")).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wide_null_passes_shell_metacharacters_through_untouched() {
+        use std::ffi::OsStr;
+        // Every cmd.exe metacharacter plus whitespace and non-ASCII: the wide
+        // conversion must be a byte-faithful UTF-16 transcoding — quoting or
+        // escaping here would corrupt the path ShellExecuteW receives.
+        let sample = OsStr::new("C:\\tmp\\a&b|c<d>^e%f\\c d 世界.txt");
+        let wide = wide_null(sample);
+        assert_eq!(wide.last(), Some(&0));
+        let body = &wide[..wide.len() - 1];
+        assert_eq!(String::from_utf16(body).unwrap(), sample.to_str().unwrap());
+        assert_eq!(body.len(), sample.to_str().unwrap().encode_utf16().count());
     }
 }

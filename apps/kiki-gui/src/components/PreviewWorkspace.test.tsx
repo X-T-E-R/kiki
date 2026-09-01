@@ -15,7 +15,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
+import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '../lib/drafts';
 import { MediaPreviewProvider, useMediaPreview } from './mediaPreview';
+import { relativeToCwd } from './PreviewWorkspace';
 
 const FILES: Record<string, string> = {
   '/work/src/server.ts': "import { boot } from './boot';\nboot(5801);\n",
@@ -305,5 +307,151 @@ describe('PreviewWorkspace', () => {
     });
     expect(writeMock).toHaveBeenCalledWith('/work/src/server.ts', 'my edit');
     expect(workspace().querySelector('[data-conflict-banner]')).toBeNull();
+  });
+});
+
+describe('PreviewWorkspace file ops & 加入对话', () => {
+  const writeText = vi.fn(async () => {});
+
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+  beforeEach(() => {
+    writeText.mockClear();
+    resetDraftMemoryForTests();
+    // Drafts persist to localStorage; without clearing it the next readDraft
+    // would rehydrate an earlier test's leftovers.
+    clearStoredDrafts();
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+  });
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      act(() => { root.unmount(); });
+    }
+    for (const container of containers.splice(0)) container.remove();
+    document.body.innerHTML = '';
+  });
+
+  it('copies the workspace-relative path from the tab menu', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/src/server.ts" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/src/server.ts');
+    const tab = workspace().querySelector('[data-preview-tab="/work/src/server.ts"]')!;
+    await act(async () => {
+      tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const menu = document.querySelector('[data-preview-tab-menu]')!;
+    expect(menu.querySelector('[data-menu-item="copy-relative"]')?.textContent).toBe(
+      'Copy relative path',
+    );
+    expect(menu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
+    // Browser runtime: no desktop opener entries.
+    expect(menu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+    await act(async () => {
+      menu
+        .querySelector<HTMLButtonElement>('[data-menu-item="copy-relative"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(writeText).toHaveBeenCalledWith('src/server.ts');
+  });
+
+  it('the @ button appends @<relative path> to the session draft', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="s1">
+        <OpenButton path="/work/docs/design.md" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/docs/design.md');
+    const mention = workspace().querySelector('[data-mention-file="/work/docs/design.md"]')!;
+    expect(mention.textContent).toBe('@');
+    await act(async () => {
+      mention.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(readDraft('s1')).toBe('@docs/design.md');
+    // Mentioning again appends with a separator, and the tab stays open.
+    await act(async () => {
+      mention.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(readDraft('s1')).toBe('@docs/design.md @docs/design.md');
+    expect(tabs()).toEqual(['/work/docs/design.md']);
+  });
+
+  it('the @ button quotes paths containing whitespace (posix cwd)', async () => {
+    FILES['/work/docs/design spec.md'] = '# Draft\n';
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="s1">
+        <OpenButton path="/work/docs/design spec.md" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/docs/design spec.md');
+    const mention = workspace().querySelector('[data-mention-file="/work/docs/design spec.md"]')!;
+    await act(async () => {
+      mention.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(readDraft('s1')).toBe('@"docs/design spec.md"');
+  });
+
+  it('the @ button quotes spaced paths under a Windows cwd', async () => {
+    FILES['C:\\work\\my dir\\a b.txt'] = 'hi\n';
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="C:\work" sessionId="s1">
+        <OpenButton path={'C:\\work\\my dir\\a b.txt'} />
+      </MediaPreviewProvider>,
+    );
+    // The CSS attribute selector cannot express backslashes; click the sole
+    // open button / mention button directly instead of a path-keyed lookup.
+    await act(async () => {
+      probe.container
+        .querySelector('button')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const mention = workspace().querySelector('[data-mention-file]')!;
+    await act(async () => {
+      mention.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(readDraft('s1')).toBe('@"my dir/a b.txt"');
+  });
+
+  it('hides the @ button when the workspace has no owning session', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/src/server.ts" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/src/server.ts');
+    expect(workspace().querySelector('[data-mention-file]')).toBeNull();
+  });
+});
+
+describe('relativeToCwd', () => {
+  it('strips the cwd prefix case-insensitively across path separators', () => {
+    expect(relativeToCwd('/work/src/server.ts', '/work')).toBe('src/server.ts');
+    expect(relativeToCwd('C:\\repo\\x\\y.md', 'C:/repo')).toBe('x/y.md');
+    expect(relativeToCwd('/work', '/work')).toBe('/work');
+  });
+
+  it('falls back to the absolute path outside the workspace or without a cwd', () => {
+    expect(relativeToCwd('/elsewhere/a.ts', '/work')).toBe('/elsewhere/a.ts');
+    expect(relativeToCwd('/work/a.ts', undefined)).toBe('/work/a.ts');
   });
 });

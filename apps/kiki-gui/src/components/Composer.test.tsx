@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
+import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '../lib/drafts';
 import { Composer } from './Composer';
 
 const { selectFilesNative, desktopRuntime } = vi.hoisted(() => ({
@@ -47,6 +48,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  resetInputHistoryForTests();
   listModels.mockReset().mockResolvedValue({ items: [] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
@@ -768,5 +770,376 @@ describe('Composer slash skill catalog', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     expect(onSend).toHaveBeenCalledWith('/review --fix', []);
+  });
+});
+
+// ---- C-1/C-2/C-3: history recall, undo/redo, skill preview ----
+
+type ComposerProps = Parameters<typeof Composer>[0];
+
+/**
+ * Stateful harness: the real parents (SessionView, /new) own the draft and
+ * clear it parent-side after a send — no input event, no undo snapshot. The
+ * history/undo tests need exactly that controlled round-trip.
+ */
+function StatefulHarness({
+  onSend,
+  ...props
+}: Partial<ComposerProps>) {
+  const [text, setText] = useState('');
+  return (
+    <Composer
+      busy={false}
+      disabled={false}
+      model={undefined}
+      defaultModel={undefined}
+      serverDefaultModel="fixture/kiki-pro"
+      modelSource="server-default"
+      permissionMode="manual"
+      planMode={false}
+      swarmMode={false}
+      goalObjective=""
+      goalStatus={undefined}
+      goalControl={undefined}
+      efforts={undefined}
+      effort={undefined}
+      attachments={[]}
+      onChangeAttachments={() => {}}
+      onChangeModel={() => {}}
+      onChangePermissionMode={() => {}}
+      onChangePlanMode={() => {}}
+      onChangeSwarmMode={() => {}}
+      onChangeGoalObjective={() => {}}
+      onChangeGoalControl={() => {}}
+      onChangeEffort={() => {}}
+      value={text}
+      onChange={setText}
+      onSend={(sentText, sentAttachments) => {
+        setText('');
+        onSend?.(sentText, sentAttachments);
+      }}
+      {...props}
+    />
+  );
+}
+
+async function renderStatefulComposer(
+  props: Partial<ComposerProps> = {},
+): Promise<{ container: HTMLDivElement; root: Root }> {
+  const container = document.createElement('div');
+  document.body.append(container);
+  containers.push(container);
+  const root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={client}>
+        <I18nProvider>
+          <MemoryRouter>
+            <StatefulHarness {...props} />
+          </MemoryRouter>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+  });
+  return { container, root };
+}
+
+function composerTextarea(container: HTMLDivElement): HTMLTextAreaElement {
+  return container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+}
+
+/** Set the textarea value through the native setter and fire the input event. */
+async function typeText(textarea: HTMLTextAreaElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(textarea, value);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function pressKey(
+  textarea: HTMLTextAreaElement,
+  init: KeyboardEventInit,
+): Promise<void> {
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+  });
+}
+
+/** Flush the requestAnimationFrame caret landings (jsdom rAF runs on a timer). */
+async function flushCaret(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+}
+
+describe('Composer input history', () => {
+  it('recalls sent prompts with ArrowUp from an empty draft and walks both ways', async () => {
+    pushInputHistory('s_hist', 'first prompt');
+    pushInputHistory('s_hist', 'second prompt');
+    const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
+    const textarea = composerTextarea(container);
+    expect(textarea.value).toBe('');
+
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('second prompt');
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('first prompt');
+    // The oldest entry sticks — no wrap-around.
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('first prompt');
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(textarea.value).toBe('second prompt');
+    // ArrowDown past the newest entry hands the pre-browse draft back.
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(textarea.value).toBe('');
+  });
+
+  it('Escape exits recall and restores the in-progress draft', async () => {
+    pushInputHistory('s_hist', 'older prompt');
+    const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
+    const textarea = composerTextarea(container);
+
+    await typeText(textarea, 'draft in progress');
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('older prompt');
+    await pressKey(textarea, { key: 'Escape' });
+    expect(textarea.value).toBe('draft in progress');
+    // A second Escape is not ours anymore (nothing left to restore).
+    await pressKey(textarea, { key: 'Escape' });
+    expect(textarea.value).toBe('draft in progress');
+  });
+
+  it('an edit during recall ends the browse and keeps the edited text', async () => {
+    pushInputHistory('s_hist', 'older prompt');
+    const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
+    const textarea = composerTextarea(container);
+
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('older prompt');
+    await typeText(textarea, 'older prompt, edited');
+    // No longer browsing: ArrowDown is not a recall key now.
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(textarea.value).toBe('older prompt, edited');
+  });
+
+  it('refuses to enter history when the caret sits past the first line', async () => {
+    pushInputHistory('s_hist', 'older prompt');
+    const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
+    const textarea = composerTextarea(container);
+
+    await typeText(textarea, 'line one\nline two');
+    // The native setter landed the caret at the end (second line).
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('line one\nline two');
+    // A caret on the FIRST line of a non-empty draft still enters history.
+    await act(async () => {
+      textarea.setSelectionRange(2, 2);
+    });
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('older prompt');
+  });
+
+  it('records a send and recalls it afterwards', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderStatefulComposer({ sessionId: 's_send', onSend });
+    const textarea = composerTextarea(container);
+
+    await typeText(textarea, 'ship it');
+    await pressKey(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('ship it', []);
+    expect(readInputHistory('s_send')).toEqual(['ship it']);
+    // The harness cleared the draft parent-side; ↑ brings the prompt back.
+    expect(textarea.value).toBe('');
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('ship it');
+    // Consecutive duplicate sends dedupe.
+    await pressKey(textarea, { key: 'Enter' });
+    expect(readInputHistory('s_send')).toEqual(['ship it']);
+  });
+
+  it('keeps ↑/↓ with an open slash menu — recall never intercepts them', async () => {
+    pushInputHistory('s_menu', 'older prompt');
+    listSessionSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const { container } = await renderStatefulComposer({
+      sessionId: 's_menu',
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+    const textarea = composerTextarea(container);
+
+    await typeText(textarea, '/');
+    await settle();
+    const menu = container.querySelector('[data-composer-menu]');
+    expect(menu).not.toBeNull();
+    const selected = () =>
+      [...container.querySelectorAll<HTMLElement>('[data-composer-menu] [role="option"]')]
+        .findIndex((row) => row.getAttribute('aria-selected') === 'true');
+    expect(selected()).toBe(0);
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(selected()).toBe(1);
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(selected()).toBe(0);
+    // The draft is untouched — no recall happened behind the menu.
+    expect(textarea.value).toBe('/');
+  });
+
+  it('shows the history hint on an empty draft only when history exists', async () => {
+    const bare = await renderStatefulComposer({ sessionId: 's_hint' });
+    expect(
+      bare.container.querySelector('[data-composer-hints]')?.textContent,
+    ).not.toContain('history');
+
+    pushInputHistory('s_hint', 'older prompt');
+    const seeded = await renderStatefulComposer({ sessionId: 's_hint' });
+    expect(seeded.container.querySelector('[data-composer-hints]')?.textContent).toContain(
+      '↑ for history',
+    );
+  });
+});
+
+describe('Composer undo/redo', () => {
+  it('walks the local stack with caret positions and redo', async () => {
+    const { container } = await renderStatefulComposer({ sessionId: 's_undo' });
+    const textarea = composerTextarea(container);
+
+    await typeText(textarea, 'hello');
+    await typeText(textarea, 'hello world');
+    await pressKey(textarea, { key: 'z', ctrlKey: true });
+    expect(textarea.value).toBe('hello');
+    await flushCaret();
+    expect(textarea.selectionStart).toBe(5);
+    await pressKey(textarea, { key: 'z', ctrlKey: true });
+    expect(textarea.value).toBe('');
+    // The stack is empty now — further Ctrl+Z is a no-op.
+    await pressKey(textarea, { key: 'z', ctrlKey: true });
+    expect(textarea.value).toBe('');
+    await pressKey(textarea, { key: 'z', ctrlKey: true, shiftKey: true });
+    expect(textarea.value).toBe('hello');
+    await pressKey(textarea, { key: 'z', ctrlKey: true, shiftKey: true });
+    expect(textarea.value).toBe('hello world');
+    await flushCaret();
+    expect(textarea.selectionStart).toBe(11);
+  });
+
+  it('a fresh edit clears the redo lane', async () => {
+    const { container } = await renderStatefulComposer({ sessionId: 's_redo' });
+    const textarea = composerTextarea(container);
+
+    await typeText(textarea, 'a');
+    await typeText(textarea, 'ab');
+    await pressKey(textarea, { key: 'z', ctrlKey: true });
+    expect(textarea.value).toBe('a');
+    await typeText(textarea, 'ax');
+    await pressKey(textarea, { key: 'z', ctrlKey: true, shiftKey: true });
+    expect(textarea.value).toBe('ax');
+  });
+
+  it('caps the stack at 100 entries', async () => {
+    const { container } = await renderStatefulComposer({ sessionId: 's_cap' });
+    const textarea = composerTextarea(container);
+
+    let value = '';
+    for (let index = 0; index < 105; index += 1) {
+      value += 'x';
+      await typeText(textarea, value);
+    }
+    // 105 pushes, capped at 100: the five oldest snapshots fell off, so the
+    // floor is the state before edit #6 — five characters.
+    for (let index = 0; index < 100; index += 1) {
+      await pressKey(textarea, { key: 'z', ctrlKey: true });
+    }
+    expect(textarea.value).toBe('xxxxx');
+    await pressKey(textarea, { key: 'z', ctrlKey: true });
+    expect(textarea.value).toBe('xxxxx');
+  });
+
+  it('snapshots a sent prompt so Ctrl+Z resurrects it', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderStatefulComposer({ sessionId: 's_send_undo', onSend });
+    const textarea = composerTextarea(container);
+
+    await typeText(textarea, 'ship it');
+    await pressKey(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('ship it', []);
+    expect(textarea.value).toBe('');
+    await pressKey(textarea, { key: 'z', ctrlKey: true });
+    expect(textarea.value).toBe('ship it');
+    await pressKey(textarea, { key: 'z', ctrlKey: true, shiftKey: true });
+    expect(textarea.value).toBe('');
+  });
+});
+
+describe('Composer skill preview card', () => {
+  const descSkill = {
+    name: 'review',
+    description: 'Review the current diff for risks',
+    path: '/skills/review/SKILL.md',
+    source: 'project' as const,
+  };
+  const bareSkill = {
+    name: 'silent',
+    description: '',
+    path: '/skills/silent/SKILL.md',
+    source: 'user' as const,
+  };
+
+  async function openPreviewMenu(container: HTMLDivElement): Promise<HTMLTextAreaElement> {
+    const textarea = composerTextarea(container);
+    await typeText(textarea, '/');
+    for (let index = 0; index < 8; index += 1) await settle();
+    expect(container.querySelector('[data-composer-menu]')).not.toBeNull();
+    return textarea;
+  }
+
+  it('shows the full description for the keyboard-active skill row', async () => {
+    listSessionSkills.mockResolvedValue({ skills: [descSkill, bareSkill] });
+    const { container } = await renderStatefulComposer({ sessionId: 's_prev' });
+    const textarea = await openPreviewMenu(container);
+
+    const preview = container.querySelector('[data-skill-preview]');
+    expect(preview?.textContent).toContain('/review');
+    expect(preview?.textContent).toContain('Review the current diff for risks');
+    expect(preview?.textContent).toContain('/skills/review/SKILL.md');
+
+    // The skill with an empty description degrades to no card…
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(container.querySelector('[data-skill-preview]')).toBeNull();
+    // …and so do the client shortcut rows.
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(container.querySelector('[data-skill-preview]')).toBeNull();
+    await pressKey(textarea, { key: 'ArrowUp' });
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(container.querySelector('[data-skill-preview]')?.textContent).toContain('/review');
+  });
+
+  it('follows the pointer over the keyboard selection and back', async () => {
+    listSessionSkills.mockResolvedValue({ skills: [descSkill, bareSkill] });
+    const { container } = await renderStatefulComposer({ sessionId: 's_prev_hover' });
+    const textarea = await openPreviewMenu(container);
+
+    // Keyboard selection sits on row 0 (review); hover the silent row.
+    const rows = [...container.querySelectorAll<HTMLButtonElement>('[data-composer-menu] [role="option"]')];
+    const silentRow = rows.find((row) => row.textContent?.includes('/silent'))!;
+    await act(async () => {
+      silentRow.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-skill-preview]')).toBeNull();
+
+    const reviewRow = rows.find((row) => row.textContent?.includes('/review'))!;
+    await act(async () => {
+      reviewRow.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-skill-preview]')?.textContent).toContain('/review');
+
+    // Leaving the menu returns the preview to the keyboard-active row…
+    const menu = container.querySelector('[data-composer-menu]')!;
+    await act(async () => {
+      menu.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    });
+    expect(container.querySelector('[data-skill-preview]')?.textContent).toContain('/review');
+    // …which then follows ArrowDown onto the description-less skill: no card.
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(container.querySelector('[data-skill-preview]')).toBeNull();
   });
 });

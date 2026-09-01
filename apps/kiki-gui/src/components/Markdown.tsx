@@ -6,10 +6,13 @@
  * collapse). Typography lives in `.kiki-md` (index.css).
  */
 
-import { memo, type ReactNode } from 'react';
+import { memo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Streamdown, defaultRemarkPlugins, type Components } from 'streamdown';
 
+import { useI18n } from '../i18n';
+import { copyTextToClipboard } from '../lib/clipboard';
+import { hostFileOpsSupported, openHostPath, revealHostPath } from '../lib/hostFileOps';
 import {
   resolveFileHref,
   unwrapFileLinkTarget,
@@ -18,6 +21,7 @@ import {
 import { KikiCodeBlock } from './markdown/KikiCodeBlock';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { useMediaPreview } from './mediaPreviewContext';
+import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 
 /**
  * Plain-prose fast path: a single line with no markdown-reactive construct
@@ -77,24 +81,74 @@ const REMARK_PLUGINS = [remarkLocalFileLinks];
  * open in the file preview pane; app routes keep the client-side Link;
  * everything else is an external anchor. Without a MediaPreviewProvider the
  * file branch falls through to the old behavior.
+ *
+ * Right-click raises a small menu (G-1): file links get preview/copy-path/
+ * copy-absolute plus the desktop opener pair; external links get open/copy.
  */
 function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNode }) {
+  const { t } = useI18n();
   const preview = useMediaPreview();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const target = href === undefined ? undefined : (unwrapFileLinkTarget(href) ?? href);
   const filePath =
     preview !== null && target !== undefined ? resolveFileHref(target, preview.cwd) : undefined;
-  if (filePath !== undefined && preview !== null) {
+
+  const openMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    setMenu({ x: event.clientX, y: event.clientY });
+  };
+  const closeMenu = () => { setMenu(null); };
+
+  if (filePath !== undefined && preview !== null && target !== undefined) {
+    const entries: MiniMenuEntry[] = [
+      { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(filePath); } },
+      { key: 'copy-path', label: t('file.copyPath'), run: () => { void copyTextToClipboard(target).catch(() => {}); } },
+      {
+        key: 'copy-absolute',
+        label: t('file.copyAbsolutePath'),
+        run: () => { void copyTextToClipboard(filePath).catch(() => {}); },
+      },
+      ...(hostFileOpsSupported()
+        ? [
+            { separator: true } as const,
+            {
+              key: 'show-in-folder',
+              label: t('file.showInFolder'),
+              run: () => { void revealHostPath(filePath).catch(() => {}); },
+            } as const,
+            {
+              key: 'open-default-app',
+              label: t('file.openDefaultApp'),
+              run: () => { void openHostPath(filePath).catch(() => {}); },
+            } as const,
+          ]
+        : []),
+    ];
     return (
-      <a
-        href={href}
-        title={filePath}
-        onClick={(event) => {
-          event.preventDefault();
-          preview.openFile(filePath);
-        }}
-      >
-        {children}
-      </a>
+      <>
+        <a
+          href={href}
+          title={filePath}
+          onClick={(event) => {
+            event.preventDefault();
+            preview.openFile(filePath);
+          }}
+          onContextMenu={openMenu}
+        >
+          {children}
+        </a>
+        {menu !== null ? (
+          <MiniContextMenu
+            x={menu.x}
+            y={menu.y}
+            entries={entries}
+            onClose={closeMenu}
+            ariaLabel={t('file.menuAria')}
+            overlayId="markdown-file-link"
+            dataAttribute="data-file-link-menu"
+          />
+        ) : null}
+      </>
     );
   }
   // A sentinel-wrapped link that cannot resolve (e.g. relative path without a
@@ -102,12 +156,36 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
   if (href !== undefined && unwrapFileLinkTarget(href) !== undefined) {
     return <span>{children}</span>;
   }
-  return isInAppHref(href) ? (
-    <Link to={href}>{children}</Link>
-  ) : (
-    <a href={href} target="_blank" rel="noreferrer noopener">
-      {children}
-    </a>
+  if (isInAppHref(href)) {
+    return <Link to={href}>{children}</Link>;
+  }
+  const url = href ?? '';
+  const entries: MiniMenuEntry[] = [
+    { key: 'open-link', label: t('link.open'), run: () => { window.open(url, '_blank', 'noreferrer,noopener'); } },
+    { key: 'copy-link', label: t('link.copyLink'), run: () => { void copyTextToClipboard(url).catch(() => {}); } },
+  ];
+  return (
+    <>
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer noopener"
+        onContextMenu={openMenu}
+      >
+        {children}
+      </a>
+      {menu !== null ? (
+        <MiniContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={entries}
+          onClose={closeMenu}
+          ariaLabel={t('link.menuAria')}
+          overlayId="markdown-link"
+          dataAttribute="data-link-menu"
+        />
+      ) : null}
+    </>
   );
 }
 

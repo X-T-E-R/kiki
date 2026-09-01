@@ -44,6 +44,7 @@ import type {
   ShellBlock,
   SkillBlock,
   SubagentBlock,
+  SubagentEventBlock,
   SystemBlock,
   SystemReminderBlock,
   ThinkingBlock,
@@ -657,6 +658,91 @@ function SubagentCardBody({
   );
 }
 
+/**
+ * Manual form override for a subagent card: once the user expands or
+ * collapses a card by hand the automatic rule (active run → full, terminal →
+ * compact) no longer touches that card.
+ */
+export type SubagentCardForm = 'full' | 'compact';
+
+/**
+ * Compact collapsed form of a subagent card (terminal runs land here by
+ * default): one row with status dot, name, terminal status, result summary,
+ * duration and tool count. Click jumps to the agent page; the trailing
+ * chevron expands back to the full card (manual override).
+ */
+function SubagentCompactCard({
+  block,
+  status,
+  elapsed,
+  depth,
+  onOpenAgent,
+  onExpand,
+}: {
+  block: SubagentBlock;
+  status: AgentTreeNode['status'] | SubagentBlock['status'];
+  elapsed: number | undefined;
+  depth: number;
+  onOpenAgent?: (agentId: string) => void;
+  onExpand?: () => void;
+}) {
+  const { t, tp, time } = useI18n();
+  const summary = block.error ?? block.summary;
+  return (
+    <div
+      data-subagent-id={block.subagentId}
+      data-agent-depth={depth}
+      data-card-form="compact"
+      data-orphaned={block.orphaned === true || undefined}
+      className={`${depth === 0 ? 'ml-6' : 'ml-4'}${block.orphaned === true ? ' opacity-60' : ''}`}
+    >
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => { onOpenAgent?.(block.subagentId); }}
+          data-agent-open={block.subagentId}
+          className="anim-enter group flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-hairline bg-panel/60 px-2.5 py-1.5 text-left transition-colors hover:border-accent/50"
+        >
+          <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${subagentStatusTone(status)}`} />
+          <span className="shrink-0 text-[12px] font-medium text-ink">{block.name}</span>
+          <span className="shrink-0 text-[10.5px] text-ink-faint">
+            {t(`subagent.status.${status}` as I18nKey)}
+          </span>
+          {summary !== undefined ? (
+            <span className={`min-w-0 flex-1 truncate text-[11px] ${block.error !== undefined ? 'text-danger' : 'text-ink-soft'}`}>
+              {summary}
+            </span>
+          ) : (
+            <span className="min-w-0 flex-1" />
+          )}
+          <span
+            className="shrink-0 font-mono text-[10px] text-ink-faint"
+            title={elapsed === undefined ? t('transcript.durationUnknown') : undefined}
+          >
+            {elapsed === undefined ? '—' : time.formatDuration(elapsed)}
+          </span>
+          <span className="shrink-0 text-[10px] text-ink-faint">
+            {tp('transcript.toolCalls', block.toolCallCount)}
+          </span>
+          <span aria-hidden className="shrink-0 text-[10px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
+        </button>
+        {onExpand !== undefined ? (
+          <button
+            type="button"
+            data-card-expand={block.subagentId}
+            aria-label={t('subagent.expandCard')}
+            title={t('subagent.expandCard')}
+            onClick={onExpand}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[10px] text-ink-faint transition-colors hover:bg-paper hover:text-accent"
+          >
+            ▸
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 const SubagentCard = memo(function SubagentCard({
   block,
   forest,
@@ -664,6 +750,8 @@ const SubagentCard = memo(function SubagentCard({
   childBlocks,
   onOpenAgent,
   displayStatus,
+  formOverride,
+  onToggleForm,
 }: {
   block: SubagentBlock;
   forest?: AgentForest;
@@ -671,6 +759,8 @@ const SubagentCard = memo(function SubagentCard({
   childBlocks?: ReadonlyMap<string, SubagentBlock>;
   onOpenAgent?: (agentId: string) => void;
   displayStatus?: AgentTreeNode['status'];
+  formOverride?: SubagentCardForm;
+  onToggleForm?: (agentId: string, form: SubagentCardForm) => void;
 }) {
   const { t } = useI18n();
   const elapsed = useSubagentElapsed(block);
@@ -680,6 +770,13 @@ const SubagentCard = memo(function SubagentCard({
     (child) => child.status === 'running' || child.status === 'suspended' || child.status === 'background',
   );
   const status = displayStatus ?? node?.status ?? block.status;
+  const autoFull =
+    status === 'running' ||
+    status === 'suspended' ||
+    status === 'background' ||
+    status === 'unknown' ||
+    hasActiveChild;
+  const full = formOverride !== undefined ? formOverride === 'full' : autoFull;
   const [expanded, setExpanded] = useState(
     () => status === 'running' || status === 'suspended' || status === 'background' || hasActiveChild,
   );
@@ -689,6 +786,22 @@ const SubagentCard = memo(function SubagentCard({
     }
   }, [status, hasActiveChild]);
   const childCount = node?.childIds.length ?? children.length;
+  if (!full) {
+    return (
+      <SubagentCompactCard
+        block={block}
+        status={status}
+        elapsed={elapsed}
+        depth={depth}
+        onOpenAgent={onOpenAgent}
+        onExpand={
+          onToggleForm === undefined
+            ? undefined
+            : () => { onToggleForm(block.subagentId, 'full'); }
+        }
+      />
+    );
+  }
   const cardClass =
     'anim-enter group block w-full rounded-xl border border-hairline bg-panel/80 px-3 py-2.5 text-left transition-all hover:-translate-y-px hover:border-accent/50 hover:shadow-[0_8px_24px_-16px_rgba(28,25,23,0.35)]';
   const body = (
@@ -708,6 +821,7 @@ const SubagentCard = memo(function SubagentCard({
     <div
       data-subagent-id={block.subagentId}
       data-agent-depth={depth}
+      data-card-form="full"
       data-orphaned={block.orphaned === true || undefined}
       className={`${depth === 0 ? 'ml-6' : 'ml-4'}${block.orphaned === true ? ' opacity-60' : ''}`}
     >
@@ -727,18 +841,32 @@ const SubagentCard = memo(function SubagentCard({
               {t('transcript.orphanedSubagent')}
             </p>
           ) : null}
-          {childCount > 0 ? (
-            <button
-              type="button"
-              aria-expanded={expanded}
-              onClick={() => {
-                setExpanded((value) => !value);
-              }}
-              className="mt-1 rounded px-1.5 py-0.5 text-[10.5px] text-ink-faint transition-colors hover:text-accent"
-            >
-              {expanded ? t('subagent.collapseChildren') : t('subagent.expandChildren')}
-            </button>
-          ) : null}
+          <div className="flex items-center gap-1">
+            {childCount > 0 ? (
+              <button
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => {
+                  setExpanded((value) => !value);
+                }}
+                className="mt-1 rounded px-1.5 py-0.5 text-[10.5px] text-ink-faint transition-colors hover:text-accent"
+              >
+                {expanded ? t('subagent.collapseChildren') : t('subagent.expandChildren')}
+              </button>
+            ) : null}
+            {onToggleForm !== undefined ? (
+              <button
+                type="button"
+                data-card-collapse={block.subagentId}
+                aria-label={t('subagent.collapseCard')}
+                title={t('subagent.collapseCard')}
+                onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
+                className="mt-1 rounded px-1.5 py-0.5 text-[10.5px] text-ink-faint transition-colors hover:text-accent"
+              >
+                ▾
+              </button>
+            ) : null}
+          </div>
           {expanded && children.length > 0 ? (
             <div className="mt-1 space-y-1">
               {children.map((child) => {
@@ -759,6 +887,48 @@ const SubagentCard = memo(function SubagentCard({
           ) : null}
         </div>
       </div>
+    </div>
+  );
+});
+
+/**
+ * One-line lifecycle entry (G-4 compact form): status dot + name + event +
+ * relative time; the whole row jumps to the agent page. Rows sit in place at
+ * their event timestamp among the regular transcript blocks.
+ */
+const SubagentEventRow = memo(function SubagentEventRow({
+  block,
+  onOpenAgent,
+}: {
+  block: SubagentEventBlock;
+  onOpenAgent?: (agentId: string) => void;
+}) {
+  const { t, time } = useI18n();
+  const busy = block.status === 'running' || block.status === 'suspended';
+  return (
+    <div className="ml-6">
+      <button
+        type="button"
+        onClick={() => { onOpenAgent?.(block.subagentId); }}
+        data-subagent-event={block.subagentId}
+        data-agent-event={block.event}
+        data-agent-open={block.subagentId}
+        title={t('subagent.openAgent', { name: block.name })}
+        className="anim-enter group flex w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-panel"
+      >
+        <span
+          aria-hidden
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${subagentStatusTone(block.status)} ${busy ? 'status-dot-busy' : ''}`}
+        />
+        <span className="shrink-0 text-[11.5px] font-medium text-ink-soft">{block.name}</span>
+        <span className="shrink-0 text-[10.5px] text-ink-faint">
+          {t(`subagent.event.${block.event}` as I18nKey)}
+        </span>
+        <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-faint">
+          {block.at === undefined ? '' : time.relativeTime(block.at)}
+        </span>
+        <span aria-hidden className="shrink-0 text-[9.5px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
+      </button>
     </div>
   );
 });
@@ -886,6 +1056,8 @@ const BlockView = memo(function BlockView({
   readOnly,
   forest,
   childBlocks,
+  subagentFormOverride,
+  onToggleSubagentForm,
   onOpenAgent,
   rowActions,
   latestFinalAssistantId,
@@ -907,6 +1079,8 @@ const BlockView = memo(function BlockView({
   approvalShortcutHints?: boolean;
   forest?: AgentForest;
   childBlocks?: ReadonlyMap<string, SubagentBlock>;
+  subagentFormOverride?: SubagentCardForm;
+  onToggleSubagentForm?: (agentId: string, form: SubagentCardForm) => void;
   onOpenAgent?: (agentId: string) => void;
   rowActions?: TranscriptRowActions;
   latestFinalAssistantId?: string;
@@ -952,7 +1126,18 @@ const BlockView = memo(function BlockView({
     case 'shell':
       return <ShellMessage block={block} />;
     case 'subagent':
-      return <SubagentCard block={block} forest={forest} childBlocks={childBlocks} onOpenAgent={onOpenAgent} />;
+      return (
+        <SubagentCard
+          block={block}
+          forest={forest}
+          childBlocks={childBlocks}
+          onOpenAgent={onOpenAgent}
+          formOverride={subagentFormOverride}
+          onToggleForm={onToggleSubagentForm}
+        />
+      );
+    case 'subagent-event':
+      return <SubagentEventRow block={block} onOpenAgent={onOpenAgent} />;
     case 'notice':
       return <Notice block={block} />;
     case 'approval':
@@ -1111,6 +1296,9 @@ type TranscriptRowProps = {
   latestFinalAssistantId?: string;
   /** External-executor badge shown above the first row of the turn. */
   executionBadge?: TurnExecutionInfo;
+  /** Resolved manual form override for subagent card rows (undefined = auto). */
+  subagentFormOverride?: SubagentCardForm;
+  onToggleSubagentForm?: (agentId: string, form: SubagentCardForm) => void;
   onResolveApproval: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -1153,6 +1341,8 @@ const TranscriptRow = memo(
     rowActions,
     latestFinalAssistantId,
     executionBadge,
+    subagentFormOverride,
+    onToggleSubagentForm,
     onResolveApproval,
     onAnswerQuestion,
     onDismissQuestion,
@@ -1178,6 +1368,8 @@ const TranscriptRow = memo(
             readOnly={readOnly}
             forest={forest}
             childBlocks={childBlocks}
+            subagentFormOverride={subagentFormOverride}
+            onToggleSubagentForm={onToggleSubagentForm}
             onOpenAgent={onOpenAgent}
             rowActions={rowActions}
             latestFinalAssistantId={latestFinalAssistantId}
@@ -1195,6 +1387,8 @@ const TranscriptRow = memo(
     prev.rowActions === next.rowActions &&
     prev.latestFinalAssistantId === next.latestFinalAssistantId &&
     prev.executionBadge === next.executionBadge &&
+    prev.subagentFormOverride === next.subagentFormOverride &&
+    prev.onToggleSubagentForm === next.onToggleSubagentForm &&
     prev.onResolveApproval === next.onResolveApproval &&
     prev.onAnswerQuestion === next.onAnswerQuestion &&
     prev.onDismissQuestion === next.onDismissQuestion &&
@@ -1532,6 +1726,18 @@ export function Transcript({
   const nodeIndexesRef = useRef(nodeIndexes);
   nodeIndexesRef.current = nodeIndexes;
   const [editingBlockIds, setEditingBlockIds] = useState<readonly string[]>([]);
+  // Manual subagent card form overrides (G-4): once the user expands or
+  // collapses a card by hand the automatic active→full / terminal→compact
+  // rule no longer touches that agent's card. Keyed by subagentId so the
+  // choice survives block identity churn across publishes.
+  const [cardForms, setCardForms] = useState<ReadonlyMap<string, SubagentCardForm>>(new Map());
+  const handleToggleSubagentForm = useCallback((agentId: string, form: SubagentCardForm) => {
+    setCardForms((previous) => {
+      const next = new Map(previous);
+      next.set(agentId, form);
+      return next;
+    });
+  }, []);
   const pinnedIndexes = useMemo(() => {
     const indexes = new Set<number>();
     virtualNodes.forEach((node, index) => {
@@ -1748,6 +1954,10 @@ export function Transcript({
                       rowActions={rowActions}
                       latestFinalAssistantId={latestFinalAssistantId}
                       executionBadge={executionBadges.get(nodeKey(node))}
+                      subagentFormOverride={
+                        node.kind === 'subagent' ? cardForms.get(node.subagentId) : undefined
+                      }
+                      onToggleSubagentForm={handleToggleSubagentForm}
                       onResolveApproval={onResolveApproval}
                       onAnswerQuestion={onAnswerQuestion}
                       onDismissQuestion={onDismissQuestion}

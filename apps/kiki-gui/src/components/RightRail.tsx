@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom';
 import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
+import type { I18nKey } from '../i18n/locale';
 import {
   RAIL_DEFAULT_WIDTH,
   RAIL_MAX_WIDTH,
@@ -18,9 +19,27 @@ import {
   writeLayoutPreferences,
 } from '../lib/layoutPrefs';
 import { sortTasks } from '../lib/sorting';
-import type { AgentForest } from '../state/agentTree';
-import type { SessionViewState, TodoItem } from '../state/transcript';
+import {
+  agentChildren,
+  agentSiblings,
+  compareAgentIds,
+  MAIN_AGENT_ID,
+  type AgentForest,
+  type AgentTreeNode,
+} from '../state/agentTree';
+import type { SessionViewState, SubagentBlock, TodoItem } from '../state/transcript';
 import { AgentTreeView } from './AgentTreeView';
+
+/** Differentiated subagent-page rail context (G-3). */
+export interface SubagentRailContext {
+  readonly agentId: string;
+  /** The subagent's own timeline card data from the parent transcript. */
+  readonly block: SubagentBlock | undefined;
+  /** Pending approvals + questions waiting on this subagent. */
+  readonly pendingInteractionCount: number;
+  /** Jump back to the parent timeline and locate the spawning card. */
+  readonly onJumpToSpawn: (() => void) | undefined;
+}
 
 /**
  * Counts rows (tagged `data-rail-item`) that sit fully below the scroll
@@ -313,8 +332,213 @@ const GoalSection = memo(function GoalSection({
   );
 });
 
-function MetaRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+function subagentStatusChipClass(status: string): string {
+  switch (status) {
+    case 'running':
+    case 'background':
+      return 'bg-accent-soft text-accent';
+    case 'suspended':
+      return 'bg-amber-card text-amber-ink';
+    case 'completed':
+      return 'bg-success/10 text-success';
+    case 'failed':
+      return 'bg-danger/10 text-danger';
+    default:
+      return 'bg-paper text-ink-soft';
+  }
+}
+
+function railTimelineMs(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/**
+ * Subagent task chapter: status chip (+ Needs-input badge), the owning task's
+ * description and result summary, and the run's own elapsed / tools / tokens
+ * rows — everything the main-agent rail cannot answer for a child.
+ */
+const SubagentTaskSection = memo(function SubagentTaskSection({
+  state,
+  forest,
+  context,
+}: {
+  state: SessionViewState;
+  forest: AgentForest;
+  context: SubagentRailContext;
+}) {
+  const { t, tp, time } = useI18n();
+  const node: AgentTreeNode | undefined = forest.byId[context.agentId];
+  const block = context.block;
+  // The timeline card carries the task-entity terminal status; the tree node
+  // can lag at 'unknown' on cold open — prefer a known card status.
+  const status =
+    block !== undefined && block.status !== 'unknown'
+      ? block.status
+      : (node?.status ?? block?.status ?? 'unknown');
+  const description = block?.description ?? block?.instruction;
+  const summary = block?.summary ?? node?.summary;
+  const error = block?.error ?? node?.error;
+  const startMs = railTimelineMs(block?.startedAt ?? node?.startedAt);
+  const endMs = railTimelineMs(block?.endedAt ?? node?.endedAt);
+  const elapsedMs =
+    startMs === undefined ? undefined : Math.max(0, (endMs ?? Date.now()) - startMs);
+  const toolCallCount = Math.max(block?.toolCallCount ?? 0, node?.toolCallCount ?? 0);
+  const usage = block?.usage ?? state.usage?.total;
+  const inputTokens =
+    usage === undefined
+      ? undefined
+      : usage.inputOther + usage.inputCacheRead + usage.inputCacheCreation;
+  const childCount = node?.childIds.length ?? 0;
   return (
+    <div className="rounded-xl border border-hairline bg-panel p-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span
+          data-agent-status={status}
+          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${subagentStatusChipClass(status)}`}
+        >
+          {t(`subagent.status.${status}` as I18nKey)}
+        </span>
+        {context.pendingInteractionCount > 0 ? (
+          <span
+            data-needs-input
+            className="rounded-full bg-amber-card px-2 py-0.5 text-[10px] font-semibold text-amber-ink"
+          >
+            {t('rail.needsInput')} · {context.pendingInteractionCount}
+          </span>
+        ) : null}
+      </div>
+      {description !== undefined ? (
+        <p className="mt-2 text-[12px] leading-snug text-ink">{description}</p>
+      ) : null}
+      {error !== undefined ? (
+        <p className="mt-1.5 text-[11px] leading-snug text-danger">{error}</p>
+      ) : summary !== undefined ? (
+        <p className="mt-1.5 text-[11px] leading-snug text-ink-soft">
+          {t('rail.result')}: {summary}
+        </p>
+      ) : null}
+      <div className="mt-2 space-y-1 border-t border-hairline pt-2">
+        <MetaRow
+          label={t('rail.elapsed')}
+          value={elapsedMs === undefined ? '—' : time.formatDuration(elapsedMs)}
+          mono
+        />
+        <MetaRow label={t('rail.toolsRow')} value={tp('transcript.toolCalls', toolCallCount)} />
+        {inputTokens !== undefined && usage !== undefined ? (
+          <MetaRow
+            label={t('rail.tokens')}
+            value={t('rail.tokensInOut', {
+              input: time.formatTokens(inputTokens),
+              output: time.formatTokens(usage.output),
+            })}
+            mono
+          />
+        ) : null}
+        {childCount > 0 ? (
+          <MetaRow label={t('rail.childrenRow')} value={tp('subagent.children', childCount)} />
+        ) : null}
+      </div>
+    </div>
+  );
+});
+
+/**
+ * Subagent navigation chapter: Parent jump-back (locates the spawning card in
+ * the parent timeline), chronological Prev/Next sibling steppers, and direct
+ * child shortcuts.
+ */
+const SubagentNavSection = memo(function SubagentNavSection({
+  forest,
+  context,
+  onOpenSubagent,
+}: {
+  forest: AgentForest;
+  context: SubagentRailContext;
+  onOpenSubagent: (agentId: string) => void;
+}) {
+  const { t } = useI18n();
+  const node = forest.byId[context.agentId];
+  const parentId = node?.parentAgentId ?? context.block?.parentAgentId;
+  const parent = parentId === undefined ? undefined : forest.byId[parentId];
+  const ordered = useMemo(() => {
+    const self = forest.byId[context.agentId];
+    const all = [...agentSiblings(forest, context.agentId), ...(self === undefined ? [] : [self])];
+    return all.sort((left, right) => {
+      const leftMs = railTimelineMs(left.startedAt);
+      const rightMs = railTimelineMs(right.startedAt);
+      if (leftMs !== undefined && rightMs !== undefined && leftMs !== rightMs) return leftMs - rightMs;
+      if (leftMs !== undefined) return -1;
+      if (rightMs !== undefined) return 1;
+      return compareAgentIds(left.agentId, right.agentId);
+    });
+  }, [forest, context.agentId]);
+  const index = ordered.findIndex((entry) => entry.agentId === context.agentId);
+  const prev = index > 0 ? ordered[index - 1] : undefined;
+  const next = index >= 0 && index < ordered.length - 1 ? ordered[index + 1] : undefined;
+  const children = agentChildren(forest, context.agentId);
+  return (
+    <div className="space-y-1.5">
+      {parentId !== undefined && context.onJumpToSpawn !== undefined ? (
+        <button
+          type="button"
+          data-jump-to-spawn
+          onClick={context.onJumpToSpawn}
+          title={t('rail.parentJumpTitle')}
+          className="flex w-full items-center gap-1.5 rounded-lg border border-hairline bg-panel px-2.5 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+        >
+          <span aria-hidden className="shrink-0 text-[10px]">↩</span>
+          <span className="shrink-0 font-medium">{t('rail.parent')}:</span>
+          <span className="min-w-0 truncate">
+            {parentId === MAIN_AGENT_ID ? t('sv.sessionCrumb') : (parent?.label ?? parentId)}
+          </span>
+        </button>
+      ) : null}
+      {ordered.length > 1 ? (
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            data-sibling-prev
+            disabled={prev === undefined}
+            title={prev?.label}
+            onClick={() => { if (prev !== undefined) onOpenSubagent(prev.agentId); }}
+            className="min-w-0 flex-1 truncate rounded-lg border border-hairline bg-panel px-2.5 py-1.5 text-left text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
+          >
+            ← {prev?.label ?? t('rail.prevSibling')}
+          </button>
+          <button
+            type="button"
+            data-sibling-next
+            disabled={next === undefined}
+            title={next?.label}
+            onClick={() => { if (next !== undefined) onOpenSubagent(next.agentId); }}
+            className="min-w-0 flex-1 truncate rounded-lg border border-hairline bg-panel px-2.5 py-1.5 text-right text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
+          >
+            {next?.label ?? t('rail.nextSibling')} →
+          </button>
+        </div>
+      ) : null}
+      {children.length > 0 ? (
+        <div className="flex flex-wrap gap-1" data-agent-children-nav>
+          {children.map((child) => (
+            <button
+              key={child.agentId}
+              type="button"
+              onClick={() => { onOpenSubagent(child.agentId); }}
+              title={child.label}
+              className="inline-flex min-w-0 max-w-40 items-baseline truncate rounded-full border border-hairline px-2 py-0.5 text-[10.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+            >
+              {child.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+function MetaRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {  return (
     <div className="flex items-baseline justify-between gap-2">
       <span className="shrink-0 text-[11px] text-ink-faint">{label}</span>
       <span
@@ -331,6 +555,7 @@ export function RightRail({
   state,
   forest,
   selectedAgentId,
+  subagent,
   onCancelTask,
   onOpenSubagent,
   className,
@@ -338,6 +563,10 @@ export function RightRail({
   state: SessionViewState;
   forest: AgentForest;
   selectedAgentId?: string;
+  /** Present on the subagent page: switches the rail to the differentiated
+   *  subagent layout (own task/usage, pending-input badge, parent/sibling
+   *  navigation) instead of the main-agent overview. */
+  subagent?: SubagentRailContext;
   onCancelTask: (taskId: string) => void;
   onOpenSubagent: (agentId: string) => void;
   className?: string;
@@ -361,9 +590,14 @@ export function RightRail({
     [state.tasks],
   );
   // Empty sections collapse entirely (header included); when all four are
-  // empty the rail shrinks to just the session meta card below.
+  // empty the rail shrinks to just the session meta card below. In subagent
+  // mode the full-tree overview yields to the task/nav chapters — the child
+  // shortcuts live in the nav chapter.
   const showGoal = state.goal !== undefined && state.goal !== null;
-  const showSubagents = Object.keys(forest.byId).some((id) => id !== 'main') || forest.roots.some((root) => root.agentId !== 'main');
+  const showSubagents =
+    subagent === undefined &&
+    (Object.keys(forest.byId).some((id) => id !== 'main') ||
+      forest.roots.some((root) => root.agentId !== 'main'));
   const showTodos = state.todos.length > 0;
   const showTasks = backgroundTasks.length > 0;
 
@@ -403,6 +637,17 @@ export function RightRail({
         onPointerDown={startResize}
         onDoubleClick={reset}
       />
+      {subagent !== undefined ? (
+        <>
+          <RailSection title={t('rail.agentTask')}>
+            <SubagentTaskSection state={state} forest={forest} context={subagent} />
+          </RailSection>
+          <RailSection title={t('rail.agentNav')}>
+            <SubagentNavSection forest={forest} context={subagent} onOpenSubagent={onOpenSubagent} />
+          </RailSection>
+        </>
+      ) : null}
+
       {showGoal ? (
         <RailSection title={t('rail.goal')}>
           <GoalSection goal={state.goal} goalUpdatedAt={state.goalUpdatedAt} />

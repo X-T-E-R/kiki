@@ -1167,6 +1167,110 @@ describe('agent tree chrome', () => {
     expect(html).toContain('max-h-80');
     expect(html).toContain('overflow-y-auto');
   });
+
+  it('differentiates the subagent rail: own task, needs-input badge, parent and sibling nav', () => {
+    const railForest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'main' },
+        { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', startedAt: '2026-01-01T00:00:00.000Z' },
+        { agentId: 'agent-2', parentAgentId: 'main', name: 'Reviewer', startedAt: '2026-01-01T00:01:00.000Z' },
+        { agentId: 'agent-3', parentAgentId: 'main', name: 'Scribe', startedAt: '2026-01-01T00:02:00.000Z' },
+      ],
+    );
+    const subagentBlock: SubagentBlock = {
+      kind: 'subagent',
+      id: 'subagent-agent-2',
+      subagentId: 'agent-2',
+      parentAgentId: 'main',
+      parentToolCallId: 'call-2',
+      name: 'Reviewer',
+      description: 'Review the presentation contract',
+      model: 'provider/child-model',
+      thinkingEffort: undefined,
+      status: 'completed',
+      summary: 'Presentation contract verified.',
+      error: undefined,
+      usage: { inputOther: 1200, output: 300, inputCacheRead: 0, inputCacheCreation: 0 },
+      startedAt: '2026-01-01T00:01:00.000Z',
+      endedAt: '2026-01-01T00:01:30.000Z',
+      toolCallCount: 5,
+      transcript: [],
+    };
+    const agentState = {
+      ...createViewState('sess-1'),
+      todos: [{ title: 'child-only todo', status: 'in_progress' }],
+    };
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <I18nProvider>
+          <RightRail
+            state={agentState}
+            forest={railForest}
+            selectedAgentId="agent-2"
+            subagent={{
+              agentId: 'agent-2',
+              block: subagentBlock,
+              pendingInteractionCount: 2,
+              onJumpToSpawn: () => {},
+            }}
+            onCancelTask={() => {}}
+            onOpenSubagent={() => {}}
+          />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+    // Own task chapter: description, result summary, status, usage rows.
+    expect(html).toContain('Review the presentation contract');
+    expect(html).toContain('Presentation contract verified.');
+    expect(html).toContain('data-agent-status="completed"');
+    expect(html).toContain('30.0s');
+    // Needs-input badge with the pending count.
+    expect(html).toContain('data-needs-input');
+    expect(html).toContain('Needs input');
+    // Navigation: parent jump-back plus chronological sibling steppers.
+    expect(html).toContain('data-jump-to-spawn');
+    expect(html).toContain('data-sibling-prev');
+    expect(html).toContain('data-sibling-next');
+    expect(html).toContain('Researcher');
+    expect(html).toContain('Scribe');
+    // The agent's own todos, not the main agent's.
+    expect(html).toContain('child-only todo');
+    // Differentiated: the full-tree overview section yields to the task/nav chapters.
+    expect(html).not.toContain('data-subagent-scroll');
+  });
+
+  it('omits the needs-input badge when nothing is pending on the subagent', () => {
+    const railForest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'main' },
+        { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher' },
+      ],
+    );
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <I18nProvider>
+          <RightRail
+            state={createViewState('sess-1')}
+            forest={railForest}
+            selectedAgentId="agent-1"
+            subagent={{
+              agentId: 'agent-1',
+              block: undefined,
+              pendingInteractionCount: 0,
+              onJumpToSpawn: undefined,
+            }}
+            onCancelTask={() => {}}
+            onOpenSubagent={() => {}}
+          />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+    expect(html).not.toContain('data-needs-input');
+    expect(html).not.toContain('data-jump-to-spawn');
+    expect(html).not.toContain('data-sibling-prev');
+  });
 });
 
 describe('canonical SessionView product gates', () => {
