@@ -48,8 +48,6 @@ const AGENT_TOOLS = [
 const CODER_TOOLS = [
   'Bash',
   'Edit',
-  'EnterPlanMode',
-  'ExitPlanMode',
   'Glob',
   'Grep',
   'Read',

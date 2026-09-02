@@ -261,6 +261,7 @@ export const transcriptTaskSchema = z.object({
   kind: z.enum(['shell', 'subagent', 'tool', 'other']),
   state: z.enum(['running', 'completed', 'failed', 'timed_out', 'killed', 'lost']),
   detached: z.boolean(),
+  name: z.string().optional(),
   description: z.string().optional(),
   agentId: agentIdSchema.optional(),
   outputTail: z.string(),

@@ -547,6 +547,7 @@ export interface AgentTranscriptTask {
   readonly kind: 'shell' | 'subagent' | 'tool' | 'other';
   readonly state: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
   readonly detached: boolean;
+  readonly name?: string;
   readonly description?: string;
   readonly agentId?: string;
   readonly outputTail: string;

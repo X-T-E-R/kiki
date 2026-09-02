@@ -614,6 +614,7 @@ interface SubagentSpawnedPayload {
   _name: 'subagent.spawned';
   subagentId: string;
   subagentName: string;
+  name?: string;
   parentToolCallId: string;
   parentToolCallUuid?: string;
   parentAgentId?: string;

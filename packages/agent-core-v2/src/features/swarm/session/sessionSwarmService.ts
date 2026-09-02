@@ -158,6 +158,7 @@ export class SessionSwarmService implements ISessionSwarmService {
     }
     emitAgentRunSpawned(caller, run.child.agentId, {
       profileName: run.child.profileName,
+      name: run.child.name,
       parentToolCallId: options.parentToolCallId,
       parentToolCallUuid: options.parentToolCallUuid,
       description: options.description,
@@ -193,6 +194,7 @@ export class SessionSwarmService implements ISessionSwarmService {
     if (!retryTurn) {
       emitAgentRunSpawned(caller, child.agentId, {
         profileName: child.profileName,
+        name: child.name,
         parentToolCallId: options.parentToolCallId,
         parentToolCallUuid: options.parentToolCallUuid,
         description: options.description,
