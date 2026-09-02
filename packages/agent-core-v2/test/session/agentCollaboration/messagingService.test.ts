@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { ClusterDb } from '@moonshot-ai/minidb/cluster';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Event, Emitter } from '#/_base/event';
@@ -10,11 +11,15 @@ import type { IAgentScopeHandle } from '#/_base/di/scope';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
-import { RuntimeThreadMailboxStore } from '#/app/threadCommunication/runtimeThreadMailboxStore';
+import {
+  RuntimeThreadMailboxStore,
+  THREAD_MAILBOX_RUNTIME_METHODS,
+} from '#/app/threadCommunication/runtimeThreadMailboxStore';
 import { ThreadMailboxBacklogError } from '#/app/threadCommunication/mailboxErrors';
 import type {
   IThreadMailboxStore,
   ThreadDeliveryClaim,
+  ThreadMailboxMutationOptions,
 } from '#/app/threadCommunication/threadMailboxStore';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { createHooks } from '#/hooks';
@@ -37,6 +42,15 @@ const runtimeMailboxes: Array<{
   readonly runtime: HomeRuntimeHostService;
   readonly store: RuntimeThreadMailboxStore;
 }> = [];
+
+interface RuntimeMailboxCaller {
+  call(
+    method: string,
+    payload: unknown,
+    options: ThreadMailboxMutationOptions | undefined,
+    timeoutMs: number,
+  ): Promise<unknown>;
+}
 
 afterEach(async () => {
   const mailboxes = runtimeMailboxes.splice(0);
@@ -196,6 +210,61 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
+  it('resumes an interrupted claim while the original handler remains in flight', async () => {
+    const homeDir = tempDir();
+    const seed = bootstrap(homeDir);
+    const runtime = new HomeRuntimeHostService(seed);
+    const threadStore = new RuntimeThreadMailboxStore(seed, runtime, new HostFileSystem());
+    runtimeMailboxes.push({ runtime, store: threadStore });
+    const store = new AgentCollaborationMessageStoreAdapter(threadStore);
+    const accepted = await store.accept(messageInput('resume delivery', 'resume-delivery'));
+    const gate = blockFirstTargetBatch();
+    const requestIds: string[] = [];
+    const originalCall = runtime.call.bind(runtime);
+    runtime.call = (method, payload, options) => {
+      if (method === THREAD_MAILBOX_RUNTIME_METHODS.claim) requestIds.push(options?.requestId ?? '');
+      return originalCall(method, payload, options);
+    };
+    const internal = threadStore as unknown as RuntimeMailboxCaller;
+    const originalClaimNext = threadStore.claimNext.bind(threadStore);
+    const interruption = new Error('claim interrupted');
+    const controller = new AbortController();
+    let claimAttempt = 0;
+    threadStore.claimNext = async (input, options) => {
+      const value = await internal.call(
+        THREAD_MAILBOX_RUNTIME_METHODS.claim,
+        input,
+        {
+          requestId: options?.requestId,
+          signal: claimAttempt++ === 0 ? controller.signal : options?.signal,
+        },
+        500,
+      );
+      return value === null ? undefined : value as ThreadDeliveryClaim;
+    };
+    const target = agentHandle('agent-target');
+    const lifecycle = lifecycleHarness([target.handle]);
+    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext());
+    try {
+      const interruptedRun = target.execution.hooks.onWillRun.run({ signal });
+      await gate.entered;
+      controller.abort(interruption);
+      await expect(interruptedRun).rejects.toBe(interruption);
+      const resumedRun = target.execution.hooks.onWillRun.run({ signal });
+      await waitUntil(() => requestIds.length >= 2);
+      gate.release();
+      await resumedRun;
+      expect(target.messages).toHaveLength(1);
+      expect(target.messages[0]?.id).toBe(accepted.message.messageId);
+      expect(new Set(requestIds.slice(0, 3))).toEqual(new Set([requestIds[0]]));
+      expect(requestIds.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      threadStore.claimNext = originalClaimNext;
+      gate.restore();
+      service.dispose();
+    }
+  });
+
   it('renders an external delegation sender distinctly at the next run boundary', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
@@ -294,6 +363,48 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 });
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('waitUntil timed out');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function blockFirstTargetBatch(): {
+  readonly entered: Promise<void>;
+  readonly release: () => void;
+  readonly restore: () => void;
+} {
+  const original = ClusterDb.prototype.partitionBatch;
+  let markEntered!: () => void;
+  let releaseBatch!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const blocked = new Promise<void>((resolve) => {
+    releaseBatch = resolve;
+  });
+  let blockedOnce = false;
+  ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof original>) {
+    const [partition] = args;
+    if (!blockedOnce && partition.startsWith('t/')) {
+      blockedOnce = true;
+      markEntered();
+      await blocked;
+    }
+    return original.apply(this, args);
+  };
+  return {
+    entered,
+    release: releaseBatch,
+    restore: () => {
+      releaseBatch();
+      ClusterDb.prototype.partitionBatch = original;
+    },
+  };
+}
 
 function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'agent-message-mailbox-'));
