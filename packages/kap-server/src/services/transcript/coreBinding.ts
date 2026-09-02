@@ -166,7 +166,8 @@ export function bindSessionTranscript(
               liveAdapter.seedSubagentTask({
                 taskId: info.taskId,
                 agentId: info.agentId,
-                name: info.collaborationTaskName ?? info.profile,
+                name: info.collaborationTaskName,
+                subagentName: info.profile,
                 description: info.description,
                 status: info.status,
                 detached: info.detached ?? false,
@@ -213,7 +214,8 @@ export function bindSessionTranscript(
           liveAdapter.seedSubagentTask({
             taskId: info.taskId,
             agentId: info.agentId,
-            name: info.collaborationTaskName ?? info.profile,
+            name: info.collaborationTaskName,
+            subagentName: info.profile,
             description: info.description,
             status: info.status,
             detached: info.detached ?? false,

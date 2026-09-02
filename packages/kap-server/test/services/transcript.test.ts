@@ -406,7 +406,10 @@ describe('AgentTranscriptLiveAdapter', () => {
     const turn = turnOps('t0', tx.getItems());
     const tool = turn.steps[0]?.frames.find((frame) => frame.kind === 'tool');
     expect(tool?.kind === 'tool' && tool.agentRefs).toEqual([{ agentId: 'agent-1', role: 'child' }]);
-    expect(tx.getTask('agent-1')).toMatchObject({ name: 'smoke_explore' });
+    expect(tx.getTask('agent-1')).toMatchObject({
+      name: 'smoke_explore',
+      subagentName: 'explore',
+    });
   });
 
   it('gives live markers their own namespace so they never collide with backfilled markers', () => {
@@ -1212,7 +1215,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       kind: 'subagent',
       state: 'running',
       detached: false,
-      name: 'worker',
+      name: undefined,
+      subagentName: 'worker',
       description: 'Second run',
       agentId: 'agent-1',
       outputTail: '',
@@ -2320,6 +2324,18 @@ describe('bindSessionTranscript', () => {
         description: 'Inspect',
         detached: false,
         startedAt: 1_700_000_000_000,
+        collaborationTaskName: 'coder',
+        profile: 'coder',
+      },
+      {
+        taskId: 'task-10',
+        kind: 'agent',
+        agentId: 'agent-2',
+        status: 'running',
+        description: 'Inspect anonymously',
+        detached: false,
+        startedAt: 1_700_000_001_000,
+        profile: 'coder',
       },
     ];
     agents.add('main', { tasks });
@@ -2333,8 +2349,15 @@ describe('bindSessionTranscript', () => {
       kind: 'subagent',
       state: 'running',
       detached: false,
+      name: 'coder',
+      subagentName: 'coder',
       description: 'Inspect',
       agentId: 'agent-1',
+    });
+    expect(store.getAgent('main')?.getTask('task-10')).toMatchObject({
+      name: undefined,
+      subagentName: 'coder',
+      agentId: 'agent-2',
     });
 
     binding.seedRunningTasks('main');

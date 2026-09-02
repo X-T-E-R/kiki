@@ -228,6 +228,7 @@ export class AgentTranscriptLiveAdapter {
     readonly taskId: string;
     readonly agentId: string;
     readonly name?: string;
+    readonly subagentName?: string;
     readonly description: string;
     readonly status: string;
     readonly detached: boolean;
@@ -241,6 +242,7 @@ export class AgentTranscriptLiveAdapter {
       state: 'running',
       detached: info.detached,
       name: info.name,
+      subagentName: info.subagentName,
       description: info.description,
       agentId: info.agentId,
       outputTail: prev?.outputTail ?? '',
@@ -1195,7 +1197,8 @@ export class AgentTranscriptLiveAdapter {
         kind: 'subagent',
         state: 'running',
         detached: event.runInBackground,
-        name: event.name ?? event.subagentName,
+        name: event.name,
+        subagentName: event.subagentName,
         description: event.description ?? previous?.description,
         agentId: event.subagentId,
         outputTail: previous?.outputTail ?? '',
@@ -1246,6 +1249,7 @@ export class AgentTranscriptLiveAdapter {
         state: 'running',
         detached: prev?.detached ?? true,
         name: prev?.name,
+        subagentName: prev?.subagentName,
         description: prev?.description,
         agentId: event.subagentId,
         outputTail: prev?.outputTail ?? '',
@@ -1270,6 +1274,7 @@ export class AgentTranscriptLiveAdapter {
             : 'running',
       detached: prev?.detached ?? true,
       name: prev?.name,
+      subagentName: prev?.subagentName,
       description: prev?.description,
       agentId: event.subagentId,
       outputTail: prev?.outputTail ?? '',
