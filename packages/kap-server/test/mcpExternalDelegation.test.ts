@@ -769,6 +769,66 @@ describe('Kiki external delegation MCP server', () => {
     expect(progress).toEqual([{ progress: 1, message: 'Delegation running tool: Bash.' }]);
   });
 
+  it('cancels an in-flight events poll when wait settles first', async () => {
+    const actions: string[] = [];
+    let pollAborted = 0;
+    let resolveWait!: (response: Response) => void;
+    const waitResponse = new Promise<Response>((resolve) => { resolveWait = resolve; });
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const action = fetchUrl(url).split('/').at(-1)!;
+      actions.push(action);
+      if (action === 'wait') return waitResponse;
+      if (action !== 'events') throw new Error(`Unexpected action: ${action}`);
+      resolveWait(new Response(JSON.stringify({
+        code: 0,
+        msg: 'ok',
+        data: {
+          waitStatus: 'completed',
+          waitedMs: 1,
+          dispatch: { dispatchId: 'dispatch_done', target: 'main', status: 'completed' },
+          completedDuringWait: [],
+          interactions: [],
+        },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          pollAborted += 1;
+          reject(init.signal?.reason);
+        }, { once: true });
+      });
+    });
+    const server = createKikiMcpServer(
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
+      { fetch: fetchMock, progressPollIntervalMs: 0 },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const called = await client.callTool(
+      { name: 'kiki_wait', arguments: { dispatch_id: 'dispatch_done' } },
+      undefined,
+      { onprogress: () => undefined },
+    );
+
+    expect(called.isError).not.toBe(true);
+    expect(called.structuredContent).toMatchObject({ waitStatus: 'completed' });
+    expect(actions).toEqual(['wait', 'events']);
+    expect(pollAborted).toBe(1);
+    await Promise.resolve();
+    expect(actions).toEqual(['wait', 'events']);
+  });
+
   it('reports invalid tool input as invalid_input instead of an internal error', async () => {
     const fetchMock = vi.fn<typeof fetch>();
     const server = createKikiMcpServer(

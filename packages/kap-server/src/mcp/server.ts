@@ -337,9 +337,15 @@ class ExternalDelegationRestClient {
     private readonly fetchImpl: typeof globalThis.fetch,
   ) {}
 
-  async call<T = unknown>(action: string, body: unknown, timeoutMs = 30_000): Promise<T> {
+  async call<T = unknown>(
+    action: string,
+    body: unknown,
+    timeoutMs = 30_000,
+    signal?: AbortSignal,
+  ): Promise<T> {
     let response: Response;
     try {
+      const timeout = AbortSignal.timeout(timeoutMs);
       response = await this.fetchImpl(
         `${this.config.endpoint}/api/v2/sessions/${encodeURIComponent(this.config.sessionId)}/external-delegation/${action}`,
         {
@@ -350,7 +356,7 @@ class ExternalDelegationRestClient {
             'x-kiki-delegation-token': this.config.delegationToken,
           },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
         },
       );
     } catch {
@@ -412,61 +418,83 @@ async function followWaitProgress(
   context: ProgressRequestContext,
   pollIntervalMs: number,
 ): Promise<unknown> {
-  const waitPromise = client.call('wait', input, waitRequestTimeoutMs(input.timeout_s));
+  const waitPromise = client.call(
+    'wait',
+    input,
+    waitRequestTimeoutMs(input.timeout_s),
+    context.signal,
+  );
   const progressToken = context._meta?.progressToken;
   if (progressToken === undefined || input.dispatch_id === undefined) return waitPromise;
 
   const waitSettled = Symbol('wait-settled');
+  let pollController: AbortController | undefined;
+  const abortPoll = (): void => {
+    pollController?.abort();
+  };
   const settlement = waitPromise.then(
-    () => waitSettled,
-    () => waitSettled,
+    () => { abortPoll(); return waitSettled; },
+    () => { abortPoll(); return waitSettled; },
   );
+  context.signal.addEventListener('abort', abortPoll, { once: true });
   let eventCursor = 0;
   let progress = 0;
   let reportedTool: string | undefined;
   const toolTitles = new Map<string, string>();
 
-  while (true) {
-    context.signal.throwIfAborted();
-    const rawEvents = await Promise.race([
-      settlement,
-      client.call('events', {
-        dispatch_id: input.dispatch_id,
-        cursor: eventCursor,
-        limit: 100,
-        detail: 'turn',
-      }),
-    ]);
-    if (rawEvents === waitSettled) return waitPromise;
-    const events = turnEventPage.parse(rawEvents);
-    let currentTool: string | undefined;
-    for (const item of events.items) {
-      eventCursor = Math.max(eventCursor, item.seq);
-      const event = item.event;
-      if (event.type === 'tool.call' && event.toolCallId !== undefined && event.title !== undefined) {
-        toolTitles.set(event.toolCallId, event.title);
-        currentTool = event.title;
-      } else if (event.type === 'tool.update' && event.toolCallId !== undefined) {
-        if (event.title !== undefined) toolTitles.set(event.toolCallId, event.title);
-        currentTool = event.title ?? toolTitles.get(event.toolCallId);
+  try {
+    while (true) {
+      context.signal.throwIfAborted();
+      pollController = new AbortController();
+      const rawEvents = await Promise.race([
+        settlement,
+        client.call(
+          'events',
+          {
+            dispatch_id: input.dispatch_id,
+            cursor: eventCursor,
+            limit: 100,
+            detail: 'turn',
+          },
+          30_000,
+          pollController.signal,
+        ),
+      ]);
+      if (rawEvents === waitSettled) return await waitPromise;
+      pollController = undefined;
+      const events = turnEventPage.parse(rawEvents);
+      let currentTool: string | undefined;
+      for (const item of events.items) {
+        eventCursor = Math.max(eventCursor, item.seq);
+        const event = item.event;
+        if (event.type === 'tool.call' && event.toolCallId !== undefined && event.title !== undefined) {
+          toolTitles.set(event.toolCallId, event.title);
+          currentTool = event.title;
+        } else if (event.type === 'tool.update' && event.toolCallId !== undefined) {
+          if (event.title !== undefined) toolTitles.set(event.toolCallId, event.title);
+          currentTool = event.title ?? toolTitles.get(event.toolCallId);
+        }
       }
+      if (currentTool !== undefined && currentTool !== reportedTool) {
+        reportedTool = currentTool;
+        await context.sendNotification({
+          method: 'notifications/progress',
+          params: {
+            progressToken,
+            progress: ++progress,
+            message: `Delegation running tool: ${currentTool}.`,
+          },
+        });
+      }
+      const delayed = await Promise.race([
+        settlement,
+        delay(pollIntervalMs, undefined, { signal: context.signal }),
+      ]);
+      if (delayed === waitSettled) return await waitPromise;
     }
-    if (currentTool !== undefined && currentTool !== reportedTool) {
-      reportedTool = currentTool;
-      await context.sendNotification({
-        method: 'notifications/progress',
-        params: {
-          progressToken,
-          progress: ++progress,
-          message: `Delegation running tool: ${currentTool}.`,
-        },
-      });
-    }
-    const delayed = await Promise.race([
-      settlement,
-      delay(pollIntervalMs, undefined, { signal: context.signal }),
-    ]);
-    if (delayed === waitSettled) return waitPromise;
+  } finally {
+    context.signal.removeEventListener('abort', abortPoll);
+    abortPoll();
   }
 }
 
