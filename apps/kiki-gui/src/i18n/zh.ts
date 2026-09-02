@@ -857,6 +857,7 @@ export const zh: Record<I18nKey, string> = {
   'usage.tab.fiveHour': '5h 节奏',
   'usage.sessions.loadMore': '加载更多（{shown}/{total}）',
   'usage.sessions.deepLinkChip': '已定位会话',
+  'usage.sessions.locating': '正在更早的分页中定位会话…',
   'usage.sessions.notInPage': '该会话不在当前结果集中。',
   'usage.col.session': '会话',
   'usage.col.workspace': '工作区',

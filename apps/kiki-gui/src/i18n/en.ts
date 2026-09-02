@@ -871,6 +871,7 @@ export const en = {
   'usage.tab.fiveHour': '5h rhythm',
   'usage.sessions.loadMore': 'Load more ({shown} of {total})',
   'usage.sessions.deepLinkChip': 'Located session',
+  'usage.sessions.locating': 'Locating the session in older pages…',
   'usage.sessions.notInPage': 'That session is outside the current result set.',
   'usage.col.session': 'Session',
   'usage.col.workspace': 'Workspace',

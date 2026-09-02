@@ -279,6 +279,55 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-session="s_2"]')).not.toBeNull();
   });
 
+  it('auto-pages until a deep-linked session on a later page is found', async () => {
+    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
+      if (query['range'] === 'today') return usageResponse();
+      const token = query['page_token'];
+      if (token === undefined) {
+        return usageResponse({ hasMore: true, nextPageToken: 'tok_2', sessions: [{ id: 's_1' }] });
+      }
+      if (token === 'tok_2') {
+        return usageResponse({ hasMore: true, nextPageToken: 'tok_3', sessions: [{ id: 's_2' }] });
+      }
+      return usageResponse({ sessions: [{ id: 's_3', title: 'Target session' }] });
+    });
+    const { container } = await renderPage('/usage?session=s_3');
+    for (let i = 0; i < 10; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    const pageTokens = getUsage.mock.calls
+      .map(([query]) => (query as Record<string, unknown>)['page_token'])
+      .filter((token) => token !== undefined);
+    expect(pageTokens).toEqual(['tok_2', 'tok_3']);
+    // The target on the last page is located and the list filters to it.
+    expect(container.querySelector('[data-usage-session="s_3"]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-session="s_1"]')).toBeNull();
+    expect(container.textContent).toContain('Located session');
+    expect(container.textContent).not.toContain('outside the current result set');
+    expect(container.querySelector('[data-usage-locating]')).toBeNull();
+  });
+
+  it('reports not-in-page only after the locator walk exhausts every page', async () => {
+    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
+      if (query['range'] === 'today') return usageResponse();
+      const token = query['page_token'];
+      if (token === undefined) {
+        return usageResponse({ hasMore: true, nextPageToken: 'tok_2', sessions: [{ id: 's_1' }] });
+      }
+      return usageResponse({ sessions: [{ id: 's_2' }] });
+    });
+    const { container } = await renderPage('/usage?session=s_absent');
+    for (let i = 0; i < 10; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    const pageTokens = getUsage.mock.calls
+      .map(([query]) => (query as Record<string, unknown>)['page_token'])
+      .filter((token) => token !== undefined);
+    expect(pageTokens).toEqual(['tok_2']);
+    expect(container.textContent).toContain('outside the current result set');
+    expect(container.querySelector('[data-usage-locating]')).toBeNull();
+  });
+
   it('persists the range selection for query-less revisits', async () => {
     await renderPage('/usage?range=this_month');
     const stored = localStorage.getItem(USAGE_FILTERS_STORAGE_KEY);

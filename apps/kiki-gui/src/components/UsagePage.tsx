@@ -673,6 +673,7 @@ function SessionsTab({
   hasNextPage,
   isFetchingNextPage,
   sessionLocator,
+  locatorSearching,
   workspaces,
 }: {
   data: { pages: readonly UsageResponseWire[] };
@@ -680,6 +681,8 @@ function SessionsTab({
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   sessionLocator: string | undefined;
+  /** True while the locator walk is still pulling pages for the target. */
+  locatorSearching: boolean;
   workspaces: readonly Workspace[];
 }) {
   const { t, time } = useI18n();
@@ -697,9 +700,19 @@ function SessionsTab({
   return (
     <div data-usage-sessions>
       {sessionLocator !== undefined && !located ? (
-        <p className="mb-2 rounded-lg border border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink">
-          {t('usage.sessions.notInPage')}
-        </p>
+        locatorSearching ? (
+          <p
+            data-usage-locating
+            className="mb-2 flex items-center gap-2 rounded-lg border border-hairline bg-paper px-3 py-1.5 text-[11px] text-ink-soft"
+          >
+            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+            {t('usage.sessions.locating')}
+          </p>
+        ) : (
+          <p className="mb-2 rounded-lg border border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink">
+            {t('usage.sessions.notInPage')}
+          </p>
+        )
       ) : null}
       <div className="flex items-center gap-3 px-2 pb-1 text-[9.5px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
         <span className="min-w-0 flex-1">{t('usage.col.session')}</span>
@@ -936,6 +949,36 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     getNextPageParam: (lastPage) =>
       lastPage.sessions.has_more ? (lastPage.sessions.next_page_token ?? undefined) : undefined,
   });
+  // A session locator deep link must find its target even when it sits beyond
+  // the first 25 rows: keep pulling pages with the server token until the
+  // target appears or the result set is exhausted (a failed page fetch stops
+  // the walk instead of retrying forever). `usageQuery.data` is a dep so the
+  // walk re-evaluates on every arrived page, even when the fetching flags
+  // flip within a single batched render.
+  const locatedSession =
+    sessionLocator !== undefined &&
+    (usageQuery.data?.pages.some((page) =>
+      page.sessions.items.some((item) => item.id === sessionLocator),
+    ) ?? false);
+  const locatorSearching =
+    sessionLocator !== undefined &&
+    !locatedSession &&
+    !usageQuery.isFetchNextPageError &&
+    (usageQuery.hasNextPage || usageQuery.isFetchingNextPage);
+  useEffect(() => {
+    if (sessionLocator === undefined || locatedSession || usageQuery.isFetchNextPageError) return;
+    if (usageQuery.hasNextPage && !usageQuery.isFetchingNextPage) {
+      void usageQuery.fetchNextPage();
+    }
+  }, [
+    sessionLocator,
+    locatedSession,
+    usageQuery.data,
+    usageQuery.hasNextPage,
+    usageQuery.isFetchingNextPage,
+    usageQuery.isFetchNextPageError,
+    usageQuery.fetchNextPage,
+  ]);
   // Trend / summary / reliability are page-invariant; read them off page one.
   const firstPage = usageQuery.data?.pages[0];
   const trend = useMemo(() => firstPage?.trend ?? [], [firstPage]);
@@ -1173,6 +1216,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                       hasNextPage={usageQuery.hasNextPage}
                       isFetchingNextPage={usageQuery.isFetchingNextPage}
                       sessionLocator={sessionLocator}
+                      locatorSearching={locatorSearching}
                       workspaces={workspaces}
                     />
                   </>
