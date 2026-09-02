@@ -17,9 +17,11 @@ import {
 } from '#/agent/loop/turnEvents';
 import { TurnEnded, TurnPrompt } from '#/agent/loop/turnOps';
 import { ToolCallStarted, ToolProgress, ToolResultEvent } from '#/agent/toolExecutor/toolExecutorEvents';
+import { IAgentUsageService } from '#/agent/usage/usage';
 import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecutor';
 import { toKimiErrorPayload } from '#/errors';
 import type { ContentPart } from '#/kosong/contract/message';
+import type { TokenUsage } from '#/kosong/contract/usage';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
 
@@ -39,6 +41,8 @@ export type ExternalExecutorEvent = NormalizedExecutorEvent;
 export interface ExternalTurnRecorderMetadata {
   readonly executorId: string;
   readonly protocol: string;
+  readonly model: string;
+  readonly modelAlias?: string;
   readonly resumeMode: ExecutorResumeMode;
   readonly profileDelivery: ExecutorProfileDelivery;
   readonly outboundPrompt?: string;
@@ -75,6 +79,7 @@ export class ExternalTurnRecorder {
   readonly #dispatcher: IEventDispatcher;
   readonly #wire: IWireService;
   readonly #context: IAgentContextMemoryService;
+  readonly #usage: IAgentUsageService;
   readonly #segments: Segment[] = [];
   readonly #userSegments: UserSegment[] = [];
   readonly #tools = new Map<string, RecordedTool>();
@@ -92,6 +97,7 @@ export class ExternalTurnRecorder {
     this.#dispatcher = agent.accessor.get(IEventDispatcher);
     this.#wire = agent.accessor.get(IWireService);
     this.#context = agent.accessor.get(IAgentContextMemoryService);
+    this.#usage = agent.accessor.get(IAgentUsageService);
     for (const loss of metadata.initialLosses ?? []) this.losses.add(loss);
   }
 
@@ -176,8 +182,8 @@ export class ExternalTurnRecorder {
     }
   }
 
-  async complete(finishReason?: string): Promise<void> {
-    await this.#end('completed', finishReason);
+  async complete(finishReason?: string, usage?: TokenUsage): Promise<void> {
+    await this.#end('completed', finishReason, undefined, usage);
   }
 
   async fail(error: unknown): Promise<void> {
@@ -401,6 +407,7 @@ export class ExternalTurnRecorder {
     reason: 'completed' | 'failed' | 'cancelled',
     finishReason?: string,
     error?: unknown,
+    usage?: TokenUsage,
   ): Promise<void> {
     if (this.#ended) return;
     this.#ended = true;
@@ -449,6 +456,18 @@ export class ExternalTurnRecorder {
         losses: [...this.losses].toSorted(),
       }),
     );
+    if (usage !== undefined) {
+      this.#usage.record(
+        this.metadata.model,
+        usage,
+        { type: 'turn', turnId: this.turnId, step: 1 },
+        {
+          provider: this.metadata.protocol,
+          modelAlias: this.metadata.modelAlias,
+          executorId: this.metadata.executorId,
+        },
+      );
+    }
     await this.#wire.flush();
     this.#context.appendLoopEvent({
       type: 'step.end',
@@ -456,6 +475,7 @@ export class ExternalTurnRecorder {
       turnId: String(this.turnId),
       step: 1,
       finishReason,
+      usage,
       rawFinishReason: finishReason,
     });
     this.#appendExternalUserMessages();
@@ -465,6 +485,7 @@ export class ExternalTurnRecorder {
           turnId: this.turnId,
           step: 1,
           stepId: this.stepId,
+          usage,
           finishReason,
           rawFinishReason: finishReason,
         }),
