@@ -413,6 +413,7 @@ describe('transcript authority projection', () => {
               kind: 'subagent' as const,
               state: 'running' as const,
               detached: false,
+              name: 'smoke_explore',
               agentId: 'child-1',
               outputTail: '',
             },
@@ -430,6 +431,7 @@ describe('transcript authority projection', () => {
       expect.objectContaining({
         subagentId: 'child-1',
         parentAgentId: 'main',
+        name: 'smoke_explore',
         parentToolCallId: 'tc-agent',
         status: 'running',
       }),
@@ -451,6 +453,7 @@ describe('transcript authority projection', () => {
       }),
     ]);
     expect(forest.byId['child-1']).toMatchObject({
+      name: 'smoke_explore',
       model: 'provider/kimi-for-coding',
       thinkingEffort: 'high',
       toolCallCount: 7,
@@ -1575,6 +1578,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               kind: 'subagent',
               state: 'completed',
               detached: false,
+              name: 'Researcher',
               agentId: 'agent-1',
               description: 'map the surface',
               outputTail: '',
@@ -1685,6 +1689,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               kind: 'subagent',
               state: 'running',
               detached: false,
+              name: 'Researcher',
               agentId: 'agent-1',
               description: 'map the surface',
               outputTail: '',
@@ -1984,6 +1989,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               kind: 'subagent',
               state: 'completed',
               detached: false,
+              name: 'Researcher',
               agentId: 'agent-1',
               description: 'map the surface',
               outputTail: '',
@@ -2030,7 +2036,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       expect(projected.blocks.indexOf(events[2]!)).toBeGreaterThan(t2Index);
     });
 
-    it('addresses resume/send refs by the explicit spawn name, never the shared profile label', () => {
+    it('addresses resume/send refs by the projected stable name, never tool input labels', () => {
       const spawnFrame = (
         frameId: string,
         toolCallId: string,
@@ -2100,6 +2106,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               kind: 'subagent',
               state: 'running',
               detached: false,
+              name: 'alpha',
               agentId: 'agent-1',
               outputTail: '',
               startedAt: '2026-01-01T00:00:01.000Z',
@@ -2109,6 +2116,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               kind: 'subagent',
               state: 'running',
               detached: false,
+              name: 'beta',
               agentId: 'agent-2',
               outputTail: '',
               startedAt: '2026-01-01T00:00:02.000Z',
@@ -2116,12 +2124,10 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
           ],
         }),
       );
-      // Both cards carry the shared profile label — display-name matching
-      // alone would cross-wire the two agents.
       const names = projected.blocks
         .filter((block) => block.kind === 'subagent')
         .map((block) => (block.kind === 'subagent' ? block.name : ''));
-      expect(names).toEqual(['coder', 'coder']);
+      expect(names).toEqual(['alpha', 'beta']);
       const resumed = projected.blocks.find(
         (block) => block.kind === 'subagent-event' && block.event === 'resumed',
       );
@@ -2293,9 +2299,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       ]);
     });
 
-    it('resolves a cold-page AgentSend target from the successful result payload', () => {
-      // Spawn turn paged out; the current window only shows the AgentSend
-      // call. Its success output names the canonical target id.
+    it('resolves a cold-page AgentSend target from the projected stable name', () => {
       const projected = projectAgentTranscriptView(
         createViewState('session_test'),
         'main',
@@ -2325,12 +2329,6 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
                       name: 'AgentSend',
                       state: 'done',
                       input: { target: 'alpha', message: 'ping' },
-                      output: JSON.stringify({
-                        message_id: 'msg-1',
-                        status: 'queued',
-                        deduplicated: false,
-                        target: { task_name: 'alpha', agent_id: 'agent-1' },
-                      }),
                       startedAt: '2026-01-01T00:00:31.000Z',
                     },
                   ],
@@ -2344,6 +2342,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               kind: 'subagent',
               state: 'running',
               detached: false,
+              name: 'alpha',
               agentId: 'agent-1',
               outputTail: '',
               startedAt: '2026-01-01T00:00:01.000Z',

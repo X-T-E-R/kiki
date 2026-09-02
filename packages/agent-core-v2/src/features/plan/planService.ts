@@ -116,7 +116,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       (toolName === 'EnterPlanMode' || toolName === 'ExitPlanMode')
     ) {
       event.veto(
-        denyToolExecution(`${toolName} is unavailable for subagents.`),
+        denyToolExecution('plan mode is only available to the main agent'),
       );
       return;
     }

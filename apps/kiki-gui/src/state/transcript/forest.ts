@@ -97,6 +97,7 @@ export function taskItemsFromTranscriptTasks(
         id: task.taskId,
         agentId: task.agentId,
         kind: task.kind,
+        name: task.name,
         description: task.description,
         status: task.state,
         startedAt: task.startedAt,
@@ -302,7 +303,7 @@ export function liveSourcesFromAgentSnapshots(
         subagentId: task.agentId,
         parentAgentId,
         parentToolCallId: byId.get(task.agentId)?.parentToolCallId,
-        name: byId.get(task.agentId)?.name ?? task.description ?? task.agentId,
+        name: task.name ?? byId.get(task.agentId)?.name ?? task.agentId,
         status: task.state,
         summary: task.resultSummary,
         error: task.error,
@@ -317,27 +318,11 @@ export function liveSourcesFromAgentSnapshots(
           if (frame.kind !== 'tool' || frame.agentRefs === undefined) continue;
           for (const ref of frame.agentRefs) {
             const existing = byId.get(ref.agentId);
-            const input = frame.input as {
-              profile?: unknown;
-              subagent_type?: unknown;
-              subagentType?: unknown;
-              description?: unknown;
-            } | undefined;
-            const named =
-              typeof input?.profile === 'string' && input.profile !== ''
-                ? input.profile
-                : typeof input?.subagent_type === 'string' && input.subagent_type !== ''
-                  ? input.subagent_type
-                  : typeof input?.subagentType === 'string' && input.subagentType !== ''
-                    ? input.subagentType
-                    : typeof input?.description === 'string' && input.description !== ''
-                      ? input.description
-                      : undefined;
             byId.set(ref.agentId, {
               subagentId: ref.agentId,
               parentAgentId,
               parentToolCallId: frame.toolCallId,
-              name: named ?? existing?.name ?? ref.agentId,
+              name: existing?.name ?? ref.agentId,
               status: existing?.status ?? 'running',
               summary: existing?.summary,
               error: existing?.error,
