@@ -28,6 +28,7 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -63,9 +64,11 @@ import {
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
 import { resolveExternalPermissionCeiling } from './permissionCeiling';
 import {
+  EXTERNAL_DELEGATION_SESSION_PROVISION_KEY,
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   classifyExternalFailureCode,
   externalFailureDescription,
+  isExternalDelegationSessionProvision,
   type DispatchUsageView,
   type DispatchWaitRequest,
   type DispatchWaitView,
@@ -164,11 +167,6 @@ interface DispatchTranscriptBoundary {
 }
 
 const STORE_KEY = 'root';
-const EXTERNAL_SESSION_BOOTSTRAP_ENV = [
-  'KIKI_EXTERNAL_WORKSPACE_PATH',
-  'KIKI_EXTERNAL_MODEL_ALIAS',
-  'KIKI_EXTERNAL_THINKING_EFFORT',
-] as const;
 const TASK_NAME = /^(?!root$)[a-z0-9_]+$/;
 const ACTIVE = new Set<ExternalDispatchStatus>(['queued', 'running']);
 const EXTERNAL_FAILURE_MESSAGE_MAX_BYTES = 512;
@@ -192,7 +190,7 @@ export class SessionExternalDelegationService
   private readonly dispatchLineages = new Map<string, Set<string>>();
   private readonly interactionConsumerId: string;
   private readonly permissionCeiling: PermissionMode;
-  private readonly dedicatedSession: boolean;
+  private dedicatedSession = false;
   private interactionConsumerActive = false;
   private document: ExternalDelegationDocument | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -203,6 +201,7 @@ export class SessionExternalDelegationService
     @IFlagService private readonly flags: IFlagService,
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @ISessionContext session: ISessionContext,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
     @IAgentLifecycleService private readonly agents: IAgentLifecycleService,
     @ISessionDispatchService private readonly dispatchDomain: ISessionDispatchService,
     @IAgentCollaborationMessagingService private readonly messaging: IAgentCollaborationMessagingService,
@@ -218,9 +217,6 @@ export class SessionExternalDelegationService
   ) {
     super();
     this.permissionCeiling = resolveExternalPermissionCeiling((name) => bootstrap.getEnv(name));
-    this.dedicatedSession = EXTERNAL_SESSION_BOOTSTRAP_ENV.every(
-      (name) => bootstrap.getEnv(name)?.trim(),
-    );
     this.scope = session.scope('external-delegation');
     this.sessionId = session.sessionId;
     this.interactionConsumerId = `external-delegation:${this.sessionId}`;
@@ -554,6 +550,10 @@ export class SessionExternalDelegationService
   }
 
   private async load(): Promise<void> {
+    const session = await this.metadata.read();
+    this.dedicatedSession = isExternalDelegationSessionProvision(
+      session.custom?.[EXTERNAL_DELEGATION_SESSION_PROVISION_KEY],
+    );
     this.document = await this.store.get<ExternalDelegationDocument>(this.scope, STORE_KEY);
     if (this.document !== undefined) {
       await this.migrateTranscriptBounds(this.document);
