@@ -11,14 +11,21 @@ import {
 } from '../lib/settings';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
+import { AdvancedSection } from './settings/AdvancedSection';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
-import { CapabilitiesSection } from './settings/CapabilitiesSection';
+import { AutomationSection } from './settings/AutomationSection';
 import { ConnectionSection } from './settings/ConnectionSection';
+import { ExperimentalSection } from './settings/ExperimentalSection';
 import { GeneralSection } from './settings/GeneralSection';
+import { McpSection } from './settings/McpSection';
+import { PluginsSection } from './settings/PluginsSection';
+import { RuntimeSection } from './settings/RuntimeSection';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsFlashContext } from './settings/SectionCard';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
+import { SkillsSection } from './settings/SkillsSection';
+import { SubagentsSection } from './settings/SubagentsSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
 import { SettingsWorkspaceScopeContext } from './settings/workspaceScope';
 import { WorkspacesSection } from './settings/WorkspacesSection';
@@ -118,26 +125,30 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const resolution = resolveSettingsRoute(section, hash);
   const active: SectionId | null =
     resolution.status === 'ok' ? (resolution.section as SectionId) : null;
-  // Workspace-scoped sections (Capabilities' MCP card today) report the
-  // workspace their edits target; the scope header names it. Reset on page
-  // change — the next section reports its own selection.
+  // Workspace-scoped sections (Skills' catalog, MCP's config card) report
+  // the workspace their edits target; the scope header names it. Reset on
+  // page change — the next section reports its own selection.
   const [workspaceScopeName, setWorkspaceScopeName] = useState<string | null>(null);
   useEffect(() => { setWorkspaceScopeName(null); }, [active]);
 
   // Canonicalize legacy / card-moved targets in place: replace, never push,
   // and bypass the dirty guard — this is a redirect, not a user navigation.
   // A resolved tab (legacy `/settings/models` → `ai?tab=models`) is merged
-  // into the existing query so server/token deep-link params survive.
+  // into the existing query so server/token deep-link params survive. A
+  // legacy card hash (`#st-card-sidecar`) is rewritten to its canonical card
+  // so the scroll + flash lands on the renamed target.
   useEffect(() => {
     if (resolution.status !== 'ok') return;
     const params = new URLSearchParams(search);
     const sectionMoved = resolution.section !== section
       && !(section === undefined && resolution.section === 'general');
     const tabMoved = resolution.tab !== undefined && params.get('tab') !== resolution.tab;
-    if (!sectionMoved && !tabMoved) return;
+    const targetHash = resolution.cardId !== undefined ? `#${resolution.cardId}` : hash;
+    const cardMoved = targetHash !== hash;
+    if (!sectionMoved && !tabMoved && !cardMoved) return;
     if (resolution.tab !== undefined) params.set('tab', resolution.tab);
     const query = params.toString();
-    rawNavigate(`/settings/${resolution.section}${query === '' ? '' : `?${query}`}${hash}`, { replace: true });
+    rawNavigate(`/settings/${resolution.section}${query === '' ? '' : `?${query}`}${targetHash}`, { replace: true });
   }, [resolution, section, search, hash, rawNavigate]);
 
   // Ctrl+, arrives with this flag; clicking Settings in the sidebar does not,
@@ -190,8 +201,15 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'ai' ? <AiSection />
     : active === 'connection' ? <ConnectionSection />
     : active === 'agents' ? <AgentsSection />
-    : active === 'capabilities' ? <CapabilitiesSection />
+    : active === 'subagents' ? <SubagentsSection />
+    : active === 'skills' ? <SkillsSection />
+    : active === 'mcp' ? <McpSection />
+    : active === 'plugins' ? <PluginsSection />
+    : active === 'automation' ? <AutomationSection />
     : active === 'workspaces' ? <WorkspacesSection />
+    : active === 'runtime' ? <RuntimeSection />
+    : active === 'experimental' ? <ExperimentalSection />
+    : active === 'advanced' ? <AdvancedSection />
     : <AboutSection />;
 
   return (
