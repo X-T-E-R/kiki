@@ -525,20 +525,6 @@ function promptContentParts(content: unknown): MessageContentPart[] {
   return content.filter(isPromptContentPart);
 }
 
-function spawnNameFromToolArgs(args: unknown, agentId: string): string | undefined {
-  if (typeof args !== 'object' || args === null) return undefined;
-  const record = args as Record<string, unknown>;
-  const named =
-    record['profile']
-    ?? record['subagent_type']
-    ?? record['subagentType']
-    ?? record['name']
-    ?? record['subagentName'];
-  if (typeof named === 'string' && named.trim() !== '') return named.trim();
-  void agentId;
-  return undefined;
-}
-
 function spawnInstructionFromToolArgs(args: unknown, agentId: string): string | undefined {
   if (typeof args !== 'object' || args === null) return undefined;
   const record = args as Record<string, unknown>;
@@ -758,72 +744,19 @@ function resumeTargetsFromToolArgs(args: unknown): readonly string[] {
   return targets;
 }
 
-/**
- * The stable address of a child is its explicit `input.name` from the spawn
- * call — NOT the block display name, which is profile-first and identical
- * across same-profile siblings. `nameToAgentId` is that address map; the
- * block-name fallback is only safe when exactly one known agent carries it.
- */
 function resolveKnownAgentId(
   raw: string,
   byAgent: ReadonlyMap<string, SubagentBlock>,
   agentIdsWithTasks: ReadonlySet<string>,
   nameToAgentId: ReadonlyMap<string, string>,
 ): string | undefined {
-  if (byAgent.has(raw) || agentIdsWithTasks.has(raw)) return raw;
-  const mapped = nameToAgentId.get(raw);
-  if (mapped !== undefined) return mapped;
-  let match: string | undefined;
-  for (const block of byAgent.values()) {
-    if (block.name !== raw) continue;
-    if (match !== undefined) return undefined; // ambiguous display name — never guess
-    match = block.subagentId;
-  }
-  return match;
-}
-
-/** The explicit address name on a tool call (`AgentRun({name})`), if present. */
-function explicitNameFromToolArgs(args: unknown): string | undefined {
-  if (typeof args !== 'object' || args === null) return undefined;
-  const record = args as Record<string, unknown>;
-  const named = record['name'] ?? record['subagentName'];
-  return typeof named === 'string' && named.trim() !== '' ? named.trim() : undefined;
+  return byAgent.has(raw) || agentIdsWithTasks.has(raw) ? raw : nameToAgentId.get(raw);
 }
 
 function sendTargetFromToolArgs(args: unknown): string | undefined {
   if (typeof args !== 'object' || args === null) return undefined;
   const target = (args as Record<string, unknown>)['target'];
   return typeof target === 'string' && target.trim() !== '' ? target.trim() : undefined;
-}
-
-/**
- * A successful AgentSend result carries the resolved canonical id:
- * `{ target: { task_name, agent_id } }`. This is the only page-local evidence
- * when the original spawn turn has been paged out (send frames never get
- * agentRefs — spawning semantics do not apply to message injection).
- */
-function agentSendTargetFromOutput(
-  output: unknown,
-): { readonly agentId: string; readonly taskName?: string } | undefined {
-  let parsed: unknown = output;
-  if (typeof parsed === 'string') {
-    try {
-      parsed = JSON.parse(parsed);
-    } catch {
-      return undefined;
-    }
-  }
-  if (typeof parsed !== 'object' || parsed === null) return undefined;
-  const target = (parsed as Record<string, unknown>)['target'];
-  if (typeof target !== 'object' || target === null) return undefined;
-  const record = target as Record<string, unknown>;
-  const id = record['agent_id'] ?? record['agentId'];
-  if (typeof id !== 'string' || id.trim() === '') return undefined;
-  const taskName = record['task_name'] ?? record['taskName'];
-  return {
-    agentId: id.trim(),
-    taskName: typeof taskName === 'string' && taskName.trim() !== '' ? taskName.trim() : undefined,
-  };
 }
 
 function terminalEventForStatus(
@@ -875,9 +808,13 @@ function subagentBlocksFromSnapshot(
   // entries are emitted for admitted runs only — the global roster must not
   // leak off-page history into this page.
   const admittedTaskIds = new Set<string>();
-  // Stable-name address map: explicit spawn `input.name` (and normalized
-  // agentRefs on resume/send frames) → canonical agent id.
-  const nameToAgentId = new Map<string, string>();
+  const nameToAgentId = new Map(
+    tasks.flatMap((task) =>
+      task.agentId === undefined || task.name === undefined
+        ? []
+        : [[task.name, task.agentId] as const],
+    ),
+  );
   const byAgent = new Map<string, SubagentBlock>();
   const rawEvents: RawSubagentEvent[] = [];
   const spawnMarked = new Set<string>();
@@ -896,7 +833,7 @@ function subagentBlocksFromSnapshot(
         parentToolCallId: existing?.parentToolCallId,
         parentTurnId:
           existing?.parentTurnId ?? (timestampMs(startedAt) === undefined ? previousTurnId : undefined),
-        name: existing?.name ?? task.description ?? task.agentId,
+        name: task.name ?? existing?.name ?? task.agentId,
         description: existing?.description ?? task.description,
         instruction: existing?.instruction,
         model: existing?.model,
@@ -931,23 +868,6 @@ function subagentBlocksFromSnapshot(
       for (const frame of step.frames) {
         if (frame.kind !== 'tool') continue;
         const frameAt = frame.startedAt ?? step.startedAt ?? item.startedAt;
-        // Address bookkeeping: a frame with exactly one normalized agentRef
-        // ties this call's explicit name (spawn `name`) or raw ref (resume /
-        // send target on engine-normalized frames) to a canonical id.
-        if (frame.agentRefs !== undefined && frame.agentRefs.length === 1) {
-          const refId = frame.agentRefs[0]!.agentId;
-          const explicit = explicitNameFromToolArgs(frame.input);
-          if (explicit !== undefined && explicit !== refId) nameToAgentId.set(explicit, refId);
-          for (const raw of resumeTargetsFromToolArgs(frame.input)) {
-            if (raw !== refId) nameToAgentId.set(raw, refId);
-          }
-          const sendRaw = frame.name === 'AgentSend' ? sendTargetFromToolArgs(frame.input) : undefined;
-          if (sendRaw !== undefined && sendRaw !== refId) nameToAgentId.set(sendRaw, refId);
-        }
-        // Mid-run lifecycle: a resume call re-prompts an existing agent, an
-        // AgentSend call injects a message into it. Neither carries agentRefs
-        // on the wire, so both are recognized by tool args against the agents
-        // this page already knows (spawn taskref / frame refs / task roster).
         const resumedTargets = new Set<string>();
         for (const raw of resumeTargetsFromToolArgs(frame.input)) {
           const targetId = resolveKnownAgentId(raw, byAgent, tasksByAgentKeySet, nameToAgentId);
@@ -964,24 +884,10 @@ function subagentBlocksFromSnapshot(
         }
         if (frame.name === 'AgentSend') {
           const target = sendTargetFromToolArgs(frame.input);
-          // Cold-page path: the spawn turn (and thus the name map) may be
-          // paged out, but a successful send result still names the canonical
-          // target id — trust it first and learn the address for later frames.
-          const resolvedOutput =
-            frame.state === 'done' ? agentSendTargetFromOutput(frame.output) : undefined;
-          if (resolvedOutput !== undefined) {
-            if (target !== undefined && target !== resolvedOutput.agentId) {
-              nameToAgentId.set(target, resolvedOutput.agentId);
-            }
-            if (resolvedOutput.taskName !== undefined && resolvedOutput.taskName !== resolvedOutput.agentId) {
-              nameToAgentId.set(resolvedOutput.taskName, resolvedOutput.agentId);
-            }
-          }
           const targetId =
-            resolvedOutput?.agentId ??
-            (target === undefined
+            target === undefined
               ? undefined
-              : resolveKnownAgentId(target, byAgent, tasksByAgentKeySet, nameToAgentId));
+              : resolveKnownAgentId(target, byAgent, tasksByAgentKeySet, nameToAgentId);
           if (targetId !== undefined) {
             rawEvents.push({
               id: `subagent-event-${targetId}-send-${frame.toolCallId}`,
@@ -1005,11 +911,7 @@ function subagentBlocksFromSnapshot(
             parentAgentId,
             parentToolCallId: frame.toolCallId,
             parentTurnId: item.turnId,
-            name:
-              spawnNameFromToolArgs(frame.input, ref.agentId) ??
-              existing?.name ??
-              task?.description ??
-              ref.agentId,
+            name: task?.name ?? existing?.name ?? ref.agentId,
             description: existing?.description ?? task?.description ?? instruction,
             instruction: instruction ?? existing?.instruction,
             model: existing?.model,

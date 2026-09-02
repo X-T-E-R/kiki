@@ -178,6 +178,9 @@ describe('buildSwitcherItems — settings entries', () => {
   it('routes a settings pick at the card hash the settings page flashes', () => {
     expect(settingsCardRoute('general', 'st-card-appearance'))
       .toBe('/settings/general#st-card-appearance');
+    // Tabbed sections carry the tab so the card is mounted on arrival.
+    expect(settingsCardRoute('ai', 'st-card-thinking', 'defaults'))
+      .toBe('/settings/ai?tab=defaults#st-card-thinking');
   });
 
   it('ranks settings below session and message matches, capped at the limit', () => {

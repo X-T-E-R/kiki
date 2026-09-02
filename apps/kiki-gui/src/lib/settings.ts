@@ -1149,12 +1149,54 @@ export function capabilityGroupForCard(cardId: string): CapabilityGroupSpec | un
   return CAPABILITY_GROUPS.find((group) => group.cardIds.includes(cardId));
 }
 
+// ---- models & providers merged entry (settings redesign batch 2) ----
+
+/**
+ * The "Models & providers" entry is one navigation leaf with three stable
+ * tabs (redesign §3.3 / §7.1): the domain objects stay distinct — Provider
+ * owns credentials and lifecycle, Model owns catalog and metadata, Defaults
+ * owns new-session choices — but first-run and daily model switching are one
+ * continuous path, so they share an entry instead of two parallel pages.
+ * Tab ids double as the `?tab=` deep-link parameter.
+ */
+export const AI_SETTINGS_TABS = ['providers', 'models', 'defaults'] as const;
+export type AiSettingsTab = (typeof AI_SETTINGS_TABS)[number];
+
+/** Bare `/settings/ai` opens the daily-driver tab: browsing and switching models. */
+export const AI_SETTINGS_DEFAULT_TAB: AiSettingsTab = 'models';
+
+const AI_TAB_BY_CARD: Readonly<Record<string, AiSettingsTab>> = {
+  'st-card-auth': 'providers',
+  'st-card-providers': 'providers',
+  'st-card-providers-add': 'providers',
+  'st-card-models': 'models',
+  'st-card-catalog-refresh': 'models',
+  'st-card-global-defaults': 'defaults',
+  'st-card-request-identity': 'defaults',
+  'st-card-thinking': 'defaults',
+};
+
+export function aiTabForCard(cardId: string): AiSettingsTab | undefined {
+  return AI_TAB_BY_CARD[cardId];
+}
+
+/** Parse the `?tab=` query; unknown values fall through to the default tab. */
+export function normalizeAiTab(value: string | null | undefined): AiSettingsTab | undefined {
+  return AI_SETTINGS_TABS.find((tab) => tab === value);
+}
+
+export function aiTabLabelKey(tab: AiSettingsTab): I18nKey {
+  return `st.ai.tab.${tab}` as I18nKey;
+}
+
 // ---- settings search index ----
 
 export interface SettingsSearchSpecEntry {
   readonly section: string;
   /** DOM id the SectionCard renders so a result can scroll + flash it. */
   readonly cardId: string;
+  /** Tab inside a tabbed section (today only `ai`); hits switch to it first. */
+  readonly tab?: AiSettingsTab;
   readonly titleKey: I18nKey;
   readonly keywordKeys: readonly I18nKey[];
   /**
@@ -1169,8 +1211,7 @@ export interface SettingsSearchSpecEntry {
  * can label settings hits without importing the whole settings tree. */
 export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'general', labelKey: 'st.section.general' },
-  { id: 'models', labelKey: 'st.section.models' },
-  { id: 'providers', labelKey: 'st.section.providers' },
+  { id: 'ai', labelKey: 'st.section.ai' },
   { id: 'agents', labelKey: 'st.section.agents' },
   { id: 'capabilities', labelKey: 'st.section.capabilities' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
@@ -1185,12 +1226,14 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
  * visual groups (they never own a page), plus top-level leaves that belong to
  * no group — "About & updates" is one, per the adjudicated tree.
  *
- * Content has not moved yet (batches 2/3), so today's eight leaves are parked
- * in the group their content will end up in: models + providers under "AI
- * configuration", capabilities under "Capabilities & extensions", and so on.
- * "Data & advanced" therefore has no leaves this batch — groups with zero
- * leaves are part of the adjudicated topology but are not rendered (empty
- * group headers would be noise); they materialize when content lands.
+ * Content has partially moved: batch 2 merged models + providers into the
+ * single "Models & providers" entry under "AI configuration" (three tabs —
+ * the domain objects stay distinct inside). The remaining leaves stay parked
+ * in the group their content will end up in: capabilities under "Capabilities
+ * & extensions", and so on. "Data & advanced" therefore has no leaves this
+ * batch — groups with zero leaves are part of the adjudicated topology but
+ * are not rendered (empty group headers would be noise); they materialize
+ * when content lands.
  */
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
@@ -1208,7 +1251,7 @@ export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'app', labelKey: 'st.group.app', sections: ['general'] },
-  { kind: 'group', id: 'ai', labelKey: 'st.group.ai', sections: ['models', 'providers'] },
+  { kind: 'group', id: 'ai', labelKey: 'st.group.ai', sections: ['ai'] },
   { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents'] },
   { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['capabilities'] },
   { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection'] },
@@ -1224,10 +1267,10 @@ export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec
 
 /**
  * Who a section's edits apply to; rendered as page-header scope badges. Until
- * the batches 2/3 content split lands, today's pages mix scopes — General
- * holds device prefs AND server-side session defaults, Capabilities holds
- * server config AND per-workspace MCP — so a page carries every scope it
- * actually writes, never a flattering single one.
+ * the batch 3 content split lands, some pages mix scopes — General holds
+ * device prefs AND server-side session defaults, Capabilities holds server
+ * config AND per-workspace MCP — so a page carries every scope it actually
+ * writes, never a flattering single one.
  */
 export type SettingsScope = 'app' | 'server' | 'workspace';
 
@@ -1238,8 +1281,7 @@ export interface SettingsSectionMeta {
 
 export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>> = {
   general: { scopes: ['app', 'server'], purposeKey: 'st.purpose.general' },
-  models: { scopes: ['server'], purposeKey: 'st.purpose.models' },
-  providers: { scopes: ['server'], purposeKey: 'st.purpose.providers' },
+  ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },
   agents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.agents' },
   capabilities: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.capabilities' },
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
@@ -1254,15 +1296,17 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'general', cardId: 'st-card-compatibility-home', titleKey: 'st.compat.title', keywordKeys: ['st.compat.home', 'st.compat.credentialPath', 'st.compat.configImportTitle', 'st.compat.migrateUserSkills'] },
-  { section: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'], synonyms: ['模型目录', 'model catalog', '模型列表'] },
-  { section: 'models', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
-  { section: 'models', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
+  { section: 'ai', tab: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'], synonyms: ['模型目录', 'model catalog', '模型列表'] },
+  { section: 'ai', tab: 'models', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.sidecar.catalogInterval', 'st.sidecar.refreshOnStart'], synonyms: ['模型目录刷新', 'catalog refresh'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
   { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'] },
   { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
   { section: 'connection', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
-  { section: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'], synonyms: ['提供商', '供应商', 'provider', '认证'] },
-  { section: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty'], synonyms: ['提供商', '供应商', 'provider'] },
-  { section: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
+  { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'], synonyms: ['提供商', '供应商', 'provider', '认证'] },
+  { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty'], synonyms: ['提供商', '供应商', 'provider'] },
+  { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
   { section: 'capabilities', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs'], synonyms: ['能力', 'skills', '技能'] },
   { section: 'capabilities', cardId: 'st-card-runtime', titleKey: 'st.runtime.title', keywordKeys: ['st.runtime.cron', 'st.runtime.communication', 'st.runtime.resources', 'st.runtime.task', 'st.runtime.agents'] },
   { section: 'capabilities', cardId: 'st-card-experimental', titleKey: 'st.experimental.title', keywordKeys: ['st.experimental.hint', 'st.experimental.overrideLabel'] },
@@ -1280,6 +1324,8 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
 export interface SettingsSearchEntry {
   readonly section: string;
   readonly cardId: string;
+  /** Tab inside a tabbed section; the page switches to it before flashing. */
+  readonly tab?: AiSettingsTab;
   /** Breadcrumb: visual group › leaf section › card title. */
   readonly groupLabel: string;
   readonly sectionLabel: string;
@@ -1306,10 +1352,18 @@ export function buildSettingsSearchIndex(
     return {
       section: entry.section,
       cardId: entry.cardId,
+      tab: entry.tab,
       groupLabel,
       sectionLabel,
       title,
-      haystack: [title, groupLabel, sectionLabel, ...entry.keywordKeys.map((key) => t(key)), ...(entry.synonyms ?? [])].join('\n').toLowerCase(),
+      haystack: [
+        title,
+        groupLabel,
+        sectionLabel,
+        ...(entry.tab === undefined ? [] : [t(aiTabLabelKey(entry.tab))]),
+        ...entry.keywordKeys.map((key) => t(key)),
+        ...(entry.synonyms ?? []),
+      ].join('\n').toLowerCase(),
     };
   });
 }
@@ -1329,17 +1383,27 @@ export function searchSettings(
 // ---- legacy / unknown settings route resolution ----
 
 export type SettingsRouteResolution =
-  | { readonly status: 'ok'; readonly section: string; readonly cardId?: string }
+  | { readonly status: 'ok'; readonly section: string; readonly cardId?: string; readonly tab?: AiSettingsTab }
   | { readonly status: 'unknown'; readonly section: string; readonly cardId?: string };
 
 /**
  * Hidden aliases for renamed sections, so an old bookmark still lands on its
- * content instead of the "unknown setting" page. Batch 1 renamed no section,
- * so the map starts empty; batches 2/3 add entries like `general → appearance`
- * as content moves. Card-level moves need no entry here — the card-aware
- * fallback in `resolveSettingsRoute` already follows the card.
+ * content instead of the "unknown setting" page. Batch 2 merged `models` and
+ * `providers` into the `ai` entry (redesign §10.3); batch 3 adds entries like
+ * `general → appearance` as content moves. Card-level moves need no entry
+ * here — the card-aware fallback in `resolveSettingsRoute` already follows
+ * the card.
  */
-export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> = {};
+export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> = {
+  models: 'ai',
+  providers: 'ai',
+};
+
+/** Which tab a legacy section bookmark maps to (redesign §10.3's route table). */
+const LEGACY_SECTION_TABS: Readonly<Record<string, AiSettingsTab>> = {
+  models: 'models',
+  providers: 'providers',
+};
 
 /** Canonical section owning a card id; the search spec is the one list that knows every card. */
 export function settingsSectionForCard(cardId: string): string | undefined {
@@ -1353,6 +1417,10 @@ export function settingsSectionForCard(cardId: string): string | undefined {
  * - Known section (directly or via a legacy alias) → that section; when the
  *   hash names a card that now lives elsewhere, the card wins, because the
  *   link predates a content move and the card is the precise half of it.
+ * - The merged `ai` entry also carries a tab: an explicit card hash picks its
+ *   owning tab (request identity / thinking live under `defaults`), otherwise
+ *   the legacy section's own tab mapping applies (`models → tab=models`,
+ *   `providers → tab=providers`).
  * - Unknown section with a recognizable card → the card's current section.
  * - Unknown section, no usable card → `unknown`; the page shows "this setting
  *   does not exist" with a search instead of silently falling back to general.
@@ -1364,18 +1432,24 @@ export function resolveSettingsRoute(
   const rawCard = hash.replace(/^#/, '');
   const cardId = rawCard.startsWith('st-card-') ? rawCard : undefined;
   const cardSection = cardId === undefined ? undefined : settingsSectionForCard(cardId);
+  const cardTab = cardId === undefined ? undefined : aiTabForCard(cardId);
   if (sectionParam === undefined || sectionParam === '') {
     return { status: 'ok', section: 'general', cardId };
   }
   const aliased = LEGACY_SETTINGS_SECTION_ALIASES[sectionParam] ?? sectionParam;
   if (SETTINGS_SECTIONS.some((candidate) => candidate.id === aliased)) {
     if (cardSection !== undefined && cardSection !== aliased) {
-      return { status: 'ok', section: cardSection, cardId };
+      return { status: 'ok', section: cardSection, cardId, tab: cardTab };
     }
-    return { status: 'ok', section: aliased, cardId };
+    return {
+      status: 'ok',
+      section: aliased,
+      cardId,
+      tab: aliased === 'ai' ? (cardTab ?? LEGACY_SECTION_TABS[sectionParam]) : undefined,
+    };
   }
   if (cardSection !== undefined) {
-    return { status: 'ok', section: cardSection, cardId };
+    return { status: 'ok', section: cardSection, cardId, tab: cardTab };
   }
   return { status: 'unknown', section: sectionParam, cardId };
 }

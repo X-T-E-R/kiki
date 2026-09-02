@@ -44,14 +44,12 @@ vi.mock('../state/connection', async (importOriginal) => {
   };
 });
 
-vi.mock('../lib/hostFileWrite', () => ({
-  hostFileWriteSupported: () => true,
-  writeHostFileText: (path: string, text: string) => writeMock(path, text),
-}));
-
-vi.mock('../lib/desktop', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../lib/desktop')>();
-  return { ...original, isDesktopRuntime: () => false };
+vi.mock('../host', () => {
+  const host = {
+    kind: 'browser',
+    writeFileText: (path: string, text: string) => writeMock(path, text),
+  };
+  return { useHost: () => host };
 });
 
 vi.mock('./CodeEditor', () => ({

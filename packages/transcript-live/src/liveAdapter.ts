@@ -82,8 +82,8 @@ import {
   type TurnState,
 } from '@moonshot-ai/transcript';
 
-import { toLegacyPhase } from '../legacyStatus/legacyStatus';
-import { projectPromptContentParts } from '../messages/messageProjection';
+import { toLegacyPhase } from './legacyPhase';
+import { projectPromptContentParts } from './promptProjection';
 
 export interface LiveAdapterInteraction {
   readonly id: string;
@@ -227,6 +227,7 @@ export class AgentTranscriptLiveAdapter {
   seedSubagentTask(info: {
     readonly taskId: string;
     readonly agentId: string;
+    readonly name?: string;
     readonly description: string;
     readonly status: string;
     readonly detached: boolean;
@@ -239,6 +240,7 @@ export class AgentTranscriptLiveAdapter {
       kind: 'subagent',
       state: 'running',
       detached: info.detached,
+      name: info.name,
       description: info.description,
       agentId: info.agentId,
       outputTail: prev?.outputTail ?? '',
@@ -1162,6 +1164,7 @@ export class AgentTranscriptLiveAdapter {
     time: number;
     subagentId: string;
     subagentName: string;
+    name?: string;
     parentToolCallId: string;
     description?: string;
     swarmIndex?: number;
@@ -1192,6 +1195,7 @@ export class AgentTranscriptLiveAdapter {
         kind: 'subagent',
         state: 'running',
         detached: event.runInBackground,
+        name: event.name ?? event.subagentName,
         description: event.description ?? previous?.description,
         agentId: event.subagentId,
         outputTail: previous?.outputTail ?? '',
@@ -1241,6 +1245,7 @@ export class AgentTranscriptLiveAdapter {
         kind: 'subagent',
         state: 'running',
         detached: prev?.detached ?? true,
+        name: prev?.name,
         description: prev?.description,
         agentId: event.subagentId,
         outputTail: prev?.outputTail ?? '',
@@ -1264,6 +1269,7 @@ export class AgentTranscriptLiveAdapter {
             ? 'failed'
             : 'running',
       detached: prev?.detached ?? true,
+      name: prev?.name,
       description: prev?.description,
       agentId: event.subagentId,
       outputTail: prev?.outputTail ?? '',

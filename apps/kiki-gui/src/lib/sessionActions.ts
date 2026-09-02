@@ -7,12 +7,13 @@
 
 import type { Session } from '@moonshot-ai/protocol';
 
+import type { HostAdapter } from '../host/host';
 import { translate, type I18nKey, type Locale } from '../i18n/locale';
 import { API_CODES, ApiError, type KikiClient } from './client';
-import { isDesktopRuntime, saveBlobNative } from './desktop';
 
 export interface SessionActionContext {
   client: KikiClient;
+  host: HostAdapter;
   refreshSessions: () => void;
   navigate: (path: string) => void;
 }
@@ -64,8 +65,8 @@ export async function exportSessionArchive(
   session: Session,
 ): Promise<boolean> {
   const { blob, filename } = await ctx.client.exportSession(session.id);
-  if (isDesktopRuntime()) {
-    return saveBlobNative(blob, filename);
+  if (ctx.host.saveBlob !== undefined) {
+    return ctx.host.saveBlob(blob, filename);
   }
   const url = URL.createObjectURL(blob);
   try {

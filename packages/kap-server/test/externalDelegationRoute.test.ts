@@ -6,6 +6,12 @@ import { Writable } from 'node:stream';
 import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import {
+  ISessionExternalDelegationProvisionStore,
+  ISessionManager,
+  resumeSessionById,
+} from '@moonshot-ai/agent-core-v2';
+
 import { type RunningServer, startServer } from '../src/start';
 import { externalDelegationAuthorityFromEnv } from '../src/mcp/externalDelegationAuthority';
 import { authHeaders } from './helpers/auth';
@@ -113,6 +119,21 @@ describe('external delegation REST facade', () => {
       delegationId: expect.stringMatching(/^delegation_/),
       dispatchables: expect.arrayContaining([{ kind: 'main' }]),
     });
+
+    const dispatched = await envelope(
+      await fetch(
+        `${base}/api/v2/sessions/${admittedSessionId}/external-delegation/dispatch`,
+        {
+          method: 'POST',
+          headers: authHeaders(server!, {
+            'content-type': 'application/json',
+            'x-kiki-delegation-token': 'DEDICATED_SECRET',
+          }),
+          body: JSON.stringify({ target: 'main', message: 'verify structured provision' }),
+        },
+      ),
+    );
+    expect(dispatched.msg).not.toMatch(/dedicated external session/i);
   });
 
   async function createSession(): Promise<string> {
@@ -171,6 +192,9 @@ describe('external delegation Session bootstrap', () => {
     const first = await listRoot(server, base, 'session_workspace_a');
     expect(first.code).toBe(0);
     expect(first.data.delegationId).toMatch(/^delegation_/);
+    expect(first.data.dispatchables).toEqual(expect.arrayContaining([{ kind: 'main' }]));
+    const dispatched = await dispatchMain(server, base, 'session_workspace_a');
+    expect(dispatched).toMatchObject({ code: 0, data: { target: 'main' } });
     await server.close();
 
     server = await startServer({
@@ -186,6 +210,7 @@ describe('external delegation Session bootstrap', () => {
     const second = await listRoot(server, base, 'session_workspace_a');
     expect(second.code).toBe(0);
     expect(second.data.delegationId).toBe(first.data.delegationId);
+    expect(second.data.dispatchables).toEqual(expect.arrayContaining([{ kind: 'main' }]));
   });
 
   it('applies an operator-updated model binding to an existing delegated Session', async () => {
@@ -310,6 +335,146 @@ describe('external delegation Session bootstrap', () => {
     expect(crossed.msg).toMatch(/Session is not admitted/i);
   });
 
+  it('ignores profile metadata attempts to overwrite or delete operator ownership', async () => {
+    const home = join(root!, 'home');
+    const workspace = join(root!, 'workspace');
+    await Promise.all([mkdir(home), mkdir(workspace)]);
+    await writeStubConfig(home);
+    const sessionId = 'session_profile_attack';
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sessionId, workspace),
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.port}`;
+
+    for (const value of [
+      { version: 1, ownership: 'attached' },
+      null,
+    ]) {
+      const response = await fetch(`${base}/api/v1/sessions/${sessionId}/profile`, {
+        method: 'POST',
+        headers: authHeaders(server, { 'content-type': 'application/json' }),
+        body: JSON.stringify({
+          metadata: { externalDelegationProvision: value },
+        }),
+      });
+      const patched = await envelope(response);
+      expect(patched.code).toBe(0);
+      expect(JSON.stringify(patched.data)).toContain('externalDelegationProvision');
+      const root = await listRoot(server, base, sessionId);
+      expect(root.data.dispatchables).toEqual(expect.arrayContaining([{ kind: 'main' }]));
+    }
+  });
+
+  it('does not copy operator ownership into a regular fork', async () => {
+    const home = join(root!, 'home');
+    const workspace = join(root!, 'workspace');
+    await Promise.all([mkdir(home), mkdir(workspace)]);
+    await writeStubConfig(home);
+    const sourceId = 'session_fork_source';
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sourceId, workspace),
+    });
+    servers.push(server);
+    const source = await resumeSessionById(server.core.accessor, sourceId);
+    if (source === undefined) throw new Error('source session unavailable');
+    const fork = await server.core.accessor.get(ISessionManager).fork({ sourceSessionId: sourceId });
+
+    await expect(
+      fork.accessor.get(ISessionExternalDelegationProvisionStore).read(),
+    ).resolves.toBeUndefined();
+  });
+
+  it('explicit attached ownership clears a prior dedicated provision across restart', async () => {
+    const home = join(root!, 'home');
+    const workspace = join(root!, 'workspace');
+    await Promise.all([mkdir(home), mkdir(workspace)]);
+    await writeStubConfig(home);
+    const sessionId = 'session_ownership_clear';
+    let server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sessionId, workspace),
+    });
+    await server.close();
+
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: {
+        principalId: `principal-${sessionId}`,
+        sessionId,
+        token: `token-${sessionId}`,
+        sessionOwnership: 'attached',
+      },
+    });
+    await server.close();
+
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: {
+        principalId: `principal-${sessionId}`,
+        sessionId,
+        token: `token-${sessionId}`,
+        sessionOwnership: 'attached',
+      },
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.port}`;
+    const profile = await fetch(`${base}/api/v1/sessions/${sessionId}/profile`, {
+      method: 'POST',
+      headers: authHeaders(server, { 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        metadata: {
+          externalDelegationProvision: { version: 1, ownership: 'dedicated' },
+        },
+      }),
+    });
+    expect((await envelope(profile)).code).toBe(0);
+    const listed = await listRoot(server, base, sessionId);
+    expect(listed.code).toBe(0);
+    expect(listed.data.dispatchables ?? []).not.toEqual(expect.arrayContaining([{ kind: 'main' }]));
+    const rejected = await dispatchMain(server, base, sessionId);
+    expect(rejected.code).not.toBe(0);
+    expect(rejected.msg).toMatch(/dedicated external session/i);
+  });
+
+  it('classifies environment authorities by Session provisioning', () => {
+    expect(externalDelegationAuthorityFromEnv({
+      KIKI_EXTERNAL_PRINCIPAL_ID: 'principal',
+      KIKI_EXTERNAL_SESSION_ID: 'session_attached',
+      KIKI_EXTERNAL_DELEGATION_TOKEN: 'token',
+    })).toMatchObject({ sessionOwnership: 'attached', sessionBootstrap: undefined });
+    expect(externalDelegationAuthorityFromEnv({
+      KIKI_EXTERNAL_PRINCIPAL_ID: 'principal',
+      KIKI_EXTERNAL_SESSION_ID: 'session_dedicated',
+      KIKI_EXTERNAL_DELEGATION_TOKEN: 'token',
+      KIKI_EXTERNAL_WORKSPACE_PATH: 'C:\\workspace',
+      KIKI_EXTERNAL_MODEL_ALIAS: 'model',
+      KIKI_EXTERNAL_THINKING_EFFORT: 'high',
+    })).toMatchObject({ sessionOwnership: 'dedicated' });
+  });
+
   it('fails closed on partial environment authority', () => {
     expect(externalDelegationAuthorityFromEnv({})).toBeUndefined();
     expect(() =>
@@ -364,7 +529,26 @@ async function listRoot(
   return response.json() as Promise<{
     code: number;
     msg: string;
-    data: { delegationId?: string };
+    data: { delegationId?: string; dispatchables?: Array<{ kind: string }> };
+  }>;
+}
+
+async function dispatchMain(server: RunningServer, base: string, sessionId: string) {
+  const response = await fetch(
+    `${base}/api/v2/sessions/${sessionId}/external-delegation/dispatch`,
+    {
+      method: 'POST',
+      headers: authHeaders(server, {
+        'content-type': 'application/json',
+        'x-kiki-delegation-token': `token-${sessionId}`,
+      }),
+      body: JSON.stringify({ target: 'main', message: 'verify structured provision' }),
+    },
+  );
+  return response.json() as Promise<{
+    code: number;
+    msg: string;
+    data: { target?: string };
   }>;
 }
 

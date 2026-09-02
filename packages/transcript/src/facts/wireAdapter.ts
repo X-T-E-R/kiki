@@ -371,6 +371,7 @@ export class TranscriptWireAdapter {
           kind: 'subagent',
           state: 'running',
           detached,
+          name: stringOf(record['name']) ?? stringOf(record['subagentName']),
           description: stringOf(record['description']) ?? previous?.description,
           agentId: subagentId,
           outputTail: previous?.outputTail ?? '',
@@ -420,6 +421,7 @@ export class TranscriptWireAdapter {
           kind: 'subagent',
           state: 'running',
           detached: previous?.detached ?? true,
+          name: previous?.name,
           description: previous?.description,
           agentId: subagentId,
           outputTail: previous?.outputTail ?? '',
@@ -444,6 +446,7 @@ export class TranscriptWireAdapter {
               ? 'failed'
               : 'running',
         detached: previous?.detached ?? true,
+        name: previous?.name,
         description: previous?.description,
         agentId: subagentId,
         outputTail: previous?.outputTail ?? '',

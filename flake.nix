@@ -75,6 +75,7 @@
         ./packages/pi-tui
         ./packages/protocol
         ./packages/transcript
+        ./packages/transcript-live
         ./packages/tree-sitter-bash
         ./apps/kimi-code
         ./apps/kiki-gui
@@ -100,6 +101,7 @@
         "@moonshot-ai/pi-tui"
         "@moonshot-ai/protocol"
         "@moonshot-ai/transcript"
+        "@kiki/transcript-live"
         "@moonshot-ai/tree-sitter-bash"
         "@moonshot-ai/kimi-code"
         "@kiki/gui"

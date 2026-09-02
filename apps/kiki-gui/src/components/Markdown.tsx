@@ -10,9 +10,9 @@ import { memo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Streamdown, defaultRemarkPlugins, type Components } from 'streamdown';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { hostFileOpsSupported, openHostPath, revealHostPath } from '../lib/hostFileOps';
 import {
   resolveFileHref,
   unwrapFileLinkTarget,
@@ -92,6 +92,7 @@ const REMARK_PLUGINS = [remarkLocalFileLinks];
  * copy-absolute plus the desktop opener pair; external links get open/copy.
  */
 function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNode }) {
+  const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -114,18 +115,18 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
         label: t('file.copyAbsolutePath'),
         run: () => copyTextToClipboard(filePath),
       },
-      ...(hostFileOpsSupported()
+      ...(host.revealPath !== undefined && host.openPath !== undefined
         ? [
             { separator: true } as const,
             {
               key: 'show-in-folder',
               label: t('file.showInFolder'),
-              run: () => revealHostPath(filePath),
+              run: () => host.revealPath?.(filePath),
             } as const,
             {
               key: 'open-default-app',
               label: t('file.openDefaultApp'),
-              run: () => openHostPath(filePath),
+              run: () => host.openPath?.(filePath),
             } as const,
           ]
         : []),

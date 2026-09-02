@@ -13,7 +13,11 @@ import {
 } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { IAgentPermissionModeService, type PermissionModeChangedContext } from './permissionMode';
+import {
+  constrainPermissionMode,
+  IAgentPermissionModeService,
+  type PermissionModeChangedContext,
+} from './permissionMode';
 import {
   permissionModeConfiguredKey,
   permissionModeKey,
@@ -25,6 +29,7 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
 
   private readonly _onDidChangeMode = this._register(new Emitter<PermissionModeChangedContext>());
   readonly onDidChangeMode: Event<PermissionModeChangedContext> = this._onDidChangeMode.event;
+  private ceiling: PermissionMode | undefined;
 
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -45,11 +50,17 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
   }
 
   setMode(mode: PermissionMode): void {
+    const effective = this.ceiling === undefined ? mode : constrainPermissionMode(mode, this.ceiling);
     const previousMode = this.mode;
-    const changed = mode !== previousMode;
+    const changed = effective !== previousMode;
     if (!changed && this.agentState.get(permissionModeConfiguredKey)) return;
-    void this.dispatcher.dispatch(new PermissionSetMode({ mode }));
-    if (changed) this._onDidChangeMode.fire({ mode, previousMode });
+    void this.dispatcher.dispatch(new PermissionSetMode({ mode: effective }));
+    if (changed) this._onDidChangeMode.fire({ mode: effective, previousMode });
+  }
+
+  setModeCeiling(mode: PermissionMode): void {
+    this.ceiling = mode;
+    this.setMode(this.mode);
   }
 
   setModeAndBroadcast(mode: PermissionMode): void {

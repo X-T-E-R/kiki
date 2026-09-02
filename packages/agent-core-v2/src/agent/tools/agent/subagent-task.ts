@@ -15,6 +15,7 @@ type SubagentCompletion = {
 export type SubagentHandle = {
   readonly agentId: string;
   readonly profileName: string;
+  readonly name?: string;
   readonly parentToolCallId?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
