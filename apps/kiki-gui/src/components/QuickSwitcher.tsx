@@ -75,7 +75,7 @@ export function QuickSwitcher({
         cardId: entry.cardId,
         sectionLabel: entry.sectionLabel,
         title: entry.title,
-        route: settingsCardRoute(entry.section, entry.cardId),
+        route: settingsCardRoute(entry.section, entry.cardId, entry.tab),
       })),
     [settingsIndex, input],
   );

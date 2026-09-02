@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   appendExtraSkillDirs,
+  AI_SETTINGS_TABS,
+  aiTabForCard,
   buildSettingsSearchIndex,
   CAPABILITY_GROUPS,
   capabilityGroupForCard,
@@ -694,13 +696,13 @@ describe('remote /models probe', () => {
 
 describe('settings search index', () => {
   const t = (key: I18nKey): string => translate('en', key);
-  const labels = { general: 'General', models: 'Models' };
+  const labels = { general: 'General', ai: 'Models & providers' };
 
   it('matches card titles, section labels, and hint keywords', () => {
     const index = buildSettingsSearchIndex(labels, t);
     expect(index.length).toBeGreaterThan(10);
     expect(searchSettings(index, 'language')[0]?.cardId).toBe('st-card-language');
-    expect(searchSettings(index, 'Models').some((hit) => hit.section === 'models')).toBe(true);
+    expect(searchSettings(index, 'Models').some((hit) => hit.section === 'ai')).toBe(true);
     expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-experimental')).toBe(true);
     expect(searchSettings(index, 'denied subagent models').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-subagent-profiles')).toBe(true);
@@ -741,6 +743,19 @@ describe('settings search index', () => {
     }
     expect(new Set(SETTINGS_SEARCH_SPEC.map((entry) => entry.cardId)).size)
       .toBe(SETTINGS_SEARCH_SPEC.length);
+  });
+
+  it('assigns every ai-entry card to the tab that mounts it', () => {
+    const aiEntries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'ai');
+    expect(aiEntries.length).toBeGreaterThan(0);
+    for (const entry of aiEntries) {
+      expect(entry.tab, entry.cardId).toBeDefined();
+      expect(entry.tab).toBe(aiTabForCard(entry.cardId));
+    }
+    // Every tab owns at least one searchable card; no orphan tabs.
+    for (const tab of AI_SETTINGS_TABS) {
+      expect(aiEntries.some((entry) => entry.tab === tab), tab).toBe(true);
+    }
   });
 });
 
@@ -787,8 +802,7 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(new Set(placed).size).toBe(placed.length);
     expect(SETTINGS_NAV_TREE[0]).toMatchObject({ kind: 'group', id: 'app' });
     expect(SETTINGS_NAV_TREE.at(-1)).toEqual({ kind: 'leaf', section: 'about' });
-    expect(settingsGroupForSection('models')?.id).toBe('ai');
-    expect(settingsGroupForSection('providers')?.id).toBe('ai');
+    expect(settingsGroupForSection('ai')?.id).toBe('ai');
     expect(settingsGroupForSection('capabilities')?.id).toBe('extensions');
     expect(settingsGroupForSection('workspaces')?.id).toBe('system');
     expect(settingsGroupForSection('connection')?.id).toBe('system');
@@ -810,7 +824,7 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'server']);
     expect(SETTINGS_SECTION_META['capabilities']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
-    expect(SETTINGS_SECTION_META['models']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['ai']?.scopes).toEqual(['server']);
   });
 });
 
@@ -827,7 +841,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     expect(about?.groupLabel).toBe('');
     expect(index.filter((entry) => entry.section !== 'about').every((entry) => entry.groupLabel !== '')).toBe(true);
     // Group labels are indexed too, so "AI configuration" finds its leaves.
-    expect(searchSettings(index, 'AI configuration').some((hit) => hit.section === 'providers')).toBe(true);
+    expect(searchSettings(index, 'AI configuration').some((hit) => hit.section === 'ai')).toBe(true);
   });
 
   it.each([
@@ -859,19 +873,39 @@ describe('settings route resolver', () => {
   });
 
   it('passes known sections through and keeps a local card hash', () => {
-    expect(resolveSettingsRoute('models', '#st-card-thinking'))
-      .toEqual({ status: 'ok', section: 'models', cardId: 'st-card-thinking' });
+    expect(resolveSettingsRoute('ai', '#st-card-models'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-models', tab: 'models' });
+    expect(resolveSettingsRoute('ai', ''))
+      .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: undefined });
     expect(resolveSettingsRoute('about', ''))
       .toEqual({ status: 'ok', section: 'about', cardId: undefined });
+  });
+
+  it('redirects the legacy models/providers sections to the merged ai entry with their tab', () => {
+    // Redesign §10.3: /settings/models → /settings/ai?tab=models,
+    // /settings/providers → /settings/ai?tab=providers; request identity and
+    // thinking cards land on the defaults tab regardless of the legacy page.
+    expect(resolveSettingsRoute('models', ''))
+      .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'models' });
+    expect(resolveSettingsRoute('providers', ''))
+      .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'providers' });
+    expect(resolveSettingsRoute('models', '#st-card-request-identity'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-request-identity', tab: 'defaults' });
+    expect(resolveSettingsRoute('models', '#st-card-thinking'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-thinking', tab: 'defaults' });
+    expect(resolveSettingsRoute('providers', '#st-card-auth'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-auth', tab: 'providers' });
   });
 
   it('follows a card hash whose content moved to another section', () => {
     // A bookmark written before a content move: section says general, card
     // says the card now lives under capabilities — the precise half wins.
     expect(resolveSettingsRoute('general', '#st-card-mcp'))
-      .toEqual({ status: 'ok', section: 'capabilities', cardId: 'st-card-mcp' });
+      .toEqual({ status: 'ok', section: 'capabilities', cardId: 'st-card-mcp', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-workspaces'))
-      .toEqual({ status: 'ok', section: 'workspaces', cardId: 'st-card-workspaces' });
+      .toEqual({ status: 'ok', section: 'workspaces', cardId: 'st-card-workspaces', tab: undefined });
+    expect(resolveSettingsRoute('retired-section', '#st-card-models'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-models', tab: 'models' });
   });
 
   it('flags genuinely unknown sections instead of silently falling back to general', () => {

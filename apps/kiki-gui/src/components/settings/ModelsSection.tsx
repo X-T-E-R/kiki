@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ModelCatalogItem } from '@moonshot-ai/protocol';
+import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../../i18n';
 import { errorText } from '../../i18n/locale';
@@ -14,9 +14,9 @@ import {
 import { formatTokens } from '../../lib/time';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
-import { useDirtyReporter } from '../dirtyGuard';
+import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
-import { INPUT, PRIMARY_BUTTON, SMALL_INPUT } from '../ui';
+import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { useSavedTick } from './useSavedTick';
 
@@ -28,7 +28,7 @@ function requestIdentityDraftsEqual(
     && a.requestIdentityOverridesJson === b.requestIdentityOverridesJson;
 }
 
-function GlobalRequestIdentityCard() {
+export function GlobalRequestIdentityCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -88,13 +88,24 @@ function GlobalRequestIdentityCard() {
   );
 }
 
-export function ModelsSection() {
+/** Alias ids look like `fixture/kiki-pro`; show just the model half in chips. */
+function shortModelId(alias: string, providerId: string): string {
+  return alias.startsWith(`${providerId}/`) ? alias.slice(providerId.length + 1) : alias;
+}
+
+/**
+ * Tab 2 of the merged entry (redesign §3.3): the cross-provider model
+ * catalog — search everything, grouped by provider, metadata per row. The
+ * star picks the GLOBAL default model (and carries its provider along); the
+ * per-provider default is a separate concept, shown as a group-header chip
+ * and edited inside the provider editor on the Connections tab.
+ */
+export function ModelCatalogCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
+  const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
-  const [thinkingEnabled, setThinkingEnabled] = useState(true);
-  const [effort, setEffort] = useState('');
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
   const [modelQuery, setModelQuery] = useState('');
@@ -103,18 +114,12 @@ export function ModelsSection() {
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
   const items = modelsQuery.data?.items ?? [];
+  const providers = useMemo(
+    () => new Map((providersQuery.data?.items ?? []).map((provider) => [provider.id, provider])),
+    [providersQuery.data],
+  );
   const defaultModel = configQuery.data?.default_model;
   const defaultProvider = configQuery.data?.default_provider ?? '';
-  const defaultItem = items.find((item) => item.model === defaultModel);
-  const thinking = asRecord(configQuery.data?.thinking);
-
-  const syncThinking = useCallback(() => {
-    const configured = thinking?.['effort'];
-    setThinkingEnabled(thinking?.['enabled'] !== false);
-    setEffort(typeof configured === 'string' ? configured : (defaultItem?.default_effort ?? ''));
-  }, [defaultItem?.default_effort, thinking]);
-
-  useEffect(() => { syncThinking(); }, [syncThinking]);
 
   // Provider grouping: default provider's group first, default model first
   // inside its group; the search box filters by id, name, provider, or chip.
@@ -145,21 +150,7 @@ export function ModelsSection() {
         || a.provider.localeCompare(b.provider));
   }, [items, modelQuery, defaultModel, defaultProvider]);
 
-  const selectDefaultProvider = async (providerId: string) => {
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig({ default_provider: providerId });
-      queryClient.setQueryData(['config'], echoed);
-      ping();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Starring a model carries its provider along as the default provider.
+  // Starring a model carries its provider along as the global default provider.
   const selectDefaultModel = async (item: ModelCatalogItem) => {
     setBusy(true);
     setFeedback(null);
@@ -181,6 +172,176 @@ export function ModelsSection() {
       setBusy(false);
     }
   };
+
+  const catalogEmpty = !modelsQuery.isLoading && !modelsQuery.isError
+    && items.length === 0 && modelQuery.trim() === '';
+
+  return (
+    <SectionCard id="st-card-models" title={t('st.models.defaultTitle')}>
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <Hint>{t('st.models.catalogHint')}</Hint>
+          <span className="ml-auto"><SavedTick show={tick} /></span>
+        </div>
+        <input
+          type="search"
+          aria-label={t('st.models.searchAria')}
+          placeholder={t('st.models.searchPlaceholder')}
+          className={INPUT}
+          value={modelQuery}
+          onChange={(event) => { setModelQuery(event.target.value); }}
+        />
+        <div className="space-y-4">
+          {groups.map((group) => {
+            const provider: ProviderCatalogItem | undefined = providers.get(group.provider);
+            const providerDefault = provider?.default_model;
+            return (
+              <div key={group.provider}>
+                <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                  <p className="font-mono text-[11px] font-semibold text-ink-soft">{group.provider}</p>
+                  {group.provider === defaultProvider ? (
+                    <span className="rounded-full border border-success/30 bg-success/10 px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-success">{t('st.models.default')}</span>
+                  ) : null}
+                  {providerDefault !== undefined && providerDefault !== null && providerDefault !== '' ? (
+                    <span
+                      className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-ink-faint"
+                      title={t('st.models.providerDefaultHint')}
+                    >
+                      {t('st.models.providerDefault')} · {shortModelId(providerDefault, group.provider)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="space-y-1.5">
+                  {group.models.map((item) => (
+                    <ModelRow
+                      key={item.model}
+                      item={item}
+                      isDefault={item.model === defaultModel}
+                      busy={busy}
+                      onSetDefault={() => void selectDefaultModel(item)}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {modelQuery.trim() !== '' && groups.length === 0 ? (
+          <Hint>{t('st.models.searchEmpty', { query: modelQuery.trim() })}</Hint>
+        ) : null}
+        {catalogEmpty ? (
+          <div className="space-y-2 rounded-lg border border-dashed border-hairline-strong px-3 py-4">
+            <p className="text-[12.5px] text-ink-soft">{t('st.models.emptyCatalog')}</p>
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              onClick={() => { navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
+            >
+              {t('st.models.goProviders')}
+            </button>
+          </div>
+        ) : null}
+        {modelsQuery.isLoading ? <Hint>{t('st.models.loading')}</Hint> : null}
+        {modelsQuery.isError ? <InlineError error={modelsQuery.error} /> : null}
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
+}
+
+/**
+ * Tab 3 opener (redesign §3.3): the GLOBAL default provider/model new
+ * sessions start with. The provider is a plain select; the model is chosen
+ * by starring a row on the Available models tab, so this card links there
+ * instead of duplicating the picker. This is deliberately distinct from the
+ * per-provider default edited inside each provider.
+ */
+export function GlobalDefaultsCard() {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const navigate = useGuardedNavigate();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [tick, ping] = useSavedTick();
+
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
+  const defaultModel = configQuery.data?.default_model;
+  const defaultProvider = configQuery.data?.default_provider ?? '';
+
+  const selectDefaultProvider = async (providerId: string) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.patchConfig({ default_provider: providerId });
+      queryClient.setQueryData(['config'], echoed);
+      ping();
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SectionCard id="st-card-global-defaults" title={t('st.defaults.globalTitle')}>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-[11px] font-medium text-ink-soft">{t('st.models.providerLabel')}
+            <select
+              className={`${SMALL_INPUT} ml-2`}
+              value={defaultProvider}
+              disabled={busy}
+              onChange={(event) => void selectDefaultProvider(event.target.value)}
+            >
+              {(providersQuery.data?.items ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
+            </select>
+          </label>
+          <SavedTick show={tick} />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
+          <span className="font-medium text-ink-soft">{t('st.defaults.globalModelLabel')}</span>
+          <span className="font-mono text-[12px] text-ink">{defaultModel ?? t('st.auth.none')}</span>
+          <button
+            type="button"
+            className={SECONDARY_BUTTON}
+            onClick={() => { navigate('/settings/ai?tab=models'); }}
+          >
+            {t('st.defaults.pickModel')}
+          </button>
+        </div>
+        <Hint>{t('st.defaults.globalHint')}</Hint>
+        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
+}
+
+export function ThinkingCard() {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [thinkingEnabled, setThinkingEnabled] = useState(true);
+  const [effort, setEffort] = useState('');
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [tick, ping] = useSavedTick();
+
+  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const defaultModel = configQuery.data?.default_model;
+  const defaultItem = (modelsQuery.data?.items ?? []).find((item) => item.model === defaultModel);
+  const thinking = asRecord(configQuery.data?.thinking);
+
+  const syncThinking = useCallback(() => {
+    const configured = thinking?.['effort'];
+    setThinkingEnabled(thinking?.['enabled'] !== false);
+    setEffort(typeof configured === 'string' ? configured : (defaultItem?.default_effort ?? ''));
+  }, [defaultItem?.default_effort, thinking]);
+
+  useEffect(() => { syncThinking(); }, [syncThinking]);
 
   const saveThinking = async (enabled: boolean, nextEffort: string) => {
     setThinkingEnabled(enabled);
@@ -211,96 +372,57 @@ export function ModelsSection() {
   };
 
   return (
-    <div className="space-y-4">
-      <SectionCard id="st-card-models" title={t('st.models.defaultTitle')}>
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.models.providerLabel')}
-              <select
-                className={`${SMALL_INPUT} ml-2`}
-                value={defaultProvider}
-                disabled={busy}
-                onChange={(event) => void selectDefaultProvider(event.target.value)}
-              >
-                {(providersQuery.data?.items ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
-              </select>
-            </label>
-            <SavedTick show={tick} />
-          </div>
+    <SectionCard id="st-card-thinking" title={t('st.thinking.title')}>
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <Toggle label={t('st.thinking.enable')} checked={thinkingEnabled} disabled={busy} onChange={(checked) => void saveThinking(checked, effort)} />
+          <SavedTick show={tick} />
+        </div>
+        {defaultItem?.support_efforts !== undefined && defaultItem.support_efforts.length > 0 ? (
+          <select
+            className={SMALL_INPUT}
+            value={effort}
+            disabled={!thinkingEnabled || busy}
+            onChange={(event) => void saveThinking(thinkingEnabled, event.target.value)}
+          >
+            {defaultItem.support_efforts.map((level) => <option key={level} value={level}>{level}</option>)}
+          </select>
+        ) : (
           <input
-            type="search"
-            aria-label={t('st.models.searchAria')}
-            placeholder={t('st.models.searchPlaceholder')}
             className={INPUT}
-            value={modelQuery}
-            onChange={(event) => { setModelQuery(event.target.value); }}
+            value={effort}
+            disabled={!thinkingEnabled || busy}
+            onChange={(event) => { setEffort(event.target.value); }}
+            onBlur={() => void saveThinking(thinkingEnabled, effort)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void saveThinking(thinkingEnabled, effort);
+            }}
+            placeholder={t('st.thinking.placeholder')}
           />
-          <div className="space-y-4">
-            {groups.map((group) => (
-              <div key={group.provider}>
-                <div className="mb-1.5 flex items-center gap-2">
-                  <p className="font-mono text-[11px] font-semibold text-ink-soft">{group.provider}</p>
-                  {group.provider === defaultProvider ? (
-                    <span className="rounded-full border border-success/30 bg-success/10 px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-success">{t('st.models.default')}</span>
-                  ) : null}
-                </div>
-                <div className="space-y-1.5">
-                  {group.models.map((item) => (
-                    <ModelRow
-                      key={item.model}
-                      item={item}
-                      isDefault={item.model === defaultModel}
-                      busy={busy}
-                      onSetDefault={() => void selectDefaultModel(item)}
-                    />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-          {modelQuery.trim() !== '' && groups.length === 0 ? (
-            <Hint>{t('st.models.searchEmpty', { query: modelQuery.trim() })}</Hint>
-          ) : null}
-          {modelsQuery.isLoading ? <Hint>{t('st.models.loading')}</Hint> : null}
-          {modelsQuery.isError ? <InlineError error={modelsQuery.error} /> : null}
-          <FeedbackLine feedback={feedback} />
-        </div>
-      </SectionCard>
+        )}
+        <Hint>{t('st.thinking.hint')}</Hint>
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
+}
 
+/** Tab 2 body of the merged "Models & providers" entry. */
+export function ModelsTab() {
+  return (
+    <div className="space-y-4">
+      <ModelCatalogCard />
+    </div>
+  );
+}
+
+/** Tab 3 body: global default provider/model, request identity, thinking. */
+export function DefaultsTab() {
+  return (
+    <div className="space-y-4">
+      <GlobalDefaultsCard />
       <GlobalRequestIdentityCard />
-
-      <SectionCard id="st-card-thinking" title={t('st.thinking.title')}>
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <Toggle label={t('st.thinking.enable')} checked={thinkingEnabled} disabled={busy} onChange={(checked) => void saveThinking(checked, effort)} />
-            <SavedTick show={tick} />
-          </div>
-          {defaultItem?.support_efforts !== undefined && defaultItem.support_efforts.length > 0 ? (
-            <select
-              className={SMALL_INPUT}
-              value={effort}
-              disabled={!thinkingEnabled || busy}
-              onChange={(event) => void saveThinking(thinkingEnabled, event.target.value)}
-            >
-              {defaultItem.support_efforts.map((level) => <option key={level} value={level}>{level}</option>)}
-            </select>
-          ) : (
-            <input
-              className={INPUT}
-              value={effort}
-              disabled={!thinkingEnabled || busy}
-              onChange={(event) => { setEffort(event.target.value); }}
-              onBlur={() => void saveThinking(thinkingEnabled, effort)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') void saveThinking(thinkingEnabled, effort);
-              }}
-              placeholder={t('st.thinking.placeholder')}
-            />
-          )}
-          <Hint>{t('st.thinking.hint')}</Hint>
-          <FeedbackLine feedback={feedback} />
-        </div>
-      </SectionCard>
+      <ThinkingCard />
     </div>
   );
 }

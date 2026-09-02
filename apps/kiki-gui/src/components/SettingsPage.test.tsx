@@ -120,7 +120,7 @@ describe('SettingsPage scope header workspace sync', () => {
   });
 
   it('shows no workspace name on pages without a workspace surface', async () => {
-    const container = await renderSettings('/settings/models');
+    const container = await renderSettings('/settings/ai?tab=models');
     const header = scopeHeader(container);
     expect(header.getAttribute('data-settings-scope-header')).toBe('server');
     expect(header.textContent).not.toContain('Workspace ·');

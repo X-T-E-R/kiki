@@ -65,7 +65,7 @@ const noop = () => {};
 describe('SettingsNav grouped tree', () => {
   it('renders non-clickable group headers, skips the empty group, and keeps About as an ungrouped leaf', async () => {
     const container = await render(
-      <SettingsNav active="models" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+      <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
     );
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     // "Data & advanced" has no leaves this batch, so only five groups render.
@@ -78,8 +78,10 @@ describe('SettingsNav grouped tree', () => {
     }
     const aiGroup = groups[1]!;
     expect(aiGroup.querySelector('p')!.textContent).toBe('AI configuration');
+    // Batch 2 merged the two AI leaves into the single "Models & providers"
+    // entry; its tabs live inside the page, not in the nav tree.
     const leaves = [...aiGroup.querySelectorAll('button')].map((button) => button.textContent);
-    expect(leaves).toEqual(['Models', 'Providers & auth']);
+    expect(leaves).toEqual(['Models & providers']);
     // About & updates sits outside every group as a clickable top-level leaf.
     const aboutLeaf = container.querySelector('[data-settings-nav-ungrouped="about"]');
     expect(aboutLeaf).not.toBeNull();
@@ -94,9 +96,9 @@ describe('SettingsNav grouped tree', () => {
     );
     const active = [...container.querySelectorAll('button')].filter((button) => button.className.includes('text-accent'));
     expect(active.map((button) => button.textContent)).toEqual(['Capabilities']);
-    const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models')!;
+    const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models & providers')!;
     await click(models);
-    expect(visited).toEqual(['models']);
+    expect(visited).toEqual(['ai']);
   });
 
   it('shows group › section › card breadcrumbs in search hits', async () => {
@@ -118,7 +120,7 @@ describe('SettingsNav grouped tree', () => {
     const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
     await typeInto(input, '供应商');
     const option = [...container.querySelectorAll('[role="option"]')]
-      .find((element) => element.textContent!.includes('Providers'))!;
+      .find((element) => element.textContent!.toLowerCase().includes('providers'))!;
     await click(option);
     expect(hits.length).toBe(1);
   });
