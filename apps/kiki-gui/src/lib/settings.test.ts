@@ -7,8 +7,6 @@ import {
   AI_SETTINGS_TABS,
   aiTabForCard,
   buildSettingsSearchIndex,
-  CAPABILITY_GROUPS,
-  capabilityGroupForCard,
   clearRestartRequirement,
   createProvider,
   fetchRemoteModels,
@@ -17,10 +15,12 @@ import {
   isProviderDraftDirty,
   isRestartRequirementAcknowledged,
   markRestartRequired,
+  mcpTimeoutsPatch,
   msUnitFor,
   normalizeTags,
   parseAdvancedServerConfig,
   parseExperimentalFlags,
+  parseHooksJson,
   parseRemoteModels,
   providerDraftFromCatalog,
   providerTemplateFor,
@@ -53,6 +53,8 @@ import {
   settingsSnapshot,
   subscribeRestartRequirement,
   subscribeSettings,
+  toolPolicyDraftFromConfig,
+  toolPolicyPatch,
   validateDesktopConfigDraft,
   validateProviderDraft,
   validateServerDefaults,
@@ -202,11 +204,14 @@ describe('settings persistence and validation', () => {
     expect(validateProviderDraft(providerDraft({ apiKey: 'bad\nkey' }))?.key).toBe('val.apiKeyLineBreaks');
     expect(() => parseExperimentalFlags('{"flag":"yes"}')).toThrow('true or false');
     expect(parseExperimentalFlags('{"search_worker":true}')).toEqual({ search_worker: true });
-    expect(() => parseAdvancedServerConfig('{"hooks":{}}')).toThrow('JSON array');
+    expect(() => parseAdvancedServerConfig('{"hooks":{}}')).toThrow('Unsupported');
     expect(() => parseAdvancedServerConfig('{"unknown":true}')).toThrow('Unsupported');
-    expect(parseAdvancedServerConfig('{"hooks":[],"background":{"max":2}}')).toEqual({
+    // Hooks left the advanced editor in the batch-3 split: they only enter
+    // through the Automation leaf's parseHooksJson, so a pasted hooks key is
+    // rejected as an unsupported field like any other unknown domain.
+    expect(() => parseAdvancedServerConfig('{"hooks":[],"background":{"max":2}}')).toThrow('Unsupported');
+    expect(parseAdvancedServerConfig('{"background":{"max":2}}')).toEqual({
       permission: undefined,
-      hooks: [],
       services: undefined,
       loop_control: undefined,
       background: { max: 2 },
@@ -256,21 +261,25 @@ describe('settings persistence and validation', () => {
     expect(patch.task).toEqual(expect.objectContaining({ max_running_tasks: 4, keep_alive_on_exit: true, print_background_mode: 'drain' }));
     expect(patch.extra_agent_dirs).toEqual(['C:\\agents', 'D:\\agents']);
     expect(patch.disabled_builtin_profiles).toEqual([]);
-    expect(patch.tools).toEqual({ enabled: ['Read'], disabled: ['Bash'] });
+    // mcp and tools belong to other leaves — the runtime patch neither sends
+    // nor replaces them, so a stale runtime draft can never roll them back.
+    expect(patch.mcp).toBeUndefined();
+    expect(patch.tools).toBeUndefined();
     expect(patch.replace_domains).toEqual(expect.arrayContaining([
       'thread_communication', 'token_counting', 'workspace_instance', 'image', 'task',
-      'identity', 'extra_agent_dirs', 'disabled_builtin_profiles', 'mcp', 'tools',
+      'identity', 'extra_agent_dirs', 'disabled_builtin_profiles',
     ]));
     expect(patch.replace_domains).not.toContain('cron');
+    expect(patch.replace_domains).not.toContain('mcp');
+    expect(patch.replace_domains).not.toContain('tools');
   });
 
   it('projects malformed config roots and lists to safe canonical defaults', () => {
     expect(runtimeConfigDraftFromConfig(null)).toMatchObject({
       extraAgentDirs: [],
       disabledBuiltinProfiles: [],
-      toolsEnabled: [],
-      toolsDisabled: [],
     });
+    expect(toolPolicyDraftFromConfig(null)).toEqual({ toolsEnabled: [], toolsDisabled: [] });
     expect(serverFileSettingsFromConfig('not-a-config')).toMatchObject({
       subagent: { timeoutMs: 7_200_000 },
       agents: { enabled: true },
@@ -288,8 +297,9 @@ describe('settings persistence and validation', () => {
     });
     expect(draft.extraAgentDirs).toEqual([]);
     expect(draft.disabledBuiltinProfiles).toEqual(['reviewer']);
-    expect(draft.toolsEnabled).toEqual(['Read']);
-    expect(draft.toolsDisabled).toEqual([]);
+    const policy = toolPolicyDraftFromConfig({ tools: { enabled: 'Read', disabled: { Bash: true } } });
+    expect(policy.toolsEnabled).toEqual(['Read']);
+    expect(policy.toolsDisabled).toEqual([]);
   });
 
   it('rejects invalid runtime integers before config writes', () => {
@@ -297,8 +307,8 @@ describe('settings persistence and validation', () => {
     draft.imageMaxEdgePx = '0';
     expect(() => runtimeConfigPatch(draft)).toThrow(/image\.max_edge_px/);
     draft.imageMaxEdgePx = '';
-    draft.mcpStartupTimeoutMs = '2147483648';
-    expect(() => runtimeConfigPatch(draft)).toThrow(/mcp\.startup_timeout_ms/);
+    // The mcp domain upper bound is enforced by its own leaf's patch helper.
+    expect(() => mcpTimeoutsPatch('2147483648', '')).toThrow(/mcp\.startup_timeout_ms/);
   });
 
   it('emits only fields changed from the last server echo', () => {
@@ -708,7 +718,7 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-subagent-profiles')).toBe(true);
     expect(searchSettings(index, 'Main agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
     expect(searchSettings(index, 'Import model configuration').some((hit) => hit.cardId === 'st-card-compatibility-home')).toBe(true);
-    expect(searchSettings(index, 'subagent')[0]?.section).toBe('agents');
+    expect(searchSettings(index, 'subagent')[0]?.section).toBe('subagents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);
   });
@@ -759,38 +769,14 @@ describe('settings search index', () => {
   });
 });
 
-describe('capabilities section grouping', () => {
-  it('covers every capabilities search card exactly once, in a known group', () => {
-    const capabilitiesCards = SETTINGS_SEARCH_SPEC
-      .filter((entry) => entry.section === 'capabilities')
-      .map((entry) => entry.cardId);
-    const grouped = CAPABILITY_GROUPS.flatMap((group) => group.cardIds);
-    expect([...grouped].toSorted()).toEqual([...capabilitiesCards].toSorted());
-    expect(new Set(grouped).size).toBe(grouped.length);
-    expect(new Set(CAPABILITY_GROUPS.map((group) => group.id)).size).toBe(CAPABILITY_GROUPS.length);
-  });
-
-  it('keeps everyday groups open by default and folds the advanced tail', () => {
-    expect(capabilityGroupForCard('st-card-caps')?.defaultOpen).toBe(true);
-    expect(capabilityGroupForCard('st-card-mcp')?.defaultOpen).toBe(true);
-    expect(capabilityGroupForCard('st-card-advanced')?.defaultOpen).toBe(false);
-    expect(capabilityGroupForCard('st-card-experimental')?.defaultOpen).toBe(false);
-    expect(capabilityGroupForCard('st-card-runtime')?.id).toBe('runtime');
-    expect(capabilityGroupForCard('st-card-tools')?.id).toBe('runtime');
-    expect(capabilityGroupForCard('st-card-about')).toBeUndefined();
-  });
-});
-
 describe('settings nav groups (redesign batch 1)', () => {
   it('matches the adjudicated topology: six groups plus an ungrouped About leaf', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     const leaves = SETTINGS_NAV_TREE.filter((node) => node.kind === 'leaf');
     expect(groups.map((group) => group.id))
       .toEqual(['app', 'ai', 'agents', 'extensions', 'system', 'advanced']);
-    // "Data & advanced" is part of the tree but has no leaves until batches
-    // 2/3 land content; renderers skip empty groups rather than dropping it
-    // from the model.
-    expect(groups.at(-1)?.sections).toEqual([]);
+    // Batch 3 filled the last empty group: every group now owns leaves.
+    expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     // "About & updates" is a clickable leaf outside all groups, not a group.
     expect(leaves.map((leaf) => leaf.section)).toEqual(['about']);
     expect(settingsGroupForSection('about')).toBeUndefined();
@@ -803,13 +789,25 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_NAV_TREE[0]).toMatchObject({ kind: 'group', id: 'app' });
     expect(SETTINGS_NAV_TREE.at(-1)).toEqual({ kind: 'leaf', section: 'about' });
     expect(settingsGroupForSection('ai')?.id).toBe('ai');
-    expect(settingsGroupForSection('capabilities')?.id).toBe('extensions');
+    // Batch 3 split: the capabilities leaf dissolved into skills / mcp /
+    // automation under extensions; runtime moved to system; the advanced
+    // tails fill "Data & advanced".
+    expect(settingsGroupForSection('skills')?.id).toBe('extensions');
+    expect(settingsGroupForSection('mcp')?.id).toBe('extensions');
+    expect(settingsGroupForSection('plugins')?.id).toBe('extensions');
+    expect(settingsGroupForSection('automation')?.id).toBe('extensions');
+    expect(settingsGroupForSection('subagents')?.id).toBe('agents');
+    expect(settingsGroupForSection('runtime')?.id).toBe('system');
+    expect(settingsGroupForSection('data')?.id).toBe('advanced');
+    expect(settingsGroupForSection('experimental')?.id).toBe('advanced');
+    expect(settingsGroupForSection('advanced')?.id).toBe('advanced');
     expect(settingsGroupForSection('workspaces')?.id).toBe('system');
     expect(settingsGroupForSection('connection')?.id).toBe('system');
+    expect(settingsGroupForSection('capabilities')).toBeUndefined();
     expect(settingsGroupForSection('nope')).toBeUndefined();
   });
 
-  it('declares every scope a page actually writes until the content split lands', () => {
+  it('declares every scope a page actually writes after the content split', () => {
     for (const section of SETTINGS_SECTIONS) {
       const meta = SETTINGS_SECTION_META[section.id];
       expect(meta, section.id).toBeDefined();
@@ -818,13 +816,21 @@ describe('settings nav groups (redesign batch 1)', () => {
         expect(['app', 'server', 'workspace']).toContain(scope);
       }
     }
-    // General mixes device prefs with server-side session defaults;
-    // Capabilities mixes server config with per-workspace MCP; Agents mixes
-    // server-wide governance with workspace-sourced profiles.
+    // General mixes device prefs with server-side session defaults; Skills
+    // and MCP mix server config with per-workspace targets; Agents and
+    // Subagents mix server-wide governance with workspace-sourced profiles.
     expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'server']);
-    expect(SETTINGS_SECTION_META['capabilities']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['skills']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['mcp']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['plugins']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['subagents']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['ai']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['runtime']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['automation']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['data']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['experimental']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['advanced']?.scopes).toEqual(['server']);
   });
 });
 
@@ -908,9 +914,9 @@ describe('settings route resolver', () => {
 
   it('follows a card hash whose content moved to another section', () => {
     // A bookmark written before a content move: section says general, card
-    // says the card now lives under capabilities — the precise half wins.
+    // says the card now lives under mcp — the precise half wins.
     expect(resolveSettingsRoute('general', '#st-card-mcp'))
-      .toEqual({ status: 'ok', section: 'capabilities', cardId: 'st-card-mcp', tab: undefined });
+      .toEqual({ status: 'ok', section: 'mcp', cardId: 'st-card-mcp', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-workspaces'))
       .toEqual({ status: 'ok', section: 'workspaces', cardId: 'st-card-workspaces', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-models'))
@@ -921,6 +927,25 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-catalog-refresh', tab: 'models' });
   });
 
+  it('redirects the retired capabilities section and its card deep links (redesign §10.3)', () => {
+    // Bare /settings/capabilities lands on skills, the split's primary leaf.
+    expect(resolveSettingsRoute('capabilities', ''))
+      .toEqual({ status: 'ok', section: 'skills', cardId: undefined, tab: undefined });
+    // A precise card hash still follows the card across the split.
+    expect(resolveSettingsRoute('capabilities', '#st-card-mcp'))
+      .toEqual({ status: 'ok', section: 'mcp', cardId: 'st-card-mcp', tab: undefined });
+    expect(resolveSettingsRoute('capabilities', '#st-card-tools'))
+      .toEqual({ status: 'ok', section: 'automation', cardId: 'st-card-tools', tab: undefined });
+    expect(resolveSettingsRoute('capabilities', '#st-card-caps'))
+      .toEqual({ status: 'ok', section: 'skills', cardId: 'st-card-caps', tab: undefined });
+    // The dissolved sidecar card has no field-level hash, so its hand-written
+    // alias lands on the subagent timeout card (§10.3's adjudicated fallback).
+    expect(resolveSettingsRoute('agents', '#st-card-sidecar'))
+      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-timeout', tab: undefined });
+    expect(resolveSettingsRoute('retired-section', '#st-card-sidecar'))
+      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-timeout', tab: undefined });
+  });
+
   it('flags genuinely unknown sections instead of silently falling back to general', () => {
     expect(resolveSettingsRoute('nonsense', '')).toEqual({ status: 'unknown', section: 'nonsense', cardId: undefined });
     expect(resolveSettingsRoute('nonsense', '#st-card-not-real')).toEqual({ status: 'unknown', section: 'nonsense', cardId: 'st-card-not-real' });
@@ -928,9 +953,90 @@ describe('settings route resolver', () => {
   });
 
   it('knows the canonical owner of every indexed card', () => {
-    expect(settingsSectionForCard('st-card-mcp')).toBe('capabilities');
+    expect(settingsSectionForCard('st-card-mcp')).toBe('mcp');
     expect(settingsSectionForCard('st-card-language')).toBe('general');
+    // Dissolved cards leave the spec to their LEGACY_CARD_ALIASES entry.
+    expect(settingsSectionForCard('st-card-sidecar')).toBeUndefined();
     expect(settingsSectionForCard('st-card-nowhere')).toBeUndefined();
+  });
+});
+
+describe('hooks and MCP timeout patches (batch 3 split)', () => {
+  it('parses the hooks editor draft as a JSON array only', () => {
+    expect(parseHooksJson('[]')).toEqual([]);
+    expect(parseHooksJson('[{"event":"PreToolUse"}]')).toEqual([{ event: 'PreToolUse' }]);
+    expect(() => parseHooksJson('{not json')).toThrowError();
+    expect(() => parseHooksJson('{"hooks":[]}')).toThrowError();
+  });
+
+  it('scopes the MCP timeout patch to the mcp replace-domain', () => {
+    expect(mcpTimeoutsPatch('60000', '')).toEqual({
+      mcp: { startup_timeout_ms: 60_000, tool_timeout_ms: undefined },
+      replace_domains: ['mcp'],
+    });
+    expect(mcpTimeoutsPatch('', '30000')).toEqual({
+      mcp: { startup_timeout_ms: undefined, tool_timeout_ms: 30_000 },
+      replace_domains: ['mcp'],
+    });
+    expect(() => mcpTimeoutsPatch('abc', '')).toThrowError();
+    expect(() => mcpTimeoutsPatch('0', '')).toThrowError();
+  });
+
+  it('scopes the tool policy patch to the tools replace-domain', () => {
+    const patch = toolPolicyPatch({ toolsEnabled: ['Read'], toolsDisabled: ['Bash'] });
+    expect(patch).toEqual({
+      tools: { enabled: ['Read'], disabled: ['Bash'] },
+      replace_domains: ['tools'],
+    });
+    expect(toolPolicyDraftFromConfig({ providers: {}, tools: { enabled: ['Read'] } })).toEqual({
+      toolsEnabled: ['Read'],
+      toolsDisabled: [],
+    });
+  });
+
+  it('keeps every split-leaf patch inside its own domains', () => {
+    const runtimePatch = runtimeConfigPatch(runtimeConfigDraftFromConfig({ providers: {} }));
+    const toolsPatch = toolPolicyPatch({ toolsEnabled: [], toolsDisabled: [] });
+    const mcpPatch = mcpTimeoutsPatch('60000', '');
+    expect(Object.keys(runtimePatch)).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
+    expect(Object.keys(toolsPatch).toSorted()).toEqual(['replace_domains', 'tools']);
+    expect(Object.keys(mcpPatch).toSorted()).toEqual(['mcp', 'replace_domains']);
+    expect(runtimePatch.replace_domains).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
+  });
+
+  it('two leaves saving from divergent echoes never roll each other back', () => {
+    // The runtime leaf holds echo A (stale tools policy), the automation leaf
+    // holds echo B (stale runtime values). Because each save only replaces its
+    // own domains, applying both patches in sequence keeps every leaf's newest
+    // values no matter how stale the other leaf's draft was.
+    const runtimeSave = runtimeConfigPatch(runtimeConfigDraftFromConfig({
+      providers: {},
+      workspace_instance: { idleTtlMs: 60_000 },
+      tools: { enabled: ['Read'], disabled: [] },
+      mcp: { startupTimeoutMs: 10_000 },
+    }));
+    const toolsSave = toolPolicyPatch(toolPolicyDraftFromConfig({
+      providers: {},
+      workspace_instance: { idleTtlMs: 999 },
+      tools: { enabled: ['Bash'], disabled: ['Read'] },
+    }));
+    const apply = (state: Record<string, unknown>, patch: { replace_domains?: string[] } & Record<string, unknown>) => {
+      const next = { ...state };
+      for (const domain of patch.replace_domains ?? []) next[domain] = patch[domain];
+      return next;
+    };
+    const server: Record<string, unknown> = {
+      workspace_instance: 'stale',
+      tools: 'policy-from-B',
+      mcp: 'mcp-from-C',
+    };
+    const afterRuntime = apply(server, runtimeSave as never);
+    expect(afterRuntime['tools']).toBe('policy-from-B');
+    expect(afterRuntime['mcp']).toBe('mcp-from-C');
+    const afterBoth = apply(afterRuntime, toolsSave as never);
+    expect(afterBoth['tools']).toEqual({ enabled: ['Bash'], disabled: ['Read'] });
+    expect(afterBoth['workspace_instance']).toEqual(runtimeSave.workspace_instance);
+    expect(afterBoth['mcp']).toBe('mcp-from-C');
   });
 });
 
