@@ -225,6 +225,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKimiHome(opts.homeDir);
   const serverVersion = opts.serverVersion ?? getServerVersion();
+  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
+  const externalDelegation =
+    opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env);
   const registry = createInstanceRegistry({
     instancesDir: opts.instancesDir ?? join(homeDir, 'server', 'instances'),
   });
@@ -245,16 +248,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const enableShutdown = exposureClass === 'loopback' || opts.allowRemoteShutdown === true;
   const enableTerminals = exposureClass === 'loopback';
   const debugEndpoints = exposureClass === 'loopback' && opts.debugEndpoints === true;
-  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
-  let externalDelegation: ExternalDelegationAuthorityConfig | undefined;
-  try {
-    externalDelegation = opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env);
-  } catch (error) {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'external delegation configuration is invalid; starting without the external delegation edge',
-    );
-  }
   const authFailureLimiter =
     exposureClass === 'loopback' ? undefined : createAuthFailureLimiter({ logger });
 

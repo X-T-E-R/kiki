@@ -538,6 +538,7 @@ describe('server-v2 boot — external delegation startup', () => {
   const originalPrincipal = process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
   const originalSession = process.env['KIKI_EXTERNAL_SESSION_ID'];
   const originalToken = process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
+  const originalPermissionMode = process.env['KIKI_EXTERNAL_PERMISSION_MODE'];
 
   afterEach(async () => {
     if (server !== undefined) {
@@ -554,22 +555,36 @@ describe('server-v2 boot — external delegation startup', () => {
     else process.env['KIKI_EXTERNAL_SESSION_ID'] = originalSession;
     if (originalToken === undefined) delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
     else process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'] = originalToken;
+    if (originalPermissionMode === undefined) delete process.env['KIKI_EXTERNAL_PERMISSION_MODE'];
+    else process.env['KIKI_EXTERNAL_PERMISSION_MODE'] = originalPermissionMode;
   });
 
-  it('starts without the delegation edge when the env authority is incomplete', async () => {
+  it('rejects startup when the env authority is incomplete', async () => {
     process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = 'example-principal';
-    // SESSION_ID and TOKEN stay unset → the env authority is incomplete.
+    delete process.env['KIKI_EXTERNAL_SESSION_ID'];
+    delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-env-'));
-    server = await startServer({
+    await expect(startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
       homeDir: home,
       logLevel: 'silent',
-    });
+    })).rejects.toThrow(/authority configuration is incomplete/i);
+    expect(await listLiveServerInstances(home)).toEqual([]);
+  });
 
-    const healthz = await fetch(`http://127.0.0.1:${server.port}/api/v1/healthz`);
-    expect(healthz.status).toBe(200);
+  it('rejects startup when the external permission mode is invalid', async () => {
+    process.env['KIKI_EXTERNAL_PERMISSION_MODE'] = 'elevated';
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-permission-'));
+    await expect(startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    })).rejects.toThrow(/permission mode is invalid/i);
+    expect(await listLiveServerInstances(home)).toEqual([]);
   });
 
   it('rejects startup when the Session bootstrap fails', async () => {

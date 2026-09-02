@@ -6,8 +6,9 @@ External delegation is on by default. Start KAP with one admitted
 `KIKI_EXTERNAL_PRINCIPAL_ID`, `KIKI_EXTERNAL_SESSION_ID`, and a dedicated
 `KIKI_EXTERNAL_DELEGATION_TOKEN`. A host may also provision that exact Session
 at startup by passing `KIKI_EXTERNAL_WORKSPACE_PATH`,
-`KIKI_EXTERNAL_MODEL_ALIAS`, and `KIKI_EXTERNAL_THINKING_EFFORT` together;
-an existing Session must retain the same workspace/model binding. Then launch
+`KIKI_EXTERNAL_MODEL_ALIAS`, and `KIKI_EXTERNAL_THINKING_EFFORT` together, plus
+optional `KIKI_EXTERNAL_PERMISSION_MODE` (`manual`, `auto`, or `yolo`); an
+existing Session must retain the same workspace/model binding. Then launch
 `kiki-mcp` with these environment variables:
 
 - `KIKI_KAP_ENDPOINT`: KAP origin, such as `http://127.0.0.1:58627`

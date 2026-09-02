@@ -1,5 +1,6 @@
 import {
   DEFAULT_AGENT_PROFILE_NAME,
+  IAgentLifecycleService,
   IAgentProfileService,
   ISessionIndex,
   ISessionLegacyService,
@@ -7,6 +8,7 @@ import {
   ISessionMetadata,
   IWorkspaceService,
   resumeSessionById,
+  type PermissionMode,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
 import { realpath } from 'node:fs/promises';
@@ -19,6 +21,7 @@ export interface ExternalDelegationSessionBootstrap {
   readonly workspacePath: string;
   readonly modelAlias: string;
   readonly thinkingEffort: string;
+  readonly permissionMode?: PermissionMode;
   readonly title?: string;
 }
 
@@ -30,7 +33,7 @@ export interface ExternalDelegationAuthorityConfig {
    * Operator-owned exact Session provisioning. The caller cannot select this
    * value over REST: it is captured from server composition, creates the
    * configured Session id in the configured workspace when absent, and applies
-   * an operator-updated signed model/thinking binding to an existing Session.
+   * an operator-updated signed model/thinking/permission binding to an existing Session.
    */
   readonly sessionBootstrap?: ExternalDelegationSessionBootstrap;
 }
@@ -51,9 +54,13 @@ export function externalDelegationAuthorityFromEnv(
 ): ExternalDelegationAuthorityConfig | undefined {
   const base = BASE_ENV.map((name) => env[name]?.trim());
   const bootstrap = BOOTSTRAP_ENV.map((name) => env[name]?.trim());
+  const permissionMode = parsePermissionMode(env['KIKI_EXTERNAL_PERMISSION_MODE']?.trim());
   const title = env['KIKI_EXTERNAL_SESSION_TITLE']?.trim();
   const hasBase = base.some((value) => value !== undefined);
-  const hasBootstrap = bootstrap.some((value) => value !== undefined) || title !== undefined;
+  const hasBootstrap =
+    bootstrap.some((value) => value !== undefined) ||
+    permissionMode !== undefined ||
+    title !== undefined;
 
   if (!hasBase && !hasBootstrap) return undefined;
   if (base.some((value) => value === undefined || value.length === 0)) {
@@ -77,10 +84,17 @@ export function externalDelegationAuthorityFromEnv(
           workspacePath: bootstrap[0] as string,
           modelAlias: bootstrap[1] as string,
           thinkingEffort: bootstrap[2] as string,
+          permissionMode,
           title: title === '' ? undefined : title,
         }
       : undefined,
   };
+}
+
+function parsePermissionMode(value: string | undefined): PermissionMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'manual' || value === 'auto' || value === 'yolo') return value;
+  throw new Error('External delegation permission mode is invalid.');
 }
 
 export async function ensureExternalDelegationSession(
@@ -130,22 +144,30 @@ export async function ensureExternalDelegationSession(
 
   const legacy = core.accessor.get(ISessionLegacyService);
   let status = await legacy.status(authority.sessionId);
-  if (
+  const updateProfile =
     status.model !== bootstrap.modelAlias ||
-    status.thinking_level !== bootstrap.thinkingEffort
-  ) {
+    status.thinking_level !== bootstrap.thinkingEffort;
+  if (updateProfile || bootstrap.permissionMode !== undefined) {
     const session = await resumeSessionById(core.accessor, authority.sessionId);
     if (session === undefined) {
       throw new Error('External delegation Session is unavailable.');
     }
-    const profile = (await ensureMainAgent(session)).accessor.get(IAgentProfileService);
-    if (status.model !== bootstrap.modelAlias) {
-      await profile.setModel(bootstrap.modelAlias);
+    const agent = await ensureMainAgent(session);
+    if (updateProfile) {
+      const profile = agent.accessor.get(IAgentProfileService);
+      if (status.model !== bootstrap.modelAlias) {
+        await profile.setModel(bootstrap.modelAlias);
+      }
+      if (status.thinking_level !== bootstrap.thinkingEffort) {
+        profile.setThinking(bootstrap.thinkingEffort);
+      }
+      status = await legacy.status(authority.sessionId);
     }
-    if (status.thinking_level !== bootstrap.thinkingEffort) {
-      profile.setThinking(bootstrap.thinkingEffort);
+    if (bootstrap.permissionMode !== undefined) {
+      agent.accessor
+        .get(IAgentLifecycleService)
+        .broadcastPermissionMode(bootstrap.permissionMode);
     }
-    status = await legacy.status(authority.sessionId);
   }
   if (
     status.model !== bootstrap.modelAlias ||

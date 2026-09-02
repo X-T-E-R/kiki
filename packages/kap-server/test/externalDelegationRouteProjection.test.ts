@@ -57,9 +57,9 @@ const dispatchView: ExternalDispatchView = {
 
 describe('external delegation route projection', () => {
   let handlers: Map<string, Handler>;
-  let logger: {
-    info: ReturnType<typeof vi.fn>;
-    warn: ReturnType<typeof vi.fn>;
+  let logger = {
+    info: vi.fn<(bindings: Record<string, unknown>, message: string) => void>(),
+    warn: vi.fn<(bindings: Record<string, unknown>, message: string) => void>(),
   };
   let service: {
     [K in keyof ExternalDelegationService]: ReturnType<typeof vi.fn>;
@@ -67,7 +67,10 @@ describe('external delegation route projection', () => {
 
   beforeEach(() => {
     handlers = new Map();
-    logger = { info: vi.fn(), warn: vi.fn() };
+    logger = {
+      info: vi.fn<(bindings: Record<string, unknown>, message: string) => void>(),
+      warn: vi.fn<(bindings: Record<string, unknown>, message: string) => void>(),
+    };
     service = {
       list: vi.fn(),
       dispatch: vi.fn(),
