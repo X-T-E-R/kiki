@@ -34,9 +34,8 @@ vi.mock('../state/connection', () => ({
   useConnection: () => ({ client }),
 }));
 
-vi.mock('../lib/desktop', () => ({
-  isDesktopRuntime: () => false,
-  selectDirectoriesNative: vi.fn(),
+vi.mock('../host', () => ({
+  useHost: () => ({ kind: 'browser' }),
 }));
 
 const containers: HTMLDivElement[] = [];

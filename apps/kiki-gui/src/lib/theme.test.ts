@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { browserHost } from '../host/browser';
 import { writeSettings } from './settings';
 import { applyTheme, onThemeChange, resolveTheme, startThemeSync } from './theme';
 
@@ -59,14 +60,14 @@ describe('startThemeSync', () => {
     stubMatchMedia(true);
     writeSettings({ theme: 'light' });
 
-    const stop = startThemeSync();
+    const stop = startThemeSync(browserHost);
     expect(document.documentElement.dataset['theme']).toBe('light');
     stop();
   });
 
   it('re-resolves when the preference changes', () => {
     stubMatchMedia(false);
-    const stop = startThemeSync();
+    const stop = startThemeSync(browserHost);
     expect(document.documentElement.dataset['theme']).toBe('light');
 
     writeSettings({ theme: 'dark' });
@@ -77,7 +78,7 @@ describe('startThemeSync', () => {
   it('follows an OS flip while the preference is system, and stops after teardown', () => {
     const media = stubMatchMedia(false);
     writeSettings({ theme: 'system' });
-    const stop = startThemeSync();
+    const stop = startThemeSync(browserHost);
     expect(document.documentElement.dataset['theme']).toBe('light');
 
     media.flip(true);
@@ -93,7 +94,7 @@ describe('onThemeChange', () => {
   it('fires when the resolved theme flips and stops after teardown', async () => {
     stubMatchMedia(false);
     writeSettings({ theme: 'system' });
-    const stopSync = startThemeSync();
+    const stopSync = startThemeSync(browserHost);
 
     const seen: string[] = [];
     const stop = onThemeChange(() => {
