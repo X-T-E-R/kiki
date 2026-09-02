@@ -32,6 +32,7 @@ import {
 } from '#/tool/toolContract';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { subagentLabels } from '#/session/agentLifecycle/subagentMetadata';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
   canonicalizeSubagentBinding,
@@ -62,6 +63,7 @@ export class TowerSpawnTool implements ITowerSpawnTool {
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentScopeContext scopeContext: IAgentScopeContext,
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
+    @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
     @ISessionSubagentService private readonly subagents: ISessionSubagentService,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
@@ -293,10 +295,12 @@ export class TowerSpawnTool implements ITowerSpawnTool {
         spawnPolicy: table.spawnPolicy,
       },
       labels: subagentLabels(this.callerAgentId),
+      delegator: { kind: 'agent', agentId: this.callerAgentId },
       userLabel: description,
     });
     created.accessor.get(IAgentPermissionModeService).setMode('auto');
     const agentId = created.id;
+    this.dispatch.recordDelegatedRun(this.callerAgentId, agentId);
 
     emitAgentRunSpawned(requester, agentId, {
       profileName: TOWER_WORKER_PROFILE,

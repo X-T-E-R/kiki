@@ -11,6 +11,7 @@ import { ILogService } from '#/_base/log/log';
 import { IFlagService } from '#/app/flag/flag';
 import { IEventBus } from '#/app/event/eventBus';
 import type { Event2 } from '#/app/event/event2';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -18,7 +19,11 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentExecutionService } from '#/agent/execution/execution';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import {
+  constrainPermissionMode,
+  IAgentPermissionModeService,
+} from '#/agent/permissionMode/permissionMode';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -41,6 +46,7 @@ import { SessionApprovalService } from '#/session/approval/approvalService';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import {
+  EXTERNAL_DELEGATION_SESSION_PROVISION_KEY,
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   type ExternalAuthority,
   ISessionExternalDelegationService,
@@ -99,6 +105,11 @@ describe('SessionExternalDelegationService', () => {
   let journalYield: (() => Promise<void>) | undefined;
   let nextTurnIds: Map<string, number>;
   let fakeExecutorApprovalResponses: unknown[];
+  let permissionModes: Map<string, PermissionMode>;
+  let permissionCeilings: Map<string, PermissionMode>;
+  let nextCreatedAgentId: string | undefined;
+  let bootstrapEnv: Record<string, string | undefined>;
+  let sessionCustom: Record<string, unknown>;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -122,6 +133,16 @@ describe('SessionExternalDelegationService', () => {
     journalYield = undefined;
     nextTurnIds = new Map();
     fakeExecutorApprovalResponses = [];
+    permissionModes = new Map();
+    permissionCeilings = new Map();
+    nextCreatedAgentId = undefined;
+    bootstrapEnv = {};
+    sessionCustom = {
+      [EXTERNAL_DELEGATION_SESSION_PROVISION_KEY]: {
+        version: 1,
+        ownership: 'dedicated',
+      },
+    };
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -152,12 +173,14 @@ describe('SessionExternalDelegationService', () => {
         updatedAt: 0,
         archived: false,
         agents: agentMetas,
+        custom: sessionCustom,
       }),
       registerAgent: async (agentId, meta) => {
         agentMetas[agentId] = meta;
       },
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
+    ix.stub(IBootstrapService, { getEnv: (name) => bootstrapEnv[name] });
     ix.stub(IConfigService, { get: <T>() => undefined as T });
     ix.stub(IModelService, { resolveId: (id: string) => id });
     ix.stub(IModelCatalog, {
@@ -237,7 +260,21 @@ describe('SessionExternalDelegationService', () => {
         _serviceBrand: undefined,
         data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', executorId, subagents: ['coder'] }),
       });
-      agent.stub(IAgentPermissionModeService, { mode: 'auto', setMode: () => {} });
+      permissionModes.set(id, 'auto');
+      const setPermissionMode = (mode: PermissionMode): void => {
+        const ceiling = permissionCeilings.get(id);
+        permissionModes.set(id, ceiling === undefined ? mode : constrainPermissionMode(mode, ceiling));
+      };
+      agent.stub(IAgentPermissionModeService, {
+        get mode() {
+          return permissionModes.get(id)!;
+        },
+        setMode: setPermissionMode,
+        setModeCeiling: (ceiling) => {
+          permissionCeilings.set(id, ceiling);
+          setPermissionMode(permissionModes.get(id)!);
+        },
+      });
       agent.stub(IAgentUserToolService, { list: () => [], inheritUserTools: () => {} });
       const runtime = new FakeRuntime(
         { workspaceId: 'workspace_test', runtimeId: 'local', generation: 'test' },
@@ -261,7 +298,8 @@ describe('SessionExternalDelegationService', () => {
       get: (id) => handles.get(id),
       create: async (opts) => {
         createdWith.push(opts);
-        const agentId = opts?.agentId ?? 'external-child';
+        const agentId = opts?.agentId ?? nextCreatedAgentId ?? 'external-child';
+        nextCreatedAgentId = undefined;
         const handle = makeHandle(
           agentId,
           opts?.binding?.profile ?? 'coder',
@@ -278,6 +316,11 @@ describe('SessionExternalDelegationService', () => {
           displayName: opts?.binding?.profile,
         };
         return handle;
+      },
+      broadcastPermissionMode: (mode) => {
+        for (const handle of handles.values()) {
+          handle.accessor.get(IAgentPermissionModeService).setMode(mode);
+        }
       },
     });
     ix.stub(ISessionSubagentService, {
@@ -547,6 +590,382 @@ describe('SessionExternalDelegationService', () => {
       expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
     });
     expect(interaction.hasConsumer({ agentId: 'external-child' })).toBe(false);
+  });
+
+  it('wakes wait with owned pending interactions', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const approvals = ix.get(ISessionApprovalService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'waiting_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+    const waiting = service.wait({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      timeoutMs: 5_000,
+    });
+    const approval = approvals.request({
+      id: 'approval-waiting',
+      agentId: 'external-child',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    await expect(waiting).resolves.toMatchObject({
+      waitStatus: 'interaction_pending',
+      dispatch: { dispatchId: dispatch.dispatchId },
+      interactions: [{
+        interactionId: 'approval-waiting',
+        kind: 'approval',
+        taskName: 'waiting_child',
+      }],
+    });
+    await service.respond({
+      authority,
+      interactionId: 'approval-waiting',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    });
+    await expect(approval).resolves.toEqual({ decision: 'approved' });
+    completions[0]!.resolve({ summary: 'done' });
+  });
+
+  it('routes main interactions from a persisted dedicated provision without env', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const approvals = ix.get(ISessionApprovalService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'main',
+      message: 'inspect',
+    });
+    const approval = approvals.request({
+      id: 'approval-main-owned',
+      agentId: 'main',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect(await service.interactions({ authority })).toMatchObject({
+      items: [{
+        interactionId: 'approval-main-owned',
+        kind: 'approval',
+        taskName: 'main',
+      }],
+    });
+    await service.respond({
+      authority,
+      interactionId: 'approval-main-owned',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    });
+    await expect(approval).resolves.toEqual({ decision: 'approved' });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+  });
+
+  it('keeps main unavailable without a dedicated provision fact', async () => {
+    sessionCustom = {};
+    const service = ix.get(ISessionExternalDelegationService);
+    const interaction = ix.get(ISessionInteractionService);
+    const approvals = ix.get(ISessionApprovalService);
+    interaction.acquireConsumer('gui');
+    expect((await service.list(authority)).dispatchables.map((entry) => entry.kind)).not.toContain('main');
+    await expect(
+      service.dispatch({ authority, target: 'main', message: 'inspect' }),
+    ).rejects.toThrow(/dedicated external session/);
+    const approval = approvals.request({
+      id: 'approval-main-attached',
+      agentId: 'main',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect((await service.interactions({ authority })).items).toEqual([]);
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-main-attached',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    })).rejects.toMatchObject({ code: EXTERNAL_INTERACTION_NOT_OWNED_CODE });
+    interaction.releaseConsumer('gui');
+    await expect(approval).resolves.toEqual({ decision: 'cancelled' });
+  });
+
+  it('does not absorb an old main branch into a dedicated main dispatch', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const interaction = ix.get(ISessionInteractionService);
+    const approvals = ix.get(ISessionApprovalService);
+    interaction.acquireConsumer('gui');
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'inspect' });
+    const approval = approvals.request({
+      id: 'approval-old-main-branch',
+      agentId: 'old-main-child',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect((await service.interactions({ authority })).items).toEqual([]);
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-old-main-branch',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    })).rejects.toMatchObject({ code: EXTERNAL_INTERACTION_NOT_OWNED_CODE });
+    interaction.releaseConsumer('gui');
+    await expect(approval).resolves.toEqual({ decision: 'cancelled' });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+  });
+
+  it('includes a direct lifecycle child explicitly recorded by the Tower path', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const approvals = ix.get(ISessionApprovalService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'tower_root',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+    ix.get(ISessionDispatchService).recordDelegatedRun('external-child', 'tower-child');
+    const approval = approvals.request({
+      id: 'approval-tower-child',
+      agentId: 'tower-child',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect(await service.interactions({ authority })).toMatchObject({
+      items: [{ interactionId: 'approval-tower-child', taskName: 'tower_root' }],
+    });
+    await service.respond({
+      authority,
+      interactionId: 'approval-tower-child',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    });
+    await expect(approval).resolves.toEqual({ decision: 'approved' });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+  });
+
+  it('keeps sibling dispatch lineages separate while waiting', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const approvals = ix.get(ISessionApprovalService);
+    nextCreatedAgentId = 'child-a';
+    const dispatchA = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'child_a',
+      profileName: 'coder',
+      message: 'inspect a',
+    });
+    nextCreatedAgentId = 'child-b';
+    const dispatchB = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'child_b',
+      profileName: 'coder',
+      message: 'inspect b',
+    });
+    ix.get(ISessionDispatchService).recordDelegatedRun('child-b', 'branch-b');
+    const approval = approvals.request({
+      id: 'approval-branch-b',
+      agentId: 'branch-b',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    await expect(service.wait({
+      authority,
+      dispatchId: dispatchA.dispatchId,
+      timeoutMs: 0,
+    })).resolves.toMatchObject({ waitStatus: 'timed_out', interactions: [] });
+    await expect(service.wait({
+      authority,
+      dispatchId: dispatchB.dispatchId,
+      timeoutMs: 100,
+    })).resolves.toMatchObject({
+      waitStatus: 'interaction_pending',
+      interactions: [{ interactionId: 'approval-branch-b', taskName: 'child_b' }],
+    });
+    await service.respond({
+      authority,
+      interactionId: 'approval-branch-b',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    });
+    await expect(approval).resolves.toEqual({ decision: 'approved' });
+    completions[0]!.resolve({ summary: 'done a' });
+    completions[1]!.resolve({ summary: 'done b' });
+  });
+
+  it('exposes and answers a grandchild interaction through its owned dispatch lineage', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const approvals = ix.get(ISessionApprovalService);
+    const rootDispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'root_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+    const parent = handles.get('external-child')!;
+    const runtimeLease = parent.accessor.get(IAgentRuntimeService).acquire(['process']);
+    nextCreatedAgentId = 'grandchild';
+    const nestedRun = await ix.get(ISessionDispatchService).launch({
+      delegator: { kind: 'agent', agentId: 'external-child' },
+      requesterAgentId: 'external-child',
+      profileName: 'coder',
+      message: 'nested',
+      name: 'nested_child',
+      runtime: runtimeLease.runtime,
+      workDir: '/workspace',
+      signal: new AbortController().signal,
+    });
+    await nestedRun.started;
+    runtimeLease.dispose();
+    expect(permissionCeilings.get('grandchild')).toBe('manual');
+    const approval = approvals.request({
+      id: 'approval-grandchild',
+      agentId: 'grandchild',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect(await service.interactions({ authority })).toMatchObject({
+      items: [{
+        interactionId: 'approval-grandchild',
+        kind: 'approval',
+        taskName: 'root_child',
+      }],
+    });
+    await service.respond({
+      authority,
+      interactionId: 'approval-grandchild',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    });
+    await expect(approval).resolves.toEqual({ decision: 'approved' });
+    completions[1]!.resolve({ summary: 'nested done' });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: rootDispatch.dispatchId })).status).toBe('completed');
+    });
+  });
+
+  it('caps a yolo main at the default manual external permission ceiling', async () => {
+    permissionModes.set('main', 'yolo');
+    const service = ix.get(ISessionExternalDelegationService);
+    await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'manual_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    expect(permissionModes.get('external-child')).toBe('manual');
+    completions[0]!.resolve({ summary: 'done' });
+  });
+
+  it('honors the configured external permission ceiling', async () => {
+    bootstrapEnv['KIKI_EXTERNAL_PERMISSION_CEILING'] = 'auto';
+    permissionModes.set('main', 'yolo');
+    const service = ix.get(ISessionExternalDelegationService);
+    await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'auto_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    expect(permissionModes.get('external-child')).toBe('auto');
+    completions[0]!.resolve({ summary: 'done' });
+  });
+
+  it('keeps an active external child below the ceiling during a yolo broadcast', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'broadcast_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    ix.get(IAgentLifecycleService).broadcastPermissionMode('yolo');
+    expect(permissionModes.get('main')).toBe('yolo');
+    expect(permissionModes.get('external-child')).toBe('manual');
+    completions[0]!.resolve({ summary: 'done' });
+  });
+
+  it('reapplies a lowered ceiling before reusing an existing child', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const first = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'reused_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: first.dispatchId })).status).toBe('completed');
+    });
+    permissionCeilings.set('external-child', 'yolo');
+    permissionModes.set('external-child', 'yolo');
+
+    await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'reused_child',
+      message: 'inspect again',
+    });
+
+    expect(permissionCeilings.get('external-child')).toBe('manual');
+    expect(permissionModes.get('external-child')).toBe('manual');
+    completions[1]!.resolve({ summary: 'done again' });
+  });
+
+  it('keeps a manual main manual when the external ceiling is yolo', async () => {
+    bootstrapEnv['KIKI_EXTERNAL_PERMISSION_CEILING'] = 'yolo';
+    permissionModes.set('main', 'manual');
+    const service = ix.get(ISessionExternalDelegationService);
+    await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'manual_main_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    expect(permissionModes.get('external-child')).toBe('manual');
+    completions[0]!.resolve({ summary: 'done' });
   });
 
   it('filters owned interactions, responds to approval and question, and preserves GUI coverage', async () => {

@@ -6,10 +6,12 @@ import { Emitter, type Event } from '#/_base/event';
 import { defineState } from '#/state/state';
 
 import type { AgentLLMRequestSource } from '#/agent/llmRequester/llmRequester';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
-import type { UsageRecordedContext, UsageStatus } from './usage';
+import type { UsageRecordedContext, UsageRecordContext, UsageStatus } from './usage';
 import { IAgentUsageService } from './usage';
 import { AgentStatusUpdated } from './usageEvents';
 import {
@@ -38,6 +40,8 @@ export class AgentUsageService extends Service implements IAgentUsageService {
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IAgentScopeContext private readonly scope: IAgentScopeContext,
+    @IAgentProfileService private readonly profile: IAgentProfileService,
   ) {
     super();
     this.states.contributeState(usageKey);
@@ -61,14 +65,32 @@ export class AgentUsageService extends Service implements IAgentUsageService {
     this.states.set(usageCurrentTurnKey, value);
   }
 
-  record(model: string, usage: TokenUsage, source?: AgentLLMRequestSource): void {
+  record(
+    model: string,
+    usage: TokenUsage,
+    source?: AgentLLMRequestSource,
+    context?: UsageRecordContext,
+  ): void {
     const usageScope: UsageRecordScope = source?.type === 'turn' ? 'turn' : 'session';
-    void this.dispatcher.dispatch(new UsageRecord({ model, usage, usageScope }));
+    const turnId = source?.turnId;
+    const profile = this.profile.data();
+    void this.dispatcher.dispatch(new UsageRecord({
+      model,
+      usage,
+      usageScope,
+      turnId,
+      agentId: this.scope.agentId,
+      parentAgentId: this.scope.parentAgentId,
+      provider: context?.provider,
+      modelAlias: context?.modelAlias ?? profile.modelAlias,
+      profileName: profile.profileName,
+      executorId: context?.executorId ?? profile.executorId ?? 'native',
+    }));
 
-    const turnId = source?.type === 'turn' ? source.turnId : undefined;
-    if (turnId !== undefined) {
-      if (this.currentTurnId !== turnId) {
-        this.currentTurnId = turnId;
+    const currentTurnId = source?.type === 'turn' ? source.turnId : undefined;
+    if (currentTurnId !== undefined) {
+      if (this.currentTurnId !== currentTurnId) {
+        this.currentTurnId = currentTurnId;
         this.currentTurn = copyUsage(usage);
       } else {
         this.currentTurn =

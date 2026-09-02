@@ -10,7 +10,13 @@ import { NewProviderWizard, ProviderEditor } from '../ProviderFields';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 
-export function ProvidersSection() {
+/**
+ * Tab 1 of the merged "Models & providers" entry (redesign §3.3): everything
+ * about connecting a service — OAuth sign-in, configured providers with their
+ * credentials/lifecycle, and the add-provider wizard. Model browsing and
+ * new-session defaults live on the sibling tabs.
+ */
+export function ConnectionsTab() {
   const { client, config: connection } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();

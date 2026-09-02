@@ -1,11 +1,13 @@
 import {
   DEFAULT_AGENT_PROFILE_NAME,
+  EXTERNAL_DELEGATION_SESSION_PROVISION_KEY,
   IAgentProfileService,
   ISessionIndex,
   ISessionLegacyService,
   ISessionManager,
   ISessionMetadata,
   IWorkspaceService,
+  isExternalDelegationSessionProvision,
   resumeSessionById,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
@@ -26,6 +28,7 @@ export interface ExternalDelegationAuthorityConfig {
   readonly principalId: string;
   readonly sessionId: string;
   readonly token: string;
+  readonly sessionOwnership?: 'dedicated' | 'attached';
   /**
    * Operator-owned exact Session provisioning. The caller cannot select this
    * value over REST: it is captured from server composition, creates the
@@ -72,6 +75,7 @@ export function externalDelegationAuthorityFromEnv(
     principalId,
     sessionId,
     token,
+    sessionOwnership: hasBootstrap ? 'dedicated' : 'attached',
     sessionBootstrap: hasBootstrap
       ? {
           workspacePath: bootstrap[0] as string,
@@ -87,8 +91,14 @@ export async function ensureExternalDelegationSession(
   core: Scope,
   authority: ExternalDelegationAuthorityConfig | undefined,
 ): Promise<void> {
-  const bootstrap = authority?.sessionBootstrap;
-  if (authority === undefined || bootstrap === undefined) return;
+  if (authority === undefined) return;
+  const bootstrap = authority.sessionBootstrap;
+  if (bootstrap === undefined) {
+    if (authority.sessionOwnership === 'dedicated') {
+      await markDedicatedExternalDelegationSession(core, authority.sessionId);
+    }
+    return;
+  }
   if (!isAbsolute(bootstrap.workspacePath)) {
     throw new Error('External delegation workspace path must be absolute.');
   }
@@ -149,6 +159,40 @@ export async function ensureExternalDelegationSession(
   ) {
     throw new Error('External delegation Session model binding does not match.');
   }
+  if (authority.sessionOwnership !== 'attached') {
+    await markDedicatedExternalDelegationSession(core, authority.sessionId);
+  }
+}
+
+async function markDedicatedExternalDelegationSession(
+  core: Scope,
+  sessionId: string,
+): Promise<void> {
+  const session = await resumeSessionById(core.accessor, sessionId);
+  if (session === undefined) {
+    throw new Error('External delegation Session is unavailable.');
+  }
+  const metadata = session.accessor.get(ISessionMetadata);
+  const current = await metadata.read();
+  if (
+    isExternalDelegationSessionProvision(
+      current.custom?.[EXTERNAL_DELEGATION_SESSION_PROVISION_KEY],
+    )
+  ) {
+    return;
+  }
+  await metadata.update(
+    {
+      custom: {
+        ...current.custom,
+        [EXTERNAL_DELEGATION_SESSION_PROVISION_KEY]: {
+          version: 1,
+          ownership: 'dedicated',
+        },
+      },
+    },
+    { touchUpdatedAt: false },
+  );
 }
 
 async function canonicalPath(path: string): Promise<string> {

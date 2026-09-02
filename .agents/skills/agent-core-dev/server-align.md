@@ -194,7 +194,7 @@ Match the v1 route's status codes and idempotent-conflict envelopes (e.g. `promp
 
 ### 6. Test against the v1 wire shape
 
-Add a `packages/kap-server/test/<resource>.test.ts` that boots the server and hits the route. Assert on the **envelope + protocol shape**, not on the v2 domain internals:
+Add a `packages/kap-server/test/<resource>.integration.ts` that boots the server and hits the route. Assert on the **envelope + protocol shape**, not on the v2 domain internals:
 
 - success envelope `{ code: 0, data: <protocol shape>, request_id }`;
 - each declared error envelope `{ code: <ErrorCode>, msg, data, request_id }`;

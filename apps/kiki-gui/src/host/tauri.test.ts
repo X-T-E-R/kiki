@@ -1,33 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  checkNativeDesktopUpdate,
-  dryRunNativeSessionsMigration,
-  executeNativeSessionsMigration,
-  importNativeKimiConfig,
-  migrateNativeCompatibilityCategory,
-  onTrayNewSession,
-  selectDirectoriesNative,
-  selectDirectoryNative,
-  selectFilesNative,
-  type SessionsMigrationPlan,
-} from './desktop';
 
-const { invoke, listen, open, readFile, stat, tauriRuntime } = vi.hoisted(() => ({
+import type { SessionsMigrationPlan } from './host';
+import { tauriHost } from './tauri';
+
+const {
+  checkDesktopUpdate: checkNativeDesktopUpdate,
+  dryRunSessionsMigration: dryRunNativeSessionsMigration,
+  executeSessionsMigration: executeNativeSessionsMigration,
+  importKimiConfig: importNativeKimiConfig,
+  migrateCompatibilityCategory: migrateNativeCompatibilityCategory,
+  onTrayNewSession,
+  pickDirectories: selectDirectoriesNative,
+  pickDirectory: selectDirectoryNative,
+  pickFiles: selectFilesNative,
+} = tauriHost;
+
+const { invoke, listen, open, readFile, stat } = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
   open: vi.fn(),
   readFile: vi.fn(),
   stat: vi.fn(),
-  tauriRuntime: { value: true },
 }));
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke,
-  isTauri: () => tauriRuntime.value,
-}));
+vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: vi.fn() }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readFile, stat }));
+vi.mock('@tauri-apps/plugin-notification', () => ({
+  isPermissionGranted: vi.fn(),
+  requestPermission: vi.fn(),
+  sendNotification: vi.fn(),
+}));
 
 describe('native desktop bridge', () => {
   beforeEach(() => {
@@ -36,7 +41,6 @@ describe('native desktop bridge', () => {
     open.mockReset();
     readFile.mockReset();
     stat.mockReset();
-    tauriRuntime.value = true;
     vi.unstubAllGlobals();
   });
 

@@ -84,6 +84,21 @@ export function isExternalFailureCategory(value: unknown): value is ExternalFail
   );
 }
 
+export const EXTERNAL_DELEGATION_SESSION_PROVISION_KEY = 'externalDelegationProvision';
+
+export interface ExternalDelegationSessionProvision {
+  readonly version: 1;
+  readonly ownership: 'dedicated';
+}
+
+export function isExternalDelegationSessionProvision(
+  value: unknown,
+): value is ExternalDelegationSessionProvision {
+  if (typeof value !== 'object' || value === null) return false;
+  const provision = value as Record<string, unknown>;
+  return provision['version'] === 1 && provision['ownership'] === 'dedicated';
+}
+
 export interface ExternalAuthority {
   readonly principalFingerprint: string;
   readonly authorityFingerprint: string;
@@ -224,10 +239,11 @@ export interface DispatchWaitRequest {
 }
 
 export interface DispatchWaitView {
-  readonly waitStatus: 'completed' | 'timed_out' | 'no_items';
+  readonly waitStatus: 'completed' | 'timed_out' | 'no_items' | 'interaction_pending';
   readonly waitedMs: number;
   readonly dispatch?: ExternalDispatchView;
   readonly completedDuringWait: readonly ExternalDispatchView[];
+  readonly interactions: readonly ExternalInteractionView[];
 }
 
 export interface ExternalPageLookup extends ExternalDispatchLookup {
