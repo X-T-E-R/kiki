@@ -12,11 +12,10 @@ import {
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
 import { AgentsSection } from './settings/AgentsSection';
+import { AiSection } from './settings/AiSection';
 import { CapabilitiesSection } from './settings/CapabilitiesSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { GeneralSection } from './settings/GeneralSection';
-import { ModelsSection } from './settings/ModelsSection';
-import { ProvidersSection } from './settings/ProvidersSection';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsFlashContext } from './settings/SectionCard';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
@@ -127,10 +126,18 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   // Canonicalize legacy / card-moved targets in place: replace, never push,
   // and bypass the dirty guard — this is a redirect, not a user navigation.
+  // A resolved tab (legacy `/settings/models` → `ai?tab=models`) is merged
+  // into the existing query so server/token deep-link params survive.
   useEffect(() => {
-    if (resolution.status !== 'ok' || resolution.section === section) return;
-    if (section === undefined && resolution.section === 'general') return;
-    rawNavigate(`/settings/${resolution.section}${search}${hash}`, { replace: true });
+    if (resolution.status !== 'ok') return;
+    const params = new URLSearchParams(search);
+    const sectionMoved = resolution.section !== section
+      && !(section === undefined && resolution.section === 'general');
+    const tabMoved = resolution.tab !== undefined && params.get('tab') !== resolution.tab;
+    if (!sectionMoved && !tabMoved) return;
+    if (resolution.tab !== undefined) params.set('tab', resolution.tab);
+    const query = params.toString();
+    rawNavigate(`/settings/${resolution.section}${query === '' ? '' : `?${query}`}${hash}`, { replace: true });
   }, [resolution, section, search, hash, rawNavigate]);
 
   // Ctrl+, arrives with this flag; clicking Settings in the sidebar does not,
@@ -169,7 +176,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const onSearchHit = (entry: SettingsSearchEntry) => {
     setFocusCard({ cardId: entry.cardId, nonce: Date.now() });
     setDrawerOpen(false);
-    if (entry.section !== active) guardedNavigate(entry.section);
+    // Tabbed sections (the merged ai entry) need the tab in the target so the
+    // hit's card is actually mounted when the flash scroll runs.
+    const target = entry.tab === undefined ? entry.section : `${entry.section}?tab=${entry.tab}`;
+    if (entry.section !== active || entry.tab !== undefined) guardedNavigate(target);
   };
 
   const activeGroup = active === null ? undefined : settingsGroupForSection(active);
@@ -177,9 +187,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   const pane = active === null ? null
     : active === 'general' ? <GeneralSection />
-    : active === 'models' ? <ModelsSection />
+    : active === 'ai' ? <AiSection />
     : active === 'connection' ? <ConnectionSection />
-    : active === 'providers' ? <ProvidersSection />
     : active === 'agents' ? <AgentsSection />
     : active === 'capabilities' ? <CapabilitiesSection />
     : active === 'workspaces' ? <WorkspacesSection />

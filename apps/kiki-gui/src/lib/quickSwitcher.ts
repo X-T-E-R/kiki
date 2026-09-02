@@ -59,9 +59,11 @@ export const SWITCHER_HIT_LIMIT = 8;
 export const SWITCHER_SETTING_LIMIT = 3;
 
 /** `/settings/<section>#st-card-…` — the hash the settings page already
- * flashes on, so a switcher pick lands on the control, not the section top. */
-export function settingsCardRoute(section: string, cardId: string): string {
-  return `/settings/${section}#${cardId}`;
+ * flashes on, so a switcher pick lands on the control, not the section top.
+ * Tabbed sections (the merged ai entry) also carry `?tab=` so the card is
+ * mounted when the flash scroll runs. */
+export function settingsCardRoute(section: string, cardId: string, tab?: string): string {
+  return `/settings/${section}${tab === undefined ? '' : `?tab=${tab}`}#${cardId}`;
 }
 
 export function switcherSessionLabel(session: Session, untitled: string): string {
