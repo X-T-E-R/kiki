@@ -38,7 +38,9 @@ describe('builtin agent profiles', () => {
     'CronCreate',
     'CronList',
     'CronDelete',
-  ])('keeps the builtin coder from dispatching or scheduling via %s', (tool) => {
+    'EnterPlanMode',
+    'ExitPlanMode',
+  ])('keeps the builtin coder from dispatching, scheduling, or planning via %s', (tool) => {
     expect(profile('coder').tools).not.toContain(tool);
   });
 

@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
-import { isDesktopRuntime, selectDirectoriesNative } from '../../lib/desktop';
+import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { errorText, issueText } from '../../i18n/locale';
 import { experimentalFlagRows } from '../../lib/agentSettings';
@@ -112,6 +112,7 @@ function ExperimentalFlagsCard() {
 }
 
 export function CapabilitiesSection() {
+  const host = useHost();
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -126,7 +127,7 @@ export function CapabilitiesSection() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [advancedFeedback, setAdvancedFeedback] = useState<Feedback>(null);
   const restart = useRestartRequirement();
-  const isDesktop = isDesktopRuntime();
+  const isDesktop = host.pickDirectories !== undefined;
   // Group fold state: user toggles override CAPABILITY_GROUPS defaults; a
   // settings-search flash forces the target card's group open so the
   // scroll + flash lands on a visible card.
@@ -189,8 +190,10 @@ export function CapabilitiesSection() {
     setSelectingDirs(true);
     setFeedback(null);
     try {
-      const selected = await selectDirectoriesNative();
-      if (selected !== null) setExtraDirs((current) => appendExtraSkillDirs(current, selected));
+      const selected = await host.pickDirectories?.();
+      if (selected !== undefined && selected !== null) {
+        setExtraDirs((current) => appendExtraSkillDirs(current, selected));
+      }
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {

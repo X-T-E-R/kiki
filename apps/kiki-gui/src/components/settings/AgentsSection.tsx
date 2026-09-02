@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { isDesktopRuntime, restartNativeServer } from '../../lib/desktop';
+import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { errorText, issueText, type I18nKey } from '../../i18n/locale';
 import {
@@ -675,7 +675,8 @@ export function AgentsSection() {
 }
 
 function DesktopServerFileCard() {
-  const isDesktop = isDesktopRuntime();
+  const host = useHost();
+  const isDesktop = host.kind === 'tauri';
   const { t, locale } = useI18n();
   const { client, socket } = useConnection();
   const queryClient = useQueryClient();
@@ -718,7 +719,7 @@ function DesktopServerFileCard() {
       const next = serverFileSettingsFromConfig(echoed);
       setConfig(next);
       setSavedConfig(next);
-      markRestartRequired(['subagent', 'agents', 'builtin_product_skills', 'model_catalog']);
+      markRestartRequired(['subagent', 'agents', 'builtin_product_skills']);
       setFeedback({ tone: 'success', text: t('st.sidecar.savedEcho') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -731,7 +732,7 @@ function DesktopServerFileCard() {
     setRestarting(true);
     setFeedback(null);
     try {
-      await restartNativeServer();
+      await host.restartServer?.();
       clearRestartRequirement();
       socket?.nudge();
       await queryClient.invalidateQueries();
@@ -754,16 +755,11 @@ function DesktopServerFileCard() {
                 ariaLabel={t('st.sidecar.subagentTimeout')}
               />
             </label>
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.catalogInterval')}
-              <MsUnitInput
-                value={config.modelCatalog.refreshIntervalMs}
-                onChange={(refreshIntervalMs) => { setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshIntervalMs } }); }}
-                ariaLabel={t('st.sidecar.catalogInterval')}
-              />
-            </label>
           </div>
+          {/* The model-catalog refresh controls moved to Settings → Models &
+              providers → Available models (st-card-catalog-refresh) in the
+              batch-2 merge; this card keeps the agents/skills defaults only. */}
           <Toggle label={t('st.sidecar.builtinSkills')} checked={config.builtinProductSkills} onChange={(checked) => { setConfig({ ...config, builtinProductSkills: checked }); }} />
-          <Toggle label={t('st.sidecar.refreshOnStart')} checked={config.modelCatalog.refreshOnStart} onChange={(checked) => { setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshOnStart: checked } }); }} />
         </fieldset>
         <Hint>{t('st.sidecar.hint')}</Hint>
         <div className="flex flex-wrap gap-2">

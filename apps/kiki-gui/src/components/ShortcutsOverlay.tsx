@@ -9,9 +9,9 @@
 
 import { useSyncExternalStore } from 'react';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import type { I18nKey } from '../i18n/locale';
-import { isDesktopRuntime } from '../lib/desktop';
 import {
   settingsServerSnapshot,
   settingsSnapshot,
@@ -42,7 +42,7 @@ function newlineKeys(shortcut: SendShortcut): readonly string[] {
 }
 
 /** Exported for tests: the runtime- and preference-aware keyboard map. */
-export function shortcutsGroups(shortcut: SendShortcut): readonly ShortcutGroup[] {
+export function shortcutsGroups(shortcut: SendShortcut, desktop: boolean): readonly ShortcutGroup[] {
   const globalRows: ShortcutRow[] = [
     { keys: ['Ctrl', 'N'], labelKey: 'shortcuts.newSession', desktopOnly: true },
     { keys: ['Ctrl', 'K'], labelKey: 'shortcuts.switcher' },
@@ -51,7 +51,7 @@ export function shortcutsGroups(shortcut: SendShortcut): readonly ShortcutGroup[
     { keys: ['Ctrl', '/'], labelKey: 'shortcuts.thisPanel' },
     { keys: ['?'], labelKey: 'shortcuts.thisPanel' },
   ];
-  if (isDesktopRuntime()) {
+  if (desktop) {
     globalRows.push({ keys: ['Ctrl', 'Shift', 'K'], labelKey: 'shortcuts.showHide' });
   }
   return [
@@ -100,8 +100,9 @@ function Kbd({ label }: { label: string }) {
 }
 
 export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
+  const host = useHost();
   const { t } = useI18n();
-  const desktop = isDesktopRuntime();
+  const desktop = host.kind === 'tauri';
   const sendShortcut = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
@@ -116,7 +117,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
     >
       <h2 className="font-display text-[16px] font-semibold text-ink">{t('shortcuts.title')}</h2>
       <div className="mt-3 max-h-[60vh] space-y-4 overflow-y-auto pr-1">
-        {shortcutsGroups(sendShortcut).map((group) => (
+        {shortcutsGroups(sendShortcut, desktop).map((group) => (
           <section key={group.titleKey}>
             <h3 className="mb-1.5 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
               {t(group.titleKey)}

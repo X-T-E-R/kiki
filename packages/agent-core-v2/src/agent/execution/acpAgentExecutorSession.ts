@@ -50,6 +50,7 @@ import {
 import {
   ExternalTurnRecorder,
   type ExternalExecutorEvent,
+  resolveExternalModelProvider,
 } from './externalTurnRecorder';
 
 interface AcpClientLike {
@@ -207,6 +208,12 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       {
         executorId: this.context.descriptor.id,
         protocol: this.context.descriptor.protocol,
+        model: this.context.binding.modelAlias!,
+        modelAlias: this.context.binding.modelAlias,
+        provider: resolveExternalModelProvider(
+          this.context.agent,
+          this.context.binding.modelAlias,
+        ),
         resumeMode,
         profileDelivery: 'first_prompt_preamble',
         outboundPrompt: remotePrompt,
@@ -351,8 +358,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       await pump;
       const turnResult = turnResultFromAcp(completed);
       if (turnResult.type === 'completed') {
+        const usage = usageFromAcp(completed);
         turn.state = 'completed';
-        await recorder.complete(completed.response.stopReason);
+        await recorder.complete(completed.response.stopReason, usage);
         result.resolve(turnResult);
         if (turnResult.truncated) {
           throw new Error2(
@@ -362,7 +370,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         }
         return {
           summary: recorder.summary(),
-          usage: usageFromAcp(completed),
+          usage,
         };
       }
       if (turnResult.type === 'cancelled') {

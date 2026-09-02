@@ -20,16 +20,8 @@ const patchConfig = vi.fn();
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client: { getConfig, patchConfig } }),
 }));
-vi.mock('../../lib/desktop', () => ({
-  isDesktopRuntime: () => false,
-  dryRunNativeSessionsMigration: vi.fn(),
-  executeNativeSessionsMigration: vi.fn(),
-  importNativeKimiConfig: vi.fn(),
-  migrateNativeCompatibilityCategory: vi.fn(),
-  readNativeDesktopPrefs: vi.fn(),
-  readNativeKimiHomePaths: vi.fn(),
-  writeNativeCompatibilitySettings: vi.fn(),
-  writeNativeDesktopPrefs: vi.fn(),
+vi.mock('../../host', () => ({
+  useHost: () => ({ kind: 'browser' }),
 }));
 
 const CONFIG: KikiConfigResponse = {

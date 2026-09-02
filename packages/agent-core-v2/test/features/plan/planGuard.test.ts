@@ -264,7 +264,7 @@ describe('AgentPlanService plan-guard listener', () => {
 
         expect(decision?.veto).toEqual({
           isError: true,
-          output: `${toolName} is unavailable for subagents.`,
+          output: 'plan mode is only available to the main agent',
         });
         expect(requests).toEqual([]);
         expect(permissionRan).toBe(false);

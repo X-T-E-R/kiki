@@ -16,12 +16,12 @@ import { useQuery } from '@tanstack/react-query';
 import type { AuthSummary, PermissionMode, SessionCreate, Workspace } from '@moonshot-ai/protocol';
 
 import { resolveSelectedEffort, DEFAULT_AGENT_PROFILE } from './Composer';
+import { useHost } from '../host';
 import { composerDefaultsForProfile } from '../lib/agentSettings';
 import { useGuardedNavigate } from './dirtyGuard';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
 import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
-import { isDesktopRuntime, selectDirectoryNative } from '../lib/desktop';
 import { readDraft, writeDraft } from '../lib/drafts';
 import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '../lib/sorting';
 import {
@@ -100,6 +100,7 @@ export function useNewSessionDraft({
   /** `?agent=` prefill — the profile the new session binds at creation. */
   initialProfile?: string;
 } = {}) {
+  const host = useHost();
   const { client } = useConnection();
   const navigate = useGuardedNavigate();
   const { t } = useI18n();
@@ -324,15 +325,15 @@ export function useNewSessionDraft({
    */
   const browseForWorkspace = useCallback(async () => {
     try {
-      const picked = await selectDirectoryNative();
-      if (picked === null) return;
+      const picked = await host.pickDirectory?.();
+      if (picked === undefined || picked === null) return;
       setWorkspaceId('');
       setCwd(picked);
       setError(null);
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, []);
+  }, [host]);
 
   const setAgentProfile = useCallback((name: string) => {
     const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
@@ -358,7 +359,7 @@ export function useNewSessionDraft({
     workspacesLoading,
     effectiveWorkspace,
     needsProviderSetup: providerSetupNeeded,
-    canBrowseForWorkspace: isDesktopRuntime(),
+    canBrowseForWorkspace: host.pickDirectory !== undefined,
     browseForWorkspace,
     serverDefaultModel,
     inheritedDefault,

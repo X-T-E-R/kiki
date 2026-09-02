@@ -126,6 +126,19 @@ describe('AgentPermissionModeService (wire-backed)', () => {
     expect(changes).toEqual([{ mode: 'auto', previousMode: 'manual' }]);
   });
 
+  it('enforces a persistent mode ceiling across later mode changes', () => {
+    svc.setMode('yolo');
+    svc.setModeCeiling('manual');
+    expect(svc.mode).toBe('manual');
+
+    svc.setMode('yolo');
+    expect(svc.mode).toBe('manual');
+
+    svc.setModeCeiling('auto');
+    svc.setMode('yolo');
+    expect(svc.mode).toBe('auto');
+  });
+
   it('dispatch persists a flat { type, mode } record (no payload key)', async () => {
     svc.setMode('auto');
 

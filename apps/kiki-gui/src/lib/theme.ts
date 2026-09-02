@@ -9,6 +9,7 @@
  * an OS switch flips the app without a reload.
  */
 
+import type { HostAdapter } from '../host/host';
 import { readSettings, subscribeSettings, type ThemePreference } from './settings';
 
 export type ResolvedTheme = 'light' | 'dark';
@@ -48,30 +49,14 @@ export function onThemeChange(listener: () => void): () => void {
 }
 
 /**
- * Mirror the resolved theme onto the native window so the title bar and any
- * native chrome match. Desktop-only; no-ops in the browser build.
- */
-async function applyNativeTheme(resolved: ResolvedTheme): Promise<void> {
-  const { isTauri } = await import('@tauri-apps/api/core');
-  if (!isTauri()) return;
-  try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await getCurrentWindow().setTheme(resolved);
-  } catch {
-    // The window may already be gone, or the platform may refuse a theme
-    // override — the in-page palette is already correct either way.
-  }
-}
-
-/**
  * Keep `<html data-theme>` in sync with the stored preference and the OS, for
  * the life of the document. Returns a teardown for tests.
  */
-export function startThemeSync(): () => void {
+export function startThemeSync(host: HostAdapter): () => void {
   const sync = (): void => {
     const resolved = resolveTheme(readSettings().theme, prefersDark());
     applyTheme(resolved);
-    void applyNativeTheme(resolved);
+    void host.setTheme?.(resolved);
   };
   sync();
 

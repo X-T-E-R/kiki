@@ -28,14 +28,12 @@ import {
 
 import type { MetaResponse } from '@moonshot-ai/protocol';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 
 import { ConnectScreen } from '../components/ConnectScreen';
+import { useHost } from '../host';
 import { translate, type I18nKey, type I18nParams } from '../i18n/locale';
 import { useI18n } from '../i18n';
 import { ApiError, KikiClient } from '../lib/client';
-import { detectLocalConnection, isDesktopRuntime } from '../lib/localServer';
 import { KikiSocket, type WsStatus } from '../lib/ws';
 import type { SessionEventFrame } from '../lib/types';
 import {
@@ -56,8 +54,6 @@ import {
 import type { SessionController } from './sessionController';
 
 export type { ConnectionConfig } from './connectionConfig';
-
-const DESKTOP_STAGE_EVENT = 'kiki://desktop-backend-stage';
 
 /**
  * Connect-screen error: client-authored text carries a dictionary key so it
@@ -152,7 +148,8 @@ class LiveControllerRegistry implements ControllerRegistry {
 const ConnectionContext = createContext<ConnectionValue | null>(null);
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
-  const desktopRuntime = isDesktopRuntime();
+  const host = useHost();
+  const desktopRuntime = host.kind === 'tauri';
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [selection, setSelection] = useState<ConnectionSelection | null>(() =>
@@ -183,7 +180,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   // considering browser handoffs or persisted remote connections, and keep
   // the bearer token in React memory only.
   useEffect(() => {
-    if (!desktopRuntime) return;
+    if (host.kind !== 'tauri') return;
     let cancelled = false;
     let resolveGeneration = 0;
     desktopCancelledRef.current = false;
@@ -191,7 +188,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
     const resolveDesktopConnection = () => {
       const generation = ++resolveGeneration;
-      void detectLocalConnection().then(
+      void host.connection.discover().then(
         (connection) => {
           if (cancelled || generation !== resolveGeneration) return;
           setDesktopBoot(null);
@@ -221,8 +218,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
     // Runtime recovery reuses the boot stage event. Each waiting stage resolves
     // the newly spawned sidecar connection because its random port may change.
-    void listen<unknown>(DESKTOP_STAGE_EVENT, (event) => {
-      const payload = event.payload;
+    void host.connection.onBackendStage((payload) => {
       if (payload === 'waiting') {
         connectionEpochRef.current += 1;
         setDesktopFailure(null);
@@ -270,7 +266,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       resolveGeneration += 1;
       unlisten?.();
     };
-  }, [desktopRuntime, desktopAttempt]);
+  }, [host, desktopAttempt]);
 
   const retryDesktopBoot = useCallback(() => {
     setDesktopFailure(null);
@@ -283,8 +279,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     desktopCancelledRef.current = true;
     setDesktopBoot(null);
     setDesktopFailure({ message: t('connect.desktopCancelled'), stderrTail: [], logPath: null });
-    void invoke('cancel_desktop_startup').catch(() => undefined);
-  }, [t]);
+    void host.connection.cancelStartup?.().catch(() => undefined);
+  }, [host, t]);
 
   const client = useMemo(
     () =>
