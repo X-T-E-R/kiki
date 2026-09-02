@@ -27,16 +27,26 @@ export interface RetainedDeletedSessionUsage extends SessionSummary {
   readonly complete: boolean;
 }
 
+export type RetainedUsageIncompleteReason = 'deadline' | 'record_budget';
+
 export interface RetainedUsageListQuery {
   readonly workspaceIds?: readonly string[];
+  readonly deadlineAt: number;
+  readonly recordLimit: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface RetainedUsageListResult {
+  readonly items: readonly RetainedDeletedSessionUsage[];
+  readonly complete: boolean;
+  readonly incompleteReason?: RetainedUsageIncompleteReason;
+  readonly scannedRecords: number;
 }
 
 export interface IRetainedUsageService {
   readonly _serviceBrand: undefined;
   retainDeletedSession(summary: SessionSummary): Promise<RetainedDeletedSessionUsage>;
-  listDeletedSessions(
-    query?: RetainedUsageListQuery,
-  ): Promise<readonly RetainedDeletedSessionUsage[]>;
+  listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult>;
 }
 
 export const IRetainedUsageService: ServiceIdentifier<IRetainedUsageService> =

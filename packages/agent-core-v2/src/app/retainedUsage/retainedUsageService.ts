@@ -12,7 +12,9 @@ import {
   IRetainedUsageService,
   RETAINED_USAGE_VERSION,
   type RetainedDeletedSessionUsage,
+  type RetainedUsageIncompleteReason,
   type RetainedUsageListQuery,
+  type RetainedUsageListResult,
   type RetainedUsageRecord,
 } from './retainedUsage';
 
@@ -45,10 +47,13 @@ const retainedUsageRecordSchema = z.object({
   executorId: z.string().optional(),
 });
 
-const retainedDeletedSessionUsageSchema = z.object({
+const retainedDeletedSessionUsageHeaderSchema = z.object({
   version: z.literal(RETAINED_USAGE_VERSION),
   id: z.string(),
   workspaceId: z.string(),
+});
+
+const retainedDeletedSessionUsageMetaSchema = retainedDeletedSessionUsageHeaderSchema.extend({
   cwd: z.string().optional(),
   title: z.string().optional(),
   lastPrompt: z.string().optional(),
@@ -61,7 +66,6 @@ const retainedDeletedSessionUsageSchema = z.object({
   usage: sessionUsageSummarySchema.optional(),
   deleted: z.literal(true),
   deletedAt: z.number().finite().nonnegative(),
-  records: z.array(retainedUsageRecordSchema),
   complete: z.boolean(),
 });
 
@@ -90,23 +94,59 @@ export class RetainedUsageService implements IRetainedUsageService {
     return snapshot;
   }
 
-  async listDeletedSessions(
-    query: RetainedUsageListQuery = {},
-  ): Promise<readonly RetainedDeletedSessionUsage[]> {
+  async listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult> {
     const workspaceIds =
       query.workspaceIds === undefined ? undefined : new Set(query.workspaceIds);
     const records = new Map<string, RetainedDeletedSessionUsage>();
+    let scannedRecords = 0;
+    let ledgerTruncated = false;
+    const result = (
+      incompleteReason?: RetainedUsageIncompleteReason,
+    ): RetainedUsageListResult => ({
+      items: [...records.values()],
+      complete: incompleteReason === undefined && !ledgerTruncated,
+      incompleteReason,
+      scannedRecords,
+    });
+    if (query.signal?.aborted || Date.now() >= query.deadlineAt) return result('deadline');
     for await (const raw of this.appendLog.read<unknown>(
       this.storeScope,
       RETAINED_USAGE_KEY,
-      { onTruncate: () => {} },
+      { onTruncate: () => { ledgerTruncated = true; } },
     )) {
-      const parsed = retainedDeletedSessionUsageSchema.safeParse(raw);
-      if (!parsed.success) continue;
-      if (workspaceIds !== undefined && !workspaceIds.has(parsed.data.workspaceId)) continue;
-      records.set(`${parsed.data.workspaceId}\0${parsed.data.id}`, parsed.data);
+      if (query.signal?.aborted || Date.now() >= query.deadlineAt) return result('deadline');
+      const header = retainedDeletedSessionUsageHeaderSchema.safeParse(raw);
+      if (!header.success) continue;
+      if (workspaceIds !== undefined && !workspaceIds.has(header.data.workspaceId)) continue;
+      if (scannedRecords >= query.recordLimit) return result('record_budget');
+      scannedRecords += 1;
+      const meta = retainedDeletedSessionUsageMetaSchema.safeParse(raw);
+      if (!meta.success) continue;
+      const rawRecords = (raw as Record<string, unknown>)['records'];
+      if (!Array.isArray(rawRecords)) continue;
+      const parsedRecords: RetainedUsageRecord[] = [];
+      let valid = true;
+      for (const rawRecord of rawRecords) {
+        if (query.signal?.aborted || Date.now() >= query.deadlineAt) {
+          return result('deadline');
+        }
+        if (scannedRecords >= query.recordLimit) return result('record_budget');
+        scannedRecords += 1;
+        const parsed = retainedUsageRecordSchema.safeParse(rawRecord);
+        if (!parsed.success) {
+          valid = false;
+          break;
+        }
+        parsedRecords.push(parsed.data);
+      }
+      if (!valid) continue;
+      records.set(`${meta.data.workspaceId}\0${meta.data.id}`, {
+        ...meta.data,
+        records: parsedRecords,
+      });
     }
-    return [...records.values()];
+    if (query.signal?.aborted || Date.now() >= query.deadlineAt) return result('deadline');
+    return result();
   }
 
   private get storeScope(): string {
@@ -120,6 +160,7 @@ export class RetainedUsageService implements IRetainedUsageService {
     const records: RetainedUsageRecord[] = [];
     let complete = agentIds.length > 0;
     for (const agentId of agentIds) {
+      let hasRecords = false;
       let truncated = false;
       try {
         for await (const raw of this.appendLog.read<WireRecord>(
@@ -127,6 +168,7 @@ export class RetainedUsageService implements IRetainedUsageService {
           AGENT_WIRE_RECORD_KEY,
           { onTruncate: () => { truncated = true; } },
         )) {
+          hasRecords = true;
           if (raw.type !== 'usage.record') continue;
           const parsed = retainedUsageRecordSchema.safeParse(raw);
           if (!parsed.success) {
@@ -138,7 +180,7 @@ export class RetainedUsageService implements IRetainedUsageService {
       } catch {
         complete = false;
       }
-      if (truncated) complete = false;
+      if (!hasRecords || truncated) complete = false;
     }
     return { records, complete };
   }
