@@ -6,6 +6,7 @@ import {
   getToasts,
   MAX_TOASTS,
   pushToast,
+  runToastAction,
   subscribeToasts,
 } from './toasts';
 
@@ -59,5 +60,32 @@ describe('toast queue', () => {
     pushToast({ tone: 'error', text: 'failed', retry: { run: () => { ran += 1; } } });
     getToasts()[0]?.retry?.run();
     expect(ran).toBe(1);
+  });
+
+  it('reports rejected actions with a sticky error toast and retry', async () => {
+    let attempts = 0;
+    runToastAction('Copy', () => {
+      attempts += 1;
+      return Promise.reject(new Error('clipboard denied'));
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getToasts()[0]).toMatchObject({
+      tone: 'error',
+      text: 'Copy: clipboard denied',
+    });
+    getToasts()[0]?.retry?.run();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(attempts).toBe(2);
+  });
+
+  it('reports synchronous action failures', () => {
+    runToastAction('Open', () => { throw new Error('opener failed'); });
+    expect(getToasts()[0]).toMatchObject({
+      tone: 'error',
+      text: 'Open: opener failed',
+    });
   });
 });

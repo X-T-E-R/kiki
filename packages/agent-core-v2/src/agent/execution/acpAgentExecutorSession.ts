@@ -18,10 +18,12 @@ import {
 import type {
   AgentExecutionStatus,
   AgentExecutorContext,
+  AgentExecutorPermissionModeMapping,
   AgentExecutorSession,
 } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import { turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -97,6 +99,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   readonly #dispatcher: IEventDispatcher;
   readonly #workspace: ISessionWorkspaceContext;
   readonly #memory: IAgentContextMemoryService;
+  readonly #permissionMode: IAgentPermissionModeService;
   #active: ActiveExternalTurn | undefined;
   #permissionContext:
     | { readonly turn: MutableExternalTurn; readonly recorder: ExternalTurnRecorder }
@@ -142,6 +145,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.#dispatcher = context.agent.accessor.get(IEventDispatcher);
     this.#workspace = context.agent.accessor.get(ISessionWorkspaceContext);
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
+    this.#permissionMode = context.agent.accessor.get(IAgentPermissionModeService);
     this.#client = clientFactory(
       processService,
       (request, options) => this.#requestPermission(request, options),
@@ -173,7 +177,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const sessionOptions = this.#sessionOptions(options.signal);
     const opened = await this.#client.openSession(sessionOptions);
     const losses = new Set<ExecutorLossCode>(['acp_no_step_boundaries']);
-    const configured = await this.#configure(opened, options.signal, losses);
+    const configured = await this.#configure(opened, options.signal);
     const prior = this.#states.get(externalExecutorKey);
     const priorSessionId = sessionIdFromState(prior.sessionRef);
     const sessionEpoch = priorSessionId === configured.sessionId
@@ -422,7 +426,6 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   async #configure(
     opened: AcpOpenSessionResult,
     signal: AbortSignal,
-    losses: Set<ExecutorLossCode>,
   ): Promise<AcpOpenSessionResult> {
     const modelBinding = this.context.descriptor.modelBinding ?? 'session_config';
     if (modelBinding !== 'session_config' && modelBinding !== 'argv') {
@@ -460,22 +463,17 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       assertConfigured(configured.configOptions, thought.selection, 'thought level');
     }
 
-    const permission = permissionConfig(configured.configOptions);
-    if (permission === undefined) {
-      losses.add('permission_mode_unverified');
-      return configured;
-    }
-    try {
-      const verified = await this.#client.configureSession({
-        configOptions: [permission.selection],
-        signal,
-      });
-      assertConfigured(verified.configOptions, permission.selection, 'permission mode');
-      return verified;
-    } catch {
-      losses.add('permission_mode_unverified');
-      return configured;
-    }
+    const permission = permissionConfig(
+      configured.configOptions,
+      this.context.descriptor.permissionModeMapping,
+      this.#permissionMode.mode,
+    );
+    const verified = await this.#client.configureSession({
+      configOptions: [permission.selection],
+      signal,
+    });
+    assertConfigured(verified.configOptions, permission.selection, 'permission mode');
+    return verified;
   }
 
   #reserveTurnId(): number {
@@ -655,20 +653,41 @@ function selectValues(option: AcpSessionConfigOption): string[] {
 
 function permissionConfig(
   options: readonly AcpSessionConfigOption[],
-): SelectedConfig | undefined {
-  const permissionOptions = options.filter((option) => {
-    const key = `${option.id} ${option.name} ${option.category ?? ''}`.toLowerCase();
-    return /permission|approval|auto.?approve|sandbox/.test(key);
-  });
-  if (permissionOptions.length !== 1) return undefined;
-  const option = permissionOptions[0]!;
-  if (option.type === 'boolean') {
-    return { option, selection: { configId: option.id, value: false } };
+  mapping: AgentExecutorPermissionModeMapping | undefined,
+  mode: IAgentPermissionModeService['mode'],
+): SelectedConfig {
+  if (mapping === undefined) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      'External ACP permission mode mapping is not configured',
+    );
   }
-  const values = selectValues(option);
-  const selected = values.find((value) => /^(interactive|manual|ask|default|agent)$/i.test(value));
-  if (selected === undefined) return undefined;
-  return { option, selection: { configId: option.id, value: selected } };
+  const matches = options.filter((option) =>
+    mapping.configId === undefined
+      ? option.category === mapping.configCategory
+      : option.id === mapping.configId);
+  if (matches.length !== 1) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      `External ACP permission config is ${matches.length === 0 ? 'missing' : 'ambiguous'}`,
+    );
+  }
+  const option = matches[0]!;
+  const value = mapping[mode];
+  if (typeof value === 'boolean') {
+    if (option.type !== 'boolean') {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        `External ACP permission config "${option.id}" is not boolean`,
+      );
+    }
+  } else if (option.type !== 'select' || !selectValues(option).includes(value)) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      `External ACP permission mode "${value}" is unavailable in config "${option.id}"`,
+    );
+  }
+  return { option, selection: { configId: option.id, value } };
 }
 
 function assertConfigured(

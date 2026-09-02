@@ -158,7 +158,7 @@ describe('PluginService (plugin boundary)', () => {
     }
   });
 
-  it('degrades consumption-plane reads to empty when installed.json is corrupt', async () => {
+  it('degrades non-blocking consumption reads but rejects hook reads when installed.json is corrupt', async () => {
     const home = await makeHome();
     await writeInstalledFile(home, '{ not json');
     const host = makeHost(home);
@@ -167,7 +167,23 @@ describe('PluginService (plugin boundary)', () => {
       await expect(svc.pluginSkillRoots()).resolves.toEqual([]);
       await expect(svc.enabledSessionStarts()).resolves.toEqual([]);
       await expect(svc.enabledSystemPrompts()).resolves.toEqual([]);
-      await expect(svc.enabledHooks()).resolves.toEqual([]);
+      await expect(svc.enabledHooks()).rejects.toMatchObject({ code: 'plugin.load_failed' });
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('rejects hook reads when an enabled plugin has an invalid matcher', async () => {
+    const home = await makeHome();
+    const pluginRoot = await makePluginDir('invalid-hook', {
+      hooks: [{ event: 'PreToolUse', matcher: '[invalid', command: 'echo blocked' }],
+    });
+    createdDirs.push(pluginRoot);
+    await writeInstalledFile(home, JSON.stringify(installedFile('invalid-hook', pluginRoot)));
+    const host = makeHost(home);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await expect(svc.enabledHooks()).rejects.toMatchObject({ code: 'plugin.load_failed' });
     } finally {
       host.dispose();
     }

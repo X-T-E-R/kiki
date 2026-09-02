@@ -7,11 +7,19 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
   #ended = false;
   #error: unknown;
 
+  constructor(private readonly maxBacklog: number) {}
+
   push(value: T): void {
     if (this.#ended) return;
     const waiter = this.#waiters.shift();
-    if (waiter === undefined) this.#values.push(value);
-    else waiter.resolve({ done: false, value });
+    if (waiter === undefined) {
+      if (this.#values.length >= this.maxBacklog) {
+        throw new Error('Async queue backlog limit exceeded');
+      }
+      this.#values.push(value);
+    } else {
+      waiter.resolve({ done: false, value });
+    }
   }
 
   end(): void {
@@ -24,6 +32,7 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     if (this.#ended) return;
     this.#ended = true;
     this.#error = error;
+    this.#values.length = 0;
     for (const waiter of this.#waiters.splice(0)) waiter.reject(error);
   }
 

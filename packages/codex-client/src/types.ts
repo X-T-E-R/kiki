@@ -87,11 +87,16 @@ export type CodexServerRequestHandler = (
   signal: AbortSignal,
 ) => void | Promise<void>;
 
+export interface CodexClientLogger {
+  error?(message: string, details?: Readonly<Record<string, unknown>>): void;
+}
+
 export interface CodexClientOptions {
   readonly onServerRequest?: CodexServerRequestHandler;
   readonly onNotification?: (notification: CodexNotification) => void | Promise<void>;
   readonly onFrame?: (frame: CodexWireFrame) => void;
   readonly onStateChange?: (status: CodexClientStatus) => void;
+  readonly logger?: CodexClientLogger;
 }
 
 export interface CodexWireFrame {

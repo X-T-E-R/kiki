@@ -8,6 +8,25 @@ import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
 export const AGENT_EXECUTORS_SECTION = 'agentExecutors';
 
 const sourceId = z.string().trim().min(1);
+const permissionModeValue = z.union([z.string().trim().min(1), z.boolean()]);
+
+const AgentExecutorPermissionModeMappingSchema = z
+  .object({
+    configId: sourceId.optional(),
+    configCategory: sourceId.optional(),
+    manual: permissionModeValue,
+    auto: permissionModeValue,
+    yolo: permissionModeValue,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.configId === undefined) === (value.configCategory === undefined)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'exactly one of configId or configCategory is required',
+      });
+    }
+  });
 
 const AgentExecutorSourceSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -49,6 +68,7 @@ export const AgentExecutorConfigSchema = z
     modelArgs: z.array(z.string()).optional(),
     modelConfigCategory: z.string().trim().min(1).optional(),
     thoughtConfigCategory: z.string().trim().min(1).optional(),
+    permissionModeMapping: AgentExecutorPermissionModeMappingSchema.optional(),
     revision: z.string().trim().min(1).optional(),
   })
   .strict()
@@ -83,6 +103,7 @@ const TOML_TO_RUNTIME = {
   model_args: 'modelArgs',
   model_config_category: 'modelConfigCategory',
   thought_config_category: 'thoughtConfigCategory',
+  permission_mode_mapping: 'permissionModeMapping',
   version_probe: 'versionProbe',
 } as const;
 
@@ -93,6 +114,7 @@ const RUNTIME_TO_TOML = {
   modelArgs: 'model_args',
   modelConfigCategory: 'model_config_category',
   thoughtConfigCategory: 'thought_config_category',
+  permissionModeMapping: 'permission_mode_mapping',
   versionProbe: 'version_probe',
 } as const;
 
@@ -110,6 +132,18 @@ export function agentExecutorsFromToml(value: unknown): unknown {
         descriptor[runtimeKey] = descriptor[tomlKey];
         delete descriptor[tomlKey];
       }
+    }
+    if (isPlainObject(descriptor['permissionModeMapping'])) {
+      const mapping: Record<string, unknown> = { ...descriptor['permissionModeMapping'] };
+      if (Object.hasOwn(mapping, 'config_id')) {
+        mapping['configId'] = mapping['config_id'];
+        delete mapping['config_id'];
+      }
+      if (Object.hasOwn(mapping, 'config_category')) {
+        mapping['configCategory'] = mapping['config_category'];
+        delete mapping['config_category'];
+      }
+      descriptor['permissionModeMapping'] = mapping;
     }
     if (Array.isArray(descriptor['sources'])) {
       descriptor['sources'] = descriptor['sources'].map((source) => {
@@ -145,6 +179,18 @@ export function agentExecutorsToToml(value: unknown): unknown {
         descriptor[tomlKey] = descriptor[runtimeKey];
         delete descriptor[runtimeKey];
       }
+    }
+    if (isPlainObject(descriptor['permission_mode_mapping'])) {
+      const mapping: Record<string, unknown> = { ...descriptor['permission_mode_mapping'] };
+      if (Object.hasOwn(mapping, 'configId')) {
+        mapping['config_id'] = mapping['configId'];
+        delete mapping['configId'];
+      }
+      if (Object.hasOwn(mapping, 'configCategory')) {
+        mapping['config_category'] = mapping['configCategory'];
+        delete mapping['configCategory'];
+      }
+      descriptor['permission_mode_mapping'] = mapping;
     }
     if (Array.isArray(descriptor['sources'])) {
       descriptor['sources'] = descriptor['sources'].map((source) => {

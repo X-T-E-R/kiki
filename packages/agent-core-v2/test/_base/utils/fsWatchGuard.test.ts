@@ -19,24 +19,22 @@ describe('native fs.watch error guard', () => {
 
   afterEach(async () => {
     resetUnexpectedErrorHandler();
-    if (root) await rm(root, { recursive: true, force: true });
+    if (root !== '') await rm(root, { recursive: true, force: true });
     root = '';
   });
 
-  it('is installed before chokidar-backed watchers load', () => {
+  it('is installed when core loads independently', () => {
     expect(isNativeFsWatchErrorGuardInstalled()).toBe(true);
     installNativeFsWatchErrorGuard();
     expect(isNativeFsWatchErrorGuardInstalled()).toBe(true);
   });
 
-  it('does not throw when a native watcher emits an error without listeners', async () => {
-    installNativeFsWatchErrorGuard();
+  it('reports through an unexpected-error handler registered later', async () => {
     root = await mkdtemp(join(tmpdir(), 'fswatch-guard-'));
     const seen: unknown[] = [];
-    setUnexpectedErrorHandler((err) => {
-      seen.push(err);
+    setUnexpectedErrorHandler((error) => {
+      seen.push(error);
     });
-
     const watcher = watch(root, { persistent: false });
     const error = Object.assign(new Error('watch failed'), {
       code: 'EPERM',
@@ -50,17 +48,15 @@ describe('native fs.watch error guard', () => {
   });
 
   it('still delivers errors to an attached listener', async () => {
-    installNativeFsWatchErrorGuard();
     root = await mkdtemp(join(tmpdir(), 'fswatch-guard-listener-'));
     const unexpected: unknown[] = [];
-    setUnexpectedErrorHandler((err) => {
-      unexpected.push(err);
+    setUnexpectedErrorHandler((error) => {
+      unexpected.push(error);
     });
-
     const watcher = watch(root, { persistent: false });
     const seen: unknown[] = [];
-    watcher.on('error', (err) => {
-      seen.push(err);
+    watcher.on('error', (error) => {
+      seen.push(error);
     });
     const error = Object.assign(new Error('watch failed'), {
       code: 'EPERM',

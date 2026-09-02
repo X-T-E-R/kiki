@@ -25,27 +25,32 @@ export async function discoverExecutorSources(
   bootstrap: IBootstrapService,
 ): Promise<readonly AgentExecutorSourceProbe[]> {
   if (descriptor.sources === undefined || descriptor.sources.length === 0) {
-    if (descriptor.command === undefined) return [];
-    const probe = await probeCommand(
-      processService,
-      descriptor.command,
-      descriptor.versionProbe?.args ?? ['--version'],
-      descriptor.env,
-    );
-    return [{
-      id: 'command',
-      kind: 'path-lookup',
-      available: probe.available && probe.code === 0,
-      command: descriptor.command,
-      version: firstLine(probe.output),
-      diagnostic: probe.available
-        ? probe.code === 0 ? undefined : `version probe exited with code ${String(probe.code)}`
-        : 'not found or not executable',
-    }];
+    return probeDescriptorCommand(descriptor, processService);
   }
   const results: AgentExecutorSourceProbe[] = [];
   for (const source of descriptor.sources) {
-    results.push(await probeSource(source, descriptor, processService, fs, bootstrap));
+    results.push(await probeSource(source, descriptor, processService, fs, bootstrap, true));
+  }
+  return results;
+}
+
+export async function resolveExecutorSource(
+  descriptor: AgentExecutorDescriptor,
+  processService: IHostProcessService,
+  fs: IHostFileSystem,
+  bootstrap: IBootstrapService,
+): Promise<readonly AgentExecutorSourceProbe[]> {
+  if (descriptor.sources === undefined || descriptor.sources.length === 0) {
+    return probeDescriptorCommand(descriptor, processService);
+  }
+  const sources = descriptor.source === undefined
+    ? descriptor.sources
+    : descriptor.sources.filter((source) => source.id === descriptor.source);
+  const results: AgentExecutorSourceProbe[] = [];
+  for (const source of sources) {
+    const result = await probeSource(source, descriptor, processService, fs, bootstrap, false);
+    results.push(result);
+    if (result.available) break;
   }
   return results;
 }
@@ -58,12 +63,36 @@ export function selectExecutorSource(
   return probes.find((probe) => probe.id === descriptor.source && probe.available);
 }
 
+async function probeDescriptorCommand(
+  descriptor: AgentExecutorDescriptor,
+  processService: IHostProcessService,
+): Promise<readonly AgentExecutorSourceProbe[]> {
+  if (descriptor.command === undefined) return [];
+  const probe = await probeCommand(
+    processService,
+    descriptor.command,
+    descriptor.versionProbe?.args ?? ['--version'],
+    descriptor.env,
+  );
+  return [{
+    id: 'command',
+    kind: 'path-lookup',
+    available: probe.available && probe.code === 0,
+    command: descriptor.command,
+    version: firstLine(probe.output),
+    diagnostic: probe.available
+      ? probe.code === 0 ? undefined : `version probe exited with code ${String(probe.code)}`
+      : 'not found or not executable',
+  }];
+}
+
 async function probeSource(
   source: AgentExecutorBinarySource,
   descriptor: AgentExecutorDescriptor,
   processService: IHostProcessService,
   fs: IHostFileSystem,
   bootstrap: IBootstrapService,
+  exhaustive: boolean,
 ): Promise<AgentExecutorSourceProbe> {
   const commands = await sourceCommands(source, fs, bootstrap);
   if (commands.length === 0) {
@@ -74,7 +103,10 @@ async function probeSource(
       diagnostic: unavailableDiagnostic(source, bootstrap),
     };
   }
-  const candidates = await Promise.all(commands.map(async (command) => ({
+  const selectedCommands = source.kind === 'glob' && !exhaustive
+    ? [commands.toSorted(compareExecutorBinaryPaths).at(-1)!]
+    : commands;
+  const candidates = await Promise.all(selectedCommands.map(async (command) => ({
     command,
     probe: await probeCommand(
       processService,
@@ -97,7 +129,7 @@ async function probeSource(
         : 'not found or not executable',
     };
   }
-  const selected = source.kind === 'glob'
+  const selected = source.kind === 'glob' && exhaustive
     ? available.toSorted((left, right) => compareExecutorBinaryCandidates(
         { command: left.command, output: left.probe.output },
         { command: right.command, output: right.probe.output },
@@ -265,6 +297,20 @@ async function safeReaddir(fs: IHostFileSystem, path: string) {
 interface BinaryVersionKey {
   readonly core: readonly number[];
   readonly prerelease: readonly (string | number)[];
+}
+
+function compareExecutorBinaryPaths(left: string, right: string): number {
+  const leftVersion = pathVersion(left);
+  const rightVersion = pathVersion(right);
+  if (leftVersion !== undefined && rightVersion !== undefined) {
+    const compared = compareVersionKeys(leftVersion, rightVersion);
+    if (compared !== 0) return compared;
+  } else if (leftVersion !== undefined) {
+    return 1;
+  } else if (rightVersion !== undefined) {
+    return -1;
+  }
+  return left.localeCompare(right);
 }
 
 export function compareExecutorBinaryCandidates(

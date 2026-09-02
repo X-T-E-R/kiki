@@ -1,5 +1,5 @@
-import { IInstantiationService } from "#/_base/di/instantiation";
-import { Service } from "#/_base/di/service";
+import { IInstantiationService } from '#/_base/di/instantiation';
+import { Service } from '#/_base/di/service';
 import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import { AutoModeApprovePermissionPolicyService } from '#/agent/permissionPolicy/policies/auto-mode-approve';
 import { AutoModeAskUserQuestionDenyPermissionPolicyService } from '#/agent/permissionPolicy/policies/auto-mode-ask-user-question-deny';
@@ -15,9 +15,11 @@ import { UserConfiguredDenyPermissionPolicyService } from '#/agent/permissionPol
 import { YoloModeApprovePermissionPolicyService } from '#/agent/permissionPolicy/policies/yolo-mode-approve';
 import {
   IAgentPermissionPolicyService,
+  PermissionPolicyAllowlistContribution,
+  type PermissionPolicyAllowlistView,
   type PermissionPolicyEvaluation,
 } from './permissionPolicy';
-import type { PermissionPolicy } from "./types";
+import type { PermissionPolicy } from './types';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
@@ -27,37 +29,62 @@ export class AgentPermissionPolicyService
 {
   declare readonly _serviceBrand: undefined;
 
-  private readonly policies: readonly PermissionPolicy[];
+  private readonly adjudicationPolicies: readonly PermissionPolicy[];
+  private readonly allowlistPolicies: readonly PermissionPolicy[];
+  private readonly fallbackPolicy: PermissionPolicy;
 
   constructor(
     @IInstantiationService private readonly instantiation: IInstantiationService,
+    @PermissionPolicyAllowlistContribution
+    private readonly allowlistContributions: PermissionPolicyAllowlistView,
   ) {
     super();
-    this.policies = [
+    this.adjudicationPolicies = [
       this.instantiation.createInstance(AutoModeAskUserQuestionDenyPermissionPolicyService),
       this.instantiation.createInstance(UserConfiguredDenyPermissionPolicyService),
-      this.instantiation.createInstance(SessionApprovalHistoryPermissionPolicyService),
       this.instantiation.createInstance(UserConfiguredAskPermissionPolicyService),
-      this.instantiation.createInstance(UserConfiguredAllowPermissionPolicyService),
       this.instantiation.createInstance(SensitiveFileAccessAskPermissionPolicyService),
       this.instantiation.createInstance(GitControlPathAccessAskPermissionPolicyService),
       this.instantiation.createInstance(AutoModeApprovePermissionPolicyService),
       this.instantiation.createInstance(YoloModeApprovePermissionPolicyService),
+    ];
+    this.allowlistPolicies = [
+      this.instantiation.createInstance(SessionApprovalHistoryPermissionPolicyService),
+      this.instantiation.createInstance(UserConfiguredAllowPermissionPolicyService),
       this.instantiation.createInstance(DefaultToolApprovePermissionPolicyService),
       this.instantiation.createInstance(GitCwdWriteApprovePermissionPolicyService),
-      this.instantiation.createInstance(FallbackAskPermissionPolicyService),
     ];
+    this.fallbackPolicy = this.instantiation.createInstance(FallbackAskPermissionPolicyService);
   }
 
   async evaluate(
     context: ResolvedToolExecutionHookContext,
   ): Promise<PermissionPolicyEvaluation | undefined> {
-    for (const policy of this.policies) {
+    const adjudication = await evaluatePolicies(this.adjudicationPolicies, context);
+    if (adjudication !== undefined) return adjudication;
+
+    const allowlist = await evaluatePolicies(this.allowlistPolicies, context);
+    if (allowlist !== undefined) return allowlist;
+
+    for (const id of this.allowlistContributions.items) {
+      const policy = this.instantiation.invokeFunction((accessor) => accessor.get(id));
       const result = await policy.evaluate(context);
       if (result !== undefined) return { policyName: policy.name, result };
     }
-    return undefined;
+
+    return evaluatePolicies([this.fallbackPolicy], context);
   }
+}
+
+async function evaluatePolicies(
+  policies: readonly PermissionPolicy[],
+  context: ResolvedToolExecutionHookContext,
+): Promise<PermissionPolicyEvaluation | undefined> {
+  for (const policy of policies) {
+    const result = await policy.evaluate(context);
+    if (result !== undefined) return { policyName: policy.name, result };
+  }
+  return undefined;
 }
 
 registerScopedService(

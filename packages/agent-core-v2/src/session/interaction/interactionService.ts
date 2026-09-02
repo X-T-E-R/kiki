@@ -165,6 +165,9 @@ export class SessionInteractionService extends Service implements ISessionIntera
     resolve: (response: unknown) => void,
   ): Interaction {
     const id = req.id ?? this.generateId();
+    if (this.pending.has(id)) {
+      throw new Error(`Interaction "${id}" is already pending`);
+    }
     const origin: InteractionOrigin = req.origin ?? {};
     const interaction: Interaction<TPayload> = {
       id,
@@ -227,7 +230,11 @@ export class SessionInteractionService extends Service implements ISessionIntera
   }
 
   private generateId(): string {
-    return `interaction-${this.nextId++}`;
+    let id: string;
+    do {
+      id = `interaction-${this.nextId++}`;
+    } while (this.pending.has(id));
+    return id;
   }
 }
 

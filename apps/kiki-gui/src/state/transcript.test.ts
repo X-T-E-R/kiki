@@ -20,6 +20,7 @@ import {
 import type { AgentTranscriptResponse } from '../lib/client';
 
 import { buildAgentForest } from './agentTree';
+import { groupBlocks } from './grouping';
 
 import {
   appendLocalUserMessage,
@@ -1720,6 +1721,119 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
           (block) => block.kind === 'subagent-event' && block.event === 'completed',
         ),
       ).toBe(false);
+    });
+
+    it('anchors sent/resumed entries after their triggering tool block without splitting the tool fold', () => {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'delegate',
+              startedAt: '2026-01-01T00:00:00.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'completed',
+                  startedAt: '2026-01-01T00:00:01.000Z',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-read',
+                      toolCallId: 'call-read-1',
+                      name: 'Read',
+                      state: 'done',
+                      input: { file_path: 'a.ts' },
+                      startedAt: '2026-01-01T00:00:01.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-edit',
+                      toolCallId: 'call-edit-1',
+                      name: 'Edit',
+                      state: 'done',
+                      input: { file_path: 'a.ts' },
+                      startedAt: '2026-01-01T00:00:02.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-spawn-1',
+                      toolCallId: 'call-spawn-1',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { profile: 'Researcher', prompt: 'map the surface' },
+                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
+                      startedAt: '2026-01-01T00:00:03.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-spawn-2',
+                      toolCallId: 'call-spawn-2',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { profile: 'Scout', prompt: 'probe the edges' },
+                      agentRefs: [{ agentId: 'agent-2', role: 'child' }],
+                      startedAt: '2026-01-01T00:00:04.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-send',
+                      toolCallId: 'call-send-1',
+                      name: 'AgentSend',
+                      state: 'done',
+                      input: { target: 'agent-1', message: 'also check the wire envelope' },
+                      startedAt: '2026-01-01T00:00:05.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-resume',
+                      toolCallId: 'call-resume-1',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { resume_agent_ids: { 'agent-1': 'keep going', 'agent-2': 'you too' } },
+                      startedAt: '2026-01-01T00:00:06.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          tasks: [],
+        }),
+      );
+      const indexOf = (id: string) => projected.blocks.findIndex((block) => block.id === id);
+      // Causality: each lifecycle entry follows the tool call that caused it,
+      // never leads it (the timeline id tiebreak orders `subagent-event-…`
+      // before `tool-…` at equal timestamps).
+      const sendTool = indexOf('tool-call-send-1');
+      const resumeTool = indexOf('tool-call-resume-1');
+      expect(sendTool).toBeGreaterThanOrEqual(0);
+      expect(resumeTool).toBeGreaterThanOrEqual(0);
+      expect(indexOf('subagent-event-agent-1-send-call-send-1')).toBe(sendTool + 1);
+      // One tool deriving several entries keeps their derivation order.
+      expect(indexOf('subagent-event-agent-1-resume-call-resume-1')).toBe(resumeTool + 1);
+      expect(indexOf('subagent-event-agent-2-resume-call-resume-1')).toBe(resumeTool + 2);
+      // The leading tool run still folds into one group — the anchored
+      // entries sit after their own tools instead of splitting the run.
+      const nodes = groupBlocks(projected.blocks);
+      const fold = nodes.find((node) => node.kind === 'tool-group');
+      expect(fold).toMatchObject({
+        kind: 'tool-group',
+        tools: [
+          { toolCallId: 'call-read-1' },
+          { toolCallId: 'call-edit-1' },
+          { toolCallId: 'call-spawn-1' },
+        ],
+      });
     });
 
     it('scopes compact entries to direct children when filtering a page', () => {

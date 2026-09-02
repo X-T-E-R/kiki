@@ -10,18 +10,32 @@ export interface ExternalHooksRunnerTriggerArgs {
   readonly sessionId?: string;
 }
 
+export type ExternalHooksRunnerFailureMode = 'empty' | 'block';
+
 export interface IExternalHooksRunnerService {
   readonly _serviceBrand: undefined;
   readonly ready: Promise<void>;
   /** Fired after the hook index is (re)built — initial load and plugin reloads. */
   readonly onDidReload: Event<void>;
-  trigger(event: string, args?: ExternalHooksRunnerTriggerArgs): Promise<HookResult[]>;
+  trigger(
+    event: string,
+    args?: ExternalHooksRunnerTriggerArgs,
+    failureMode?: ExternalHooksRunnerFailureMode,
+  ): Promise<HookResult[]>;
   triggerBlock(
     event: string,
     args?: ExternalHooksRunnerTriggerArgs,
   ): Promise<HookBlockDecision | undefined>;
   fireAndForgetTrigger(event: string, args?: ExternalHooksRunnerTriggerArgs): Promise<HookResult[]>;
   hasHooksFor(event: string): boolean;
+}
+
+export function triggerBlockingResults(
+  runner: IExternalHooksRunnerService,
+  event: string,
+  args?: ExternalHooksRunnerTriggerArgs,
+): Promise<HookResult[]> {
+  return runner.trigger(event, args, 'block');
 }
 
 export const IExternalHooksRunnerService: ServiceIdentifier<IExternalHooksRunnerService> =

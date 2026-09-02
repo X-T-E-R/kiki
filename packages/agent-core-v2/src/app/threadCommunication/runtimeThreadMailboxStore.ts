@@ -40,6 +40,8 @@ const DELIVERY_HEAD_REPAIR_STEP_LIMIT = 32;
 const RECEIPT_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const CALL_TIMEOUT_MS = 10_000;
 const STARTUP_CALL_TIMEOUT_MS = 20_000;
+const CALL_RETRY_BACKOFF_MS = 25;
+const CALL_TOTAL_TIMEOUT_MULTIPLIER = 2;
 const LEGACY_THREAD_DIR = 'thread-mailbox-v1';
 const LEGACY_AGENT_DIR = 'agent-collaboration-mailbox-v2';
 const SYSTEM_PARTITION = 's/thread-mailbox-v3';
@@ -218,6 +220,7 @@ type ReadActivityRpcResult =
 
 interface PartitionOperation {
   readonly kind: 'operation';
+  readonly ctx: RuntimeMethodContext;
   readonly run: () => Promise<unknown>;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
@@ -250,6 +253,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   private readonly legacyDirs: readonly string[];
   private readonly registrations: IDisposable[];
   private readonly partitionQueues = new Map<string, PartitionQueue>();
+  private readonly partitionAbortListeners = new WeakMap<PartitionQueueOperation, () => void>();
   private readonly ownerOperations = new Map<Promise<unknown>, number>();
   private readonly quarantine: MiniDb<Record<string, unknown>>[] = [];
   private readonly closeController = new AbortController();
@@ -457,17 +461,38 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   ): Promise<unknown> {
     if (this.closing) throw new Error('Thread mailbox store is closed.');
     const requestId = options?.requestId ?? randomUUID();
-    const signal = combineAbortSignals(this.closeController.signal, options?.signal);
-    const invoke = async (): Promise<unknown> => {
-      throwIfAborted(signal);
-      await abortable(this.runtime.ready(), signal);
-      return this.runtime.call(method, payload, { requestId, timeoutMs, signal });
-    };
+    const totalTimeoutMs = timeoutMs * CALL_TOTAL_TIMEOUT_MULTIPLIER;
+    const deadlineAt = Date.now() + totalTimeoutMs;
+    const deadlineError = new HomeRuntimeError('runtime.timeout', `thread mailbox call timed out after ${totalTimeoutMs}ms`);
+    const deadlineController = new AbortController();
+    const deadlineTimer = setTimeout(() => deadlineController.abort(deadlineError), totalTimeoutMs);
+    deadlineTimer.unref?.();
+    const callerSignal = combineAbortSignals(this.closeController.signal, options?.signal);
+    const signal = combineAbortSignals(callerSignal, deadlineController.signal);
     try {
-      return await invoke();
-    } catch (error) {
-      if (signal.aborted || !isAmbiguousRuntimeResponse(error)) throw error;
-      return invoke();
+      for (;;) {
+        throwIfAborted(signal);
+        const readyBudgetMs = deadlineAt - Date.now();
+        if (readyBudgetMs <= 0) throw deadlineError;
+        try {
+          await abortable(this.runtime.ready(), signal);
+          const remainingMs = deadlineAt - Date.now();
+          if (remainingMs <= 0) throw deadlineError;
+          return await this.runtime.call(method, payload, {
+            requestId,
+            timeoutMs: Math.min(timeoutMs, remainingMs),
+            signal,
+          });
+        } catch (error) {
+          throwIfAborted(signal);
+          if (!isRetryableMailboxRuntimeResponse(error)) throw error;
+          const backoffMs = Math.min(CALL_RETRY_BACKOFF_MS, deadlineAt - Date.now());
+          if (backoffMs <= 0) throw deadlineError;
+          await abortable(delay(backoffMs), signal);
+        }
+      }
+    } finally {
+      clearTimeout(deadlineTimer);
     }
   }
 
@@ -623,7 +648,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
 
   private async claimOwner(input: ClaimPayload, ctx: RuntimeMethodContext): Promise<ThreadDeliveryClaim | null> {
     const partition = targetPartition(input.target);
-    return this.withPartition(partition, async () => {
+    return this.withPartition(partition, ctx, async () => {
       const db = await this.readyOwner(ctx);
       const method = THREAD_MAILBOX_RUNTIME_METHODS.claim;
       const receiptKey = requestReceiptKey(partition, method, ctx);
@@ -689,7 +714,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       : THREAD_MAILBOX_RUNTIME_METHODS.undeliverable;
     const partition = targetPartition(claim.message.target);
     const input = state === 'delivered' ? claim : { claim, reason };
-    return this.withPartition(partition, async () => {
+    return this.withPartition(partition, ctx, async () => {
       const db = await this.readyOwner(ctx);
       const receiptKey = requestReceiptKey(partition, method, ctx);
       const receipt = readReceipt(await db.partitionGet(partition, receiptKey), receiptKey, method, ctx, input);
@@ -817,7 +842,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
 
   private async appendActivityOwner(input: ActivityPayload, ctx: RuntimeMethodContext): Promise<StoredThreadActivity> {
     const partition = targetPartition(input.target);
-    return this.withPartition(partition, async () => {
+    return this.withPartition(partition, ctx, async () => {
       const db = await this.readyOwner(ctx);
       const method = THREAD_MAILBOX_RUNTIME_METHODS.appendActivity;
       const receiptKey = requestReceiptKey(partition, method, ctx);
@@ -862,7 +887,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
 
   private async readActivityOwner(input: ReadActivityPayload, ctx: RuntimeMethodContext): Promise<ThreadActivityPage> {
     const partition = targetPartition(input.target);
-    return this.withPartition(partition, async () => {
+    return this.withPartition(partition, ctx, async () => {
       const db = await this.readyOwner(ctx);
       const metaKey = targetMetaKey(partition);
       let meta = asTargetMeta(await db.partitionGet(partition, metaKey));
@@ -910,7 +935,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     const partition = workspacePartition(workspaceId);
     const method = THREAD_MAILBOX_RUNTIME_METHODS.setWorkspaceOverride;
     const input = { workspaceId, enabled };
-    await this.withPartition(partition, async () => {
+    await this.withPartition(partition, ctx, async () => {
       const db = await this.readyOwner(ctx);
       const receiptKey = requestReceiptKey(partition, method, ctx);
       if (readReceipt(await db.partitionGet(partition, receiptKey), receiptKey, method, ctx, input) !== undefined) return;
@@ -932,7 +957,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     const partition = workspacePartition(workspaceId);
     const method = THREAD_MAILBOX_RUNTIME_METHODS.clearWorkspaceOverride;
     const input = { workspaceId };
-    await this.withPartition(partition, async () => {
+    await this.withPartition(partition, ctx, async () => {
       const db = await this.readyOwner(ctx);
       const receiptKey = requestReceiptKey(partition, method, ctx);
       if (readReceipt(await db.partitionGet(partition, receiptKey), receiptKey, method, ctx, input) !== undefined) return;
@@ -946,10 +971,11 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     });
   }
 
-  private withPartition<T>(partition: string, run: () => Promise<T>): Promise<T> {
+  private withPartition<T>(partition: string, ctx: RuntimeMethodContext, run: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       this.enqueuePartitionOperation(partition, {
         kind: 'operation',
+        ctx,
         run,
         resolve: (value) => resolve(value as T),
         reject,
@@ -958,20 +984,46 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   }
 
   private enqueuePartitionOperation(partition: string, operation: PartitionQueueOperation): void {
+    if (operation.ctx.signal.aborted) {
+      operation.reject(abortError(operation.ctx.signal));
+      return;
+    }
     let queue = this.partitionQueues.get(partition);
     if (queue === undefined) {
       queue = { operations: [], running: false };
       this.partitionQueues.set(partition, queue);
     }
     queue.operations.push(operation);
+    const onAbort = (): void => {
+      const index = queue.operations.indexOf(operation);
+      if (index < 0) return;
+      queue.operations.splice(index, 1);
+      this.detachPartitionAbortListener(operation);
+      operation.reject(abortError(operation.ctx.signal));
+    };
+    operation.ctx.signal.addEventListener('abort', onAbort, { once: true });
+    this.partitionAbortListeners.set(operation, onAbort);
     if (queue.running) return;
     queue.running = true;
     void this.runPartitionQueue(partition, queue);
   }
 
+  private takePartitionOperation(queue: PartitionQueue): PartitionQueueOperation {
+    const operation = queue.operations.shift()!;
+    this.detachPartitionAbortListener(operation);
+    return operation;
+  }
+
+  private detachPartitionAbortListener(operation: PartitionQueueOperation): void {
+    const listener = this.partitionAbortListeners.get(operation);
+    if (listener === undefined) return;
+    operation.ctx.signal.removeEventListener('abort', listener);
+    this.partitionAbortListeners.delete(operation);
+  }
+
   private async runPartitionQueue(partition: string, queue: PartitionQueue): Promise<void> {
     while (queue.operations.length > 0) {
-      const operation = queue.operations.shift()!;
+      const operation = this.takePartitionOperation(queue);
       if (operation.kind === 'operation') {
         try {
           operation.resolve(await operation.run());
@@ -984,7 +1036,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       while (batch.length < ACCEPT_MICROBATCH_LIMIT) {
         const next = queue.operations[0];
         if (next?.kind !== 'accept' || next.ctx.epoch !== operation.ctx.epoch) break;
-        batch.push(queue.operations.shift() as AcceptPartitionOperation);
+        batch.push(this.takePartitionOperation(queue) as AcceptPartitionOperation);
       }
       await this.runAcceptBatch(partition, batch);
     }
@@ -1748,18 +1800,26 @@ function finitePositiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('Thread mailbox operation aborted.');
+}
+
 function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('Thread mailbox operation aborted.');
+  if (signal.aborted) throw abortError(signal);
 }
 
 function combineAbortSignals(primary: AbortSignal, secondary?: AbortSignal): AbortSignal {
   return secondary === undefined ? primary : AbortSignal.any([primary, secondary]);
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
+  if (signal.aborted) return Promise.reject(abortError(signal));
   return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(signal.reason);
+    const onAbort = (): void => reject(abortError(signal));
     signal.addEventListener('abort', onAbort, { once: true });
     operation.then(
       (value) => {
@@ -1774,14 +1834,15 @@ function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-function isAmbiguousRuntimeResponse(error: unknown): boolean {
+function isRetryableMailboxRuntimeResponse(error: unknown): boolean {
   return error instanceof HomeRuntimeError && (
     error.code === 'runtime.connection_failed' ||
     error.code === 'runtime.owner_gone' ||
     error.code === 'runtime.detached' ||
     error.code === 'runtime.timeout' ||
     error.code === 'runtime.epoch_stale' ||
-    error.code === 'runtime.epoch_future'
+    error.code === 'runtime.epoch_future' ||
+    error.code === 'runtime.duplicate_request'
   );
 }
 

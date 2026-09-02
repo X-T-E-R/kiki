@@ -662,7 +662,7 @@ describe('Plan service', () => {
       },
     );
 
-    it('short-circuits active plan file writes ahead of explicit deny rules', async () => {
+    it('applies explicit deny rules before the active plan file allowlist', async () => {
       const files = new Map<string, string>();
       const writeText = vi.fn(async (path: string, content: string): Promise<void> => {
         files.set(path, content);
@@ -694,9 +694,9 @@ describe('Plan service', () => {
 
       await ctx.untilTurnEnd();
 
-      expect(files.get(planPath)).toBe(content);
-      expect(writeText).toHaveBeenCalledWith(planPath, content);
-      expect(toolResultText(context.get())).not.toContain('denied by permission rule');
+      expect(files.has(planPath)).toBe(false);
+      expect(writeText).not.toHaveBeenCalled();
+      expect(toolResultText(context.get())).toContain('denied by permission rule');
       expect(
         ctx.allEvents.some((event) => event.type === '[rpc]' && event.event === 'requestApproval'),
       ).toBe(false);

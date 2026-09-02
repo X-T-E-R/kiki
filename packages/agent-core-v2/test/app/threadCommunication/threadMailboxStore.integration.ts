@@ -22,7 +22,11 @@ import {
   ThreadMailboxLegacyWriterActiveError,
 } from '#/app/threadCommunication/mailboxErrors';
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
-import type { AcceptedThreadMessage } from '#/app/threadCommunication/threadMailboxStore';
+import type {
+  AcceptedThreadMessage,
+  ThreadDeliveryClaim,
+  ThreadMailboxMutationOptions,
+} from '#/app/threadCommunication/threadMailboxStore';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 const source: ThreadRef = { hostId: 'host-a', workspaceId: 'workspace-a', sessionId: 'source' };
@@ -33,6 +37,15 @@ const workerFixture = fileURLToPath(new URL('../runtimeHost/fixtures/runtime-mai
 interface Harness {
   readonly runtime: HomeRuntimeHostService;
   readonly store: RuntimeThreadMailboxStore;
+}
+
+interface RuntimeMailboxCaller {
+  call(
+    method: string,
+    payload: unknown,
+    options: ThreadMailboxMutationOptions | undefined,
+    timeoutMs: number,
+  ): Promise<unknown>;
 }
 
 function bootstrap(homeDir: string): IBootstrapService {
@@ -631,6 +644,94 @@ describe('runtime thread mailbox', () => {
     }
     const retry = await client.store.acceptMessage(acceptInput('lost-accept'));
     expect(retry).toMatchObject({ deduplicated: true, message: { messageId: accepted.message.messageId } });
+  });
+
+  it('waits for an in-flight same-id handler and reads its durable receipt once', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    const accepted = await item.store.acceptMessage(acceptInput('in-flight-receipt'));
+    const gate = blockFirstTargetBatch();
+    const requestIds: string[] = [];
+    const originalCall = item.runtime.call.bind(item.runtime);
+    item.runtime.call = (method, payload, options) => {
+      if (method === THREAD_MAILBOX_RUNTIME_METHODS.claim) requestIds.push(options?.requestId ?? '');
+      return originalCall(method, payload, options);
+    };
+    const internal = item.store as unknown as RuntimeMailboxCaller;
+    try {
+      const claimPromise = internal.call(
+        THREAD_MAILBOX_RUNTIME_METHODS.claim,
+        { target, consumerId: 'consumer', leaseMs: 10_000 },
+        { requestId: 'in-flight-claim' },
+        500,
+      ) as Promise<ThreadDeliveryClaim>;
+      await gate.entered;
+      await waitUntil(() => requestIds.length >= 2);
+      gate.release();
+      const claim = await claimPromise;
+      expect(claim.message.messageId).toBe(accepted.message.messageId);
+      expect(new Set(requestIds)).toEqual(new Set(['in-flight-claim']));
+      expect(gate.count()).toBe(1);
+    } finally {
+      gate.restore();
+    }
+  });
+
+  it('bounds retries while the original same-id handler stays in flight', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    await item.store.acceptMessage(acceptInput('stuck-handler'));
+    const gate = blockFirstTargetBatch();
+    const requestIds: string[] = [];
+    const originalCall = item.runtime.call.bind(item.runtime);
+    item.runtime.call = (method, payload, options) => {
+      if (method === THREAD_MAILBOX_RUNTIME_METHODS.claim) requestIds.push(options?.requestId ?? '');
+      return originalCall(method, payload, options);
+    };
+    const internal = item.store as unknown as RuntimeMailboxCaller;
+    try {
+      const claimPromise = internal.call(
+        THREAD_MAILBOX_RUNTIME_METHODS.claim,
+        { target, consumerId: 'consumer', leaseMs: 10_000 },
+        { requestId: 'stuck-claim' },
+        75,
+      );
+      await gate.entered;
+      await expect(claimPromise).rejects.toMatchObject({ code: 'runtime.timeout' });
+      expect(requestIds.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(requestIds)).toEqual(new Set(['stuck-claim']));
+      expect(gate.count()).toBe(1);
+    } finally {
+      gate.restore();
+    }
+  });
+
+  it('removes aborted operations before they start in a partition queue', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    await item.store.acceptMessage(acceptInput('queued-abort'));
+    const gate = blockFirstTargetBatch();
+    const queues = (item.store as unknown as {
+      readonly partitionQueues: Map<string, { readonly operations: readonly unknown[] }>;
+    }).partitionQueues;
+    const interruption = new Error('queued claim aborted');
+    const controller = new AbortController();
+    try {
+      const first = item.store.claimNext({ target, consumerId: 'first', leaseMs: 10_000 });
+      await gate.entered;
+      const second = item.store.claimNext(
+        { target, consumerId: 'second', leaseMs: 10_000 },
+        { requestId: 'queued-abort-claim', signal: controller.signal },
+      ).catch((error: unknown) => error);
+      await waitUntil(() => [...queues.values()].some((queue) => queue.operations.length === 1));
+      controller.abort(interruption);
+      expect(await second).toBe(interruption);
+      expect([...queues.values()].every((queue) => queue.operations.length === 0)).toBe(true);
+      gate.release();
+      await expect(first).resolves.toMatchObject({ message: { messageId: expect.any(String) } });
+    } finally {
+      gate.restore();
+    }
   });
 
   it('reclaims expired and prior-epoch claims while fencing stale finishes', async () => {

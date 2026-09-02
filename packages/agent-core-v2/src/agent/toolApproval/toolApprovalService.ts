@@ -134,7 +134,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     let response: ApprovalResponse;
     const approvalService = this.tryApprovalService();
     if (approvalService === undefined) {
-      response = { decision: 'approved' };
+      response = { decision: 'cancelled' };
     } else {
       void this.dispatcher.dispatch(new PermissionApprovalRequested(approvalContext));
       try {

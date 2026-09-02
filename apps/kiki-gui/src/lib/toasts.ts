@@ -59,6 +59,25 @@ export function pushToast(input: ToastInput): number {
   return id;
 }
 
+function actionErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function runToastAction(label: string, action: () => void | Promise<void>): void {
+  const reportFailure = (error: unknown): void => {
+    pushToast({
+      tone: 'error',
+      text: `${label}: ${actionErrorMessage(error)}`,
+      retry: { run: () => { runToastAction(label, action); } },
+    });
+  };
+  try {
+    void Promise.resolve(action()).catch(reportFailure);
+  } catch (error) {
+    reportFailure(error);
+  }
+}
+
 export function dismissToast(id: number): void {
   if (!toasts.some((toast) => toast.id === id)) return;
   toasts = toasts.filter((toast) => toast.id !== id);

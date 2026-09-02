@@ -112,6 +112,20 @@ describe('AgentExecutorRegistryService', () => {
     expect(JSON.stringify({ revision: first.revision })).not.toContain(secret);
   });
 
+  it('treats a declared revision as a salt instead of replacing the descriptor digest', () => {
+    const descriptor = (args: readonly string[]) => new AgentExecutorRegistryService(configWith({
+      secure: {
+        protocol: 'acp-v1',
+        command: 'secure-agent',
+        args,
+        env: { REGION: 'test' },
+        revision: 'r1',
+      },
+    }), processService, fs, bootstrap).get('secure')!;
+
+    expect(descriptor(['stdio']).revision).not.toBe(descriptor(['serve']).revision);
+  });
+
   it('delegates closed option validation to the protocol provider', () => {
     provider = registerAgentExecutorProvider({
       id: 'fake-acp',
@@ -159,6 +173,12 @@ describe('AgentExecutorRegistryService', () => {
           startup_timeout_ms: 70_000,
           model_binding: 'argv',
           model_args: ['--model', '{model}'],
+          permission_mode_mapping: {
+            config_id: 'auto_approve',
+            manual: false,
+            auto: false,
+            yolo: true,
+          },
           revision: 'r1',
         },
       }),
@@ -172,6 +192,12 @@ describe('AgentExecutorRegistryService', () => {
       startupTimeoutMs: 70_000,
       modelBinding: 'argv',
       modelArgs: ['--model', '{model}'],
+      permissionModeMapping: {
+        configId: 'auto_approve',
+        manual: false,
+        auto: false,
+        yolo: true,
+      },
       revision: 'r1',
     });
     expect(() => AgentExecutorsConfigSchema.parse({
@@ -286,7 +312,7 @@ describe('AgentExecutorRegistryService', () => {
     expect(registry.get('grok-acp')).toMatchObject({
       args: ['--no-auto-update', 'agent', 'stdio'],
       startupTimeoutMs: 70_000,
-      revision: '2026-08-30.1',
+      revision: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(registry.get('codex-acp')).toMatchObject({
       env: { DISABLE_MCP_CONFIG_FILTERING: 'true' },
@@ -297,5 +323,21 @@ describe('AgentExecutorRegistryService', () => {
       modelBinding: 'argv',
       modelArgs: ['--model', '{model}'],
     });
+    expect(registry.get('kimi-acp')?.permissionModeMapping).toEqual({
+      configId: 'mode',
+      manual: 'default',
+      auto: 'auto',
+      yolo: 'yolo',
+    });
+    for (const id of [
+      'grok-acp',
+      'codex-acp',
+      'cursor-acp',
+      'claude-acp',
+      'gemini-acp',
+      'opencode-acp',
+    ]) {
+      expect(registry.get(id)?.permissionModeMapping).toBeUndefined();
+    }
   });
 });

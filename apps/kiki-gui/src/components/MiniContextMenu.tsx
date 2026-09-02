@@ -11,6 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { clampOverlayPosition } from '../lib/overlayPosition';
+import { runToastAction } from '../lib/toasts';
 import { registerOverlay } from '../lib/uiBusy';
 
 export type MiniMenuEntry =
@@ -18,7 +19,7 @@ export type MiniMenuEntry =
       readonly key: string;
       readonly label: string;
       readonly danger?: boolean;
-      readonly run: () => void;
+      readonly run: () => void | Promise<void>;
     }
   | { readonly separator: true };
 
@@ -106,7 +107,7 @@ export function MiniContextMenu({
             }`}
             onClick={() => {
               onClose();
-              entry.run();
+              runToastAction(entry.label, entry.run);
             }}
           >
             {entry.label}

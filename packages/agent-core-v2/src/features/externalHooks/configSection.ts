@@ -3,14 +3,23 @@ import { z } from 'zod';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 import { isPlainObject, plainObjectToToml, transformPlainObject } from '#/app/config/toml';
 
-import { HOOK_EVENT_TYPES } from './internal/types';
+import { compileHookMatcher, HOOK_EVENT_TYPES } from './internal/types';
 
 export const HOOKS_SECTION = 'hooks';
+
+const HookMatcherSchema = z.string().refine((value) => {
+  try {
+    compileHookMatcher(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, 'matcher must be a valid regular expression');
 
 export const HookDefSchema = z
   .object({
     event: z.enum(HOOK_EVENT_TYPES),
-    matcher: z.string().optional(),
+    matcher: HookMatcherSchema.optional(),
     command: z.string().min(1),
     timeout: z.number().int().min(1).max(600).optional(),
   })

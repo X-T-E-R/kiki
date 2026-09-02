@@ -2268,6 +2268,65 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  it('resumes from through_seq when filtered-empty tail batches follow the last visible batch', async () => {
+    const { controller, client, socket, flushAll } = await openTranscriptController();
+    seedTextAgent(controller, 'main', 'f1', 'Hello');
+    // Last visible batch: one real op lands at seq 2.
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 2,
+      ops: [
+        {
+          op: 'append',
+          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
+          offset: 5,
+          text: ' world',
+        },
+      ],
+    }));
+    // The server then covered seq 3-5 with batches whose ops were all
+    // filtered out: cursor stays on the last visible op while through_seq
+    // moves on.
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      cursor: { seq: 2, epoch: 'epoch-1' },
+      through_seq: 5,
+      ops: [],
+    }));
+    flushAll();
+    expect(client.getTranscriptOps).not.toHaveBeenCalled();
+    expect(socket.updateTranscriptSince).toHaveBeenLastCalledWith('session_test', 'main', {
+      seq: 5,
+      epoch: 'epoch-1',
+    });
+    // A reconnect with live work in flight catch-ups per agent; it must
+    // resume at the watermark instead of re-pulling the filtered 3-5 range.
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p1',
+      user_message_id: 'm1',
+      status: 'running',
+      content: [{ type: 'text', text: 'A' }],
+      created_at: '2026-01-01T00:00:02.000Z',
+    });
+    await controller.sendPrompt({ text: 'A', permissionMode: 'manual' });
+    expect(controller.getState().busy).toBe(true);
+    controller.handleWsDrop();
+    controller.handleReconnectAck();
+    await waitFor(() => client.getTranscriptOps.mock.calls.length > 0);
+    expect(client.getTranscriptOps).toHaveBeenCalledWith(
+      'session_test',
+      'main',
+      { seq: 5, epoch: 'epoch-1' },
+      'delta',
+    );
+    // No reset degradation: the only snapshot is the initial open.
+    expect(client.snapshot).toHaveBeenCalledTimes(1);
+    expect(controller.getState().resyncing).toBe(false);
+    controller.close();
+  });
+
   it('catchup is per-agent, uses subscription grades, and still applies when the child has no later frame', async () => {
     const { controller, client, socket, flushAll } = await openTranscriptController();
     const mainHeld = deferred<{

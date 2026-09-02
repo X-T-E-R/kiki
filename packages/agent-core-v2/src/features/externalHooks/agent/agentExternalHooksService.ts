@@ -38,7 +38,10 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { IAgentExternalHooksService } from './agentExternalHooks';
-import { IExternalHooksRunnerService } from '../app/externalHooksRunner';
+import {
+  IExternalHooksRunnerService,
+  triggerBlockingResults,
+} from '../app/externalHooksRunner';
 import type { HookMatcherValue } from '../internal/types';
 import {
   renderUserPromptHookBlockResult,
@@ -343,7 +346,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     const signal = new AbortController().signal;
     const input = ctx.promptMessage.content;
     signal.throwIfAborted();
-    const results = await this.runner.trigger('UserPromptSubmit', {
+    const results = await triggerBlockingResults(this.runner, 'UserPromptSubmit', {
       matcherValue: input,
       signal,
       sessionId: this.sessionContext.sessionId,

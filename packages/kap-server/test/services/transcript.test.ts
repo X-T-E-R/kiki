@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -394,6 +394,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     const ops = liveAdapter.map(
       ev({
         type: 'subagent.spawned',
+        time: 1_700_000_000_000,
         subagentId: 'agent-1',
         subagentName: 'explore',
         parentToolCallId: 'call_agent',
@@ -1043,6 +1044,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     feed(
       ev({
         type: 'subagent.spawned',
+        time: 1_700_000_000_000,
         subagentId: 'agent-0',
         subagentName: 'worker',
         parentToolCallId: 'call_swarm',
@@ -1075,6 +1077,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     feed(
       ev({
         type: 'subagent.spawned',
+        time: 1_700_000_000_000,
         subagentId: 'agent-1',
         subagentName: 'explore',
         parentToolCallId: 'call-1',
@@ -1134,6 +1137,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     feed(
       ev({
         type: 'subagent.spawned',
+        time: 1_700_000_000_000,
         subagentId: 'agent-1',
         subagentName: 'explore',
         parentToolCallId: 'call-1',
@@ -1146,6 +1150,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     feed(
       ev({
         type: 'subagent.spawned',
+        time: 1_700_000_000_000,
         subagentId: 'agent-1',
         subagentName: 'worker',
         parentToolCallId: 'call-2',
@@ -1157,6 +1162,59 @@ describe('AgentTranscriptLiveAdapter', () => {
 
     expect(tx.getTask('task-9')).toMatchObject({ state: 'completed', resultSummary: 'done' });
     expect(tx.getTask('agent-1')).toMatchObject({ kind: 'subagent', state: 'running' });
+  });
+
+  it('resets terminal fields when one agent starts a second run without a task id', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
+
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        time: 1_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-1',
+        description: 'First run',
+        runInBackground: true,
+      }),
+    );
+    feed(ev({ type: 'subagent.started', time: 1_100, subagentId: 'agent-1' }));
+    feed(ev({ type: 'subagent.suspended', time: 1_200, subagentId: 'agent-1', reason: 'approval' }));
+    feed(
+      ev({
+        type: 'subagent.completed',
+        time: 1_300,
+        subagentId: 'agent-1',
+        resultSummary: 'done',
+        usage: { inputOther: 10, output: 5, inputCacheRead: 3, inputCacheCreation: 2 },
+      }),
+    );
+    feed(ev({ type: 'subagent.failed', time: 1_400, subagentId: 'agent-1', error: 'boom' }));
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        time: 2_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-2',
+        description: 'Second run',
+        runInBackground: false,
+      }),
+    );
+    feed(ev({ type: 'subagent.started', time: 2_100, subagentId: 'agent-1' }));
+
+    expect(tx.getTask('agent-1')).toEqual({
+      taskId: 'agent-1',
+      kind: 'subagent',
+      state: 'running',
+      detached: false,
+      description: 'Second run',
+      agentId: 'agent-1',
+      outputTail: '',
+      startedAt: new Date(2_000).toISOString(),
+    });
   });
 
   it('recovers the agent → task association from a backfilled task.started', () => {
@@ -2357,7 +2415,7 @@ describe('bindSessionTranscript', () => {
     expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
       state: 'completed',
       resultSummary: 'done',
-      startedAt: new Date(3_000).toISOString(),
+      startedAt: new Date(2_000).toISOString(),
       endedAt: new Date(5_000).toISOString(),
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
@@ -2869,6 +2927,96 @@ describe('bindSessionTranscript', () => {
       expect(store?.getAgent('main')?.getTask('task-9')).toMatchObject({
         state: 'killed',
         endedAt: new Date(2_000).toISOString(),
+      });
+      service.dropSession('s1');
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('deduplicates durable events captured by both cold backfill and the live replay buffer', async () => {
+    const home = await seedWireHomeWithTool(false);
+    try {
+      const agents = new FakeAgents();
+      const main = agents.add('main', { loopStatus: { state: 'running', activeTurnId: 0 } });
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      });
+      const originalReadColdSnapshot = service.readColdSnapshot.bind(service);
+      let releaseRead!: () => void;
+      const readGate = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      vi.spyOn(service, 'readColdSnapshot').mockImplementation(async (...args) => {
+        await readGate;
+        return originalReadColdSnapshot(...args);
+      });
+
+      const store = service.forSessionLive('s1')!;
+      const taskStates: TranscriptTask['state'][] = [];
+      service.onSessionOps('s1', (event) => {
+        for (const op of event.ops) {
+          if (op.op === 'task.upsert' && op.task.taskId === 'task-9') taskStates.push(op.task.state);
+        }
+      });
+      main.bus.emit(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' }, prompt: 'hi' }));
+      main.bus.emit(ev({ type: 'turn.step.started', turnId: 0, step: 1, stepId: 'step-1' }));
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const overlap = [
+        {
+          type: 'subagent.spawned',
+          time: 6_000,
+          subagentId: 'agent-1',
+          subagentName: 'explore',
+          parentToolCallId: 'call_1',
+          description: 'Inspect',
+          runInBackground: true,
+          taskId: 'task-9',
+        },
+        {
+          type: 'subagent.completed',
+          time: 7_000,
+          subagentId: 'agent-1',
+          resultSummary: 'done',
+        },
+        {
+          type: 'task.notified',
+          time: 8_000,
+          notificationType: 'completed',
+          title: 'Agent completed',
+          body: 'done',
+          severity: 'info',
+          sourceKind: 'agent',
+          sourceId: 'task-9',
+        },
+      ];
+      for (const event of overlap) {
+        await appendFile(wirePath, `${JSON.stringify(event)}\n`);
+        main.bus.emit(ev(event));
+      }
+      releaseRead();
+
+      await service.whenReady('s1');
+      const turn = store.getAgent('main')?.getTurn('t0');
+      const notificationFrames = turn?.steps
+        .flatMap((step) => step.frames)
+        .filter((frame) => frame.kind === 'text' && frame.taskId === 'task-9');
+      const tool = turn?.steps
+        .flatMap((step) => step.frames)
+        .find((frame) => frame.kind === 'tool' && frame.toolCallId === 'call_1');
+      expect(notificationFrames).toEqual([
+        expect.objectContaining({ frameId: 'task-notified:task-9', text: 'Agent completed\ndone' }),
+      ]);
+      expect(tool).toMatchObject({ agentRefs: [{ agentId: 'agent-1', role: 'child' }] });
+      expect(taskStates).toEqual(['completed']);
+      expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
+        state: 'completed',
+        detached: true,
+        description: 'Inspect',
+        startedAt: new Date(6_000).toISOString(),
+        endedAt: new Date(7_000).toISOString(),
+        resultSummary: 'done',
       });
       service.dropSession('s1');
     } finally {

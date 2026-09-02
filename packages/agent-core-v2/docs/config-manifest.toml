@@ -69,6 +69,12 @@
   # model_args: string[]
   # model_config_category: string
   # thought_config_category: string
+  # permission_mode_mapping: object
+    # config_id: string
+    # config_category: string
+    # manual: string | boolean
+    # auto: string | boolean
+    # yolo: string | boolean
   # revision: string
 
 # ##########################################################################

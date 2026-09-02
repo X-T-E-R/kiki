@@ -20,6 +20,7 @@ import { hostFileOpsSupported, openHostPath, revealHostPath } from '../lib/hostF
 import { hostFileWriteSupported, writeHostFileText } from '../lib/hostFileWrite';
 import { basenameOf, formatBytes, previewKindOf } from '../lib/media';
 import type { KikiClient } from '../lib/client';
+import { runToastAction } from '../lib/toasts';
 import { useOptionalConnection } from '../state/connection';
 import {
   HostFileEditorController,
@@ -352,6 +353,10 @@ function TabContextMenu({
     onCloseMenu();
     run();
   };
+  const pickAction = (label: string, action: () => Promise<void>) => {
+    onCloseMenu();
+    runToastAction(label, action);
+  };
   const path = menu.path;
   const relative = relativeToCwd(path, cwd);
   const openers = hostFileOpsSupported();
@@ -377,7 +382,7 @@ function TabContextMenu({
         role="menuitem"
         data-menu-item="copy-relative"
         className={itemClass}
-        onClick={() => { pick(() => { void copyTextToClipboard(relative).catch(() => {}); }); }}
+        onClick={() => { pickAction(t('file.copyRelativePath'), () => copyTextToClipboard(relative)); }}
       >
         {t('file.copyRelativePath')}
       </button>
@@ -386,7 +391,7 @@ function TabContextMenu({
         role="menuitem"
         data-menu-item="copy-absolute"
         className={itemClass}
-        onClick={() => { pick(() => { void copyTextToClipboard(path).catch(() => {}); }); }}
+        onClick={() => { pickAction(t('file.copyAbsolutePath'), () => copyTextToClipboard(path)); }}
       >
         {t('file.copyAbsolutePath')}
       </button>
@@ -397,7 +402,7 @@ function TabContextMenu({
             role="menuitem"
             data-menu-item="show-in-folder"
             className={itemClass}
-            onClick={() => { pick(() => { void revealHostPath(path).catch(() => {}); }); }}
+            onClick={() => { pickAction(t('file.showInFolder'), () => revealHostPath(path)); }}
           >
             {t('file.showInFolder')}
           </button>
@@ -406,7 +411,7 @@ function TabContextMenu({
             role="menuitem"
             data-menu-item="open-default-app"
             className={itemClass}
-            onClick={() => { pick(() => { void openHostPath(path).catch(() => {}); }); }}
+            onClick={() => { pickAction(t('file.openDefaultApp'), () => openHostPath(path)); }}
           >
             {t('file.openDefaultApp')}
           </button>

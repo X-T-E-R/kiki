@@ -4,6 +4,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
+import { AgentExecutionService } from '#/agent/execution/executionService';
+import type { IAgentProfileService } from '#/agent/profile/profile';
+import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import type { IAgentStateService } from '#/agent/state/agentState';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -190,6 +194,144 @@ describe('AgentExecutorPreflightService', () => {
       version: 'codex-cli 0.150.0',
     });
     expect(result?.sources?.filter((source) => source.available)).toHaveLength(2);
+  });
+
+  it('resolves sources lazily and stops after the first available source', async () => {
+    processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.151.0' });
+    processService.outputs.set('C:/Users/test/.local/bin/cursor-agent --version', { output: 'cursor-agent 1.0.0' });
+
+    const codex = await services.get(IAgentExecutorRegistry).resolveExecutable('codex-app-server');
+    const cursor = await services.get(IAgentExecutorRegistry).resolveExecutable('cursor-acp');
+
+    expect(codex.descriptor.selectedSource).toBe('env');
+    expect(cursor.descriptor.selectedSource).toBe('local-bin');
+    expect(processService.calls).toEqual([
+      'C:/tools/codex.exe --version',
+      'C:/Users/test/.local/bin/cursor-agent --version',
+    ]);
+  });
+
+  it('probes only an explicitly selected source during runtime resolution', async () => {
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: () => ({
+        selected: {
+          protocol: 'codex-app-server',
+          sources: [
+            { id: 'preferred', kind: 'env', name: 'CODEX_PATH' },
+            { id: 'forced', kind: 'env', name: 'ALT_CODEX_PATH' },
+          ],
+          source: 'forced',
+          versionProbe: { args: ['--version'] },
+          args: [],
+        },
+      }),
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    processService.outputs.set('C:/alt/codex.exe --version', { output: 'codex-cli 0.150.0' });
+
+    const result = await services.get(IAgentExecutorRegistry).resolveExecutable('selected');
+
+    expect(result.descriptor.selectedSource).toBe('forced');
+    expect(processService.calls).toEqual(['C:/alt/codex.exe --version']);
+  });
+
+  it('ranks glob paths before executing only the selected runtime candidate', async () => {
+    services.set(IHostFileSystem, {
+      _serviceBrand: undefined,
+      stat: async (path: string) => {
+        if (!path.endsWith('codex.exe')) throw new Error('missing');
+        return { isFile: true, isDirectory: false, size: 1 } satisfies HostFileStat;
+      },
+      readdir: async (path: string) => {
+        if (path === 'C:/extensions') {
+          return [
+            { name: 'openai.chatgpt-0.151.0', isFile: false, isDirectory: true },
+            { name: 'openai.chatgpt-0.152.0', isFile: false, isDirectory: true },
+          ];
+        }
+        return [];
+      },
+    } as unknown as IHostFileSystem);
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: () => ({
+        selected: {
+          protocol: 'codex-app-server',
+          sources: [{
+            id: 'extensions',
+            kind: 'glob',
+            pattern: 'C:/extensions/openai.chatgpt-*/bin/codex.exe',
+          }],
+          versionProbe: { args: ['--version'] },
+          args: [],
+        },
+      }),
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    processService.outputs.set(
+      'C:/extensions/openai.chatgpt-0.152.0/bin/codex.exe --version',
+      { output: 'codex-cli 0.152.0' },
+    );
+
+    const result = await services.get(IAgentExecutorRegistry).resolveExecutable('selected');
+
+    expect(result.descriptor.command).toBe('C:/extensions/openai.chatgpt-0.152.0/bin/codex.exe');
+    expect(processService.calls).toEqual([
+      'C:/extensions/openai.chatgpt-0.152.0/bin/codex.exe --version',
+    ]);
+  });
+
+  it('changes the resolved revision when the same executable path reports a new version', async () => {
+    processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.151.0' });
+    const registry = services.get(IAgentExecutorRegistry);
+    const first = await registry.resolveExecutable('codex-app-server');
+    processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.152.0' });
+    const second = await registry.resolveExecutable('codex-app-server');
+
+    expect(first.descriptor.command).toBe(second.descriptor.command);
+    expect(first.descriptor.revision).not.toBe(second.descriptor.revision);
+  });
+
+  it('rejects a prior binding when the same direct command reports a new version', async () => {
+    processService.outputs.set('kimi --version', { output: '0.37.1' });
+    const registry = services.get(IAgentExecutorRegistry);
+    const first = await registry.resolveExecutable('kimi-acp');
+    processService.outputs.set('kimi --version', { output: '0.38.0' });
+    const second = await registry.resolveExecutable('kimi-acp');
+    const execution = new AgentExecutionService(
+      services,
+      {
+        _serviceBrand: undefined,
+        agentId: 'agent-test',
+        scope: () => 'agent-test',
+      } satisfies IAgentScopeContext,
+      {
+        _serviceBrand: undefined,
+        data: () => ({
+          thinkingLevel: 'off',
+          systemPrompt: '',
+          executorId: 'kimi-acp',
+          executorProtocol: 'acp-v1',
+          executorDescriptorRevision: first.descriptor.revision,
+        }),
+      } as IAgentProfileService,
+      registry,
+      {
+        _serviceBrand: undefined,
+        contributeState: () => ({ dispose: () => {} }),
+      } as unknown as IAgentStateService,
+    );
+
+    expect(first.descriptor.command).toBe('kimi');
+    expect(first.descriptor.command).toBe(second.descriptor.command);
+    expect(first.descriptor.selectedSource).toBe('command');
+    expect(first.descriptor.revision).not.toBe(second.descriptor.revision);
+    await expect(execution.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    )).rejects.toThrow(/descriptor.*changed/i);
+    execution.dispose();
   });
 
   it('reports unavailable binaries without treating missing auth as success', async () => {

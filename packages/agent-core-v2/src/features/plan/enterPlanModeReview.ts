@@ -26,7 +26,14 @@ export class EnterPlanModeReview {
   async requestApproval(
     context: ResolvedToolExecutionHookContext,
   ): Promise<BeforeExecuteDecision | undefined> {
-    if (context.execution.display?.kind !== 'plan_enter') return undefined;
+    if (context.execution.display?.kind !== 'plan_enter') {
+      return {
+        veto: {
+          isError: true,
+          output: 'Plan mode was not entered because the approval display is missing or invalid.',
+        },
+      };
+    }
     const approvalId = `approval_${randomUUID()}`;
     const deadline = createDeadlineAbortSignal(context.signal, this.timeoutMs);
     try {

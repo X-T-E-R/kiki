@@ -110,6 +110,50 @@ describe('SessionInteractionService', () => {
     await expect(pending).resolves.toEqual({ decision: 'approved' });
   });
 
+  it('rejects a duplicate pending id without replacing the original request', async () => {
+    const svc = ix.get(ISessionInteractionService);
+    const original = svc.request<unknown, string>({
+      id: 'tool-1',
+      kind: 'approval',
+      payload: { request: 'original' },
+    });
+    const duplicate = svc.request({
+      id: 'tool-1',
+      kind: 'approval',
+      payload: { request: 'duplicate' },
+    });
+
+    await expect(duplicate).rejects.toThrow('Interaction "tool-1" is already pending');
+    expect(svc.listPending()).toHaveLength(1);
+    expect(svc.listPending()[0]?.payload).toEqual({ request: 'original' });
+
+    svc.respond('tool-1', 'approved');
+    await expect(original).resolves.toBe('approved');
+  });
+
+  it('throws when enqueue reuses a pending id', () => {
+    const svc = ix.get(ISessionInteractionService);
+    svc.enqueue({ id: 'tool-1', kind: 'approval', payload: {} });
+
+    expect(() => svc.enqueue({ id: 'tool-1', kind: 'question', payload: {} })).toThrow(
+      'Interaction "tool-1" is already pending',
+    );
+    expect(svc.listPending()).toHaveLength(1);
+  });
+
+  it('generates an id that does not collide with an explicit pending id', () => {
+    const svc = ix.get(ISessionInteractionService);
+    svc.enqueue({ id: 'interaction-0', kind: 'approval', payload: {} });
+
+    const generated = svc.enqueue({ kind: 'question', payload: {} });
+
+    expect(generated.id).toBe('interaction-1');
+    expect(svc.listPending().map((interaction) => interaction.id)).toEqual([
+      'interaction-0',
+      'interaction-1',
+    ]);
+  });
+
   it('listPending filters by kind', () => {
     const svc = ix.get(ISessionInteractionService);
     void svc.request({ kind: 'approval', payload: {} });

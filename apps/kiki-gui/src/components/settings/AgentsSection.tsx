@@ -113,7 +113,7 @@ function SubagentGovernanceCard() {
     </SectionCard>
   );
 }
-export function parseNamedAgentTools(value: string): readonly string[] | null {
+export function parseNamedAgentTools(value: string): string[] | null {
   const tools = value
     .split(/[\n,]/u)
     .map((item) => item.trim())
@@ -216,7 +216,7 @@ function NamedAgentProfileRow({
     setFeedback(null);
     try {
       const echoed = await client.updateNamedAgentProfile(profile.name, {
-        scope: profile.source === 'workspace' ? 'project' : profile.source,
+        scope: profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra',
         workspace_id: profile.workspace_id,
         description: description.trim(),
         when_to_use: whenToUse.trim() === '' ? null : whenToUse.trim(),
@@ -265,7 +265,7 @@ function NamedAgentProfileRow({
     setFeedback(null);
     try {
       const echoed = await client.updateNamedAgentProfile(profile.name, {
-        scope: profile.source === 'workspace' ? 'project' : profile.source,
+        scope: profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra',
         workspace_id: profile.workspace_id,
         raw_text: rawText,
       });

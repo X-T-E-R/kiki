@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   RAIL_DEFAULT_WIDTH,
@@ -8,6 +10,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  subscribeLayoutPreferences,
   writeLayoutPreferences,
 } from './layoutPrefs';
 
@@ -53,6 +56,26 @@ describe('readLayoutPreferences', () => {
     ls().setItem('kiki.layout', JSON.stringify({ groupBy: 'nope', sortBy: 'nope' }));
     expect(readLayoutPreferences().groupBy).toBe('time');
     expect(readLayoutPreferences().sortBy).toBe('updated-desc');
+  });
+});
+
+describe('subscribeLayoutPreferences', () => {
+  it('detaches the storage listener after the last subscriber leaves', () => {
+    const add = vi.spyOn(window, 'addEventListener');
+    const remove = vi.spyOn(window, 'removeEventListener');
+    const first = subscribeLayoutPreferences(() => {});
+    const second = subscribeLayoutPreferences(() => {});
+
+    expect(add).toHaveBeenCalledTimes(1);
+    first();
+    expect(remove).not.toHaveBeenCalled();
+    second();
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    const third = subscribeLayoutPreferences(() => {});
+    expect(add).toHaveBeenCalledTimes(2);
+    third();
+    expect(remove).toHaveBeenCalledTimes(2);
   });
 });
 

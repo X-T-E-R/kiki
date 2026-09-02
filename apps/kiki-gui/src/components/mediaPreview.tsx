@@ -654,19 +654,19 @@ export function FilePathLink({ path, className }: { path: string; className?: st
   if (preview === null) return <span className={className}>{path}</span>;
   const entries: MiniMenuEntry[] = [
     { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(path); } },
-    { key: 'copy-path', label: t('file.copyPath'), run: () => { void copyTextToClipboard(path).catch(() => {}); } },
+    { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(path) },
     ...(hostFileOpsSupported()
       ? [
           { separator: true } as const,
           {
             key: 'show-in-folder',
             label: t('file.showInFolder'),
-            run: () => { void revealHostPath(path).catch(() => {}); },
+            run: () => revealHostPath(path),
           } as const,
           {
             key: 'open-default-app',
             label: t('file.openDefaultApp'),
-            run: () => { void openHostPath(path).catch(() => {}); },
+            run: () => openHostPath(path),
           } as const,
         ]
       : []),

@@ -95,6 +95,12 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
   },
   'kimi-acp': {
     protocol: 'acp-v1',
+    permissionModeMapping: {
+      configId: 'mode',
+      manual: 'default',
+      auto: 'auto',
+      yolo: 'yolo',
+    },
     command: 'kimi',
     args: ['acp'],
     shutdownGraceMs: 3_000,

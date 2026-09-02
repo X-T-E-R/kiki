@@ -32,11 +32,6 @@ import {
   type Scope,
   type ScopedAgentProfileBinding,
 } from '@moonshot-ai/agent-core-v2';
-import { z } from 'zod';
-
-import { errEnvelope, okEnvelope } from '../envelope';
-import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import {
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
@@ -44,7 +39,12 @@ import {
   namedAgentProfileSchema,
   updateNamedAgentProfileRequestSchema,
   type NamedAgentProfile,
-} from '../protocol/rest-agentProfile';
+} from '@moonshot-ai/protocol';
+import { z } from 'zod';
+
+import { errEnvelope, okEnvelope } from '../envelope';
+import { defineRoute } from '../middleware/defineRoute';
+import { ErrorCode } from '../protocol/error-codes';
 
 interface AgentProfilesRouteHost {
   get(

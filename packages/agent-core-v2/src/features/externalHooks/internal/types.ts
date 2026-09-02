@@ -51,3 +51,7 @@ export interface HookBlockDecision {
 }
 
 export type HookMatcherValue = string | readonly ContentPart[];
+
+export function compileHookMatcher(value: string): RegExp {
+  return new RegExp(value);
+}

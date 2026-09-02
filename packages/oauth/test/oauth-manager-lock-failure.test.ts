@@ -89,7 +89,7 @@ describe('OAuthManager refresh lock failure', () => {
     });
 
     await expect(mgr.ensureFresh()).rejects.toBeInstanceOf(OAuthError);
-    await expect(mgr.ensureFresh()).rejects.toThrow(/refresh lock/i);
+    await expect(mgr.ensureFresh()).rejects.toThrow(/oauth lock/i);
     expect(refreshImpl).not.toHaveBeenCalled();
   });
 });

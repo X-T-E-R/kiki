@@ -27,8 +27,18 @@ export class ExitPlanModeReview {
     context: ResolvedToolExecutionHookContext,
   ): Promise<BeforeExecuteDecision | undefined> {
     const display = context.execution.display;
-    if (display?.kind !== 'plan_review') return undefined;
-    if (display.plan.trim().length === 0) return undefined;
+    if (
+      display?.kind !== 'plan_review' ||
+      typeof display.plan !== 'string' ||
+      display.plan.trim().length === 0
+    ) {
+      return {
+        veto: {
+          isError: true,
+          output: 'Plan mode was not exited because the approval display is missing or invalid.',
+        },
+      };
+    }
     this.trackPlanTelemetry('plan_submitted', {
       has_options: display.options !== undefined && display.options.length >= 2,
     });

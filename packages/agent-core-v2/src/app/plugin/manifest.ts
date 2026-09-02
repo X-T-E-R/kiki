@@ -385,7 +385,7 @@ function readHooks(
     const parsed = HookDefSchema.safeParse(entry);
     if (!parsed.success) {
       diagnostics.push({
-        severity: 'warn',
+        severity: 'error',
         message: `Invalid hook at index ${i}: ${parsed.error.message}`,
       });
     } else {

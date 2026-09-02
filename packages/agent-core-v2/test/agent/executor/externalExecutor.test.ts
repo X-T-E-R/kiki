@@ -11,8 +11,11 @@ import type {
 } from '@moonshot-ai/acp-client';
 import { describe, expect, it, vi } from 'vitest';
 
+import { buildModeOption } from '../../../../acp-server/src/config-options';
+
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { AcpAgentExecutorProvider } from '#/agent/execution/acpAgentExecutorProvider';
 import {
   AcpAgentExecutorSession,
@@ -31,6 +34,7 @@ import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptors';
 import type { Event2 } from '#/app/event/event2';
 import { ISessionApprovalService, type ApprovalResponse } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
@@ -49,6 +53,9 @@ interface FakeHarnessOptions {
   readonly permissionSurface?: boolean;
   readonly sessionConfigOptions?: readonly AcpSessionConfigOption[];
   readonly configureFailureId?: string;
+  readonly configureReadbackFailureId?: string;
+  readonly permissionMode?: 'manual' | 'auto' | 'yolo';
+  readonly permissionMapping?: AgentExecutorContext['descriptor']['permissionModeMapping'];
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -189,6 +196,10 @@ function createHarness(options: FakeHarnessOptions = {}) {
     workDir: 'C:\\workspace',
     additionalDirs: ['C:\\shared'],
   } as unknown as ISessionWorkspaceContext;
+  const permissionMode = {
+    _serviceBrand: undefined,
+    mode: options.permissionMode ?? 'manual',
+  } as unknown as IAgentPermissionModeService;
   const services = new Map<unknown, unknown>([
     [IAgentStateService, state.state],
     [IEventDispatcher, dispatcher],
@@ -198,6 +209,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     [ISessionInteractionService, interaction],
     [IAgentRuntimeService, runtime],
     [ISessionWorkspaceContext, workspace],
+    [IAgentPermissionModeService, permissionMode],
   ]);
   let permissionHandler: AcpPermissionHandler | undefined;
   let configured = options.sessionConfigOptions === undefined
@@ -225,7 +237,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
         }
         selections.push(selection);
         configured = configured.map((option) =>
-          option.id === selection.configId
+          option.id === selection.configId && selection.configId !== options.configureReadbackFailureId
             ? { ...option, currentValue: selection.value } as AcpSessionConfigOption
             : option,
         );
@@ -294,6 +306,12 @@ function createHarness(options: FakeHarnessOptions = {}) {
       modelBinding: 'session_config',
       modelConfigCategory: 'model',
       thoughtConfigCategory: 'thought_level',
+      permissionModeMapping: options.permissionMapping ?? {
+        configId: 'auto_approve',
+        manual: false,
+        auto: false,
+        yolo: true,
+      },
       revision: 'r1',
     },
     binding: {
@@ -773,9 +791,49 @@ describe('ACP external executor', () => {
     expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalled();
   });
 
-  it('marks permission mode unverified without an approval config surface', async () => {
+  it.each([
+    ['missing surface', { permissionSurface: false }],
+    ['setting failure', { configureFailureId: 'auto_approve' }],
+    ['readback mismatch', { configureReadbackFailureId: 'auto_approve' }],
+    [
+      'ambiguous surface',
+      {
+        sessionConfigOptions: [
+          ...configOptions(),
+          {
+            id: 'auto_approve_2',
+            name: 'Auto approve 2',
+            category: 'mode',
+            type: 'boolean',
+            currentValue: true,
+          },
+        ] as AcpSessionConfigOption[],
+        permissionMapping: {
+          configCategory: 'mode',
+          manual: false,
+          auto: false,
+          yolo: true,
+        },
+      },
+    ],
+  ])('fails manual permission mode closed for %s', async (_name, options) => {
     const harness = createHarness({
-      permissionSurface: false,
+      ...options,
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    await expect(harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    )).rejects.toThrow();
+    expect(harness.starts).toHaveLength(0);
+  });
+
+  it.each([
+    ['auto', false],
+    ['yolo', true],
+  ] as const)('uses the declared %s permission mapping', async (permissionMode, value) => {
+    const harness = createHarness({
+      permissionMode,
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
     });
     const run = await harness.session.run(
@@ -783,9 +841,30 @@ describe('ACP external executor', () => {
       { signal: new AbortController().signal },
     );
     await run.completion;
-    const metadata = harness.events.find(
-      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    expect(harness.selections).toContainEqual({ configId: 'auto_approve', value });
+  });
+
+  it.each([
+    ['manual', 'default'],
+    ['auto', 'auto'],
+    ['yolo', 'yolo'],
+  ] as const)('configures Kimi ACP mode for %s before starting the turn', async (permissionMode, value) => {
+    const harness = createHarness({
+      permissionMode,
+      permissionMapping: BUILTIN_AGENT_EXECUTORS['kimi-acp']!.permissionModeMapping,
+      sessionConfigOptions: [
+        ...configOptions(false),
+        buildModeOption('default'),
+      ],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
     );
-    expect(metadata?.losses).toContain('permission_mode_unverified');
+    await run.completion;
+
+    expect(harness.selections).toContainEqual({ configId: 'mode', value });
+    expect(harness.starts).toHaveLength(1);
   });
 });

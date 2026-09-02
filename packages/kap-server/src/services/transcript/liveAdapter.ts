@@ -59,6 +59,7 @@ import type {
 } from '@moonshot-ai/agent-core-v2/session/subagent/mirrorAgentRun';
 import {
   projectInteractionEndState,
+  taskNotificationFrameId,
   type AgentRef,
   type AgentUsageMeta,
   type StepHeader,
@@ -182,6 +183,7 @@ export interface LiveAdapterLookups {
   readonly stepOrdinal?: LiveAdapterStepOrdinalLookup;
   readonly turn?: LiveAdapterTurnLookup;
   readonly turnDetails?: LiveAdapterTurnDetailsLookup;
+  readonly task?: (taskId: string) => TranscriptTask | undefined;
 }
 
 interface OpenTextFrame {
@@ -214,6 +216,7 @@ export class AgentTranscriptLiveAdapter {
       carried the registration (`taskId`): the task row keys by the task id so
       `/tasks/{id}` actions resolve, and lifecycle events fold back to it. */
   private readonly subagentTaskIds = new Map<string, string>();
+  private readonly replayedSubagentSpawns = new Map<string, string>();
 
   /** Pre-seed the association and the row for a task registered before
       attach: a foreground Agent run emits no `task.started` at all, so
@@ -989,7 +992,7 @@ export class AgentTranscriptLiveAdapter {
     if (!midTurn) return [];
     const frame: TextFrame = {
       kind: 'text',
-      frameId: `${step.stepId}.f${++this.frameOrdinal}`,
+      frameId: taskNotificationFrameId(event.sourceId),
       role: 'user',
       text: `${event.title}\n${event.body}`.trim(),
       taskId: event.sourceId,
@@ -1150,12 +1153,13 @@ export class AgentTranscriptLiveAdapter {
     taskId: string,
     build: (prev: TranscriptTask | undefined) => TranscriptTask,
   ): TranscriptTask {
-    const task = build(this.tasks.get(taskId));
+    const task = build(this.tasks.get(taskId) ?? this.lookups?.task?.(taskId));
     this.tasks.set(taskId, task);
     return task;
   }
 
   private onSubagentSpawned(event: {
+    time: number;
     subagentId: string;
     subagentName: string;
     parentToolCallId: string;
@@ -1170,21 +1174,35 @@ export class AgentTranscriptLiveAdapter {
     } else {
       this.subagentTaskIds.delete(event.subagentId);
     }
-    const task = this.upsertTask(taskKey, (prev) => ({
-      taskId: taskKey,
-      kind: 'subagent',
-      state: 'running',
-      detached: event.runInBackground,
-      description: event.description ?? prev?.description,
-      agentId: event.subagentId,
-      outputTail: prev?.outputTail ?? '',
-      startedAt: prev?.startedAt ?? nowIso(),
-      endedAt: prev?.endedAt,
-    }));
-    const ops: TranscriptOperation[] = [{ op: 'task.upsert', task }];
+    const startedAt = epochMsToIso(event.time);
+    const previous = this.tasks.get(taskKey) ?? this.lookups?.task?.(taskKey);
+    const sameRun =
+      previous?.taskId === taskKey &&
+      previous.kind === 'subagent' &&
+      previous.agentId === event.subagentId &&
+      previous.startedAt === startedAt;
+    const ops: TranscriptOperation[] = [];
+    if (sameRun) {
+      this.tasks.set(taskKey, previous);
+      this.replayedSubagentSpawns.set(event.subagentId, taskKey);
+    } else {
+      this.replayedSubagentSpawns.delete(event.subagentId);
+      const task: TranscriptTask = {
+        taskId: taskKey,
+        kind: 'subagent',
+        state: 'running',
+        detached: event.runInBackground,
+        description: event.description ?? previous?.description,
+        agentId: event.subagentId,
+        outputTail: previous?.outputTail ?? '',
+        startedAt,
+      };
+      this.tasks.set(taskKey, task);
+      ops.push({ op: 'task.upsert', task });
+    }
     const hit =
       this.toolFrames.get(event.parentToolCallId) ?? this.adoptToolFrame(event.parentToolCallId);
-    if (hit !== undefined) {
+    if (hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === event.subagentId)) {
       const ref: AgentRef = {
         agentId: event.subagentId,
         role: event.swarmIndex !== undefined ? 'member' : 'child',
@@ -1208,27 +1226,49 @@ export class AgentTranscriptLiveAdapter {
     error?: string;
     reason?: string;
   }): TranscriptOperation[] {
-    const state: TranscriptTask['state'] =
-      event.type === 'subagent.completed'
-        ? 'completed'
-        : event.type === 'subagent.failed'
-          ? 'failed'
-          : 'running';
     const at = event.time === undefined ? nowIso() : epochMsToIso(event.time);
     const taskKey = this.subagentTaskIds.get(event.subagentId) ?? event.subagentId;
+    if (
+      event.type === 'subagent.started' &&
+      this.replayedSubagentSpawns.get(event.subagentId) === taskKey
+    ) {
+      return [];
+    }
+    this.replayedSubagentSpawns.delete(event.subagentId);
+    if (event.type === 'subagent.started') {
+      const task = this.upsertTask(taskKey, (prev) => ({
+        taskId: taskKey,
+        kind: 'subagent',
+        state: 'running',
+        detached: prev?.detached ?? true,
+        description: prev?.description,
+        agentId: event.subagentId,
+        outputTail: prev?.outputTail ?? '',
+        startedAt:
+          prev?.kind === 'subagent' &&
+          prev.agentId === event.subagentId &&
+          prev.state === 'running'
+            ? (prev.startedAt ?? at)
+            : at,
+      }));
+      return [{ op: 'task.upsert', task }];
+    }
+    const terminal = event.type === 'subagent.completed' || event.type === 'subagent.failed';
     const task = this.upsertTask(taskKey, (prev) => ({
       taskId: taskKey,
       kind: 'subagent',
-      state,
+      state:
+        event.type === 'subagent.completed'
+          ? 'completed'
+          : event.type === 'subagent.failed'
+            ? 'failed'
+            : 'running',
       detached: prev?.detached ?? true,
       description: prev?.description,
       agentId: event.subagentId,
       outputTail: prev?.outputTail ?? '',
-      startedAt: event.type === 'subagent.started' ? at : (prev?.startedAt ?? at),
-      endedAt:
-        event.type === 'subagent.completed' || event.type === 'subagent.failed'
-          ? at
-          : prev?.endedAt,
+      startedAt: prev?.startedAt ?? at,
+      endedAt: terminal ? at : prev?.endedAt,
       resultSummary: event.resultSummary ?? prev?.resultSummary,
       usage: event.usage ?? prev?.usage,
       error: event.error ?? prev?.error,

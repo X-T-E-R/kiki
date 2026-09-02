@@ -304,15 +304,6 @@ const KNOWN_AGENT_FRONTMATTER_KEYS = new Set([
 ]);
 const MAX_AGENT_SCAN_DEPTH = 8;
 
-/**
- * Frontmatter fields the v2 agent grammar accepts but the legacy
- * `agent-core` (v1) parser silently drops at runtime.
- */
-const V2_ONLY_AGENT_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
-  'service_tier',
-  'request_params',
-]);
-
 interface ParsedAgentFile {
   readonly path: string;
   readonly name: string;
@@ -320,7 +311,6 @@ interface ParsedAgentFile {
   readonly subagents?: readonly string[];
   readonly modelAlias?: string;
   readonly unknownKeys: readonly string[];
-  readonly legacyIgnoredKeys: readonly string[];
   readonly parserWarnings: readonly string[];
 }
 
@@ -369,20 +359,16 @@ async function checkAgentProfiles(
   try {
     modules = await deps.loadAgentProfileModules();
   } catch (error) {
-    // Upstream refactors of the agent-core-v2 internal module layout must not
-    // take the whole doctor command down; degrade to a non-fatal warning so
-    // the config/tui results still render and the exit code stays 0.
     return [
       {
         label: 'agents',
         path: cwd,
-        status: 'WARN',
+        status: 'ERROR',
         message: `agent profile check unavailable: ${errorMessage(error)}`,
       },
     ];
   }
   const { core, agentRoots, agentPaths, frontmatter } = modules;
-  const legacyEngine = false;
   const fs = new core.HostFileSystem();
   const discoveryWarnings: string[] = [];
   const warn = (message: string): void => {
@@ -460,9 +446,6 @@ async function checkAgentProfiles(
           const unknownKeys = presentKeys.filter(
             (key) => !KNOWN_AGENT_FRONTMATTER_KEYS.has(key),
           );
-          const legacyIgnoredKeys = legacyEngine
-            ? presentKeys.filter((key) => V2_ONLY_AGENT_FRONTMATTER_KEYS.has(key))
-            : [];
           parsedFiles.push({
             path: entryPath,
             name: agent.name,
@@ -470,7 +453,6 @@ async function checkAgentProfiles(
             subagents: agent.subagents,
             modelAlias: agent.modelAlias,
             unknownKeys,
-            legacyIgnoredKeys,
             parserWarnings,
           });
         } catch (error) {
@@ -517,13 +499,6 @@ async function checkAgentProfiles(
     if (file.unknownKeys.length > 0) {
       warnings.push(
         `Unknown frontmatter ${file.unknownKeys.length === 1 ? 'key' : 'keys'} ignored by the engine: ${file.unknownKeys.join(', ')}.`,
-      );
-    }
-    if (file.legacyIgnoredKeys.length > 0) {
-      const keys = file.legacyIgnoredKeys.join(', ');
-      const singular = file.legacyIgnoredKeys.length === 1;
-      warnings.push(
-        `${keys} ${singular ? 'is' : 'are'} ignored by the legacy agent engine; ${singular ? 'it' : 'they'} only take${singular ? 's' : ''} effect under agent-core-v2.`,
       );
     }
     warnings.push(...file.parserWarnings);

@@ -272,7 +272,15 @@ export class PluginManager {
   enabledHooks(): readonly HookDef[] {
     const out: HookDef[] = [];
     for (const record of this.records.values()) {
-      if (!record.enabled || record.state !== 'ok' || record.manifest === undefined) continue;
+      if (!record.enabled) continue;
+      if (record.state !== 'ok' || record.manifest === undefined) {
+        const message = record.diagnostics.find((diagnostic) => diagnostic.severity === 'error')?.message;
+        throw new Error2(
+          PluginErrors.codes.PLUGIN_LOAD_FAILED,
+          `Failed to load hooks from plugin "${record.id}": ${message ?? 'invalid plugin state'}`,
+          { details: { id: record.id } },
+        );
+      }
       for (const hook of record.manifest.hooks ?? []) {
         out.push({
           ...hook,

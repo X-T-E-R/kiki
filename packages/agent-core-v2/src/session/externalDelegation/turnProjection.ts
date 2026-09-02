@@ -21,6 +21,17 @@ export class AgentTurnProjection {
   private readonly events: ExternalTurnEventView[] = [];
   private readonly items: SequencedItem[] = [];
   private readonly watermarks: { readonly time: number; readonly cursor: number }[] = [];
+  private readonly turnEnds = new Map<number, number>();
+  private reliableTimes = true;
+  private latestTime = 0;
+
+  static async build(records: AsyncIterable<WireRecord>): Promise<AgentTurnProjection> {
+    const projection = new AgentTurnProjection();
+    await projection.rebuild(records);
+    return projection;
+  }
+
+  private constructor() {}
 
   get cursor(): number {
     return this.nextSeq - 1;
@@ -35,14 +46,51 @@ export class AgentTurnProjection {
     return cursor;
   }
 
-  async rebuild(records: AsyncIterable<WireRecord>): Promise<void> {
-    this.nextSeq = 1;
-    this.events.length = 0;
-    this.items.length = 0;
-    this.watermarks.length = 0;
+  cursorBefore(time: number): number {
+    let cursor = 0;
+    for (const watermark of this.watermarks) {
+      if (watermark.time >= time) break;
+      cursor = watermark.cursor;
+    }
+    return cursor;
+  }
+
+  cursorRange(startTime: number, endTime: number): { readonly start: number; readonly end: number } | undefined {
+    if (
+      !this.reliableTimes ||
+      !Number.isFinite(startTime) ||
+      !Number.isFinite(endTime) ||
+      endTime < startTime
+    ) {
+      return undefined;
+    }
+    const start = this.cursorAt(startTime);
+    const end = this.cursorBefore(endTime);
+    return start <= end ? { start, end } : undefined;
+  }
+
+  hasTurnEnd(turnId: number): boolean {
+    return this.turnEnds.has(turnId);
+  }
+
+  turnEndCursor(turnId: number): number {
+    const cursor = this.turnEnds.get(turnId);
+    if (cursor === undefined) throw new Error(`Turn ${turnId} has no completion record`);
+    return cursor;
+  }
+
+  private async rebuild(records: AsyncIterable<WireRecord>): Promise<void> {
     for await (const record of records) {
+      const before = this.cursor;
       this.replayRecord(record);
-      this.watermarks.push({ time: record.time ?? 0, cursor: this.cursor });
+      if (this.cursor === before) continue;
+      const time = record.time;
+      if (typeof time !== 'number' || !Number.isFinite(time) || time < this.latestTime) {
+        this.reliableTimes = false;
+        continue;
+      }
+      this.latestTime = time;
+      this.watermarks.push({ time, cursor: this.cursor });
     }
   }
 
@@ -237,6 +285,7 @@ export class AgentTurnProjection {
             : 'failed',
       endedAt: iso(event.time),
     });
+    this.turnEnds.set(turnNumber(event), this.cursor);
   }
 
   private upsertStep(event: ProjectedEvent): void {

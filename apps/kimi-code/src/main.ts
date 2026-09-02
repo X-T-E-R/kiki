@@ -5,7 +5,7 @@
  * outer update preflight, then delegates to the requested UI runner.
  */
 
-import './native/fs-watch-guard';
+import '@moonshot-ai/kimi-code-sdk/native-fs-watch-error-guard';
 
 import {
   createKimiHarness,
