@@ -54,6 +54,7 @@ import {
   writeStoredUsageFilters,
   type UsageDetailView,
   type UsageDimensionRow,
+  type UsageDrilldownSessionWire,
   type UsageFilters,
   type UsageResponseWire,
   type UsageTrendBucketWire,
@@ -471,6 +472,64 @@ function TrendChart({
   );
 }
 
+/**
+ * Drilldown session rows with per-turn locators: the session id opens the
+ * session, and each returned turn id is its own action that lands on
+ * `/s/{id}?turn={n}` so the session view can scroll to that turn. The wire
+ * `turn_ids` are rendered, never collapsed into a bare count.
+ */
+function DrilldownSessionList({
+  sessions,
+}: {
+  sessions: readonly UsageDrilldownSessionWire[];
+}) {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  return (
+    <ul className="space-y-1">
+      {sessions.map((session) => (
+        <li key={session.session_id}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded-lg px-2 py-1.5">
+            <button
+              type="button"
+              data-usage-drilldown-session={session.session_id}
+              onClick={() => void navigate(`/s/${session.session_id}`)}
+              className="min-w-0 flex-1 truncate text-left font-mono text-[11.5px] text-ink transition-colors hover:text-accent hover:underline"
+            >
+              {session.session_id}
+            </button>
+            <span className="shrink-0 font-mono text-[10.5px] text-ink-soft tabular-nums">
+              {t('usage.drilldown.turns', { count: session.turn_count })}
+              {session.turn_ids_truncated ? ` · ${t('usage.drilldown.turnIdsTruncated')}` : ''}
+            </span>
+            {session.unknown_turn_records > 0 ? (
+              <span className="shrink-0 text-[10px] text-amber-ink">
+                {t('usage.drilldown.unknownTurns', { count: session.unknown_turn_records })}
+              </span>
+            ) : null}
+          </div>
+          {session.turn_ids.length > 0 ? (
+            <div className="flex flex-wrap gap-1 px-2 pb-1">
+              {session.turn_ids.map((turnId) => (
+                <button
+                  key={turnId}
+                  type="button"
+                  data-usage-turn={turnId}
+                  onClick={() => void navigate(`/s/${session.session_id}?turn=${turnId}`)}
+                  title={t('usage.drilldown.turnHint')}
+                  className="rounded-md border border-hairline px-1.5 py-0.5 font-mono text-[10px] text-ink-soft tabular-nums transition-colors hover:border-accent hover:text-accent"
+                >
+                  {t('usage.drilldown.turnId', { id: turnId })}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function DrilldownPanel({
   bucket,
   filters,
@@ -481,7 +540,6 @@ function DrilldownPanel({
   onClose: () => void;
 }) {
   const { t, locale } = useI18n();
-  const navigate = useNavigate();
   return (
     <section
       data-usage-drilldown
@@ -503,30 +561,9 @@ function DrilldownPanel({
       {bucket.drilldown.sessions.length === 0 ? (
         <p className="mt-2 text-[11.5px] text-ink-faint">{t('usage.empty')}</p>
       ) : (
-        <ul className="mt-2 space-y-1">
-          {bucket.drilldown.sessions.map((session) => (
-            <li key={session.session_id}>
-              <button
-                type="button"
-                onClick={() => void navigate(`/s/${session.session_id}`)}
-                className="flex w-full flex-wrap items-center gap-x-3 gap-y-0.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-panel"
-              >
-                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink">
-                  {session.session_id}
-                </span>
-                <span className="shrink-0 font-mono text-[10.5px] text-ink-soft tabular-nums">
-                  {t('usage.drilldown.turns', { count: session.turn_count })}
-                  {session.turn_ids_truncated ? ` · ${t('usage.drilldown.turnIdsTruncated')}` : ''}
-                </span>
-                {session.unknown_turn_records > 0 ? (
-                  <span className="shrink-0 text-[10px] text-amber-ink">
-                    {t('usage.drilldown.unknownTurns', { count: session.unknown_turn_records })}
-                  </span>
-                ) : null}
-              </button>
-            </li>
-          ))}
-        </ul>
+        <div className="mt-2">
+          <DrilldownSessionList sessions={bucket.drilldown.sessions} />
+        </div>
       )}
       {bucket.drilldown.sessions_truncated ? (
         <p className="mt-2 text-[10.5px] text-amber-ink">{t('usage.drilldown.sessionsTruncated')}</p>
@@ -783,16 +820,23 @@ function SessionsTab({
   );
 }
 
+/**
+ * The 5h rhythm detail tab (§15.1/§15.3): a second-level view over the 5h
+ * window granularity — each window lists its sessions and per-turn locators
+ * straight from the bucket's server drilldown, newest window first. Without
+ * the 5h granularity selected there is no data to show honestly, so the tab
+ * offers the switch instead of a placeholder.
+ */
 function FiveHourTab({
+  trend,
   filters,
   onSwitchGranularity,
-  children,
 }: {
+  trend: readonly UsageTrendBucketWire[];
   filters: UsageFilters;
   onSwitchGranularity: () => void;
-  children: React.ReactNode;
 }) {
-  const { t } = useI18n();
+  const { t, locale, time } = useI18n();
   if (filters.granularity !== 'five_hour') {
     return (
       <div className="flex flex-col items-center gap-2 py-8 text-center" data-usage-fivehour-hint>
@@ -807,7 +851,43 @@ function FiveHourTab({
       </div>
     );
   }
-  return <>{children}</>;
+  const windows = [...trend].reverse();
+  if (windows.length === 0) {
+    return <p className="py-6 text-center text-[12.5px] text-ink-faint">{t('usage.empty')}</p>;
+  }
+  return (
+    <div className="space-y-3" data-usage-fivehour>
+      {windows.map((bucket) => (
+        <section
+          key={bucket.key}
+          data-usage-fivehour-window={bucket.key}
+          className="rounded-xl border border-hairline bg-paper/60 p-3"
+        >
+          <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-1 pb-2">
+            <h3 className="font-mono text-[11.5px] font-semibold text-ink tabular-nums">
+              {bucketLabel(bucket, 'five_hour', locale)}
+            </h3>
+            <span className="ml-auto shrink-0 font-mono text-[10.5px] text-ink-soft tabular-nums">
+              {time.formatTokens(bucketTokens(bucket))} {t('usage.col.tokens')}
+            </span>
+            <span className="shrink-0 font-mono text-[10.5px] font-semibold text-ink tabular-nums">
+              {formatCostUsd(bucketCost(bucket))}
+            </span>
+          </header>
+          {bucket.drilldown.sessions.length === 0 ? (
+            <p className="px-1 pb-1 text-[11px] text-ink-faint">{t('usage.empty')}</p>
+          ) : (
+            <DrilldownSessionList sessions={bucket.drilldown.sessions} />
+          )}
+          {bucket.drilldown.sessions_truncated ? (
+            <p className="px-1 pt-1 text-[10.5px] text-amber-ink">
+              {t('usage.drilldown.sessionsTruncated')}
+            </p>
+          ) : null}
+        </section>
+      ))}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1224,11 +1304,10 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   <DimensionBreakdown trend={trend} filters={filters} />
                 ) : (
                   <FiveHourTab
+                    trend={trend}
                     filters={filters}
                     onSwitchGranularity={() => { applyFilters({ ...filters, granularity: 'five_hour' }); }}
-                  >
-                    <p className="text-[11.5px] text-ink-soft">{t('usage.trend.clickHint')}</p>
-                  </FiveHourTab>
+                  />
                 )}
               </Card>
 

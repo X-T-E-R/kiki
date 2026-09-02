@@ -146,7 +146,7 @@ function usageResponse(overrides: {
 
 function LocationProbe() {
   const location = useLocation();
-  return <span data-location-probe>{location.search}</span>;
+  return <span data-location-probe>{`${location.pathname}${location.search}`}</span>;
 }
 
 async function renderPage(entry = '/usage') {
@@ -385,5 +385,40 @@ describe('UsagePage (V2)', () => {
     });
     expect(probe()).not.toContain('view=');
     expect(probe()).toContain('dimension=agent');
+  });
+
+  it('renders the 5h rhythm tab with per-window session and turn detail', async () => {
+    const { container } = await renderPage('/usage?view=five_hour&granularity=five_hour');
+    expect(
+      container.querySelector('[data-usage-tab="fiveHour"]')?.getAttribute('aria-selected'),
+    ).toBe('true');
+    const view = container.querySelector('[data-usage-fivehour]');
+    expect(view).not.toBeNull();
+    expect(view!.querySelector('[data-usage-fivehour-window]')).not.toBeNull();
+    // The seeded bucket drilldown renders the session and its turn locators.
+    expect(view!.textContent).toContain('s_1');
+    expect(view!.querySelector('[data-usage-turn="1"]')).not.toBeNull();
+    expect(view!.querySelector('[data-usage-turn="2"]')).not.toBeNull();
+    expect(view!.textContent).toContain('2 turns');
+  });
+
+  it('turn locators navigate to the session at the turn', async () => {
+    const { container } = await renderPage('/usage?view=five_hour&granularity=five_hour');
+    const probe = () => container.querySelector('[data-location-probe]')?.textContent ?? '';
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-turn="2"]')!.click();
+    });
+    expect(probe()).toBe('/s/s_1?turn=2');
+  });
+
+  it('shows the bucket drilldown with turn locators when a trend bucket is selected', async () => {
+    const { container } = await renderPage();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!.click();
+    });
+    const panel = container.querySelector('[data-usage-drilldown]');
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain('s_1');
+    expect(panel!.querySelector('[data-usage-turn="1"]')).not.toBeNull();
   });
 });

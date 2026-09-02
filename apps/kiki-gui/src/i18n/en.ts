@@ -866,6 +866,8 @@ export const en = {
   'usage.drilldown.turns': '{count} turns',
   'usage.drilldown.unknownTurns': '{count} records without turn attribution',
   'usage.drilldown.turnIdsTruncated': 'turn list truncated',
+  'usage.drilldown.turnId': 'turn {id}',
+  'usage.drilldown.turnHint': 'Open the session at this turn',
   'usage.drilldown.sessionsTruncated': 'More sessions exist than the drilldown limit shows.',
   'usage.tab.sessions': 'Sessions',
   'usage.tab.fiveHour': '5h rhythm',

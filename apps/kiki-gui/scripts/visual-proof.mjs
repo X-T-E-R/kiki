@@ -2972,23 +2972,34 @@ async function scenarioUsageDashboard() {
   await shot('usage-filters-reliability');
 
   // 3. Agent breakdown tab: parent/child tree expands to the researcher rows.
+  //    The tab switch must land in the URL so the view is shareable.
   await page.locator('[data-usage-tab="breakdown"]').click();
   await page.waitForSelector('[data-usage-agent-tree]', { timeout: 10_000 });
+  if (!page.url().includes('view=breakdown')) {
+    throw new Error(`breakdown tab missing from the URL: ${page.url()}`);
+  }
   await page.locator('[data-usage-agent-tree] button', { hasText: S.usageSubagentPattern }).first().click();
   await page.waitForSelector('text=researcher', { timeout: 5000 });
   await page.waitForTimeout(300);
   await shot('usage-breakdown-agents');
 
-  // 4. 5h rhythm: switch granularity, then drill into a bucket's sessions.
+  // 4. 5h rhythm tab: switch granularity, then the tab itself renders the
+  //    per-window session/turn drilldown (not just the trend chart).
   await page.locator('[data-axis="granularity"] [data-axis-value="five_hour"]').click();
   await page.waitForTimeout(700);
-  await page.locator('[data-usage-trend] [data-bucket]').last().click();
-  await page.waitForSelector('[data-usage-drilldown]', { timeout: 10_000 });
-  const drillText = await page.locator('[data-usage-drilldown]').innerText();
-  if (!drillText.includes(S.usageDrilldown)) throw new Error(`drilldown missing title: ${drillText}`);
-  if (!drillText.includes('session_fixture_usage_zeta')) {
-    throw new Error(`drilldown missing seeded session: ${drillText}`);
+  await page.locator('[data-usage-tab="fiveHour"]').click();
+  await page.waitForSelector('[data-usage-fivehour]', { timeout: 10_000 });
+  if (!page.url().includes('view=five_hour') || !page.url().includes('granularity=five_hour')) {
+    throw new Error(`5h view missing from the URL: ${page.url()}`);
   }
+  const fiveHour = page.locator('[data-usage-fivehour]');
+  const fiveHourText = await fiveHour.innerText();
+  if (!fiveHourText.includes('session_fixture_usage_zeta')) {
+    throw new Error(`5h tab missing seeded session: ${fiveHourText}`);
+  }
+  const turnChips = await fiveHour.locator('[data-usage-turn]').count();
+  console.log(`[check] 5h windows=${await fiveHour.locator('[data-usage-fivehour-window]').count()} turnChips=${turnChips}`);
+  if (turnChips === 0) throw new Error('5h tab renders no turn locators');
   await shot('usage-fivehour-drilldown');
 
   // 5. Mobile: narrow viewport must not overflow; the strip and filter bar wrap.

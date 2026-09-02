@@ -852,6 +852,8 @@ export const zh: Record<I18nKey, string> = {
   'usage.drilldown.turns': '{count} 轮',
   'usage.drilldown.unknownTurns': '{count} 条记录无 turn 归因',
   'usage.drilldown.turnIdsTruncated': 'turn 列表已截断',
+  'usage.drilldown.turnId': '轮次 {id}',
+  'usage.drilldown.turnHint': '打开会话并定位到该轮次',
   'usage.drilldown.sessionsTruncated': '会话数量超出下钻上限，仅显示部分。',
   'usage.tab.sessions': '会话',
   'usage.tab.fiveHour': '5h 节奏',

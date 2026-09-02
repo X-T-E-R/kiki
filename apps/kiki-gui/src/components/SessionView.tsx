@@ -1064,6 +1064,30 @@ export function SessionView({
   // Throttle for the ambiguous y/n hint (epoch ms of the last toast).
   const lastAmbiguityToastRef = useRef(0);
   const createHandoff = parseSessionCreateHandoff(location.state);
+  // Turn locator: /s/{id}?turn=N (the /usage drilldown's per-turn action)
+  // smooth-scrolls the transcript to that turn's first block, retrying briefly
+  // while the view mounts and publishes its rows (same pattern as the
+  // subagent jump-back locator). Turns outside the loaded transcript window
+  // degrade to landing on the session.
+  const turnLocator = new URLSearchParams(location.search).get('turn');
+  useEffect(() => {
+    if (turnLocator === null) return;
+    let cancelled = false;
+    const scrollToTurn = (attemptsLeft: number): void => {
+      if (cancelled) return;
+      const target = document.querySelector(`[data-turn-id="${CSS.escape(turnLocator)}"]`);
+      if (target !== null) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+      if (attemptsLeft > 0) window.setTimeout(() => { scrollToTurn(attemptsLeft - 1); }, 150);
+    };
+    const timer = window.setTimeout(() => { scrollToTurn(12); }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [turnLocator, sessionId]);
   const initialPromptRef = useRef(createHandoff.initialPrompt);
   const initialSkillRef = useRef(createHandoff.initialSkill);
   const initialOptionsRef = useRef(createHandoff);
