@@ -17,6 +17,13 @@ const usageRecordSchema = z.object({
   model: z.string(),
   usage: z.custom<TokenUsage>(),
   usageScope: z.custom<UsageRecordScope>().optional(),
+  turnId: z.number().int().nonnegative().optional(),
+  agentId: z.string().optional(),
+  parentAgentId: z.string().optional(),
+  provider: z.string().optional(),
+  modelAlias: z.string().optional(),
+  profileName: z.string().optional(),
+  executorId: z.string().optional(),
 });
 
 export class UsageRecord extends Event2<z.infer<typeof usageRecordSchema>> {

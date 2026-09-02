@@ -48,6 +48,8 @@ import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import {
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   type ExternalAuthority,
+  type ExternalDelegationSessionProvision,
+  ISessionExternalDelegationProvisionStore,
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
@@ -108,6 +110,8 @@ describe('SessionExternalDelegationService', () => {
   let permissionCeilings: Map<string, PermissionMode>;
   let nextCreatedAgentId: string | undefined;
   let bootstrapEnv: Record<string, string | undefined>;
+  let provision: ExternalDelegationSessionProvision | undefined;
+  let sessionCustom: Record<string, unknown>;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -134,11 +138,9 @@ describe('SessionExternalDelegationService', () => {
     permissionModes = new Map();
     permissionCeilings = new Map();
     nextCreatedAgentId = undefined;
-    bootstrapEnv = {
-      KIKI_EXTERNAL_WORKSPACE_PATH: '/workspace',
-      KIKI_EXTERNAL_MODEL_ALIAS: 'model',
-      KIKI_EXTERNAL_THINKING_EFFORT: 'off',
-    };
+    bootstrapEnv = {};
+    provision = { version: 1, ownership: 'dedicated' };
+    sessionCustom = {};
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -169,9 +171,16 @@ describe('SessionExternalDelegationService', () => {
         updatedAt: 0,
         archived: false,
         agents: agentMetas,
+        custom: sessionCustom,
       }),
       registerAgent: async (agentId, meta) => {
         agentMetas[agentId] = meta;
+      },
+    });
+    ix.stub(ISessionExternalDelegationProvisionStore, {
+      read: async () => provision,
+      write: async (value) => {
+        provision = value;
       },
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
@@ -630,10 +639,7 @@ describe('SessionExternalDelegationService', () => {
     completions[0]!.resolve({ summary: 'done' });
   });
 
-  it('routes main interactions to the external caller during a dedicated main dispatch', async () => {
-    bootstrapEnv['KIKI_EXTERNAL_WORKSPACE_PATH'] = '/workspace';
-    bootstrapEnv['KIKI_EXTERNAL_MODEL_ALIAS'] = 'model';
-    bootstrapEnv['KIKI_EXTERNAL_THINKING_EFFORT'] = 'off';
+  it('routes main interactions from a persisted dedicated provision without env', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const approvals = ix.get(ISessionApprovalService);
     const dispatch = await service.dispatch({
@@ -670,8 +676,11 @@ describe('SessionExternalDelegationService', () => {
     });
   });
 
-  it('keeps main unavailable for a base-only attached session', async () => {
-    bootstrapEnv = {};
+  it('ignores caller custom metadata that imitates a dedicated provision', async () => {
+    provision = undefined;
+    sessionCustom = {
+      externalDelegationProvision: { version: 1, ownership: 'dedicated' },
+    };
     const service = ix.get(ISessionExternalDelegationService);
     const interaction = ix.get(ISessionInteractionService);
     const approvals = ix.get(ISessionApprovalService);
@@ -701,9 +710,6 @@ describe('SessionExternalDelegationService', () => {
   });
 
   it('does not absorb an old main branch into a dedicated main dispatch', async () => {
-    bootstrapEnv['KIKI_EXTERNAL_WORKSPACE_PATH'] = '/workspace';
-    bootstrapEnv['KIKI_EXTERNAL_MODEL_ALIAS'] = 'model';
-    bootstrapEnv['KIKI_EXTERNAL_THINKING_EFFORT'] = 'off';
     const service = ix.get(ISessionExternalDelegationService);
     const interaction = ix.get(ISessionInteractionService);
     const approvals = ix.get(ISessionApprovalService);

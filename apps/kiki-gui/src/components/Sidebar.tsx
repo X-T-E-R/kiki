@@ -22,11 +22,10 @@ import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { Session, Workspace } from '@moonshot-ai/protocol';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { isDesktopRuntime } from '../lib/desktop';
-import { openHostPath, revealHostPath } from '../lib/hostFileOps';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
 import { runToastAction } from '../lib/toasts';
@@ -203,6 +202,7 @@ export function Sidebar({
   onNewSession: () => void;
   className?: string;
 }) {
+  const host = useHost();
   const navigate = useGuardedNavigate();
   const { client, meta, wsStatus } = useConnection();
   const { t, locale, time } = useI18n();
@@ -252,8 +252,8 @@ export function Sidebar({
   );
 
   const actionContext: SessionActionContext = useMemo(
-    () => ({ client, refreshSessions, navigate }),
-    [client, refreshSessions, navigate],
+    () => ({ client, host, refreshSessions, navigate }),
+    [client, host, refreshSessions, navigate],
   );
 
   // Debounced global search; react-query cancels superseded requests.
@@ -1205,6 +1205,7 @@ function SessionMenu({
   onArchive: () => void;
   onRestore: () => void;
 }) {
+  const host = useHost();
   const { t } = useI18n();
   const archived = session.archived === true;
   const menuRef = useRef<HTMLDivElement>(null);
@@ -1250,7 +1251,7 @@ function SessionMenu({
   // editor actions ride the desktop opener commands, so the browser build
   // degrades to the two copy entries only.
   const cwd = session.metadata.cwd;
-  const desktop = isDesktopRuntime();
+  const desktop = host.revealPath !== undefined && host.openPath !== undefined;
   const runAndClose = (label: string, action: () => Promise<void>) => {
     onClose();
     runToastAction(label, action);
@@ -1319,7 +1320,7 @@ function SessionMenu({
                 role="menuitem"
                 data-menu-item="open-folder"
                 className={itemClass}
-                onClick={() => { runAndClose(t('menu.openFolder'), () => revealHostPath(cwd)); }}
+                onClick={() => { runAndClose(t('menu.openFolder'), () => host.revealPath!(cwd)); }}
               >
                 {t('menu.openFolder')}
               </button>
@@ -1328,7 +1329,7 @@ function SessionMenu({
                 role="menuitem"
                 data-menu-item="open-default-app"
                 className={itemClass}
-                onClick={() => { runAndClose(t('menu.openDefaultApp'), () => openHostPath(cwd)); }}
+                onClick={() => { runAndClose(t('menu.openDefaultApp'), () => host.openPath!(cwd)); }}
               >
                 {t('menu.openDefaultApp')}
               </button>

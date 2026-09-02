@@ -84,6 +84,7 @@ import {
   type ExternalInteractionsRequest,
   type ExternalInteractionView,
   type ExternalPageLookup,
+  ISessionExternalDelegationProvisionStore,
   type ExternalRespondRequest,
   type ExternalRespondView,
   type ExternalResultPage,
@@ -164,11 +165,6 @@ interface DispatchTranscriptBoundary {
 }
 
 const STORE_KEY = 'root';
-const EXTERNAL_SESSION_BOOTSTRAP_ENV = [
-  'KIKI_EXTERNAL_WORKSPACE_PATH',
-  'KIKI_EXTERNAL_MODEL_ALIAS',
-  'KIKI_EXTERNAL_THINKING_EFFORT',
-] as const;
 const TASK_NAME = /^(?!root$)[a-z0-9_]+$/;
 const ACTIVE = new Set<ExternalDispatchStatus>(['queued', 'running']);
 const EXTERNAL_FAILURE_MESSAGE_MAX_BYTES = 512;
@@ -192,7 +188,7 @@ export class SessionExternalDelegationService
   private readonly dispatchLineages = new Map<string, Set<string>>();
   private readonly interactionConsumerId: string;
   private readonly permissionCeiling: PermissionMode;
-  private readonly dedicatedSession: boolean;
+  private dedicatedSession = false;
   private interactionConsumerActive = false;
   private document: ExternalDelegationDocument | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -203,6 +199,8 @@ export class SessionExternalDelegationService
     @IFlagService private readonly flags: IFlagService,
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @ISessionContext session: ISessionContext,
+    @ISessionExternalDelegationProvisionStore
+    private readonly provision: ISessionExternalDelegationProvisionStore,
     @IAgentLifecycleService private readonly agents: IAgentLifecycleService,
     @ISessionDispatchService private readonly dispatchDomain: ISessionDispatchService,
     @IAgentCollaborationMessagingService private readonly messaging: IAgentCollaborationMessagingService,
@@ -218,9 +216,6 @@ export class SessionExternalDelegationService
   ) {
     super();
     this.permissionCeiling = resolveExternalPermissionCeiling((name) => bootstrap.getEnv(name));
-    this.dedicatedSession = EXTERNAL_SESSION_BOOTSTRAP_ENV.every(
-      (name) => bootstrap.getEnv(name)?.trim(),
-    );
     this.scope = session.scope('external-delegation');
     this.sessionId = session.sessionId;
     this.interactionConsumerId = `external-delegation:${this.sessionId}`;
@@ -554,6 +549,7 @@ export class SessionExternalDelegationService
   }
 
   private async load(): Promise<void> {
+    this.dedicatedSession = (await this.provision.read())?.ownership === 'dedicated';
     this.document = await this.store.get<ExternalDelegationDocument>(this.scope, STORE_KEY);
     if (this.document !== undefined) {
       await this.migrateTranscriptBounds(this.document);

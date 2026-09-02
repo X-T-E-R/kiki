@@ -19,6 +19,7 @@ import { type AgentRunHandle, ISessionSubagentService } from './subagent';
 export interface SubagentSpawnedPayload {
   readonly subagentId: string;
   readonly subagentName: string;
+  readonly name?: string;
   readonly parentToolCallId: string;
   readonly parentToolCallUuid?: string;
   readonly parentAgentId?: string;
@@ -35,6 +36,7 @@ export interface SubagentSpawnedPayload {
 const subagentSpawnedSchema: z.ZodType<SubagentSpawnedPayload> = z.object({
   subagentId: z.string(),
   subagentName: z.string(),
+  name: z.string().optional(),
   parentToolCallId: z.string(),
   parentToolCallUuid: z.string().optional(),
   parentAgentId: z.string().optional(),
@@ -118,6 +120,7 @@ registerEvent2Class(SubagentFailed);
 
 export interface AgentRunSpawnedMeta {
   readonly profileName: string;
+  readonly name?: string;
   readonly parentToolCallId?: string;
   readonly parentToolCallUuid?: string;
   readonly description?: string;
@@ -150,6 +153,7 @@ export function emitAgentRunSpawned(
     new SubagentSpawned({
       subagentId: targetAgentId,
       subagentName: meta.profileName,
+      name: meta.name,
       parentToolCallId: meta.parentToolCallId ?? '',
       parentToolCallUuid: meta.parentToolCallUuid,
       parentAgentId: requester.id,

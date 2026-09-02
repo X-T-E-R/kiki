@@ -48,7 +48,10 @@ import {
   type ExecutorLossCode,
   type ExecutorResumeMode,
 } from './externalExecutorOps';
-import { ExternalTurnRecorder } from './externalTurnRecorder';
+import {
+  ExternalTurnRecorder,
+  resolveExternalModelProvider,
+} from './externalTurnRecorder';
 
 interface CodexClientLike {
   status(): ReturnType<CodexAppServerClient['status']>;
@@ -197,6 +200,12 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       {
         executorId: this.context.descriptor.id,
         protocol: this.context.descriptor.protocol,
+        model: this.context.binding.modelAlias!,
+        modelAlias: this.context.binding.modelAlias,
+        provider: resolveExternalModelProvider(
+          this.context.agent,
+          this.context.binding.modelAlias,
+        ),
         resumeMode: opened.mode,
         profileDelivery: 'native',
         outboundPrompt: remotePrompt,
@@ -335,10 +344,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       await pump;
       const turnResult = turnResultFromCodex(completed);
       if (turnResult.type === 'completed') {
+        const usage = usageFromCodex(completed);
         turn.state = 'completed';
-        await recorder.complete(completed.status);
+        await recorder.complete(completed.status, usage);
         result.resolve(turnResult);
-        return { summary: recorder.summary(), usage: usageFromCodex(completed) };
+        return { summary: recorder.summary(), usage };
       }
       if (turnResult.type === 'cancelled') {
         turn.state = 'cancelled';

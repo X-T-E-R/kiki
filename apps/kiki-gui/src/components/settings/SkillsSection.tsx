@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 
-import { isDesktopRuntime, selectDirectoriesNative } from '../../lib/desktop';
+import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { errorText, issueText } from '../../i18n/locale';
 import {
@@ -63,7 +63,8 @@ function SkillsDefaultsCard() {
   const [saving, setSaving] = useState(false);
   const [selectingDirs, setSelectingDirs] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const isDesktop = isDesktopRuntime();
+  const host = useHost();
+  const canPickDirs = host.pickDirectories !== undefined;
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
@@ -78,8 +79,10 @@ function SkillsDefaultsCard() {
     setSelectingDirs(true);
     setFeedback(null);
     try {
-      const selected = await selectDirectoriesNative();
-      if (selected !== null) setExtraDirs((current) => appendExtraSkillDirs(current, selected));
+      const selected = await host.pickDirectories?.();
+      if (selected !== undefined && selected !== null) {
+        setExtraDirs((current) => appendExtraSkillDirs(current, selected));
+      }
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -126,7 +129,7 @@ function SkillsDefaultsCard() {
         <div>
           <div className="flex items-center justify-between gap-3">
             <label htmlFor="settings-extra-skill-dirs" className="text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}</label>
-            {isDesktop ? (
+            {canPickDirs ? (
               <button
                 type="button"
                 className={SECONDARY_BUTTON}

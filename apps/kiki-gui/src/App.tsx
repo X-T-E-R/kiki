@@ -45,13 +45,7 @@ import { Sidebar } from './components/Sidebar';
 import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
-import {
-  checkNativeDesktopUpdate,
-  isDesktopRuntime,
-  onTrayNewSession,
-  readNativeDesktopPrefs,
-  writeNativeDesktopPrefs,
-} from './lib/desktop';
+import { useHost } from './host';
 import {
   arrangePinnedFirst,
   dedupeSessions,
@@ -98,11 +92,12 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 export function App() {
+  const host = useHost();
   const { client, socket, wsStatus } = useConnection();
   const { t, locale } = useI18n();
   const rawNavigate = useNavigate();
   const location = useLocation();
-  const desktop = isDesktopRuntime();
+  const desktop = host.kind === 'tauri';
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [workspaceFilter, setWorkspaceFilter] = useState<string | undefined>(undefined);
@@ -143,17 +138,17 @@ export function App() {
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.
   useEffect(() => {
-    if (!isDesktopRuntime()) return;
-    void readNativeDesktopPrefs().then((prefs) => {
+    if (host.kind !== 'tauri') return;
+    void host.readDesktopPrefs().then((prefs) => {
       if (prefs !== null) writeDesktopPrefs(prefs);
     });
-    return onTrayNewSession(() => void navigate('/new'));
-  }, [navigate]);
+    return host.onTrayNewSession(() => void navigate('/new'));
+  }, [host, navigate]);
 
   useEffect(() => {
-    if (!isDesktopRuntime()) return;
+    if (host.kind !== 'tauri') return;
     const timer = window.setTimeout(() => {
-      void checkNativeDesktopUpdate()
+      void host.checkDesktopUpdate()
         .then((update) => {
           if (update !== null) {
             pushToast({ tone: 'info', text: t('st.about.updateAvailable', { version: update.version }) });
@@ -162,12 +157,12 @@ export function App() {
         .catch(() => {});
     }, 1_500);
     return () => { window.clearTimeout(timer); };
-  }, [t]);
+  }, [host, t]);
 
   // Keep the native side (tray menu labels) on the active UI locale.
   useEffect(() => {
-    void writeNativeDesktopPrefs({ locale });
-  }, [locale]);
+    void host.writeDesktopPrefs?.({ locale });
+  }, [host, locale]);
 
   const sessionMatch = useMatch('/s/:id/*');
   const activeSessionId = sessionMatch?.params.id;

@@ -11,10 +11,10 @@
 import { useRef, useState, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { errorText } from '../i18n/locale';
 import { fetchBusySessionCount, type BusySessionProbe } from '../lib/busySessions';
-import { isDesktopRuntime, restartNativeServer } from '../lib/desktop';
 import {
   acknowledgeRestartRequirement,
   clearRestartRequirement,
@@ -32,6 +32,7 @@ export function useRestartRequirement(): RestartRequirement {
 }
 
 export function RestartBanner() {
+  const host = useHost();
   const { t, locale } = useI18n();
   const { client, socket } = useConnection();
   const queryClient = useQueryClient();
@@ -43,7 +44,7 @@ export function RestartBanner() {
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const isDesktop = isDesktopRuntime();
+  const isDesktop = host.restartServer !== undefined;
 
   if (!restart.required || dismissedAt === restart.changedAt || isRestartRequirementAcknowledged(restart)) {
     return null;
@@ -53,7 +54,7 @@ export function RestartBanner() {
     setWorking(true);
     setError(null);
     try {
-      await restartNativeServer();
+      await host.restartServer?.();
       clearRestartRequirement();
       // The sidecar restarted on the same endpoint: reattach the shared WS
       // immediately and let every query refetch against the fresh process.
