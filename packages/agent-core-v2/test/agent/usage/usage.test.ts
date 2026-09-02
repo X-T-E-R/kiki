@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import {
@@ -42,6 +44,16 @@ beforeEach(() => {
   disposables = new DisposableStore();
   ix = disposables.add(new TestInstantiationService());
   ix.stub(IFileSystemStorageService, new InMemoryStorageService());
+  ix.stub(IAgentProfileService, {
+    _serviceBrand: undefined,
+    data: () => ({
+      modelAlias: 'model-a',
+      profileName: 'coder',
+      thinkingLevel: 'high',
+      systemPrompt: '',
+      executorId: 'native',
+    }),
+  } as unknown as IAgentProfileService);
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IEventBus, new SyncDescriptor(EventBusService));
@@ -50,6 +62,12 @@ beforeEach(() => {
   registerTestAgentWire(ix, testWireScope(SCOPE, KEY), {
     log,
     eventBus: ix.get(IEventBus),
+  });
+  ix.stub(IAgentScopeContext, {
+    _serviceBrand: undefined,
+    agentId: 'agent-child',
+    parentAgentId: 'agent-parent',
+    scope: () => 'agent-scope',
   });
   dispatcher = registerTestEventDispatcher(ix);
   svc = ix.get(IAgentUsageService);
@@ -180,8 +198,8 @@ describe('AgentUsageService (wire-backed)', () => {
     ]);
   });
 
-  it('dispatch persists flat { type, model, usage, usageScope } records (no payload key)', async () => {
-    svc.record('model-a', a1);
+  it('dispatch persists flat attributed usage records (no payload key)', async () => {
+    svc.record('model-a', a1, undefined, { provider: 'provider-a' });
 
     const records = await readRecords();
     expect(records).toEqual([
@@ -190,14 +208,25 @@ describe('AgentUsageService (wire-backed)', () => {
         model: 'model-a',
         usage: a1,
         usageScope: 'session',
+        agentId: 'agent-child',
+        parentAgentId: 'agent-parent',
+        provider: 'provider-a',
+        modelAlias: 'model-a',
+        profileName: 'coder',
+        executorId: 'native',
         time: expect.any(Number),
       },
     ]);
     expect('payload' in records[0]!).toBe(false);
   });
 
-  it('marks turn-scoped sources with usageScope only (no turnId or context persisted)', async () => {
-    svc.record('model-a', a1, { type: 'turn', turnId: 7, step: 2 });
+  it('persists turn attribution with the compatibility usage scope', async () => {
+    svc.record(
+      'model-a',
+      a1,
+      { type: 'turn', turnId: 7, step: 2 },
+      { provider: 'provider-a' },
+    );
 
     const records = await readRecords();
     expect(records).toEqual([
@@ -206,6 +235,13 @@ describe('AgentUsageService (wire-backed)', () => {
         model: 'model-a',
         usage: a1,
         usageScope: 'turn',
+        turnId: 7,
+        agentId: 'agent-child',
+        parentAgentId: 'agent-parent',
+        provider: 'provider-a',
+        modelAlias: 'model-a',
+        profileName: 'coder',
+        executorId: 'native',
         time: expect.any(Number),
       },
     ]);

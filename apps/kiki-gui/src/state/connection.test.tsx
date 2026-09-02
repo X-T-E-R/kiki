@@ -20,13 +20,12 @@ const mocks = vi.hoisted(() => ({
   stageListener: undefined as ((event: { payload: unknown }) => void) | undefined,
 }));
 
-vi.mock('../lib/localServer', () => ({
-  detectLocalConnection: mocks.detectLocalConnection,
-  isDesktopRuntime: () => true,
-}));
-
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: mocks.invoke,
+  invoke: (command: string, args?: unknown) =>
+    command === 'desktop_connection'
+      ? Promise.resolve(mocks.detectLocalConnection()).then((connection) => connection.config)
+      : mocks.invoke(command, args),
+  isTauri: () => true,
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({

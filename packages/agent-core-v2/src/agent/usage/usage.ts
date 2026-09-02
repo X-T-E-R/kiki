@@ -31,10 +31,21 @@ export interface UsageRecordedContext {
   readonly source?: AgentLLMRequestSource;
 }
 
+export interface UsageRecordContext {
+  readonly provider?: string;
+  readonly modelAlias?: string;
+  readonly executorId?: string;
+}
+
 export interface IAgentUsageService {
   readonly _serviceBrand: undefined;
 
-  record(model: string, usage: TokenUsage, source?: AgentLLMRequestSource): void;
+  record(
+    model: string,
+    usage: TokenUsage,
+    source?: AgentLLMRequestSource,
+    context?: UsageRecordContext,
+  ): void;
   status(): UsageStatus;
 
   readonly onDidRecord: Event<UsageRecordedContext>;

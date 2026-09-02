@@ -33,9 +33,11 @@ import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
 import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentUsageService } from '#/agent/usage/usage';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptors';
 import type { Event2 } from '#/app/event/event2';
+import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { ISessionApprovalService, type ApprovalResponse } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -56,6 +58,9 @@ interface FakeHarnessOptions {
   readonly configureReadbackFailureId?: string;
   readonly permissionMode?: 'manual' | 'auto' | 'yolo';
   readonly permissionMapping?: AgentExecutorContext['descriptor']['permissionModeMapping'];
+  readonly completionUsage?: AcpTurnResult['response']['usage'];
+  readonly executorId?: string;
+  readonly providerName?: string;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -200,8 +205,23 @@ function createHarness(options: FakeHarnessOptions = {}) {
     _serviceBrand: undefined,
     mode: options.permissionMode ?? 'manual',
   } as unknown as IAgentPermissionModeService;
+  const usageRecords: Parameters<IAgentUsageService['record']>[] = [];
+  const usage = {
+    _serviceBrand: undefined,
+    record: (...args: Parameters<IAgentUsageService['record']>) => { usageRecords.push(args); },
+    status: () => ({}),
+    onDidRecord: () => ({ dispose: () => {} }),
+  } as IAgentUsageService;
+  const modelCatalog = {
+    get: () => {
+      if (options.providerName === undefined) throw new Error('model is external-only');
+      return { providerName: options.providerName } as Model;
+    },
+  } as unknown as IModelCatalog;
   const services = new Map<unknown, unknown>([
     [IAgentStateService, state.state],
+    [IModelCatalog, modelCatalog],
+    [IAgentUsageService, usage],
     [IEventDispatcher, dispatcher],
     [IWireService, wire],
     [IAgentContextMemoryService, contextMemory],
@@ -275,7 +295,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
         permissionDecisions.push(decision);
       }
       const result: AcpTurnResult = {
-        response: { stopReason: 'end_turn' },
+        response: { stopReason: 'end_turn', usage: options.completionUsage },
         session: openResult(),
         stderrTail: '',
       };
@@ -299,7 +319,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       },
     },
     descriptor: {
-      id: 'example-acp',
+      id: options.executorId ?? 'example-acp',
       protocol: 'acp-v1',
       command: 'example-acp',
       args: [],
@@ -318,7 +338,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       modelAlias: 'model-a',
       thinkingLevel: 'high',
       systemPrompt: 'Frozen profile',
-      executorId: 'example-acp',
+      executorId: options.executorId ?? 'example-acp',
       executorProtocol: 'acp-v1',
       executorDescriptorRevision: 'r1',
     },
@@ -339,6 +359,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     selections,
     permissionDecisions,
     interaction,
+    usageRecords,
     wire,
   };
 }
@@ -407,10 +428,17 @@ describe('ACP external executor', () => {
       append: () => {},
       appendLoopEvent: (event: unknown) => loopEvents.push(event),
     } as unknown as IAgentContextMemoryService;
+    const usage = {
+      _serviceBrand: undefined,
+      record: () => {},
+      status: () => ({}),
+      onDidRecord: () => ({ dispose: () => {} }),
+    } as IAgentUsageService;
     const services = new Map<unknown, unknown>([
       [IEventDispatcher, dispatcher],
       [IWireService, wire],
       [IAgentContextMemoryService, contextMemory],
+      [IAgentUsageService, usage],
     ]);
     const recorder = new ExternalTurnRecorder(
       {
@@ -422,6 +450,8 @@ describe('ACP external executor', () => {
       {
         executorId: 'generic-executor',
         protocol: 'vendor-v2',
+        model: 'generic-model',
+        modelAlias: 'generic-model',
         resumeMode: 'new',
         profileDelivery: 'native',
       },
@@ -629,6 +659,63 @@ describe('ACP external executor', () => {
       { configId: 'thought-id', value: 'high' },
       { configId: 'auto_approve', value: false },
     ]);
+  });
+
+  it.each([
+    ['grok-acp', 'grok'],
+    ['kimi-acp', 'kimi'],
+  ])('records %s completion usage with the %s provider', async (executorId, providerName) => {
+    const harness = createHarness({
+      executorId,
+      providerName,
+      completionUsage: { inputTokens: 12, outputTokens: 5, totalTokens: 17 },
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    const usage = {
+      inputOther: 12,
+      output: 5,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    };
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await expect(run.completion).resolves.toEqual({ summary: '', usage });
+
+    expect(harness.usageRecords).toEqual([[
+      'model-a',
+      usage,
+      { type: 'turn', turnId: 4, step: 1 },
+      { provider: providerName, modelAlias: 'model-a', executorId },
+    ]]);
+    expect(harness.loopEvents.find(
+      (event) => (event as { type?: string }).type === 'step.end',
+    )).toMatchObject({ usage });
+    expect(harness.events.find(
+      (event) => event.type === 'turn.step.completed',
+    )).toMatchObject({ usage });
+  });
+
+  it('leaves provider empty when the external model is absent from the catalog', async () => {
+    const harness = createHarness({
+      executorId: 'cursor-acp',
+      completionUsage: { inputTokens: 12, outputTokens: 5, totalTokens: 17 },
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.usageRecords[0]?.[3]).toEqual({
+      provider: undefined,
+      modelAlias: 'model-a',
+      executorId: 'cursor-acp',
+    });
   });
 
   it.each(['live', 'resume', 'load'] as const)('records %s resume mode without handoff', async (mode) => {

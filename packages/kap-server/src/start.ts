@@ -226,8 +226,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const homeDir = resolveKimiHome(opts.homeDir);
   const serverVersion = opts.serverVersion ?? getServerVersion();
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
-  const externalDelegation =
-    opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env);
+  const externalDelegation = opts.externalDelegation === undefined
+    ? externalDelegationAuthorityFromEnv(process.env)
+    : {
+        ...opts.externalDelegation,
+        sessionOwnership: opts.externalDelegation.sessionOwnership ?? 'dedicated',
+      };
   const registry = createInstanceRegistry({
     instancesDir: opts.instancesDir ?? join(homeDir, 'server', 'instances'),
   });

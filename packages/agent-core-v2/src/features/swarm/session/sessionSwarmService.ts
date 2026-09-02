@@ -158,6 +158,7 @@ export class SessionSwarmService implements ISessionSwarmService {
     }
     emitAgentRunSpawned(caller, run.child.agentId, {
       profileName: run.child.profileName,
+      name: run.child.name,
       parentToolCallId: options.parentToolCallId,
       parentToolCallUuid: options.parentToolCallUuid,
       description: options.description,
@@ -184,11 +185,16 @@ export class SessionSwarmService implements ISessionSwarmService {
     const run = await this.dispatch.runOnExisting(
       child,
       retryTurn ? { kind: 'retry' } : options.prompt,
-      { signal: options.signal, onReady: options.onReady },
+      {
+        signal: options.signal,
+        requesterAgentId: callerAgentId,
+        onReady: options.onReady,
+      },
     );
     if (!retryTurn) {
       emitAgentRunSpawned(caller, child.agentId, {
         profileName: child.profileName,
+        name: child.name,
         parentToolCallId: options.parentToolCallId,
         parentToolCallUuid: options.parentToolCallUuid,
         description: options.description,

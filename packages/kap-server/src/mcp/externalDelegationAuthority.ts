@@ -2,6 +2,7 @@ import {
   DEFAULT_AGENT_PROFILE_NAME,
   IAgentLifecycleService,
   IAgentProfileService,
+  ISessionExternalDelegationProvisionStore,
   ISessionIndex,
   ISessionLegacyService,
   ISessionManager,
@@ -29,6 +30,7 @@ export interface ExternalDelegationAuthorityConfig {
   readonly principalId: string;
   readonly sessionId: string;
   readonly token: string;
+  readonly sessionOwnership?: 'dedicated' | 'attached';
   /**
    * Operator-owned exact Session provisioning. The caller cannot select this
    * value over REST: it is captured from server composition, creates the
@@ -79,6 +81,7 @@ export function externalDelegationAuthorityFromEnv(
     principalId,
     sessionId,
     token,
+    sessionOwnership: hasBootstrap ? 'dedicated' : 'attached',
     sessionBootstrap: hasBootstrap
       ? {
           workspacePath: bootstrap[0] as string,
@@ -101,8 +104,18 @@ export async function ensureExternalDelegationSession(
   core: Scope,
   authority: ExternalDelegationAuthorityConfig | undefined,
 ): Promise<void> {
-  const bootstrap = authority?.sessionBootstrap;
-  if (authority === undefined || bootstrap === undefined) return;
+  if (authority === undefined) return;
+  const bootstrap = authority.sessionBootstrap;
+  const ownership = authority.sessionOwnership ?? (bootstrap === undefined ? 'attached' : 'dedicated');
+  if (ownership === 'attached') {
+    await writeExternalDelegationSessionOwnership(core, authority.sessionId, 'attached');
+  }
+  if (bootstrap === undefined) {
+    if (ownership === 'dedicated') {
+      await writeExternalDelegationSessionOwnership(core, authority.sessionId, 'dedicated');
+    }
+    return;
+  }
   if (!isAbsolute(bootstrap.workspacePath)) {
     throw new Error('External delegation workspace path must be absolute.');
   }
@@ -175,6 +188,24 @@ export async function ensureExternalDelegationSession(
   ) {
     throw new Error('External delegation Session model binding does not match.');
   }
+  if (ownership === 'dedicated') {
+    await writeExternalDelegationSessionOwnership(core, authority.sessionId, 'dedicated');
+  }
+}
+
+async function writeExternalDelegationSessionOwnership(
+  core: Scope,
+  sessionId: string,
+  ownership: 'dedicated' | 'attached',
+): Promise<void> {
+  const session = await resumeSessionById(core.accessor, sessionId);
+  if (session === undefined) {
+    throw new Error('External delegation Session is unavailable.');
+  }
+  await session.accessor.get(ISessionExternalDelegationProvisionStore).write({
+    version: 1,
+    ownership,
+  });
 }
 
 async function canonicalPath(path: string): Promise<string> {

@@ -101,14 +101,14 @@ function ProviderSetupCard() {
       <div className="mt-2.5 flex flex-wrap gap-2">
         <button
           type="button"
-          onClick={() => { void navigate('/settings/providers#st-card-auth'); }}
+          onClick={() => { void navigate('/settings/ai?tab=providers#st-card-auth'); }}
           className="rounded-md border border-accent bg-accent px-2.5 py-1 text-[12px] font-medium text-paper transition-opacity hover:opacity-90"
         >
           {t('new.setupSignIn')}
         </button>
         <button
           type="button"
-          onClick={() => { void navigate('/settings/providers#st-card-providers-add'); }}
+          onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
           className="rounded-md border border-hairline-strong bg-panel px-2.5 py-1 text-[12px] text-ink transition-colors hover:border-accent hover:text-accent"
         >
           {t('new.setupApiKey')}

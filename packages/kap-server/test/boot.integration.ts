@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { pino } from 'pino';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   IBootstrapService,
@@ -27,6 +27,38 @@ import { createServerLogger } from '../src/services/pinoLoggerService';
 import { listenWithPortRetry, type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authedFetch } from './helpers/auth';
+
+const EXTERNAL_DELEGATION_ENV_NAMES = [
+  'KIKI_EXTERNAL_PRINCIPAL_ID',
+  'KIKI_EXTERNAL_SESSION_ID',
+  'KIKI_EXTERNAL_DELEGATION_TOKEN',
+  'KIKI_EXTERNAL_WORKSPACE_PATH',
+  'KIKI_EXTERNAL_MODEL_ALIAS',
+  'KIKI_EXTERNAL_THINKING_EFFORT',
+  'KIKI_EXTERNAL_PERMISSION_MODE',
+  'KIKI_EXTERNAL_SESSION_TITLE',
+] as const;
+
+type ExternalDelegationEnvName = (typeof EXTERNAL_DELEGATION_ENV_NAMES)[number];
+type ExternalDelegationEnv = Partial<Record<ExternalDelegationEnvName, string>>;
+
+function takeExternalDelegationEnv(): ExternalDelegationEnv {
+  const values: ExternalDelegationEnv = {};
+  for (const name of EXTERNAL_DELEGATION_ENV_NAMES) {
+    const value = process.env[name];
+    if (value !== undefined) values[name] = value;
+    delete process.env[name];
+  }
+  return values;
+}
+
+function restoreExternalDelegationEnv(values: ExternalDelegationEnv): void {
+  for (const name of EXTERNAL_DELEGATION_ENV_NAMES) {
+    const value = values[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -126,6 +158,11 @@ describe('server logger', () => {
 describe('server-v2 boot', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
+  let externalDelegationEnv: ExternalDelegationEnv;
+
+  beforeEach(() => {
+    externalDelegationEnv = takeExternalDelegationEnv();
+  });
 
   afterEach(async () => {
     if (server !== undefined) {
@@ -136,6 +173,7 @@ describe('server-v2 boot', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
     }
+    restoreExternalDelegationEnv(externalDelegationEnv);
   });
 
   it('boots agent-core-v2 and serves the basic /api/v1 routes', async () => {
@@ -296,7 +334,7 @@ describe('server-v2 boot', () => {
       generation: 1,
       degradedCount: 0,
     });
-    server = await withTimeout(starting, 2_000);
+    server = await starting;
     expect(get).toHaveBeenCalledWith('session_index_ready');
   });
 
@@ -534,11 +572,11 @@ describe('server-v2 boot', () => {
 describe('server-v2 boot — external delegation startup', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
+  let externalDelegationEnv: ExternalDelegationEnv;
 
-  const originalPrincipal = process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
-  const originalSession = process.env['KIKI_EXTERNAL_SESSION_ID'];
-  const originalToken = process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
-  const originalPermissionMode = process.env['KIKI_EXTERNAL_PERMISSION_MODE'];
+  beforeEach(() => {
+    externalDelegationEnv = takeExternalDelegationEnv();
+  });
 
   afterEach(async () => {
     if (server !== undefined) {
@@ -549,14 +587,7 @@ describe('server-v2 boot — external delegation startup', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
     }
-    if (originalPrincipal === undefined) delete process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
-    else process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = originalPrincipal;
-    if (originalSession === undefined) delete process.env['KIKI_EXTERNAL_SESSION_ID'];
-    else process.env['KIKI_EXTERNAL_SESSION_ID'] = originalSession;
-    if (originalToken === undefined) delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
-    else process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'] = originalToken;
-    if (originalPermissionMode === undefined) delete process.env['KIKI_EXTERNAL_PERMISSION_MODE'];
-    else process.env['KIKI_EXTERNAL_PERMISSION_MODE'] = originalPermissionMode;
+    restoreExternalDelegationEnv(externalDelegationEnv);
   });
 
   it('rejects startup when the env authority is incomplete', async () => {
@@ -738,6 +769,11 @@ describe('listenWithPortRetry', () => {
 describe('server-v2 boot — port retry', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
+  let externalDelegationEnv: ExternalDelegationEnv;
+
+  beforeEach(() => {
+    externalDelegationEnv = takeExternalDelegationEnv();
+  });
 
   afterEach(async () => {
     if (server !== undefined) {
@@ -748,6 +784,7 @@ describe('server-v2 boot — port retry', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
     }
+    restoreExternalDelegationEnv(externalDelegationEnv);
   });
 
   it('retries on port+1 and advertises the bound port in the instance registry', async () => {

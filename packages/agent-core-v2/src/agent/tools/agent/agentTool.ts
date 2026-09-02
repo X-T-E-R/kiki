@@ -295,7 +295,7 @@ export class SubagentTool implements ISubagentTool {
               resumeRef,
             ),
             args.prompt,
-            { signal: controller.signal },
+            { signal: controller.signal, requesterAgentId: this.callerAgentId },
           )
         : await this.dispatch.launch({
             delegator: { kind: 'agent', agentId: this.callerAgentId },
@@ -333,6 +333,7 @@ export class SubagentTool implements ISubagentTool {
     return {
       agentId: run.child.agentId,
       profileName: run.child.profileName,
+      name: run.child.name,
       parentToolCallId: toolCallId,
       model: run.child.modelAlias,
       thinkingEffort: run.child.agent
@@ -406,7 +407,14 @@ export class SubagentTool implements ISubagentTool {
           signal: runInBackground ? undefined : signal,
         };
         taskId = this.tasks.registerTask(
-          new SubagentTask(handle, runLabel, controller),
+          new SubagentTask(
+            handle,
+            runLabel,
+            controller,
+            handle.name === undefined
+              ? undefined
+              : { taskName: handle.name, agentType: handle.profileName },
+          ),
           registerOptions,
         );
         await this.dispatch.recordRun(handle.agentId, taskId);
@@ -435,6 +443,7 @@ export class SubagentTool implements ISubagentTool {
       if (requester !== undefined) {
         emitAgentRunSpawned(requester, handle.agentId, {
           profileName: handle.profileName,
+          name: handle.name,
           parentToolCallId: toolCallId,
           description: runLabel,
           runInBackground,

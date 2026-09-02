@@ -26,6 +26,7 @@ import { EventBusService } from '#/app/event/eventBusService';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { DEFAULT_SUBAGENT_TIMEOUT_MS } from '#/session/subagent/configSection';
 import {
@@ -69,6 +70,7 @@ describe('TowerSpawnTool', () => {
   let registerTask: Mock<IAgentTaskService['registerTask']>;
   let completion: Deferred<{ readonly summary: string }>;
   let createdSetMode: Mock<(mode: PermissionMode) => void>;
+  let recordDelegatedRun: Mock<(requesterAgentId: string, agentId: string) => void>;
 
   async function git(cwd: string, ...args: string[]): Promise<void> {
     await execFileAsync('git', args, { cwd });
@@ -91,6 +93,7 @@ describe('TowerSpawnTool', () => {
     release = vi.fn();
     completion = deferred();
     createdSetMode = vi.fn();
+    recordDelegatedRun = vi.fn();
     createAgent = vi.fn(
       async () =>
         ({
@@ -142,6 +145,9 @@ describe('TowerSpawnTool', () => {
           : undefined,
       create: createAgent,
     } as unknown as IAgentLifecycleService);
+    ix.stub(ISessionDispatchService, {
+      recordDelegatedRun,
+    } as unknown as ISessionDispatchService);
     ix.stub(ISessionSubagentService, { run: runAgent } as unknown as ISessionSubagentService);
     ix.stub(IAgentTaskService, { registerTask } as unknown as IAgentTaskService);
     ix.stub(IAgentProfileService, {
@@ -235,8 +241,10 @@ describe('TowerSpawnTool', () => {
           thinking: undefined,
         }),
         labels: { parentAgentId: 'main' },
+        delegator: { kind: 'agent', agentId: 'main' },
       }),
     );
+    expect(recordDelegatedRun).toHaveBeenCalledWith('main', 'agent-7');
     expect(runAgent).toHaveBeenCalledWith(
       'agent-7',
       { kind: 'prompt', prompt: expect.stringContaining(worktreeAbs) },
