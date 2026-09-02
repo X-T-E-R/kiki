@@ -41,6 +41,10 @@
     "./wire": {
       "types": "./src/wire/records.ts",
       "default": "./src/wire/records.ts"
+    },
+    "./native-fs-watch-error-guard": {
+      "types": "./src/native-fs-watch-error-guard.ts",
+      "default": "./src/native-fs-watch-error-guard.ts"
     }
   },
   "publishConfig": {
@@ -50,12 +54,17 @@
         "types": "./dist/index.d.mts",
         "import": "./dist/index.mjs",
         "default": "./dist/index.mjs"
+      },
+      "./native-fs-watch-error-guard": {
+        "types": "./dist/native-fs-watch-error-guard.d.mts",
+        "import": "./dist/native-fs-watch-error-guard.mjs",
+        "default": "./dist/native-fs-watch-error-guard.mjs"
       }
     },
     "provenance": true
   },
   "scripts": {
-    "build": "tsdown && pnpm run build:dts",
+    "build": "tsdown && tsdown --config tsdown.native-fs-watch-error-guard.config.ts && pnpm run build:dts",
     "build:dts": "node scripts/build-dts.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-await import('@moonshot-ai/agent-core-v2/_base/utils/nativeFsWatchErrorGuard');
+await import('@moonshot-ai/kimi-code-sdk/native-fs-watch-error-guard');
 const earlyWatcher = watch(tmpdir(), { persistent: false });
 const earlyEmit = Object.getPrototypeOf(earlyWatcher).emit as unknown;
 earlyWatcher.close();
