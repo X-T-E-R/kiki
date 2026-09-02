@@ -50,6 +50,7 @@ import {
 import {
   ExternalTurnRecorder,
   type ExternalExecutorEvent,
+  resolveExternalModelProvider,
 } from './externalTurnRecorder';
 
 interface AcpClientLike {
@@ -209,6 +210,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         protocol: this.context.descriptor.protocol,
         model: this.context.binding.modelAlias!,
         modelAlias: this.context.binding.modelAlias,
+        provider: resolveExternalModelProvider(
+          this.context.agent,
+          this.context.binding.modelAlias,
+        ),
         resumeMode,
         profileDelivery: 'first_prompt_preamble',
         outboundPrompt: remotePrompt,

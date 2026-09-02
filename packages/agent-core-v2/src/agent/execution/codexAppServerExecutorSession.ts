@@ -48,7 +48,10 @@ import {
   type ExecutorLossCode,
   type ExecutorResumeMode,
 } from './externalExecutorOps';
-import { ExternalTurnRecorder } from './externalTurnRecorder';
+import {
+  ExternalTurnRecorder,
+  resolveExternalModelProvider,
+} from './externalTurnRecorder';
 
 interface CodexClientLike {
   status(): ReturnType<CodexAppServerClient['status']>;
@@ -199,6 +202,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         protocol: this.context.descriptor.protocol,
         model: this.context.binding.modelAlias!,
         modelAlias: this.context.binding.modelAlias,
+        provider: resolveExternalModelProvider(
+          this.context.agent,
+          this.context.binding.modelAlias,
+        ),
         resumeMode: opened.mode,
         profileDelivery: 'native',
         outboundPrompt: remotePrompt,

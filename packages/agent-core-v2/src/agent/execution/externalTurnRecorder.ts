@@ -22,6 +22,7 @@ import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecuto
 import { toKimiErrorPayload } from '#/errors';
 import type { ContentPart } from '#/kosong/contract/message';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import { IModelCatalog } from '#/kosong/model/catalog';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
 
@@ -43,10 +44,23 @@ export interface ExternalTurnRecorderMetadata {
   readonly protocol: string;
   readonly model: string;
   readonly modelAlias?: string;
+  readonly provider?: string;
   readonly resumeMode: ExecutorResumeMode;
   readonly profileDelivery: ExecutorProfileDelivery;
   readonly outboundPrompt?: string;
   readonly initialLosses?: readonly ExecutorLossCode[];
+}
+
+export function resolveExternalModelProvider(
+  agent: AgentExecutorAgentContext,
+  modelAlias: string | undefined,
+): string | undefined {
+  if (modelAlias === undefined) return undefined;
+  try {
+    return agent.accessor.get(IModelCatalog).get(modelAlias).providerName;
+  } catch {
+    return undefined;
+  }
 }
 
 interface Segment {
@@ -462,7 +476,7 @@ export class ExternalTurnRecorder {
         usage,
         { type: 'turn', turnId: this.turnId, step: 1 },
         {
-          provider: this.metadata.protocol,
+          provider: this.metadata.provider,
           modelAlias: this.metadata.modelAlias,
           executorId: this.metadata.executorId,
         },

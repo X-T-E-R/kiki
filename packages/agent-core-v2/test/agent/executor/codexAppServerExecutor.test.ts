@@ -21,6 +21,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import type { Event2 } from '#/app/event/event2';
+import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { ISessionQuestionService } from '#/session/question/question';
@@ -147,8 +148,12 @@ function createHarness(options: HarnessOptions = {}) {
     status: () => ({}),
     onDidRecord: () => ({ dispose: () => {} }),
   } as IAgentUsageService;
+  const modelCatalog = {
+    get: () => ({ providerName: 'openai' }) as Model,
+  } as unknown as IModelCatalog;
   const services = new Map<unknown, unknown>([
     [IAgentStateService, states],
+    [IModelCatalog, modelCatalog],
     [IAgentUsageService, usage],
     [IEventDispatcher, dispatcher],
     [IAgentContextMemoryService, memory],
@@ -309,7 +314,7 @@ describe('Codex app-server external executor', () => {
       { inputOther: 3, inputCacheRead: 1, inputCacheCreation: 0, output: 2 },
       { type: 'turn', turnId: 2, step: 1 },
       {
-        provider: 'codex-app-server',
+        provider: 'openai',
         modelAlias: 'gpt-test',
         executorId: 'codex-app-server',
       },
