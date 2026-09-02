@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { Link, useLocation } from 'react-router-dom';
 
 import { useI18n } from '../../i18n';
 import { errorText, type I18nKey } from '../../i18n/locale';
@@ -136,6 +137,7 @@ export function McpConfigManager({
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
+  const location = useLocation();
   const [draft, setDraft] = useState<McpEditorDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -257,6 +259,14 @@ export function McpConfigManager({
               <p className="truncate font-mono text-[10.5px] text-ink-faint" title={entry.origin}>
                 {entry.plugin?.name ?? entry.origin} · {entry.config.transport}
               </p>
+              {entry.plugin !== undefined ? (
+                <Link
+                  to={{ pathname: '/settings/plugins', search: location.search }}
+                  className="mt-0.5 inline-block text-[10px] font-medium text-accent hover:underline"
+                >
+                  {t('st.plugins.manageLink')}
+                </Link>
+              ) : null}
             </div>
             <div className="flex gap-2">
               <button

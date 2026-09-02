@@ -1,13 +1,12 @@
 import {
   DEFAULT_AGENT_PROFILE_NAME,
-  EXTERNAL_DELEGATION_SESSION_PROVISION_KEY,
   IAgentProfileService,
+  ISessionExternalDelegationProvisionStore,
   ISessionIndex,
   ISessionLegacyService,
   ISessionManager,
   ISessionMetadata,
   IWorkspaceService,
-  isExternalDelegationSessionProvision,
   resumeSessionById,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
@@ -93,9 +92,13 @@ export async function ensureExternalDelegationSession(
 ): Promise<void> {
   if (authority === undefined) return;
   const bootstrap = authority.sessionBootstrap;
+  const ownership = authority.sessionOwnership ?? (bootstrap === undefined ? 'attached' : 'dedicated');
+  if (ownership === 'attached') {
+    await writeExternalDelegationSessionOwnership(core, authority.sessionId, 'attached');
+  }
   if (bootstrap === undefined) {
-    if (authority.sessionOwnership === 'dedicated') {
-      await markDedicatedExternalDelegationSession(core, authority.sessionId);
+    if (ownership === 'dedicated') {
+      await writeExternalDelegationSessionOwnership(core, authority.sessionId, 'dedicated');
     }
     return;
   }
@@ -159,40 +162,24 @@ export async function ensureExternalDelegationSession(
   ) {
     throw new Error('External delegation Session model binding does not match.');
   }
-  if (authority.sessionOwnership !== 'attached') {
-    await markDedicatedExternalDelegationSession(core, authority.sessionId);
+  if (ownership === 'dedicated') {
+    await writeExternalDelegationSessionOwnership(core, authority.sessionId, 'dedicated');
   }
 }
 
-async function markDedicatedExternalDelegationSession(
+async function writeExternalDelegationSessionOwnership(
   core: Scope,
   sessionId: string,
+  ownership: 'dedicated' | 'attached',
 ): Promise<void> {
   const session = await resumeSessionById(core.accessor, sessionId);
   if (session === undefined) {
     throw new Error('External delegation Session is unavailable.');
   }
-  const metadata = session.accessor.get(ISessionMetadata);
-  const current = await metadata.read();
-  if (
-    isExternalDelegationSessionProvision(
-      current.custom?.[EXTERNAL_DELEGATION_SESSION_PROVISION_KEY],
-    )
-  ) {
-    return;
-  }
-  await metadata.update(
-    {
-      custom: {
-        ...current.custom,
-        [EXTERNAL_DELEGATION_SESSION_PROVISION_KEY]: {
-          version: 1,
-          ownership: 'dedicated',
-        },
-      },
-    },
-    { touchUpdatedAt: false },
-  );
+  await session.accessor.get(ISessionExternalDelegationProvisionStore).write({
+    version: 1,
+    ownership,
+  });
 }
 
 async function canonicalPath(path: string): Promise<string> {

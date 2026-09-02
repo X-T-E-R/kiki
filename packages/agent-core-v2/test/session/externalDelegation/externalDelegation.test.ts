@@ -46,9 +46,10 @@ import { SessionApprovalService } from '#/session/approval/approvalService';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import {
-  EXTERNAL_DELEGATION_SESSION_PROVISION_KEY,
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   type ExternalAuthority,
+  type ExternalDelegationSessionProvision,
+  ISessionExternalDelegationProvisionStore,
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
@@ -109,6 +110,7 @@ describe('SessionExternalDelegationService', () => {
   let permissionCeilings: Map<string, PermissionMode>;
   let nextCreatedAgentId: string | undefined;
   let bootstrapEnv: Record<string, string | undefined>;
+  let provision: ExternalDelegationSessionProvision | undefined;
   let sessionCustom: Record<string, unknown>;
 
   beforeEach(() => {
@@ -137,12 +139,8 @@ describe('SessionExternalDelegationService', () => {
     permissionCeilings = new Map();
     nextCreatedAgentId = undefined;
     bootstrapEnv = {};
-    sessionCustom = {
-      [EXTERNAL_DELEGATION_SESSION_PROVISION_KEY]: {
-        version: 1,
-        ownership: 'dedicated',
-      },
-    };
+    provision = { version: 1, ownership: 'dedicated' };
+    sessionCustom = {};
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -177,6 +175,12 @@ describe('SessionExternalDelegationService', () => {
       }),
       registerAgent: async (agentId, meta) => {
         agentMetas[agentId] = meta;
+      },
+    });
+    ix.stub(ISessionExternalDelegationProvisionStore, {
+      read: async () => provision,
+      write: async (value) => {
+        provision = value;
       },
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
@@ -672,8 +676,11 @@ describe('SessionExternalDelegationService', () => {
     });
   });
 
-  it('keeps main unavailable without a dedicated provision fact', async () => {
-    sessionCustom = {};
+  it('ignores caller custom metadata that imitates a dedicated provision', async () => {
+    provision = undefined;
+    sessionCustom = {
+      externalDelegationProvision: { version: 1, ownership: 'dedicated' },
+    };
     const service = ix.get(ISessionExternalDelegationService);
     const interaction = ix.get(ISessionInteractionService);
     const approvals = ix.get(ISessionApprovalService);

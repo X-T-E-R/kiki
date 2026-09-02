@@ -34,7 +34,7 @@ import {
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { DirtyGuardContext, shouldGuardNavigation } from './components/dirtyGuard';
 import { NewSessionPage } from './components/NewSessionPage';
-import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
+import { CapabilitiesShim } from './components/CapabilitiesShim';
 import { ConversationShell } from './components/ConversationShell';
 import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
@@ -169,7 +169,6 @@ export function App() {
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
-  const isCapabilitiesRoute = useMatch('/capabilities') !== null;
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions', showArchived, workspaceFilter],
@@ -265,17 +264,14 @@ export function App() {
             ? { kind: 'settings' }
             : isUsageRoute
               ? { kind: 'usage' }
-              : isCapabilitiesRoute
-                ? { kind: 'capabilities' }
-                : { kind: 'other' };
+              : { kind: 'other' };
     document.title = resolveWindowTitle(route, sessions, {
       untitled: t('sidebar.untitled'),
       newSession: t('new.title'),
       settings: t('st.title'),
       usage: t('usage.title'),
-      capabilities: t('cap.title'),
     });
-  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isCapabilitiesRoute, sessions, t]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, sessions, t]);
 
   // ⌘N / Ctrl+N navigates to the /new draft page from any route; ⌘K / Ctrl+K
   // toggles the quick switcher; Ctrl+Tab jumps to the most recent other
@@ -367,7 +363,7 @@ export function App() {
   // Close mobile sidebar on route change.
   useEffect(() => {
     setSidebarOpen(false);
-  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isCapabilitiesRoute]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute]);
 
   // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
   // events, so the key must be handled globally while it is open).
@@ -452,7 +448,7 @@ export function App() {
           />
           <Route
             path="/capabilities"
-            element={<CapabilitiesPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+            element={<CapabilitiesShim />}
           />
           {/* More specific than the `/s/:id/*` splat, so the tasks browser wins
               over SessionRouteView while the sidebar keeps the session active. */}

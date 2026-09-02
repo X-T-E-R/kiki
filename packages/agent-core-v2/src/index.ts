@@ -753,6 +753,7 @@ export * from '#/features/sessionInit/profile/init';
 import '#/features/sessionInit/sessionInitFeature';
 import '#/session/externalDelegation/flag';
 export * from '#/session/externalDelegation/externalDelegation';
+import '#/session/externalDelegation/externalDelegationProvisionStore';
 import '#/session/externalDelegation/externalDelegationService';
 export * from '#/session/todo/todoItem';
 export * from '#/session/todo/todoListReminder';

@@ -38,6 +38,40 @@ export default {
       tool_count: 2,
     },
   ],
+  // Installed plugins for the settings Plugins leaf: one healthy contributor
+  // (the plugin skills above belong to it) and one in the error state.
+  plugins: [
+    {
+      id: 'research',
+      displayName: 'Research pack',
+      version: '1.4.0',
+      enabled: true,
+      state: 'ok',
+      skillCount: 2,
+      mcpServerCount: 1,
+      enabledMcpServerCount: 1,
+      hookCount: 1,
+      commandCount: 3,
+      hasErrors: false,
+      source: 'github',
+      originalSource: 'github:fixture/research-pack',
+    },
+    {
+      id: 'broken-tools',
+      displayName: 'Broken tools',
+      version: '0.2.1',
+      enabled: false,
+      state: 'error',
+      skillCount: 0,
+      mcpServerCount: 1,
+      enabledMcpServerCount: 0,
+      hookCount: 0,
+      commandCount: 0,
+      hasErrors: true,
+      source: 'local-path',
+      originalSource: 'C:/fixture/plugins/broken-tools',
+    },
+  ],
   workspaceSkills: {
     [WSID]: [
       {

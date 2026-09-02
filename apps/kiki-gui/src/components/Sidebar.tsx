@@ -3,8 +3,8 @@
  * settings entry, and the session list (polled every 5s).
  *
  * Entry distribution follows the desktop convention: the wordmark row carries
- * the browse-only destinations (capabilities, usage) and the footer keeps just
- * the settings entry plus a connection status dot that deep-links to
+ * the browse-only usage destination and the footer keeps just the settings
+ * entry plus a connection status dot that deep-links to
  * settings → connection. Disconnect lives in that settings section.
  *
  * The search box queries `POST /search` (global full-text index); results
@@ -61,8 +61,8 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { PendingBadge } from './PendingBadge';
 import { Wordmark } from './Wordmark';
 
-/** Wordmark-row icon buttons (capabilities / usage): glyph-only, ink-faint at
- * rest so the header stays quiet next to the wordmark. */
+/** Wordmark-row icon buttons (usage): glyph-only, ink-faint at rest so the
+ * header stays quiet next to the wordmark. */
 const HEADER_ICON_BUTTON =
   'flex h-6 w-6 items-center justify-center rounded-md text-[12.5px] leading-none text-ink-faint transition-colors hover:bg-paper hover:text-ink';
 
@@ -413,16 +413,6 @@ export function Sidebar({
       <div className="flex items-center justify-between px-4 pt-4 pb-3">
         <Wordmark />
         <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            data-nav-capabilities
-            onClick={() => void navigate('/capabilities')}
-            aria-label={t('cap.navAria')}
-            title={t('cap.nav')}
-            className={HEADER_ICON_BUTTON}
-          >
-            <span aria-hidden>✦</span>
-          </button>
           <button
             type="button"
             data-nav-usage
