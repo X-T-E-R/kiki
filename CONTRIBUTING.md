@@ -1,4 +1,4 @@
-﻿# Contributing to kimi-code
+# Contributing to kimi-code
 
 Thanks for taking the time to contribute! This project moves quickly, and thoughtful contributions from the community are what keep it sharp. The guide below walks you through how we work so your PR has the best chance of landing smoothly.
 
@@ -51,7 +51,7 @@ Useful scripts:
 - `pnpm test` — run tests (vitest; L0 + L1; L2 files self-skip unless env-gated)
 - `pnpm test:fast` — L0 only (`*.test.ts`, skips `*.integration.ts` / `*.e2e.ts`)
 - `pnpm test:integration` — L1 files (`*.integration.ts`)
-- `pnpm test:promote` — local promote extra gate: engine/CLI/GUI L0+L1, the kap-server L0/fast subset, plus `packages/pi-tui` (`node --test`). Run `pnpm test:kap-server:integration` for kap-server's 55 `*.integration.ts` suites
+- `pnpm test:promote` — local promote extra gate: engine/CLI/GUI L0+L1, the kap-server L0/fast subset, plus `packages/pi-tui` (`node --test`). Run `pnpm test:kap-server:integration` for kap-server's 56 `*.integration.ts` suites
 - `pnpm typecheck` — TypeScript check (note: builds packages first)
 - `pnpm lint` — oxlint
 - `pnpm lint:fix` — oxlint with auto-fix
