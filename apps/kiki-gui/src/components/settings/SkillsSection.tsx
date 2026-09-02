@@ -298,16 +298,25 @@ export function SkillsSection() {
     return () => { reportWorkspaceScope(null); };
   }, [reportWorkspaceScope, workspaceScopeName]);
 
+  // The split signpost keeps the deep-link context (server/token/workspace)
+  // when pointing at the sibling leaves; only the `from` marker is dropped.
+  const shimLinkTarget = (section: string) => {
+    const params = new URLSearchParams(searchParams);
+    params.delete('from');
+    const query = params.toString();
+    return `/settings/${section}${query === '' ? '' : `?${query}`}`;
+  };
+
   return (
     <div className="space-y-4">
       {fromCapabilities ? (
         <p data-capabilities-shim-note className="rounded-lg border border-hairline bg-panel px-3 py-2 text-[11.5px] text-ink-soft">
           {t('st.shim.capabilities')}{' '}
-          <Link to="/settings/skills" className="font-medium text-accent hover:underline">{t('st.section.skills')}</Link>
+          <Link to={shimLinkTarget('skills')} className="font-medium text-accent hover:underline">{t('st.section.skills')}</Link>
           {' · '}
-          <Link to="/settings/mcp" className="font-medium text-accent hover:underline">{t('st.section.mcp')}</Link>
+          <Link to={shimLinkTarget('mcp')} className="font-medium text-accent hover:underline">{t('st.section.mcp')}</Link>
           {' · '}
-          {t('st.shim.plugins')}
+          <Link to={shimLinkTarget('plugins')} className="font-medium text-accent hover:underline">{t('st.shim.plugins')}</Link>
         </p>
       ) : null}
       <div className="flex flex-wrap items-center gap-2 px-1">

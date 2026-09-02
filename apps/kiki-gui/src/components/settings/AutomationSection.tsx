@@ -5,11 +5,11 @@ import { useI18n } from '../../i18n';
 import { errorText } from '../../i18n/locale';
 import {
   parseHooksJson,
-  runtimeConfigDraftFromConfig,
-  runtimeConfigPatch,
   setToolPolicy,
+  toolPolicyDraftFromConfig,
+  toolPolicyPatch,
   toolPolicyValue,
-  type RuntimeConfigDraft,
+  type ToolPolicyDraft,
 } from '../../lib/settings';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
@@ -18,22 +18,22 @@ import { SectionCard } from './SectionCard';
 
 /**
  * Tool policy (redesign §8.3): per-tool enabled/disabled/inherited, split out
- * of the runtime editor. The save still goes through `runtimeConfigPatch`
- * (whole-domain replace) with a draft rebuilt from the latest config, so the
- * runtime leaf's values ride along untouched.
+ * of the runtime editor. The save goes through the narrow `toolPolicyPatch`
+ * (`replace_domains: ['tools']`), so it can never roll back runtime or MCP
+ * values edited on their own leaves.
  */
 function ToolPolicyCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<RuntimeConfigDraft | null>(null);
+  const [draft, setDraft] = useState<ToolPolicyDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const toolsQuery = useQuery({ queryKey: ['tools'], queryFn: () => client.listTools(), staleTime: 60_000 });
 
   useEffect(() => {
-    if (configQuery.data !== undefined) setDraft(runtimeConfigDraftFromConfig(configQuery.data));
+    if (configQuery.data !== undefined) setDraft(toolPolicyDraftFromConfig(configQuery.data));
   }, [configQuery.data]);
 
   const toolNames = useMemo(() => {
@@ -49,7 +49,7 @@ function ToolPolicyCard() {
     if (draft === null) return;
     let patch;
     try {
-      patch = runtimeConfigPatch(draft);
+      patch = toolPolicyPatch(draft);
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
       return;
@@ -59,11 +59,7 @@ function ToolPolicyCard() {
     try {
       const echoed = await client.patchConfig(patch);
       queryClient.setQueryData(['config'], echoed);
-      setDraft(runtimeConfigDraftFromConfig(echoed));
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['tools'] }),
-        queryClient.invalidateQueries({ queryKey: ['mcp-servers'] }),
-      ]);
+      setDraft(toolPolicyDraftFromConfig(echoed));
       setFeedback({ tone: 'success', text: t('st.runtime.saved') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });

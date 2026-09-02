@@ -138,12 +138,9 @@ export function RuntimeConfigEditor() {
       queryClient.setQueryData(['config'], echoed);
       setDraft(runtimeConfigDraftFromConfig(echoed));
       if (identityChanged) markRestartRequired(['identity']);
-      // The patch still replaces the tools and mcp domains (the draft carries
-      // their latest values), so the leaves that own them see fresh data.
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['tools'] }),
-        queryClient.invalidateQueries({ queryKey: ['mcp-servers'] }),
-      ]);
+      // The patch is narrow: the mcp and tools domains belong to the MCP
+      // timeouts card and the automation leaf's tool policy card, so nothing
+      // here needs their queries invalidated.
       setFeedback({ tone: 'success', text: t('st.runtime.saved') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -193,10 +190,9 @@ export function RuntimeConfigEditor() {
                 <NumberField label={t('st.runtime.workspaceIdle')} value={draft.workspaceIdleTtlMs} onChange={(workspaceIdleTtlMs) => { setDraft({ ...draft, workspaceIdleTtlMs }); }} />
                 <NumberField label={t('st.runtime.imageMaxEdge')} value={draft.imageMaxEdgePx} onChange={(imageMaxEdgePx) => { setDraft({ ...draft, imageMaxEdgePx }); }} />
                 <NumberField label={t('st.runtime.imageBudget')} value={draft.imageReadByteBudget} onChange={(imageReadByteBudget) => { setDraft({ ...draft, imageReadByteBudget }); }} />
-                {/* MCP startup/tool timeouts moved to Settings → MCP
-                    (st-card-mcp-timeouts) in the batch-3 split; the draft
-                    still carries their values so a runtime save never
-                    clobbers them. */}
+                {/* MCP startup/tool timeouts live on Settings → MCP
+                    (st-card-mcp-timeouts) since the batch-3 split; the
+                    runtime draft and patch no longer carry the mcp domain. */}
               </div>
             </Group>
 

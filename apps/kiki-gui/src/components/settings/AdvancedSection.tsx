@@ -12,9 +12,8 @@ import { SectionCard } from './SectionCard';
 /**
  * Raw JSON domains (redesign §8.3 / §10.3): permission, services,
  * loop_control, and background as one JSON document. Hooks left this editor
- * in batch 3 — they have their own card under Automation — so the initial
- * document no longer seeds a `hooks` key (the parser still accepts one for
- * pasted configs).
+ * in batch 3 — they only enter through the Automation leaf's parseHooksJson —
+ * so a pasted `hooks` key is rejected as an unsupported field.
  */
 export function AdvancedSection() {
   const { client } = useConnection();

@@ -6,11 +6,13 @@
  */
 
 import { useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 
 import type { McpServer, SkillDescriptor } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../../i18n';
 import { errorText } from '../../i18n/locale';
+import { skillGroupId } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, type Feedback } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
@@ -19,11 +21,21 @@ const BADGE_CLASS =
   'shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px text-[9px] font-medium tracking-wide text-ink-faint uppercase';
 
 export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sourceLabel: string }) {
+  const { t } = useI18n();
+  const location = useLocation();
   return (
     <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
       <div className="flex items-center gap-2">
         <p className="min-w-0 truncate text-[13px] font-medium text-ink">{skill.name}</p>
         <span className={BADGE_CLASS}>{sourceLabel}</span>
+        {skillGroupId(skill.source) === 'plugin' ? (
+          <Link
+            to={{ pathname: '/settings/plugins', search: location.search }}
+            className="shrink-0 text-[10px] font-medium text-accent hover:underline"
+          >
+            {t('st.plugins.manageLink')}
+          </Link>
+        ) : null}
       </div>
       {skill.description !== '' ? (
         <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-ink-soft">

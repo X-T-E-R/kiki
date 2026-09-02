@@ -569,7 +569,6 @@ export function parseExperimentalFlags(value: string): Record<string, boolean> {
 
 export interface AdvancedServerConfigPatch {
   permission?: unknown;
-  hooks?: unknown[];
   services?: unknown;
   loop_control?: unknown;
   background?: unknown;
@@ -586,20 +585,19 @@ export function parseAdvancedServerConfig(value: string): AdvancedServerConfigPa
     throw new LocalizedError({ key: 'val.advancedObject' });
   }
   const source = parsed as Record<string, unknown>;
-  const allowed = new Set(['permission', 'hooks', 'services', 'loop_control', 'background']);
+  // Hooks left this editor in the batch-3 split: they only enter through the
+  // Automation leaf's parseHooksJson, so a pasted `hooks` key is rejected as
+  // an unsupported field like any other unknown domain.
+  const allowed = new Set(['permission', 'services', 'loop_control', 'background']);
   const unknownKeys = Object.keys(source).filter((key) => !allowed.has(key));
   if (unknownKeys.length > 0) {
     throw new LocalizedError({ key: 'val.advancedUnknown', params: { fields: unknownKeys.join(', ') } });
-  }
-  if (source['hooks'] !== undefined && !Array.isArray(source['hooks'])) {
-    throw new LocalizedError({ key: 'val.advancedHooks' });
   }
   if (Object.keys(source).length === 0) {
     throw new LocalizedError({ key: 'val.advancedEmpty' });
   }
   return {
     permission: source['permission'],
-    hooks: source['hooks'] as unknown[] | undefined,
     services: source['services'],
     loop_control: source['loop_control'],
     background: source['background'],
@@ -626,7 +624,7 @@ export function parseHooksJson(value: string): unknown[] {
 /**
  * Narrow MCP timeout patch for the MCP settings card (redesign §8.3): the
  * `replace_domains` scope stays `['mcp']` so saving timeouts never rewrites
- * the other runtime domains the way the full runtime editor patch does.
+ * the other runtime domains. This is the only writer of the `mcp` domain.
  */
 export function mcpTimeoutsPatch(startupTimeoutMs: string, toolTimeoutMs: string): KikiConfigPatch {
   const mcpMax = 2_147_483_647;
@@ -671,10 +669,6 @@ export interface RuntimeConfigDraft {
   identitySlug: string;
   extraAgentDirs: string[];
   disabledBuiltinProfiles: string[];
-  mcpStartupTimeoutMs: string;
-  mcpToolTimeoutMs: string;
-  toolsEnabled: string[];
-  toolsDisabled: string[];
 }
 
 function optionalNumberDraft(value: number | null | undefined): string {
@@ -713,10 +707,6 @@ export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft
     identitySlug: config.identity?.slug ?? '',
     extraAgentDirs: normalizeConfigStringList(config.extra_agent_dirs),
     disabledBuiltinProfiles: normalizeConfigStringList(config.disabled_builtin_profiles),
-    mcpStartupTimeoutMs: optionalNumberDraft(config.mcp?.startupTimeoutMs),
-    mcpToolTimeoutMs: optionalNumberDraft(config.mcp?.toolTimeoutMs),
-    toolsEnabled: normalizeConfigStringList(config.tools?.enabled),
-    toolsDisabled: normalizeConfigStringList(config.tools?.disabled),
   };
 }
 
@@ -745,7 +735,10 @@ function normalizeStringList(values: readonly string[]): string[] {
 export function runtimeConfigPatch(draft: RuntimeConfigDraft): KikiConfigPatch {
   // cron is env-driven (KIMI_CRON_*) and intentionally never persisted — the
   // editor shows it read-only, so the patch neither sends nor replaces it.
-  const mcpMax = 2_147_483_647;
+  // The mcp and tools domains are likewise absent: the MCP timeouts card
+  // (mcpTimeoutsPatch) and the automation leaf's tool policy card
+  // (toolPolicyPatch) own them, so a runtime save can never roll back values
+  // edited on another leaf from a stale draft.
   return {
     thread_communication: { enabled: draft.threadCommunicationEnabled },
     token_counting: { strategy: draft.tokenCountingStrategy },
@@ -772,14 +765,6 @@ export function runtimeConfigPatch(draft: RuntimeConfigDraft): KikiConfigPatch {
     },
     extra_agent_dirs: normalizeStringList(draft.extraAgentDirs),
     disabled_builtin_profiles: normalizeStringList(draft.disabledBuiltinProfiles),
-    mcp: {
-      startup_timeout_ms: parseOptionalInteger(draft.mcpStartupTimeoutMs, 'mcp.startup_timeout_ms', 1, mcpMax),
-      tool_timeout_ms: parseOptionalInteger(draft.mcpToolTimeoutMs, 'mcp.tool_timeout_ms', 1, mcpMax),
-    },
-    tools: {
-      enabled: normalizeStringList(draft.toolsEnabled),
-      disabled: normalizeStringList(draft.toolsDisabled),
-    },
     replace_domains: [
       'thread_communication',
       'token_counting',
@@ -789,23 +774,50 @@ export function runtimeConfigPatch(draft: RuntimeConfigDraft): KikiConfigPatch {
       'identity',
       'extra_agent_dirs',
       'disabled_builtin_profiles',
-      'mcp',
-      'tools',
     ],
   };
 }
 
-export function toolPolicyValue(draft: RuntimeConfigDraft, toolName: string): 'enabled' | 'disabled' | 'inherited' {
+/** The automation leaf's tool-policy draft: just the two lists it edits. */
+export interface ToolPolicyDraft {
+  toolsEnabled: string[];
+  toolsDisabled: string[];
+}
+
+export function toolPolicyDraftFromConfig(value: unknown): ToolPolicyDraft {
+  const config = configObjectOrEmpty(value) as unknown as KikiConfigResponse;
+  return {
+    toolsEnabled: normalizeConfigStringList(config.tools?.enabled),
+    toolsDisabled: normalizeConfigStringList(config.tools?.disabled),
+  };
+}
+
+/**
+ * Narrow tool-policy patch (redesign §8.3): `replace_domains` stays
+ * `['tools']` so saving the policy never rewrites the runtime domains the
+ * runtime leaf owns.
+ */
+export function toolPolicyPatch(draft: ToolPolicyDraft): KikiConfigPatch {
+  return {
+    tools: {
+      enabled: normalizeStringList(draft.toolsEnabled),
+      disabled: normalizeStringList(draft.toolsDisabled),
+    },
+    replace_domains: ['tools'],
+  };
+}
+
+export function toolPolicyValue(draft: ToolPolicyDraft, toolName: string): 'enabled' | 'disabled' | 'inherited' {
   if (draft.toolsDisabled.includes(toolName)) return 'disabled';
   if (draft.toolsEnabled.includes(toolName)) return 'enabled';
   return 'inherited';
 }
 
 export function setToolPolicy(
-  draft: RuntimeConfigDraft,
+  draft: ToolPolicyDraft,
   toolName: string,
   policy: 'enabled' | 'disabled' | 'inherited',
-): RuntimeConfigDraft {
+): ToolPolicyDraft {
   const enabled = draft.toolsEnabled.filter((name) => name !== toolName);
   const disabled = draft.toolsDisabled.filter((name) => name !== toolName);
   if (policy === 'enabled') enabled.push(toolName);
@@ -1220,6 +1232,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'subagents', labelKey: 'st.section.subagents' },
   { id: 'skills', labelKey: 'st.section.skills' },
   { id: 'mcp', labelKey: 'st.section.mcp' },
+  { id: 'plugins', labelKey: 'st.section.plugins' },
   { id: 'automation', labelKey: 'st.section.automation' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
   { id: 'connection', labelKey: 'st.section.connection' },
@@ -1261,7 +1274,7 @@ export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'app', labelKey: 'st.group.app', sections: ['general'] },
   { kind: 'group', id: 'ai', labelKey: 'st.group.ai', sections: ['ai'] },
   { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents', 'subagents'] },
-  { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'automation'] },
+  { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'automation'] },
   { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection', 'runtime'] },
   { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['data', 'experimental', 'advanced'] },
   { kind: 'leaf', section: 'about' },
@@ -1293,6 +1306,7 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   subagents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.subagents' },
   skills: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.skills' },
   mcp: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.mcp' },
+  plugins: { scopes: ['server'], purposeKey: 'st.purpose.plugins' },
   automation: { scopes: ['server'], purposeKey: 'st.purpose.automation' },
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
@@ -1335,6 +1349,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'mcp', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace'], synonyms: ['能力', 'mcp 服务器', 'mcp server'] },
   { section: 'mcp', cardId: 'st-card-mcp-status', titleKey: 'st.mcp.statusTitle', keywordKeys: ['st.mcp.restart', 'st.mcp.toolsCount'], synonyms: ['mcp 状态', 'mcp status'] },
   { section: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
+  { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理'] },
   { section: 'data', cardId: 'st-card-telemetry', titleKey: 'st.telemetry.title', keywordKeys: ['st.caps.telemetry', 'st.caps.telemetryHint'], synonyms: ['遥测', 'telemetry'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
