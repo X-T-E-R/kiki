@@ -474,7 +474,7 @@ model_alias: fast-model
     );
   });
 
-  it('warns about unknown frontmatter keys without failing', async () => {
+  it('reports unknown frontmatter keys as an error', async () => {
     await writeValidConfig();
     const agentPath = await writeAgentFile(
       'reviewer.md',
@@ -488,11 +488,11 @@ future_field: true
 
     const code = await handleDoctor(deps, {});
 
-    expect(code).toBe(0);
-    expect(stderr.join('')).toBe('');
-    const out = stdout.join('');
-    expect(out).toContain(`WARN agents       ${agentPath}`);
-    expect(out).toContain('Unknown frontmatter key ignored by the engine: future_field.');
+    expect(code).toBe(1);
+    expect(stdout.join('')).toBe('');
+    const err = stderr.join('');
+    expect(err).toContain(`ERROR agents       ${agentPath}`);
+    expect(err).toContain('Unknown frontmatter field "future_field"');
   });
 
   it('warns when a builtin profile name is missing override true', async () => {
