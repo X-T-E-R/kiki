@@ -1,6 +1,6 @@
 # Environment variables
 
-Kimi Code CLI uses environment variables to control a small number of runtime behaviors — relocating the data directory, turning off telemetry, and temporarily switching models without touching the config file.
+Kimi Code CLI uses environment variables to control a small number of runtime behaviors — relocating the data directory and temporarily switching models without touching the config file.
 
 ::: warning Important: API keys are not configured here
 Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in `config.toml` under `[providers.<name>]` or the `[providers.<name>.env]` sub-table.
@@ -23,14 +23,6 @@ export KIMI_CODE_HOME="/path/to/custom/kimi-code"
 > Make sure the directory is writable. Multiple `kimi` instances sharing the same `KIMI_CODE_HOME` will share config and credential files.
 
 For the complete data directory structure, see [Data locations](./data-locations.md).
-
-### `KIMI_DISABLE_TELEMETRY`
-
-Set to `1` to turn off anonymous telemetry reporting (also accepts `true`, `yes`, `y`, case-insensitive):
-
-```sh
-export KIMI_DISABLE_TELEMETRY=1
-```
 
 ### `KIMI_MODEL_*` family
 
@@ -116,11 +108,10 @@ If `KIMI_MODEL_NAME` is set but a required variable is missing, startup fails im
 
 ## Runtime switches
 
-Switches that control the behavior of subsystems such as telemetry, background tasks, and the plugin marketplace:
+Switches that control the behavior of subsystems such as background tasks and the plugin marketplace:
 
 | Variable | Purpose | Valid values |
 | --- | --- | --- |
-| `KIMI_DISABLE_TELEMETRY` | Disable anonymous telemetry reporting | `1`, `true`, `yes`, `y` (case-insensitive) |
 | `KIMI_CODE_PASSWORD` | Set a parallel auth credential for the `kimi web` local server, valid alongside the bearer token; recommended when binding the server beyond loopback — see [Local server and API](../guides/server.md#authentication) | Any non-empty string; when unset, only the token is valid |
 | `KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` | Whether to keep background tasks when the session closes; takes higher priority than `config.toml`. The default is to stop them on exit | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIMI_CODE_BACKGROUND_MAX_RUNNING_TASKS` | Cap on concurrently running background tasks; takes higher priority than `[background] max_running_tasks` in `config.toml` (unset means no cap) | Positive integer; invalid values are ignored |
@@ -187,7 +178,7 @@ The CLI also reads several standard system variables to detect the runtime envir
 
 ## HTTP proxy
 
-Kimi Code honors the standard proxy environment variables for all outbound traffic — model API calls, MCP servers, web tools, telemetry, sign-in, and update checks:
+Kimi Code honors the standard proxy environment variables for all outbound traffic — model API calls, MCP servers, web tools, sign-in, and update checks:
 
 - `HTTP_PROXY` / `http_proxy`: proxy for `http://` requests
 - `HTTPS_PROXY` / `https_proxy`: proxy for `https://` requests

@@ -1,5 +1,4 @@
-import { log, type Logger } from '@moonshot-ai/kimi-code-sdk';
-import { track as trackTelemetry, type TelemetryProperties } from '@moonshot-ai/kimi-telemetry';
+import { log, type Logger, type TelemetryProperties } from '@moonshot-ai/kimi-code-sdk';
 
 import { refreshUpdateCache } from '#/cli/update/refresh';
 import { selectUpdateTarget } from '#/cli/update/select';
@@ -182,7 +181,7 @@ function createDefaultUpgradeDeps(overrides: Partial<UpgradeDeps>): UpgradeDeps 
     stdout: overrides.stdout ?? process.stdout,
     stderr: overrides.stderr ?? process.stderr,
     isInteractive: overrides.isInteractive ?? (process.stdin.isTTY && process.stdout.isTTY),
-    track: overrides.track ?? trackTelemetry,
+    track: overrides.track ?? (() => {}),
     logger: overrides.logger ?? log,
   };
 }

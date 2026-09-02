@@ -27,16 +27,13 @@ import {
   IBootstrapService,
   IConfigService,
   IEventBus,
-  IOAuthToolkit,
   ISessionCronService,
   ISessionIndex,
   ISessionManager,
-  ITelemetryService,
   PRINT_MAX_TURNS_DEFAULT,
   PRINT_WAIT_CEILING_S_DEFAULT,
   applyPrintModeConfigDefaults,
   bootstrap,
-  createCloudAppender,
   ensureMainAgent,
   resumeSessionById,
   logSeed,
@@ -54,8 +51,7 @@ import {
   type PrintBackgroundMode,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
-import { createKimiDefaultHeaders, createKimiDeviceId } from '@moonshot-ai/kimi-code-oauth';
-import { shouldEnableTelemetry } from '@moonshot-ai/kimi-telemetry';
+import { createKimiDefaultHeaders } from '@moonshot-ai/kimi-code-oauth';
 import type { GoalUpdated } from '@moonshot-ai/agent-core-v2/agent/goal/goalOps';
 import type { TurnEnded } from '@moonshot-ai/agent-core-v2/agent/loop/turnOps';
 import type {
@@ -72,11 +68,7 @@ import type {
 } from '@moonshot-ai/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
 import { resolve } from 'pathe';
 
-import {
-  CLI_SHUTDOWN_TIMEOUT_MS,
-  CLI_USER_AGENT_PRODUCT,
-  PROMPT_CLEANUP_TIMEOUT_MS,
-} from '#/constant/app';
+import { PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';
 
 import {
   formatGoalSummaryText,
@@ -120,7 +112,6 @@ export async function runV2Print(
   version: string,
   io: PromptRunIO = {},
 ): Promise<void> {
-  const startedAt = Date.now();
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
   const promptProcess = io.process ?? process;
@@ -130,12 +121,6 @@ export async function runV2Print(
   writeExperimentalVersion(version, outputFormat, stdout, stderr);
 
   const homeDir = resolveKimiHome();
-  let firstLaunch = false;
-  const deviceId = createKimiDeviceId(homeDir, {
-    onFirstLaunch: () => {
-      firstLaunch = true;
-    },
-  });
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
   const identity = createKimiCodeHostIdentity(version);
   const hostHeaders = createKimiDefaultHeaders({ homeDir, ...identity });
@@ -158,7 +143,6 @@ export async function runV2Print(
     },
     [...logSeed(logging)],
   );
-  const auth = app.accessor.get(IOAuthToolkit);
 
   const configService = app.accessor.get(IConfigService);
   await configService.ready;
@@ -167,12 +151,6 @@ export async function runV2Print(
   // user left unset are filled, in the memory layer.
   await applyPrintModeConfigDefaults(configService);
   const defaultModel = configService.get<string>('defaultModel') ?? undefined;
-  let telemetryEnabled = false;
-  try {
-    telemetryEnabled = shouldEnableTelemetry({ enabled: configService.get('telemetry') === true });
-  } catch {
-    telemetryEnabled = false;
-  }
   for (const diagnostic of configService.diagnostics()) {
     if (diagnostic.severity === 'warning') {
       stderr.write(`Warning: ${diagnostic.message}\n`);
@@ -182,16 +160,12 @@ export async function runV2Print(
   let restorePermission = async (): Promise<void> => {};
   let removeTerminationCleanup: (() => void) | undefined;
   let cleanupPromise: Promise<void> | undefined;
-  let telemetryService: ITelemetryService | undefined;
   const cleanup = async (): Promise<void> => {
     const pending = (cleanupPromise ??= (async () => {
       removeTerminationCleanup?.();
       try {
         await restorePermission();
       } finally {
-        if (telemetryService !== undefined) {
-          await raceWithTimeout(telemetryService.shutdown(), CLI_SHUTDOWN_TIMEOUT_MS);
-        }
         app.dispose();
       }
     })());
@@ -200,31 +174,8 @@ export async function runV2Print(
   removeTerminationCleanup = installPromptTerminationCleanup(promptProcess, cleanup);
 
   try {
-    // Install the appender BEFORE resolving the session: `session_started` and
-    // `session_load_failed` fire inside create()/resume(), so an appender wired
-    // up only after resolveNativeSession() would drop them to the null appender.
-    // The model below is the best known up front; a resumed session's real
-    // model is reconciled via setContext once resolved.
-    telemetryService = app.accessor.get(ITelemetryService);
-    if (telemetryEnabled) {
-      telemetryService.setAppender(
-        createCloudAppender(app.accessor, {
-          deviceId,
-          appName: CLI_USER_AGENT_PRODUCT,
-          uiMode: PROMPT_UI_MODE,
-          model: opts.model ?? defaultModel,
-          getAccessToken: async () => (await auth.getCachedAccessToken()) ?? null,
-        }),
-      );
-    }
-
     const resolved = await resolveNativeSession(app, opts, workDir, defaultModel, stderr);
     restorePermission = resolved.restorePermission;
-
-    telemetryService.setContext({ sessionId: resolved.session.id, model: resolved.telemetryModel });
-    if (firstLaunch) {
-      telemetryService.track2('first_launch');
-    }
 
     const goalCreate = parseHeadlessGoalCreate(opts.prompt!);
     if (goalCreate !== undefined) {
@@ -250,10 +201,6 @@ export async function runV2Print(
       );
     }
     writeResumeHint(resolved.session.id, outputFormat, stdout, stderr);
-
-    telemetryService.withContext({ sessionId: resolved.session.id }).track2('exit', {
-      duration_ms: Date.now() - startedAt,
-    });
   } finally {
     await cleanup();
   }
@@ -263,7 +210,6 @@ interface ResolvedNativeSession {
   readonly session: ISessionScopeHandle;
   readonly agent: IAgentScopeHandle;
   readonly restorePermission: () => Promise<void>;
-  readonly telemetryModel: string | undefined;
   readonly goalModel: string | undefined;
 }
 
@@ -366,7 +312,6 @@ async function resolveNativeSession(
       session,
       agent,
       restorePermission,
-      telemetryModel: configuredModel(opts.model, currentModel, defaultModel),
       goalModel: configuredModel(opts.model, currentModel),
     };
   }
@@ -385,8 +330,7 @@ async function resolveNativeSession(
         session,
         agent,
         restorePermission,
-        telemetryModel: configuredModel(opts.model, currentModel, defaultModel),
-        goalModel: configuredModel(opts.model, currentModel),
+          goalModel: configuredModel(opts.model, currentModel),
       };
     }
     stderr.write(`No sessions to continue under "${workDir}"; starting a fresh session.\n`);
@@ -408,7 +352,6 @@ async function resolveNativeSession(
     session,
     agent,
     restorePermission: async () => {},
-    telemetryModel: model,
     goalModel: model,
   };
 }

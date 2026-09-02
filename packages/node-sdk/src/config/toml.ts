@@ -487,7 +487,6 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
     'mergeAllAvailableSkills',
     'extraSkillDirs',
     'extraAgentDirs',
-    'telemetry',
   ];
   for (const key of scalarFields) {
     setDefined(out, camelToSnake(key), config[key]);

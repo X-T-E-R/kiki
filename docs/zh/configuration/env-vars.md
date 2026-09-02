@@ -1,6 +1,6 @@
 # 环境变量
 
-Kimi Code CLI 通过环境变量控制少数运行时行为——迁移数据目录、关闭遥测、不改配置文件临时切换模型。
+Kimi Code CLI 通过环境变量控制少数运行时行为——迁移数据目录，以及不改配置文件临时切换模型。
 
 ::: warning 重要：API 密钥不在这里配置
 `KIMI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不会**从 shell 环境变量自动读取。在终端里 `export KIMI_API_KEY=xxx` 不会让任何供应商获得密钥——必须写在 `config.toml` 的 `[providers.<name>]` 段或 `[providers.<name>.env]` 子表里。
@@ -23,14 +23,6 @@ export KIMI_CODE_HOME="/path/to/custom/kimi-code"
 > 确保目录可写。多个 `kimi` 实例共用同一个 `KIMI_CODE_HOME` 会共享配置和凭证。
 
 数据目录的完整结构见[数据路径](./data-locations.md)。
-
-### `KIMI_DISABLE_TELEMETRY`
-
-设为 `1` 关闭匿名遥测上报（也接受 `true`/`yes`/`y`，不区分大小写）：
-
-```sh
-export KIMI_DISABLE_TELEMETRY=1
-```
 
 ### `KIMI_MODEL_*` 系列
 
@@ -116,11 +108,10 @@ kimi
 
 ## 运行时开关
 
-控制遥测、后台任务、plugin marketplace 等子系统行为的开关变量：
+控制后台任务、plugin marketplace 等子系统行为的开关变量：
 
 | 环境变量 | 用途 | 合法值 |
 | --- | --- | --- |
-| `KIMI_DISABLE_TELEMETRY` | 关闭匿名遥测上报 | `1`、`true`、`yes`、`y`（不区分大小写） |
 | `KIMI_CODE_PASSWORD` | 为 `kimi web` 本地服务设置并列鉴权密码，与 bearer token 同时有效；把服务绑定到非本机地址时建议设置，见[本地服务与 API](../guides/server.md#鉴权) | 任意非空字符串；未设置时仅 token 有效 |
 | `KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` | 会话关闭时是否保留后台任务，优先级高于 `config.toml`。默认会在退出时停止后台任务 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIMI_CODE_BACKGROUND_MAX_RUNNING_TASKS` | 同时运行的后台任务数上限，优先级高于 `config.toml` 的 `[background] max_running_tasks`（不设置表示无上限） | 正整数；非法值被忽略 |
@@ -187,7 +178,7 @@ CLI 还会读取一些标准系统变量来检测运行环境，不会修改它�
 
 ## HTTP 代理
 
-Kimi Code 会遵循标准代理环境变量，让所有出网流量——模型 API 调用、MCP 服务、网络工具、遥测、登录、更新检查——都走代理：
+Kimi Code 会遵循标准代理环境变量，让所有出网流量——模型 API 调用、MCP 服务、网络工具、登录、更新检查——都走代理：
 
 - `HTTP_PROXY` / `http_proxy`：用于 `http://` 请求的代理
 - `HTTPS_PROXY` / `https_proxy`：用于 `https://` 请求的代理

@@ -1263,7 +1263,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'], synonyms: ['提供商', '供应商', 'provider', '认证'] },
   { section: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty'], synonyms: ['提供商', '供应商', 'provider'] },
   { section: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
-  { section: 'capabilities', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.telemetry', 'st.caps.extraDirs'], synonyms: ['能力', 'skills', '技能'] },
+  { section: 'capabilities', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs'], synonyms: ['能力', 'skills', '技能'] },
   { section: 'capabilities', cardId: 'st-card-runtime', titleKey: 'st.runtime.title', keywordKeys: ['st.runtime.cron', 'st.runtime.communication', 'st.runtime.resources', 'st.runtime.task', 'st.runtime.agents'] },
   { section: 'capabilities', cardId: 'st-card-experimental', titleKey: 'st.experimental.title', keywordKeys: ['st.experimental.hint', 'st.experimental.overrideLabel'] },
   { section: 'capabilities', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },

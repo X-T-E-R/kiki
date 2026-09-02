@@ -67,7 +67,6 @@ export * from '#/app/telemetry/telemetryService';
 export * from '#/app/telemetry/agentTelemetryContext';
 export * from '#/app/telemetry/agentTelemetryContextService';
 export * from '#/app/telemetry/consoleAppender';
-export * from '#/app/telemetry/cloudAppender';
 export * from '#/app/bootstrap/bootstrap';
 export * from '#/app/bootstrap/bootstrapService';
 export * from '#/os/interface/hostClock';

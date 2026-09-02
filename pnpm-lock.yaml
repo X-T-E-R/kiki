@@ -220,9 +220,6 @@ importers:
       '@moonshot-ai/kimi-code-sdk':
         specifier: workspace:^
         version: link:../../packages/node-sdk
-      '@moonshot-ai/kimi-telemetry':
-        specifier: workspace:^
-        version: link:../../packages/telemetry
       '@moonshot-ai/minidb':
         specifier: workspace:^
         version: link:../../packages/minidb
@@ -931,8 +928,6 @@ importers:
       zod:
         specifier: ^4.3.6
         version: 4.3.6
-
-  packages/telemetry: {}
 
   packages/transcript:
     dependencies:

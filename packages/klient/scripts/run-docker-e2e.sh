@@ -61,7 +61,6 @@ workspace_node_modules=(
   "pkg_oauth:/workspace/kimi-code/packages/oauth/node_modules"
   "pkg_protocol:/workspace/kimi-code/packages/protocol/node_modules"
   "pkg_services:/workspace/kimi-code/packages/services/node_modules"
-  "pkg_telemetry:/workspace/kimi-code/packages/telemetry/node_modules"
 )
 
 mkdir -p "${STATE_ROOT}" "${KIMI_HOME_HOST}" "${REPORT_DIR_HOST}" "${NM_ROOT}"

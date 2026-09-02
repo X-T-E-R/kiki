@@ -36,7 +36,7 @@ export interface PromptHarness {
   track(event: string, properties?: TelemetryProperties): void;
 
   ensureConfigFile(): Promise<void>;
-  getConfig(): Promise<Pick<KimiConfig, 'defaultModel' | 'telemetry'>>;
+  getConfig(): Promise<Pick<KimiConfig, 'defaultModel'>>;
   getConfigDiagnostics(): Promise<ConfigDiagnostics>;
   listSessions(options: ListSessionsOptions): Promise<readonly SessionSummary[]>;
   createSession(options: CreateSessionOptions): Promise<PromptSession>;

@@ -27,7 +27,6 @@ default_model = "kimi-code/k3"
 default_permission_mode = "manual"
 default_plan_mode = false
 merge_all_available_skills = true
-telemetry = true
 
 [providers."managed:kimi-code"]
 type = "kimi"
@@ -105,7 +104,6 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `extra_agent_dirs` | `array<string>` | — | Extra custom agent search directories, layered on top of the default directories |
 | `disabled_builtin_profiles` | `array<string>` | `[]` | Built-in profile names to remove from subagent discovery and dispatch: `agent`, `coder`, `explore`, or `plan`. Dispatching a disabled profile fails as an unknown role. Disabling `agent` leaves the main agent's default binding available; a same-name file profile no longer needs `override: true` when its built-in is disabled |
 | `builtin_product_skills` | `boolean` | `true` | Whether the built-in skills that document Kimi Code itself are offered to the model: `update-config`, `custom-theme`, `mcp-config`, `check-kimi-code-docs`, and `import-from-cc-codex`. Turning them off trims their names and descriptions from the system prompt, at the cost of the guided flows for those tasks |
-| `telemetry` | `boolean` | `true` | Whether anonymous telemetry is enabled; disabled only when explicitly set to `false` |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |

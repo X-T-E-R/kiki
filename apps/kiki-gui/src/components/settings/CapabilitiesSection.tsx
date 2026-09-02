@@ -10,14 +10,12 @@ import {
   appendExtraSkillDirs,
   CAPABILITY_GROUPS,
   capabilityGroupForCard,
-  markRestartRequired,
   parseAdvancedServerConfig,
   validateExtraSkillDirs,
 } from '../../lib/settings';
 import { sortWorkspacesByRecency } from '../../lib/sorting';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
-import { useRestartRequirement } from '../RestartBanner';
 import { RuntimeConfigEditor } from '../RuntimeConfigEditor';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -119,13 +117,11 @@ export function CapabilitiesSection() {
   const [mergeSkills, setMergeSkills] = useState(true);
   const [extraDirs, setExtraDirs] = useState('');
   const [advanced, setAdvanced] = useState('{}');
-  const [telemetry, setTelemetry] = useState(true);
   const [saving, setSaving] = useState(false);
   const [selectingDirs, setSelectingDirs] = useState(false);
   const [advancedSaving, setAdvancedSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [advancedFeedback, setAdvancedFeedback] = useState<Feedback>(null);
-  const restart = useRestartRequirement();
   const isDesktop = isDesktopRuntime();
   // Group fold state: user toggles override CAPABILITY_GROUPS defaults; a
   // settings-search flash forces the target card's group open so the
@@ -182,7 +178,6 @@ export function CapabilitiesSection() {
       loop_control: config.loop_control ?? {},
       background: config.background ?? {},
     }, null, 2));
-    setTelemetry(config.telemetry !== false);
   }, [configQuery.data]);
 
   const selectExtraDirs = async () => {
@@ -210,19 +205,11 @@ export function CapabilitiesSection() {
       const echoed = await client.patchConfig({
         merge_all_available_skills: mergeSkills,
         extra_skill_dirs: extraDirs.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean),
-        telemetry,
       });
       queryClient.setQueryData(['config'], echoed);
       setMergeSkills(echoed.merge_all_available_skills !== false);
       setExtraDirs((echoed.extra_skill_dirs ?? []).join('\n'));
-      setTelemetry(echoed.telemetry !== false);
-      const previousTelemetry = configQuery.data?.telemetry !== false;
-      if (telemetry !== previousTelemetry) {
-        markRestartRequired(['telemetry']);
-        setFeedback({ tone: 'success', text: t('st.caps.savedRestart') });
-      } else {
-        setFeedback({ tone: 'success', text: t('st.caps.saved') });
-      }
+      setFeedback({ tone: 'success', text: t('st.caps.saved') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -262,17 +249,9 @@ export function CapabilitiesSection() {
     // Browsing surfaces (the skill catalog, MCP runtime status + restart) live
     // on /capabilities — settings keeps only the values it owns.
     skills: (
-      <SectionCard
-        id="st-card-caps"
-        title={t('st.caps.title')}
-        badge={restart.fields.includes('telemetry') ? 'restart' : undefined}
-      >
+      <SectionCard id="st-card-caps" title={t('st.caps.title')}>
         <div className="space-y-4">
           <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
-          <div className="space-y-1.5">
-            <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
-            <Hint>{t('st.caps.telemetryHint')}</Hint>
-          </div>
           <div>
             <div className="flex items-center justify-between gap-3">
               <label htmlFor="settings-extra-skill-dirs" className="text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}</label>

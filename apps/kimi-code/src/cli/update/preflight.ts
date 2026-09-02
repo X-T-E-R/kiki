@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 
-import { log, type Logger } from '@moonshot-ai/kimi-code-sdk';
-import type { TelemetryProperties } from '@moonshot-ai/kimi-telemetry';
+import { log, type Logger, type TelemetryProperties } from '@moonshot-ai/kimi-code-sdk';
 
 import {
   kimiCodeOfficialInstallUrl,

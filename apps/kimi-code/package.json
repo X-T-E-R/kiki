@@ -89,7 +89,6 @@
     "@moonshot-ai/kap-server": "workspace:^",
     "@moonshot-ai/kimi-code-oauth": "workspace:^",
     "@moonshot-ai/kimi-code-sdk": "workspace:^",
-    "@moonshot-ai/kimi-telemetry": "workspace:^",
     "@moonshot-ai/minidb": "workspace:^",
     "@moonshot-ai/pi-tui": "workspace:^",
     "@moonshot-ai/vis-server": "workspace:^",

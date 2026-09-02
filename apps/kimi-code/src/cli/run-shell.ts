@@ -6,19 +6,10 @@ import {
   createKimiHarness,
   flushDiagnosticLogsSync,
   log,
-  type KimiHarness,
   type KimiHarnessOptions,
-  type TelemetryClient,
 } from '@moonshot-ai/kimi-code-sdk';
-import {
-  setCrashPhase,
-  setTelemetryContext,
-  shutdownTelemetry,
-  track,
-  withTelemetryContext,
-} from '@moonshot-ai/kimi-telemetry';
 
-import { CLI_SHUTDOWN_TIMEOUT_MS, CLI_UI_MODE } from '#/constant/app';
+import { CLI_UI_MODE } from '#/constant/app';
 import type { TuiConfig } from '#/tui/config';
 import { loadTuiConfig, TuiConfigParseError } from '#/tui/config';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
@@ -31,12 +22,9 @@ import { resolveCommandPath } from '#/utils/process/resolve-command';
 
 import type { CLIOptions } from './options';
 import { resolveAgentProfileSelection } from './agent-selection';
-import { createCliTelemetryBootstrap, initializeCliTelemetry } from './telemetry';
 import { createKimiCodeHostIdentity } from './version';
 
 export async function runShell(opts: CLIOptions, version: string): Promise<void> {
-  const startedAt = Date.now();
-  const configStartedAt = startedAt;
   let tuiConfig: TuiConfig;
   let configWarning: string | undefined;
   try {
@@ -52,28 +40,9 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   currentTheme.setPalette(palette);
 
   const workDir = process.cwd();
-  const telemetryBootstrap = createCliTelemetryBootstrap();
-  const telemetryClient: TelemetryClient = {
-    track,
-    withContext: withTelemetryContext,
-    setContext: setTelemetryContext,
-  };
   const harnessOptions: KimiHarnessOptions = {
-    homeDir: telemetryBootstrap.homeDir,
     identity: createKimiCodeHostIdentity(version),
     skillDirs: opts.skillsDirs,
-    telemetry: telemetryClient,
-    onOAuthRefresh: (outcome) => {
-      if (outcome.success) {
-        track('oauth_refresh', { outcome: 'success' });
-        return;
-      }
-      track('oauth_refresh', {
-        outcome: 'error',
-        reason: outcome.reason,
-      });
-    },
-    sessionStartedProperties: { yolo: opts.yolo, auto: opts.auto, plan: opts.plan, afk: false },
   };
   const harness = createKimiHarness(harnessOptions);
   startupTrace('harness:created');
@@ -86,12 +55,8 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   });
 
   await harness.ensureConfigFile();
-  const config = await harness.getConfig();
+  await harness.getConfig();
   startupTrace('config:loaded');
-  // Config diagnostics (deprecated keys, invalid sections, ...) are surfaced
-  // by the TUI itself at `finishStartup` via `showConfigWarningsIfAny` —
-  // folded into the dim startup notice they were too easy to miss.
-  const configMs = Date.now() - configStartedAt;
   // Resolve --agent/--agent-file once for the startup session; validateOptions
   // has already rejected them alongside --session/--continue.
   const agentProfile = await resolveAgentProfileSelection(opts, workDir);
@@ -107,30 +72,6 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     // ~20 places; those branches are dead and get deleted with the flag itself.
     engineV2: true,
   });
-
-  initializeCliTelemetry({
-    harness,
-    bootstrap: telemetryBootstrap,
-    config,
-    version,
-    uiMode: CLI_UI_MODE,
-  });
-  setCrashPhase('runtime');
-
-  const trackLifecycleForSession = (
-    sessionId: string,
-    event: string,
-    properties?: Parameters<KimiHarness['track']>[1],
-  ) => {
-    if (sessionId.length === 0) {
-      harness.track(event, properties);
-      return;
-    }
-    withTelemetryContext({ sessionId }).track(event, properties);
-  };
-  const trackLifecycle = (event: string, properties?: Parameters<KimiHarness['track']>[1]) => {
-    trackLifecycleForSession(tui.getCurrentSessionId(), event, properties);
-  };
 
   let savedStty: string | undefined;
   // stty runs before tui.start() reaches the workspace trust gate, so it must
@@ -207,9 +148,6 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   tui.onExit = async (exitCode = 0) => {
     const sessionId = tui.getCurrentSessionId();
     const hasContent = tui.hasSessionContent();
-    setCrashPhase('shutdown');
-    trackLifecycle('exit', { duration_ms: Date.now() - startedAt, tui_mode: tui.state.ui.mode });
-    await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS });
     const gutter = ' '.repeat(CHROME_GUTTER);
     process.stdout.write(`${gutter}Bye!\n`);
     const hints: string[] = [];
@@ -234,25 +172,11 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     process.exit(exitCode);
   };
   try {
-    const initStartedAt = Date.now();
     startupTrace('tui.start:begin');
     await tui.start();
     startupTrace('tui.start:end');
-    const initMs = Date.now() - initStartedAt;
-    const startupSessionId = tui.getCurrentSessionId();
-    const mcpMs = await tui.getStartupMcpMs();
-    trackLifecycleForSession(startupSessionId, 'startup_perf', {
-      duration_ms: Date.now() - startedAt,
-      config_ms: configMs,
-      init_ms: initMs,
-      mcp_ms: mcpMs,
-      tui_mode: tui.state.ui.mode,
-    });
   } catch (error) {
     removeCrashHandlers();
-    setCrashPhase('shutdown');
-    trackLifecycle('exit', { duration_ms: Date.now() - startedAt, tui_mode: tui.state.ui.mode });
-    await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS });
     await harness.close();
     throw error;
   }

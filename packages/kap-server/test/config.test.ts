@@ -146,7 +146,7 @@ describe('server-v2 /api/v1/config', () => {
       overrides: { client: { user_agent: 'host' } },
     });
 
-    const omitted = await patchConfig({ telemetry: true });
+    const omitted = await patchConfig({ builtin_product_skills: true });
     expect(omitted.request_identity).toEqual(first.request_identity);
 
     const replaced = await patchConfig({
@@ -183,8 +183,6 @@ describe('server-v2 /api/v1/config', () => {
 
   it('POST persists GUI server settings through the config service without dropping other domains', async () => {
     await boot([
-      'telemetry = true',
-      '',
       '[providers.example]',
       'type = "openai"',
       'api_key = "secret-kept"',

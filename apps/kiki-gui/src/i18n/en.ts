@@ -1145,10 +1145,6 @@ export const en = {
   'st.unit.hours': '{n} h',
   'st.caps.title': 'Skill defaults',
   'st.caps.mergeSkills': 'Merge all available skills',
-  'st.caps.telemetry': 'Enable telemetry',
-  'st.caps.telemetryHint':
-    'Telemetry is wired at server start. Saving this toggle marks a restart as required; it does not hot-reload.',
-  'st.caps.savedRestart': 'Saved. Restart the server for telemetry to take effect.',
   'st.caps.extraDirs': 'Extra skill directories',
   'st.caps.selectDirs': 'Choose folders…',
   'st.caps.save': 'Save capability defaults',

@@ -74,7 +74,6 @@
         ./packages/oauth
         ./packages/pi-tui
         ./packages/protocol
-        ./packages/telemetry
         ./packages/transcript
         ./packages/tree-sitter-bash
         ./apps/kimi-code
@@ -100,7 +99,6 @@
         "@moonshot-ai/klient"
         "@moonshot-ai/pi-tui"
         "@moonshot-ai/protocol"
-        "@moonshot-ai/kimi-telemetry"
         "@moonshot-ai/transcript"
         "@moonshot-ai/tree-sitter-bash"
         "@moonshot-ai/kimi-code"

@@ -8,21 +8,12 @@
 import '@moonshot-ai/kimi-code-sdk/native-fs-watch-error-guard';
 
 import {
-  createKimiHarness,
   flushDiagnosticLogs,
   installGlobalProxyDispatcher,
   log,
   resolveGlobalLogPath,
   resolveKimiHome,
-  type TelemetryClient,
 } from '@moonshot-ai/kimi-code-sdk';
-import {
-  installCrashHandlers,
-  setTelemetryContext,
-  shutdownTelemetry,
-  track,
-  withTelemetryContext,
-} from '@moonshot-ai/kimi-telemetry';
 
 import { createProgram } from './cli/commands';
 import { finalizeHeadlessRun } from './cli/headless-exit';
@@ -35,17 +26,11 @@ import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { runUpdateDownloadCommand } from './cli/sub/update-download';
 import { handleUpgrade } from './cli/sub/upgrade';
-import { createCliTelemetryBootstrap, initializeCliTelemetry } from './cli/telemetry';
 import { runUpdatePreflight } from './cli/update/preflight';
 import { detectNativeInstall } from './cli/update/source';
 import { maybeRelaunchWithStagedNativeUpdate } from './cli/update/native-swap';
-import { createKimiCodeHostIdentity, getVersion } from './cli/version';
-import {
-  CLI_SHUTDOWN_TIMEOUT_MS,
-  CLI_UI_MODE,
-  isKikiDesktopBundled,
-  PROCESS_NAME,
-} from './constant/app';
+import { getVersion } from './cli/version';
+import { isKikiDesktopBundled, PROCESS_NAME } from './constant/app';
 import { cleanupStaleNativeCacheForCurrent } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
@@ -85,7 +70,7 @@ export async function handleMainCommand(
     startupTrace('preflight:begin');
     const preflightResult = await runUpdatePreflight(
       version,
-      validated.uiMode === 'print' ? { track, isTTY: false } : { track },
+      validated.uiMode === 'print' ? { isTTY: false } : {},
     );
     startupTrace('preflight:end');
     if (preflightResult === 'exit') {
@@ -104,39 +89,11 @@ export async function handleMainCommand(
 }
 
 export async function handleUpgradeCommand(version: string): Promise<void> {
-  const telemetryBootstrap = createCliTelemetryBootstrap();
-  const telemetryClient: TelemetryClient = {
-    track,
-    withContext: withTelemetryContext,
-    setContext: setTelemetryContext,
-  };
-  const harness = createKimiHarness({
-    homeDir: telemetryBootstrap.homeDir,
-    identity: createKimiCodeHostIdentity(version),
-    telemetry: telemetryClient,
-  });
-  let exitCode = 1;
-  try {
-    await harness.ensureConfigFile();
-    const config = await harness.getConfig();
-    initializeCliTelemetry({
-      harness,
-      bootstrap: telemetryBootstrap,
-      config,
-      version,
-      uiMode: CLI_UI_MODE,
-    });
-    exitCode = await handleUpgrade(version, { track, logger: log });
-  } finally {
-    await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS }).catch(() => {});
-    await harness.close().catch(() => {});
-  }
-  process.exit(exitCode);
+  process.exit(await handleUpgrade(version, { logger: log }));
 }
 
 export function main(): void {
   process.title = PROCESS_NAME;
-  installCrashHandlers();
   // A staged native update is swapped in and re-exec'd here, before any other
   // initialization, so the user session immediately runs the new binary (and
   // the old process never replaces itself while running). Every failure path

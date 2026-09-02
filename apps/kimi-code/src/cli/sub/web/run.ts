@@ -12,17 +12,14 @@ import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 import { createServerLogger, startServer, type ServerLogger } from '@moonshot-ai/kap-server';
-import { shutdownTelemetry, track } from '@moonshot-ai/kimi-telemetry';
 import chalk from 'chalk';
 import type { Command } from 'commander';
 
-import { CLI_SHUTDOWN_TIMEOUT_MS, WEB_USER_AGENT_SUFFIX } from '#/constant/app';
+import { WEB_USER_AGENT_SUFFIX } from '#/constant/app';
 import { getNativeWebAssetsDir } from '#/native/web-assets';
 import { darkColors } from '#/tui/theme/colors';
 import { openUrl as defaultOpenUrl } from '#/utils/open-url';
 import { getDataDir } from '#/utils/paths';
-
-import { initializeServerTelemetry } from '../../telemetry';
 import {
   createKimiCodeHostIdentity,
   getHostPackageRoot,
@@ -251,12 +248,6 @@ async function runServerInProcess(
 ): Promise<never> {
   const version = getVersion();
   const externalCatalog = externalCatalogSourceFromEnv(process.env);
-  // Registers the telemetry provider for `track` / `shutdownTelemetry`; the
-  // client itself is not passed into kap-server.
-  const telemetry = initializeServerTelemetry({
-    version,
-    configPath: externalCatalog?.configPath,
-  });
 
   let running: RoutedServer | undefined;
   let stopping = false;
@@ -275,7 +266,6 @@ async function runServerInProcess(
     }
     try {
       await running?.close();
-      await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS });
     } catch (error) {
       running?.logger.error(
         { err: error instanceof Error ? error : new Error(String(error)) },
@@ -325,10 +315,6 @@ async function runServerInProcess(
     allowedHosts: options.allowedHosts,
     disableAuth: options.dangerousBypassAuth,
     webTitle: options.webTitle,
-    // Attach the engine's cloud telemetry appender (still gated by the config
-    // `telemetry` toggle). Complements the v1 client registered above, which
-    // only covers host-level events.
-    telemetry: telemetry.cloudEnabled,
     webAssetsDir,
   });
   logger.info('serving the REST/WS API and the bundled web UI');
@@ -337,8 +323,6 @@ async function runServerInProcess(
     logger,
     close: () => v2.close(),
   };
-
-  track('server_started', { daemon: false });
 
   const heapPolicy = resolveHeapWatchdogPolicy(process.env);
   if (heapPolicy !== undefined) {
@@ -380,7 +364,6 @@ async function runServerInProcess(
       await hooks.onShutdown?.('startup_failed');
     } finally {
       await running.close();
-      await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS });
     }
     throw error;
   }

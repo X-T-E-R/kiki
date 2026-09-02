@@ -380,7 +380,7 @@ describe('server-v2 boot', () => {
 
   it('does not shut down a host-injected telemetry service when server telemetry is disabled', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-host-telemetry-'));
-    await writeFile(join(home, 'config.toml'), 'telemetry = false\n', 'utf8');
+    await writeFile(join(home, 'config.toml'), '', 'utf8');
     const shutdown = vi.fn(async () => {});
 
     server = await startServer({
@@ -396,43 +396,6 @@ describe('server-v2 boot', () => {
     server = undefined;
 
     expect(shutdown).not.toHaveBeenCalled();
-  });
-
-  it('completes server cleanup when owned telemetry shutdown fails', async () => {
-    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-telemetry-failure-'));
-    const storage = new InMemoryStorageService();
-    const write = storage.write.bind(storage);
-    vi.spyOn(storage, 'write').mockImplementation(async (scope, key, data, options) => {
-      if (scope === 'telemetry') throw new Error('telemetry storage unavailable');
-      await write(scope, key, data, options);
-    });
-    const auth = {
-      _serviceBrand: undefined,
-      getCachedAccessToken: async () => {
-        throw new Error('telemetry auth unavailable');
-      },
-    } as unknown as IOAuthToolkit;
-
-    server = await startServer({
-      hostIdentity: TEST_HOST_IDENTITY,
-      host: '127.0.0.1',
-      port: 0,
-      homeDir: home,
-      logLevel: 'silent',
-      telemetry: true,
-      seeds: [
-        [IFileSystemStorageService, storage],
-        [IOAuthToolkit, auth],
-      ],
-    });
-    const core = server.core;
-    core.accessor.get(ITelemetryService).track('server_probe');
-
-    await server.close();
-    server = undefined;
-
-    expect(() => core.accessor.get(IBootstrapService)).toThrow();
-    expect(await listLiveServerInstances(home)).toEqual([]);
   });
 
   it.each(['listener', 'thread'] as const)(

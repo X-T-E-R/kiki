@@ -76,11 +76,6 @@ import { createOriginHook, isOriginAllowed, parseCorsOrigins } from './middlewar
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
 import { createAuthHook } from './middleware/auth';
 import { GuiStoreService } from './services/guiStore/guiStoreService';
-import {
-  initializeServerTelemetry,
-  type ServerTelemetry,
-  shutdownServerTelemetry,
-} from './services/telemetry';
 import { TranscriptService } from './services/transcript/transcriptService';
 import { ModelCatalogRefreshScheduler } from './services/modelCatalog/modelCatalogRefreshScheduler';
 import { createAuthFailureLimiter } from './middleware/rateLimit';
@@ -197,14 +192,6 @@ export interface ServerStartOptions {
    * `hostIdentity.version` instead.
    */
   readonly serverVersion?: string;
-  /**
-   * Opt-in cloud telemetry for the engine's `ITelemetryService` events: when
-   * true, a `CloudAppender` is attached at startup (still gated by the config
-   * `telemetry` toggle) and flushed on close. Defaults to false so tests and
-   * embedding hosts that wire their own telemetry never post to the real
-   * endpoint unintentionally; the CLI's `kimi web` host passes true.
-   */
-  readonly telemetry?: boolean;
 }
 
 export interface RunningServer {
@@ -294,18 +281,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     },
     [...logSeed(logging), ...(opts.seeds ?? [])],
   );
-
-  let telemetry: ServerTelemetry = {};
-  if (opts.telemetry === true) {
-    try {
-      telemetry = await initializeServerTelemetry(core, homeDir);
-    } catch (error) {
-      logger.warn(
-        { err: error instanceof Error ? error.message : String(error) },
-        'telemetry initialization failed; continuing without telemetry',
-      );
-    }
-  }
 
   if (exposureClass !== 'loopback') {
     logger.warn(
@@ -440,14 +415,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     capabilityInstallSubscription.dispose();
     authFailureLimiter?.dispose();
     modelCatalogRefreshScheduler.dispose();
-    try {
-      await shutdownServerTelemetry(telemetry);
-    } catch (error) {
-      logger.warn(
-        { err: error instanceof Error ? error.message : String(error) },
-        'telemetry shutdown failed; continuing server cleanup',
-      );
-    }
     try {
       await postListenWarmup;
       await drainSessionMetadataWrites();

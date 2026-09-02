@@ -20,17 +20,6 @@ const mocks = vi.hoisted(() => {
     runUpdatePreflight: vi.fn(),
     runShell: vi.fn(),
     runPrompt: vi.fn(),
-    installCrashHandlers: vi.fn(),
-    track: vi.fn(),
-    setTelemetryContext: vi.fn(),
-    withTelemetryContext: vi.fn(),
-    shutdownTelemetry: vi.fn(),
-    createCliTelemetryBootstrap: vi.fn(() => ({
-      homeDir: '/tmp/kimi-home',
-      deviceId: 'device-id',
-      firstLaunch: false,
-    })),
-    initializeCliTelemetry: vi.fn(),
     handleUpgrade: vi.fn(),
     flushDiagnosticLogs: vi.fn(),
     finalizeHeadlessRun: vi.fn(),
@@ -53,14 +42,6 @@ const mocks = vi.hoisted(() => {
     runUpdateDownloadCommand: vi.fn(async () => 0),
   };
 });
-
-vi.mock('@moonshot-ai/kimi-telemetry', () => ({
-  installCrashHandlers: mocks.installCrashHandlers,
-  track: mocks.track,
-  setTelemetryContext: mocks.setTelemetryContext,
-  withTelemetryContext: mocks.withTelemetryContext,
-  shutdownTelemetry: mocks.shutdownTelemetry,
-}));
 
 vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
   const actual = await vi.importActual<typeof import('@moonshot-ai/kimi-code-sdk')>(
@@ -88,11 +69,6 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
     log: mocks.log,
   };
 });
-
-vi.mock('../../src/cli/telemetry', () => ({
-  createCliTelemetryBootstrap: mocks.createCliTelemetryBootstrap,
-  initializeCliTelemetry: mocks.initializeCliTelemetry,
-}));
 
 vi.mock('../../src/cli/sub/upgrade', () => ({
   handleUpgrade: mocks.handleUpgrade,
@@ -233,10 +209,8 @@ describe('main entry command handling', () => {
     mocks.harness.ensureConfigFile.mockResolvedValue(undefined);
     mocks.harness.getConfig.mockResolvedValue({
       defaultModel: 'kimi-k2',
-      telemetry: true,
     });
     mocks.harness.close.mockResolvedValue(undefined);
-    mocks.shutdownTelemetry.mockResolvedValue(undefined);
     mocks.handleUpgrade.mockResolvedValue(0);
     mocks.flushDiagnosticLogs.mockResolvedValue(undefined);
   });
@@ -251,7 +225,7 @@ describe('main entry command handling', () => {
 
     expect(exitCode).toBeNull();
     expect(validateOptions).toHaveBeenCalledWith(opts);
-    expect(runUpdatePreflight).toHaveBeenCalledWith('0.0.1-alpha.2', { track: expect.any(Function) });
+    expect(runUpdatePreflight).toHaveBeenCalledWith('0.0.1-alpha.2', {});
     expect(mocks.runUpdatePreflight.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.runShell.mock.invocationCallOrder[0]!,
     );
@@ -284,7 +258,6 @@ describe('main entry command handling', () => {
 
     expect(exitCode).toBeNull();
     expect(runUpdatePreflight).toHaveBeenCalledWith('0.0.1-alpha.2', {
-      track: expect.any(Function),
       isTTY: false,
     });
     expect(runPrompt).toHaveBeenCalledWith(opts, '0.0.1-alpha.2');
@@ -375,20 +348,14 @@ describe('main entry command handling', () => {
     const exitCode = await runHandleMainCommand(opts);
 
     expect(exitCode).toBeNull();
-    expect(runUpdatePreflight).toHaveBeenCalledWith('0.0.1-alpha.2', {
-      track: expect.any(Function),
-    });
+    expect(runUpdatePreflight).toHaveBeenCalledWith('0.0.1-alpha.2', {});
     expect(runShell).toHaveBeenCalledWith(opts, '0.0.1-alpha.2');
   });
 
-  it('installs crash handlers before parsing CLI arguments', async () => {
+  it('parses CLI arguments after the staged-swap check', async () => {
     main();
 
-    expect(mocks.installCrashHandlers).toHaveBeenCalledTimes(1);
     await waitForAssertion(() => {
-      expect(mocks.installCrashHandlers.mock.invocationCallOrder[0]).toBeLessThan(
-        mocks.createProgram.mock.invocationCallOrder[0]!,
-      );
       expect(mocks.parse).toHaveBeenCalledWith(process.argv);
     });
   });
@@ -445,42 +412,13 @@ describe('main entry command handling', () => {
     expect(runShell).not.toHaveBeenCalled();
   });
 
-  it('initializes and flushes telemetry around the upgrade command', async () => {
+  it('runs the upgrade command with the diagnostic logger', async () => {
     const exitCode = await runHandleUpgradeCommand();
 
     expect(exitCode).toBe(0);
-    expect(mocks.createCliTelemetryBootstrap).toHaveBeenCalledTimes(1);
-    expect(mocks.createKimiHarness).toHaveBeenCalledWith(expect.objectContaining({
-      homeDir: '/tmp/kimi-home',
-      telemetry: {
-        track: mocks.track,
-        withContext: mocks.withTelemetryContext,
-        setContext: mocks.setTelemetryContext,
-      },
-    }));
-    expect(mocks.harness.ensureConfigFile).toHaveBeenCalledTimes(1);
-    expect(mocks.initializeCliTelemetry).toHaveBeenCalledWith(expect.objectContaining({
-      harness: expect.objectContaining({
-        homeDir: '/tmp/kimi-home',
-      }),
-      bootstrap: {
-        homeDir: '/tmp/kimi-home',
-        deviceId: 'device-id',
-        firstLaunch: false,
-      },
-      config: {
-        defaultModel: 'kimi-k2',
-        telemetry: true,
-      },
-      version: '0.0.1-alpha.2',
-      uiMode: 'shell',
-    }));
     expect(mocks.handleUpgrade).toHaveBeenCalledWith('0.0.1-alpha.2', {
-      track: mocks.track,
       logger: mocks.log,
     });
-    expect(mocks.shutdownTelemetry).toHaveBeenCalledWith({ timeoutMs: 3000 });
-    expect(mocks.harness.close).toHaveBeenCalledTimes(1);
   });
 
   it('formats Kimi startup errors with structured fields', () => {

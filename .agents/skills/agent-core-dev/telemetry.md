@@ -11,9 +11,6 @@ Telemetry is a **layer-1 root** domain (alongside `log`): the facade lives at `A
 - `src/app/telemetry/telemetryService.ts`: `TelemetryService` impl + `registerScopedService(LifecycleScope.App, …)`.
 - `src/app/telemetry/agentTelemetryContext.ts` + `agentTelemetryContextService.ts`: `IAgentTelemetryContextService` — Agent-scoped mutable request context (`mode` / `provider_type` / `protocol` / `turn_id` / `trace_id`) snapshot into turn telemetry at launch. Agent identity (`agent_id`) is not part of it — identity is bound by the Agent-scoped `ITelemetryService` view.
 - `src/app/telemetry/consoleAppender.ts`: `ConsoleAppender` — echoes events to a log function (dev / debug).
-- `src/app/telemetry/cloudAppender.ts`: `CloudAppender` — sanitizes + PII-cleans properties, batches + enriches + posts to the telemetry endpoint.
-- `src/app/telemetry/cloudTransport.ts`: `CloudTransport` — HTTP transport behind `CloudAppender`.
-- `src/app/telemetry/privacy.ts`: outbound PII redaction (`cleanTelemetryProperties`) — URLs, emails, tokens, and absolute file paths become `<REDACTED: ...>` labels; `node_modules/` tails are kept.
 
 ## Emitting events (business services)
 
@@ -59,7 +56,6 @@ export interface ITelemetryAppender {
 Built-in appenders:
 
 - `ConsoleAppender` — `[telemetry] <event> <json>` to a log function (default `console.log`); options `prefix` / `pretty` / `log`.
-- `CloudAppender` — batches events, enriches with common context (`app_name` / `version` / `platform` / …), and posts to `https://telemetry-logs.kimi.com/v1/event` through `CloudTransport` (Bearer auth, retry, on-disk fallback). Options: `homeDir` / `deviceId` / `sessionId?` / `appName` / `version` / `uiMode?` / `model?` / `getAccessToken?` / `endpoint?` / `flushThreshold?` / `flushIntervalMs?`.
 
 ### Registering appenders (bootstrap)
 
@@ -69,12 +65,7 @@ Appenders are added after the App scope exists, by resolving the service and cal
 const app = createAppScope();
 const telemetry = app.accessor.get(ITelemetryService);
 
-telemetry.addAppender(new ConsoleAppender({ prefix: '[dev]' }));   // dev echo
-telemetry.addAppender(new CloudAppender({                          // production
-  homeDir, deviceId, sessionId,
-  appName: 'kimi-code', version, uiMode: 'shell', model,
-  getAccessToken: () => auth.getCachedAccessToken(KIMI_CODE_PROVIDER_NAME),
-}));
+telemetry.addAppender(new ConsoleAppender({ prefix: '[dev]' }));
 ```
 
 `addAppender` returns an `IDisposable` that removes the appender when disposed. `setAppender(appender)` resets to a single appender (mainly for tests). `removeAppender(appender)` drops one.
@@ -84,7 +75,7 @@ telemetry.addAppender(new CloudAppender({                          // production
 ## Lifecycle
 
 - `setEnabled(false)` drops `track` (service-level switch); `setEnabled(true)` resumes. `flush` / `shutdown` are unaffected by the switch.
-- `flush()` / `shutdown()` fan out to all appenders concurrently; a single rejecting appender is swallowed. Await `shutdown()` before process exit so buffered events (e.g. in `CloudAppender`) are sent.
+- `flush()` / `shutdown()` fan out to all appenders concurrently; a single rejecting appender is swallowed. Await `shutdown()` before process exit when a buffering appender is registered.
 
 ## Red lines (this topic)
 
@@ -93,5 +84,5 @@ telemetry.addAppender(new CloudAppender({                          // production
 - Appenders are plain `ITelemetryAppender` objects, not DI Services — register them with `addAppender`, never via `registerScopedService`.
 - `track` is fire-and-forget and must not throw; appender `track` must be synchronous — buffer and send asynchronously via `flush` / `shutdown`.
 - Await `telemetry.shutdown()` before process exit when a buffering appender is registered.
-- Keep event names stable; register every business event in `events.ts` and emit via `track2` — properties must be JSON-serializable primitives (non-primitives are dropped with a warning by `CloudAppender`).
+- Keep event names stable; register every business event in `events.ts` and emit via `track2` — properties must be JSON-serializable primitives.
 - Agent identity is ambient: agent-scope events go through `defineAgentTelemetryEvent` and get `agent_id` from the scoped telemetry view — do not pass `agent_id` at business call sites (per-event identities such as `subagent_created` and the cron events are the exception).
