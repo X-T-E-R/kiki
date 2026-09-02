@@ -11,13 +11,11 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
+import { useHost, type HostAdapter } from '../host';
 import { useI18n } from '../i18n';
 import { mentionToken } from '../lib/attachments';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { isDesktopRuntime, saveBlobNative } from '../lib/desktop';
 import { appendToDraft } from '../lib/drafts';
-import { hostFileOpsSupported, openHostPath, revealHostPath } from '../lib/hostFileOps';
-import { hostFileWriteSupported, writeHostFileText } from '../lib/hostFileWrite';
 import { basenameOf, formatBytes, previewKindOf } from '../lib/media';
 import type { KikiClient } from '../lib/client';
 import { runToastAction } from '../lib/toasts';
@@ -319,6 +317,7 @@ function TabContextMenu({
   readonly onCloseOthers: () => void;
   readonly onCloseAll: () => void;
 }) {
+  const host = useHost();
   const { t } = useI18n();
   // Stable single attach: the parent passes inline callbacks, so depending on
   // `onCloseMenu` would churn detach/attach on every parent render and an
@@ -359,7 +358,7 @@ function TabContextMenu({
   };
   const path = menu.path;
   const relative = relativeToCwd(path, cwd);
-  const openers = hostFileOpsSupported();
+  const openers = host.revealPath !== undefined && host.openPath !== undefined;
   return (
     <div
       data-preview-tab-menu
@@ -402,7 +401,7 @@ function TabContextMenu({
             role="menuitem"
             data-menu-item="show-in-folder"
             className={itemClass}
-            onClick={() => { pickAction(t('file.showInFolder'), () => revealHostPath(path)); }}
+            onClick={() => { pickAction(t('file.showInFolder'), () => host.revealPath!(path)); }}
           >
             {t('file.showInFolder')}
           </button>
@@ -411,7 +410,7 @@ function TabContextMenu({
             role="menuitem"
             data-menu-item="open-default-app"
             className={itemClass}
-            onClick={() => { pickAction(t('file.openDefaultApp'), () => openHostPath(path)); }}
+            onClick={() => { pickAction(t('file.openDefaultApp'), () => host.openPath!(path)); }}
           >
             {t('file.openDefaultApp')}
           </button>
@@ -425,12 +424,17 @@ function TabContextMenu({
 // Tab content
 // ---------------------------------------------------------------------------
 
-async function downloadHostFile(client: KikiClient, path: string, name: string): Promise<void> {
+async function downloadHostFile(
+  host: HostAdapter,
+  client: KikiClient,
+  path: string,
+  name: string,
+): Promise<void> {
   const { bytes, mime } = await client.readHostFileBytes(path);
   const blob = new Blob([bytes as BlobPart], { type: mime });
-  if (isDesktopRuntime()) {
+  if (host.saveBlob !== undefined) {
     try {
-      await saveBlobNative(blob, name);
+      await host.saveBlob(blob, name);
       return;
     } catch {
       // Fall through to the browser download.
@@ -559,6 +563,7 @@ function ImageTabView({
 }
 
 function BinaryTabView({ path }: { readonly path: string }) {
+  const host = useHost();
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const name = basenameOf(path);
@@ -571,7 +576,7 @@ function BinaryTabView({ path }: { readonly path: string }) {
           type="button"
           onClick={() => {
             const client = connection?.client;
-            if (client !== undefined) void downloadHostFile(client, path, name);
+            if (client !== undefined) void downloadHostFile(host, client, path, name);
           }}
           className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-accent-deep"
         >
@@ -609,6 +614,7 @@ function TextTabView({
   readonly markdown: boolean;
   readonly reportDirty: (path: string, dirty: boolean) => void;
 }) {
+  const host = useHost();
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
@@ -623,7 +629,7 @@ function TextTabView({
     const next = new HostFileEditorController({
       path,
       readFile: (target) => client.readHostFile(target),
-      writeFile: hostFileWriteSupported() ? writeHostFileText : undefined,
+      writeFile: host.writeFileText,
     });
     setController(next);
     void next.load();
@@ -631,7 +637,7 @@ function TextTabView({
       next.dispose();
       setController(null);
     };
-  }, [client, path]);
+  }, [client, host, path]);
 
   const subscribe = useMemo(
     () => controller?.subscribe ?? (() => () => {}),
@@ -707,7 +713,9 @@ function TextTabView({
           type="button"
           title={t('media.download')}
           onClick={() => {
-            if (clientForDownload !== undefined) void downloadHostFile(clientForDownload, path, name);
+            if (clientForDownload !== undefined) {
+              void downloadHostFile(host, clientForDownload, path, name);
+            }
           }}
           className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[10.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
         >

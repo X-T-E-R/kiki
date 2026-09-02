@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { isDesktopRuntime, restartNativeServer } from '../../lib/desktop';
+import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { errorText, issueText, type I18nKey } from '../../i18n/locale';
 import {
@@ -675,7 +675,8 @@ export function AgentsSection() {
 }
 
 function DesktopServerFileCard() {
-  const isDesktop = isDesktopRuntime();
+  const host = useHost();
+  const isDesktop = host.kind === 'tauri';
   const { t, locale } = useI18n();
   const { client, socket } = useConnection();
   const queryClient = useQueryClient();
@@ -731,7 +732,7 @@ function DesktopServerFileCard() {
     setRestarting(true);
     setFeedback(null);
     try {
-      await restartNativeServer();
+      await host.restartServer?.();
       clearRestartRequirement();
       socket?.nudge();
       await queryClient.invalidateQueries();

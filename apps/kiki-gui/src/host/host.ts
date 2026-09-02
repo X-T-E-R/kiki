@@ -80,8 +80,7 @@ export interface HostConnectionAdapter {
   onBackendStage?: (callback: (payload: unknown) => void) => Promise<() => void>;
 }
 
-export interface HostAdapter {
-  readonly kind: 'browser' | 'tauri';
+interface HostCapabilities {
   readonly connection: HostConnectionAdapter;
   notify?: (options: HostNotification) => Promise<void>;
   isWindowVisibleAndFocused?: () => Promise<boolean>;
@@ -107,3 +106,14 @@ export interface HostAdapter {
   onTrayNewSession?: (callback: () => void) => () => void;
   setTheme?: (resolved: ResolvedTheme) => Promise<void>;
 }
+
+export interface BrowserHostAdapter extends HostCapabilities {
+  readonly kind: 'browser';
+}
+
+export interface TauriHostAdapter extends Required<Omit<HostCapabilities, 'connection'>> {
+  readonly kind: 'tauri';
+  readonly connection: Required<HostConnectionAdapter>;
+}
+
+export type HostAdapter = BrowserHostAdapter | TauriHostAdapter;

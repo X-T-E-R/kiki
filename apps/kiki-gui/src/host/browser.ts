@@ -1,4 +1,4 @@
-import type { HostAdapter } from './host';
+import type { BrowserHostAdapter } from './host';
 
 interface ViteLocalServerPayload {
   readonly url?: string;
@@ -6,7 +6,7 @@ interface ViteLocalServerPayload {
   readonly error?: string;
 }
 
-export const browserHost: HostAdapter = {
+export const browserHost: BrowserHostAdapter = {
   kind: 'browser',
   connection: {
     async discover() {

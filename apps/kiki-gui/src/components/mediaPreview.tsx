@@ -16,9 +16,9 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { hostFileOpsSupported, openHostPath, revealHostPath } from '../lib/hostFileOps';
 import { basenameOf, formatBytes, type MediaRef } from '../lib/media';
 import { useOptionalConnection } from '../state/connection';
 import {
@@ -648,6 +648,7 @@ export function MediaPartList({
  * copy path, and the desktop opener pair.
  */
 export function FilePathLink({ path, className }: { path: string; className?: string }) {
+  const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -655,18 +656,18 @@ export function FilePathLink({ path, className }: { path: string; className?: st
   const entries: MiniMenuEntry[] = [
     { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(path); } },
     { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(path) },
-    ...(hostFileOpsSupported()
+    ...(host.revealPath !== undefined && host.openPath !== undefined
       ? [
           { separator: true } as const,
           {
             key: 'show-in-folder',
             label: t('file.showInFolder'),
-            run: () => revealHostPath(path),
+            run: () => host.revealPath?.(path),
           } as const,
           {
             key: 'open-default-app',
             label: t('file.openDefaultApp'),
-            run: () => openHostPath(path),
+            run: () => host.openPath?.(path),
           } as const,
         ]
       : []),

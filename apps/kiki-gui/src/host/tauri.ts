@@ -10,7 +10,7 @@ import {
 import type {
   CompatibilityMigrationResult,
   DesktopUpdate,
-  HostAdapter,
+  TauriHostAdapter,
   HostSelectedFile,
   KimiConfigImportResult,
   KimiHomePaths,
@@ -51,7 +51,7 @@ function onTrayNewSession(callback: () => void): () => void {
   };
 }
 
-export const tauriHost: HostAdapter = {
+export const tauriHost: TauriHostAdapter = {
   kind: 'tauri',
   connection: {
     async discover() {
