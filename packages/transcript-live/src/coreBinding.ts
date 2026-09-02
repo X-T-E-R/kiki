@@ -25,12 +25,12 @@ import {
   type TranscriptWireRecord,
 } from '@moonshot-ai/transcript';
 
-import { projectPromptContentParts } from '../messages/messageProjection';
+import { projectPromptContentParts } from './promptProjection';
 import {
   resolveSubagentDisplayName,
   subagentParentAgentId,
   subagentUserLabel,
-} from '../subagentProjection';
+} from './subagentProjection';
 import {
   AgentTranscriptLiveAdapter,
   type LiveAdapterBusEvent,
