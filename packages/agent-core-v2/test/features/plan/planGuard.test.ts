@@ -7,6 +7,7 @@ import { abortable } from '#/_base/utils/abort';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type {
   ApprovalResponse,
   PermissionMode,
@@ -49,7 +50,7 @@ import { stubToolExecutorEvents, type ToolExecutorEventStubs } from '../../agent
 const signal = new AbortController().signal;
 const SESSION_DIR = '/session';
 const PLAN_ID = 'plan-1';
-const PLAN_PATH = `${SESSION_DIR}/agents/test-agent/plans/${PLAN_ID}.md`;
+const PLAN_PATH = `${SESSION_DIR}/agents/main/plans/${PLAN_ID}.md`;
 
 const options = [
   { label: 'Approach A', description: 'Small change.' },
@@ -147,6 +148,7 @@ describe('AgentPlanService plan-guard listener', () => {
   let requestToolApproval: Mock<IAgentToolApprovalService['requestToolApproval']>;
   let formatDenyMessage: Mock<(message: string) => string>;
   let mode: PermissionMode;
+  let agentId: string;
   let files: Map<string, string>;
 
   beforeEach(() => {
@@ -160,6 +162,7 @@ describe('AgentPlanService plan-guard listener', () => {
     });
     formatDenyMessage = vi.fn((message: string) => message);
     mode = 'manual';
+    agentId = 'main';
     files = new Map();
     permissionRan = false;
     permissionStandInRegistered = false;
@@ -198,6 +201,12 @@ describe('AgentPlanService plan-guard listener', () => {
           register: () => ({ dispose: () => {} }),
         });
         reg.definePartialInstance(IAgentTelemetryContextService, { set: () => {} });
+        reg.definePartialInstance(IAgentScopeContext, {
+          get agentId() {
+            return agentId;
+          },
+          scope: () => '',
+        });
         reg.defineInstance(IAgentToolExecutorService, executorEvents.executor);
         reg.defineInstance(IAgentToolApprovalService, toolApproval);
         reg.defineInstance(IAgentPermissionModeService, stubPermissionModeService(() => mode));
@@ -244,6 +253,24 @@ describe('AgentPlanService plan-guard listener', () => {
   }
 
   describe('guard', () => {
+    it.each(['EnterPlanMode', 'ExitPlanMode'] as const)(
+      'rejects %s for a subagent before approval or execution',
+      async (toolName) => {
+        if (toolName === 'ExitPlanMode') await enterPlan();
+        else plan();
+        agentId = 'child-agent';
+
+        const decision = await run(hookContext(toolName));
+
+        expect(decision?.veto).toEqual({
+          isError: true,
+          output: `${toolName} is unavailable for subagents.`,
+        });
+        expect(requests).toEqual([]);
+        expect(permissionRan).toBe(false);
+      },
+    );
+
     it.each(['Write', 'Edit'] as const)(
       'lets a %s that only targets the active plan file continue through adjudication',
       async (toolName) => {

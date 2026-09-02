@@ -109,9 +109,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     options: unknown = {},
   ): Promise<ResolvedAgentExecutor> {
     const resolved = this.resolve(id, options);
-    if (resolved.descriptor.id === 'native' || resolved.descriptor.sources === undefined) {
-      return resolved;
-    }
+    if (resolved.descriptor.id === 'native') return resolved;
     const probes = await resolveExecutorSource(
       resolved.descriptor,
       this.processService,

@@ -11,6 +11,8 @@ import type {
 } from '@moonshot-ai/acp-client';
 import { describe, expect, it, vi } from 'vitest';
 
+import { buildModeOption } from '../../../../acp-server/src/config-options';
+
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -32,6 +34,7 @@ import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptors';
 import type { Event2 } from '#/app/event/event2';
 import { ISessionApprovalService, type ApprovalResponse } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
@@ -839,5 +842,29 @@ describe('ACP external executor', () => {
     );
     await run.completion;
     expect(harness.selections).toContainEqual({ configId: 'auto_approve', value });
+  });
+
+  it.each([
+    ['manual', 'default'],
+    ['auto', 'auto'],
+    ['yolo', 'yolo'],
+  ] as const)('configures Kimi ACP mode for %s before starting the turn', async (permissionMode, value) => {
+    const harness = createHarness({
+      permissionMode,
+      permissionMapping: BUILTIN_AGENT_EXECUTORS['kimi-acp']!.permissionModeMapping,
+      sessionConfigOptions: [
+        ...configOptions(false),
+        buildModeOption('default'),
+      ],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.selections).toContainEqual({ configId: 'mode', value });
+    expect(harness.starts).toHaveLength(1);
   });
 });

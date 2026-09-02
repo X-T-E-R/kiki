@@ -312,12 +312,6 @@ describe('AgentExecutorRegistryService', () => {
     expect(registry.get('grok-acp')).toMatchObject({
       args: ['--no-auto-update', 'agent', 'stdio'],
       startupTimeoutMs: 70_000,
-      permissionModeMapping: {
-        configCategory: 'mode',
-        manual: false,
-        auto: false,
-        yolo: true,
-      },
       revision: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(registry.get('codex-acp')).toMatchObject({
@@ -329,5 +323,21 @@ describe('AgentExecutorRegistryService', () => {
       modelBinding: 'argv',
       modelArgs: ['--model', '{model}'],
     });
+    expect(registry.get('kimi-acp')?.permissionModeMapping).toEqual({
+      configId: 'mode',
+      manual: 'default',
+      auto: 'auto',
+      yolo: 'yolo',
+    });
+    for (const id of [
+      'grok-acp',
+      'codex-acp',
+      'cursor-acp',
+      'claude-acp',
+      'gemini-acp',
+      'opencode-acp',
+    ]) {
+      expect(registry.get(id)?.permissionModeMapping).toBeUndefined();
+    }
   });
 });

@@ -1,16 +1,8 @@
 import type { AgentExecutorsConfig } from './configSection';
 
-const ACP_PERMISSION_MODE_MAPPING = {
-  configCategory: 'mode',
-  manual: false,
-  auto: false,
-  yolo: true,
-} as const;
-
 export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
   'grok-acp': {
     protocol: 'acp-v1',
-    permissionModeMapping: ACP_PERMISSION_MODE_MAPPING,
     command: 'grok',
     args: ['--no-auto-update', 'agent', 'stdio'],
     startupTimeoutMs: 70_000,
@@ -49,7 +41,6 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
   },
   'codex-acp': {
     protocol: 'acp-v1',
-    permissionModeMapping: ACP_PERMISSION_MODE_MAPPING,
     command: 'codex-acp',
     args: [],
     env: { DISABLE_MCP_CONFIG_FILTERING: 'true' },
@@ -61,7 +52,6 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
   },
   'cursor-acp': {
     protocol: 'acp-v1',
-    permissionModeMapping: ACP_PERMISSION_MODE_MAPPING,
     sources: [
       { id: 'env', kind: 'env', name: 'CURSOR_AGENT_PATH' },
       { id: 'local-bin', kind: 'explicit-path', path: '~/.local/bin/cursor-agent' },
@@ -87,7 +77,6 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
   },
   'claude-acp': {
     protocol: 'acp-v1',
-    permissionModeMapping: ACP_PERMISSION_MODE_MAPPING,
     command: 'claude-agent-acp',
     args: [],
     shutdownGraceMs: 3_000,
@@ -97,7 +86,6 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
   },
   'gemini-acp': {
     protocol: 'acp-v1',
-    permissionModeMapping: ACP_PERMISSION_MODE_MAPPING,
     command: 'gemini',
     args: ['--acp'],
     shutdownGraceMs: 3_000,
@@ -107,7 +95,12 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
   },
   'kimi-acp': {
     protocol: 'acp-v1',
-    permissionModeMapping: ACP_PERMISSION_MODE_MAPPING,
+    permissionModeMapping: {
+      configId: 'mode',
+      manual: 'default',
+      auto: 'auto',
+      yolo: 'yolo',
+    },
     command: 'kimi',
     args: ['acp'],
     shutdownGraceMs: 3_000,
@@ -117,7 +110,6 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
   },
   'opencode-acp': {
     protocol: 'acp-v1',
-    permissionModeMapping: ACP_PERMISSION_MODE_MAPPING,
     command: 'opencode',
     args: ['acp'],
     shutdownGraceMs: 3_000,

@@ -4,6 +4,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
+import { AgentExecutionService } from '#/agent/execution/executionService';
+import type { IAgentProfileService } from '#/agent/profile/profile';
+import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import type { IAgentStateService } from '#/agent/state/agentState';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -287,6 +291,47 @@ describe('AgentExecutorPreflightService', () => {
 
     expect(first.descriptor.command).toBe(second.descriptor.command);
     expect(first.descriptor.revision).not.toBe(second.descriptor.revision);
+  });
+
+  it('rejects a prior binding when the same direct command reports a new version', async () => {
+    processService.outputs.set('kimi --version', { output: '0.37.1' });
+    const registry = services.get(IAgentExecutorRegistry);
+    const first = await registry.resolveExecutable('kimi-acp');
+    processService.outputs.set('kimi --version', { output: '0.38.0' });
+    const second = await registry.resolveExecutable('kimi-acp');
+    const execution = new AgentExecutionService(
+      services,
+      {
+        _serviceBrand: undefined,
+        agentId: 'agent-test',
+        scope: () => 'agent-test',
+      } satisfies IAgentScopeContext,
+      {
+        _serviceBrand: undefined,
+        data: () => ({
+          thinkingLevel: 'off',
+          systemPrompt: '',
+          executorId: 'kimi-acp',
+          executorProtocol: 'acp-v1',
+          executorDescriptorRevision: first.descriptor.revision,
+        }),
+      } as IAgentProfileService,
+      registry,
+      {
+        _serviceBrand: undefined,
+        contributeState: () => ({ dispose: () => {} }),
+      } as unknown as IAgentStateService,
+    );
+
+    expect(first.descriptor.command).toBe('kimi');
+    expect(first.descriptor.command).toBe(second.descriptor.command);
+    expect(first.descriptor.selectedSource).toBe('command');
+    expect(first.descriptor.revision).not.toBe(second.descriptor.revision);
+    await expect(execution.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    )).rejects.toThrow(/descriptor.*changed/i);
+    execution.dispose();
   });
 
   it('reports unavailable binaries without treating missing auth as success', async () => {
