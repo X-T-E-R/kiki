@@ -1,8 +1,8 @@
 /**
- * Row cards for the /capabilities page: one skill card (name + two-line
- * description + source badge + mono path) and one MCP server row (status dot
- * + transport/status/tool count + restart with the settings page's feedback
- * semantics).
+ * Row cards for the settings skills catalog and MCP status cards: one skill
+ * card (name + two-line description + source badge + mono path) and one MCP
+ * server row (status dot + transport/status/tool count + restart with the
+ * settings page's feedback semantics). Formerly the /capabilities page rows.
  */
 
 import { useState } from 'react';

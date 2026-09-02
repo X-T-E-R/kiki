@@ -606,6 +606,39 @@ export function parseAdvancedServerConfig(value: string): AdvancedServerConfigPa
   };
 }
 
+/**
+ * The automation leaf's hooks editor: a raw JSON array, nothing else. Invalid
+ * JSON and non-array shapes reuse the advanced editor's validation keys.
+ */
+export function parseHooksJson(value: string): unknown[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new LocalizedError({ key: 'val.advancedJson' });
+  }
+  if (!Array.isArray(parsed)) {
+    throw new LocalizedError({ key: 'val.advancedHooks' });
+  }
+  return parsed;
+}
+
+/**
+ * Narrow MCP timeout patch for the MCP settings card (redesign §8.3): the
+ * `replace_domains` scope stays `['mcp']` so saving timeouts never rewrites
+ * the other runtime domains the way the full runtime editor patch does.
+ */
+export function mcpTimeoutsPatch(startupTimeoutMs: string, toolTimeoutMs: string): KikiConfigPatch {
+  const mcpMax = 2_147_483_647;
+  return {
+    mcp: {
+      startup_timeout_ms: parseOptionalInteger(startupTimeoutMs, 'mcp.startup_timeout_ms', 1, mcpMax),
+      tool_timeout_ms: parseOptionalInteger(toolTimeoutMs, 'mcp.tool_timeout_ms', 1, mcpMax),
+    },
+    replace_domains: ['mcp'],
+  };
+}
+
 export type TokenCountingStrategy = 'measured+estimated' | 'measured' | 'estimated';
 export type PrintBackgroundMode = 'exit' | 'drain' | 'steer';
 
@@ -1120,35 +1153,6 @@ export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<Provi
   }));
 }
 
-// ---- capabilities section grouping ----
-
-/**
- * Information hierarchy for the settings capabilities section: cards are
- * bucketed into collapsible groups so the section reads as five labeled
- * layers instead of a flat wall. Everyday surfaces (skills, MCP) stay open;
- * low-frequency / dangerous surfaces (runtime policy, experimental flags,
- * raw JSON domains) start collapsed. `cardIds` lets a settings-search hit
- * force its group open before the scroll + flash lands.
- */
-export interface CapabilityGroupSpec {
-  readonly id: string;
-  readonly titleKey: I18nKey;
-  readonly cardIds: readonly string[];
-  readonly defaultOpen: boolean;
-}
-
-export const CAPABILITY_GROUPS: readonly CapabilityGroupSpec[] = [
-  { id: 'skills', titleKey: 'st.caps.group.skills', cardIds: ['st-card-caps'], defaultOpen: true },
-  { id: 'mcp', titleKey: 'st.caps.group.mcp', cardIds: ['st-card-mcp'], defaultOpen: true },
-  { id: 'runtime', titleKey: 'st.caps.group.runtime', cardIds: ['st-card-runtime', 'st-card-tools'], defaultOpen: false },
-  { id: 'experimental', titleKey: 'st.caps.group.experimental', cardIds: ['st-card-experimental'], defaultOpen: false },
-  { id: 'advanced', titleKey: 'st.caps.group.advanced', cardIds: ['st-card-advanced'], defaultOpen: false },
-];
-
-export function capabilityGroupForCard(cardId: string): CapabilityGroupSpec | undefined {
-  return CAPABILITY_GROUPS.find((group) => group.cardIds.includes(cardId));
-}
-
 // ---- models & providers merged entry (settings redesign batch 2) ----
 
 /**
@@ -1213,9 +1217,16 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'general', labelKey: 'st.section.general' },
   { id: 'ai', labelKey: 'st.section.ai' },
   { id: 'agents', labelKey: 'st.section.agents' },
-  { id: 'capabilities', labelKey: 'st.section.capabilities' },
+  { id: 'subagents', labelKey: 'st.section.subagents' },
+  { id: 'skills', labelKey: 'st.section.skills' },
+  { id: 'mcp', labelKey: 'st.section.mcp' },
+  { id: 'automation', labelKey: 'st.section.automation' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
   { id: 'connection', labelKey: 'st.section.connection' },
+  { id: 'runtime', labelKey: 'st.section.runtime' },
+  { id: 'data', labelKey: 'st.section.data' },
+  { id: 'experimental', labelKey: 'st.section.experimental' },
+  { id: 'advanced', labelKey: 'st.section.advanced' },
   { id: 'about', labelKey: 'st.section.about' },
 ];
 
@@ -1226,14 +1237,11 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
  * visual groups (they never own a page), plus top-level leaves that belong to
  * no group — "About & updates" is one, per the adjudicated tree.
  *
- * Content has partially moved: batch 2 merged models + providers into the
- * single "Models & providers" entry under "AI configuration" (three tabs —
- * the domain objects stay distinct inside). The remaining leaves stay parked
- * in the group their content will end up in: capabilities under "Capabilities
- * & extensions", and so on. "Data & advanced" therefore has no leaves this
- * batch — groups with zero leaves are part of the adjudicated topology but
- * are not rendered (empty group headers would be noise); they materialize
- * when content lands.
+ * Batch 3 landed the capabilities split (redesign §10.3): the old single
+ * "capabilities" leaf dissolved into skills / mcp / automation under
+ * "Capabilities & extensions", runtime moved to "System", and the dangerous
+ * tails (telemetry, experimental flags, raw JSON) fill "Data & advanced".
+ * Groups with zero leaves are not rendered — every group now has content.
  */
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
@@ -1252,10 +1260,10 @@ export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'app', labelKey: 'st.group.app', sections: ['general'] },
   { kind: 'group', id: 'ai', labelKey: 'st.group.ai', sections: ['ai'] },
-  { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents'] },
-  { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['capabilities'] },
-  { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection'] },
-  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: [] },
+  { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents', 'subagents'] },
+  { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'automation'] },
+  { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection', 'runtime'] },
+  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['data', 'experimental', 'advanced'] },
   { kind: 'leaf', section: 'about' },
 ];
 
@@ -1266,11 +1274,10 @@ export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec
 }
 
 /**
- * Who a section's edits apply to; rendered as page-header scope badges. Until
- * the batch 3 content split lands, some pages mix scopes — General holds
- * device prefs AND server-side session defaults, Capabilities holds server
- * config AND per-workspace MCP — so a page carries every scope it actually
- * writes, never a flattering single one.
+ * Who a section's edits apply to; rendered as page-header scope badges. After
+ * the batch 3 split every leaf owns one coherent scope set: skills and MCP
+ * mix server defaults with per-workspace targets, the rest are single-scope.
+ * A page carries every scope it actually writes, never a flattering single one.
  */
 export type SettingsScope = 'app' | 'server' | 'workspace';
 
@@ -1283,9 +1290,16 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   general: { scopes: ['app', 'server'], purposeKey: 'st.purpose.general' },
   ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },
   agents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.agents' },
-  capabilities: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.capabilities' },
+  subagents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.subagents' },
+  skills: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.skills' },
+  mcp: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.mcp' },
+  automation: { scopes: ['server'], purposeKey: 'st.purpose.automation' },
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
+  runtime: { scopes: ['server'], purposeKey: 'st.purpose.runtime' },
+  data: { scopes: ['server'], purposeKey: 'st.purpose.data' },
+  experimental: { scopes: ['server'], purposeKey: 'st.purpose.experimental' },
+  advanced: { scopes: ['server'], purposeKey: 'st.purpose.advanced' },
   about: { scopes: ['app', 'server'], purposeKey: 'st.purpose.about' },
 };
 
@@ -1307,16 +1321,21 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'], synonyms: ['提供商', '供应商', 'provider', '认证'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty'], synonyms: ['提供商', '供应商', 'provider'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
-  { section: 'capabilities', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.telemetry', 'st.caps.extraDirs'], synonyms: ['能力', 'skills', '技能'] },
-  { section: 'capabilities', cardId: 'st-card-runtime', titleKey: 'st.runtime.title', keywordKeys: ['st.runtime.cron', 'st.runtime.communication', 'st.runtime.resources', 'st.runtime.task', 'st.runtime.agents'] },
-  { section: 'capabilities', cardId: 'st-card-experimental', titleKey: 'st.experimental.title', keywordKeys: ['st.experimental.hint', 'st.experimental.overrideLabel'] },
-  { section: 'capabilities', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
-  { section: 'agents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'], synonyms: ['子 agent', '子代理'] },
+  { section: 'skills', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs', 'st.sidecar.builtinSkills'], synonyms: ['能力', 'skills', '技能'] },
+  { section: 'skills', cardId: 'st-card-skill-catalog', titleKey: 'st.skills.catalogTitle', keywordKeys: ['cap.filterPlaceholder'], synonyms: ['能力', 'capabilities', '技能目录', 'skill catalog'] },
+  { section: 'runtime', cardId: 'st-card-runtime', titleKey: 'st.runtime.title', keywordKeys: ['st.runtime.cron', 'st.runtime.communication', 'st.runtime.resources', 'st.runtime.task', 'st.runtime.agents'] },
+  { section: 'experimental', cardId: 'st-card-experimental', titleKey: 'st.experimental.title', keywordKeys: ['st.experimental.hint', 'st.experimental.overrideLabel'] },
+  { section: 'advanced', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
+  { section: 'subagents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'], synonyms: ['子 agent', '子代理'] },
   { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.mainAgents.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin'], synonyms: ['主 agent'] },
-  { section: 'agents', cardId: 'st-card-subagent-profiles', titleKey: 'st.subagentProfiles.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin', 'st.namedAgents.route'], synonyms: ['子 agent', '子代理', 'profiles', 'profile'] },
-  { section: 'agents', cardId: 'st-card-sidecar', titleKey: 'st.sidecar.title', keywordKeys: ['st.sidecar.hint', 'st.sidecar.subagentTimeout', 'st.agents.webHint'] },
-  { section: 'capabilities', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: [] },
-  { section: 'capabilities', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace'], synonyms: ['能力', 'mcp 服务器', 'mcp server'] },
+  { section: 'subagents', cardId: 'st-card-subagent-profiles', titleKey: 'st.subagentProfiles.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin', 'st.namedAgents.route'], synonyms: ['子 agent', '子代理', 'profiles', 'profile'] },
+  { section: 'subagents', cardId: 'st-card-subagent-timeout', titleKey: 'st.subagentTimeout.title', keywordKeys: ['st.sidecar.subagentTimeout', 'st.subagentTimeout.hint'], synonyms: ['子 agent 超时', 'subagent timeout'] },
+  { section: 'automation', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: [] },
+  { section: 'automation', cardId: 'st-card-hooks', titleKey: 'st.hooks.title', keywordKeys: ['st.hooks.hint'], synonyms: ['hooks', '钩子'] },
+  { section: 'mcp', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace'], synonyms: ['能力', 'mcp 服务器', 'mcp server'] },
+  { section: 'mcp', cardId: 'st-card-mcp-status', titleKey: 'st.mcp.statusTitle', keywordKeys: ['st.mcp.restart', 'st.mcp.toolsCount'], synonyms: ['mcp 状态', 'mcp status'] },
+  { section: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
+  { section: 'data', cardId: 'st-card-telemetry', titleKey: 'st.telemetry.title', keywordKeys: ['st.caps.telemetry', 'st.caps.telemetryHint'], synonyms: ['遥测', 'telemetry'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
 ];
@@ -1389,14 +1408,25 @@ export type SettingsRouteResolution =
 /**
  * Hidden aliases for renamed sections, so an old bookmark still lands on its
  * content instead of the "unknown setting" page. Batch 2 merged `models` and
- * `providers` into the `ai` entry (redesign §10.3); batch 3 adds entries like
- * `general → appearance` as content moves. Card-level moves need no entry
- * here — the card-aware fallback in `resolveSettingsRoute` already follows
- * the card.
+ * `providers` into the `ai` entry (redesign §10.3); batch 3 split
+ * `capabilities` into skills / mcp / automation — the bare section lands on
+ * skills, and a precise card hash still follows the card via the card-aware
+ * fallback in `resolveSettingsRoute`.
  */
 export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> = {
   models: 'ai',
   providers: 'ai',
+  capabilities: 'skills',
+};
+
+/**
+ * Cards that were dissolved rather than moved whole (redesign §10.3). The
+ * sidecar card mixed subagent timeout, builtin skills, and agents toggles
+ * with no field-level hash, so it cannot disambiguate — it lands on the
+ * subagent timeout card, the field that dominated the card.
+ */
+export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: string; readonly cardId: string }>> = {
+  'st-card-sidecar': { section: 'subagents', cardId: 'st-card-subagent-timeout' },
 };
 
 /** Which tab a legacy section bookmark maps to (redesign §10.3's route table). */
@@ -1430,8 +1460,14 @@ export function resolveSettingsRoute(
   hash: string,
 ): SettingsRouteResolution {
   const rawCard = hash.replace(/^#/, '');
-  const cardId = rawCard.startsWith('st-card-') ? rawCard : undefined;
-  const cardSection = cardId === undefined ? undefined : settingsSectionForCard(cardId);
+  const requestedCard = rawCard.startsWith('st-card-') ? rawCard : undefined;
+  // A dissolved card (today only st-card-sidecar) has a hand-written target;
+  // anything else follows the search spec's canonical owner.
+  const legacyCard = requestedCard === undefined ? undefined : LEGACY_CARD_ALIASES[requestedCard];
+  const cardId = legacyCard?.cardId ?? requestedCard;
+  const cardSection = cardId === undefined
+    ? undefined
+    : (legacyCard?.section ?? settingsSectionForCard(cardId));
   const cardTab = cardId === undefined ? undefined : aiTabForCard(cardId);
   if (sectionParam === undefined || sectionParam === '') {
     return { status: 'ok', section: 'general', cardId };

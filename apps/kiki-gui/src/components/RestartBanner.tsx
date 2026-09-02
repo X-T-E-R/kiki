@@ -130,7 +130,7 @@ export function RestartBanner() {
             title={t('st.restart.desktopOnly')}
             onClick={() => { acknowledgeRestartRequirement(); }}
           >
-            {t('st.sidecar.acknowledge')}
+            {t('st.banner.acknowledge')}
           </button>
         )}
         <button
