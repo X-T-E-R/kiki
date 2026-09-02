@@ -122,10 +122,21 @@ function attachStorageListener(): void {
   storageListening = true;
 }
 
+function detachStorageListener(): void {
+  if (!storageListening) return;
+  if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+    window.removeEventListener('storage', handleStorageEvent);
+  }
+  storageListening = false;
+}
+
 export function subscribeLayoutPreferences(listener: () => void): () => void {
   listeners.add(listener);
   if (listeners.size === 1) attachStorageListener();
-  return () => { listeners.delete(listener); };
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) detachStorageListener();
+  };
 }
 
 export function layoutPreferencesSnapshot(): LayoutPreferences {
