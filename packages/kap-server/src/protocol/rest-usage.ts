@@ -78,6 +78,18 @@ export const usageTrendBucketSchema = z.object({
   start_at: z.number().int().nonnegative(),
   end_at: z.number().int().nonnegative(),
   groups: z.array(usageGroupSchema),
+  drilldown: z.object({
+    sessions: z.array(
+      z.object({
+        session_id: z.string(),
+        turn_ids: z.array(z.number().int().nonnegative()),
+        turn_count: z.number().int().nonnegative(),
+        unknown_turn_records: z.number().int().nonnegative(),
+        turn_ids_truncated: z.boolean(),
+      }),
+    ),
+    sessions_truncated: z.boolean(),
+  }),
 });
 
 export const usageSessionItemSchema = z.object({

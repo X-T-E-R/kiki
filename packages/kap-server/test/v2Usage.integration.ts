@@ -149,6 +149,7 @@ describe('server /api/v2/usage', () => {
         },
       },
       usageRecord(BASE_TIME + DAY + 60 * 60 * 1000, 'billing-a', 50, {
+        turnId: 7,
         agentId: 'agent-child',
         parentAgentId: 'main',
         provider: 'example-provider',
@@ -158,12 +159,14 @@ describe('server /api/v2/usage', () => {
     ]);
     await writeWire(home, WS_A, 'session-low', 'main', [
       usageRecord(BASE_TIME + 2 * DAY + 2 * 60 * 60 * 1000, 'unknown-price', 10, {
+        turnId: 3,
         agentId: 'main',
         modelAlias: 'alias-b',
       }),
     ]);
     await writeWire(home, WS_B, 'session-archived', 'main', [
       usageRecord(BASE_TIME + 3 * DAY + 2 * 60 * 60 * 1000, 'billing-a', 25, {
+        turnId: 9,
         agentId: 'archived-agent',
         modelAlias: 'alias-a',
       }),
@@ -233,6 +236,15 @@ describe('server /api/v2/usage', () => {
       model_alias: null,
       agent_id: null,
     });
+    expect(data.trend[0]?.drilldown.sessions).toEqual([
+      {
+        session_id: 'session-high',
+        turn_ids: [],
+        turn_count: 0,
+        unknown_turn_records: 1,
+        turn_ids_truncated: false,
+      },
+    ]);
     expect(data.reliability.unknown_price_models).toEqual(['unknown-price']);
     expect(data.reliability.includes_deleted_sessions).toBe(false);
   });
@@ -258,7 +270,39 @@ describe('server /api/v2/usage', () => {
     expect(data.summary.session_count).toBe(1);
     expect(data.trend).toHaveLength(1);
     expect(data.trend[0]?.groups[0]?.key).toBe('archived-agent');
+    expect(data.trend[0]?.drilldown).toEqual({
+      sessions: [
+        {
+          session_id: 'session-archived',
+          turn_ids: [9],
+          turn_count: 1,
+          unknown_turn_records: 0,
+          turn_ids_truncated: false,
+        },
+      ],
+      sessions_truncated: false,
+    });
     expect(data.sessions.items[0]).toMatchObject({ id: 'session-archived', archived: true });
+  });
+
+  it('uses east-positive timezone offsets for day bucket boundaries', async () => {
+    const east = await getData(
+      `?workspace.id=${WS_A}&granularity=day&timezone_offset_minutes=480`,
+    );
+    expect(east.trend.map((bucket) => bucket.start_at)).toEqual([
+      BASE_TIME - 8 * 60 * 60 * 1000,
+      BASE_TIME + DAY - 8 * 60 * 60 * 1000,
+      BASE_TIME + 2 * DAY - 8 * 60 * 60 * 1000,
+    ]);
+
+    const west = await getData(
+      `?workspace.id=${WS_A}&granularity=day&timezone_offset_minutes=-300`,
+    );
+    expect(west.trend.map((bucket) => bucket.start_at)).toEqual([
+      BASE_TIME - 19 * 60 * 60 * 1000,
+      BASE_TIME + DAY - 19 * 60 * 60 * 1000,
+      BASE_TIME + 2 * DAY - 19 * 60 * 60 * 1000,
+    ]);
   });
 
   it('sorts session details by estimated cost and paginates with condition-bound tokens', async () => {
