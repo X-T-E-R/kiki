@@ -33,6 +33,7 @@ const client = {
   listWorkspaceSkills: vi.fn(async () => ({ skills: [] })),
   listTools: vi.fn(async () => ({ tools: [] })),
   listNamedAgentProfiles: vi.fn(async () => ({ items: [] })),
+  patchConfig: vi.fn(async () => ({})),
 };
 
 vi.mock('../state/connection', () => ({
@@ -75,13 +76,14 @@ async function flush(): Promise<void> {
   });
 }
 
-async function renderSettings(initialPath: string): Promise<HTMLDivElement> {
+async function renderSettings(initialPath: string, handles?: { queryClient?: QueryClient }): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (handles !== undefined) handles.queryClient = queryClient;
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -241,5 +243,28 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(links[0]).toMatch(/^\/settings\/skills\?/);
     expect(links[1]).toMatch(/^\/settings\/mcp\?/);
     expect(links[2]).toMatch(/^\/settings\/plugins\?/);
+  });
+
+  it('saves tool policy with the narrow patch and invalidates only the tools query', async () => {
+    const handles: { queryClient?: QueryClient } = {};
+    const container = await renderSettings('/settings/automation', handles);
+    await flush();
+    const queryClient = handles.queryClient!;
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    client.patchConfig.mockClear();
+    const card = container.querySelector('#st-card-tools')!;
+    const saveButton = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save tool policy')!;
+    await click(saveButton);
+    await flush();
+    // The save is the narrow tools-domain patch, and the tools list (whose
+    // descriptor `active` flags derive from the policy) is invalidated —
+    // mcp-servers is not, this save never touches the mcp domain.
+    expect(client.patchConfig).toHaveBeenCalledWith({
+      tools: { enabled: [], disabled: [] },
+      replace_domains: ['tools'],
+    });
+    const invalidated = invalidateSpy.mock.calls.map(([arg]) => (arg as { queryKey?: unknown[] }).queryKey);
+    expect(invalidated).toContainEqual(['tools']);
+    expect(invalidated).not.toContainEqual(['mcp-servers']);
   });
 });

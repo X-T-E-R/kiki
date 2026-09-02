@@ -60,6 +60,10 @@ function ToolPolicyCard() {
       const echoed = await client.patchConfig(patch);
       queryClient.setQueryData(['config'], echoed);
       setDraft(toolPolicyDraftFromConfig(echoed));
+      // /api/v1/tools descriptors carry `active` computed from the saved
+      // policy — drop the stale list, but leave mcp-servers alone (this save
+      // never touches the mcp domain).
+      await queryClient.invalidateQueries({ queryKey: ['tools'] });
       setFeedback({ tone: 'success', text: t('st.runtime.saved') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
