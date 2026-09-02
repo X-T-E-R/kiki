@@ -2313,6 +2313,7 @@ function createPermissionModeService(initialMode: PermissionMode): IAgentPermiss
     setMode: (nextMode) => {
       mode = nextMode;
     },
+    setModeCeiling: () => {},
     setModeAndBroadcast: (nextMode) => {
       service.setMode(nextMode);
     },

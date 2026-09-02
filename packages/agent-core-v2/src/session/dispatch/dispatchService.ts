@@ -1,3 +1,4 @@
+import { Emitter } from '#/_base/event';
 import { abortable } from '#/_base/utils/abort';
 import { setClampedTimeout } from '#/_base/utils/timer';
 import { LifecycleScope } from '#/app/scopes';
@@ -57,6 +58,8 @@ import {
 
 export class SessionDispatchService implements ISessionDispatchService {
   declare readonly _serviceBrand: undefined;
+  private readonly delegatedRun = new Emitter<{ requesterAgentId: string; agentId: string }>();
+  readonly onDidDelegateRun = this.delegatedRun.event;
 
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
@@ -150,9 +153,13 @@ export class SessionDispatchService implements ISessionDispatchService {
         userLabel: input.userLabel,
         runtimeId: input.runtimeId ?? input.runtime.identity.runtimeId,
       });
-      child
-        .accessor.get(IAgentPermissionModeService)
-        .setMode(requester.accessor.get(IAgentPermissionModeService).mode);
+      const permissionMode = child.accessor.get(IAgentPermissionModeService);
+      if (input.permissionModeCeiling !== undefined) {
+        permissionMode.setModeCeiling(input.permissionModeCeiling);
+      }
+      permissionMode.setMode(
+        input.permissionMode ?? requester.accessor.get(IAgentPermissionModeService).mode,
+      );
       child.accessor.get(IAgentUserToolService).inheritUserTools(requesterUserTools);
       const dispatchChild = this.childView(
         child,
@@ -169,6 +176,9 @@ export class SessionDispatchService implements ISessionDispatchService {
       });
       await input.onCreated?.(dispatchChild);
       if (name !== undefined) this.names.commit(name, input.delegator);
+      if (input.delegator.kind === 'agent') {
+        this.recordDelegatedRun(input.requesterAgentId, dispatchChild.agentId);
+      }
       const request = { kind: 'prompt', prompt } as const;
       return {
         child: dispatchChild,
@@ -218,13 +228,14 @@ export class SessionDispatchService implements ISessionDispatchService {
         { details: { agentId: resolvedAgentId, delegator } },
       );
     }
+    const childDelegator = delegatorRef(meta)!;
     const child =
       this.lifecycle.get(resolvedAgentId) ??
       (await this.lifecycle.create({
         agentId: resolvedAgentId,
         forkedFrom: meta.forkedFrom,
         labels: labelsFromAgentMeta(meta),
-        delegator: delegatorRef(meta),
+        delegator: childDelegator,
       }));
     const data = child.accessor.get(IAgentProfileService).data();
     return this.childView(
@@ -248,6 +259,9 @@ export class SessionDispatchService implements ISessionDispatchService {
       typeof requestInput === 'string'
         ? { kind: 'prompt', prompt: requestInput }
         : requestInput;
+    if (options.requesterAgentId !== undefined) {
+      this.recordDelegatedRun(options.requesterAgentId, child.agentId);
+    }
     return {
       child,
       request,
@@ -269,6 +283,10 @@ export class SessionDispatchService implements ISessionDispatchService {
         [COLLABORATION_LATEST_TASK_LABEL]: runId,
       },
     });
+  }
+
+  recordDelegatedRun(requesterAgentId: string, agentId: string): void {
+    this.delegatedRun.fire({ requesterAgentId, agentId });
   }
 
   async wait<T>(
@@ -303,6 +321,16 @@ export class SessionDispatchService implements ISessionDispatchService {
           waitedMs: Date.now() - startedAt,
           item: completed[0],
           completedDuringWait: completed.slice(1),
+        };
+      }
+      const blockedKey = source.blockedKey?.();
+      if (blockedKey !== undefined && trackedKeys.includes(blockedKey)) {
+        wake.dispose();
+        return {
+          waitStatus: 'blocked',
+          waitedMs: Date.now() - startedAt,
+          item: current.find((candidate) => source.key(candidate) === blockedKey),
+          completedDuringWait: [],
         };
       }
       if (Date.now() >= deadline) {

@@ -295,7 +295,7 @@ export class SubagentTool implements ISubagentTool {
               resumeRef,
             ),
             args.prompt,
-            { signal: controller.signal },
+            { signal: controller.signal, requesterAgentId: this.callerAgentId },
           )
         : await this.dispatch.launch({
             delegator: { kind: 'agent', agentId: this.callerAgentId },
