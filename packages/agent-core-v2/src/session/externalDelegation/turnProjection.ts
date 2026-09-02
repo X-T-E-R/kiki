@@ -21,6 +21,7 @@ export class AgentTurnProjection {
   private readonly events: ExternalTurnEventView[] = [];
   private readonly items: SequencedItem[] = [];
   private readonly watermarks: { readonly time: number; readonly cursor: number }[] = [];
+  private readonly turnEnds = new Map<number, number>();
   private reliableTimes = true;
   private latestTime = 0;
 
@@ -45,6 +46,15 @@ export class AgentTurnProjection {
     return cursor;
   }
 
+  cursorBefore(time: number): number {
+    let cursor = 0;
+    for (const watermark of this.watermarks) {
+      if (watermark.time >= time) break;
+      cursor = watermark.cursor;
+    }
+    return cursor;
+  }
+
   cursorRange(startTime: number, endTime: number): { readonly start: number; readonly end: number } | undefined {
     if (
       !this.reliableTimes ||
@@ -55,8 +65,18 @@ export class AgentTurnProjection {
       return undefined;
     }
     const start = this.cursorAt(startTime);
-    const end = this.cursorAt(endTime);
+    const end = this.cursorBefore(endTime);
     return start <= end ? { start, end } : undefined;
+  }
+
+  hasTurnEnd(turnId: number): boolean {
+    return this.turnEnds.has(turnId);
+  }
+
+  turnEndCursor(turnId: number): number {
+    const cursor = this.turnEnds.get(turnId);
+    if (cursor === undefined) throw new Error(`Turn ${turnId} has no completion record`);
+    return cursor;
   }
 
   private async rebuild(records: AsyncIterable<WireRecord>): Promise<void> {
@@ -265,6 +285,7 @@ export class AgentTurnProjection {
             : 'failed',
       endedAt: iso(event.time),
     });
+    this.turnEnds.set(turnNumber(event), this.cursor);
   }
 
   private upsertStep(event: ProjectedEvent): void {

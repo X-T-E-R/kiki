@@ -97,12 +97,14 @@ describe('SessionExternalDelegationService', () => {
   let wireRecords: Map<string, WireRecord[]>;
   let journalReads: Map<string, number>;
   let journalYield: (() => Promise<void>) | undefined;
+  let nextTurnIds: Map<string, number>;
   let fakeExecutorApprovalResponses: unknown[];
 
   beforeEach(() => {
     disposables = new DisposableStore();
     ix = disposables.add(new TestInstantiationService());
     documents = new Map();
+    const documentStore = documents;
     handles = new Map();
     agentMetas = { main: { type: 'main', labels: {} } };
     completions = [];
@@ -118,13 +120,14 @@ describe('SessionExternalDelegationService', () => {
     wireRecords = new Map();
     journalReads = new Map();
     journalYield = undefined;
+    nextTurnIds = new Map();
     fakeExecutorApprovalResponses = [];
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
       _serviceBrand: undefined,
-      get: async <T>(_scope: string, key: string) => documents.get(key) as T | undefined,
-      set: async (_scope, key, value) => { documents.set(key, structuredClone(value)); },
+      get: async <T>(_scope: string, key: string) => documentStore.get(key) as T | undefined,
+      set: async (_scope, key, value) => { documentStore.set(key, structuredClone(value)); },
       delete: async () => {},
       list: async () => [],
       watch: () => () => ({ dispose: () => {} }),
@@ -301,9 +304,46 @@ describe('SessionExternalDelegationService', () => {
           });
           fakeExecutorApprovalResponses.push(response);
         }
-        let resolve!: (value: { summary: string; usage?: TokenUsage }) => void;
-        let reject!: (error: unknown) => void;
-        const completion = new Promise<{ summary: string; usage?: TokenUsage }>((res, rej) => { resolve = res; reject = rej; });
+        const turnId = (nextTurnIds.get(agentId) ?? 0) + 1;
+        nextTurnIds.set(agentId, turnId);
+        const turn = { id: turnId };
+        const journalStart = wireRecords.get(agentId)!.length;
+        const ensureTurnEnded = (reason: 'completed' | 'failed' | 'cancelled'): void => {
+          const records = wireRecords.get(agentId)!;
+          let ended = records.slice(journalStart).findLast((record) => record.type === 'turn.ended');
+          if (ended === undefined) {
+            const lastTime = records.reduce(
+              (time, record) => typeof record.time === 'number' ? Math.max(time, record.time) : time,
+              0,
+            );
+            if (!records.some((record) => record.type === 'turn.prompt' && record['turnId'] === turnId)) {
+              records.push({
+                type: 'turn.prompt',
+                time: lastTime + 1,
+                turnId,
+                input: [{ type: 'text', text: request.kind === 'prompt' ? request.prompt : 'retry' }],
+                origin: { kind: 'user' },
+              });
+            }
+            records.push({ type: 'turn.ended', time: lastTime + 2, turnId, reason });
+            ended = records.at(-1)!;
+          }
+          turn.id = ended['turnId'] as number;
+        };
+        let resolvePromise!: (value: { summary: string; usage?: TokenUsage }) => void;
+        let rejectPromise!: (error: unknown) => void;
+        const completion = new Promise<{ summary: string; usage?: TokenUsage }>((res, rej) => {
+          resolvePromise = res;
+          rejectPromise = rej;
+        });
+        const resolve = (value: { summary: string; usage?: TokenUsage }): void => {
+          ensureTurnEnded('completed');
+          resolvePromise(value);
+        };
+        const reject = (error: unknown): void => {
+          ensureTurnEnded(opts.signal.aborted ? 'cancelled' : 'failed');
+          rejectPromise(error);
+        };
         completions.push({ resolve, reject });
         const abort = (): void => {
           onRunAbort?.(agentId);
@@ -311,7 +351,7 @@ describe('SessionExternalDelegationService', () => {
         };
         if (opts.signal.aborted) abort();
         else opts.signal.addEventListener('abort', abort, { once: true });
-        return { agentId, turn: {} as never, completion };
+        return { agentId, turn: turn as never, completion };
       },
     });
     ix.stub(IAgentCollaborationRegistry, {
@@ -920,6 +960,75 @@ describe('SessionExternalDelegationService', () => {
     expect(journalReads.get('main')).toBe(2);
   });
 
+  it('rebuilds terminal bounds instead of sharing an older generation', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    const records = wireRecords.get('main')!;
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'answer' },
+        },
+      },
+    );
+    let releaseRebuild!: () => void;
+    const rebuildGate = new Promise<void>((resolve) => { releaseRebuild = resolve; });
+    let markRebuildStarted!: () => void;
+    const rebuildStarted = new Promise<void>((resolve) => { markRebuildStarted = resolve; });
+    let blocked = false;
+    journalYield = async () => {
+      if (blocked) return;
+      blocked = true;
+      markRebuildStarted();
+      await rebuildGate;
+    };
+
+    const staleReader = service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+    });
+    await rebuildStarted;
+    records.push({ type: 'turn.ended', time: 4, turnId: 1, reason: 'completed' });
+    completions[0]!.resolve({ summary: 'done' });
+    const terminalReader = service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+    });
+    await vi.waitFor(() => {
+      expect(journalReads.get('main')).toBe(3);
+    });
+    releaseRebuild();
+
+    await expect(terminalReader).resolves.toMatchObject({
+      items: [{ kind: 'turn', turnId: 't1', state: 'completed' }],
+    });
+    await expect(staleReader).resolves.toMatchObject({
+      items: [{ kind: 'turn', turnId: 't1', state: 'completed' }],
+    });
+    expect(journalReads.get('main')).toBe(3);
+  });
+
   it('freezes each dispatch slice across later runs and journal rebuilds', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const first = await service.dispatch({ authority, target: 'main', message: 'first' });
@@ -1048,7 +1157,7 @@ describe('SessionExternalDelegationService', () => {
     });
   });
 
-  it('freezes text transcript end before later local turns', async () => {
+  it('freezes text and structured bounds before a later turn during rebuild', async () => {
     const main = handles.get('main')!;
     const messages: ContextMessage[] = [{
       role: 'user',
@@ -1058,22 +1167,89 @@ describe('SessionExternalDelegationService', () => {
     vi.spyOn(main.accessor.get(IAgentContextMemoryService), 'get').mockImplementation(() => messages as never);
     const service = ix.get(ISessionExternalDelegationService);
     const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    const records = wireRecords.get('main')!;
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'owned result' },
+        },
+      },
+      { type: 'turn.ended', time: 4, turnId: 1, reason: 'completed' },
+    );
     messages.push({
       role: 'assistant',
       content: [{ type: 'text' as const, text: 'owned result' }],
       toolCalls: [],
     });
+    let releaseRebuild!: () => void;
+    const rebuildGate = new Promise<void>((resolve) => { releaseRebuild = resolve; });
+    let markRebuildStarted!: () => void;
+    const rebuildStarted = new Promise<void>((resolve) => { markRebuildStarted = resolve; });
+    let blocked = false;
+    journalYield = async () => {
+      if (blocked) return;
+      blocked = true;
+      markRebuildStarted();
+      await rebuildGate;
+    };
+
     completions[0]!.resolve({ summary: 'done' });
     await vi.waitFor(async () => {
       expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
     });
-    await service.transcript({ authority, dispatchId: dispatch.dispatchId, detail: 'text' });
-
+    await rebuildStarted;
     messages.push({
       role: 'user',
       content: [{ type: 'text' as const, text: 'later private turn' }],
       toolCalls: [],
     });
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 5,
+        turnId: 2,
+        input: [{ type: 'text', text: 'later private turn' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 6,
+        event: { type: 'step.begin', uuid: 's2', turnId: '2', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 7,
+        event: {
+          type: 'content.part',
+          stepUuid: 's2',
+          turnId: '2',
+          step: 1,
+          uuid: 'm2',
+          part: { type: 'text', text: 'private result' },
+        },
+      },
+      { type: 'turn.ended', time: 8, turnId: 2, reason: 'completed' },
+    );
+    releaseRebuild();
 
     await expect(service.transcript({
       authority,
@@ -1083,13 +1259,22 @@ describe('SessionExternalDelegationService', () => {
       items: [{ index: 1, role: 'assistant', text: 'owned result' }],
       nextCursor: undefined,
     });
+    const structured = await service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+    });
+    expect(structured.items).toMatchObject([{ kind: 'turn', turnId: 't1' }]);
+    expect(structured.items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ turnId: 't2' }),
+    ]));
     const stored = documents.get('root') as {
       dispatches: Record<string, { legacyTranscriptEnd: number }>;
     };
     expect(stored.dispatches[dispatch.dispatchId]!.legacyTranscriptEnd).toBe(2);
   });
 
-  it('migrates a legacy terminal slice without exposing earlier turns', async () => {
+  it('migrates a legacy terminal slice with strict repeated timestamp bounds', async () => {
     wireRecords.set('main', [
       {
         type: 'turn.prompt',
@@ -1140,7 +1325,43 @@ describe('SessionExternalDelegationService', () => {
           part: { type: 'text', text: 'delegated answer' },
         },
       },
+      {
+        type: 'context.append_loop_event',
+        time: 12,
+        event: {
+          type: 'content.part',
+          stepUuid: 's2',
+          turnId: '2',
+          step: 1,
+          uuid: 'm2',
+          part: { type: 'text', text: ' repeated' },
+        },
+      },
       { type: 'turn.ended', time: 13, turnId: 2, reason: 'completed' },
+      {
+        type: 'turn.prompt',
+        time: 14,
+        turnId: 3,
+        input: [{ type: 'text', text: 'private after' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 14,
+        event: { type: 'step.begin', uuid: 's3', turnId: '3', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 14,
+        event: {
+          type: 'content.part',
+          stepUuid: 's3',
+          turnId: '3',
+          step: 1,
+          uuid: 'm3',
+          part: { type: 'text', text: 'private result' },
+        },
+      },
     ]);
     documents.set('root', {
       version: 1,
@@ -1170,6 +1391,83 @@ describe('SessionExternalDelegationService', () => {
     const page = await service.transcript({
       authority,
       dispatchId: 'dispatch_legacy',
+      detail: 'items',
+    });
+    expect(page.items).toMatchObject([{
+      kind: 'turn',
+      turnId: 't2',
+      steps: [{ frames: [{ kind: 'text', text: 'delegated answer repeated' }] }],
+    }]);
+    expect(page.items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ turnId: 't1' }),
+      expect.objectContaining({ turnId: 't3' }),
+    ]));
+  });
+
+  it('keeps a legacy owned turn whose first record matches createdAt', async () => {
+    wireRecords.set('main', [
+      {
+        type: 'turn.prompt',
+        time: 8,
+        turnId: 1,
+        input: [{ type: 'text', text: 'private before' }],
+        origin: { kind: 'user' },
+      },
+      { type: 'turn.ended', time: 9, turnId: 1, reason: 'completed' },
+      {
+        type: 'turn.prompt',
+        time: 9,
+        turnId: 2,
+        input: [{ type: 'text', text: 'delegated work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 10,
+        event: { type: 'step.begin', uuid: 's2', turnId: '2', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 11,
+        event: {
+          type: 'content.part',
+          stepUuid: 's2',
+          turnId: '2',
+          step: 1,
+          uuid: 'm2',
+          part: { type: 'text', text: 'delegated answer' },
+        },
+      },
+      { type: 'turn.ended', time: 12, turnId: 2, reason: 'completed' },
+    ]);
+    documents.set('root', {
+      version: 1,
+      delegationId: 'delegation_legacy_start',
+      principalFingerprint: authority.principalFingerprint,
+      authorityFingerprint: authority.authorityFingerprint,
+      configFingerprint: authority.configFingerprint,
+      lifecycle: 'active',
+      createdAt: 1,
+      children: {},
+      dispatches: {
+        dispatch_legacy_start: {
+          dispatchId: 'dispatch_legacy_start',
+          target: 'main',
+          agentId: 'main',
+          status: 'completed',
+          createdAt: 9,
+          endedAt: 13,
+          transcriptStart: 0,
+        },
+      },
+      events: [],
+      nextEventSeq: 1,
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const page = await service.transcript({
+      authority,
+      dispatchId: 'dispatch_legacy_start',
       detail: 'items',
     });
     expect(page.items).toMatchObject([{ kind: 'turn', turnId: 't2' }]);
@@ -1273,7 +1571,7 @@ describe('SessionExternalDelegationService', () => {
           agentId: 'main',
           status: 'completed',
           createdAt: 1,
-          endedAt: 7,
+          endedAt: 8,
           transcriptStart: 0,
           transcriptCursorVersion: 2,
           legacyTranscriptStart: 0,

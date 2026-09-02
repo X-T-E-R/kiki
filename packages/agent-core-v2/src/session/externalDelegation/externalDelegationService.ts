@@ -105,6 +105,7 @@ interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedA
   endedAt?: number;
   transcriptStart: number;
   transcriptEnd?: number;
+  transcriptTurnId?: number;
   transcriptCursorVersion?: 2;
   legacyTranscriptStart?: number;
   legacyTranscriptEnd?: number;
@@ -143,7 +144,16 @@ interface ProjectionCacheEntry {
     readonly generation: number;
     readonly projection: AgentTurnProjection;
   };
-  rebuilding?: Promise<AgentTurnProjection>;
+  rebuilding?: {
+    readonly generation: number;
+    readonly promise: Promise<AgentTurnProjection>;
+  };
+}
+
+interface DispatchTranscriptBoundary {
+  readonly turnId: number;
+  readonly generation: number;
+  readonly legacyTranscriptEnd: number;
 }
 
 const STORE_KEY = 'root';
@@ -536,7 +546,7 @@ export class SessionExternalDelegationService
           ? undefined
           : projection.cursorRange(dispatch.createdAt, dispatch.endedAt);
         const start = ACTIVE.has(dispatch.status)
-          ? projection.cursorRange(dispatch.createdAt, dispatch.createdAt)?.start ?? projection.cursor
+          ? projection.cursorAt(dispatch.createdAt)
           : range?.start ?? projection.cursor;
         dispatch.transcriptStart = start;
         dispatch.transcriptEnd = ACTIVE.has(dispatch.status)
@@ -546,7 +556,9 @@ export class SessionExternalDelegationService
         dispatch.legacyTranscriptStart = legacyTranscriptStart;
         changed = true;
       } else if (!ACTIVE.has(dispatch.status) && dispatch.transcriptEnd === undefined) {
-        dispatch.transcriptEnd = projection.cursorAt(dispatch.endedAt ?? dispatch.createdAt);
+        dispatch.transcriptEnd = dispatch.transcriptTurnId === undefined
+          ? projection.cursorBefore(dispatch.endedAt ?? dispatch.createdAt)
+          : projection.turnEndCursor(dispatch.transcriptTurnId);
         changed = true;
       }
       if (!ACTIVE.has(dispatch.status) && dispatch.legacyTranscriptEnd === undefined) {
@@ -778,47 +790,94 @@ export class SessionExternalDelegationService
     ).agent;
   }
 
+  private projectionEntry(handle: IAgentScopeHandle): ProjectionCacheEntry {
+    let entry = this.projectionCache.get(handle.id);
+    if (entry !== undefined) return entry;
+    entry = { generation: 0 };
+    this.projectionCache.set(handle.id, entry);
+    this._register(handle.accessor.get(IEventBus).subscribe((event) => {
+      if ((event.constructor as Event2Class).durable) entry!.generation++;
+    }));
+    return entry;
+  }
+
   private async buildTurnProjection(
     handle: IAgentScopeHandle,
     cached = true,
+    requiredGeneration?: number,
+    requiredTurnId?: number,
   ): Promise<AgentTurnProjection> {
     const wire = handle.accessor.get(IWireService);
+    const entry = this.projectionEntry(handle);
     if (!cached) {
       await wire.flush();
       return AgentTurnProjection.build(wire.readJournal());
     }
-    let entry = this.projectionCache.get(handle.id);
-    if (entry === undefined) {
-      entry = { generation: 0 };
-      this.projectionCache.set(handle.id, entry);
-      this._register(handle.accessor.get(IEventBus).subscribe((event) => {
-        if ((event.constructor as Event2Class).durable) entry!.generation++;
-      }));
+    const required = requiredGeneration ?? entry.generation;
+    for (;;) {
+      if (
+        entry.snapshot !== undefined &&
+        entry.snapshot.generation >= required &&
+        (requiredTurnId === undefined || entry.snapshot.projection.hasTurnEnd(requiredTurnId))
+      ) {
+        return entry.snapshot.projection;
+      }
+      let rebuilding = entry.rebuilding;
+      if (rebuilding === undefined || rebuilding.generation !== required) {
+        const generation = Math.max(required, entry.generation);
+        const promise = (async () => {
+          await wire.flush();
+          const projection = await AgentTurnProjection.build(wire.readJournal());
+          if (entry.snapshot === undefined || entry.snapshot.generation <= generation) {
+            entry.snapshot = { generation, projection };
+          }
+          return projection;
+        })();
+        rebuilding = { generation, promise };
+        entry.rebuilding = rebuilding;
+      }
+      try {
+        await rebuilding.promise;
+      } finally {
+        if (entry.rebuilding === rebuilding) entry.rebuilding = undefined;
+      }
     }
-    if (entry.snapshot?.generation === entry.generation) return entry.snapshot.projection;
-    if (entry.rebuilding !== undefined) return entry.rebuilding;
-    const rebuilding = (async () => {
-      await wire.flush();
-      const generation = entry!.generation;
-      const projection = await AgentTurnProjection.build(wire.readJournal());
-      entry!.snapshot = { generation, projection };
-      return projection;
-    })();
-    entry.rebuilding = rebuilding;
-    try {
-      return await rebuilding;
-    } finally {
-      if (entry.rebuilding === rebuilding) entry.rebuilding = undefined;
-    }
+  }
+
+  private captureTranscriptBoundary(
+    handle: IAgentScopeHandle,
+    turnId: number,
+  ): DispatchTranscriptBoundary {
+    return {
+      turnId,
+      generation: this.projectionEntry(handle).generation,
+      legacyTranscriptEnd: handle.accessor.get(IAgentContextMemoryService).get().length,
+    };
   }
 
   private async captureTranscriptEnd(
     doc: ExternalDelegationDocument,
     dispatch: StoredDispatch,
+    boundary: DispatchTranscriptBoundary | undefined,
   ): Promise<void> {
     const handle = await this.materializeDispatchAgent(doc, dispatch);
-    dispatch.transcriptEnd = (await this.buildTurnProjection(handle)).cursor;
-    dispatch.legacyTranscriptEnd = handle.accessor.get(IAgentContextMemoryService).get().length;
+    const resolved = boundary ?? (
+      dispatch.transcriptTurnId === undefined
+        ? undefined
+        : this.captureTranscriptBoundary(handle, dispatch.transcriptTurnId)
+    );
+    dispatch.legacyTranscriptEnd ??= resolved?.legacyTranscriptEnd ?? dispatch.legacyTranscriptStart;
+    if (resolved === undefined) {
+      dispatch.transcriptEnd = dispatch.transcriptStart;
+      return;
+    }
+    const projection = await this.buildTurnProjection(
+      handle,
+      true,
+      resolved.generation,
+      resolved.turnId,
+    );
+    dispatch.transcriptEnd = projection.turnEndCursor(resolved.turnId);
   }
 
   private async startExistingDispatch(
@@ -962,17 +1021,38 @@ export class SessionExternalDelegationService
       }
       dispatch.status = 'running';
       dispatch.startedAt = Date.now();
+      dispatch.transcriptTurnId = run.turn.id;
       this.appendEvent(doc, dispatchId, 'started');
-      await this.persist();
       void run.completion.then(
-        (result) => this.finish(dispatchId, 'completed', result.summary, undefined, undefined, result.usage),
+        (result) => {
+          const boundary = this.captureTranscriptBoundary(dispatchRun.child.agent, run.turn.id);
+          return this.finish(
+            dispatchId,
+            'completed',
+            result.summary,
+            undefined,
+            undefined,
+            result.usage,
+            boundary,
+          );
+        },
         (error) => {
+          const boundary = this.captureTranscriptBoundary(dispatchRun.child.agent, run.turn.id);
           if (controller.signal.aborted) {
-            return this.finish(dispatchId, 'cancelled', undefined, 'Cancelled');
+            return this.finish(
+              dispatchId,
+              'cancelled',
+              undefined,
+              'Cancelled',
+              undefined,
+              undefined,
+              boundary,
+            );
           }
-          return this.failDispatch(dispatchId, error);
+          return this.failDispatch(dispatchId, error, boundary);
         },
       );
+      await this.persist();
     } catch (error) {
       if (controller.signal.aborted) {
         await this.finish(dispatchId, 'cancelled', undefined, 'Cancelled');
@@ -988,7 +1068,11 @@ export class SessionExternalDelegationService
    * session identity), and persist only the category code plus its
    * domain-owned description.
    */
-  private async failDispatch(dispatchId: string, error: unknown): Promise<void> {
+  private async failDispatch(
+    dispatchId: string,
+    error: unknown,
+    boundary?: DispatchTranscriptBoundary,
+  ): Promise<void> {
     const payload = toKimiErrorPayload(error);
     const category: ExternalFailureCategory = classifyExternalFailureCode(payload.code) ?? 'internal';
     this.log.error('External dispatch failed.', {
@@ -1000,7 +1084,15 @@ export class SessionExternalDelegationService
       raw: payload.message,
       stack: error instanceof Error ? error.stack : undefined,
     });
-    await this.finish(dispatchId, 'failed', undefined, externalFailureDescription(category), category);
+    await this.finish(
+      dispatchId,
+      'failed',
+      undefined,
+      externalFailureDescription(category),
+      category,
+      undefined,
+      boundary,
+    );
   }
 
   private async finish(
@@ -1010,12 +1102,17 @@ export class SessionExternalDelegationService
     error?: string,
     errorCode?: ExternalFailureCategory,
     usage?: TokenUsage,
+    boundary?: DispatchTranscriptBoundary,
   ): Promise<void> {
     const claimed = this.terminalizations.get(dispatchId);
     if (claimed !== undefined) return;
     const doc = this.document;
     const dispatch = doc?.dispatches[dispatchId];
     if (doc === undefined || dispatch === undefined || !ACTIVE.has(dispatch.status)) return;
+    if (boundary !== undefined) {
+      dispatch.transcriptTurnId = boundary.turnId;
+      dispatch.legacyTranscriptEnd = boundary.legacyTranscriptEnd;
+    }
     dispatch.status = status;
     dispatch.endedAt = Date.now();
     dispatch.result = result;
@@ -1028,7 +1125,7 @@ export class SessionExternalDelegationService
     const published = this.persist();
     const terminalization = (async () => {
       await this.executionSettled.get(dispatchId);
-      await this.captureTranscriptEnd(doc, dispatch);
+      await this.captureTranscriptEnd(doc, dispatch, boundary);
       await published;
       await this.persist();
     })();
