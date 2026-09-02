@@ -52,6 +52,7 @@ export class TranscriptWireAdapter {
   readonly #stepUsages = new Map<string, StepUsage[]>();
   readonly #tasks = new Map<string, TranscriptTask>();
   readonly #subagentTaskIds = new Map<string, string>();
+  readonly #replayedSubagentSpawns = new Map<string, string>();
   readonly #interactions = new Map<string, TranscriptInteraction>();
   readonly #canonicalTurns = new Set<string>();
   readonly #undoAnchors = new Set<string>();
@@ -353,24 +354,31 @@ export class TranscriptWireAdapter {
       const taskId = explicitTaskId ?? subagentId;
       if (explicitTaskId === undefined) this.#subagentTaskIds.delete(subagentId);
       else this.#subagentTaskIds.set(subagentId, explicitTaskId);
+      const startedAt = isoOf(record.time);
       const previous = this.#tasks.get(taskId);
-      const task: TranscriptTask = {
-        taskId,
-        kind: 'subagent',
-        state: previous?.state ?? 'running',
-        detached: previous?.detached ?? detached,
-        description: stringOf(record['description']) ?? previous?.description,
-        agentId: subagentId,
-        outputTail: previous?.outputTail ?? '',
-        startedAt: previous?.startedAt ?? isoOf(record.time),
-        endedAt: previous?.endedAt,
-        resultSummary: previous?.resultSummary,
-        usage: previous?.usage,
-        error: previous?.error,
-        stateReason: previous?.stateReason,
-      };
-      this.#tasks.set(taskId, task);
-      const operations: TranscriptOperation[] = [{ op: 'task.upsert', task }];
+      const sameRun =
+        previous?.taskId === taskId &&
+        previous.kind === 'subagent' &&
+        previous.agentId === subagentId &&
+        previous.startedAt === startedAt;
+      const operations: TranscriptOperation[] = [];
+      if (sameRun) {
+        this.#replayedSubagentSpawns.set(subagentId, taskId);
+      } else {
+        this.#replayedSubagentSpawns.delete(subagentId);
+        const task: TranscriptTask = {
+          taskId,
+          kind: 'subagent',
+          state: 'running',
+          detached,
+          description: stringOf(record['description']) ?? previous?.description,
+          agentId: subagentId,
+          outputTail: previous?.outputTail ?? '',
+          startedAt,
+        };
+        this.#tasks.set(taskId, task);
+        operations.push({ op: 'task.upsert', task });
+      }
       const hit = this.#tools.get(parentToolCallId) ?? this.lookups?.tool?.(parentToolCallId);
       if (hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === subagentId)) {
         const frame: ToolCallFrame = {
@@ -397,7 +405,34 @@ export class TranscriptWireAdapter {
       const subagentId = stringOf(record['subagentId']);
       if (subagentId === undefined) return [];
       const taskId = this.#subagentTaskIds.get(subagentId) ?? subagentId;
+      if (
+        record.type === 'subagent.started' &&
+        this.#replayedSubagentSpawns.get(subagentId) === taskId
+      ) {
+        return [];
+      }
+      this.#replayedSubagentSpawns.delete(subagentId);
       const previous = this.#tasks.get(taskId);
+      if (record.type === 'subagent.started') {
+        const at = isoOf(record.time);
+        const task: TranscriptTask = {
+          taskId,
+          kind: 'subagent',
+          state: 'running',
+          detached: previous?.detached ?? true,
+          description: previous?.description,
+          agentId: subagentId,
+          outputTail: previous?.outputTail ?? '',
+          startedAt:
+            previous?.kind === 'subagent' &&
+            previous.agentId === subagentId &&
+            previous.state === 'running'
+              ? (previous.startedAt ?? at)
+              : at,
+        };
+        this.#tasks.set(taskId, task);
+        return [{ op: 'task.upsert', task }];
+      }
       const terminal = record.type === 'subagent.completed' || record.type === 'subagent.failed';
       const task: TranscriptTask = {
         taskId,
@@ -412,10 +447,7 @@ export class TranscriptWireAdapter {
         description: previous?.description,
         agentId: subagentId,
         outputTail: previous?.outputTail ?? '',
-        startedAt:
-          record.type === 'subagent.started'
-            ? isoOf(record.time)
-            : (previous?.startedAt ?? isoOf(record.time)),
+        startedAt: previous?.startedAt ?? isoOf(record.time),
         endedAt: terminal ? isoOf(record.time) : previous?.endedAt,
         resultSummary: stringOf(record['resultSummary']) ?? previous?.resultSummary,
         usage: usageOf(record['usage']) ?? previous?.usage,

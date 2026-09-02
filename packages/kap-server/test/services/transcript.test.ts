@@ -1164,6 +1164,59 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.getTask('agent-1')).toMatchObject({ kind: 'subagent', state: 'running' });
   });
 
+  it('resets terminal fields when one agent starts a second run without a task id', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
+
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        time: 1_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-1',
+        description: 'First run',
+        runInBackground: true,
+      }),
+    );
+    feed(ev({ type: 'subagent.started', time: 1_100, subagentId: 'agent-1' }));
+    feed(ev({ type: 'subagent.suspended', time: 1_200, subagentId: 'agent-1', reason: 'approval' }));
+    feed(
+      ev({
+        type: 'subagent.completed',
+        time: 1_300,
+        subagentId: 'agent-1',
+        resultSummary: 'done',
+        usage: { inputOther: 10, output: 5, inputCacheRead: 3, inputCacheCreation: 2 },
+      }),
+    );
+    feed(ev({ type: 'subagent.failed', time: 1_400, subagentId: 'agent-1', error: 'boom' }));
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        time: 2_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-2',
+        description: 'Second run',
+        runInBackground: false,
+      }),
+    );
+    feed(ev({ type: 'subagent.started', time: 2_100, subagentId: 'agent-1' }));
+
+    expect(tx.getTask('agent-1')).toEqual({
+      taskId: 'agent-1',
+      kind: 'subagent',
+      state: 'running',
+      detached: false,
+      description: 'Second run',
+      agentId: 'agent-1',
+      outputTail: '',
+      startedAt: new Date(2_000).toISOString(),
+    });
+  });
+
   it('recovers the agent → task association from a backfilled task.started', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');
@@ -2362,7 +2415,7 @@ describe('bindSessionTranscript', () => {
     expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
       state: 'completed',
       resultSummary: 'done',
-      startedAt: new Date(3_000).toISOString(),
+      startedAt: new Date(2_000).toISOString(),
       endedAt: new Date(5_000).toISOString(),
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();

@@ -1542,7 +1542,7 @@ describe('TranscriptWireAdapter', () => {
       resultSummary: 'scanned 12 files',
       stateReason: 'approval',
       usage: { inputOther: 10, output: 5, inputCacheRead: 3, inputCacheCreation: 2 },
-      startedAt: new Date(4_200).toISOString(),
+      startedAt: new Date(4_100).toISOString(),
       endedAt: new Date(5_000).toISOString(),
     });
     expect(transcript.getTask('child-2')).toMatchObject({
@@ -1555,6 +1555,51 @@ describe('TranscriptWireAdapter', () => {
       endedAt: new Date(5_200).toISOString(),
     });
     expect(transcript.getTurn('t1')?.origin).toMatchObject({ kind: 'task', taskId: 'shell-2' });
+  });
+
+  it('resets terminal fields when one agent starts a second run without a task id', () => {
+    const transcript = replay([
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-1',
+        description: 'First run',
+        runInBackground: true,
+        time: 1_000,
+      },
+      { type: 'subagent.started', subagentId: 'child-1', time: 1_100 },
+      { type: 'subagent.suspended', subagentId: 'child-1', reason: 'approval', time: 1_200 },
+      {
+        type: 'subagent.completed',
+        subagentId: 'child-1',
+        resultSummary: 'done',
+        usage: { inputOther: 10, output: 5, inputCacheRead: 3, inputCacheCreation: 2 },
+        time: 1_300,
+      },
+      { type: 'subagent.failed', subagentId: 'child-1', error: 'boom', time: 1_400 },
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-2',
+        description: 'Second run',
+        runInBackground: false,
+        time: 2_000,
+      },
+      { type: 'subagent.started', subagentId: 'child-1', time: 2_100 },
+    ]);
+
+    expect(transcript.getTask('child-1')).toEqual({
+      taskId: 'child-1',
+      kind: 'subagent',
+      state: 'running',
+      detached: false,
+      description: 'Second run',
+      agentId: 'child-1',
+      outputTail: '',
+      startedAt: new Date(2_000).toISOString(),
+    });
   });
 
   it('anchors task references after the current turn and leaves context-free references unanchored', () => {
