@@ -416,6 +416,7 @@ class FixtureServer {
       { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
     ]);
     this.mcpManaged = structuredClone(data.mcpManagedServers ?? []);
+    this.usageV2 = data.usageV2 ?? null;
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
       this.sessions.set(session.id, new FixtureSession(bound, bind(data.snapshots?.[session.id] ?? {}, session.id)));
@@ -918,6 +919,9 @@ class FixtureServer {
 
   /** `/api/v2/mcp/*` — the unified MCP management plane the settings page writes through. */
   routeV2(res, path, query, body, method) {
+    if (path === '/usage' && method === 'GET') {
+      return this.usageV2Response(res, query);
+    }
     if (path === '/mcp/servers' && method === 'GET') {
       return this.envelope(res, this.managedMcpServers());
     }
@@ -952,6 +956,62 @@ class FixtureServer {
 
   managedMcpServers() {
     return this.mcpManaged.map((entry) => ({ ...entry, config: { ...entry.config } }));
+  }
+
+  /**
+   * `GET /api/v2/usage` — serves the scenario's prebuilt `usageV2` seed. The
+   * seed carries per-granularity trends (plus an agent-dimension variant);
+   * the handler echoes the requested axes, honors `range=today` with the
+   * smaller summary, and paginates session items by numeric offset tokens so
+   * load-more flows are exercisable. Scenarios without a seed get a 40404.
+   */
+  usageV2Response(res, query) {
+    const seed = this.usageV2;
+    if (seed === null || seed === undefined) {
+      return this.envelope(res, null, 40404, 'no usage fixture for this scenario');
+    }
+    const granularity = query.get('granularity') ?? 'day';
+    const dimension = query.get('dimension') ?? 'model';
+    const range = query.get('range') ?? 'all';
+    const includeArchived = query.get('include_archived') !== 'false';
+    const workspace = query.get('workspace.id');
+    const pageSize = Math.min(100, Math.max(1, Number(query.get('page_size') ?? 25) || 25));
+    const offset = Math.max(0, Number(query.get('page_token') ?? 0) || 0);
+
+    let items = seed.sessions;
+    if (!includeArchived) items = items.filter((item) => item.archived !== true);
+    if (workspace !== null) items = items.filter((item) => item.workspace_id === workspace);
+    const pageItems = items.slice(offset, offset + pageSize);
+    const hasMore = offset + pageItems.length < items.length;
+
+    const dimensionTrend = seed.trendByDimension?.[dimension];
+    const trend =
+      dimensionTrend?.[granularity] ?? seed.trend[granularity] ?? seed.trend.day ?? [];
+
+    return this.envelope(res, {
+      query: {
+        granularity,
+        range: {
+          preset: range,
+          start_at: query.get('start_at') !== null ? Number(query.get('start_at')) : null,
+          end_at: query.get('end_at') !== null ? Number(query.get('end_at')) : null,
+          defaulted_to_all_history: query.get('range') === null,
+        },
+        dimension,
+        workspace_ids: workspace !== null ? [workspace] : [],
+        include_archived: includeArchived,
+        timezone_offset_minutes: Number(query.get('timezone_offset_minutes') ?? 0) || 0,
+      },
+      summary: range === 'today' ? seed.summaryToday : { ...seed.summary, session_count: items.length },
+      trend,
+      sessions: {
+        items: pageItems,
+        total: items.length,
+        has_more: hasMore,
+        next_page_token: hasMore ? String(offset + pageItems.length) : null,
+      },
+      reliability: seed.reliability,
+    });
   }
 
   route(res, path, query, body, method) {

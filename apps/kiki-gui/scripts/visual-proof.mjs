@@ -138,7 +138,15 @@ const STRINGS = {
     compactContext: 'Compact context',
     compactOlderContext: 'Compact older context',
     contextDetails: 'Context details',
-    sessionUsage: 'Session usage',
+    sessionUsage: 'Session cumulative',
+    usageAllHistory: 'All history · no time filter applied',
+    usageEstimatedCost: 'Estimated cost',
+    usagePartial: 'partially unknown',
+    usageReliability: 'Data reliability',
+    usageDeletedExcluded: 'Deleted sessions are not included',
+    usageFiveHourRhythm: '5h rhythm',
+    usageDrilldown: 'Sessions in this bucket',
+    usageSubagentPattern: /subagent/,
     pasteAsPlainText: 'Paste as plain text',
     contextMenuSelectAll: 'Select all',
     bannerPattern: /Connection lost|Disconnected from the server/,
@@ -272,7 +280,15 @@ const STRINGS = {
     compactContext: '压缩上下文',
     compactOlderContext: '压缩较早上下文',
     contextDetails: '上下文详情',
-    sessionUsage: '会话用量',
+    sessionUsage: '本会话累计',
+    usageAllHistory: '全部历史 · 未套用时间过滤',
+    usageEstimatedCost: '估算成本',
+    usagePartial: '部分未知',
+    usageReliability: '数据可信度',
+    usageDeletedExcluded: '不含已删除会话',
+    usageFiveHourRhythm: '5h 节奏',
+    usageDrilldown: '该时间桶内的会话',
+    usageSubagentPattern: /子代理/,
     pasteAsPlainText: '粘贴为纯文本',
     contextMenuSelectAll: '全选',
     bannerPattern: /正在重连|已与服务器断开连接/,
@@ -2869,6 +2885,82 @@ async function scenarioSearch() {
 }
 
 /**
+ * /usage V2 dashboard (§15.3): the no-query all-history default with the
+ * explicit chip and the cost/tokens KPIs, the three-axis filter bar driving
+ * the URL, the 5h rhythm granularity with a bucket drilldown into
+ * session/turn ids, the agent dimension's parent/child breakdown tree, the
+ * always-visible data-reliability card, and the 390px mobile layout.
+ */
+async function scenarioUsageDashboard() {
+  const usageUrl = (query) =>
+    `${WEB_URL}/usage${query === '' ? '' : `?${query}&`}${query === '' ? '?' : ''}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+
+  // 1. No-query visit: all history, said out loud; the unknown-price note and
+  //    the partially-unknown cost chip come from the seeded `mystery-9` model.
+  await page.goto(usageUrl(''), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`text=${S.usageEstimatedCost}`, { timeout: 15_000 });
+  await page.waitForSelector(`text=${S.usageAllHistory}`, { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.usagePartial}`, { timeout: 10_000 });
+  await page.waitForSelector('text=mystery-9', { timeout: 10_000 });
+  await page.waitForSelector('[data-usage-trend]', { timeout: 10_000 });
+  await page.waitForTimeout(500);
+  await shot('usage-all-history');
+
+  // 2. Three axes + the fixed reliability card (scrolled into view).
+  await page.locator('[data-axis="range"] [data-axis-value="last_7_days"]').click();
+  await page.locator('[data-axis="dimension"] [data-axis-value="agent"]').click();
+  await page.waitForSelector('[data-usage-reliability]', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.usageDeletedExcluded}`, { timeout: 10_000 });
+  await page.waitForTimeout(500);
+  await page.locator('[data-usage-reliability]').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  await shot('usage-filters-reliability');
+
+  // 3. Agent breakdown tab: parent/child tree expands to the researcher rows.
+  await page.locator('[data-usage-tab="breakdown"]').click();
+  await page.waitForSelector('[data-usage-agent-tree]', { timeout: 10_000 });
+  await page.locator('[data-usage-agent-tree] button', { hasText: S.usageSubagentPattern }).first().click();
+  await page.waitForSelector('text=researcher', { timeout: 5000 });
+  await page.waitForTimeout(300);
+  await shot('usage-breakdown-agents');
+
+  // 4. 5h rhythm: switch granularity, then drill into a bucket's sessions.
+  await page.locator('[data-axis="granularity"] [data-axis-value="five_hour"]').click();
+  await page.waitForTimeout(700);
+  await page.locator('[data-usage-trend] [data-bucket]').last().click();
+  await page.waitForSelector('[data-usage-drilldown]', { timeout: 10_000 });
+  const drillText = await page.locator('[data-usage-drilldown]').innerText();
+  if (!drillText.includes(S.usageDrilldown)) throw new Error(`drilldown missing title: ${drillText}`);
+  if (!drillText.includes('session_fixture_usage_zeta')) {
+    throw new Error(`drilldown missing seeded session: ${drillText}`);
+  }
+  await shot('usage-fivehour-drilldown');
+
+  // 5. Mobile: narrow viewport must not overflow; the strip and filter bar wrap.
+  await resizeViewport(390);
+  await page.goto(usageUrl('granularity=day'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  if (overflow > 1) throw new Error(`390px layout overflows by ${overflow}px`);
+  // The main pane clips horizontal overflow (overflow-y auto), so also assert
+  // every axis group stays inside the viewport instead of bleeding off-edge.
+  const bleeders = await page.evaluate(() => {
+    const names = [];
+    for (const el of document.querySelectorAll('[data-axis]')) {
+      const rect = el.getBoundingClientRect();
+      if (rect.right > window.innerWidth + 1 || rect.left < -1) names.push(el.dataset.axis);
+    }
+    return names;
+  });
+  if (bleeders.length > 0) throw new Error(`390px axis groups bleed off-edge: ${bleeders.join(',')}`);
+  await shot('usage-mobile-390');
+  await resizeViewport(1440);
+}
+
+/**
  * Session footer context ring: open the composer's ring detail card (amber at
  * ~57%), assert its lifetime session-usage rows, verify clicking the card
  * (not the ring) triggers compaction; then open the textarea's custom
@@ -3125,6 +3217,7 @@ const SCENARIOS = [
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
   ['context-ring', scenarioContextRing],
+  ['usage-dashboard', scenarioUsageDashboard],
   ['terminal', scenarioTerminal],
   ['capabilities', scenarioCapabilities],
   ['i18n', scenarioI18n],
