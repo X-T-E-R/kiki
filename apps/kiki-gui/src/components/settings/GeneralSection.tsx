@@ -50,6 +50,7 @@ export function GeneralSection() {
   const [planMode, setPlanMode] = useState(false);
   const [planGate, setPlanGate] = useState<'free' | 'gated'>('free');
   const [planGateTimeoutS, setPlanGateTimeoutS] = useState('60');
+  const [compatOpen, setCompatOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [compatibilityFeedback, setCompatibilityFeedback] = useState<Feedback>(null);
@@ -506,6 +507,16 @@ export function GeneralSection() {
       <SectionCard id="st-card-compatibility-home" title={t('st.compat.title')} badge="desktop" aside={isDesktop ? undefined : t('st.compat.browserHint')}>
         {isDesktop ? (
         <>
+        <button
+          type="button"
+          aria-expanded={compatOpen}
+          onClick={() => { setCompatOpen(!compatOpen); }}
+          className="mb-2 text-[11px] font-medium text-accent hover:underline"
+        >
+          {t(compatOpen ? 'st.compat.collapse' : 'st.compat.expand')}
+        </button>
+        {compatOpen ? (
+        <>
         <fieldset disabled={compatibilityBusy || configImporting || migrating !== null || sessionsBusy !== null} className="space-y-4">
           <div>
             <label htmlFor="compatibility-home-kind" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
@@ -662,6 +673,8 @@ export function GeneralSection() {
           onConfirm={() => void moveSessions()}
           onCancel={() => { setConfirmSessionsMove(false); }}
         />
+        </>
+        ) : null}
         </>
         ) : null}
       </SectionCard>

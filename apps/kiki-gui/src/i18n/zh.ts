@@ -901,6 +901,8 @@ export const zh: Record<I18nKey, string> = {
   'st.desktop.quit': '退出 Kiki',
   'st.desktop.quitDesc': '退出 Kiki 并停止其本地后端。',
   'st.desktop.browserHint': '安装并打开 Kiki 桌面应用，以更改原生窗口和通知行为。',
+  'st.compat.expand': '展开 Kimi Home 与迁移选项',
+  'st.compat.collapse': '收起 Kimi Home 与迁移选项',
   'st.compat.title': 'Kimi Home',
   'st.compat.home': 'Kimi Code OAuth Home',
   'st.compat.homeKimi': 'Kimi Code 默认 Home',

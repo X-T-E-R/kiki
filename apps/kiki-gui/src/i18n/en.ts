@@ -919,6 +919,8 @@ export const en = {
   'st.desktop.quitDesc': 'Exit Kiki and stop its local backend.',
   'st.desktop.browserHint':
     'Install and open the Kiki desktop app to change native window and notification behaviour.',
+  'st.compat.expand': 'Show Kimi Home and migration options',
+  'st.compat.collapse': 'Hide Kimi Home and migration options',
   'st.compat.title': 'Kimi Home',
   'st.compat.home': 'Kimi Code OAuth Home',
   'st.compat.homeKimi': 'Kimi Code default Home',

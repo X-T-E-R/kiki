@@ -34,7 +34,7 @@ function ScopeHeader({ section, workspaceName }: { section: SectionId; workspace
   if (meta === undefined) return null;
   const labelKey = SECTIONS.find((candidate) => candidate.id === section)?.labelKey;
   return (
-    <header data-settings-scope-header={meta.scopes.join('+')} className="mb-3 border-b border-hairline pb-3">
+    <header data-settings-scope-header={meta.scopes.join('+')} className="py-3">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <h2 className="font-display text-[15px] font-semibold tracking-tight text-ink">
           {labelKey === undefined ? section : t(labelKey)}
@@ -233,12 +233,18 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <UnknownSettingsSection section={section ?? ''} onSearchHit={onSearchHit} />
             </div>
           ) : (
-            <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto px-4 py-3 lg:px-8">
-              <div className="mx-auto max-w-[760px]">
-                <ScopeHeader section={active} workspaceName={workspaceScopeName} />
-                <div className="space-y-3">{pane}</div>
+            <>
+              <div className="shrink-0 border-b border-hairline px-4 lg:px-8">
+                <div className="mx-auto max-w-[760px]">
+                  <ScopeHeader section={active} workspaceName={workspaceScopeName} />
+                </div>
               </div>
-            </div>
+              <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto px-4 py-3 lg:px-8">
+                <div className="mx-auto max-w-[760px]">
+                  <div className="space-y-3">{pane}</div>
+                </div>
+              </div>
+            </>
           )}
         </div>
       </main>

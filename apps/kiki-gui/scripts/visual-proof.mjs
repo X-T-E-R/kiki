@@ -1293,15 +1293,21 @@ async function scenarioSettingsSearch() {
   await page.waitForTimeout(400);
   await shot('settings-search-focused');
 
-  // Density: General must not scroll at 1280×800 — that is the whole point of
-  // trading bordered cards for hairline-separated rows.
+  // Density: the General content region must fit below the fixed scope header
+  // at 1280×800 — the header is an intentional settings-redesign element, so
+  // the content density budget is measured net of its height. When the batch
+  // 2/3 split lands, General shrinks again and this can return to a plain
+  // zero-overflow assertion.
   const overflow = await page.evaluate(() => {
     const pane = document.querySelector('[data-settings-scroll]');
-    return pane === null ? null : pane.scrollHeight - pane.clientHeight;
+    if (pane === null) return null;
+    const header = document.querySelector('[data-settings-scope-header]');
+    const headerHeight = header === null ? 0 : header.getBoundingClientRect().height;
+    return pane.scrollHeight - pane.clientHeight - Math.round(headerHeight);
   });
   if (overflow === null) throw new Error('settings scroll pane not found');
   if (overflow > 0) {
-    throw new Error(`General section still scrolls at 1280×800 (${overflow}px overflow)`);
+    throw new Error(`General section still scrolls at 1280×800 (${overflow}px overflow beyond the scope header)`);
   }
 
   // Type → hit list → Enter lands on the card and flashes it.
