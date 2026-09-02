@@ -9,6 +9,8 @@ import { Error2 } from '#/_base/errors/errors';
 import type { ErrorCode } from '#/errors';
 import { ILogService } from '#/_base/log/log';
 import { IFlagService } from '#/app/flag/flag';
+import { IEventBus } from '#/app/event/eventBus';
+import type { Event2 } from '#/app/event/event2';
 import { IConfigService } from '#/app/config/config';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -93,6 +95,7 @@ describe('SessionExternalDelegationService', () => {
   let sentMessages: Parameters<IAgentCollaborationMessagingService['send']>[0][];
   let messagesByKey: Map<string, AgentMessageAcceptance>;
   let wireRecords: Map<string, WireRecord[]>;
+  let journalReads: Map<string, number>;
   let journalYield: (() => Promise<void>) | undefined;
   let fakeExecutorApprovalResponses: unknown[];
 
@@ -113,6 +116,7 @@ describe('SessionExternalDelegationService', () => {
     sentMessages = [];
     messagesByKey = new Map();
     wireRecords = new Map();
+    journalReads = new Map();
     journalYield = undefined;
     fakeExecutorApprovalResponses = [];
 
@@ -191,17 +195,39 @@ describe('SessionExternalDelegationService', () => {
     ): IAgentScopeHandle => {
       const agent = new TestInstantiationService();
       disposables.add(agent);
-      wireRecords.set(id, []);
+      const wireEvents = disposables.add(new Emitter<Event2<unknown>>());
+      const records: WireRecord[] = [];
+      const push = records.push.bind(records);
+      records.push = (...items) => {
+        const length = push(...items);
+        for (const record of items) {
+          wireEvents.fire({
+            type: record.type,
+            constructor: { durable: true },
+          } as unknown as Event2<unknown>);
+        }
+        return length;
+      };
+      wireRecords.set(id, records);
+      agent.set(IEventBus, {
+        _serviceBrand: undefined,
+        publish: (event) => wireEvents.fire(event),
+        subscribe: ((handler: (event: Event2<unknown>) => void) =>
+          wireEvents.event(handler)) as IEventBus['subscribe'],
+      });
       agent.set(IWireService, {
         _serviceBrand: undefined,
         seal: async () => {},
         appendRecord: (record: WireRecord) => { wireRecords.get(id)!.push(record); },
-        readJournal: () => (async function* () {
-          for (const record of wireRecords.get(id)!) {
-            await journalYield?.();
-            yield record;
-          }
-        })(),
+        readJournal: () => {
+          journalReads.set(id, (journalReads.get(id) ?? 0) + 1);
+          return (async function* () {
+            for (const record of wireRecords.get(id)!) {
+              await journalYield?.();
+              yield record;
+            }
+          })();
+        },
         flush: async () => {},
       });
       agent.stub(IAgentProfileService, {
@@ -364,6 +390,44 @@ describe('SessionExternalDelegationService', () => {
     const continued = await service.continue({ authority, dispatchId: first.dispatchId, message: 'continue' });
     expect(continued.continuationOf).toBe(first.dispatchId);
     expect(createdWith).toHaveLength(1);
+  });
+
+  it('releases a dispatch key when the durable queue write fails', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    await service.list(authority);
+    vi.spyOn(ix.get(IAtomicDocumentStore), 'set').mockRejectedValueOnce(new Error('write failed'));
+
+    await expect(service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'retry_child',
+      profileName: 'coder',
+      message: 'work',
+      dispatchKey: 'retry-key',
+    })).rejects.toThrow('write failed');
+    const afterFailure = documents.get('root') as {
+      children: Record<string, unknown>;
+      dispatches: Record<string, unknown>;
+      dispatchKeys?: Record<string, unknown>;
+      nextEventSeq: number;
+    };
+    expect(afterFailure.children).toEqual({});
+    expect(afterFailure.dispatches).toEqual({});
+    expect(afterFailure.dispatchKeys).toBeUndefined();
+    expect(afterFailure.nextEventSeq).toBe(1);
+
+    const retried = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'retry_child',
+      profileName: 'coder',
+      message: 'work',
+      dispatchKey: 'retry-key',
+    });
+    expect(retried.status).toBe('queued');
+    expect(runAgentIds).toEqual(['external-child']);
+    expect(createdWith).toHaveLength(1);
+    expect(completions).toHaveLength(1);
   });
 
   it('queues idempotent mailbox messages only for an owned named child', async () => {
@@ -851,6 +915,9 @@ describe('SessionExternalDelegationService', () => {
     expect(itemsA).toEqual(itemsB);
     expect(eventsA.items.map((item) => item.event.type)).toEqual(['message.delta']);
     expect(itemsA).toMatchObject({ items: [{ kind: 'turn', turnId: 't1' }] });
+    await service.events({ authority, dispatchId: dispatch.dispatchId, detail: 'turn' });
+    await service.transcript({ authority, dispatchId: dispatch.dispatchId, detail: 'items' });
+    expect(journalReads.get('main')).toBe(2);
   });
 
   it('freezes each dispatch slice across later runs and journal rebuilds', async () => {
@@ -979,6 +1046,136 @@ describe('SessionExternalDelegationService', () => {
       transcriptCursorVersion: 2,
       legacyTranscriptStart: 1,
     });
+  });
+
+  it('freezes text transcript end before later local turns', async () => {
+    const main = handles.get('main')!;
+    const messages: ContextMessage[] = [{
+      role: 'user',
+      content: [{ type: 'text' as const, text: 'before' }],
+      toolCalls: [],
+    }];
+    vi.spyOn(main.accessor.get(IAgentContextMemoryService), 'get').mockImplementation(() => messages as never);
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    messages.push({
+      role: 'assistant',
+      content: [{ type: 'text' as const, text: 'owned result' }],
+      toolCalls: [],
+    });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+    await service.transcript({ authority, dispatchId: dispatch.dispatchId, detail: 'text' });
+
+    messages.push({
+      role: 'user',
+      content: [{ type: 'text' as const, text: 'later private turn' }],
+      toolCalls: [],
+    });
+
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'text',
+    })).resolves.toEqual({
+      items: [{ index: 1, role: 'assistant', text: 'owned result' }],
+      nextCursor: undefined,
+    });
+    const stored = documents.get('root') as {
+      dispatches: Record<string, { legacyTranscriptEnd: number }>;
+    };
+    expect(stored.dispatches[dispatch.dispatchId]!.legacyTranscriptEnd).toBe(2);
+  });
+
+  it('migrates a legacy terminal slice without exposing earlier turns', async () => {
+    wireRecords.set('main', [
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'private before' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'private answer' },
+        },
+      },
+      { type: 'turn.ended', time: 4, turnId: 1, reason: 'completed' },
+      {
+        type: 'turn.prompt',
+        time: 10,
+        turnId: 2,
+        input: [{ type: 'text', text: 'delegated work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 11,
+        event: { type: 'step.begin', uuid: 's2', turnId: '2', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 12,
+        event: {
+          type: 'content.part',
+          stepUuid: 's2',
+          turnId: '2',
+          step: 1,
+          uuid: 'm2',
+          part: { type: 'text', text: 'delegated answer' },
+        },
+      },
+      { type: 'turn.ended', time: 13, turnId: 2, reason: 'completed' },
+    ]);
+    documents.set('root', {
+      version: 1,
+      delegationId: 'delegation_legacy',
+      principalFingerprint: authority.principalFingerprint,
+      authorityFingerprint: authority.authorityFingerprint,
+      configFingerprint: authority.configFingerprint,
+      lifecycle: 'active',
+      createdAt: 1,
+      children: {},
+      dispatches: {
+        dispatch_legacy: {
+          dispatchId: 'dispatch_legacy',
+          target: 'main',
+          agentId: 'main',
+          status: 'completed',
+          createdAt: 9,
+          endedAt: 14,
+          transcriptStart: 1,
+        },
+      },
+      events: [],
+      nextEventSeq: 1,
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const page = await service.transcript({
+      authority,
+      dispatchId: 'dispatch_legacy',
+      detail: 'items',
+    });
+    expect(page.items).toMatchObject([{ kind: 'turn', turnId: 't2' }]);
+    expect(page.items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ turnId: 't1' }),
+    ]));
   });
 
   it('rebuilds items and turn events from the durable agent journal', async () => {

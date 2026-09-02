@@ -16,6 +16,8 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes, isError2, toKimiErrorPayload, type ErrorCode } from '#/errors';
 import { IFlagService } from '#/app/flag/flag';
+import { IEventBus } from '#/app/event/eventBus';
+import type { Event2Class } from '#/app/event/event2';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -105,6 +107,7 @@ interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedA
   transcriptEnd?: number;
   transcriptCursorVersion?: 2;
   legacyTranscriptStart?: number;
+  legacyTranscriptEnd?: number;
   result?: string;
   error?: string;
   errorCode?: ExternalFailureCategory;
@@ -134,6 +137,15 @@ interface ExternalDelegationDocument {
   truncatedBeforeEventSeq?: number;
 }
 
+interface ProjectionCacheEntry {
+  generation: number;
+  snapshot?: {
+    readonly generation: number;
+    readonly projection: AgentTurnProjection;
+  };
+  rebuilding?: Promise<AgentTurnProjection>;
+}
+
 const STORE_KEY = 'root';
 const TASK_NAME = /^(?!root$)[a-z0-9_]+$/;
 const ACTIVE = new Set<ExternalDispatchStatus>(['queued', 'running']);
@@ -151,6 +163,7 @@ export class SessionExternalDelegationService
   private readonly dispatchKeys = new KeyReservationRegistry<string>();
   private readonly executionSettled = new Map<string, Promise<void>>();
   private readonly terminalizations = new Map<string, Promise<void>>();
+  private readonly projectionCache = new Map<string, ProjectionCacheEntry>();
   private readonly interactionConsumerId: string;
   private interactionConsumerActive = false;
   private document: ExternalDelegationDocument | undefined;
@@ -269,11 +282,8 @@ export class SessionExternalDelegationService
         throw invalid('Named-child fields are not admitted for target main.');
       }
       const key = optionalNonblank(request.dispatchKey, 'dispatch_key');
-      const reservation = this.reserveDispatchKey(
-        doc,
-        key,
-        dispatchFingerprint(request, message),
-      );
+      const fingerprint = dispatchFingerprint(request, message);
+      const reservation = this.reserveDispatchKey(doc, key, fingerprint);
       if (reservation.kind === 'replay') {
         return dispatchView(this.lookup(doc, reservation.result));
       }
@@ -286,9 +296,10 @@ export class SessionExternalDelegationService
               message,
               undefined,
               key,
+              fingerprint,
               reservation,
             )
-          : await this.startNamedDispatch(doc, request, message, key, reservation);
+          : await this.startNamedDispatch(doc, request, message, key, fingerprint, reservation);
       } catch (error) {
         reservation.release();
         throw error;
@@ -302,11 +313,8 @@ export class SessionExternalDelegationService
       const doc = await this.authorize(request.authority);
       const previous = this.lookup(doc, request.dispatchId);
       const key = optionalNonblank(request.dispatchKey, 'dispatch_key');
-      const reservation = this.reserveDispatchKey(
-        doc,
-        key,
-        continueFingerprint(request, message),
-      );
+      const fingerprint = continueFingerprint(request, message);
+      const reservation = this.reserveDispatchKey(doc, key, fingerprint);
       if (reservation.kind === 'replay') {
         return dispatchView(this.lookup(doc, reservation.result));
       }
@@ -326,6 +334,7 @@ export class SessionExternalDelegationService
           message,
           previous.dispatchId,
           key,
+          fingerprint,
           reservation,
         );
       } catch (error) {
@@ -436,7 +445,7 @@ export class SessionExternalDelegationService
       await this.terminalizations.get(dispatch.dispatchId);
       const handle = await this.materializeDispatchAgent(doc, dispatch);
       const projection = await this.buildTurnProjection(handle);
-      const start = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
+      const start = dispatch.transcriptStart;
       const end = ACTIVE.has(dispatch.status) ? projection.cursor : dispatch.transcriptEnd!;
       if (cursor > end) throw invalid('cursor is invalid.');
       return projection.eventPage(dispatch.dispatchId, start, end, cursor, limit);
@@ -465,25 +474,25 @@ export class SessionExternalDelegationService
       const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
       const handle = await this.materializeDispatchAgent(doc, dispatch);
       const projection = await this.buildTurnProjection(handle);
-      const start = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
+      const start = dispatch.transcriptStart;
       const end = ACTIVE.has(dispatch.status) ? projection.cursor : dispatch.transcriptEnd!;
       if (cursor > end) throw invalid('cursor is invalid.');
       return projection.itemPage(start, end, cursor, limit);
     }
+    await this.terminalizations.get(dispatch.dispatchId);
     const handle = await this.materializeDispatchAgent(doc, dispatch);
     const all = handle.accessor.get(IAgentContextMemoryService).get();
-    const legacyStart = dispatch.transcriptCursorVersion === 2
-      ? dispatch.legacyTranscriptStart!
-      : dispatch.transcriptStart;
-    const cursor = Math.max(legacyStart, boundedCursor(request.cursor, all.length));
-    const window = all.slice(cursor, cursor + limit);
+    const legacyStart = dispatch.legacyTranscriptStart!;
+    const legacyEnd = ACTIVE.has(dispatch.status) ? all.length : dispatch.legacyTranscriptEnd!;
+    const cursor = Math.max(legacyStart, boundedCursor(request.cursor, legacyEnd));
+    const window = all.slice(cursor, Math.min(cursor + limit, legacyEnd));
     const items = window.map((message, offset) => ({
       index: cursor + offset,
       role: message.role,
       text: contextText(message.content),
     }));
     const end = cursor + window.length;
-    return { items, nextCursor: end < all.length ? end : undefined };
+    return { items, nextCursor: end < legacyEnd ? end : undefined };
   }
 
   async cancel(request: ExternalDispatchLookup): Promise<ExternalDispatchView> {
@@ -498,24 +507,52 @@ export class SessionExternalDelegationService
   private async load(): Promise<void> {
     this.document = await this.store.get<ExternalDelegationDocument>(this.scope, STORE_KEY);
     if (this.document !== undefined) {
-      await this.backfillTranscriptEnds(this.document);
+      await this.migrateTranscriptBounds(this.document);
       await this.interruptActive('Process restarted');
     }
   }
 
-  private async backfillTranscriptEnds(doc: ExternalDelegationDocument): Promise<void> {
+  private async migrateTranscriptBounds(doc: ExternalDelegationDocument): Promise<void> {
     const projections = new Map<string, AgentTurnProjection>();
     let changed = false;
     for (const dispatch of Object.values(doc.dispatches)) {
-      if (ACTIVE.has(dispatch.status) || dispatch.transcriptEnd !== undefined) continue;
+      const terminal = !ACTIVE.has(dispatch.status);
+      if (
+        dispatch.transcriptCursorVersion === 2 &&
+        (!terminal || dispatch.transcriptEnd !== undefined) &&
+        (!terminal || dispatch.legacyTranscriptEnd !== undefined)
+      ) {
+        continue;
+      }
       let projection = projections.get(dispatch.agentId);
       if (projection === undefined) {
         const handle = await this.materializeDispatchAgent(doc, dispatch);
         projection = await this.buildTurnProjection(handle);
         projections.set(dispatch.agentId, projection);
       }
-      dispatch.transcriptEnd = projection.cursorAt(dispatch.endedAt ?? dispatch.createdAt);
-      changed = true;
+      if (dispatch.transcriptCursorVersion !== 2) {
+        const legacyTranscriptStart = dispatch.transcriptStart;
+        const range = dispatch.endedAt === undefined
+          ? undefined
+          : projection.cursorRange(dispatch.createdAt, dispatch.endedAt);
+        const start = ACTIVE.has(dispatch.status)
+          ? projection.cursorRange(dispatch.createdAt, dispatch.createdAt)?.start ?? projection.cursor
+          : range?.start ?? projection.cursor;
+        dispatch.transcriptStart = start;
+        dispatch.transcriptEnd = ACTIVE.has(dispatch.status)
+          ? undefined
+          : range?.end ?? projection.cursor;
+        dispatch.transcriptCursorVersion = 2;
+        dispatch.legacyTranscriptStart = legacyTranscriptStart;
+        changed = true;
+      } else if (!ACTIVE.has(dispatch.status) && dispatch.transcriptEnd === undefined) {
+        dispatch.transcriptEnd = projection.cursorAt(dispatch.endedAt ?? dispatch.createdAt);
+        changed = true;
+      }
+      if (!ACTIVE.has(dispatch.status) && dispatch.legacyTranscriptEnd === undefined) {
+        dispatch.legacyTranscriptEnd = dispatch.legacyTranscriptStart!;
+        changed = true;
+      }
     }
     if (changed) await this.persist();
   }
@@ -557,6 +594,7 @@ export class SessionExternalDelegationService
     request: ExternalDispatchRequest,
     message: string,
     dispatchKey: string | undefined,
+    fingerprint: string,
     reservation: ActiveDispatchKeyReservation,
   ): Promise<ExternalDispatchView> {
     const taskName = request.taskName?.trim();
@@ -583,10 +621,38 @@ export class SessionExternalDelegationService
         message,
         undefined,
         dispatchKey,
+        fingerprint,
         reservation,
       );
     }
     const profileName = requireNonblank(request.profileName, 'profile_name');
+    const recovered = await this.recoverNamedTarget(doc, taskName);
+    if (recovered !== undefined) {
+      if (profileName !== recovered.profileName) {
+        throw invalid('A named child cannot change profile.');
+      }
+      if (modelAlias !== undefined && modelAlias !== recovered.modelAlias) {
+        throw invalid('A named child cannot change model_alias.');
+      }
+      if (thinkingEffort !== undefined && thinkingEffort !== recovered.thinkingEffort) {
+        throw invalid('A named child cannot change thinking_effort.');
+      }
+      return this.startExistingDispatch(
+        doc,
+        recovered,
+        message,
+        undefined,
+        dispatchKey,
+        fingerprint,
+        reservation,
+        {
+          taskName,
+          agentId: recovered.agentId,
+          profileName,
+          createdAt: Date.now(),
+        },
+      );
+    }
     const main = this.requireMain();
     const runtimeLease = main.accessor.get(IAgentRuntimeService).acquire(['process']);
     const view = new RuntimeWorkspaceView(runtimeLease.runtime, this.workspace);
@@ -607,19 +673,20 @@ export class SessionExternalDelegationService
         workDir: view.workDir,
         signal: controller.signal,
         onCreated: async (child) => {
-          doc.children[taskName] = {
-            taskName,
-            agentId: child.agentId,
-            profileName,
-            createdAt: Date.now(),
-          };
           await this.queueDispatch(
             doc,
             dispatchId,
             targetView(child.agent, taskName, profileName),
             undefined,
             dispatchKey,
+            fingerprint,
             reservation,
+            {
+              taskName,
+              agentId: child.agentId,
+              profileName,
+              createdAt: Date.now(),
+            },
           );
         },
       });
@@ -682,6 +749,22 @@ export class SessionExternalDelegationService
     return targetView(child.agent, taskName, stored.profileName);
   }
 
+  private async recoverNamedTarget(
+    doc: ExternalDelegationDocument,
+    taskName: string,
+  ): Promise<DispatchTarget | undefined> {
+    try {
+      const child = await this.dispatchDomain.resolveOwnedChild(
+        { kind: 'external', delegationId: doc.delegationId },
+        taskName,
+      );
+      return targetView(child.agent, taskName, child.profileName);
+    } catch (error) {
+      if (isError2(error) && error.code === ErrorCodes.AGENT_NOT_FOUND) return undefined;
+      throw error;
+    }
+  }
+
   private async materializeDispatchAgent(
     doc: ExternalDelegationDocument,
     dispatch: StoredDispatch,
@@ -695,12 +778,38 @@ export class SessionExternalDelegationService
     ).agent;
   }
 
-  private async buildTurnProjection(handle: IAgentScopeHandle): Promise<AgentTurnProjection> {
+  private async buildTurnProjection(
+    handle: IAgentScopeHandle,
+    cached = true,
+  ): Promise<AgentTurnProjection> {
     const wire = handle.accessor.get(IWireService);
-    await wire.flush();
-    const projection = new AgentTurnProjection();
-    await projection.rebuild(wire.readJournal());
-    return projection;
+    if (!cached) {
+      await wire.flush();
+      return AgentTurnProjection.build(wire.readJournal());
+    }
+    let entry = this.projectionCache.get(handle.id);
+    if (entry === undefined) {
+      entry = { generation: 0 };
+      this.projectionCache.set(handle.id, entry);
+      this._register(handle.accessor.get(IEventBus).subscribe((event) => {
+        if ((event.constructor as Event2Class).durable) entry!.generation++;
+      }));
+    }
+    if (entry.snapshot?.generation === entry.generation) return entry.snapshot.projection;
+    if (entry.rebuilding !== undefined) return entry.rebuilding;
+    const rebuilding = (async () => {
+      await wire.flush();
+      const generation = entry!.generation;
+      const projection = await AgentTurnProjection.build(wire.readJournal());
+      entry!.snapshot = { generation, projection };
+      return projection;
+    })();
+    entry.rebuilding = rebuilding;
+    try {
+      return await rebuilding;
+    } finally {
+      if (entry.rebuilding === rebuilding) entry.rebuilding = undefined;
+    }
   }
 
   private async captureTranscriptEnd(
@@ -709,6 +818,7 @@ export class SessionExternalDelegationService
   ): Promise<void> {
     const handle = await this.materializeDispatchAgent(doc, dispatch);
     dispatch.transcriptEnd = (await this.buildTurnProjection(handle)).cursor;
+    dispatch.legacyTranscriptEnd = handle.accessor.get(IAgentContextMemoryService).get().length;
   }
 
   private async startExistingDispatch(
@@ -717,7 +827,9 @@ export class SessionExternalDelegationService
     message: string,
     continuationOf: string | undefined,
     dispatchKey: string | undefined,
+    fingerprint: string,
     reservation: ActiveDispatchKeyReservation,
+    newChild?: StoredChild,
   ): Promise<ExternalDispatchView> {
     const active = Object.values(doc.dispatches).find(
       (dispatch) => dispatch.agentId === target.agent.id && ACTIVE.has(dispatch.status),
@@ -736,7 +848,9 @@ export class SessionExternalDelegationService
           target,
           continuationOf,
           dispatchKey,
+          fingerprint,
           reservation,
+          newChild,
         );
       },
     });
@@ -752,10 +866,12 @@ export class SessionExternalDelegationService
     target: DispatchTarget,
     continuationOf: string | undefined,
     dispatchKey: string | undefined,
+    fingerprint: string,
     reservation: ActiveDispatchKeyReservation,
+    newChild?: StoredChild,
   ): Promise<void> {
     const legacyTranscriptStart = target.agent.accessor.get(IAgentContextMemoryService).get().length;
-    const projection = await this.buildTurnProjection(target.agent);
+    const projection = await this.buildTurnProjection(target.agent, false);
     const dispatch: StoredDispatch = {
       dispatchId,
       target: target.taskName === undefined ? 'main' : 'named',
@@ -777,22 +893,46 @@ export class SessionExternalDelegationService
       transcriptCursorVersion: 2,
       legacyTranscriptStart,
     };
-    doc.dispatches[dispatchId] = dispatch;
-    if (target.taskName !== undefined) {
-      doc.children[target.taskName]!.latestDispatchId = dispatchId;
-      await this.dispatchDomain.recordRun(target.agentId, dispatchId);
-    }
-    const committed = reservation.commit(dispatchId);
-    if (dispatchKey !== undefined) {
-      doc.dispatchKeys ??= {};
-      doc.dispatchKeys[dispatchKey] = {
-        fingerprint: committed.fingerprint,
-        dispatchId: committed.result,
-      };
-    }
-    this.appendEvent(doc, dispatchId, 'queued');
+    const event: ExternalEventView = {
+      seq: doc.nextEventSeq,
+      dispatchId,
+      type: 'queued',
+      at: Date.now(),
+    };
+    const publish = (targetDoc: ExternalDelegationDocument): void => {
+      targetDoc.dispatches[dispatchId] = { ...dispatch };
+      if (newChild !== undefined) targetDoc.children[newChild.taskName] = { ...newChild };
+      if (target.taskName !== undefined) {
+        targetDoc.children[target.taskName]!.latestDispatchId = dispatchId;
+      }
+      if (dispatchKey !== undefined) {
+        targetDoc.dispatchKeys ??= {};
+        targetDoc.dispatchKeys[dispatchKey] = { fingerprint, dispatchId };
+      }
+      this.publishEvent(targetDoc, event);
+    };
+    const write = this.writeQueue
+      .then(async () => {
+        const candidate = structuredClone(doc);
+        publish(candidate);
+        await this.store.set(this.scope, STORE_KEY, candidate);
+        publish(doc);
+        this.changed.fire();
+      });
+    this.writeQueue = write.catch(() => {});
+    await write;
+    reservation.commit(dispatchId);
     this.syncInteractionConsumer(doc);
-    await this.persist();
+    if (target.taskName !== undefined) {
+      void this.dispatchDomain.recordRun(target.agentId, dispatchId).catch((error: unknown) => {
+        this.log.error('Failed to record external dispatch run.', {
+          dispatchId,
+          sessionId: this.sessionId,
+          agentId: target.agentId,
+          error,
+        });
+      });
+    }
   }
 
   private trackExecutionSettlement(dispatchId: string, dispatchRun: DispatchRun): void {
@@ -887,9 +1027,9 @@ export class SessionExternalDelegationService
     this.syncInteractionConsumer(doc);
     const published = this.persist();
     const terminalization = (async () => {
-      await published;
       await this.executionSettled.get(dispatchId);
       await this.captureTranscriptEnd(doc, dispatch);
+      await published;
       await this.persist();
     })();
     this.terminalizations.set(dispatchId, terminalization);
@@ -921,7 +1061,14 @@ export class SessionExternalDelegationService
     type: ExternalEventView['type'],
     message?: string,
   ): void {
-    doc.events.push({ seq: doc.nextEventSeq++, dispatchId, type, at: Date.now(), message });
+    this.publishEvent(doc, { seq: doc.nextEventSeq, dispatchId, type, at: Date.now(), message });
+  }
+
+  private publishEvent(doc: ExternalDelegationDocument, event: ExternalEventView): void {
+    doc.nextEventSeq = Math.max(doc.nextEventSeq, event.seq + 1);
+    const index = doc.events.findIndex((candidate) => candidate.seq > event.seq);
+    if (index === -1) doc.events.push(event);
+    else doc.events.splice(index, 0, event);
     if (doc.events.length > 5_000) {
       doc.events.splice(0, doc.events.length - 5_000);
       doc.truncatedBeforeEventSeq = doc.events[0]!.seq;

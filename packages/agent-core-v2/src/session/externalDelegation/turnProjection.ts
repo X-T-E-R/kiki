@@ -21,6 +21,16 @@ export class AgentTurnProjection {
   private readonly events: ExternalTurnEventView[] = [];
   private readonly items: SequencedItem[] = [];
   private readonly watermarks: { readonly time: number; readonly cursor: number }[] = [];
+  private reliableTimes = true;
+  private latestTime = 0;
+
+  static async build(records: AsyncIterable<WireRecord>): Promise<AgentTurnProjection> {
+    const projection = new AgentTurnProjection();
+    await projection.rebuild(records);
+    return projection;
+  }
+
+  private constructor() {}
 
   get cursor(): number {
     return this.nextSeq - 1;
@@ -35,14 +45,32 @@ export class AgentTurnProjection {
     return cursor;
   }
 
-  async rebuild(records: AsyncIterable<WireRecord>): Promise<void> {
-    this.nextSeq = 1;
-    this.events.length = 0;
-    this.items.length = 0;
-    this.watermarks.length = 0;
+  cursorRange(startTime: number, endTime: number): { readonly start: number; readonly end: number } | undefined {
+    if (
+      !this.reliableTimes ||
+      !Number.isFinite(startTime) ||
+      !Number.isFinite(endTime) ||
+      endTime < startTime
+    ) {
+      return undefined;
+    }
+    const start = this.cursorAt(startTime);
+    const end = this.cursorAt(endTime);
+    return start <= end ? { start, end } : undefined;
+  }
+
+  private async rebuild(records: AsyncIterable<WireRecord>): Promise<void> {
     for await (const record of records) {
+      const before = this.cursor;
       this.replayRecord(record);
-      this.watermarks.push({ time: record.time ?? 0, cursor: this.cursor });
+      if (this.cursor === before) continue;
+      const time = record.time;
+      if (typeof time !== 'number' || !Number.isFinite(time) || time < this.latestTime) {
+        this.reliableTimes = false;
+        continue;
+      }
+      this.latestTime = time;
+      this.watermarks.push({ time, cursor: this.cursor });
     }
   }
 
