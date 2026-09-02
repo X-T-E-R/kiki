@@ -537,6 +537,7 @@ function createLane(
             setMode: (mode: string) => {
               probe.permissions.push(['permission', mode]);
             },
+            setModeCeiling: () => {},
           };
         }
         if (serviceId === IAgentUserToolService) {

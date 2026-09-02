@@ -35,9 +35,8 @@ export interface InteractionPendingChangedEvent {
 export type InteractionConsumerCoverage =
   | { readonly kind: 'session' }
   | {
-      readonly kind: 'agent_subtrees';
-      readonly roots: () => ReadonlySet<string>;
-      readonly parent: (agentId: string) => string | undefined;
+      readonly kind: 'agent_lineages';
+      readonly agents: () => ReadonlySet<string>;
     };
 
 export function interactionCoverageIncludes(
@@ -45,14 +44,7 @@ export function interactionCoverageIncludes(
   origin: InteractionOrigin,
 ): boolean {
   if (coverage.kind === 'session') return true;
-  let agentId = origin.agentId;
-  const seen = new Set<string>();
-  while (agentId !== undefined && !seen.has(agentId)) {
-    if (coverage.roots().has(agentId)) return true;
-    seen.add(agentId);
-    agentId = coverage.parent(agentId);
-  }
-  return false;
+  return origin.agentId !== undefined && coverage.agents().has(origin.agentId);
 }
 
 export interface ISessionInteractionService {

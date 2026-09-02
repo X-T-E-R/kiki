@@ -60,6 +60,7 @@ function permissionMode(mode: PermissionMode = 'auto'): IAgentPermissionModeServ
     _serviceBrand: undefined,
     mode,
     setMode: () => {},
+    setModeCeiling: () => {},
     setModeAndBroadcast: () => {},
     onDidChangeMode: () => ({ dispose: () => {} }),
   };

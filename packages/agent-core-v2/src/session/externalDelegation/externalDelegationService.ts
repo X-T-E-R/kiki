@@ -15,7 +15,10 @@ import { Emitter, Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes, isError2, toKimiErrorPayload, type ErrorCode } from '#/errors';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import {
+  constrainPermissionMode,
+  IAgentPermissionModeService,
+} from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
@@ -58,10 +61,7 @@ import {
 } from '#/session/dispatch/reservation';
 
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
-import {
-  constrainExternalPermissionMode,
-  resolveExternalPermissionCeiling,
-} from './permissionCeiling';
+import { resolveExternalPermissionCeiling } from './permissionCeiling';
 import {
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   classifyExternalFailureCode,
@@ -164,6 +164,11 @@ interface DispatchTranscriptBoundary {
 }
 
 const STORE_KEY = 'root';
+const EXTERNAL_SESSION_BOOTSTRAP_ENV = [
+  'KIKI_EXTERNAL_WORKSPACE_PATH',
+  'KIKI_EXTERNAL_MODEL_ALIAS',
+  'KIKI_EXTERNAL_THINKING_EFFORT',
+] as const;
 const TASK_NAME = /^(?!root$)[a-z0-9_]+$/;
 const ACTIVE = new Set<ExternalDispatchStatus>(['queued', 'running']);
 const EXTERNAL_FAILURE_MESSAGE_MAX_BYTES = 512;
@@ -184,8 +189,10 @@ export class SessionExternalDelegationService
   >();
   private readonly terminalizations = new Map<string, Promise<void>>();
   private readonly projectionCache = new Map<string, ProjectionCacheEntry>();
+  private readonly dispatchLineages = new Map<string, Set<string>>();
   private readonly interactionConsumerId: string;
   private readonly permissionCeiling: PermissionMode;
+  private readonly dedicatedSession: boolean;
   private interactionConsumerActive = false;
   private document: ExternalDelegationDocument | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -211,10 +218,18 @@ export class SessionExternalDelegationService
   ) {
     super();
     this.permissionCeiling = resolveExternalPermissionCeiling((name) => bootstrap.getEnv(name));
+    this.dedicatedSession = EXTERNAL_SESSION_BOOTSTRAP_ENV.every(
+      (name) => bootstrap.getEnv(name)?.trim(),
+    );
     this.scope = session.scope('external-delegation');
     this.sessionId = session.sessionId;
     this.interactionConsumerId = `external-delegation:${this.sessionId}`;
     this._register(this.changed);
+    this._register(
+      this.dispatchDomain.onDidDelegateRun(({ requesterAgentId, agentId }) => {
+        this.includeDelegatedAgent(requesterAgentId, agentId);
+      }),
+    );
     this._register(this.store.acquire(this.scope, STORE_KEY));
     this.ready = this.load();
     if (lifecycle.onWillCloseSession !== undefined) {
@@ -276,7 +291,7 @@ export class SessionExternalDelegationService
       delegationId: doc.delegationId,
       lifecycle: doc.lifecycle,
       dispatchables: [
-        { kind: 'main' },
+        ...(this.dedicatedSession ? [{ kind: 'main' as const }] : []),
         ...entries.map((entry) => ({
           kind: 'named' as const,
           ...entry,
@@ -295,6 +310,9 @@ export class SessionExternalDelegationService
     return this.exclusive(async () => {
       const message = requireNonblank(request.message, 'message');
       const doc = await this.authorize(request.authority);
+      if (request.target === 'main' && !this.dedicatedSession) {
+        throw invalid('Main dispatch requires a dedicated external session.');
+      }
       if (
         request.target === 'main' &&
         (request.taskName !== undefined ||
@@ -335,6 +353,9 @@ export class SessionExternalDelegationService
       const message = requireNonblank(request.message, 'message');
       const doc = await this.authorize(request.authority);
       const previous = this.lookup(doc, request.dispatchId);
+      if (previous.target === 'main' && !this.dedicatedSession) {
+        throw invalid('Main dispatch requires a dedicated external session.');
+      }
       const key = optionalNonblank(request.dispatchKey, 'dispatch_key');
       const fingerprint = continueFingerprint(request, message);
       const reservation = this.reserveDispatchKey(doc, key, fingerprint);
@@ -698,10 +719,11 @@ export class SessionExternalDelegationService
         name: taskName,
         modelAlias,
         thinkingEffort,
-        permissionMode: constrainExternalPermissionMode(
+        permissionMode: constrainPermissionMode(
           main.accessor.get(IAgentPermissionModeService).mode,
           this.permissionCeiling,
         ),
+        permissionModeCeiling: this.permissionCeiling,
         strictThinkingFromProfile: true,
         runtime: runtimeLease.runtime,
         workDir: view.workDir,
@@ -911,6 +933,9 @@ export class SessionExternalDelegationService
       (dispatch) => dispatch.agentId === target.agent.id && ACTIVE.has(dispatch.status),
     );
     if (active !== undefined) throw invalid('The target already has an active dispatch.');
+    if (target.taskName !== undefined) {
+      target.agent.accessor.get(IAgentPermissionModeService).setModeCeiling(this.permissionCeiling);
+    }
     const controller = new AbortController();
     const dispatchId = `dispatch_${ulid()}`;
     const run = await this.dispatchDomain.runOnExisting(target, message, {
@@ -998,6 +1023,10 @@ export class SessionExternalDelegationService
     this.writeQueue = write.catch(() => {});
     await write;
     reservation.commit(dispatchId);
+    this.dispatchLineages.set(
+      dispatchId,
+      target.taskName !== undefined || this.dedicatedSession ? new Set([target.agent.id]) : new Set(),
+    );
     this.syncInteractionConsumer(doc);
     if (target.taskName !== undefined) {
       void this.dispatchDomain.recordRun(target.agentId, dispatchId).catch((error: unknown) => {
@@ -1143,6 +1172,7 @@ export class SessionExternalDelegationService
     dispatch.errorCode = errorCode;
     dispatch.usage = usage;
     this.controllers.delete(dispatchId);
+    this.dispatchLineages.delete(dispatchId);
     this.appendEvent(doc, dispatchId, status, dispatch.error);
     this.syncInteractionConsumer(doc);
     const published = this.persist();
@@ -1234,21 +1264,27 @@ export class SessionExternalDelegationService
     agentId: string,
     dispatchId?: string,
   ): StoredDispatch | undefined {
-    const roots = new Map(
-      Object.values(doc.dispatches)
-        .filter((dispatch) => ACTIVE.has(dispatch.status))
-        .filter((dispatch) => dispatchId === undefined || dispatch.dispatchId === dispatchId)
-        .map((dispatch) => [dispatch.agentId, dispatch]),
-    );
-    const seen = new Set<string>();
-    let current: string | undefined = agentId;
-    while (current !== undefined && !seen.has(current)) {
-      const dispatch = roots.get(current);
-      if (dispatch !== undefined) return dispatch;
-      seen.add(current);
-      current = this.dispatchDomain.parentAgentId(current);
+    return Object.values(doc.dispatches)
+      .filter((dispatch) => ACTIVE.has(dispatch.status))
+      .filter((dispatch) => dispatchId === undefined || dispatch.dispatchId === dispatchId)
+      .find((dispatch) => this.dispatchLineages.get(dispatch.dispatchId)?.has(agentId));
+  }
+
+  private includeDelegatedAgent(requesterAgentId: string, agentId: string): void {
+    const doc = this.document;
+    if (doc === undefined) return;
+    for (const dispatch of Object.values(doc.dispatches)) {
+      if (!ACTIVE.has(dispatch.status)) continue;
+      const lineage = this.dispatchLineages.get(dispatch.dispatchId);
+      if (!lineage?.has(requesterAgentId)) continue;
+      lineage.add(agentId);
+      if (dispatch.target === 'named') {
+        this.agents
+          .get(agentId)
+          ?.accessor.get(IAgentPermissionModeService)
+          .setModeCeiling(this.permissionCeiling);
+      }
     }
-    return undefined;
   }
 
   private requireOwnedInteraction(
@@ -1266,13 +1302,12 @@ export class SessionExternalDelegationService
     if (active === this.interactionConsumerActive) return;
     if (active) {
       this.interaction.acquireConsumer(this.interactionConsumerId, {
-        kind: 'agent_subtrees',
-        roots: () => new Set(
+        kind: 'agent_lineages',
+        agents: () => new Set(
           Object.values(this.document?.dispatches ?? {})
             .filter((dispatch) => ACTIVE.has(dispatch.status))
-            .map((dispatch) => dispatch.agentId),
+            .flatMap((dispatch) => [...(this.dispatchLineages.get(dispatch.dispatchId) ?? [])]),
         ),
-        parent: (agentId) => this.dispatchDomain.parentAgentId(agentId),
       });
       this.interactionConsumerActive = true;
     } else {

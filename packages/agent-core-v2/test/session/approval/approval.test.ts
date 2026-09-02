@@ -65,12 +65,11 @@ describe('SessionApprovalService', () => {
   it('fails closed when scoped consumers do not cover the approval origin', async () => {
     const interaction = ix.get(ISessionInteractionService);
     const approvals = ix.get(ISessionApprovalService);
-    const roots = new Set(['child-a']);
+    const agents = new Set(['child-a']);
     interaction.releaseConsumer('test-consumer');
     interaction.acquireConsumer('external-root', {
-      kind: 'agent_subtrees',
-      roots: () => roots,
-      parent: () => undefined,
+      kind: 'agent_lineages',
+      agents: () => agents,
     });
 
     const covered = approvals.request({ ...makeRequest('covered'), agentId: 'child-a' });

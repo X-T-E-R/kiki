@@ -19,7 +19,10 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentExecutionService } from '#/agent/execution/execution';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import {
+  constrainPermissionMode,
+  IAgentPermissionModeService,
+} from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
@@ -102,6 +105,7 @@ describe('SessionExternalDelegationService', () => {
   let nextTurnIds: Map<string, number>;
   let fakeExecutorApprovalResponses: unknown[];
   let permissionModes: Map<string, PermissionMode>;
+  let permissionCeilings: Map<string, PermissionMode>;
   let nextCreatedAgentId: string | undefined;
   let bootstrapEnv: Record<string, string | undefined>;
 
@@ -128,8 +132,13 @@ describe('SessionExternalDelegationService', () => {
     nextTurnIds = new Map();
     fakeExecutorApprovalResponses = [];
     permissionModes = new Map();
+    permissionCeilings = new Map();
     nextCreatedAgentId = undefined;
-    bootstrapEnv = {};
+    bootstrapEnv = {
+      KIKI_EXTERNAL_WORKSPACE_PATH: '/workspace',
+      KIKI_EXTERNAL_MODEL_ALIAS: 'model',
+      KIKI_EXTERNAL_THINKING_EFFORT: 'off',
+    };
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -247,11 +256,19 @@ describe('SessionExternalDelegationService', () => {
         data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', executorId, subagents: ['coder'] }),
       });
       permissionModes.set(id, 'auto');
+      const setPermissionMode = (mode: PermissionMode): void => {
+        const ceiling = permissionCeilings.get(id);
+        permissionModes.set(id, ceiling === undefined ? mode : constrainPermissionMode(mode, ceiling));
+      };
       agent.stub(IAgentPermissionModeService, {
         get mode() {
           return permissionModes.get(id)!;
         },
-        setMode: (mode) => permissionModes.set(id, mode),
+        setMode: setPermissionMode,
+        setModeCeiling: (ceiling) => {
+          permissionCeilings.set(id, ceiling);
+          setPermissionMode(permissionModes.get(id)!);
+        },
       });
       agent.stub(IAgentUserToolService, { list: () => [], inheritUserTools: () => {} });
       const runtime = new FakeRuntime(
@@ -294,6 +311,11 @@ describe('SessionExternalDelegationService', () => {
           displayName: opts?.binding?.profile,
         };
         return handle;
+      },
+      broadcastPermissionMode: (mode) => {
+        for (const handle of handles.values()) {
+          handle.accessor.get(IAgentPermissionModeService).setMode(mode);
+        }
       },
     });
     ix.stub(ISessionSubagentService, {
@@ -608,7 +630,10 @@ describe('SessionExternalDelegationService', () => {
     completions[0]!.resolve({ summary: 'done' });
   });
 
-  it('routes main interactions to the external caller during a main dispatch', async () => {
+  it('routes main interactions to the external caller during a dedicated main dispatch', async () => {
+    bootstrapEnv['KIKI_EXTERNAL_WORKSPACE_PATH'] = '/workspace';
+    bootstrapEnv['KIKI_EXTERNAL_MODEL_ALIAS'] = 'model';
+    bootstrapEnv['KIKI_EXTERNAL_THINKING_EFFORT'] = 'off';
     const service = ix.get(ISessionExternalDelegationService);
     const approvals = ix.get(ISessionApprovalService);
     const dispatch = await service.dispatch({
@@ -645,7 +670,159 @@ describe('SessionExternalDelegationService', () => {
     });
   });
 
-  it('exposes and answers a grandchild interaction through its owned dispatch subtree', async () => {
+  it('keeps main unavailable for a base-only attached session', async () => {
+    bootstrapEnv = {};
+    const service = ix.get(ISessionExternalDelegationService);
+    const interaction = ix.get(ISessionInteractionService);
+    const approvals = ix.get(ISessionApprovalService);
+    interaction.acquireConsumer('gui');
+    expect((await service.list(authority)).dispatchables.map((entry) => entry.kind)).not.toContain('main');
+    await expect(
+      service.dispatch({ authority, target: 'main', message: 'inspect' }),
+    ).rejects.toThrow(/dedicated external session/);
+    const approval = approvals.request({
+      id: 'approval-main-attached',
+      agentId: 'main',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect((await service.interactions({ authority })).items).toEqual([]);
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-main-attached',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    })).rejects.toMatchObject({ code: EXTERNAL_INTERACTION_NOT_OWNED_CODE });
+    interaction.releaseConsumer('gui');
+    await expect(approval).resolves.toEqual({ decision: 'cancelled' });
+  });
+
+  it('does not absorb an old main branch into a dedicated main dispatch', async () => {
+    bootstrapEnv['KIKI_EXTERNAL_WORKSPACE_PATH'] = '/workspace';
+    bootstrapEnv['KIKI_EXTERNAL_MODEL_ALIAS'] = 'model';
+    bootstrapEnv['KIKI_EXTERNAL_THINKING_EFFORT'] = 'off';
+    const service = ix.get(ISessionExternalDelegationService);
+    const interaction = ix.get(ISessionInteractionService);
+    const approvals = ix.get(ISessionApprovalService);
+    interaction.acquireConsumer('gui');
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'inspect' });
+    const approval = approvals.request({
+      id: 'approval-old-main-branch',
+      agentId: 'old-main-child',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect((await service.interactions({ authority })).items).toEqual([]);
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-old-main-branch',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    })).rejects.toMatchObject({ code: EXTERNAL_INTERACTION_NOT_OWNED_CODE });
+    interaction.releaseConsumer('gui');
+    await expect(approval).resolves.toEqual({ decision: 'cancelled' });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+  });
+
+  it('includes a direct lifecycle child explicitly recorded by the Tower path', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const approvals = ix.get(ISessionApprovalService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'tower_root',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+    ix.get(ISessionDispatchService).recordDelegatedRun('external-child', 'tower-child');
+    const approval = approvals.request({
+      id: 'approval-tower-child',
+      agentId: 'tower-child',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect(await service.interactions({ authority })).toMatchObject({
+      items: [{ interactionId: 'approval-tower-child', taskName: 'tower_root' }],
+    });
+    await service.respond({
+      authority,
+      interactionId: 'approval-tower-child',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    });
+    await expect(approval).resolves.toEqual({ decision: 'approved' });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+  });
+
+  it('keeps sibling dispatch lineages separate while waiting', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const approvals = ix.get(ISessionApprovalService);
+    nextCreatedAgentId = 'child-a';
+    const dispatchA = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'child_a',
+      profileName: 'coder',
+      message: 'inspect a',
+    });
+    nextCreatedAgentId = 'child-b';
+    const dispatchB = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'child_b',
+      profileName: 'coder',
+      message: 'inspect b',
+    });
+    ix.get(ISessionDispatchService).recordDelegatedRun('child-b', 'branch-b');
+    const approval = approvals.request({
+      id: 'approval-branch-b',
+      agentId: 'branch-b',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    await expect(service.wait({
+      authority,
+      dispatchId: dispatchA.dispatchId,
+      timeoutMs: 0,
+    })).resolves.toMatchObject({ waitStatus: 'timed_out', interactions: [] });
+    await expect(service.wait({
+      authority,
+      dispatchId: dispatchB.dispatchId,
+      timeoutMs: 100,
+    })).resolves.toMatchObject({
+      waitStatus: 'interaction_pending',
+      interactions: [{ interactionId: 'approval-branch-b', taskName: 'child_b' }],
+    });
+    await service.respond({
+      authority,
+      interactionId: 'approval-branch-b',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    });
+    await expect(approval).resolves.toEqual({ decision: 'approved' });
+    completions[0]!.resolve({ summary: 'done a' });
+    completions[1]!.resolve({ summary: 'done b' });
+  });
+
+  it('exposes and answers a grandchild interaction through its owned dispatch lineage', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const approvals = ix.get(ISessionApprovalService);
     const rootDispatch = await service.dispatch({
@@ -670,6 +847,7 @@ describe('SessionExternalDelegationService', () => {
     });
     await nestedRun.started;
     runtimeLease.dispose();
+    expect(permissionCeilings.get('grandchild')).toBe('manual');
     const approval = approvals.request({
       id: 'approval-grandchild',
       agentId: 'grandchild',
@@ -728,6 +906,66 @@ describe('SessionExternalDelegationService', () => {
     });
 
     expect(permissionModes.get('external-child')).toBe('auto');
+    completions[0]!.resolve({ summary: 'done' });
+  });
+
+  it('keeps an active external child below the ceiling during a yolo broadcast', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'broadcast_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    ix.get(IAgentLifecycleService).broadcastPermissionMode('yolo');
+    expect(permissionModes.get('main')).toBe('yolo');
+    expect(permissionModes.get('external-child')).toBe('manual');
+    completions[0]!.resolve({ summary: 'done' });
+  });
+
+  it('reapplies a lowered ceiling before reusing an existing child', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const first = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'reused_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: first.dispatchId })).status).toBe('completed');
+    });
+    permissionCeilings.set('external-child', 'yolo');
+    permissionModes.set('external-child', 'yolo');
+
+    await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'reused_child',
+      message: 'inspect again',
+    });
+
+    expect(permissionCeilings.get('external-child')).toBe('manual');
+    expect(permissionModes.get('external-child')).toBe('manual');
+    completions[1]!.resolve({ summary: 'done again' });
+  });
+
+  it('keeps a manual main manual when the external ceiling is yolo', async () => {
+    bootstrapEnv['KIKI_EXTERNAL_PERMISSION_CEILING'] = 'yolo';
+    permissionModes.set('main', 'manual');
+    const service = ix.get(ISessionExternalDelegationService);
+    await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'manual_main_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    expect(permissionModes.get('external-child')).toBe('manual');
     completions[0]!.resolve({ summary: 'done' });
   });
 
