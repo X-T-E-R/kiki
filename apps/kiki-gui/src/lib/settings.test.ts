@@ -7,8 +7,6 @@ import {
   AI_SETTINGS_TABS,
   aiTabForCard,
   buildSettingsSearchIndex,
-  CAPABILITY_GROUPS,
-  capabilityGroupForCard,
   clearRestartRequirement,
   createProvider,
   fetchRemoteModels,
@@ -17,10 +15,12 @@ import {
   isProviderDraftDirty,
   isRestartRequirementAcknowledged,
   markRestartRequired,
+  mcpTimeoutsPatch,
   msUnitFor,
   normalizeTags,
   parseAdvancedServerConfig,
   parseExperimentalFlags,
+  parseHooksJson,
   parseRemoteModels,
   providerDraftFromCatalog,
   providerTemplateFor,
@@ -708,7 +708,7 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-subagent-profiles')).toBe(true);
     expect(searchSettings(index, 'Main agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
     expect(searchSettings(index, 'Import model configuration').some((hit) => hit.cardId === 'st-card-compatibility-home')).toBe(true);
-    expect(searchSettings(index, 'subagent')[0]?.section).toBe('agents');
+    expect(searchSettings(index, 'subagent')[0]?.section).toBe('subagents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);
   });
@@ -759,38 +759,14 @@ describe('settings search index', () => {
   });
 });
 
-describe('capabilities section grouping', () => {
-  it('covers every capabilities search card exactly once, in a known group', () => {
-    const capabilitiesCards = SETTINGS_SEARCH_SPEC
-      .filter((entry) => entry.section === 'capabilities')
-      .map((entry) => entry.cardId);
-    const grouped = CAPABILITY_GROUPS.flatMap((group) => group.cardIds);
-    expect([...grouped].toSorted()).toEqual([...capabilitiesCards].toSorted());
-    expect(new Set(grouped).size).toBe(grouped.length);
-    expect(new Set(CAPABILITY_GROUPS.map((group) => group.id)).size).toBe(CAPABILITY_GROUPS.length);
-  });
-
-  it('keeps everyday groups open by default and folds the advanced tail', () => {
-    expect(capabilityGroupForCard('st-card-caps')?.defaultOpen).toBe(true);
-    expect(capabilityGroupForCard('st-card-mcp')?.defaultOpen).toBe(true);
-    expect(capabilityGroupForCard('st-card-advanced')?.defaultOpen).toBe(false);
-    expect(capabilityGroupForCard('st-card-experimental')?.defaultOpen).toBe(false);
-    expect(capabilityGroupForCard('st-card-runtime')?.id).toBe('runtime');
-    expect(capabilityGroupForCard('st-card-tools')?.id).toBe('runtime');
-    expect(capabilityGroupForCard('st-card-about')).toBeUndefined();
-  });
-});
-
 describe('settings nav groups (redesign batch 1)', () => {
   it('matches the adjudicated topology: six groups plus an ungrouped About leaf', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     const leaves = SETTINGS_NAV_TREE.filter((node) => node.kind === 'leaf');
     expect(groups.map((group) => group.id))
       .toEqual(['app', 'ai', 'agents', 'extensions', 'system', 'advanced']);
-    // "Data & advanced" is part of the tree but has no leaves until batches
-    // 2/3 land content; renderers skip empty groups rather than dropping it
-    // from the model.
-    expect(groups.at(-1)?.sections).toEqual([]);
+    // Batch 3 filled the last empty group: every group now owns leaves.
+    expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     // "About & updates" is a clickable leaf outside all groups, not a group.
     expect(leaves.map((leaf) => leaf.section)).toEqual(['about']);
     expect(settingsGroupForSection('about')).toBeUndefined();
@@ -803,13 +779,24 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_NAV_TREE[0]).toMatchObject({ kind: 'group', id: 'app' });
     expect(SETTINGS_NAV_TREE.at(-1)).toEqual({ kind: 'leaf', section: 'about' });
     expect(settingsGroupForSection('ai')?.id).toBe('ai');
-    expect(settingsGroupForSection('capabilities')?.id).toBe('extensions');
+    // Batch 3 split: the capabilities leaf dissolved into skills / mcp /
+    // automation under extensions; runtime moved to system; the advanced
+    // tails fill "Data & advanced".
+    expect(settingsGroupForSection('skills')?.id).toBe('extensions');
+    expect(settingsGroupForSection('mcp')?.id).toBe('extensions');
+    expect(settingsGroupForSection('automation')?.id).toBe('extensions');
+    expect(settingsGroupForSection('subagents')?.id).toBe('agents');
+    expect(settingsGroupForSection('runtime')?.id).toBe('system');
+    expect(settingsGroupForSection('data')?.id).toBe('advanced');
+    expect(settingsGroupForSection('experimental')?.id).toBe('advanced');
+    expect(settingsGroupForSection('advanced')?.id).toBe('advanced');
     expect(settingsGroupForSection('workspaces')?.id).toBe('system');
     expect(settingsGroupForSection('connection')?.id).toBe('system');
+    expect(settingsGroupForSection('capabilities')).toBeUndefined();
     expect(settingsGroupForSection('nope')).toBeUndefined();
   });
 
-  it('declares every scope a page actually writes until the content split lands', () => {
+  it('declares every scope a page actually writes after the content split', () => {
     for (const section of SETTINGS_SECTIONS) {
       const meta = SETTINGS_SECTION_META[section.id];
       expect(meta, section.id).toBeDefined();
@@ -818,13 +805,20 @@ describe('settings nav groups (redesign batch 1)', () => {
         expect(['app', 'server', 'workspace']).toContain(scope);
       }
     }
-    // General mixes device prefs with server-side session defaults;
-    // Capabilities mixes server config with per-workspace MCP; Agents mixes
-    // server-wide governance with workspace-sourced profiles.
+    // General mixes device prefs with server-side session defaults; Skills
+    // and MCP mix server config with per-workspace targets; Agents and
+    // Subagents mix server-wide governance with workspace-sourced profiles.
     expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'server']);
-    expect(SETTINGS_SECTION_META['capabilities']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['skills']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['mcp']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['subagents']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['ai']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['runtime']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['automation']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['data']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['experimental']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['advanced']?.scopes).toEqual(['server']);
   });
 });
 
@@ -908,9 +902,9 @@ describe('settings route resolver', () => {
 
   it('follows a card hash whose content moved to another section', () => {
     // A bookmark written before a content move: section says general, card
-    // says the card now lives under capabilities — the precise half wins.
+    // says the card now lives under mcp — the precise half wins.
     expect(resolveSettingsRoute('general', '#st-card-mcp'))
-      .toEqual({ status: 'ok', section: 'capabilities', cardId: 'st-card-mcp', tab: undefined });
+      .toEqual({ status: 'ok', section: 'mcp', cardId: 'st-card-mcp', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-workspaces'))
       .toEqual({ status: 'ok', section: 'workspaces', cardId: 'st-card-workspaces', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-models'))
@@ -921,6 +915,25 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-catalog-refresh', tab: 'models' });
   });
 
+  it('redirects the retired capabilities section and its card deep links (redesign §10.3)', () => {
+    // Bare /settings/capabilities lands on skills, the split's primary leaf.
+    expect(resolveSettingsRoute('capabilities', ''))
+      .toEqual({ status: 'ok', section: 'skills', cardId: undefined, tab: undefined });
+    // A precise card hash still follows the card across the split.
+    expect(resolveSettingsRoute('capabilities', '#st-card-mcp'))
+      .toEqual({ status: 'ok', section: 'mcp', cardId: 'st-card-mcp', tab: undefined });
+    expect(resolveSettingsRoute('capabilities', '#st-card-tools'))
+      .toEqual({ status: 'ok', section: 'automation', cardId: 'st-card-tools', tab: undefined });
+    expect(resolveSettingsRoute('capabilities', '#st-card-caps'))
+      .toEqual({ status: 'ok', section: 'skills', cardId: 'st-card-caps', tab: undefined });
+    // The dissolved sidecar card has no field-level hash, so its hand-written
+    // alias lands on the subagent timeout card (§10.3's adjudicated fallback).
+    expect(resolveSettingsRoute('agents', '#st-card-sidecar'))
+      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-timeout', tab: undefined });
+    expect(resolveSettingsRoute('retired-section', '#st-card-sidecar'))
+      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-timeout', tab: undefined });
+  });
+
   it('flags genuinely unknown sections instead of silently falling back to general', () => {
     expect(resolveSettingsRoute('nonsense', '')).toEqual({ status: 'unknown', section: 'nonsense', cardId: undefined });
     expect(resolveSettingsRoute('nonsense', '#st-card-not-real')).toEqual({ status: 'unknown', section: 'nonsense', cardId: 'st-card-not-real' });
@@ -928,9 +941,33 @@ describe('settings route resolver', () => {
   });
 
   it('knows the canonical owner of every indexed card', () => {
-    expect(settingsSectionForCard('st-card-mcp')).toBe('capabilities');
+    expect(settingsSectionForCard('st-card-mcp')).toBe('mcp');
     expect(settingsSectionForCard('st-card-language')).toBe('general');
+    // Dissolved cards leave the spec to their LEGACY_CARD_ALIASES entry.
+    expect(settingsSectionForCard('st-card-sidecar')).toBeUndefined();
     expect(settingsSectionForCard('st-card-nowhere')).toBeUndefined();
+  });
+});
+
+describe('hooks and MCP timeout patches (batch 3 split)', () => {
+  it('parses the hooks editor draft as a JSON array only', () => {
+    expect(parseHooksJson('[]')).toEqual([]);
+    expect(parseHooksJson('[{"event":"PreToolUse"}]')).toEqual([{ event: 'PreToolUse' }]);
+    expect(() => parseHooksJson('{not json')).toThrowError();
+    expect(() => parseHooksJson('{"hooks":[]}')).toThrowError();
+  });
+
+  it('scopes the MCP timeout patch to the mcp replace-domain', () => {
+    expect(mcpTimeoutsPatch('60000', '')).toEqual({
+      mcp: { startup_timeout_ms: 60_000, tool_timeout_ms: undefined },
+      replace_domains: ['mcp'],
+    });
+    expect(mcpTimeoutsPatch('', '30000')).toEqual({
+      mcp: { startup_timeout_ms: undefined, tool_timeout_ms: 30_000 },
+      replace_domains: ['mcp'],
+    });
+    expect(() => mcpTimeoutsPatch('abc', '')).toThrowError();
+    expect(() => mcpTimeoutsPatch('0', '')).toThrowError();
   });
 });
 

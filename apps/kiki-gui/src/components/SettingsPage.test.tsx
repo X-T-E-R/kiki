@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 /**
- * SettingsPage scope header: a workspace-scoped section (Capabilities' MCP
- * card) reports its selected workspace, and the header names it in lockstep
- * with the card-level selector.
+ * SettingsPage scope header: a workspace-scoped section (Skills' catalog,
+ * MCP's config card) reports its selected workspace, and the header names it
+ * in lockstep with the card-level selector. Also covers the batch-3 leaf
+ * mounts and the retired-capabilities legacy redirects.
  */
 
 import { act } from 'react';
@@ -27,7 +28,10 @@ const client = {
   meta: vi.fn(async () => ({ experimental_flags: {} })),
   listWorkspaces: vi.fn(async () => WORKSPACES),
   listManagedMcpServers: vi.fn(async () => []),
+  listMcpServers: vi.fn(async () => ({ servers: [] })),
+  listWorkspaceSkills: vi.fn(async () => ({ skills: [] })),
   listTools: vi.fn(async () => ({ tools: [] })),
+  listNamedAgentProfiles: vi.fn(async () => ({ items: [] })),
 };
 
 vi.mock('../state/connection', () => ({
@@ -47,6 +51,10 @@ const reactActEnvironment = globalThis as typeof globalThis & {
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
+  // jsdom has no CSS.escape; the card ids are already selector-safe.
+  vi.stubGlobal('CSS', { escape: (value: string) => value });
+  // …and no scrollIntoView, which the search-flash scroll runs on a card hit.
+  Element.prototype.scrollIntoView ??= () => {};
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
@@ -103,7 +111,7 @@ function scopeHeader(container: HTMLDivElement): HTMLElement {
 
 describe('SettingsPage scope header workspace sync', () => {
   it('names the workspace the MCP card targets and follows selector changes', async () => {
-    const container = await renderSettings('/settings/capabilities');
+    const container = await renderSettings('/settings/mcp');
     const header = scopeHeader(container);
     expect(header.getAttribute('data-settings-scope-header')).toBe('server+workspace');
     // Default selection: the most recently opened workspace.
@@ -132,5 +140,81 @@ describe('SettingsPage scope header workspace sync', () => {
     expect(card).not.toBeNull();
     expect(card!.textContent).toContain('Model catalog refresh');
     expect(card!.textContent).toContain('Refresh model catalog when the server starts');
+  });
+});
+
+describe('SettingsPage batch-3 leaves', () => {
+  it('mounts the skills leaf with defaults and the workspace skill catalog', async () => {
+    const container = await renderSettings('/settings/skills');
+    expect(container.querySelector('#st-card-caps')).not.toBeNull();
+    expect(container.querySelector('#st-card-skill-catalog')).not.toBeNull();
+    expect(container.querySelector('#workspace-skills-select')).not.toBeNull();
+    expect(scopeHeader(container).getAttribute('data-settings-scope-header')).toBe('server+workspace');
+    expect(scopeHeader(container).textContent).toContain('Workspace · Alpha');
+  });
+
+  it('mounts the mcp leaf with config, status, and timeouts cards', async () => {
+    const container = await renderSettings('/settings/mcp');
+    expect(container.querySelector('#st-card-mcp')).not.toBeNull();
+    expect(container.querySelector('#st-card-mcp-status')).not.toBeNull();
+    expect(container.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
+  });
+
+  it('mounts the automation leaf with tool policy and hooks cards', async () => {
+    const container = await renderSettings('/settings/automation');
+    expect(container.querySelector('#st-card-tools')).not.toBeNull();
+    expect(container.querySelector('#st-card-hooks')).not.toBeNull();
+  });
+
+  it('mounts the runtime leaf without the tools card or MCP timeout fields', async () => {
+    const container = await renderSettings('/settings/runtime');
+    expect(container.querySelector('#st-card-runtime')).not.toBeNull();
+    expect(container.querySelector('#st-card-tools')).toBeNull();
+  });
+
+  it('mounts the data, experimental, and advanced leaves under Data & advanced', async () => {
+    for (const [section, cardId] of [
+      ['data', 'st-card-telemetry'],
+      ['experimental', 'st-card-experimental'],
+      ['advanced', 'st-card-advanced'],
+    ] as const) {
+      const container = await renderSettings(`/settings/${section}`);
+      expect(container.querySelector(`#${cardId}`), section).not.toBeNull();
+    }
+  });
+
+  it('mounts the subagents leaf with profiles, governance, and the timeout card', async () => {
+    const container = await renderSettings('/settings/subagents');
+    expect(container.querySelector('#st-card-subagent-profiles')).not.toBeNull();
+    expect(container.querySelector('#st-card-subagents')).not.toBeNull();
+    expect(container.querySelector('#st-card-subagent-timeout')).not.toBeNull();
+  });
+
+  it('keeps only the main-agent card on the agents leaf', async () => {
+    const container = await renderSettings('/settings/agents');
+    expect(container.querySelector('#st-card-main-agents')).not.toBeNull();
+    expect(container.querySelector('#st-card-subagent-profiles')).toBeNull();
+    expect(container.querySelector('#st-card-sidecar')).toBeNull();
+  });
+
+  it('redirects bare /settings/capabilities to the skills leaf', async () => {
+    const container = await renderSettings('/settings/capabilities');
+    await flush();
+    expect(container.querySelector('#st-card-caps')).not.toBeNull();
+    expect(container.querySelector('#st-card-skill-catalog')).not.toBeNull();
+  });
+
+  it('follows a legacy capabilities card hash to its new leaf', async () => {
+    const container = await renderSettings('/settings/capabilities#st-card-mcp');
+    await flush();
+    expect(container.querySelector('#st-card-mcp')).not.toBeNull();
+    expect(container.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
+  });
+
+  it('lands the dissolved sidecar card on the subagent timeout card', async () => {
+    const container = await renderSettings('/settings/agents#st-card-sidecar');
+    await flush();
+    expect(container.querySelector('#st-card-subagent-timeout')).not.toBeNull();
+    expect(container.querySelector('#st-card-sidecar')).toBeNull();
   });
 });

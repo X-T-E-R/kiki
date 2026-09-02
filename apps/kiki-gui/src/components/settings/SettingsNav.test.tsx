@@ -63,14 +63,14 @@ async function click(element: Element): Promise<void> {
 const noop = () => {};
 
 describe('SettingsNav grouped tree', () => {
-  it('renders non-clickable group headers, skips the empty group, and keeps About as an ungrouped leaf', async () => {
+  it('renders non-clickable group headers and keeps About as an ungrouped leaf', async () => {
     const container = await render(
       <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
     );
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
-    // "Data & advanced" has no leaves this batch, so only five groups render.
+    // Batch 3 filled "Data & advanced": all six groups render now.
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['app', 'ai', 'agents', 'extensions', 'system']);
+      .toEqual(['app', 'ai', 'agents', 'extensions', 'system', 'advanced']);
     for (const group of groups) {
       const header = group.querySelector('p');
       expect(header).not.toBeNull();
@@ -82,6 +82,10 @@ describe('SettingsNav grouped tree', () => {
     // entry; its tabs live inside the page, not in the nav tree.
     const leaves = [...aiGroup.querySelectorAll('button')].map((button) => button.textContent);
     expect(leaves).toEqual(['Models & providers']);
+    // The extensions group carries the batch-3 split leaves in order.
+    const extensionsGroup = groups[3]!;
+    expect([...extensionsGroup.querySelectorAll('button')].map((button) => button.textContent))
+      .toEqual(['Skills', 'MCP', 'Tools & hooks']);
     // About & updates sits outside every group as a clickable top-level leaf.
     const aboutLeaf = container.querySelector('[data-settings-nav-ungrouped="about"]');
     expect(aboutLeaf).not.toBeNull();
@@ -92,10 +96,10 @@ describe('SettingsNav grouped tree', () => {
   it('highlights only the active leaf and navigates on click', async () => {
     const visited: string[] = [];
     const container = await render(
-      <SettingsNav active="capabilities" searchFocusToken={null} onNavigate={(id) => { visited.push(id); }} onSearchHit={noop} />,
+      <SettingsNav active="skills" searchFocusToken={null} onNavigate={(id) => { visited.push(id); }} onSearchHit={noop} />,
     );
     const active = [...container.querySelectorAll('button')].filter((button) => button.className.includes('text-accent'));
-    expect(active.map((button) => button.textContent)).toEqual(['Capabilities']);
+    expect(active.map((button) => button.textContent)).toEqual(['Skills']);
     const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models & providers')!;
     await click(models);
     expect(visited).toEqual(['ai']);
@@ -138,6 +142,6 @@ describe('UnknownSettingsSection', () => {
     await typeInto(input, 'mcp');
     const option = container.querySelector('[role="option"]')!;
     await click(option);
-    expect(hits).toEqual(['capabilities']);
+    expect(hits).toEqual(['mcp']);
   });
 });
