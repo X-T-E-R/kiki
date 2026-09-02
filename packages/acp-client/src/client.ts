@@ -46,6 +46,9 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 70_000;
 const DEFAULT_CANCEL_GRACE_MS = 3_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 3_000;
 const DEFAULT_STDERR_MAX_BYTES = 64 * 1024;
+const MAX_NDJSON_FRAME_BYTES = 1024 * 1024;
+const MAX_STDOUT_BUFFER_BYTES = 1024 * 1024;
+const MAX_EVENT_BACKLOG = 1024;
 const SESSION_REF_VERSION = 1;
 const UNKNOWN_UPDATE_METHOD = '_kiki/session_update_unknown';
 const KNOWN_UPDATE_TYPES = new Set([
@@ -91,19 +94,11 @@ class ValidatedNdjsonInput extends Transform {
 
   override _transform(
     chunk: Buffer | string,
-    encoding: BufferEncoding,
+    _encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
     try {
-      this.#buffer +=
-        typeof chunk === 'string' ? chunk : this.#decoder.write(chunk);
-      let newline = this.#buffer.indexOf('\n');
-      while (newline >= 0) {
-        const line = this.#buffer.slice(0, newline);
-        this.#buffer = this.#buffer.slice(newline + 1);
-        this.push(`${this.#validatedLine(line)}\n`);
-        newline = this.#buffer.indexOf('\n');
-      }
+      this.#consume(typeof chunk === 'string' ? chunk : this.#decoder.write(chunk));
       callback();
     } catch (error) {
       const protocolError =
@@ -119,10 +114,12 @@ class ValidatedNdjsonInput extends Transform {
 
   override _flush(callback: (error?: Error | null) => void): void {
     try {
-      this.#buffer += this.#decoder.end();
+      this.#consume(this.#decoder.end());
       if (this.#buffer.trim().length > 0) {
+        this.#assertFrameSize(this.#buffer);
         this.push(this.#validatedLine(this.#buffer));
       }
+      this.#buffer = '';
       callback();
     } catch (error) {
       const protocolError =
@@ -133,6 +130,37 @@ class ValidatedNdjsonInput extends Transform {
             });
       this.#onProtocolError(protocolError);
       callback(protocolError);
+    }
+  }
+
+  #consume(value: string): void {
+    let offset = 0;
+    let newline = value.indexOf('\n', offset);
+    while (newline >= 0) {
+      this.#append(value.slice(offset, newline));
+      const line = this.#buffer;
+      this.#buffer = '';
+      this.#assertFrameSize(line);
+      this.push(`${this.#validatedLine(line)}\n`);
+      offset = newline + 1;
+      newline = value.indexOf('\n', offset);
+    }
+    this.#append(value.slice(offset));
+  }
+
+  #append(value: string): void {
+    if (
+      Buffer.byteLength(this.#buffer, 'utf8') + Buffer.byteLength(value, 'utf8') >
+      MAX_STDOUT_BUFFER_BYTES
+    ) {
+      throw new AcpProtocolError('ACP stdout pending buffer exceeded the protocol limit');
+    }
+    this.#buffer += value;
+  }
+
+  #assertFrameSize(line: string): void {
+    if (Buffer.byteLength(line, 'utf8') > MAX_NDJSON_FRAME_BYTES) {
+      throw new AcpProtocolError('ACP NDJSON frame exceeded the protocol limit');
     }
   }
 
@@ -440,7 +468,7 @@ export class AcpProcessClient {
       );
     }
 
-    const queue = new AsyncQueue<NormalizedExecutorEvent>();
+    const queue = new AsyncQueue<NormalizedExecutorEvent>(MAX_EVENT_BACKLOG);
     const requestController = new AbortController();
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => {
@@ -550,12 +578,21 @@ export class AcpProcessClient {
   async shutdown(reason: unknown = new Error('ACP client closed')): Promise<void> {
     if (this.#state === 'closed') return;
     this.#setState('closing');
-    if (this.#activeTurn !== undefined) await this.cancel(reason);
-    this.#connection?.close(reason);
-    await this.#terminateCurrentProcess();
-    this.#connection = undefined;
-    this.#process = undefined;
-    this.#setState('closed');
+    try {
+      if (this.#activeTurn !== undefined) await this.cancel(reason);
+    } finally {
+      try {
+        this.#connection?.close(reason);
+      } finally {
+        try {
+          await this.#terminateCurrentProcess();
+        } finally {
+          this.#connection = undefined;
+          this.#process = undefined;
+          this.#setState('closed');
+        }
+      }
+    }
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
@@ -941,37 +978,46 @@ export class AcpProcessClient {
   }
 
   async #cleanupTransport(closeState: boolean): Promise<void> {
-    this.#connection?.close();
-    await this.#terminateCurrentProcess();
-    this.#connection = undefined;
-    this.#process = undefined;
-    if (closeState) this.#setState('closed');
+    try {
+      this.#connection?.close();
+    } finally {
+      try {
+        await this.#terminateCurrentProcess();
+      } finally {
+        this.#connection = undefined;
+        this.#process = undefined;
+        if (closeState) this.#setState('closed');
+      }
+    }
   }
 
   async #terminateCurrentProcess(): Promise<void> {
     const child = this.#process;
     if (child === undefined) return;
-    await this.#terminateProcess(child);
-    if (this.#process === child) this.#process = undefined;
+    try {
+      await this.#terminateProcess(child);
+    } finally {
+      if (this.#process === child) this.#process = undefined;
+    }
   }
 
   async #terminateProcess(child: HostProcessLike): Promise<void> {
     this.#intentionalExit.add(child);
-    if (child.exitCode !== null) {
+    try {
+      if (child.exitCode !== null) return;
+      const grace = this.#descriptor.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+      await this.#sendTermination(child, false);
+      const exited = await Promise.race([
+        child.wait().then(() => true, () => true),
+        delay(grace).then(() => false),
+      ]);
+      if (!exited) {
+        await this.#sendTermination(child, true);
+        await child.wait().catch(() => undefined);
+      }
+    } finally {
       await child.dispose();
-      return;
     }
-    const grace = this.#descriptor.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
-    await this.#sendTermination(child, false);
-    const exited = await Promise.race([
-      child.wait().then(() => true, () => true),
-      delay(grace).then(() => false),
-    ]);
-    if (!exited) {
-      await this.#sendTermination(child, true);
-      await child.wait().catch(() => undefined);
-    }
-    await child.dispose();
   }
 
   async #sendTermination(child: HostProcessLike, force: boolean): Promise<void> {
@@ -1023,7 +1069,15 @@ export class AcpProcessClient {
 
   #setState(state: AcpClientState): void {
     this.#state = state;
-    this.#options.onStateChange?.(this.status());
+    try {
+      this.#options.onStateChange?.(this.status());
+    } catch (error) {
+      try {
+        this.#options.logger?.error?.('ACP state observer failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } catch {}
+    }
   }
 }
 

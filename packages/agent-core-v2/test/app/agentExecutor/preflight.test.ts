@@ -192,6 +192,103 @@ describe('AgentExecutorPreflightService', () => {
     expect(result?.sources?.filter((source) => source.available)).toHaveLength(2);
   });
 
+  it('resolves sources lazily and stops after the first available source', async () => {
+    processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.151.0' });
+    processService.outputs.set('C:/Users/test/.local/bin/cursor-agent --version', { output: 'cursor-agent 1.0.0' });
+
+    const codex = await services.get(IAgentExecutorRegistry).resolveExecutable('codex-app-server');
+    const cursor = await services.get(IAgentExecutorRegistry).resolveExecutable('cursor-acp');
+
+    expect(codex.descriptor.selectedSource).toBe('env');
+    expect(cursor.descriptor.selectedSource).toBe('local-bin');
+    expect(processService.calls).toEqual([
+      'C:/tools/codex.exe --version',
+      'C:/Users/test/.local/bin/cursor-agent --version',
+    ]);
+  });
+
+  it('probes only an explicitly selected source during runtime resolution', async () => {
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: () => ({
+        selected: {
+          protocol: 'codex-app-server',
+          sources: [
+            { id: 'preferred', kind: 'env', name: 'CODEX_PATH' },
+            { id: 'forced', kind: 'env', name: 'ALT_CODEX_PATH' },
+          ],
+          source: 'forced',
+          versionProbe: { args: ['--version'] },
+          args: [],
+        },
+      }),
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    processService.outputs.set('C:/alt/codex.exe --version', { output: 'codex-cli 0.150.0' });
+
+    const result = await services.get(IAgentExecutorRegistry).resolveExecutable('selected');
+
+    expect(result.descriptor.selectedSource).toBe('forced');
+    expect(processService.calls).toEqual(['C:/alt/codex.exe --version']);
+  });
+
+  it('ranks glob paths before executing only the selected runtime candidate', async () => {
+    services.set(IHostFileSystem, {
+      _serviceBrand: undefined,
+      stat: async (path: string) => {
+        if (!path.endsWith('codex.exe')) throw new Error('missing');
+        return { isFile: true, isDirectory: false, size: 1 } satisfies HostFileStat;
+      },
+      readdir: async (path: string) => {
+        if (path === 'C:/extensions') {
+          return [
+            { name: 'openai.chatgpt-0.151.0', isFile: false, isDirectory: true },
+            { name: 'openai.chatgpt-0.152.0', isFile: false, isDirectory: true },
+          ];
+        }
+        return [];
+      },
+    } as unknown as IHostFileSystem);
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: () => ({
+        selected: {
+          protocol: 'codex-app-server',
+          sources: [{
+            id: 'extensions',
+            kind: 'glob',
+            pattern: 'C:/extensions/openai.chatgpt-*/bin/codex.exe',
+          }],
+          versionProbe: { args: ['--version'] },
+          args: [],
+        },
+      }),
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    processService.outputs.set(
+      'C:/extensions/openai.chatgpt-0.152.0/bin/codex.exe --version',
+      { output: 'codex-cli 0.152.0' },
+    );
+
+    const result = await services.get(IAgentExecutorRegistry).resolveExecutable('selected');
+
+    expect(result.descriptor.command).toBe('C:/extensions/openai.chatgpt-0.152.0/bin/codex.exe');
+    expect(processService.calls).toEqual([
+      'C:/extensions/openai.chatgpt-0.152.0/bin/codex.exe --version',
+    ]);
+  });
+
+  it('changes the resolved revision when the same executable path reports a new version', async () => {
+    processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.151.0' });
+    const registry = services.get(IAgentExecutorRegistry);
+    const first = await registry.resolveExecutable('codex-app-server');
+    processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.152.0' });
+    const second = await registry.resolveExecutable('codex-app-server');
+
+    expect(first.descriptor.command).toBe(second.descriptor.command);
+    expect(first.descriptor.revision).not.toBe(second.descriptor.revision);
+  });
+
   it('reports unavailable binaries without treating missing auth as success', async () => {
     services.set(IHostFileSystem, fsWith([]));
     services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));

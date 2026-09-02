@@ -23,6 +23,13 @@ import type {
 
 type JsonObject = Record<string, unknown>;
 
+const MAX_JSONL_FRAME_BYTES = 1024 * 1024;
+const MAX_STDOUT_BUFFER_BYTES = 1024 * 1024;
+const MAX_EVENT_BACKLOG = 1024;
+const MAX_EARLY_NOTIFICATIONS = 1024;
+const MAX_MODEL_PAGES = 100;
+const MAX_MODELS = 10_000;
+
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
@@ -123,8 +130,16 @@ export class CodexAppServerClient {
 
   async listModels(signal?: AbortSignal): Promise<CodexModelListResult> {
     const models: CodexModelListResult['data'][number][] = [];
+    const cursors = new Set<string>();
     let cursor: string | null | undefined;
+    let pages = 0;
     do {
+      pages += 1;
+      if (pages > MAX_MODEL_PAGES) {
+        const error = new CodexClientError('protocol', 'model/list exceeded the page limit');
+        await this.#break(error);
+        throw error;
+      }
       const value = object(await this.request('model/list', {
         cursor,
         limit: 100,
@@ -134,6 +149,11 @@ export class CodexAppServerClient {
         throw new CodexClientError('protocol', 'model/list result.data must be an array', value);
       }
       for (const raw of value['data']) {
+        if (models.length >= MAX_MODELS) {
+          const error = new CodexClientError('protocol', 'model/list exceeded the model limit');
+          await this.#break(error);
+          throw error;
+        }
         const model = object(raw, 'model/list model');
         if (typeof model['id'] !== 'string') {
           throw new CodexClientError('protocol', 'model/list model.id must be a string', model);
@@ -151,6 +171,11 @@ export class CodexAppServerClient {
       cursor = value['nextCursor'] === null || typeof value['nextCursor'] === 'string'
         ? value['nextCursor']
         : undefined;
+      if (typeof cursor === 'string' && !cursors.add(cursor)) {
+        const error = new CodexClientError('protocol', 'model/list repeated a cursor');
+        await this.#break(error);
+        throw error;
+      }
     } while (cursor !== undefined && cursor !== null);
     return { data: models, nextCursor: null };
   }
@@ -191,7 +216,7 @@ export class CodexAppServerClient {
     const active: ActiveTurn = {
       threadId,
       turnId,
-      events: new AsyncQueue<NormalizedExecutorEvent>(),
+      events: new AsyncQueue<NormalizedExecutorEvent>(MAX_EVENT_BACKLOG),
       completion,
       resolve,
       reject,
@@ -241,10 +266,10 @@ export class CodexAppServerClient {
       this.#setState('closed');
       return;
     }
-    process.stdin.end();
     const grace = this.descriptor.shutdownGraceMs ?? 3_000;
     let timer: NodeJS.Timeout | undefined;
     try {
+      process.stdin.end();
       await Promise.race([
         process.wait(),
         new Promise<void>((resolve) => {
@@ -261,8 +286,12 @@ export class CodexAppServerClient {
       if (process.exitCode === null) await process.kill('SIGKILL').catch(() => undefined);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
-      await process.dispose();
-      this.#setState('closed');
+      try {
+        await process.dispose();
+      } finally {
+        if (this.#process === process) this.#process = undefined;
+        this.#setState('closed');
+      }
     }
   }
 
@@ -323,6 +352,10 @@ export class CodexAppServerClient {
       if (this.#stdoutBuffer.length > 0) {
         const tail = this.#stdoutBuffer.replace(/\r$/, '');
         this.#stdoutBuffer = '';
+        if (Buffer.byteLength(tail, 'utf8') > MAX_JSONL_FRAME_BYTES) {
+          void this.#break(new CodexClientError('protocol', 'Codex JSONL frame exceeded the protocol limit'));
+          return;
+        }
         this.#consumeLine(tail);
       }
       if (this.#state !== 'closing' && this.#state !== 'closed' && this.#state !== 'broken') {
@@ -345,9 +378,18 @@ export class CodexAppServerClient {
     this.#stdoutBuffer += chunk;
     for (;;) {
       const index = this.#stdoutBuffer.indexOf('\n');
-      if (index < 0) return;
+      if (index < 0) {
+        if (Buffer.byteLength(this.#stdoutBuffer, 'utf8') > MAX_STDOUT_BUFFER_BYTES) {
+          void this.#break(new CodexClientError('protocol', 'Codex stdout pending buffer exceeded the protocol limit'));
+        }
+        return;
+      }
       const raw = this.#stdoutBuffer.slice(0, index).replace(/\r$/, '');
       this.#stdoutBuffer = this.#stdoutBuffer.slice(index + 1);
+      if (Buffer.byteLength(raw, 'utf8') > MAX_JSONL_FRAME_BYTES) {
+        void this.#break(new CodexClientError('protocol', 'Codex JSONL frame exceeded the protocol limit'));
+        return;
+      }
       this.#consumeLine(raw);
       if (this.#terminalError !== undefined) return;
     }
@@ -424,7 +466,13 @@ export class CodexAppServerClient {
     } catch {}
     const active = this.#activeTurn;
     if (active === undefined) {
-      if (this.#startingTurnThreadId !== undefined) this.#earlyNotifications.push(notification);
+      if (this.#startingTurnThreadId !== undefined) {
+        if (this.#earlyNotifications.length >= MAX_EARLY_NOTIFICATIONS) {
+          void this.#break(new CodexClientError('protocol', 'Codex early notification limit exceeded'));
+          return;
+        }
+        this.#earlyNotifications.push(notification);
+      }
       return;
     }
     let mapped;
@@ -450,7 +498,12 @@ export class CodexAppServerClient {
           active.seenReasoningSummaryDeltas.add(event.messageId);
         }
       }
-      active.events.push(event);
+      try {
+        active.events.push(event);
+      } catch (error) {
+        void this.#break(new CodexClientError('protocol', 'Codex event backlog limit exceeded', error));
+        return;
+      }
     }
     if (mapped.usage !== undefined) active.usage = mapped.usage;
     if (
@@ -578,6 +631,10 @@ export class CodexAppServerClient {
     this.#terminalError = error;
     this.#setState('broken');
     this.#rejectPending(error);
+    this.#earlyNotifications.length = 0;
+    this.#stdoutBuffer = '';
+    this.#startingTurnThreadId = undefined;
+    this.#turnSignal = undefined;
     const active = this.#activeTurn;
     if (active !== undefined) {
       active.events.fail(error);
@@ -586,14 +643,30 @@ export class CodexAppServerClient {
     }
     const process = this.#process;
     if (process !== undefined) {
-      process.stdin.end();
-      await process.kill('SIGTERM').catch(() => undefined);
+      try {
+        process.stdin.end();
+        await process.kill('SIGTERM').catch(() => undefined);
+      } finally {
+        try {
+          await process.dispose();
+        } finally {
+          if (this.#process === process) this.#process = undefined;
+        }
+      }
     }
   }
 
   #setState(state: CodexClientStatus['state']): void {
     this.#state = state;
-    this.options.onStateChange?.(this.status());
+    try {
+      this.options.onStateChange?.(this.status());
+    } catch (error) {
+      try {
+        this.options.logger?.error?.('Codex state observer failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } catch {}
+    }
   }
 }
 

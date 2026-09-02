@@ -52,6 +52,14 @@ export type AgentExecutorOptions = Readonly<
   Record<string, AgentExecutorOptionValue>
 >;
 
+export interface AgentExecutorPermissionModeMapping {
+  readonly configId?: string;
+  readonly configCategory?: string;
+  readonly manual: string | boolean;
+  readonly auto: string | boolean;
+  readonly yolo: string | boolean;
+}
+
 export interface AgentExecutorDescriptor {
   readonly id: string;
   readonly protocol: AgentExecutorProtocol;
@@ -70,6 +78,7 @@ export interface AgentExecutorDescriptor {
   readonly modelArgs?: readonly string[];
   readonly modelConfigCategory?: string;
   readonly thoughtConfigCategory?: string;
+  readonly permissionModeMapping?: AgentExecutorPermissionModeMapping;
   readonly revision: string;
 }
 

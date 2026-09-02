@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { normalize } from 'pathe';
+
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -22,7 +24,10 @@ import {
   type ResolvedAgentExecutor,
   registeredAgentExecutorProviders,
 } from './agentExecutor';
-import { discoverExecutorSources, selectExecutorSource } from './binaryDiscovery';
+import {
+  discoverExecutorSources,
+  resolveExecutorSource,
+} from './binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
 import {
   AGENT_EXECUTORS_SECTION,
@@ -107,8 +112,13 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     if (resolved.descriptor.id === 'native' || resolved.descriptor.sources === undefined) {
       return resolved;
     }
-    const probes = await this.discover(id);
-    const selected = selectExecutorSource(resolved.descriptor, probes);
+    const probes = await resolveExecutorSource(
+      resolved.descriptor,
+      this.processService,
+      this.fs,
+      this.bootstrap,
+    );
+    const selected = probes.find((probe) => probe.available);
     if (selected?.command === undefined) {
       const requested = resolved.descriptor.source;
       throw new Error2(
@@ -127,7 +137,12 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
         selectedSource: selected.id,
         sourceProbes: probes,
         version: selected.version,
-        revision: resolvedExecutableRevision(resolved.descriptor.revision, selected.command),
+        revision: resolvedExecutableRevision({
+          baseRevision: resolved.descriptor.revision,
+          selectedSource: selected.id,
+          command: selected.command,
+          version: selected.version,
+        }),
       },
     };
   }
@@ -169,13 +184,24 @@ function descriptorFromConfig(
     modelArgs: config.modelArgs,
     modelConfigCategory: config.modelConfigCategory,
     thoughtConfigCategory: config.thoughtConfigCategory,
-    revision: config.revision ?? descriptorRevisionFromConfig(config),
+    permissionModeMapping: config.permissionModeMapping,
+    revision: descriptorRevisionFromConfig(config),
   };
 }
 
-export function resolvedExecutableRevision(baseRevision: string, command: string): string {
+export function resolvedExecutableRevision(input: {
+  readonly baseRevision: string;
+  readonly selectedSource: string;
+  readonly command: string;
+  readonly version?: string;
+}): string {
   return createHash('sha256')
-    .update(JSON.stringify({ baseRevision, command }))
+    .update(JSON.stringify({
+      baseRevision: input.baseRevision,
+      selectedSource: input.selectedSource,
+      command: normalize(input.command),
+      version: input.version,
+    }))
     .digest('hex');
 }
 
@@ -197,6 +223,8 @@ export function descriptorRevisionFromConfig(config: AgentExecutorConfig): strin
     modelArgs: config.modelArgs,
     modelConfigCategory: config.modelConfigCategory,
     thoughtConfigCategory: config.thoughtConfigCategory,
+    permissionModeMapping: config.permissionModeMapping,
+    declaredRevision: config.revision,
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
