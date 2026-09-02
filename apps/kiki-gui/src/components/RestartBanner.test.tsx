@@ -41,9 +41,8 @@ vi.mock('../state/connection', () => ({
   }),
 }));
 
-vi.mock('../lib/desktop', () => ({
-  isDesktopRuntime: () => true,
-  restartNativeServer,
+vi.mock('../host', () => ({
+  useHost: () => ({ kind: 'tauri', restartServer: restartNativeServer }),
 }));
 
 interface Deferred {

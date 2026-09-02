@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { shortcutsGroups } from './ShortcutsOverlay';
 
 function row(labelKey: string) {
-  for (const group of shortcutsGroups('enter')) {
+  for (const group of shortcutsGroups('enter', false)) {
     for (const row of group.rows) {
       if (row.labelKey === labelKey) return row;
     }
@@ -25,7 +25,7 @@ describe('shortcutsGroups runtime honesty', () => {
   });
 
   it('layers the Esc semantics instead of one ambiguous row', () => {
-    const session = shortcutsGroups('enter').find(
+    const session = shortcutsGroups('enter', false).find(
       (group) => group.titleKey === 'shortcuts.group.session',
     )!;
     const escRows = session.rows.filter((r) => r.keys.length === 1 && r.keys[0] === 'Esc');

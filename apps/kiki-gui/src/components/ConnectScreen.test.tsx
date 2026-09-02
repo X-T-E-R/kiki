@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { browserHost, HostProvider } from '../host';
 import { I18nProvider } from '../i18n';
 import { normalizeDesktopFailure, type DesktopBootStatus } from '../state/desktopConnection';
 import { ConnectScreen } from './ConnectScreen';
@@ -28,9 +29,11 @@ const baseProps = {
 
 function renderScreen(props: Partial<Parameters<typeof ConnectScreen>[0]> = {}): string {
   return renderToStaticMarkup(
-    <I18nProvider>
-      <ConnectScreen {...baseProps} {...(props as Parameters<typeof ConnectScreen>[0])} />
-    </I18nProvider>,
+    <HostProvider host={browserHost}>
+      <I18nProvider>
+        <ConnectScreen {...baseProps} {...(props as Parameters<typeof ConnectScreen>[0])} />
+      </I18nProvider>
+    </HostProvider>,
   );
 }
 

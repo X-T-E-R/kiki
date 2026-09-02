@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { checkNativeDesktopUpdate, isDesktopRuntime, writeNativeDesktopPrefs } from '../../lib/desktop';
+import { useHost, type DesktopUpdate } from '../../host';
 import { useI18n } from '../../i18n';
 import { readDesktopPrefs, writeDesktopPrefs } from '../../lib/settings';
 import { useConnection } from '../../state/connection';
@@ -8,20 +8,22 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 
 export function AboutSection() {
+  const host = useHost();
   const { meta } = useConnection();
   const { t } = useI18n();
   const guiVersion = import.meta.env['VITE_APP_VERSION'] ?? '0.0.0-dev';
   const buildSha = import.meta.env['VITE_BUILD_SHA'] as string | undefined;
-  const isDesktop = isDesktopRuntime();
+  const isDesktop = host.kind === 'tauri';
   const [channel, setChannel] = useState<'stable' | 'beta'>(() => readDesktopPrefs().updateChannel);
-  const [update, setUpdate] = useState<Awaited<ReturnType<typeof checkNativeDesktopUpdate>>>(null);
+  const [update, setUpdate] = useState<DesktopUpdate | null>(null);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'installing'>('idle');
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
 
   const checkForUpdate = () => {
+    if (host.kind !== 'tauri') return;
     setUpdateStatus('checking');
     setUpdateMessage(null);
-    void checkNativeDesktopUpdate()
+    void host.checkDesktopUpdate()
       .then((next) => {
         setUpdate(next);
         setUpdateMessage(next === null ? t('st.about.upToDate') : null);
@@ -65,7 +67,7 @@ export function AboutSection() {
                 setUpdate(null);
                 setUpdateMessage(null);
                 writeDesktopPrefs({ updateChannel: next });
-                void writeNativeDesktopPrefs({ updateChannel: next });
+                void host.writeDesktopPrefs?.({ updateChannel: next });
               }}
               className="rounded-lg border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none focus:border-accent"
             >

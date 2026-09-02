@@ -3,18 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PermissionMode } from '@moonshot-ai/protocol';
 
-import {
-  dryRunNativeSessionsMigration,
-  executeNativeSessionsMigration,
-  importNativeKimiConfig,
-  isDesktopRuntime,
-  migrateNativeCompatibilityCategory,
-  readNativeDesktopPrefs,
-  readNativeKimiHomePaths,
-  writeNativeCompatibilitySettings,
-  writeNativeDesktopPrefs,
-  type SessionsMigrationPlan,
-} from '../../lib/desktop';
+import { useHost, type SessionsMigrationPlan } from '../../host';
 import { useI18n } from '../../i18n';
 import { errorText, type Locale } from '../../i18n/locale';
 import type { KikiConfigResponse } from '../../lib/client';
@@ -41,6 +30,7 @@ function isAbsoluteHomePath(path: string): boolean {
 }
 
 export function GeneralSection() {
+  const host = useHost();
   const { client } = useConnection();
   const { t, locale, setLocale } = useI18n();
   const queryClient = useQueryClient();
@@ -73,7 +63,7 @@ export function GeneralSection() {
     desktopPrefs.compatibility.customHome ?? '',
   );
   const [tick, ping] = useSavedTick();
-  const isDesktop = isDesktopRuntime();
+  const isDesktop = host.kind === 'tauri';
 
   const configQuery = useQuery({
     queryKey: ['config'],
@@ -93,8 +83,8 @@ export function GeneralSection() {
   useEffect(() => { syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig]);
 
   useEffect(() => {
-    if (!isDesktop) return;
-    void Promise.all([readNativeDesktopPrefs(), readNativeKimiHomePaths()]).then(([prefs, paths]) => {
+    if (host.kind !== 'tauri') return;
+    void Promise.all([host.readDesktopPrefs(), host.readKimiHomePaths()]).then(([prefs, paths]) => {
       if (prefs !== null) {
         setDesktopPrefs(prefs);
         setHomeKindDraft(prefs.compatibility.homeKind);
@@ -103,7 +93,7 @@ export function GeneralSection() {
       }
       setKimiHomePaths(paths);
     });
-  }, [isDesktop]);
+  }, [host]);
 
   // Server defaults apply on change: optimistic local state, echo confirms,
   // failure reverts to the last server-known config.
@@ -195,8 +185,8 @@ export function GeneralSection() {
     setCompatibilityBusy(true);
     setCompatibilityFeedback(null);
     try {
-      await writeNativeCompatibilitySettings(next);
-      setKimiHomePaths(await readNativeKimiHomePaths());
+      await host.writeCompatibilitySettings?.(next);
+      setKimiHomePaths((await host.readKimiHomePaths?.()) ?? null);
       setSessionsPlan(null);
       setConfirmSessionsMove(false);
       const prefs = { ...desktopPrefs, compatibility: next };
@@ -213,10 +203,11 @@ export function GeneralSection() {
   };
 
   const importKimiConfig = async () => {
+    if (host.kind !== 'tauri') return;
     setConfigImporting(true);
     setCompatibilityFeedback(null);
     try {
-      const result = await importNativeKimiConfig();
+      const result = await host.importKimiConfig();
       if (result.status === 'noop') {
         setCompatibilityFeedback({ tone: 'info', text: t('st.compat.configImportNoop') });
       } else if (result.restartError !== null) {
@@ -243,10 +234,11 @@ export function GeneralSection() {
   };
 
   const migrateCategory = async () => {
+    if (host.kind !== 'tauri') return;
     setMigrating('userSkills');
     setCompatibilityFeedback(null);
     try {
-      const result = await migrateNativeCompatibilityCategory('userSkills');
+      const result = await host.migrateCompatibilityCategory('userSkills');
       if (result.status === 'copied') {
         setCompatibilityFeedback({
           tone: result.restartError === null ? 'success' : 'info',
@@ -279,10 +271,11 @@ export function GeneralSection() {
   };
 
   const reviewSessionsMove = async () => {
+    if (host.kind !== 'tauri') return;
     setSessionsBusy('dryRun');
     setCompatibilityFeedback(null);
     try {
-      const plan = await dryRunNativeSessionsMigration();
+      const plan = await host.dryRunSessionsMigration();
       setSessionsPlan(plan);
       if (plan.status === 'blocked') {
         setCompatibilityFeedback({ tone: 'error', text: t('st.compat.sessionsConflict') });
@@ -297,11 +290,12 @@ export function GeneralSection() {
   };
 
   const moveSessions = async () => {
+    if (host.kind !== 'tauri') return;
     setConfirmSessionsMove(false);
     setSessionsBusy('move');
     setCompatibilityFeedback(null);
     try {
-      const result = await executeNativeSessionsMigration();
+      const result = await host.executeSessionsMigration();
       setSessionsPlan(result);
       if (result.status === 'moved') {
         setCompatibilityFeedback({
@@ -465,7 +459,7 @@ export function GeneralSection() {
               const next = { ...desktopPrefs, notifications: checked };
               setDesktopPrefs(next);
               writeDesktopPrefs(next);
-              void writeNativeDesktopPrefs(next);
+              void host.writeDesktopPrefs(next);
             }}
           />
           <div className="grid gap-2 sm:grid-cols-2">
@@ -488,7 +482,7 @@ export function GeneralSection() {
                       const next = { ...desktopPrefs, closeToTray: option.closeToTray };
                       setDesktopPrefs(next);
                       writeDesktopPrefs(next);
-                      void writeNativeDesktopPrefs(next);
+                      void host.writeDesktopPrefs(next);
                     }}
                     className="mt-0.5 accent-[var(--color-accent)]"
                   />
