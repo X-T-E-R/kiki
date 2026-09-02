@@ -37,7 +37,9 @@ import type {
   Message,
   MessageContent,
   MetaResponse,
+  ListNamedAgentProfilesResponse as ProtocolListNamedAgentProfilesResponse,
   NamedAgentModelProfile as ProtocolNamedAgentModelProfile,
+  NamedAgentProfile as ProtocolNamedAgentProfile,
   NamedAgentRoute as ProtocolNamedAgentRoute,
   NamedAgentSpawnConstraints as ProtocolNamedAgentSpawnConstraints,
   NamedAgentSubagentLease as ProtocolNamedAgentSubagentLease,
@@ -73,6 +75,7 @@ import type {
   Task,
   Terminal,
   UndoSessionResponse,
+  UpdateNamedAgentProfileRequest as ProtocolUpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
   Workspace,
 } from '@moonshot-ai/protocol';
@@ -359,63 +362,13 @@ export type KikiConfigPatch = Omit<
   readonly replace_domains?: readonly string[];
 };
 
-// Named-agent wire shapes alias the protocol contract types directly so the
-// GUI can never drift from the /agents schema (the subagent lease in
-// particular carries the full constraint field set).
 export type NamedAgentRoute = ProtocolNamedAgentRoute;
 export type NamedAgentModelProfile = ProtocolNamedAgentModelProfile;
 export type NamedAgentSpawnConstraints = ProtocolNamedAgentSpawnConstraints;
 export type NamedAgentSubagentLease = ProtocolNamedAgentSubagentLease;
-
-export interface NamedAgentProfile {
-  readonly name: string;
-  readonly description?: string;
-  readonly when_to_use?: string;
-  readonly source: string;
-  readonly workspace_id?: string;
-  /** Merged /agents view: every workspace this name+source+file applies to. */
-  readonly workspace_ids?: string[];
-  readonly source_file?: string;
-  /** Curated main-profile flag from the engine catalog. */
-  readonly main: boolean;
-  /** File profile explicitly overriding the same-named built-in profile. */
-  readonly override?: boolean;
-  readonly executor?: string;
-  readonly executor_protocol?: string;
-  readonly executor_options?: Readonly<Record<string, string | number | boolean>>;
-  readonly pinned_model_alias?: string;
-  readonly thinking_effort?: string;
-  readonly service_tier?: 'auto' | 'default' | 'flex' | 'priority';
-  readonly tools?: string[];
-  readonly disallowed_tools?: string[];
-  readonly disabled: boolean;
-  readonly routes: NamedAgentRoute[];
-  readonly model_profiles?: NamedAgentModelProfile[];
-  readonly spawn_constraints?: NamedAgentSpawnConstraints;
-  readonly subagents?: (string | NamedAgentSubagentLease)[];
-}
-
-export interface ListNamedAgentProfilesResponse {
-  readonly items: NamedAgentProfile[];
-}
-
-export interface UpdateNamedAgentProfileRequest {
-  readonly scope: 'user' | 'project' | 'extra';
-  readonly workspace_id: string;
-  readonly description?: string;
-  readonly when_to_use?: string | null;
-  readonly pinned_model_alias?: string | null;
-  readonly thinking_effort?: string | null;
-  readonly service_tier?: 'auto' | 'default' | 'flex' | 'priority' | null;
-  readonly tools?: readonly string[] | null;
-  readonly disallowed_tools?: readonly string[] | null;
-  readonly routes?: readonly {
-    readonly id: string;
-    readonly description?: string;
-    readonly model_alias?: string | null;
-  }[];
-  readonly raw_text?: string;
-}
+export type NamedAgentProfile = ProtocolNamedAgentProfile;
+export type ListNamedAgentProfilesResponse = ProtocolListNamedAgentProfilesResponse;
+export type UpdateNamedAgentProfileRequest = ProtocolUpdateNamedAgentProfileRequest;
 
 export type McpTransport = 'stdio' | 'http' | 'sse';
 

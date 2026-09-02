@@ -8,9 +8,8 @@ import {
   ISessionManager,
   normalizeAgentProfile,
 } from '@moonshot-ai/agent-core-v2';
+import { listNamedAgentProfilesResponseSchema } from '@moonshot-ai/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
-import { listNamedAgentProfilesResponseSchema } from '../src/protocol/rest-agentProfile';
 import { type RunningServer, startServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
