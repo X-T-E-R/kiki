@@ -77,20 +77,6 @@ export const DEFAULT_OAUTH_PROVIDER_NAME = 'managed:kimi-code';
 // auto-propagates instead of silently breaking the startup recovery path.
 export const OAUTH_LOGIN_REQUIRED_CODE = ErrorCodes.AUTH_LOGIN_REQUIRED;
 
-export const FEEDBACK_ISSUE_URL = 'https://github.com/MoonshotAI/kimi-code/issues';
-// Sign-up / sign-in page offered to signed-out users so they can create an
-// account and submit feedback through the authenticated channel next time.
-export function kimiCodeSignupUrl(): string {
-  return `${currentKimiProfile().siteBase}/code`;
-}
-
-// Sent in the feedback `version` field so the backend can distinguish this
-// TypeScript client from clients that send a bare version.
-export const FEEDBACK_VERSION_PREFIX = 'kimi-code-';
-
-// Telemetry event name; keep stable for dashboard queries.
-export const FEEDBACK_TELEMETRY_EVENT = 'feedback_submitted';
-
 // CDN source of truth: all version checks and native install scripts pull from here.
 // The off-session endpoints derive from the current region profile so a
 // global login points at the .ai deployment; they are resolved per call so
