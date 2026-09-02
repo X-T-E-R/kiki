@@ -92,8 +92,21 @@ export interface LegacyStatusSnapshot {
   readonly model: string;
 }
 
+export interface ReadLegacyStatusOptions {
+  /**
+   * Whether to compute `contextBreakdown`. The breakdown re-estimates the
+   * system prompt, every tool schema, and the whole conversation history, so
+   * callers that only need usage / context size should pass `false`.
+   * Defaults to `true`.
+   */
+  readonly contextBreakdown?: boolean;
+}
+
 /** Read the current combined status when the handle exposes a complete agent. */
-export function readLegacyStatus(agent: IAgentScopeHandle): LegacyStatusSnapshot | undefined {
+export function readLegacyStatus(
+  agent: IAgentScopeHandle,
+  options?: ReadLegacyStatusOptions,
+): LegacyStatusSnapshot | undefined {
   const profile = agent.accessor.get(IAgentProfileService) as
     | IAgentProfileService
     | undefined;
@@ -118,7 +131,8 @@ export function readLegacyStatus(agent: IAgentScopeHandle): LegacyStatusSnapshot
     usage,
     contextTokens,
     maxContextTokens: maxContextTokens > 0 ? maxContextTokens : undefined,
-    contextBreakdown: readContextBreakdown(agent, contextTokens),
+    contextBreakdown:
+      options?.contextBreakdown === false ? undefined : readContextBreakdown(agent, contextTokens),
     model,
   };
 }

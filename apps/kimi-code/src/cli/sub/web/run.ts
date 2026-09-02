@@ -35,6 +35,7 @@ import {
   isLoopbackHost,
   splitTokenFragment,
 } from './access-urls';
+import { resolveHeapWatchdogPolicy, startHeapWatchdog } from './heap-watchdog';
 import { type NetworkAddress } from './networks';
 import {
   formatRemoteControlOutput,
@@ -415,6 +416,30 @@ async function runServerInProcess(
   };
 
   track('server_started', { daemon: false });
+
+  const heapPolicy = resolveHeapWatchdogPolicy(process.env);
+  if (heapPolicy !== undefined) {
+    const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
+    logger.info(
+      { threshold_mb: mb(heapPolicy.thresholdBytes), interval_ms: heapPolicy.intervalMs },
+      'heap watchdog armed',
+    );
+    startHeapWatchdog({
+      policy: heapPolicy,
+      onTrip: (trip) => {
+        logger.warn(
+          {
+            heap_used_mb: mb(trip.heapUsed),
+            heap_total_mb: mb(trip.heapTotal),
+            rss_mb: mb(trip.rss),
+            threshold_mb: mb(trip.thresholdBytes),
+          },
+          'heap watchdog tripped; restarting the server before the old-space limit',
+        );
+        void shutdown('heap_limit');
+      },
+    });
+  }
 
   process.once('SIGINT', () => {
     void shutdown('SIGINT');

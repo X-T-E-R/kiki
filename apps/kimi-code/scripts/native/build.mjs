@@ -42,7 +42,7 @@ if (profile === 'release' && process.env[BUILT_IN_CATALOG_ENV] === undefined) {
 }
 
 await runBundleStep();
-await runSeaBlobStep();
+await runSeaBlobStep({ profile });
 await runInjectStep();
 
 const identity =

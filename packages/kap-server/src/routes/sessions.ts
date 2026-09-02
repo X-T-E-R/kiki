@@ -1277,7 +1277,7 @@ function readSessionUsage(
   persisted?: SessionUsageSummary,
 ): SessionUsage | undefined {
   try {
-    const status = readLegacyStatus(main);
+    const status = readLegacyStatus(main, { contextBreakdown: false });
     if (status === undefined) return undefined;
     const total = persisted?.total ?? status.usage?.total;
     const byModel = new Map<string, MutableModelTokenUsage>();

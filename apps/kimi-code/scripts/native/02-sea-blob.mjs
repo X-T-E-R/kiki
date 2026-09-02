@@ -26,7 +26,13 @@ async function ensureBundleExists() {
   }
 }
 
-async function writeSeaConfig(target) {
+const LOCAL_PROFILE_EXEC_ARGV = ['--max-old-space-size=8192'];
+
+export function seaExecArgv(profile) {
+  return profile === 'local' ? LOCAL_PROFILE_EXEC_ARGV : [];
+}
+
+async function writeSeaConfig(target, profile) {
   await mkdir(nativeIntermediatesDir(), { recursive: true });
   const { manifest, manifestJson, assets } = await collectNativeAssets({
     appRoot,
@@ -55,6 +61,7 @@ async function writeSeaConfig(target) {
     disableExperimentalSEAWarning: true,
     useCodeCache: false,
     useSnapshot: false,
+    execArgv: seaExecArgv(profile),
   };
   await writeFile(nativeSeaConfigPath(), `${JSON.stringify(config, null, 2)}\n`);
 
@@ -67,10 +74,10 @@ async function writeSeaConfig(target) {
   );
 }
 
-export async function runSeaBlobStep() {
+export async function runSeaBlobStep({ profile = 'local' } = {}) {
   await ensureBundleExists();
   const target = targetTriple();
-  await writeSeaConfig(target);
+  await writeSeaConfig(target, profile);
   await run(process.execPath, ['--experimental-sea-config', nativeSeaConfigPath()]);
 }
 
