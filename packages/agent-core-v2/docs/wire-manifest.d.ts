@@ -925,6 +925,13 @@ interface UsageRecordPayload {
   };
   /** UsageRecordScope */
   usageScope?: 'session' | 'turn';
+  turnId?: number;
+  agentId?: string;
+  parentAgentId?: string;
+  provider?: string;
+  modelAlias?: string;
+  profileName?: string;
+  executorId?: string;
 }
 
 /** Record type → payload sketch. */

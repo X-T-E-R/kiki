@@ -75,8 +75,7 @@ const STRINGS = {
     kikiAsks: 'kiki asks',
     submit: 'Submit',
     settings: 'Settings',
-    models: 'Models',
-    providersAuth: 'Providers & auth',
+    tabProviders: 'Connections',
     capabilities: 'Capabilities',
     configuredProviders: 'Configured providers',
     tools: 'Tools',
@@ -210,8 +209,7 @@ const STRINGS = {
     kikiAsks: 'kiki 提问',
     submit: '提交',
     settings: '设置',
-    models: '模型',
-    providersAuth: '提供商与认证',
+    tabProviders: '连接服务',
     capabilities: '能力',
     configuredProviders: '已配置的提供商',
     tools: '工具',
@@ -1167,14 +1165,16 @@ async function scenarioSettings() {
   await page.waitForTimeout(500);
   await shot('settings-general');
 
-  await page.click(`text=${S.models}`);
+  // Batch 2 merged Models + Providers into one "Models & providers" entry
+  // with three tabs; the nav leaf opens the default (Available models) tab.
+  await page.locator('nav [data-settings-nav-leaf="ai"]').click();
   await page.waitForSelector('text=Kiki Pro', { timeout: 10_000 });
   // The second fixture provider proves the per-provider grouping renders.
   await page.waitForSelector('text=Alt Claude X', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-models');
 
-  await page.click(`text=${S.providersAuth}`);
+  await page.locator('[data-ai-tab="providers"]').click();
   await page.waitForSelector(`text=${S.configuredProviders}`, { timeout: 10_000 });
   // The pending device-code flow is seeded by the scenario — proof for the
   // OAuth card (code, countdown, polling indicator).
@@ -1182,8 +1182,9 @@ async function scenarioSettings() {
   await page.waitForTimeout(400);
   await shot('settings-providers');
 
-  // Reload-proof: land on the providers route directly so a dev-server page
-  // reload during the walk cannot strand the assertions on the wrong tab.
+  // Reload-proof + legacy-route proof: the pre-merge /settings/providers
+  // bookmark redirects to /settings/ai?tab=providers and lands on the same
+  // card, so a dev-server reload cannot strand the assertions on the wrong tab.
   await page.goto(`${WEB_URL}/settings/providers?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });

@@ -9,8 +9,8 @@
 
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import { detectLocalConnection, isDesktopRuntime } from '../lib/localServer';
 import type { ConnectionConfig } from '../state/connectionConfig';
 import type { DesktopBootStatus, DesktopFailureInfo } from '../state/desktopConnection';
 import { Wordmark } from './Wordmark';
@@ -187,6 +187,7 @@ function BrowserConnectForm({
   onConnect: (config: ConnectionConfig, persist?: boolean) => void;
   onBack: (() => void) | undefined;
 }) {
+  const host = useHost();
   const { t } = useI18n();
   const [url, setUrl] = useState(initial.url);
   const [token, setToken] = useState(initial.token);
@@ -202,7 +203,7 @@ function BrowserConnectForm({
     setDetecting(true);
     setDetectNote(null);
     try {
-      const connection = await detectLocalConnection();
+      const connection = await host.connection.discover();
       if (connection === null) {
         setDetectNote(t('connect.noneFound'));
         return;
@@ -210,7 +211,7 @@ function BrowserConnectForm({
       onConnect(connection.config, connection.persist);
     } catch (error) {
       setDetectNote(
-        isDesktopRuntime()
+        host.kind === 'tauri'
           ? t('connect.desktopStartFailed', {
               detail: error instanceof Error ? error.message : String(error),
             })

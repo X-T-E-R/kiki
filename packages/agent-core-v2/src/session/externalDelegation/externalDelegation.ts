@@ -90,6 +90,20 @@ export interface ExternalAuthority {
   readonly configFingerprint: string;
 }
 
+export interface ExternalDelegationSessionProvision {
+  readonly version: 1;
+  readonly ownership: 'dedicated' | 'attached';
+}
+
+export interface ISessionExternalDelegationProvisionStore {
+  readonly _serviceBrand: undefined;
+  read(): Promise<ExternalDelegationSessionProvision | undefined>;
+  write(provision: ExternalDelegationSessionProvision): Promise<void>;
+}
+
+export const ISessionExternalDelegationProvisionStore: ServiceIdentifier<ISessionExternalDelegationProvisionStore> =
+  createDecorator<ISessionExternalDelegationProvisionStore>('sessionExternalDelegationProvisionStore');
+
 export interface ExternalDispatchable extends Partial<DispatchProfileCatalogEntry> {
   readonly kind: 'main' | 'named';
 }
@@ -224,10 +238,11 @@ export interface DispatchWaitRequest {
 }
 
 export interface DispatchWaitView {
-  readonly waitStatus: 'completed' | 'timed_out' | 'no_items';
+  readonly waitStatus: 'completed' | 'timed_out' | 'no_items' | 'interaction_pending';
   readonly waitedMs: number;
   readonly dispatch?: ExternalDispatchView;
   readonly completedDuringWait: readonly ExternalDispatchView[];
+  readonly interactions: readonly ExternalInteractionView[];
 }
 
 export interface ExternalPageLookup extends ExternalDispatchLookup {

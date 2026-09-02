@@ -17,6 +17,7 @@ import {
   type InteractionPendingChangedEvent,
   type InteractionRequest,
   type InteractionResolution,
+  interactionCoverageIncludes,
   ISessionInteractionService,
 } from './interaction';
 import {
@@ -122,8 +123,7 @@ export class SessionInteractionService extends Service implements ISessionIntera
   hasConsumer(origin?: InteractionOrigin): boolean {
     if (origin === undefined) return this.consumers.size > 0;
     for (const coverage of this.consumers.values()) {
-      if (coverage.kind === 'session') return true;
-      if (origin.agentId !== undefined && coverage.children().has(origin.agentId)) return true;
+      if (interactionCoverageIncludes(coverage, origin)) return true;
     }
     return false;
   }

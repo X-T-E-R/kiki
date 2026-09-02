@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { isDesktopRuntime, restartNativeServer } from '../../lib/desktop';
+import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { errorText } from '../../i18n/locale';
 import { useBusySessionCount } from '../../lib/busySessions';
@@ -13,10 +13,11 @@ import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '..
 import { SectionCard } from './SectionCard';
 
 export function ConnectionSection() {
+  const host = useHost();
   const { config, meta, wsStatus, socket, disconnect, applyConnection } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const isDesktop = isDesktopRuntime();
+  const isDesktop = host.kind === 'tauri';
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
@@ -37,7 +38,7 @@ export function ConnectionSection() {
     setRestarting(true);
     setFeedback(null);
     try {
-      await restartNativeServer();
+      await host.restartServer?.();
       clearRestartRequirement();
       // Fresh sidecar on the same endpoint: reattach the WS and refetch
       // instead of reloading the page.

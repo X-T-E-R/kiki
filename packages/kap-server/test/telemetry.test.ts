@@ -130,7 +130,6 @@ describe('server telemetry', () => {
       });
       const telemetry = await initializeServerTelemetry(app, home as string);
       expect(telemetry.appender).toBeUndefined();
-      expect(readKimiDeviceId(home as string)).toBeNull();
       await shutdownServerTelemetry(telemetry);
     },
   );

@@ -13,6 +13,7 @@ import { BrowserRouter } from 'react-router-dom';
 
 import { App } from './App';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
+import { HostProvider, hostAdapter } from './host';
 import { I18nProvider } from './i18n';
 import { ConnectionProvider } from './state/connection';
 import { startThemeSync } from './lib/theme';
@@ -20,7 +21,7 @@ import './index.css';
 
 // Before the first render: the palette must be right on the first frame, or a
 // dark-theme user gets a paper-white flash on every launch.
-startThemeSync();
+startThemeSync(hostAdapter);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -31,15 +32,17 @@ const queryClient = new QueryClient({
 createRoot(document.querySelector('#root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <I18nProvider>
-        <ConnectionProvider>
-          <BrowserRouter>
-            <AppErrorBoundary>
-              <App />
-            </AppErrorBoundary>
-          </BrowserRouter>
-        </ConnectionProvider>
-      </I18nProvider>
+      <HostProvider>
+        <I18nProvider>
+          <ConnectionProvider>
+            <BrowserRouter>
+              <AppErrorBoundary>
+                <App />
+              </AppErrorBoundary>
+            </BrowserRouter>
+          </ConnectionProvider>
+        </I18nProvider>
+      </HostProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

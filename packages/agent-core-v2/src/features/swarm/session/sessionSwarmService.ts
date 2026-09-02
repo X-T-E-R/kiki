@@ -185,7 +185,11 @@ export class SessionSwarmService implements ISessionSwarmService {
     const run = await this.dispatch.runOnExisting(
       child,
       retryTurn ? { kind: 'retry' } : options.prompt,
-      { signal: options.signal, onReady: options.onReady },
+      {
+        signal: options.signal,
+        requesterAgentId: callerAgentId,
+        onReady: options.onReady,
+      },
     );
     if (!retryTurn) {
       emitAgentRunSpawned(caller, child.agentId, {

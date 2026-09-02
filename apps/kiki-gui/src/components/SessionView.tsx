@@ -34,10 +34,10 @@ import {
   buildSkillActivation,
   type ComposerAttachment,
 } from '../lib/attachments';
+import { useHost } from '../host';
 import { composerDefaultsForProfile } from '../lib/agentSettings';
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { readComposerState, readDraft, subscribeDraftAppends, writeComposerState, writeDraft } from '../lib/drafts';
-import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
 import {
   addAnnotation,
   buildAnnotationsPrefix,
@@ -1046,6 +1046,7 @@ export function SessionView({
   /** Polled session records owned by App (page-1 polling there). */
   sessions: readonly Session[];
 }) {
+  const host = useHost();
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
   const { client, socket, meta, wsStatus } = useConnection();
@@ -1806,10 +1807,11 @@ export function SessionView({
   const actionContext: SessionActionContext = useMemo(
     () => ({
       client,
+      host,
       refreshSessions: () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
       navigate,
     }),
-    [client, queryClient, navigate],
+    [client, host, queryClient, navigate],
   );
 
   // Same bare-title patch the sidebar's rename dialog sends: omitting
@@ -2119,15 +2121,15 @@ export function SessionView({
     }
     if (lastNotifiedInteractionRef.current === 'approval') return;
     lastNotifiedInteractionRef.current = 'approval';
-    if (!readDesktopPrefs().notifications) return;
-    void isMainWindowVisibleAndFocused().then((visibleAndFocused) => {
+    if (!readDesktopPrefs().notifications || host.isWindowVisibleAndFocused === undefined) return;
+    void host.isWindowVisibleAndFocused().then((visibleAndFocused) => {
       if (visibleAndFocused) return;
-      void showDesktopNotification({
+      void host.notify?.({
         title: 'Kiki',
         body: t('sv.notificationBody'),
       });
     });
-  }, [state.pendingInteraction, t]);
+  }, [host, state.pendingInteraction, t]);
 
   const composerDisabled =
     controller === null ||

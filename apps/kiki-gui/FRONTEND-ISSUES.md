@@ -50,7 +50,7 @@
 - **可见故障**：向上加载旧消息时，新增历史可能倒序或插在错误位置；随后继续分页时可能使用错误的 `before_id`。
 - **事实**：服务端 `/messages` 先把完整历史反转为 newest-first，再返回分页结果；服务端测试也把这个顺序作为契约。前端 `prependOlderMessages()` 按传入顺序生成 block、整体前插，并把 `messages[0]` 当作最旧消息。fixture server 却返回 oldest-first 的尾部切片，因此现有 fixture 会掩盖生产契约差异。
 - **影响判断**：真实服务端返回两条以上旧消息时，前端的阅读顺序和下一页游标都可能错误；fixture 的长 transcript 证明不能排除该问题。
-- **证据**：`packages/kap-server/src/services/messages/messageHistory.ts:78-109`；`packages/kap-server/test/messages.test.ts:252-281`；`apps/kiki-gui/src/state/transcript.ts:439-467`；`apps/kiki-gui/scripts/fixture-server.mjs:411-421`。
+- **证据**：`packages/kap-server/src/services/messages/messageHistory.ts:78-109`；`packages/kap-server/test/messages.integration.ts:252-281`；`apps/kiki-gui/src/state/transcript.ts:439-467`；`apps/kiki-gui/scripts/fixture-server.mjs:411-421`。
 - **期望行为**：快照、增量分页和最终 transcript 都保持 oldest-to-newest 的阅读顺序，且每次请求的 `before_id` 指向当前最旧的已加载消息。
 - **定向证明**：使用真实 `/messages` 契约准备至少 120 条带连续编号的消息，打开快照后连续加载两页；断言 DOM 编号严格递增、无重复或缺失，并核对第二次请求的游标。
 
