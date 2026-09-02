@@ -381,15 +381,25 @@ fn begin_runtime_recovery_transition<T>(
 struct BackendState {
     backend: Option<OwnedBackend>,
     recovery: RuntimeRecoveryState,
+    /// Bumped every time a fresh connection is published; host-root grants
+    /// authorize only under the generation they were issued in.
+    generation: u64,
+}
+
+/// A user-granted file-access boundary for one canonical workspace root,
+/// valid only while the backend connection generation it was granted under
+/// stays live.
+struct HostGrant {
+    generation: u64,
+    root: PathBuf,
 }
 
 #[derive(Clone, Default)]
 struct BackendManager {
     inner: Arc<Mutex<BackendState>>,
-    /// Canonicalized workspace roots reported by the connected backend — the
-    /// containment boundary for every host-path command. See
-    /// `require_authorized_host_path`.
-    host_roots: Arc<Mutex<Vec<PathBuf>>>,
+    /// User-granted host roots, each bound to the connection generation it
+    /// was granted under. See `require_authorized_host_path`.
+    host_grants: Arc<Mutex<Vec<HostGrant>>>,
 }
 
 impl BackendManager {
@@ -537,11 +547,6 @@ impl BackendManager {
                             ));
                         }
                         if let Some(connection) = self.publish_connection(&pending, &connection) {
-                            // Best-effort warm-up of the authorized host-root
-                            // set. Host-path commands re-fetch lazily on a
-                            // containment miss, so a failure here (registry
-                            // still building) must not fail the connection.
-                            let _ = self.refresh_host_roots();
                             return Ok(connection);
                         }
                     }
@@ -591,6 +596,12 @@ impl BackendManager {
         }
         backend.connection = Some(connection.clone());
         backend.ready_at = Some(Instant::now());
+        state.generation += 1;
+        // A fresh connection generation invalidates every grant issued under
+        // the previous backend (restart, recovery, or reconnect).
+        if let Ok(mut grants) = self.host_grants.lock() {
+            grants.clear();
+        }
         Some(connection.clone())
     }
 
@@ -606,7 +617,9 @@ impl BackendManager {
                 .inner
                 .lock()
                 .expect("backend lifecycle lock must not be poisoned");
-            let BackendState { backend, recovery } = &mut *state;
+            let BackendState {
+                backend, recovery, ..
+            } = &mut *state;
             begin_runtime_recovery_transition(
                 backend,
                 recovery,
@@ -974,26 +987,46 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn write_host_file_text(
+async fn write_host_file_text(
     path: PathBuf,
     text: String,
+    app: AppHandle,
     manager: State<'_, BackendManager>,
 ) -> Result<(), String> {
-    manager.write_host_file_text(&path, &text)
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.write_host_file_text(&app, &path, &text))
+        .await
+        .map_err(|error| format!("Kiki host-file task failed: {error}"))?
 }
 
 /// Narrow host-opener pair behind the session/file context menus. Both are
 /// gated by `require_authorized_host_path` and spawn the platform shell
 /// without waiting: `explorer` exits non-zero even on success, so spawn
-/// success is the whole contract.
+/// success is the whole contract. The gate may show a blocking native grant
+/// prompt, so every command dispatches on a blocking worker — never the main
+/// thread.
 #[tauri::command]
-fn reveal_host_path(path: PathBuf, manager: State<'_, BackendManager>) -> Result<(), String> {
-    manager.reveal_host_path(&path)
+async fn reveal_host_path(
+    path: PathBuf,
+    app: AppHandle,
+    manager: State<'_, BackendManager>,
+) -> Result<(), String> {
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.reveal_host_path(&app, &path))
+        .await
+        .map_err(|error| format!("Kiki host-path task failed: {error}"))?
 }
 
 #[tauri::command]
-fn open_host_path(path: PathBuf, manager: State<'_, BackendManager>) -> Result<(), String> {
-    manager.open_host_path(&path)
+async fn open_host_path(
+    path: PathBuf,
+    app: AppHandle,
+    manager: State<'_, BackendManager>,
+) -> Result<(), String> {
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.open_host_path(&app, &path))
+        .await
+        .map_err(|error| format!("Kiki host-path task failed: {error}"))?
 }
 
 /// What the caller intends to do with a host path: writes tolerate a missing
@@ -1016,35 +1049,47 @@ impl BackendManager {
             .ok_or_else(|| "Kiki backend is not connected".to_string())
     }
 
-    /// Re-pull the backend's workspace registry into the authorized host-root
-    /// set. A fetch failure leaves the previous set in place.
-    fn refresh_host_roots(&self) -> Result<(), String> {
-        let connection = self.current_connection()?;
-        let roots = fetch_workspace_roots(&connection)?;
-        let mut set = self
-            .host_roots
-            .lock()
-            .map_err(|_| "Kiki host-root lock was poisoned".to_string())?;
-        *set = roots;
-        Ok(())
+    /// The generation of the CURRENT live backend connection, if any. Grants
+    /// recorded under any other generation — or while no live connection
+    /// exists (backend removed, exited, or mid-restart) — authorize nothing.
+    fn live_connection_generation(&self) -> Option<u64> {
+        let state = self.inner.lock().ok()?;
+        let backend = state.backend.as_ref()?;
+        backend.connection.as_ref()?;
+        if backend.monitor.exit().is_some() {
+            return None;
+        }
+        Some(state.generation)
     }
 
-    fn host_roots_contain(&self, canonical: &Path) -> bool {
-        self.host_roots
-            .lock()
-            .is_ok_and(|roots| roots.iter().any(|root| canonical.starts_with(root)))
+    fn host_grant_covers(&self, generation: u64, canonical: &Path) -> bool {
+        self.host_grants.lock().is_ok_and(|grants| {
+            grants
+                .iter()
+                .any(|grant| grant.generation == generation && canonical.starts_with(&grant.root))
+        })
+    }
+
+    fn record_host_grant(&self, generation: u64, root: PathBuf) {
+        if let Ok(mut grants) = self.host_grants.lock() {
+            grants.retain(|grant| grant.root != root);
+            grants.push(HostGrant { generation, root });
+        }
     }
 
     /// The boundary every host-path command shares: the target must
-    /// canonicalize inside one of the workspace roots the backend itself
-    /// reported — the renderer never declares roots, so transcript or menu
-    /// content cannot widen the boundary. A containment miss retries once
-    /// against a fresh registry pull (a workspace registered since the last
-    /// fetch must not be rejected), then fails closed. The CHECK uses the
-    /// canonical path while the ACTION keeps the caller's path verbatim; the
-    /// residual symlink-swap race is accepted on this local single-user
-    /// shell.
-    fn require_authorized_host_path(&self, path: &Path, op: HostPathOp) -> Result<(), String> {
+    /// canonicalize inside a root holding a LIVE grant for the current
+    /// connection generation, or the user is asked — natively, on the Rust
+    /// side — to grant the registry-reported workspace root covering it.
+    /// The CHECK uses the canonical path while the ACTION keeps the caller's
+    /// path verbatim; the residual symlink-swap race is accepted on this
+    /// local single-user shell.
+    fn require_authorized_host_path(
+        &self,
+        path: &Path,
+        op: HostPathOp,
+        confirm: &dyn Fn(&Path) -> bool,
+    ) -> Result<(), String> {
         reject_remote_or_device_host_path(path)?;
         if op == HostPathOp::Open && is_executable_host_path(path) {
             return Err(format!(
@@ -1056,43 +1101,120 @@ impl BackendManager {
             return Err("Host path must be absolute".to_string());
         }
         let canonical = canonicalize_host_path(path, op == HostPathOp::Write)?;
-        if self.host_roots_contain(&canonical) {
-            return Ok(());
-        }
-        self.refresh_host_roots()?;
-        if self.host_roots_contain(&canonical) {
-            Ok(())
-        } else {
-            Err(format!(
-                "Host path {} is outside every workspace root registered with the backend",
-                path.display()
-            ))
-        }
+        let Some(generation) = self.live_connection_generation() else {
+            return Err("Kiki backend is not connected".to_string());
+        };
+        let connection = self.current_connection()?;
+        self.decide_host_path_access(generation, &connection, &canonical, path, confirm)
     }
 
-    fn open_host_path(&self, path: &Path) -> Result<(), String> {
-        self.require_authorized_host_path(path, HostPathOp::Open)?;
+    /// Grant check → registry consultation → user confirmation, given a live
+    /// connection generation. The backend's workspace registry only selects
+    /// WHICH root the user is asked about: the renderer holds the bearer
+    /// token and could register `C:\` as a workspace, so membership alone
+    /// proves nothing. The grant itself requires the confirmation callback —
+    /// in production the native dialog, the one channel a compromised
+    /// renderer cannot forge. A registry fetch failure fails closed (there is
+    /// no stale registry cache to fall back to); confirmed grants survive
+    /// transient registry failures within their generation because they are
+    /// the user-consented boundary, not a registry mirror.
+    fn decide_host_path_access(
+        &self,
+        generation: u64,
+        connection: &DesktopConnection,
+        canonical: &Path,
+        display: &Path,
+        confirm: &dyn Fn(&Path) -> bool,
+    ) -> Result<(), String> {
+        if self.host_grant_covers(generation, canonical) {
+            return Ok(());
+        }
+        let roots = fetch_workspace_roots(connection)?;
+        let Some(root) = roots.into_iter().find(|root| canonical.starts_with(root)) else {
+            return Err(format!(
+                "Host path {} is outside every workspace root registered with the backend",
+                display.display()
+            ));
+        };
+        if !confirm(&root) {
+            return Err(format!(
+                "Access to host root {} was not granted",
+                root.display()
+            ));
+        }
+        self.record_host_grant(generation, root);
+        Ok(())
+    }
+
+    fn open_host_path(&self, app: &AppHandle, path: &Path) -> Result<(), String> {
+        self.require_authorized_host_path(path, HostPathOp::Open, &|root| {
+            confirm_host_root_native(app, root)
+        })?;
         open_with_default_app(path)
     }
 
-    fn reveal_host_path(&self, path: &Path) -> Result<(), String> {
-        self.require_authorized_host_path(path, HostPathOp::Reveal)?;
+    fn reveal_host_path(&self, app: &AppHandle, path: &Path) -> Result<(), String> {
+        self.require_authorized_host_path(path, HostPathOp::Reveal, &|root| {
+            confirm_host_root_native(app, root)
+        })?;
         reveal_in_file_manager(path)
     }
 
-    fn write_host_file_text(&self, path: &Path, text: &str) -> Result<(), String> {
-        self.require_authorized_host_path(path, HostPathOp::Write)?;
-        fs::write(path, text)
-            .map_err(|error| format!("Cannot write host file {}: {error}", path.display()))
+    fn write_host_file_text(&self, app: &AppHandle, path: &Path, text: &str) -> Result<(), String> {
+        self.require_authorized_host_path(path, HostPathOp::Write, &|root| {
+            confirm_host_root_native(app, root)
+        })?;
+        write_host_file_text_authorized(path, text)
     }
+}
 
-    #[cfg(test)]
-    fn authorize_host_roots_for_tests(&self, roots: &[&Path]) {
-        let canonical: Vec<PathBuf> = roots
-            .iter()
-            .filter_map(|root| fs::canonicalize(root).ok())
-            .collect();
-        *self.host_roots.lock().unwrap() = canonical;
+/// The write itself; only reachable after `require_authorized_host_path`.
+fn write_host_file_text_authorized(path: &Path, text: &str) -> Result<(), String> {
+    fs::write(path, text)
+        .map_err(|error| format!("Cannot write host file {}: {error}", path.display()))
+}
+
+/// Native user confirmation of a workspace root — the dialog is created and
+/// answered entirely on the Rust side, so renderer content cannot forge a
+/// grant. `blocking_show` must not run on the main thread; the commands
+/// dispatch through spawn_blocking.
+fn confirm_host_root_native(app: &AppHandle, root: &Path) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let labels = host_root_prompt_labels(read_desktop_prefs_file().locale.as_deref());
+    app.dialog()
+        .message(format!("{}\n\n{}", labels.message, root.display()))
+        .title(labels.title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            labels.allow.to_string(),
+            labels.deny.to_string(),
+        ))
+        .blocking_show()
+}
+
+struct HostRootPromptLabels {
+    title: &'static str,
+    message: &'static str,
+    allow: &'static str,
+    deny: &'static str,
+}
+
+/// Grant-prompt copy follows the frontend's UI locale (mirrored into
+/// desktop.json), same as the tray labels.
+fn host_root_prompt_labels(locale: Option<&str>) -> HostRootPromptLabels {
+    match locale {
+        Some("zh") => HostRootPromptLabels {
+            title: "Kiki 文件访问",
+            message: "允许 Kiki 打开并编辑此工作区文件夹中的文件？",
+            allow: "允许",
+            deny: "不允许",
+        },
+        _ => HostRootPromptLabels {
+            title: "Kiki file access",
+            message: "Allow Kiki to open and edit files under this workspace folder?",
+            allow: "Allow",
+            deny: "Don't allow",
+        },
     }
 }
 
@@ -3689,22 +3811,81 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// Loopback HTTP stub answering each request with the canned response;
+    /// serves up to `max_requests` connections, then the thread exits.
+    fn spawn_stub_server(status: &'static str, body: String, max_requests: usize) -> u16 {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for _ in 0..max_requests {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                // Drain the request headers before answering.
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            request.extend_from_slice(&chunk[..n]);
+                            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                    if request.len() > 64 * 1024 {
+                        break;
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        port
+    }
+
+    fn stub_connection(port: u16) -> DesktopConnection {
+        DesktopConnection {
+            url: format!("http://127.0.0.1:{port}"),
+            token: "test-token".to_string(),
+        }
+    }
+
+    /// Registry JSON listing `roots` as the backend's workspaces.
+    fn registry_body(roots: &[&Path]) -> String {
+        serde_json::json!({
+            "data": { "items": roots.iter().map(|root| serde_json::json!({
+                "id": "w",
+                "root": root.to_string_lossy(),
+            })).collect::<Vec<_>>() }
+        })
+        .to_string()
+    }
+
     #[test]
-    fn host_file_write_requires_an_authorized_root_and_writes_utf8() {
+    fn host_file_write_writes_utf8_and_rejects_relative_paths() {
         let root = env::temp_dir().join(format!(
             "kiki-host-file-write-test-{}-{}",
             std::process::id(),
             unix_epoch_millis().unwrap()
         ));
         fs::create_dir_all(&root).unwrap();
-        let manager = BackendManager::default();
-        manager.authorize_host_roots_for_tests(&[root.as_path()]);
         let path = root.join("note.txt");
-
-        manager.write_host_file_text(&path, "hello 世界").unwrap();
+        write_host_file_text_authorized(&path, "hello 世界").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello 世界");
+
+        // The gate rejects relative paths before any prompt or I/O.
+        let manager = BackendManager::default();
+        let never_confirm = |_: &Path| panic!("relative paths must be rejected before any prompt");
         assert!(manager
-            .write_host_file_text(Path::new("relative.txt"), "no")
+            .require_authorized_host_path(
+                Path::new("relative.txt"),
+                HostPathOp::Write,
+                &never_confirm
+            )
             .is_err());
 
         fs::remove_dir_all(root).unwrap();
@@ -3713,101 +3894,180 @@ mod tests {
     #[test]
     fn host_path_openers_reject_relative_paths() {
         let manager = BackendManager::default();
-        assert!(manager.reveal_host_path(Path::new("relative.txt")).is_err());
-        assert!(manager.open_host_path(Path::new("relative.txt")).is_err());
+        let never_confirm = |_: &Path| panic!("relative paths must be rejected before any prompt");
+        assert!(manager
+            .require_authorized_host_path(
+                Path::new("relative.txt"),
+                HostPathOp::Open,
+                &never_confirm
+            )
+            .is_err());
+        assert!(manager
+            .require_authorized_host_path(
+                Path::new("nested/file.md"),
+                HostPathOp::Reveal,
+                &never_confirm
+            )
+            .is_err());
     }
 
     #[test]
-    fn host_paths_outside_authorized_roots_fail_closed() {
+    fn grants_require_a_live_connection() {
+        // Even a recorded grant authorizes nothing while no backend
+        // connection is live (a default manager's backend slot is empty).
+        let root = env::temp_dir().join(format!(
+            "kiki-root-live-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("note.txt");
+        fs::write(&path, "x").unwrap();
+
+        let manager = BackendManager::default();
+        manager.record_host_grant(0, fs::canonicalize(&root).unwrap());
+        assert!(manager
+            .require_authorized_host_path(&path, HostPathOp::Open, &|_| panic!("must not prompt"))
+            .is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_root_requires_confirmation_and_grants_bind_to_the_connection_generation() {
+        let root = env::temp_dir().join(format!(
+            "kiki-root-grant-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("note.txt");
+        fs::write(&file, "x").unwrap();
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        let canonical_file = fs::canonicalize(&file).unwrap();
+
+        let port = spawn_stub_server("200 OK", registry_body(&[root.as_path()]), 4);
+        let connection = stub_connection(port);
+        let manager = BackendManager::default();
+
+        // Denied: nothing is recorded.
+        assert!(manager
+            .decide_host_path_access(1, &connection, &canonical_file, &file, &|_| false)
+            .is_err());
+        assert!(!manager.host_grant_covers(1, &canonical_file));
+
+        // Allowed: the user is asked about the CANONICAL root…
+        manager
+            .decide_host_path_access(1, &connection, &canonical_file, &file, &|asked| {
+                assert_eq!(asked, canonical_root);
+                true
+            })
+            .unwrap();
+        // …and the grant then serves without any registry fetch or prompt.
+        manager
+            .decide_host_path_access(1, &connection, &canonical_file, &file, &|_| {
+                panic!("grant hit must not re-prompt")
+            })
+            .unwrap();
+
+        // A new connection generation (backend restart/reconnect) invalidates
+        // the grant: the user is asked again.
+        manager
+            .decide_host_path_access(2, &connection, &canonical_file, &file, &|_| true)
+            .unwrap();
+        assert!(manager.host_grant_covers(2, &canonical_file));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn paths_outside_every_registry_root_fail_closed_without_prompting() {
         let millis = unix_epoch_millis().unwrap();
         let pid = std::process::id();
         let allowed = env::temp_dir().join(format!("kiki-root-allowed-{pid}-{millis}"));
         let other = env::temp_dir().join(format!("kiki-root-other-{pid}-{millis}"));
         fs::create_dir_all(&allowed).unwrap();
         fs::create_dir_all(&other).unwrap();
-        fs::write(other.join("secret.txt"), "x").unwrap();
-
-        let manager = BackendManager::default();
-        manager.authorize_host_roots_for_tests(&[allowed.as_path()]);
-
-        // Inside the authorized root all three ops pass the gate (calling the
-        // gate directly never reaches ShellExecute/explorer in tests).
-        let inside = allowed.join("note.txt");
-        fs::write(&inside, "x").unwrap();
-        manager
-            .require_authorized_host_path(&inside, HostPathOp::Open)
-            .unwrap();
-        manager
-            .require_authorized_host_path(&inside, HostPathOp::Reveal)
-            .unwrap();
-        // Writes also cover a file that does not exist yet.
-        manager
-            .write_host_file_text(&allowed.join("created.txt"), "new")
-            .unwrap();
-        assert_eq!(
-            fs::read_to_string(allowed.join("created.txt")).unwrap(),
-            "new"
-        );
-
-        // Outside the root everything is rejected; with no backend connected
-        // the miss-triggered registry refresh fails too — the gate fails
-        // CLOSED either way.
         let outside = other.join("secret.txt");
-        assert!(manager
-            .require_authorized_host_path(&outside, HostPathOp::Open)
-            .is_err());
-        assert!(manager
-            .require_authorized_host_path(&outside, HostPathOp::Reveal)
-            .is_err());
-        assert!(manager
-            .write_host_file_text(&other.join("pwned.txt"), "no")
-            .is_err());
-        assert!(!other.join("pwned.txt").exists());
+        fs::write(&outside, "x").unwrap();
+
+        let port = spawn_stub_server("200 OK", registry_body(&[allowed.as_path()]), 2);
+        let connection = stub_connection(port);
+        let manager = BackendManager::default();
+
+        let error = manager
+            .decide_host_path_access(
+                1,
+                &connection,
+                &fs::canonicalize(&outside).unwrap(),
+                &outside,
+                &|_| panic!("outside paths must never prompt"),
+            )
+            .unwrap_err();
+        assert!(error.contains("outside every workspace root"));
 
         fs::remove_dir_all(allowed).unwrap();
         fs::remove_dir_all(other).unwrap();
     }
 
     #[test]
-    fn open_refuses_executables_even_inside_an_authorized_root() {
+    fn registry_failure_fails_closed_with_no_stale_fallback() {
         let root = env::temp_dir().join(format!(
-            "kiki-root-exec-{}-{}",
+            "kiki-root-failclosed-{}-{}",
             std::process::id(),
             unix_epoch_millis().unwrap()
         ));
         fs::create_dir_all(&root).unwrap();
+        let file = root.join("note.txt");
+        fs::write(&file, "x").unwrap();
+        let canonical_file = fs::canonicalize(&file).unwrap();
         let manager = BackendManager::default();
-        manager.authorize_host_roots_for_tests(&[root.as_path()]);
 
-        for name in [
-            "runme.exe",
-            "script.BAT",
-            "evil.ps1",
-            "x.cmd",
-            "x.msi",
-            "x.lnk",
-            "x.js",
-        ] {
-            let path = root.join(name);
-            fs::write(&path, "x").unwrap();
-            assert!(
-                manager
-                    .require_authorized_host_path(&path, HostPathOp::Open)
-                    .is_err(),
-                "{name} must be refused"
-            );
-            // Reveal stays allowed: selecting a file in Explorer runs nothing.
-            manager
-                .require_authorized_host_path(&path, HostPathOp::Reveal)
-                .unwrap();
-        }
-        let document = root.join("readme.md");
-        fs::write(&document, "x").unwrap();
-        manager
-            .require_authorized_host_path(&document, HostPathOp::Open)
-            .unwrap();
+        // Registry answers, but not with a valid registry payload.
+        let port = spawn_stub_server("500 Internal Server Error", "{}".to_string(), 1);
+        assert!(manager
+            .decide_host_path_access(1, &stub_connection(port), &canonical_file, &file, &|_| {
+                panic!("must not prompt")
+            })
+            .is_err());
+
+        // Registry unreachable at all.
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let dead_port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(manager
+            .decide_host_path_access(
+                1,
+                &stub_connection(dead_port),
+                &canonical_file,
+                &file,
+                &|_| panic!("must not prompt")
+            )
+            .is_err());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn open_refuses_executables_before_any_io() {
+        let manager = BackendManager::default();
+        let never_confirm = |_: &Path| panic!("executables must be rejected before any prompt");
+        for raw in [
+            "C:/work/runme.exe",
+            "C:/work/script.BAT",
+            "C:/work/evil.ps1",
+            "C:/work/x.cmd",
+            "C:/work/x.msi",
+            "C:/work/x.lnk",
+            "C:/work/x.js",
+        ] {
+            assert!(
+                manager
+                    .require_authorized_host_path(Path::new(raw), HostPathOp::Open, &never_confirm)
+                    .is_err(),
+                "{raw} must be refused"
+            );
+        }
     }
 
     #[test]
@@ -3822,6 +4082,7 @@ mod tests {
     #[test]
     fn unc_device_and_verbatim_prefixes_are_rejected_before_any_io() {
         let manager = BackendManager::default();
+        let never_confirm = |_: &Path| panic!("prefix-rejected paths must never prompt");
         for raw in [
             r"\\server\share\file.txt",
             r"\\.\PhysicalDrive0",
@@ -3831,7 +4092,9 @@ mod tests {
             assert!(path.is_absolute(), "{raw}");
             for op in [HostPathOp::Open, HostPathOp::Reveal, HostPathOp::Write] {
                 assert!(
-                    manager.require_authorized_host_path(path, op).is_err(),
+                    manager
+                        .require_authorized_host_path(path, op, &never_confirm)
+                        .is_err(),
                     "{raw} must be refused for {op:?}"
                 );
             }
@@ -3839,7 +4102,7 @@ mod tests {
     }
 
     #[test]
-    fn symlink_escape_outside_an_authorized_root_is_rejected() {
+    fn symlink_escape_outside_a_granted_root_is_rejected() {
         let millis = unix_epoch_millis().unwrap();
         let pid = std::process::id();
         let root = env::temp_dir().join(format!("kiki-root-link-{pid}-{millis}"));
@@ -3862,24 +4125,35 @@ mod tests {
         };
 
         let manager = BackendManager::default();
-        manager.authorize_host_roots_for_tests(&[root.as_path()]);
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        manager.record_host_grant(9, canonical_root.clone());
+
         let escape = link.join("secret.txt");
         assert!(escape.exists());
+        let canonical_escape = fs::canonicalize(&escape).unwrap();
+        // The symlink target resolved OUTSIDE the granted root: the grant
+        // must not cover it…
+        assert!(!canonical_escape.starts_with(&canonical_root));
+        assert!(!manager.host_grant_covers(9, &canonical_escape));
+        // …and the registry (which lists the root) offers no covering root
+        // either, so access fails closed without prompting.
+        let port = spawn_stub_server("200 OK", registry_body(&[root.as_path()]), 1);
         assert!(manager
-            .require_authorized_host_path(&escape, HostPathOp::Open)
+            .decide_host_path_access(
+                9,
+                &stub_connection(port),
+                &canonical_escape,
+                &escape,
+                &|_| panic!("symlink escapes must never prompt"),
+            )
             .is_err());
-        // ...including a not-yet-created file reached through the symlink.
-        assert!(manager
-            .write_host_file_text(&link.join("new.txt"), "no")
-            .is_err());
-        assert!(!outside.join("new.txt").exists());
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]
-    fn dotdot_segments_cannot_escape_an_authorized_root() {
+    fn dotdot_segments_cannot_escape_a_granted_root() {
         let base = env::temp_dir().join(format!(
             "kiki-root-dotdot-{}-{}",
             std::process::id(),
@@ -3889,15 +4163,18 @@ mod tests {
         let sub = root.join("sub");
         fs::create_dir_all(&sub).unwrap();
         let manager = BackendManager::default();
-        manager.authorize_host_roots_for_tests(&[root.as_path()]);
+        manager.record_host_grant(3, fs::canonicalize(&root).unwrap());
 
+        // The escape canonicalizes OUTSIDE the granted root.
         let escape = sub.join("..").join("..").join("escape.txt");
-        assert!(manager.write_host_file_text(&escape, "no").is_err());
-        assert!(!base.join("escape.txt").exists());
+        let canonical_escape = canonicalize_host_path(&escape, true).unwrap();
+        assert!(!manager.host_grant_covers(3, &canonical_escape));
 
         // A `..` that stays INSIDE the root keeps working.
         let within = sub.join("..").join("ok.txt");
-        manager.write_host_file_text(&within, "yes").unwrap();
+        let canonical_within = canonicalize_host_path(&within, true).unwrap();
+        assert!(manager.host_grant_covers(3, &canonical_within));
+        write_host_file_text_authorized(&within, "yes").unwrap();
         assert_eq!(fs::read_to_string(root.join("ok.txt")).unwrap(), "yes");
 
         fs::remove_dir_all(base).unwrap();
