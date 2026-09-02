@@ -70,7 +70,7 @@ import {
 } from './session';
 import { handleSwarmCommand } from './swarm';
 import { handleUndoCommand } from './undo';
-import { handleRemoteControlCommand, handleWebCommand } from './web';
+import { handleWebCommand } from './web';
 
 // ---------------------------------------------------------------------------
 // Re-exports — keep existing consumers working
@@ -107,7 +107,7 @@ export {
   handleTitleCommand,
 } from './session';
 export { handleUndoCommand } from './undo';
-export { handleRemoteControlCommand, handleWebCommand } from './web';
+export { handleWebCommand } from './web';
 
 // ---------------------------------------------------------------------------
 // Host interface
@@ -604,9 +604,6 @@ async function handleBuiltInSlashCommand(
       return;
     case 'web':
       await handleWebCommand(host);
-      return;
-    case 'remote-control':
-      await handleRemoteControlCommand(host);
       return;
     default:
       host.showError(`Unknown slash command: /${String(name)}`);

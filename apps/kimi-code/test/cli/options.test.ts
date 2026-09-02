@@ -592,7 +592,6 @@ describe('CLI options parsing', () => {
 
     it('registers the visible sub-commands', () => {
       vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
-      vi.stubEnv('KIMI_CODE_EXPERIMENTAL_REMOTE_CONTROL', '0');
       onTestFinished(() => { vi.unstubAllEnvs(); });
       const program = createProgram(
         '0.0.0',

@@ -195,10 +195,4 @@ describe('built-in slash command registry', () => {
     expect(findBuiltInSlashCommand('secondary-model')).toBeUndefined();
   });
 
-  it('gates remote-control behind the remote-control experiment, always available', () => {
-    const command = findBuiltInSlashCommand('remote-control');
-    expect(command).toBeDefined();
-    expect((command as KimiSlashCommand).experimentalFlag).toBe('remote-control');
-    expect(resolveSlashCommandAvailability(command!, '')).toBe('always');
-  });
 });
