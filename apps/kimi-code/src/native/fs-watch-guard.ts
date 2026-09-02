@@ -1,14 +1,28 @@
 import { watch } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-const GUARD = Symbol.for('kiki.nativeFsWatchErrorGuard');
+const GUARD_STATE = Symbol.for('kiki.nativeFsWatchErrorGuard');
+const GUARDED_PROTOTYPE = Symbol.for('kiki.nativeFsWatchErrorGuard.prototype');
+
+interface NativeFsWatchErrorGuardState {
+  installed: boolean;
+  report: (error: NodeJS.ErrnoException) => void;
+}
+
+type GuardGlobal = typeof globalThis & {
+  [GUARD_STATE]?: NativeFsWatchErrorGuardState;
+};
 
 type GuardedPrototype = {
   emit: (event: string | symbol, ...args: unknown[]) => boolean;
-  [GUARD]?: true;
+  [GUARDED_PROTOTYPE]?: true;
 };
 
-let installed = false;
+const guardGlobal = globalThis as GuardGlobal;
+const guardState = guardGlobal[GUARD_STATE] ??= {
+  installed: false,
+  report: (error) => { console.error('[fs.watch]', error); },
+};
 
 function captureFsWatcherPrototype(): GuardedPrototype | undefined {
   for (const root of [tmpdir(), process.cwd()]) {
@@ -30,27 +44,23 @@ function tryCapture(root: string): GuardedPrototype | undefined {
 }
 
 export function installNativeFsWatchErrorGuard(): void {
-  if (installed) return;
+  if (guardState.installed) return;
   const proto = captureFsWatcherPrototype();
   if (proto === undefined) return;
-  if (proto[GUARD] === true) {
-    installed = true;
+  if (proto[GUARDED_PROTOTYPE] === true) {
+    guardState.installed = true;
     return;
   }
   const originalEmit = proto.emit;
   proto.emit = function (this: NodeJS.EventEmitter, event: string | symbol, ...args: unknown[]): boolean {
     if (event === 'error' && this.listenerCount('error') === 0) {
-      onNativeFsWatchError(args[0] as NodeJS.ErrnoException);
+      guardState.report(args[0] as NodeJS.ErrnoException);
       return false;
     }
     return originalEmit.call(this, event, ...args);
   };
-  proto[GUARD] = true;
-  installed = true;
-}
-
-function onNativeFsWatchError(error: NodeJS.ErrnoException): void {
-  console.error('[fs.watch]', error);
+  proto[GUARDED_PROTOTYPE] = true;
+  guardState.installed = true;
 }
 
 installNativeFsWatchErrorGuard();
