@@ -1,4 +1,4 @@
-# Contributing to kimi-code
+﻿# Contributing to kimi-code
 
 Thanks for taking the time to contribute! This project moves quickly, and thoughtful contributions from the community are what keep it sharp. The guide below walks you through how we work so your PR has the best chance of landing smoothly.
 
