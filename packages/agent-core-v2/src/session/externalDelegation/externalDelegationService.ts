@@ -171,7 +171,10 @@ export class SessionExternalDelegationService
   private readonly controllers = new Map<string, AbortController>();
   private readonly changed = new Emitter<void>();
   private readonly dispatchKeys = new KeyReservationRegistry<string>();
-  private readonly executionSettled = new Map<string, Promise<void>>();
+  private readonly executionSettled = new Map<
+    string,
+    Promise<DispatchTranscriptBoundary | undefined>
+  >();
   private readonly terminalizations = new Map<string, Promise<void>>();
   private readonly projectionCache = new Map<string, ProjectionCacheEntry>();
   private readonly interactionConsumerId: string;
@@ -860,24 +863,19 @@ export class SessionExternalDelegationService
     dispatch: StoredDispatch,
     boundary: DispatchTranscriptBoundary | undefined,
   ): Promise<void> {
-    const handle = await this.materializeDispatchAgent(doc, dispatch);
-    const resolved = boundary ?? (
-      dispatch.transcriptTurnId === undefined
-        ? undefined
-        : this.captureTranscriptBoundary(handle, dispatch.transcriptTurnId)
-    );
-    dispatch.legacyTranscriptEnd ??= resolved?.legacyTranscriptEnd ?? dispatch.legacyTranscriptStart;
-    if (resolved === undefined) {
+    dispatch.legacyTranscriptEnd ??= boundary?.legacyTranscriptEnd ?? dispatch.legacyTranscriptStart;
+    if (boundary === undefined) {
       dispatch.transcriptEnd = dispatch.transcriptStart;
       return;
     }
+    const handle = await this.materializeDispatchAgent(doc, dispatch);
     const projection = await this.buildTurnProjection(
       handle,
       true,
-      resolved.generation,
-      resolved.turnId,
+      boundary.generation,
+      boundary.turnId,
     );
-    dispatch.transcriptEnd = projection.turnEndCursor(resolved.turnId);
+    dispatch.transcriptEnd = projection.turnEndCursor(boundary.turnId);
   }
 
   private async startExistingDispatch(
@@ -997,7 +995,13 @@ export class SessionExternalDelegationService
   private trackExecutionSettlement(dispatchId: string, dispatchRun: DispatchRun): void {
     this.executionSettled.set(
       dispatchId,
-      dispatchRun.started.then((run) => run.completion).then(() => undefined, () => undefined),
+      dispatchRun.started.then(
+        (run) => run.completion.then(
+          () => this.captureTranscriptBoundary(dispatchRun.child.agent, run.turn.id),
+          () => this.captureTranscriptBoundary(dispatchRun.child.agent, run.turn.id),
+        ),
+        () => undefined,
+      ),
     );
   }
 
@@ -1124,8 +1128,13 @@ export class SessionExternalDelegationService
     this.syncInteractionConsumer(doc);
     const published = this.persist();
     const terminalization = (async () => {
-      await this.executionSettled.get(dispatchId);
-      await this.captureTranscriptEnd(doc, dispatch, boundary);
+      const settledBoundary = await this.executionSettled.get(dispatchId);
+      const terminalBoundary = boundary ?? settledBoundary;
+      if (terminalBoundary !== undefined) {
+        dispatch.transcriptTurnId = terminalBoundary.turnId;
+        dispatch.legacyTranscriptEnd = terminalBoundary.legacyTranscriptEnd;
+      }
+      await this.captureTranscriptEnd(doc, dispatch, terminalBoundary);
       await published;
       await this.persist();
     })();

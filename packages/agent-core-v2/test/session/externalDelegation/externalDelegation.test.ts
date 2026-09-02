@@ -2300,6 +2300,99 @@ describe('SessionExternalDelegationService', () => {
     });
   });
 
+  it('freezes cancelled text before later private messages during terminalization', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'cancel_text',
+      profileName: 'coder',
+      message: 'work',
+    });
+    const child = handles.get('external-child')!;
+    const messages: ContextMessage[] = [];
+    vi.spyOn(child.accessor.get(IAgentContextMemoryService), 'get').mockImplementation(() => messages as never);
+    const records = wireRecords.get('external-child')!;
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+    );
+    onRunAbort = () => {
+      messages.push({
+        role: 'assistant',
+        content: [{ type: 'text' as const, text: 'interrupted partial' }],
+        toolCalls: [],
+      });
+      records.push(
+        {
+          type: 'context.append_loop_event',
+          time: 3,
+          event: {
+            type: 'content.part',
+            stepUuid: 's1',
+            turnId: '1',
+            step: 1,
+            uuid: 'm1',
+            part: { type: 'text', text: 'interrupted partial' },
+          },
+        },
+        { type: 'turn.ended', time: 4, turnId: 1, reason: 'cancelled' },
+      );
+    };
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('running');
+    });
+    const dispatchService = ix.get(ISessionDispatchService);
+    const resolveOwnedChild = dispatchService.resolveOwnedChild.bind(dispatchService);
+    let releaseMaterialization!: () => void;
+    const materializationGate = new Promise<void>((resolve) => { releaseMaterialization = resolve; });
+    let markMaterializationStarted!: () => void;
+    const materializationStarted = new Promise<void>((resolve) => { markMaterializationStarted = resolve; });
+    let blocked = false;
+    vi.spyOn(dispatchService, 'resolveOwnedChild').mockImplementation(async (delegator, ref) => {
+      if (!blocked) {
+        blocked = true;
+        markMaterializationStarted();
+        await materializationGate;
+      }
+      return resolveOwnedChild(delegator, ref);
+    });
+
+    await expect(service.cancel({ authority, dispatchId: dispatch.dispatchId })).resolves.toMatchObject({
+      status: 'cancelled',
+    });
+    await materializationStarted;
+    messages.push({
+      role: 'user',
+      content: [{ type: 'text' as const, text: 'later private message' }],
+      toolCalls: [],
+    });
+    releaseMaterialization();
+
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'text',
+    })).resolves.toEqual({
+      items: [{ index: 0, role: 'assistant', text: 'interrupted partial' }],
+      nextCursor: undefined,
+    });
+    const stored = documents.get('root') as {
+      dispatches: Record<string, { legacyTranscriptEnd: number }>;
+    };
+    expect(stored.dispatches[dispatch.dispatchId]!.legacyTranscriptEnd).toBe(1);
+  });
+
   it('pages results with the admitted byte limit instead of rejecting limits above the default page size', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
