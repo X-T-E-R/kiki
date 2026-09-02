@@ -84,26 +84,25 @@ export function isExternalFailureCategory(value: unknown): value is ExternalFail
   );
 }
 
-export const EXTERNAL_DELEGATION_SESSION_PROVISION_KEY = 'externalDelegationProvision';
-
-export interface ExternalDelegationSessionProvision {
-  readonly version: 1;
-  readonly ownership: 'dedicated';
-}
-
-export function isExternalDelegationSessionProvision(
-  value: unknown,
-): value is ExternalDelegationSessionProvision {
-  if (typeof value !== 'object' || value === null) return false;
-  const provision = value as Record<string, unknown>;
-  return provision['version'] === 1 && provision['ownership'] === 'dedicated';
-}
-
 export interface ExternalAuthority {
   readonly principalFingerprint: string;
   readonly authorityFingerprint: string;
   readonly configFingerprint: string;
 }
+
+export interface ExternalDelegationSessionProvision {
+  readonly version: 1;
+  readonly ownership: 'dedicated' | 'attached';
+}
+
+export interface ISessionExternalDelegationProvisionStore {
+  readonly _serviceBrand: undefined;
+  read(): Promise<ExternalDelegationSessionProvision | undefined>;
+  write(provision: ExternalDelegationSessionProvision): Promise<void>;
+}
+
+export const ISessionExternalDelegationProvisionStore: ServiceIdentifier<ISessionExternalDelegationProvisionStore> =
+  createDecorator<ISessionExternalDelegationProvisionStore>('sessionExternalDelegationProvisionStore');
 
 export interface ExternalDispatchable extends Partial<DispatchProfileCatalogEntry> {
   readonly kind: 'main' | 'named';
