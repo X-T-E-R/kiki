@@ -224,10 +224,11 @@ export interface DispatchWaitRequest {
 }
 
 export interface DispatchWaitView {
-  readonly waitStatus: 'completed' | 'timed_out' | 'no_items';
+  readonly waitStatus: 'completed' | 'timed_out' | 'no_items' | 'interaction_pending';
   readonly waitedMs: number;
   readonly dispatch?: ExternalDispatchView;
   readonly completedDuringWait: readonly ExternalDispatchView[];
+  readonly interactions: readonly ExternalInteractionView[];
 }
 
 export interface ExternalPageLookup extends ExternalDispatchLookup {

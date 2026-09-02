@@ -57,6 +57,7 @@ import {
 
 export class SessionDispatchService implements ISessionDispatchService {
   declare readonly _serviceBrand: undefined;
+  private readonly delegators = new Map<string, DelegatorRef>();
 
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
@@ -150,9 +151,10 @@ export class SessionDispatchService implements ISessionDispatchService {
         userLabel: input.userLabel,
         runtimeId: input.runtimeId ?? input.runtime.identity.runtimeId,
       });
+      this.delegators.set(child.id, input.delegator);
       child
         .accessor.get(IAgentPermissionModeService)
-        .setMode(requester.accessor.get(IAgentPermissionModeService).mode);
+        .setMode(input.permissionMode ?? requester.accessor.get(IAgentPermissionModeService).mode);
       child.accessor.get(IAgentUserToolService).inheritUserTools(requesterUserTools);
       const dispatchChild = this.childView(
         child,
@@ -218,14 +220,16 @@ export class SessionDispatchService implements ISessionDispatchService {
         { details: { agentId: resolvedAgentId, delegator } },
       );
     }
+    const childDelegator = delegatorRef(meta)!;
     const child =
       this.lifecycle.get(resolvedAgentId) ??
       (await this.lifecycle.create({
         agentId: resolvedAgentId,
         forkedFrom: meta.forkedFrom,
         labels: labelsFromAgentMeta(meta),
-        delegator: delegatorRef(meta),
+        delegator: childDelegator,
       }));
+    this.delegators.set(resolvedAgentId, childDelegator);
     const data = child.accessor.get(IAgentProfileService).data();
     return this.childView(
       child,
@@ -271,6 +275,11 @@ export class SessionDispatchService implements ISessionDispatchService {
     });
   }
 
+  parentAgentId(agentId: string): string | undefined {
+    const delegator = this.delegators.get(agentId);
+    return delegator?.kind === 'agent' ? delegator.agentId : undefined;
+  }
+
   async wait<T>(
     source: DispatchWaitSource<T>,
     options: { readonly key?: string; readonly timeoutMs: number; readonly signal?: AbortSignal },
@@ -303,6 +312,16 @@ export class SessionDispatchService implements ISessionDispatchService {
           waitedMs: Date.now() - startedAt,
           item: completed[0],
           completedDuringWait: completed.slice(1),
+        };
+      }
+      const blockedKey = source.blockedKey?.();
+      if (blockedKey !== undefined && trackedKeys.includes(blockedKey)) {
+        wake.dispose();
+        return {
+          waitStatus: 'blocked',
+          waitedMs: Date.now() - startedAt,
+          item: current.find((candidate) => source.key(candidate) === blockedKey),
+          completedDuringWait: [],
         };
       }
       if (Date.now() >= deadline) {

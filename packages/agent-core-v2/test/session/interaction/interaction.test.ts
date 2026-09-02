@@ -206,36 +206,38 @@ describe('SessionInteractionService', () => {
     expect(svc.hasConsumer()).toBe(false);
   });
 
-  it('scoped consumer coverage follows the live children set', () => {
+  it('scoped consumer coverage follows live agent subtrees', () => {
     const svc = ix.get(ISessionInteractionService);
-    const children = new Set(['child-a']);
+    const roots = new Set(['child-a']);
+    const parents = new Map([['grandchild-a', 'child-a']]);
     svc.acquireConsumer('external-root', {
-      kind: 'delegator_children',
-      delegator: { kind: 'external', delegationId: 'root-1' },
-      children: () => children,
+      kind: 'agent_subtrees',
+      roots: () => roots,
+      parent: (agentId) => parents.get(agentId),
     });
 
     expect(svc.hasConsumer()).toBe(true);
     expect(svc.hasConsumer({ agentId: 'child-a' })).toBe(true);
+    expect(svc.hasConsumer({ agentId: 'grandchild-a' })).toBe(true);
     expect(svc.hasConsumer({ agentId: 'child-b' })).toBe(false);
     expect(svc.hasConsumer({})).toBe(false);
-    children.add('child-b');
+    roots.add('child-b');
     expect(svc.hasConsumer({ agentId: 'child-b' })).toBe(true);
   });
 
   it('releasing scoped consumers cancels only approvals without remaining coverage', async () => {
     const svc = ix.get(ISessionInteractionService);
-    const wideChildren = new Set(['child-a', 'child-b']);
+    const wideRoots = new Set(['child-a', 'child-b']);
     const childB = new Set(['child-b']);
     svc.acquireConsumer('wide', {
-      kind: 'delegator_children',
-      delegator: { kind: 'external', delegationId: 'root-wide' },
-      children: () => wideChildren,
+      kind: 'agent_subtrees',
+      roots: () => wideRoots,
+      parent: () => undefined,
     });
     svc.acquireConsumer('child-b', {
-      kind: 'delegator_children',
-      delegator: { kind: 'agent', agentId: 'main' },
-      children: () => childB,
+      kind: 'agent_subtrees',
+      roots: () => childB,
+      parent: () => undefined,
     });
     const pendingA = svc.request<unknown, { decision: string }>({
       id: 'a',
@@ -268,12 +270,12 @@ describe('SessionInteractionService', () => {
 
   it('whole-session coverage prevents scoped release from cancelling pending approvals', async () => {
     const svc = ix.get(ISessionInteractionService);
-    const children = new Set(['child-a']);
+    const roots = new Set(['child-a']);
     svc.acquireConsumer('gui');
     svc.acquireConsumer('external-root', {
-      kind: 'delegator_children',
-      delegator: { kind: 'external', delegationId: 'root-1' },
-      children: () => children,
+      kind: 'agent_subtrees',
+      roots: () => roots,
+      parent: () => undefined,
     });
     const child = svc.request<unknown, { decision: string }>({
       id: 'child',

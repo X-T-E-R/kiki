@@ -31,6 +31,7 @@ import {
 } from '#/agent/tools/agent/agent';
 import { SubagentTool } from '#/agent/tools/agent/agentTool';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import type { Event2 } from '#/app/event/event2';
@@ -895,6 +896,7 @@ function createLane(
     debug: () => {},
     child: () => ix.get(ILogService),
   });
+  ix.stub(IBootstrapService, { getEnv: () => 'yolo' });
   ix.stub(IConfigService, { get: <T>() => undefined as T });
   ix.stub(IModelService, { resolveId: (id: string) => id });
   ix.stub(IModelCatalog, {

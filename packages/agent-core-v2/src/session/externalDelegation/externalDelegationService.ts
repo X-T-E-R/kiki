@@ -11,10 +11,13 @@
 import { ulid } from 'ulid';
 
 import { Disposable } from '#/_base/di/lifecycle';
-import { Emitter } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes, isError2, toKimiErrorPayload, type ErrorCode } from '#/errors';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { IEventBus } from '#/app/event/eventBus';
 import type { Event2Class } from '#/app/event/event2';
@@ -55,6 +58,10 @@ import {
 } from '#/session/dispatch/reservation';
 
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
+import {
+  constrainExternalPermissionMode,
+  resolveExternalPermissionCeiling,
+} from './permissionCeiling';
 import {
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   classifyExternalFailureCode,
@@ -178,6 +185,7 @@ export class SessionExternalDelegationService
   private readonly terminalizations = new Map<string, Promise<void>>();
   private readonly projectionCache = new Map<string, ProjectionCacheEntry>();
   private readonly interactionConsumerId: string;
+  private readonly permissionCeiling: PermissionMode;
   private interactionConsumerActive = false;
   private document: ExternalDelegationDocument | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -199,8 +207,10 @@ export class SessionExternalDelegationService
     @ILogService private readonly log: ILogService,
     @ISessionManager lifecycle: ISessionManager,
     @IModelService private readonly models: IModelService,
+    @IBootstrapService bootstrap: IBootstrapService,
   ) {
     super();
+    this.permissionCeiling = resolveExternalPermissionCeiling((name) => bootstrap.getEnv(name));
     this.scope = session.scope('external-delegation');
     this.sessionId = session.sessionId;
     this.interactionConsumerId = `external-delegation:${this.sessionId}`;
@@ -375,15 +385,10 @@ export class SessionExternalDelegationService
 
   async interactions(request: ExternalInteractionsRequest): Promise<ExternalInteractionPage> {
     const doc = await this.authorize(request.authority);
-    const children = this.ownedChildrenByAgentId(doc);
-    const pending = this.interaction
-      .listPending()
-      .filter((entry) => entry.kind === 'approval' || entry.kind === 'question')
-      .filter((entry) => entry.origin.agentId !== undefined && children.has(entry.origin.agentId))
-      .toSorted((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    const pending = this.ownedInteractionEntries(doc);
     const cursor = boundedCursor(request.cursor, pending.length);
     const window = pending.slice(cursor, cursor + 100);
-    const items = window.map((entry) => interactionView(entry, children.get(entry.origin.agentId!)!));
+    const items = window.map(({ interaction, dispatch }) => interactionView(interaction, dispatch));
     const end = cursor + window.length;
     return { items, nextCursor: end < pending.length ? end : undefined };
   }
@@ -413,10 +418,14 @@ export class SessionExternalDelegationService
     if (request.dispatchId !== undefined) this.lookup(doc, request.dispatchId);
     const waited = await this.dispatchDomain.wait(
       {
-        onDidChange: this.changed.event,
+        onDidChange: Event.any(
+          this.changed.event,
+          Event.map(this.interaction.onDidChangePending, () => undefined),
+        ),
         read: () => Object.values(doc.dispatches),
         key: (dispatch) => dispatch.dispatchId,
         terminal: (dispatch) => !ACTIVE.has(dispatch.status),
+        blockedKey: () => this.ownedInteractionEntries(doc, request.dispatchId)[0]?.dispatch.dispatchId,
       },
       {
         key: request.dispatchId,
@@ -424,11 +433,17 @@ export class SessionExternalDelegationService
         signal: request.signal,
       },
     );
+    const interactions = waited.waitStatus === 'blocked'
+      ? this.ownedInteractionEntries(doc, waited.item?.dispatchId).map(({ interaction, dispatch }) =>
+          interactionView(interaction, dispatch),
+        )
+      : [];
     return {
-      waitStatus: waited.waitStatus,
+      waitStatus: waited.waitStatus === 'blocked' ? 'interaction_pending' : waited.waitStatus,
       waitedMs: waited.waitedMs,
       dispatch: waited.item === undefined ? undefined : dispatchView(waited.item),
       completedDuringWait: waited.completedDuringWait.map(dispatchView),
+      interactions,
     };
   }
 
@@ -683,6 +698,10 @@ export class SessionExternalDelegationService
         name: taskName,
         modelAlias,
         thinkingEffort,
+        permissionMode: constrainExternalPermissionMode(
+          main.accessor.get(IAgentPermissionModeService).mode,
+          this.permissionCeiling,
+        ),
         strictThinkingFromProfile: true,
         runtime: runtimeLease.runtime,
         workDir: view.workDir,
@@ -1191,24 +1210,54 @@ export class SessionExternalDelegationService
     return write;
   }
 
-  private ownedChildrenByAgentId(doc: ExternalDelegationDocument): Map<string, StoredChild> {
-    return new Map(Object.values(doc.children).map((child) => [child.agentId, child]));
+  private ownedInteractionEntries(
+    doc: ExternalDelegationDocument,
+    dispatchId?: string,
+  ): readonly { readonly interaction: Interaction; readonly dispatch: StoredDispatch }[] {
+    return this.interaction
+      .listPending()
+      .filter((interaction) => interaction.kind === 'approval' || interaction.kind === 'question')
+      .flatMap((interaction) => {
+        const agentId = interaction.origin.agentId;
+        if (agentId === undefined) return [];
+        const dispatch = this.owningDispatch(doc, agentId, dispatchId);
+        return dispatch === undefined ? [] : [{ interaction, dispatch }];
+      })
+      .toSorted((left, right) =>
+        left.interaction.createdAt - right.interaction.createdAt ||
+        left.interaction.id.localeCompare(right.interaction.id),
+      );
+  }
+
+  private owningDispatch(
+    doc: ExternalDelegationDocument,
+    agentId: string,
+    dispatchId?: string,
+  ): StoredDispatch | undefined {
+    const roots = new Map(
+      Object.values(doc.dispatches)
+        .filter((dispatch) => ACTIVE.has(dispatch.status))
+        .filter((dispatch) => dispatchId === undefined || dispatch.dispatchId === dispatchId)
+        .map((dispatch) => [dispatch.agentId, dispatch]),
+    );
+    const seen = new Set<string>();
+    let current: string | undefined = agentId;
+    while (current !== undefined && !seen.has(current)) {
+      const dispatch = roots.get(current);
+      if (dispatch !== undefined) return dispatch;
+      seen.add(current);
+      current = this.dispatchDomain.parentAgentId(current);
+    }
+    return undefined;
   }
 
   private requireOwnedInteraction(
     doc: ExternalDelegationDocument,
     interactionId: string,
   ): Interaction {
-    const interaction = this.interaction.listPending().find((entry) => entry.id === interactionId);
-    const agentId = interaction?.origin.agentId;
-    if (
-      interaction === undefined ||
-      (interaction.kind !== 'approval' && interaction.kind !== 'question') ||
-      agentId === undefined ||
-      !this.ownedChildrenByAgentId(doc).has(agentId)
-    ) {
-      throw interactionNotOwned();
-    }
+    const interaction = this.ownedInteractionEntries(doc)
+      .find((entry) => entry.interaction.id === interactionId)?.interaction;
+    if (interaction === undefined) throw interactionNotOwned();
     return interaction;
   }
 
@@ -1217,11 +1266,13 @@ export class SessionExternalDelegationService
     if (active === this.interactionConsumerActive) return;
     if (active) {
       this.interaction.acquireConsumer(this.interactionConsumerId, {
-        kind: 'delegator_children',
-        delegator: { kind: 'external', delegationId: doc.delegationId },
-        children: () => new Set(
-          Object.values(this.document?.children ?? {}).map((child) => child.agentId),
+        kind: 'agent_subtrees',
+        roots: () => new Set(
+          Object.values(this.document?.dispatches ?? {})
+            .filter((dispatch) => ACTIVE.has(dispatch.status))
+            .map((dispatch) => dispatch.agentId),
         ),
+        parent: (agentId) => this.dispatchDomain.parentAgentId(agentId),
       });
       this.interactionConsumerActive = true;
     } else {
@@ -1284,12 +1335,12 @@ type ActiveDispatchKeyReservation = Extract<
 
 function interactionView(
   interaction: Interaction,
-  child: StoredChild,
+  dispatch: StoredDispatch,
 ): ExternalInteractionView {
   return {
     interactionId: interaction.id,
     kind: interaction.kind as 'approval' | 'question',
-    taskName: child.taskName,
+    taskName: dispatch.taskName ?? MAIN_AGENT_ID,
     payload: interaction.payload,
     createdAt: interaction.createdAt,
   };

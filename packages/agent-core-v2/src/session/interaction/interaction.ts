@@ -1,6 +1,5 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
-import type { DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
 
 export type InteractionKind = 'approval' | 'question' | 'user_tool';
 
@@ -36,10 +35,25 @@ export interface InteractionPendingChangedEvent {
 export type InteractionConsumerCoverage =
   | { readonly kind: 'session' }
   | {
-      readonly kind: 'delegator_children';
-      readonly delegator: DelegatorRef;
-      readonly children: () => ReadonlySet<string>;
+      readonly kind: 'agent_subtrees';
+      readonly roots: () => ReadonlySet<string>;
+      readonly parent: (agentId: string) => string | undefined;
     };
+
+export function interactionCoverageIncludes(
+  coverage: InteractionConsumerCoverage,
+  origin: InteractionOrigin,
+): boolean {
+  if (coverage.kind === 'session') return true;
+  let agentId = origin.agentId;
+  const seen = new Set<string>();
+  while (agentId !== undefined && !seen.has(agentId)) {
+    if (coverage.roots().has(agentId)) return true;
+    seen.add(agentId);
+    agentId = coverage.parent(agentId);
+  }
+  return false;
+}
 
 export interface ISessionInteractionService {
   readonly _serviceBrand: undefined;
