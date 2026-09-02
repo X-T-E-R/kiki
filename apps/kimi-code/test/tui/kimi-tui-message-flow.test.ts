@@ -130,7 +130,6 @@ function makeStartupInput(): KimiTUIStartupInput {
       disablePasteBurst: false,
       editorCommand: null,
       notifications: { enabled: true, condition: 'unfocused' },
-      upgrade: { autoInstall: true },
       statusLine: { items: null, command: null },
     },
     version: '0.0.0-test',

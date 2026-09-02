@@ -273,7 +273,6 @@ function createInitialAppState(input: KimiTUIStartupInput): AppState {
     renderLatex: input.tuiConfig.renderLatex,
     cacheExpiryHint: input.tuiConfig.cacheExpiryHint,
     notifications: input.tuiConfig.notifications,
-    upgrade: input.tuiConfig.upgrade,
     statusLine: input.tuiConfig.statusLine,
     availableModels: {},
     availableProviders: {},

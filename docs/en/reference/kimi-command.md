@@ -266,16 +266,6 @@ kimi migrate
 
 For full migration instructions, see [Migrating from kimi-cli](../guides/migration.md).
 
-### `kimi upgrade`
-
-Immediately check for the latest version and display an update prompt; exits after you make a selection. `kimi update` is an alias for this command.
-
-```sh
-kimi upgrade
-```
-
-For global npm, pnpm, yarn, and bun installations, `kimi upgrade` shows update options; selecting `Install update now` runs the corresponding foreground install command. For native installations (including Windows), it downloads and verifies the new binary in the foreground and swaps it in on the next start. When the current installation method cannot be upgraded automatically, the manual update command is printed instead.
-
 ### `kimi vis`
 
 Launch the session visualizer in your browser to inspect a session as it unfolds. The command starts an in-process server pointed at your local sessions, prints the URL, opens your browser, and keeps running until you press `Ctrl-C`.

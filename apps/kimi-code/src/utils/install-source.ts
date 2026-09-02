@@ -6,8 +6,16 @@ import { join, resolve } from 'node:path';
 import { getHostPackageRoot } from '#/cli/version';
 import { resolveCommandPath } from '#/utils/process/resolve-command';
 
-import { NPM_PACKAGE_NAME, type InstallSource } from './types';
+export type InstallSource =
+  | 'npm-global'
+  | 'pnpm-global'
+  | 'yarn-global'
+  | 'bun-global'
+  | 'homebrew'
+  | 'native'
+  | 'unsupported';
 
+const NPM_PACKAGE_NAME = '@moonshot-ai/kimi-code';
 const nodeRequire = createRequire(import.meta.url);
 
 interface NodeSeaModule {

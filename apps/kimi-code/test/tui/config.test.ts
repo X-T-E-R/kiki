@@ -36,8 +36,6 @@ describe('TUI config', () => {
     expect(text).toContain('theme = "auto"');
     expect(text).toContain('cache_expiry_hint = true');
     expect(text).toContain('command = ""');
-    expect(text).toContain('[upgrade]');
-    expect(text).toContain('auto_install = true');
     expect(text).toContain('[notifications]');
     expect(text).toContain('enabled = true');
     expect(text).toContain('notification_condition = "unfocused"');
@@ -53,9 +51,6 @@ command = "code --wait"
 [notifications]
 enabled = false
 notification_condition = "always"
-
-[upgrade]
-auto_install = false
 `);
 
     expect(config).toEqual({
@@ -65,7 +60,6 @@ auto_install = false
       cacheExpiryHint: true,
       editorCommand: 'code --wait',
       notifications: { enabled: false, condition: 'always' },
-      upgrade: { autoInstall: false },
       statusLine: { items: null, command: null },
     });
   });
@@ -111,7 +105,6 @@ command = "   "
       cacheExpiryHint: true,
       editorCommand: null,
       notifications: { enabled: true, condition: 'unfocused' },
-      upgrade: { autoInstall: true },
       statusLine: { items: null, command: null },
     });
   });
@@ -120,7 +113,6 @@ command = "   "
     const config = parseTuiConfig(`theme = "dark"`);
 
     expect(config.notifications).toEqual({ enabled: true, condition: 'unfocused' });
-    expect(config.upgrade).toEqual({ autoInstall: true });
   });
 
   it('throws TuiConfigParseError with fallback when parsing fails, leaving the file untouched', async () => {
@@ -145,7 +137,6 @@ command = "   "
         cacheExpiryHint: true,
         editorCommand: 'vim',
         notifications: { enabled: false, condition: 'always' },
-        upgrade: { autoInstall: false },
         statusLine: { items: null, command: null },
       },
       filePath,
@@ -158,7 +149,6 @@ command = "   "
       cacheExpiryHint: true,
       editorCommand: 'vim',
       notifications: { enabled: false, condition: 'always' },
-      upgrade: { autoInstall: false },
       statusLine: { items: null, command: null },
     });
   });
@@ -172,7 +162,6 @@ command = "   "
         cacheExpiryHint: DEFAULT_TUI_CONFIG.cacheExpiryHint,
         editorCommand: null,
         notifications: DEFAULT_TUI_CONFIG.notifications,
-        upgrade: DEFAULT_TUI_CONFIG.upgrade,
         statusLine: DEFAULT_TUI_CONFIG.statusLine,
       },
       filePath,

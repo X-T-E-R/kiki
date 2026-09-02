@@ -5,7 +5,6 @@ import { EditorSelectorComponent } from '#/tui/components/dialogs/editor-selecto
 import { PermissionSelectorComponent } from '#/tui/components/dialogs/permission-selector';
 import { SettingsSelectorComponent } from '#/tui/components/dialogs/settings-selector';
 import { ThemeSelectorComponent } from '#/tui/components/dialogs/theme-selector';
-import { UpdatePreferenceSelectorComponent } from '#/tui/components/dialogs/update-preference-selector';
 import { currentTheme } from '#/tui/theme';
 import { darkColors } from '#/tui/theme/colors';
 
@@ -104,16 +103,6 @@ describe('ChoicePickerComponent', () => {
     const settingsOutput = settings.render(120).map(strip);
     expect(settingsOutput).toContain('  ❯ Model');
     expect(settingsOutput).toContain('    Switch the active model and thinking mode.');
-    expect(settingsOutput).toContain('    Turn automatic CLI updates on or off.');
-
-    const upgradePreference = new UpdatePreferenceSelectorComponent({
-      currentValue: true,
-      onSelect,
-      onCancel,
-    });
-    const upgradePreferenceOutput = upgradePreference.render(120).map(strip);
-    expect(upgradePreferenceOutput).toContain('  ❯ On ← current');
-    expect(upgradePreferenceOutput).toContain('    Install new versions in the background.');
   });
 
   it('routes Space into the query for searchable lists instead of selecting', () => {

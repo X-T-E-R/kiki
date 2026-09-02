@@ -20,23 +20,11 @@ Two installation options are available: the official install script (recommended
 Kimi Code CLI is a fully interactive TUI application. For the best visual experience, run it in a terminal with true-color and ligature support, such as [Kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/).
 :::
 
-### Install script (recommended)
+### Release download (recommended)
 
-- **macOS / Linux**:
-
-```sh
-curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash
-```
-
-- **Windows (PowerShell)**:
-
-```powershell
-irm https://code.kimi.com/kimi-code/install.ps1 | iex
-```
+Download the appropriate build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases).
 
 > On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Kimi Code CLI uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
-
-The script automatically downloads the latest release, verifies the checksum, and places the `kimi` executable on your `PATH`.
 
 ### npm installation
 
@@ -61,7 +49,7 @@ After installation, verify that the executable is ready:
 kimi --version
 ```
 
-**Upgrade**: run `kimi upgrade` — the CLI checks for the latest version and presents update options. Choose `Install update now` to upgrade based on your current install source. You can also upgrade directly via the package manager:
+**Upgrade**: download a newer build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases), or upgrade directly via the package manager:
 
 ```sh
 npm install -g @moonshot-ai/kimi-code@latest

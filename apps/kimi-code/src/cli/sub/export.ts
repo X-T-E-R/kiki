@@ -16,8 +16,8 @@ import {
   type ShellEnvironment,
 } from '@moonshot-ai/kimi-code-sdk';
 import type { Command } from 'commander';
-import { detectInstallSource } from '#/cli/update/source';
 import { createKimiCodeHostIdentity } from '#/cli/version';
+import { detectInstallSource } from '#/utils/install-source';
 import { detectShellEnvironment } from '#/utils/process/shell-env';
 
 interface WritableLike {
