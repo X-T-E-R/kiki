@@ -360,6 +360,7 @@ describe('KimiHarness config API', () => {
       'remote-control',
       'task_wait',
       'tool-select',
+      'subagent_release_idle',
       'persistence_minidb_readmodel',
       'external_delegation_mcp',
     ]);

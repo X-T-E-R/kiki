@@ -306,6 +306,13 @@ export class ConfigService extends Disposable implements IConfigService {
   private effective: ResolvedConfig = {};
   private memory: ResolvedConfig = {};
   private delivered: ResolvedConfig = {};
+  private freshCache:
+    | {
+        readonly envNames: readonly string[];
+        readonly fingerprint: string;
+        readonly value: ResolvedConfig;
+      }
+    | undefined;
   private readonly diagnosticsList: ConfigDiagnostic[] = [];
   private lastDiagnosticsSnapshot = '[]';
   private readonly configKey: string;
@@ -358,10 +365,33 @@ export class ConfigService extends Disposable implements IConfigService {
   }
 
   private freshEffective(): ResolvedConfig {
+    const cached = this.freshCache;
+    if (cached !== undefined && this.envFingerprint(cached.envNames) === cached.fingerprint) {
+      return cached.value;
+    }
+    const accessed = new Set<string>();
+    const getEnv = (name: string): string | undefined => {
+      accessed.add(name);
+      return this.bootstrap.getEnv(name);
+    };
     const effective: ResolvedConfig = { ...this.validated };
-    this.applySectionEnvBindings(effective, false);
-    this.applyEnvOverlay(effective, false);
+    this.applySectionEnvBindings(effective, false, getEnv);
+    this.applyEnvOverlay(effective, false, getEnv);
+    const envNames = [...accessed].sort();
+    this.freshCache = { envNames, fingerprint: this.envFingerprint(envNames), value: effective };
     return effective;
+  }
+
+  private envFingerprint(names: readonly string[]): string {
+    let fingerprint = '';
+    for (const name of names) {
+      fingerprint += `${name}\u0000${this.bootstrap.getEnv(name) ?? '\u0001'}\u0002`;
+    }
+    return fingerprint;
+  }
+
+  private invalidateFresh(): void {
+    this.freshCache = undefined;
   }
 
   diagnostics(): readonly ConfigDiagnostic[] {
@@ -551,6 +581,7 @@ export class ConfigService extends Disposable implements IConfigService {
   ): void {
     const previous = this.effective;
     this.validated = this.buildValidated(this.raw);
+    this.invalidateFresh();
     const next = { ...this.validated };
     this.applySectionEnvBindings(next, true);
     this.applyEnvOverlay(next);
@@ -605,8 +636,11 @@ export class ConfigService extends Disposable implements IConfigService {
     return validated;
   }
 
-  private applySectionEnvBindings(effective: ResolvedConfig, reportErrors: boolean): void {
-    const getEnv = (name: string): string | undefined => this.bootstrap.getEnv(name);
+  private applySectionEnvBindings(
+    effective: ResolvedConfig,
+    reportErrors: boolean,
+    getEnv: (name: string) => string | undefined = (name) => this.bootstrap.getEnv(name),
+  ): void {
     for (const section of this.registry.listSections()) {
       if (section.env === undefined) continue;
       try {
@@ -634,8 +668,11 @@ export class ConfigService extends Disposable implements IConfigService {
     }
   }
 
-  private applyEnvOverlay(effective: ResolvedConfig, reportErrors = true): void {
-    const getEnv = (name: string): string | undefined => this.bootstrap.getEnv(name);
+  private applyEnvOverlay(
+    effective: ResolvedConfig,
+    reportErrors = true,
+    getEnv: (name: string) => string | undefined = (name) => this.bootstrap.getEnv(name),
+  ): void {
     const validate = (domain: string, value: unknown): unknown =>
       this.registry.validate(domain, value);
     for (const overlay of this.registry.listEffectiveOverlays()) {
@@ -655,6 +692,7 @@ export class ConfigService extends Disposable implements IConfigService {
   private reapplyOverlays(): void {
     const before = this.effective;
     this.validated = this.buildValidated(this.raw);
+    this.invalidateFresh();
     const next = { ...this.validated };
     this.applySectionEnvBindings(next, true);
     this.applyEnvOverlay(next);
@@ -666,6 +704,7 @@ export class ConfigService extends Disposable implements IConfigService {
   private revalidateDomain(domain: string): void {
     const section = this.registry.getSection(domain);
     if (section === undefined) return;
+    this.invalidateFresh();
 
     if (section.fromToml !== undefined) {
       const rawSnakeValue = this.rawSnake[camelToSnake(domain)];
@@ -716,6 +755,7 @@ export class ConfigService extends Disposable implements IConfigService {
 
   private devalidateDomain(domain: string): void {
     if (this.registry.getSection(domain) !== undefined) return;
+    this.invalidateFresh();
 
     const snakeKey = camelToSnake(domain);
     const rawSnakeValue = this.rawSnake[snakeKey];

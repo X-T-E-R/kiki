@@ -214,14 +214,20 @@ export class SessionIndexProjector {
     counts: Map<string, { active: number; archived: number }>,
   ): Promise<void> {
     const { queryStore } = this.deps;
-    const ops: WriteOp[] = [...counts.entries()].map(([workspaceId, value]) => ({
-      kind: 'put',
-      collection: counters,
-      key: workspaceId,
-      value: { active: value.active, archived: value.archived } satisfies SessionWorkspaceCounts,
-    }));
-    const existing = await queryStore.listKeys(counters);
-    for (const key of existing) {
+    const existingKeys = await queryStore.listKeys(counters);
+    const existing = await queryStore.getMany<SessionWorkspaceCounts>(counters, existingKeys);
+    const ops: WriteOp[] = [];
+    for (const [workspaceId, value] of counts) {
+      const current = existing.get(workspaceId);
+      if (current?.active === value.active && current.archived === value.archived) continue;
+      ops.push({
+        kind: 'put',
+        collection: counters,
+        key: workspaceId,
+        value: { active: value.active, archived: value.archived } satisfies SessionWorkspaceCounts,
+      });
+    }
+    for (const key of existingKeys) {
       if (!counts.has(key)) ops.push({ kind: 'delete', collection: counters, key });
     }
     await this.batchChunks(ops);

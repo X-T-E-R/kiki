@@ -70,6 +70,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private readonly interactionBusDisposables = new Map<string, IDisposable>();
   private readonly usageDisposables = new Map<string, IDisposable>();
   private readonly creating = new Map<string, Promise<IAgentScopeHandle>>();
+  private readonly removing = new Map<string, Promise<void>>();
   private readonly deferredCreateEvents = new Set<string>();
 
   get onWillCreate() {
@@ -140,6 +141,11 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     if (opts.agentId !== undefined) {
       const inflight = this.creating.get(opts.agentId);
       if (inflight !== undefined) return inflight;
+      const removal = this.removing.get(opts.agentId);
+      if (removal !== undefined) {
+        await removal.catch(() => undefined);
+        return this.create(opts);
+      }
       const existing = this.handles.get(opts.agentId);
       if (existing !== undefined) {
         const persisted = existing.accessor.get(IAgentProfileService).data();
@@ -468,9 +474,17 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   async remove(agentId: string): Promise<void> {
     const handle = this.handles.get(agentId);
-    if (handle === undefined) return;
+    if (handle === undefined) return this.removing.get(agentId);
     this.handles.delete(agentId);
     this.deferredCreateEvents.delete(agentId);
+    const removal = this.doRemove(agentId, handle).finally(() => {
+      if (this.removing.get(agentId) === removal) this.removing.delete(agentId);
+    });
+    this.removing.set(agentId, removal);
+    return removal;
+  }
+
+  private async doRemove(agentId: string, handle: IAgentScopeHandle): Promise<void> {
     await handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed');
     const execution = handle.accessor.get(IAgentExecutionService);
     const compaction = handle.accessor.get(IAgentFullCompactionService).compacting;

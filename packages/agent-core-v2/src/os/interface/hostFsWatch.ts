@@ -11,9 +11,19 @@ export interface HostFsChange {
   readonly kind: HostFsChangeKind;
 }
 
+/**
+ * Ignore predicate for a watch. When the predicate also carries `subtree`, a
+ * `true` verdict from it promises that every path below the argument is
+ * ignored too, which lets the watcher drop whole directory trees without
+ * resolving each event.
+ */
+export type HostFsWatchIgnore = ((path: string) => boolean) & {
+  readonly subtree?: (path: string) => boolean;
+};
+
 export interface HostFsWatchOptions {
   readonly recursive?: boolean;
-  readonly ignored?: (path: string) => boolean;
+  readonly ignored?: HostFsWatchIgnore;
   readonly signal?: boolean;
 }
 

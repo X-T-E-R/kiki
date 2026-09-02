@@ -460,6 +460,36 @@ describe('ConfigService env overlay (live)', () => {
     disposables.dispose();
   });
 
+  it('reuses the effective config across get() calls until an observed env var changes', async () => {
+    const env: Record<string, string> = { KIMI_DISABLE_CRON: '0' };
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', env));
+    ix.stub(IFileSystemStorageService, new InMemoryStorageService());
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+
+    const first = config.get<CronConfig>('cron');
+    expect(config.get<CronConfig>('cron')).toBe(first);
+    expect(config.get<CronConfig>('cron')).toBe(first);
+
+    env['KIMI_DISABLE_CRON'] = '1';
+    const changed = config.get<CronConfig>('cron');
+    expect(changed).not.toBe(first);
+    expect(changed.disabled).toBe(true);
+    expect(config.get<CronConfig>('cron')).toBe(changed);
+
+    await config.replace('cron', { disabled: false });
+    delete env['KIMI_DISABLE_CRON'];
+    expect(config.get<CronConfig>('cron').disabled).toBe(false);
+
+    disposables.dispose();
+  });
+
   it('applies a scalar section env binding and keeps it out of the file', async () => {
     const env: Record<string, string> = {};
     const disposables = new DisposableStore();

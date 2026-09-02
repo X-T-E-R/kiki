@@ -56,6 +56,7 @@ interface LiveEntry {
   readonly agentBackfills: Map<string, Promise<void>>;
   readonly opsJournals: Map<string, AgentOpsJournal>;
   readonly agentToolCallStates: Map<string, MaterializedAgentToolCallState>;
+  readonly agentDisposal: IDisposable;
 }
 
 interface MaterializedAgentToolCallState {
@@ -145,8 +146,28 @@ export class TranscriptService {
       agentBackfills: new Map(),
       opsJournals: new Map(),
       agentToolCallStates: new Map(),
+      agentDisposal: session.accessor
+        .get(IAgentLifecycleService)
+        .onDidDispose((agentId) => this.evictAgent(sessionId, store, agentId)),
     });
     return store;
+  }
+
+  /**
+   * A released subagent keeps its roster entry, but its in-memory transcript,
+   * ops journal, and backfill marker go away with the engine scope; the next
+   * read rebuilds them from the persisted wire.
+   */
+  private evictAgent(sessionId: string, store: TranscriptStore, agentId: string): void {
+    if (agentId === MAIN_AGENT_ID) return;
+    const entry = this.live.get(sessionId);
+    if (entry === undefined || entry.store !== store) return;
+    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
+    if (session?.accessor.get(IAgentLifecycleService).get(agentId) !== undefined) return;
+    entry.agentBackfills.delete(agentId);
+    entry.opsJournals.delete(agentId);
+    entry.agentToolCallStates.delete(agentId);
+    store.evictAgentTranscript(agentId);
   }
 
   /**
@@ -522,6 +543,7 @@ export class TranscriptService {
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
     this.live.delete(sessionId);
+    entry.agentDisposal.dispose();
     entry.binding.dispose();
   }
 }

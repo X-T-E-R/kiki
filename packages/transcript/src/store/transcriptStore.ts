@@ -48,6 +48,15 @@ export class TranscriptStore {
     return removed;
   }
 
+  /**
+   * Drop an agent's transcript content while keeping it on the roster, for an
+   * agent whose history stays available in persistent storage and can be
+   * rebuilt on the next read.
+   */
+  evictAgentTranscript(agentId: AgentId): boolean {
+    return this.#agents.delete(agentId);
+  }
+
   /** Merge or replace an agent's roster descriptor. */
   describeAgent(descriptor: AgentDescriptor): void {
     if (this.#descriptors.get(descriptor.agentId) !== descriptor) {

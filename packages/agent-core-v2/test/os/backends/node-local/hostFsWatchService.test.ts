@@ -9,6 +9,7 @@ import {
   resetUnexpectedErrorHandler,
   setUnexpectedErrorHandler,
 } from '#/_base/errors/unexpectedError';
+import { subtreeWatchFilter } from '#/_base/utils/paths';
 import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
 import type {
   HostFsChange,
@@ -167,6 +168,37 @@ describe('host filesystem change notifications', () => {
     rig.attempt(0).emit('node_modules/pkg/index.js');
 
     expect(events).toEqual([]);
+  });
+
+  it('drops native signals under pruned top-level directories without resolving them', () => {
+    const rig = signalRig();
+    const events: HostFsChange[] = [];
+    const filter = subtreeWatchFilter('/repo', ['/repo/.agents', '/repo/.kimi-code/agents']);
+    const seen: string[] = [];
+    const ignored = Object.assign(
+      (path: string): boolean => {
+        seen.push(path);
+        return filter(path);
+      },
+      { subtree: filter.subtree },
+    );
+    handle = rig.service.watch('/repo', { signal: true, ignored });
+    handle.onDidChange((event) => events.push(event));
+
+    rig.attempt(0).emit('node_modules\\pkg\\index.js');
+    rig.attempt(0).emit('node_modules\\other\\SKILL.md');
+    rig.attempt(0).emit('packages/core/src/a.ts');
+    expect(events).toEqual([]);
+    expect(seen).toEqual([]);
+
+    rig.attempt(0).emit('.kimi-code\\agents\\worker.md');
+    rig.attempt(0).emit('.kimi-code');
+    rig.attempt(0).emit('README.md');
+    expect(events).toEqual([
+      { path: '/repo', action: 'modified', kind: 'directory' },
+      { path: '/repo', action: 'modified', kind: 'directory' },
+    ]);
+    expect(seen).toHaveLength(2);
   });
 
   it('increases the retry delay after consecutive native failures', () => {

@@ -58,18 +58,38 @@ export interface SubtreeWatchFilterOptions {
   readonly scannedDirectories?: readonly string[];
 }
 
+/**
+ * Watch-path predicate produced by `subtreeWatchFilter`. `subtree(path)` is the
+ * structural verdict: `true` means the path is neither a candidate, nor inside
+ * one, nor an ancestor of one, so nothing below it can ever pass the filter.
+ */
+export interface SubtreeWatchFilter {
+  (path: string): boolean;
+  readonly subtree: (path: string) => boolean;
+}
+
 export function subtreeWatchFilter(
   root: string,
   candidates: readonly string[],
   options?: SubtreeWatchFilterOptions,
-): (path: string) => boolean {
+): SubtreeWatchFilter {
   const normRoot = normalizeSlashes(root);
   const normCandidates = candidates.map(normalizeSlashes);
   const normScannedDirectories =
     options?.scannedDirectories === undefined
       ? undefined
       : new Set([...normCandidates, ...options.scannedDirectories.map(normalizeSlashes)]);
-  return (p: string): boolean => {
+  const subtree = (p: string): boolean => {
+    const norm = normalizeSlashes(p);
+    if (norm === normRoot) return false;
+    for (const candidate of normCandidates) {
+      if (norm === candidate) return false;
+      if (norm.startsWith(`${candidate}/`)) return false;
+      if (candidate.startsWith(`${norm}/`)) return false;
+    }
+    return true;
+  };
+  const filter = (p: string): boolean => {
     const norm = normalizeSlashes(p);
     if (norm === normRoot) return false;
     for (const candidate of normCandidates) {
@@ -86,6 +106,7 @@ export function subtreeWatchFilter(
     }
     return true;
   };
+  return Object.assign(filter, { subtree });
 }
 
 function isPrunedBelowCandidate(

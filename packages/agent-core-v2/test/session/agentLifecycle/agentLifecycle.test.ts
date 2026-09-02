@@ -62,6 +62,7 @@ import { interactionKey } from '#/session/interaction/interactionOps';
 import '#/agent/toolDedupe/toolDedupeService';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
 import '#/app/event/eventBusService';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
@@ -97,6 +98,7 @@ import {
   IWorkspaceInstanceManager,
 } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import { stubFlag } from '../../app/flag/stubs';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 
 const noopLog = {
@@ -249,6 +251,7 @@ describe('AgentLifecycleService', () => {
       _serviceBrand: undefined,
       homeDir: '/tmp/kimi-agentLifecycle-home',
       cwd: '/tmp/kimi-agentLifecycle-home',
+      getEnv: () => undefined,
     } as unknown as IBootstrapService);
     ix.stub(ISessionWorkspaceContext, {
       _serviceBrand: undefined,
@@ -565,6 +568,43 @@ describe('AgentLifecycleService', () => {
     releaseDrain();
     await removal;
     expect(disposed).toEqual(['main']);
+  });
+
+  it('create for an agent whose removal is in flight waits for the old scope to go away', async () => {
+    let releaseDrain!: () => void;
+    let markDrainStarted!: () => void;
+    const drainStarted = new Promise<void>((resolve) => {
+      markDrainStarted = resolve;
+    });
+    promptDrain.mockImplementationOnce(() => {
+      markDrainStarted();
+      return new Promise<void>((resolve) => {
+        releaseDrain = resolve;
+      });
+    });
+    const svc = ix.get(IAgentLifecycleService);
+    const first = await svc.create({ agentId: 'child' });
+    const disposed: string[] = [];
+    disposables.add(svc.onDidDispose((agentId) => disposed.push(agentId)));
+
+    const removal = svc.remove('child');
+    await drainStarted;
+    expect(svc.get('child')).toBeUndefined();
+
+    let recreated: IAgentScopeHandle | undefined;
+    const recreate = svc.create({ agentId: 'child' }).then((handle) => {
+      recreated = handle;
+      return handle;
+    });
+    await Promise.resolve();
+    expect(recreated).toBeUndefined();
+
+    releaseDrain();
+    await removal;
+    const second = await recreate;
+    expect(disposed).toEqual(['child']);
+    expect(second).not.toBe(first);
+    expect(svc.get('child')).toBe(second);
   });
 
   it('remove cancels queued turns before waiting for the active turn to settle', async () => {
@@ -1075,6 +1115,7 @@ describe('AgentLifecycleService', () => {
   });
 
   it('run throws when the agent does not exist', () => {
+    ix.stub(IFlagService, stubFlag(true));
     ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
     const svc = ix.get(ISessionSubagentService);
     expect(() =>

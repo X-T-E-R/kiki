@@ -14,6 +14,7 @@ import {
   type HostFsChange,
   type HostFsChangeAction,
   type HostFsChangeKind,
+  type HostFsWatchIgnore,
   type HostFsWatchOptions,
   type IHostFsWatchHandle,
   IHostFsWatchService,
@@ -23,6 +24,7 @@ const DEFAULT_IGNORED = (p: string): boolean => /(?:^|[/\\])\.git(?:$|[/\\])/.te
 
 const NATIVE_RETRY_BASE_MS = 1000;
 const NATIVE_RETRY_MAX_MS = 30000;
+const IGNORED_TOP_LEVEL_CACHE_SIZE = 4096;
 
 interface NativeFsWatcher {
   close(): void;
@@ -130,7 +132,8 @@ class SignalWatchHandle implements IHostFsWatchHandle {
 
   private readonly readiness = createWatchReadiness();
   private readonly emitter: Emitter<HostFsChange>;
-  private readonly ignored: (path: string) => boolean;
+  private readonly ignored: HostFsWatchIgnore;
+  private readonly ignoredTopLevel = new Map<string, boolean>();
   private nativeWatcher: NativeFsWatcher | undefined;
   private chokidarLeg: HostFsWatchHandle | undefined;
   private retry: IDisposable | undefined;
@@ -156,6 +159,7 @@ class SignalWatchHandle implements IHostFsWatchHandle {
       const watcher = this.runtime.watchNative(this.root, (_eventType, filename) => {
         if (this.disposed) return;
         this.retryAttempts = 0;
+        if (this.isIgnoredTopLevel(filename)) return;
         const absPath = resolveNativeSignalPath(this.root, filename);
         if (absPath !== this.root && this.ignored(absPath)) return;
         this.fireInvalidation();
@@ -210,6 +214,22 @@ class SignalWatchHandle implements IHostFsWatchHandle {
     this.chokidarLeg = leg;
   }
 
+  private isIgnoredTopLevel(filename: string | null): boolean {
+    const subtree = this.ignored.subtree;
+    if (subtree === undefined || filename === null || filename === '' || isAbsolute(filename)) {
+      return false;
+    }
+    const top = topLevelSegment(filename);
+    if (top === '' || top === '.' || top === '..' || top === basename(this.root)) return false;
+    let verdict = this.ignoredTopLevel.get(top);
+    if (verdict === undefined) {
+      verdict = subtree(join(this.root, top));
+      if (this.ignoredTopLevel.size >= IGNORED_TOP_LEVEL_CACHE_SIZE) this.ignoredTopLevel.clear();
+      this.ignoredTopLevel.set(top, verdict);
+    }
+    return verdict;
+  }
+
   private fireInvalidation(): void {
     this.emitter.fire({ path: this.root, action: 'modified', kind: 'directory' });
   }
@@ -223,6 +243,18 @@ class SignalWatchHandle implements IHostFsWatchHandle {
     this.chokidarLeg?.dispose();
     this.emitter.dispose();
   }
+}
+
+function topLevelSegment(filename: string): string {
+  let end = filename.length;
+  for (let i = 0; i < filename.length; i += 1) {
+    const ch = filename.charCodeAt(i);
+    if (ch === 47 || ch === 92) {
+      end = i;
+      break;
+    }
+  }
+  return filename.slice(0, end);
 }
 
 export class HostFsWatchService implements IHostFsWatchService {
