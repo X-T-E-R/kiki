@@ -977,6 +977,18 @@ importers:
         specifier: 'catalog:'
         version: 4.3.6
 
+  packages/transcript-live:
+    dependencies:
+      '@moonshot-ai/agent-core-v2':
+        specifier: workspace:^
+        version: link:../agent-core-v2
+      '@moonshot-ai/protocol':
+        specifier: workspace:^
+        version: link:../protocol
+      '@moonshot-ai/transcript':
+        specifier: workspace:^
+        version: link:../transcript
+
   packages/tree-sitter-bash:
     devDependencies:
       tree-sitter-bash:

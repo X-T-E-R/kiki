@@ -1,0 +1,30 @@
+{
+  "name": "@kiki/transcript-live",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Engine event bindings for the canonical transcript operation stream.",
+  "license": "MIT",
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@moonshot-ai/agent-core-v2": "workspace:^",
+    "@moonshot-ai/protocol": "workspace:^",
+    "@moonshot-ai/transcript": "workspace:^"
+  }
+}
