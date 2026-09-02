@@ -1,7 +1,6 @@
 /**
  * Clipboard write with a document.execCommand fallback for non-secure or
- * permission-denied contexts. Resolves regardless of which path succeeded;
- * throws only when neither channel exists.
+ * permission-denied contexts. Rejects when both channels fail.
  */
 
 export async function copyTextToClipboard(text: string): Promise<void> {
@@ -18,7 +17,9 @@ export async function copyTextToClipboard(text: string): Promise<void> {
   document.body.append(area);
   area.select();
   try {
-    document.execCommand('copy');
+    if (!document.execCommand('copy')) {
+      throw new Error('Clipboard fallback rejected the copy command.');
+    }
   } finally {
     area.remove();
   }

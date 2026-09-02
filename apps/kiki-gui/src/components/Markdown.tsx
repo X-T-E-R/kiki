@@ -48,6 +48,12 @@ export function isInAppHref(href: string | undefined): href is string {
   return href !== undefined && !EXTERNAL_HREF.test(href);
 }
 
+function openExternalLink(url: string): void {
+  if (window.open(url, '_blank', 'noreferrer,noopener') === null) {
+    throw new Error('The browser blocked the new window.');
+  }
+}
+
 /**
  * Streamdown's sanitize+harden chain strips `file:`/`C:` hrefs and resolves
  * `./x` against a dummy origin, so the anchor component would never see the
@@ -102,11 +108,11 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
   if (filePath !== undefined && preview !== null && target !== undefined) {
     const entries: MiniMenuEntry[] = [
       { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(filePath); } },
-      { key: 'copy-path', label: t('file.copyPath'), run: () => { void copyTextToClipboard(target).catch(() => {}); } },
+      { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(target) },
       {
         key: 'copy-absolute',
         label: t('file.copyAbsolutePath'),
-        run: () => { void copyTextToClipboard(filePath).catch(() => {}); },
+        run: () => copyTextToClipboard(filePath),
       },
       ...(hostFileOpsSupported()
         ? [
@@ -114,12 +120,12 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
             {
               key: 'show-in-folder',
               label: t('file.showInFolder'),
-              run: () => { void revealHostPath(filePath).catch(() => {}); },
+              run: () => revealHostPath(filePath),
             } as const,
             {
               key: 'open-default-app',
               label: t('file.openDefaultApp'),
-              run: () => { void openHostPath(filePath).catch(() => {}); },
+              run: () => openHostPath(filePath),
             } as const,
           ]
         : []),
@@ -161,8 +167,8 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
   }
   const url = href ?? '';
   const entries: MiniMenuEntry[] = [
-    { key: 'open-link', label: t('link.open'), run: () => { window.open(url, '_blank', 'noreferrer,noopener'); } },
-    { key: 'copy-link', label: t('link.copyLink'), run: () => { void copyTextToClipboard(url).catch(() => {}); } },
+    { key: 'open-link', label: t('link.open'), run: () => { openExternalLink(url); } },
+    { key: 'copy-link', label: t('link.copyLink'), run: () => copyTextToClipboard(url) },
   ];
   return (
     <>

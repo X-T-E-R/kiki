@@ -21,9 +21,11 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal as XTerm } from '@xterm/xterm';
 
 import { useI18n } from '../i18n';
+import { copyTextToClipboard } from '../lib/clipboard';
 import {
   clampTerminalPanelHeight,
 } from '../lib/terminalPrefs';
+import { runToastAction } from '../lib/toasts';
 import { onThemeChange } from '../lib/theme';
 import type { WsStatus } from '../lib/ws';
 import type { TerminalManager, TerminalTab } from '../state/terminalManager';
@@ -54,32 +56,6 @@ function xtermTheme(): Record<string, string> {
   };
 }
 
-function copyText(text: string): void {
-  if (navigator.clipboard?.writeText !== undefined) {
-    navigator.clipboard.writeText(text).catch(() => {
-      legacyCopy(text);
-    });
-    return;
-  }
-  legacyCopy(text);
-}
-
-/** execCommand fallback for webviews without the async clipboard API. */
-function legacyCopy(text: string): void {
-  const area = document.createElement('textarea');
-  area.value = text;
-  area.style.position = 'fixed';
-  area.style.opacity = '0';
-  document.body.append(area);
-  area.select();
-  try {
-    document.execCommand('copy');
-  } catch {
-    // no clipboard access — copying is best-effort
-  }
-  area.remove();
-}
-
 /**
  * One xterm instance per terminal id. Owns its renderer, fit observer, and
  * the manager bindings (output sink, keystroke source, resize reporter).
@@ -88,10 +64,12 @@ function TerminalCanvas({
   manager,
   tabId,
   active,
+  copyLabel,
 }: {
   manager: TerminalManager;
   tabId: string;
   active: boolean;
+  copyLabel: string;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -144,7 +122,7 @@ function TerminalCanvas({
       if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
         if (event.code === 'KeyC') {
           if (!term.hasSelection()) return true;
-          copyText(term.getSelection());
+          runToastAction(copyLabel, () => copyTextToClipboard(term.getSelection()));
           return false;
         }
         if (event.code === 'KeyV') {
@@ -196,7 +174,7 @@ function TerminalCanvas({
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [manager, tabId]);
+  }, [manager, tabId, copyLabel]);
 
   // Becoming visible (tab switch or panel reopen): fit to the revealed box
   // and take focus so typing lands immediately.
@@ -409,6 +387,7 @@ export function TerminalPanel({
             manager={manager}
             tabId={tab.id}
             active={tab.id === activeId}
+            copyLabel={t('contextMenu.copy')}
           />
         ))}
 

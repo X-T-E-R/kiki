@@ -29,6 +29,7 @@ import { isDesktopRuntime } from '../lib/desktop';
 import { openHostPath, revealHostPath } from '../lib/hostFileOps';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
+import { runToastAction } from '../lib/toasts';
 import {
   isPinnedSession,
   pinMetadataPatch,
@@ -1260,13 +1261,9 @@ function SessionMenu({
   // degrades to the two copy entries only.
   const cwd = session.metadata.cwd;
   const desktop = isDesktopRuntime();
-  const copyAndClose = (text: string) => {
+  const runAndClose = (label: string, action: () => Promise<void>) => {
     onClose();
-    void copyTextToClipboard(text).catch(() => {});
-  };
-  const openAndClose = (run: (path: string) => Promise<void>, path: string) => {
-    onClose();
-    void run(path).catch(() => {});
+    runToastAction(label, action);
   };
 
   const itemClass =
@@ -1308,7 +1305,9 @@ function SessionMenu({
             role="menuitem"
             data-menu-item="copy-link"
             className={itemClass}
-            onClick={() => { copyAndClose(`/s/${session.id}`); }}
+            onClick={() => {
+              runAndClose(t('menu.copyLink'), () => copyTextToClipboard(`/s/${session.id}`));
+            }}
           >
             {t('menu.copyLink')}
           </button>
@@ -1318,7 +1317,7 @@ function SessionMenu({
               role="menuitem"
               data-menu-item="copy-path"
               className={itemClass}
-              onClick={() => { copyAndClose(cwd); }}
+              onClick={() => { runAndClose(t('menu.copyPath'), () => copyTextToClipboard(cwd)); }}
             >
               {t('menu.copyPath')}
             </button>
@@ -1330,7 +1329,7 @@ function SessionMenu({
                 role="menuitem"
                 data-menu-item="open-folder"
                 className={itemClass}
-                onClick={() => { openAndClose(revealHostPath, cwd); }}
+                onClick={() => { runAndClose(t('menu.openFolder'), () => revealHostPath(cwd)); }}
               >
                 {t('menu.openFolder')}
               </button>
@@ -1339,7 +1338,7 @@ function SessionMenu({
                 role="menuitem"
                 data-menu-item="open-default-app"
                 className={itemClass}
-                onClick={() => { openAndClose(openHostPath, cwd); }}
+                onClick={() => { runAndClose(t('menu.openDefaultApp'), () => openHostPath(cwd)); }}
               >
                 {t('menu.openDefaultApp')}
               </button>

@@ -21,6 +21,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
 
 import { useI18n } from '../i18n';
+import { copyTextToClipboard } from '../lib/clipboard';
+import { runToastAction } from '../lib/toasts';
 
 /** Whether the async Clipboard read API is present (secure context). */
 export function clipboardReadSupported(): boolean {
@@ -175,17 +177,12 @@ export function useComposerContextMenu({
 
   const handleCopy = useCallback(() => {
     const el = textareaRef.current;
-    if (el !== null && anchor !== null && typeof navigator.clipboard?.writeText === 'function') {
-      void navigator.clipboard
-        .writeText(el.value.slice(anchor.start, anchor.end))
-        .catch(() => {
-          copyFallback(el.value.slice(anchor.start, anchor.end));
-        });
-    } else if (el !== null && anchor !== null) {
-      copyFallback(el.value.slice(anchor.start, anchor.end));
+    if (el !== null && anchor !== null) {
+      const text = el.value.slice(anchor.start, anchor.end);
+      runToastAction(t('contextMenu.copy'), () => copyTextToClipboard(text));
     }
     closeMenu();
-  }, [textareaRef, anchor, closeMenu]);
+  }, [textareaRef, anchor, closeMenu, t]);
 
   const handleCut = useCallback(() => {
     const el = restoreSelection();
@@ -194,17 +191,12 @@ export function useComposerContextMenu({
       return;
     }
     const text = el.value.slice(anchor.start, anchor.end);
-    const writeClipboard = (piece: string) => {
-      if (typeof navigator.clipboard?.writeText === 'function') {
-        void navigator.clipboard.writeText(piece).catch(() => { copyFallback(piece); });
-      } else {
-        copyFallback(piece);
-      }
-    };
-    writeClipboard(text);
-    replaceRange();
+    runToastAction(t('contextMenu.cut'), async () => {
+      await copyTextToClipboard(text);
+      replaceRange();
+    });
     closeMenu();
-  }, [restoreSelection, replaceRange, anchor, closeMenu]);
+  }, [restoreSelection, replaceRange, anchor, closeMenu, t]);
 
   const handlePaste = useCallback(async () => {
     if (anchor === null) return;
@@ -314,22 +306,3 @@ export function useComposerContextMenu({
 
 const MENU_ITEM_CLASS =
   'flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper disabled:pointer-events-none disabled:opacity-45';
-
-/** Hidden-textarea fallback write for non-secure contexts or write denial. */
-function copyFallback(text: string) {
-  if (text === '') return;
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  textarea.style.top = '0';
-  document.body.appendChild(textarea);
-  textarea.select();
-  try {
-    document.execCommand('copy');
-  } catch {
-    // nothing left to fall back to — copy simply no-ops
-  }
-  document.body.removeChild(textarea);
-}
