@@ -29,6 +29,7 @@ const client = {
   listWorkspaces: vi.fn(async () => WORKSPACES),
   listManagedMcpServers: vi.fn(async () => []),
   listMcpServers: vi.fn(async () => ({ servers: [] })),
+  listPlugins: vi.fn(async () => ({ plugins: [] })),
   listWorkspaceSkills: vi.fn(async () => ({ skills: [] })),
   listTools: vi.fn(async () => ({ tools: [] })),
   listNamedAgentProfiles: vi.fn(async () => ({ items: [] })),
@@ -216,5 +217,29 @@ describe('SettingsPage batch-3 leaves', () => {
     await flush();
     expect(container.querySelector('#st-card-subagent-timeout')).not.toBeNull();
     expect(container.querySelector('#st-card-sidecar')).toBeNull();
+  });
+
+  it('mounts the plugins leaf with the installed-plugins card', async () => {
+    const container = await renderSettings('/settings/plugins');
+    await flush();
+    expect(container.querySelector('#st-card-plugins')).not.toBeNull();
+    expect(client.listPlugins).toHaveBeenCalled();
+  });
+
+  it('keeps the deep-link query on the capabilities signpost links', async () => {
+    const container = await renderSettings('/settings/skills?from=capabilities&workspace=ws-beta&token=tok');
+    await flush();
+    const note = container.querySelector('[data-capabilities-shim-note]');
+    expect(note).not.toBeNull();
+    const links = [...note!.querySelectorAll('a')].map((anchor) => anchor.getAttribute('href') ?? '');
+    expect(links.length).toBe(3);
+    for (const href of links) {
+      expect(href).toContain('workspace=ws-beta');
+      expect(href).toContain('token=tok');
+      expect(href).not.toContain('from=capabilities');
+    }
+    expect(links[0]).toMatch(/^\/settings\/skills\?/);
+    expect(links[1]).toMatch(/^\/settings\/mcp\?/);
+    expect(links[2]).toMatch(/^\/settings\/plugins\?/);
   });
 });

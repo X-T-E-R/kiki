@@ -53,6 +53,8 @@ import {
   settingsSnapshot,
   subscribeRestartRequirement,
   subscribeSettings,
+  toolPolicyDraftFromConfig,
+  toolPolicyPatch,
   validateDesktopConfigDraft,
   validateProviderDraft,
   validateServerDefaults,
@@ -202,11 +204,14 @@ describe('settings persistence and validation', () => {
     expect(validateProviderDraft(providerDraft({ apiKey: 'bad\nkey' }))?.key).toBe('val.apiKeyLineBreaks');
     expect(() => parseExperimentalFlags('{"flag":"yes"}')).toThrow('true or false');
     expect(parseExperimentalFlags('{"search_worker":true}')).toEqual({ search_worker: true });
-    expect(() => parseAdvancedServerConfig('{"hooks":{}}')).toThrow('JSON array');
+    expect(() => parseAdvancedServerConfig('{"hooks":{}}')).toThrow('Unsupported');
     expect(() => parseAdvancedServerConfig('{"unknown":true}')).toThrow('Unsupported');
-    expect(parseAdvancedServerConfig('{"hooks":[],"background":{"max":2}}')).toEqual({
+    // Hooks left the advanced editor in the batch-3 split: they only enter
+    // through the Automation leaf's parseHooksJson, so a pasted hooks key is
+    // rejected as an unsupported field like any other unknown domain.
+    expect(() => parseAdvancedServerConfig('{"hooks":[],"background":{"max":2}}')).toThrow('Unsupported');
+    expect(parseAdvancedServerConfig('{"background":{"max":2}}')).toEqual({
       permission: undefined,
-      hooks: [],
       services: undefined,
       loop_control: undefined,
       background: { max: 2 },
@@ -256,21 +261,25 @@ describe('settings persistence and validation', () => {
     expect(patch.task).toEqual(expect.objectContaining({ max_running_tasks: 4, keep_alive_on_exit: true, print_background_mode: 'drain' }));
     expect(patch.extra_agent_dirs).toEqual(['C:\\agents', 'D:\\agents']);
     expect(patch.disabled_builtin_profiles).toEqual([]);
-    expect(patch.tools).toEqual({ enabled: ['Read'], disabled: ['Bash'] });
+    // mcp and tools belong to other leaves — the runtime patch neither sends
+    // nor replaces them, so a stale runtime draft can never roll them back.
+    expect(patch.mcp).toBeUndefined();
+    expect(patch.tools).toBeUndefined();
     expect(patch.replace_domains).toEqual(expect.arrayContaining([
       'thread_communication', 'token_counting', 'workspace_instance', 'image', 'task',
-      'identity', 'extra_agent_dirs', 'disabled_builtin_profiles', 'mcp', 'tools',
+      'identity', 'extra_agent_dirs', 'disabled_builtin_profiles',
     ]));
     expect(patch.replace_domains).not.toContain('cron');
+    expect(patch.replace_domains).not.toContain('mcp');
+    expect(patch.replace_domains).not.toContain('tools');
   });
 
   it('projects malformed config roots and lists to safe canonical defaults', () => {
     expect(runtimeConfigDraftFromConfig(null)).toMatchObject({
       extraAgentDirs: [],
       disabledBuiltinProfiles: [],
-      toolsEnabled: [],
-      toolsDisabled: [],
     });
+    expect(toolPolicyDraftFromConfig(null)).toEqual({ toolsEnabled: [], toolsDisabled: [] });
     expect(serverFileSettingsFromConfig('not-a-config')).toMatchObject({
       subagent: { timeoutMs: 7_200_000 },
       agents: { enabled: true },
@@ -288,8 +297,9 @@ describe('settings persistence and validation', () => {
     });
     expect(draft.extraAgentDirs).toEqual([]);
     expect(draft.disabledBuiltinProfiles).toEqual(['reviewer']);
-    expect(draft.toolsEnabled).toEqual(['Read']);
-    expect(draft.toolsDisabled).toEqual([]);
+    const policy = toolPolicyDraftFromConfig({ tools: { enabled: 'Read', disabled: { Bash: true } } });
+    expect(policy.toolsEnabled).toEqual(['Read']);
+    expect(policy.toolsDisabled).toEqual([]);
   });
 
   it('rejects invalid runtime integers before config writes', () => {
@@ -297,8 +307,8 @@ describe('settings persistence and validation', () => {
     draft.imageMaxEdgePx = '0';
     expect(() => runtimeConfigPatch(draft)).toThrow(/image\.max_edge_px/);
     draft.imageMaxEdgePx = '';
-    draft.mcpStartupTimeoutMs = '2147483648';
-    expect(() => runtimeConfigPatch(draft)).toThrow(/mcp\.startup_timeout_ms/);
+    // The mcp domain upper bound is enforced by its own leaf's patch helper.
+    expect(() => mcpTimeoutsPatch('2147483648', '')).toThrow(/mcp\.startup_timeout_ms/);
   });
 
   it('emits only fields changed from the last server echo', () => {
@@ -784,6 +794,7 @@ describe('settings nav groups (redesign batch 1)', () => {
     // tails fill "Data & advanced".
     expect(settingsGroupForSection('skills')?.id).toBe('extensions');
     expect(settingsGroupForSection('mcp')?.id).toBe('extensions');
+    expect(settingsGroupForSection('plugins')?.id).toBe('extensions');
     expect(settingsGroupForSection('automation')?.id).toBe('extensions');
     expect(settingsGroupForSection('subagents')?.id).toBe('agents');
     expect(settingsGroupForSection('runtime')?.id).toBe('system');
@@ -811,6 +822,7 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'server']);
     expect(SETTINGS_SECTION_META['skills']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['mcp']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['plugins']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['subagents']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['ai']?.scopes).toEqual(['server']);
@@ -968,6 +980,63 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
     });
     expect(() => mcpTimeoutsPatch('abc', '')).toThrowError();
     expect(() => mcpTimeoutsPatch('0', '')).toThrowError();
+  });
+
+  it('scopes the tool policy patch to the tools replace-domain', () => {
+    const patch = toolPolicyPatch({ toolsEnabled: ['Read'], toolsDisabled: ['Bash'] });
+    expect(patch).toEqual({
+      tools: { enabled: ['Read'], disabled: ['Bash'] },
+      replace_domains: ['tools'],
+    });
+    expect(toolPolicyDraftFromConfig({ providers: {}, tools: { enabled: ['Read'] } })).toEqual({
+      toolsEnabled: ['Read'],
+      toolsDisabled: [],
+    });
+  });
+
+  it('keeps every split-leaf patch inside its own domains', () => {
+    const runtimePatch = runtimeConfigPatch(runtimeConfigDraftFromConfig({ providers: {} }));
+    const toolsPatch = toolPolicyPatch({ toolsEnabled: [], toolsDisabled: [] });
+    const mcpPatch = mcpTimeoutsPatch('60000', '');
+    expect(Object.keys(runtimePatch)).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
+    expect(Object.keys(toolsPatch).toSorted()).toEqual(['replace_domains', 'tools']);
+    expect(Object.keys(mcpPatch).toSorted()).toEqual(['mcp', 'replace_domains']);
+    expect(runtimePatch.replace_domains).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
+  });
+
+  it('two leaves saving from divergent echoes never roll each other back', () => {
+    // The runtime leaf holds echo A (stale tools policy), the automation leaf
+    // holds echo B (stale runtime values). Because each save only replaces its
+    // own domains, applying both patches in sequence keeps every leaf's newest
+    // values no matter how stale the other leaf's draft was.
+    const runtimeSave = runtimeConfigPatch(runtimeConfigDraftFromConfig({
+      providers: {},
+      workspace_instance: { idleTtlMs: 60_000 },
+      tools: { enabled: ['Read'], disabled: [] },
+      mcp: { startupTimeoutMs: 10_000 },
+    }));
+    const toolsSave = toolPolicyPatch(toolPolicyDraftFromConfig({
+      providers: {},
+      workspace_instance: { idleTtlMs: 999 },
+      tools: { enabled: ['Bash'], disabled: ['Read'] },
+    }));
+    const apply = (state: Record<string, unknown>, patch: { replace_domains?: string[] } & Record<string, unknown>) => {
+      const next = { ...state };
+      for (const domain of patch.replace_domains ?? []) next[domain] = patch[domain];
+      return next;
+    };
+    const server: Record<string, unknown> = {
+      workspace_instance: 'stale',
+      tools: 'policy-from-B',
+      mcp: 'mcp-from-C',
+    };
+    const afterRuntime = apply(server, runtimeSave as never);
+    expect(afterRuntime['tools']).toBe('policy-from-B');
+    expect(afterRuntime['mcp']).toBe('mcp-from-C');
+    const afterBoth = apply(afterRuntime, toolsSave as never);
+    expect(afterBoth['tools']).toEqual({ enabled: ['Bash'], disabled: ['Read'] });
+    expect(afterBoth['workspace_instance']).toEqual(runtimeSave.workspace_instance);
+    expect(afterBoth['mcp']).toBe('mcp-from-C');
   });
 });
 

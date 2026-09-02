@@ -148,6 +148,24 @@ export default {
       tool_count: 1,
     },
   ],
+  // /api/v1/plugins — the settings Plugins leaf lists this one contributor.
+  plugins: [
+    {
+      id: 'fixture-plugin',
+      displayName: 'fixture-plugin',
+      version: '2.0.0',
+      enabled: true,
+      state: 'ok',
+      skillCount: 1,
+      mcpServerCount: 1,
+      enabledMcpServerCount: 1,
+      hookCount: 0,
+      commandCount: 2,
+      hasErrors: false,
+      source: 'local-path',
+      originalSource: 'C:/fixture/plugins/fixture-plugin',
+    },
+  ],
   // /api/v2/mcp/servers — one writable user-level entry and one read-only
   // plugin entry, so the manager's editable/read-only split is exercised.
   mcpManagedServers: [

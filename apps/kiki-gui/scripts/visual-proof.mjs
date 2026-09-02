@@ -83,7 +83,7 @@ const STRINGS = {
     mcp: 'MCP',
     automation: 'Tools & hooks',
     shimCapabilities: 'The capabilities panel was split into dedicated settings pages',
-    shimPlugins: 'Plugins (coming soon)',
+    shimPlugins: 'Plugins',
     newSessionDefaults: 'New-session defaults',
     appearanceTitle: 'Appearance',
     searchQuery: 'theme',
@@ -221,7 +221,7 @@ const STRINGS = {
     mcp: 'MCP',
     automation: '工具与 Hooks',
     shimCapabilities: '能力面板已拆分为独立的设置页面',
-    shimPlugins: '插件（即将推出）',
+    shimPlugins: '插件',
     newSessionDefaults: '新会话默认值',
     appearanceTitle: '外观',
     searchQuery: '主题',
@@ -1280,6 +1280,14 @@ async function scenarioSettings() {
   await page.waitForSelector('#st-card-mcp-timeouts', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-mcp');
+
+  // Plugins leaf (batch-3 reviewer ruling): installed plugins with enabled /
+  // error state and contribution summaries; the marketplace stays batch 5.
+  await page.locator('nav [data-settings-nav-leaf="plugins"]').click();
+  await page.waitForSelector('#st-card-plugins', { timeout: 10_000 });
+  await page.waitForSelector('text=fixture-plugin', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('settings-plugins');
 
   // Automation leaf: tool policy plus the raw hooks editor.
   await page.locator('nav [data-settings-nav-leaf="automation"]').click();
@@ -3079,7 +3087,8 @@ async function scenarioCapabilities() {
     throw new Error(`capabilities shim must land on /settings/skills?from=capabilities, got ${redirected}`);
   }
   await page.waitForSelector(`text=${S.shimCapabilities}`, { timeout: 5000 });
-  await page.waitForSelector(`text=${S.shimPlugins}`, { timeout: 5000 });
+  // Scoped to the note: the leaf name alone also appears in the nav rail.
+  await page.waitForSelector(`[data-capabilities-shim-note] >> text=${S.shimPlugins}`, { timeout: 5000 });
   await page.waitForSelector('#st-card-skill-catalog', { timeout: 10_000 });
   await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
   // Plugin skill rows (MCP servers live on the MCP leaf after the split).
