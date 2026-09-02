@@ -783,6 +783,9 @@ importers:
       '@fastify/swagger':
         specifier: ^9.7.0
         version: 9.7.0
+      '@kiki/transcript-live':
+        specifier: workspace:^
+        version: link:../transcript-live
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.3.6)

@@ -1,4 +1,9 @@
 import {
+  resolveSubagentDisplayName,
+  subagentParentAgentId,
+  subagentUserLabel,
+} from '@kiki/transcript-live';
+import {
   ensureMainAgent,
   IAgentProfileService,
   ISessionContext,
@@ -23,11 +28,6 @@ import {
   type SnapshotSubagent,
 } from '../protocol/rest-snapshot';
 import { loadCapturedMessageHistory } from '../services/messages/messageHistory';
-import {
-  resolveSubagentDisplayName,
-  subagentParentAgentId,
-  subagentUserLabel,
-} from '../services/subagentProjection';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { toWireApproval } from './approvals';
 import { toWireQuestion } from './questions';
