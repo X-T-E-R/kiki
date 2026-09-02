@@ -10,6 +10,7 @@
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
+  isExternalFailureCategory,
   renderProfileCatalogEntries,
   type DispatchProfileCatalogEntry,
 } from '@moonshot-ai/agent-core-v2';
@@ -127,6 +128,15 @@ const turnEventPage = z.object({
     }).passthrough(),
   }).passthrough()),
 }).passthrough();
+const waitView = z.object({
+  waitStatus: z.enum(['completed', 'timed_out', 'no_items', 'interaction_pending']),
+  dispatch: dispatchView.optional(),
+  interactions: z.array(z.object({
+    interactionId: z.string(),
+    kind: z.enum(['approval', 'question']),
+    taskName: z.string(),
+  }).passthrough()),
+}).passthrough();
 const profileCatalogEntry = z.object({
   profileName: z.string().min(1),
   description: z.string().optional(),
@@ -145,23 +155,9 @@ const delegationRoot = z.object({
   dispatchables: z.array(z.object({ kind: z.enum(['main', 'named']) }).passthrough()),
 }).passthrough();
 
-/**
- * Stable external failure taxonomy mirrored from
- * `agent-core-v2/src/session/externalDelegation/externalDelegation.ts`
- * (`ExternalFailureCategory`). The stdio edge stays dependency-light instead of
- * importing the core barrel, so keep the two lists in sync — an unknown code
- * degrades to the generic `request_rejected` edge error, never to a leak.
- */
-const EXTERNAL_FAILURE_CATEGORIES = new Set([
-  'auth_expired',
-  'quota_exceeded',
-  'model_not_supported',
-  'network',
-  'invalid_input',
-  'internal',
-  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
-]);
 const KIKI_LIST_DESCRIPTION = 'List admitted main/named dispatchables and owned continuations.';
+const INTERACTION_PENDING_NEXT_STEP =
+  'Call kiki_interactions to inspect pending requests, call kiki_respond to answer each one, then call kiki_wait again.';
 const KIKI_DISPATCH_DESCRIPTION =
   'Dispatch main-agent work or one stable named child asynchronously. '
   + 'task_name (named children only) must be lowercase [a-z0-9_] and must not be "root" '
@@ -179,14 +175,14 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
   });
   const server = new McpServer({ name: 'kiki-external-delegation', version: '0.1.0' });
 
-  // The SDK validates tool input against `inputSchema` before invoking the
-  // handler and reports a failure as a bare `{ isError: true, content }` with
-  // no classification. Re-shape that path onto the edge's structured
-  // `{ error: { code, message } }` contract so an invalid tool call reads as
-  // `invalid_input` (carrying the schema hint, e.g. the task_name rule) rather
-  // than an opaque MCP protocol error.
   (server as unknown as { createToolError(message: string): unknown }).createToolError = (message) => {
-    const payload = { error: { code: 'invalid_input', message: validationErrorMessage(message) } };
+    const payload = {
+      error: {
+        code: 'invalid_input',
+        message: validationErrorMessage(message),
+        next_step: 'Fix the tool arguments and retry.',
+      },
+    };
     return { ...result(payload), isError: true };
   };
 
@@ -209,35 +205,23 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
       description: KIKI_DISPATCH_DESCRIPTION,
       inputSchema: dispatchInput,
     },
-    async (input, extra) =>
+    async (input) =>
       toolResult(async () => {
         const parsed = dispatchInput.parse(input);
         const dispatchKey = parsed.dispatch_key ?? randomUUID();
         const dispatched = await client.call('dispatch', { ...parsed, dispatch_key: dispatchKey });
-        const observed = await followDelegationProgress(
-          client,
-          dispatched,
-          extra,
-          progressPollIntervalMs,
-        );
-        return withDispatchReceipt(observed, dispatchKey);
+        return withDispatchReceipt(dispatched, dispatchKey);
       }),
   );
   server.registerTool(
     'kiki_continue',
     { description: 'Continue an owned terminal main or named-child dispatch.', inputSchema: continueInput },
-    async (input, extra) =>
+    async (input) =>
       toolResult(async () => {
         const parsed = continueInput.parse(input);
         const dispatchKey = parsed.dispatch_key ?? randomUUID();
         const dispatched = await client.call('continue', { ...parsed, dispatch_key: dispatchKey });
-        const observed = await followDelegationProgress(
-          client,
-          dispatched,
-          extra,
-          progressPollIntervalMs,
-        );
-        return withDispatchReceipt(observed, dispatchKey);
+        return withDispatchReceipt(dispatched, dispatchKey);
       }),
   );
   server.registerTool(
@@ -277,11 +261,20 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
   );
   server.registerTool(
     'kiki_wait',
-    { description: 'Wait for one owned dispatch or the next owned dispatch to finish.', inputSchema: waitInput },
-    async (input) =>
-      toolResult(() => {
+    {
+      description: 'Wait for one owned dispatch or the next owned dispatch to finish or request an external interaction response.',
+      inputSchema: waitInput,
+    },
+    async (input, extra) =>
+      toolResult(async () => {
         const parsed = waitInput.parse(input);
-        return client.call('wait', parsed, waitRequestTimeoutMs(parsed.timeout_s));
+        const waited = await followWaitProgress(
+          client,
+          parsed,
+          extra,
+          progressPollIntervalMs,
+        );
+        return withWaitGuidance(waited);
       }),
   );
   server.registerTool(
@@ -361,14 +354,22 @@ class ExternalDelegationRestClient {
         },
       );
     } catch {
-      throw new KikiMcpEdgeError('endpoint_unavailable', 'Kiki delegation endpoint is unavailable.');
+      throw new KikiMcpEdgeError(
+        'endpoint_unavailable',
+        'Kiki delegation endpoint is unavailable.',
+        'Check that Kiki is running and the configured endpoint is reachable, then retry.',
+      );
     }
-    if (!response.ok) throw new KikiMcpEdgeError('transport_rejected', 'Kiki delegation endpoint rejected the request.');
+    if (!response.ok) throw httpStatusError(response.status);
     let envelope: unknown;
     try {
       envelope = await response.json();
     } catch {
-      throw new KikiMcpEdgeError('invalid_response', 'Kiki delegation endpoint returned an invalid response.');
+      throw new KikiMcpEdgeError(
+        'invalid_response',
+        'Kiki delegation endpoint returned an invalid response.',
+        'Retry; if the response stays invalid, ask the operator to inspect the Kiki server.',
+      );
     }
     const parsed = z
       .object({
@@ -380,13 +381,12 @@ class ExternalDelegationRestClient {
       .passthrough()
       .parse(envelope);
     if (parsed.code !== 0) {
-      // A server-side classification travels in `details.failure_code`; the
-      // message itself is the domain-owned category description, so it can be
-      // surfaced verbatim (safeRemoteMessage stays as belt-and-braces).
       const failureCode = readFailureCode(parsed.details);
+      const code = failureCode ?? 'request_rejected';
       throw new KikiMcpEdgeError(
-        failureCode ?? 'request_rejected',
+        code,
         safeRemoteMessage(parsed.msg),
+        failureNextStep(code),
       );
     }
     return parsed.data as T;
@@ -406,50 +406,40 @@ interface ProgressRequestContext {
   }): Promise<void>;
 }
 
-async function followDelegationProgress(
+async function followWaitProgress(
   client: ExternalDelegationRestClient,
-  initial: unknown,
+  input: z.infer<typeof waitInput>,
   context: ProgressRequestContext,
   pollIntervalMs: number,
 ): Promise<unknown> {
+  const waitPromise = client.call('wait', input, waitRequestTimeoutMs(input.timeout_s));
   const progressToken = context._meta?.progressToken;
-  if (progressToken === undefined) return initial;
+  if (progressToken === undefined || input.dispatch_id === undefined) return waitPromise;
 
-  let dispatch = dispatchView.parse(initial);
+  const waitSettled = Symbol('wait-settled');
+  const settlement = waitPromise.then(
+    () => waitSettled,
+    () => waitSettled,
+  );
   let eventCursor = 0;
   let progress = 0;
-  let turnStarted = false;
   let reportedTool: string | undefined;
   const toolTitles = new Map<string, string>();
-  const notify = (message: string) =>
-    context.sendNotification({
-      method: 'notifications/progress',
-      params: { progressToken, progress: ++progress, message },
-    });
-
-  if (dispatch.status === 'running') {
-    turnStarted = true;
-    await notify(progressMessage('started'));
-  } else if (isTerminalDispatchStatus(dispatch.status)) {
-    await notify(progressMessage(dispatch.status));
-    return dispatch;
-  }
 
   while (true) {
     context.signal.throwIfAborted();
-    const [rawEvents, rawStatus] = await Promise.all([
+    const rawEvents = await Promise.race([
+      settlement,
       client.call('events', {
-        dispatch_id: dispatch.dispatchId,
+        dispatch_id: input.dispatch_id,
         cursor: eventCursor,
         limit: 100,
         detail: 'turn',
       }),
-      client.call('status', { dispatch_id: dispatch.dispatchId }),
     ]);
+    if (rawEvents === waitSettled) return waitPromise;
     const events = turnEventPage.parse(rawEvents);
-    dispatch = dispatchView.parse(rawStatus);
     let currentTool: string | undefined;
-
     for (const item of events.items) {
       eventCursor = Math.max(eventCursor, item.seq);
       const event = item.event;
@@ -461,35 +451,23 @@ async function followDelegationProgress(
         currentTool = event.title ?? toolTitles.get(event.toolCallId);
       }
     }
-
-    if (!turnStarted && dispatch.status === 'running') {
-      turnStarted = true;
-      await notify(progressMessage('started'));
-    }
     if (currentTool !== undefined && currentTool !== reportedTool) {
       reportedTool = currentTool;
-      await notify(progressMessage('running', currentTool));
+      await context.sendNotification({
+        method: 'notifications/progress',
+        params: {
+          progressToken,
+          progress: ++progress,
+          message: `Delegation running tool: ${currentTool}.`,
+        },
+      });
     }
-    if (isTerminalDispatchStatus(dispatch.status)) {
-      await notify(progressMessage(dispatch.status));
-      return dispatch;
-    }
-
-    await delay(pollIntervalMs, undefined, { signal: context.signal });
+    const delayed = await Promise.race([
+      settlement,
+      delay(pollIntervalMs, undefined, { signal: context.signal }),
+    ]);
+    if (delayed === waitSettled) return waitPromise;
   }
-}
-
-function isTerminalDispatchStatus(status: z.infer<typeof dispatchStatus>): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'interrupted';
-}
-
-function progressMessage(
-  status: 'started' | z.infer<typeof dispatchStatus>,
-  tool?: string,
-): string {
-  if (status === 'started') return 'Delegation turn started.';
-  if (status === 'running' && tool !== undefined) return `Delegation running tool: ${tool}.`;
-  return `Delegation ${status}.`;
 }
 
 function withDispatchReceipt(value: unknown, dispatchKey: string): Record<string, unknown> {
@@ -506,10 +484,17 @@ function withDispatchReceipt(value: unknown, dispatchKey: string): Record<string
       task_name: dispatch.taskName,
       actual_profile: dispatch.actualProfile,
       status: dispatch.status,
-      next_step: `Call kiki_wait with dispatch_id "${dispatch.dispatchId}" to block until done, or call kiki_events to poll.`,
+      next_step: `Call kiki_wait with dispatch_id "${dispatch.dispatchId}" to block until done. If it returns interaction_pending, ${INTERACTION_PENDING_NEXT_STEP}`,
       continue_hint: continueHint,
     },
   };
+}
+
+function withWaitGuidance(value: unknown): Record<string, unknown> {
+  const waited = waitView.parse(value);
+  return waited.waitStatus === 'interaction_pending'
+    ? { ...waited, next_step: INTERACTION_PENDING_NEXT_STEP }
+    : waited;
 }
 
 function waitRequestTimeoutMs(timeoutSeconds: number | undefined): number {
@@ -541,6 +526,7 @@ function bindRoot(
     throw new KikiMcpEdgeError(
       'invalid_response',
       'Kiki delegation endpoint returned an invalid response.',
+      'Retry; if the response stays invalid, ask the operator to inspect the Kiki server.',
     );
   }
   return { ...(root as Record<string, unknown>), binding };
@@ -549,7 +535,11 @@ function bindRoot(
 function result(data: unknown) {
   const text = JSON.stringify(data);
   if (Buffer.byteLength(text, 'utf8') > 1_048_576) {
-    throw new KikiMcpEdgeError('response_too_large', 'Kiki delegation response exceeds the MCP frame limit.');
+    throw new KikiMcpEdgeError(
+      'response_too_large',
+      'Kiki delegation response exceeds the MCP frame limit.',
+      'Request a smaller page and retry.',
+    );
   }
   return { content: [{ type: 'text' as const, text }], structuredContent: data as Record<string, unknown> };
 }
@@ -561,30 +551,81 @@ async function toolResult(produce: () => Promise<unknown>) {
     const payload = {
       error:
         error instanceof KikiMcpEdgeError
-          ? { code: error.code, message: error.message }
+          ? { code: error.code, message: error.message, next_step: error.nextStep }
           : error instanceof z.ZodError
-            ? { code: 'invalid_input', message: zodErrorMessage(error) }
-            : { code: 'internal', message: 'Kiki delegation request failed.' },
+            ? {
+                code: 'invalid_input',
+                message: zodErrorMessage(error),
+                next_step: 'Fix the tool arguments and retry.',
+              }
+            : {
+                code: 'internal',
+                message: 'Kiki delegation request failed.',
+                next_step: 'Retry; if it keeps failing, ask the operator to inspect the Kiki server.',
+              },
     };
     return { ...result(payload), isError: true };
   }
 }
 
-/** Render the Zod issues as a single hint so an invalid tool call reads as validation feedback, not an internal failure. */
 function zodErrorMessage(error: z.ZodError): string {
   return error.issues.map((issue) => issue.message).join('; ');
 }
 
-/** Sanitize a schema-validation message surfaced to the MCP client. */
 function validationErrorMessage(message: string): string {
   return message.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 500);
 }
 
 class KikiMcpEdgeError extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly nextStep: string,
+  ) {
     super(message);
     this.name = 'KikiMcpEdgeError';
   }
+}
+
+function httpStatusError(status: number): KikiMcpEdgeError {
+  if (status === 401) {
+    return new KikiMcpEdgeError(
+      'authentication_failed',
+      'Kiki delegation authentication failed.',
+      'Ask the operator to verify the bearer and delegation tokens, then retry.',
+    );
+  }
+  if (status === 404) {
+    return new KikiMcpEdgeError(
+      'endpoint_not_found',
+      'Kiki delegation endpoint was not found.',
+      'Ask the operator to verify the endpoint, session binding, and delegation feature flag.',
+    );
+  }
+  if (status >= 500) {
+    return new KikiMcpEdgeError(
+      'server_error',
+      'Kiki delegation server failed to process the request.',
+      'Retry; if it keeps failing, ask the operator to inspect the Kiki server logs.',
+    );
+  }
+  return new KikiMcpEdgeError(
+    'transport_rejected',
+    `Kiki delegation endpoint rejected the request with HTTP ${String(status)}.`,
+    'Check the request and server configuration, then retry.',
+  );
+}
+
+function failureNextStep(code: string): string {
+  if (code === 'auth_expired') return 'Ask the operator to re-authenticate the provider, then retry.';
+  if (code === 'quota_exceeded') return 'Retry after the provider quota or rate limit resets.';
+  if (code === 'model_not_supported') return 'Choose an admitted model or ask the operator to update the profile.';
+  if (code === 'network') return 'Retry after checking provider and network availability.';
+  if (code === 'invalid_input') return 'Fix the request input and retry.';
+  if (code === EXTERNAL_INTERACTION_NOT_OWNED_CODE) {
+    return 'Call kiki_interactions to refresh the pending requests before responding again.';
+  }
+  return 'Retry; if it keeps failing, ask the operator to inspect the Kiki server.';
 }
 
 function boundUtf8Page<T extends Record<string, unknown> & { text?: unknown; nextCursor?: unknown }>(
@@ -616,11 +657,19 @@ function utf8PagePrefix(
       if (consumed + 1 === value.length && backendHasMore) break;
       const second = value.charCodeAt(consumed + 1);
       if (second < 0xdc00 || second > 0xdfff) {
-        throw new KikiMcpEdgeError('invalid_response', 'Kiki delegation endpoint returned invalid Unicode.');
+        throw new KikiMcpEdgeError(
+          'invalid_response',
+          'Kiki delegation endpoint returned invalid Unicode.',
+          'Retry from the returned cursor; if it persists, ask the operator to inspect the Kiki server.',
+        );
       }
       width = 2;
     } else if (first >= 0xdc00 && first <= 0xdfff) {
-      throw new KikiMcpEdgeError('invalid_response', 'Kiki delegation endpoint returned invalid Unicode.');
+      throw new KikiMcpEdgeError(
+        'invalid_response',
+        'Kiki delegation endpoint returned invalid Unicode.',
+        'Retry from the returned cursor; if it persists, ask the operator to inspect the Kiki server.',
+      );
     }
     const symbol = value.slice(consumed, consumed + width);
     const symbolBytes = Buffer.byteLength(symbol, 'utf8');
@@ -636,9 +685,11 @@ function safeRemoteMessage(message: string): string {
   return message.slice(0, 500);
 }
 
-/** Read a trusted failure classification off a REST error envelope, if any. */
 function readFailureCode(details: unknown): string | undefined {
   if (details === null || typeof details !== 'object' || Array.isArray(details)) return undefined;
   const code = (details as { readonly failure_code?: unknown }).failure_code;
-  return typeof code === 'string' && EXTERNAL_FAILURE_CATEGORIES.has(code) ? code : undefined;
+  return typeof code === 'string' &&
+    (isExternalFailureCategory(code) || code === EXTERNAL_INTERACTION_NOT_OWNED_CODE)
+    ? code
+    : undefined;
 }
