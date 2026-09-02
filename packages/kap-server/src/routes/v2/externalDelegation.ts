@@ -32,6 +32,10 @@ interface RouteRequest {
   readonly params: unknown;
   readonly body?: unknown;
   readonly headers: Record<string, string | string[] | undefined>;
+  readonly log: {
+    info(bindings: Record<string, unknown>, message: string): void;
+    warn(bindings: Record<string, unknown>, message: string): void;
+  };
 }
 
 interface ExternalDelegationRouteHost {
@@ -252,6 +256,19 @@ function command<T extends z.ZodTypeAny>(
       );
       reply.send(okEnvelope(data, req.id));
     } catch (error) {
+      const failureCode = failureCodeForLog(error);
+      const log = {
+        request_id: req.id,
+        action: path.slice(path.lastIndexOf('/') + 1),
+        error_message: error instanceof Error ? error.message : String(error),
+        error_stack: error instanceof Error ? error.stack : undefined,
+        failure_code: failureCode,
+      };
+      if (failureCode === undefined) {
+        req.log.warn(log, 'external delegation request failed');
+      } else {
+        req.log.info(log, 'external delegation request failed');
+      }
       const redacted = redactedMessage(error);
       reply.send({ ...errEnvelope(ErrorCode.VALIDATION_FAILED, redacted.message, req.id), details: redacted.details });
     }
@@ -285,6 +302,13 @@ function dedicatedTokenMatches(candidate: string | undefined, expected: string):
   const a = Buffer.from(candidate);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function failureCodeForLog(error: unknown): string | undefined {
+  if (!isError2(error)) return undefined;
+  const failureCode = error.details?.['failure_code'];
+  if (typeof failureCode === 'string') return failureCode;
+  return classifyExternalFailureCode(error.code);
 }
 
 interface RedactedFailure {
