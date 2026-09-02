@@ -9,7 +9,6 @@ const TEXT = {
   newSession: 'New session',
   settings: 'Settings',
   usage: 'Usage',
-  capabilities: 'Capabilities',
 };
 
 function session(id: string, overrides: Partial<Session> = {}): Session {
@@ -73,11 +72,10 @@ describe('resolveWindowTitle', () => {
     expect(resolveWindowTitle({ kind: 'session', sessionId: 'gone' }, [], TEXT)).toBe('Kiki');
   });
 
-  it('titles the /new, /settings, /usage, and /capabilities routes with their page names', () => {
+  it('titles the /new, /settings, and /usage routes with their page names', () => {
     expect(resolveWindowTitle({ kind: 'new' }, [], TEXT)).toBe('New session — Kiki');
     expect(resolveWindowTitle({ kind: 'settings' }, [], TEXT)).toBe('Settings — Kiki');
     expect(resolveWindowTitle({ kind: 'usage' }, [], TEXT)).toBe('Usage — Kiki');
-    expect(resolveWindowTitle({ kind: 'capabilities' }, [], TEXT)).toBe('Capabilities — Kiki');
     expect(resolveWindowTitle({ kind: 'other' }, [], TEXT)).toBe('Kiki');
   });
 });

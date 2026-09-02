@@ -418,9 +418,9 @@ describe('Sidebar global search pagination', () => {
 });
 
 describe('Sidebar entry distribution', () => {
-  it('puts capabilities and usage on the wordmark row', async () => {
+  it('puts usage on the wordmark row (capabilities moved into settings)', async () => {
     const { container } = await mount();
-    expect(container.querySelector('[data-nav-capabilities]')).not.toBeNull();
+    expect(container.querySelector('[data-nav-capabilities]')).toBeNull();
     expect(container.querySelector('[data-nav-usage]')).not.toBeNull();
   });
 
@@ -524,15 +524,14 @@ describe('Sidebar view menu', () => {
     expect(container.querySelectorAll('select')).toHaveLength(0);
   });
 
-  it('keeps the default chrome down to seven controls with the view options collapsed', async () => {
+  it('keeps the default chrome down to six controls with the view options collapsed', async () => {
     const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
     // Chrome only: the session rows and their hover affordances live in the
     // scroller, which this filter drops.
     const chrome = [...container.querySelectorAll<HTMLElement>('button, input, select, textarea')].filter(
       (element) => element.closest('[data-session-list]') === null,
     );
-    expect(chrome).toHaveLength(7);
-    expect(container.querySelector('[data-nav-capabilities]')).not.toBeNull();
+    expect(chrome).toHaveLength(6);
     expect(container.querySelector('[data-nav-usage]')).not.toBeNull();
     expect(container.querySelector('[data-search-box]')).not.toBeNull();
     expect(container.querySelector('[data-view-menu-toggle]')).not.toBeNull();
