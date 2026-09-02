@@ -29,13 +29,13 @@ import {
   type TranscriptTurn,
 } from '@moonshot-ai/transcript';
 
-import { readWireRecords } from './wireRecords';
 import {
   bindSessionTranscript,
   descriptorFromMeta,
+  readWireRecords,
   type TranscriptBinding,
   type TranscriptBindingLogger,
-} from './coreBinding';
+} from '@kiki/transcript-live';
 
 const SESSIONS_ROOT = 'sessions';
 const AGENTS_DIR = 'agents';

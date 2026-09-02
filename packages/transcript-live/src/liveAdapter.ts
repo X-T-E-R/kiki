@@ -82,8 +82,8 @@ import {
   type TurnState,
 } from '@moonshot-ai/transcript';
 
-import { toLegacyPhase } from '../legacyStatus/legacyStatus';
-import { projectPromptContentParts } from '../messages/messageProjection';
+import { toLegacyPhase } from './legacyPhase';
+import { projectPromptContentParts } from './promptProjection';
 
 export interface LiveAdapterInteraction {
   readonly id: string;

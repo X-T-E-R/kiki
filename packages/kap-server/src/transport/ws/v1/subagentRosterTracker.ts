@@ -1,8 +1,8 @@
+import { resolveSubagentDisplayName } from '@kiki/transcript-live';
 import type { AgentTaskInfo } from '@moonshot-ai/agent-core-v2';
 
 import type { Event } from './events';
 import type { SnapshotSubagent } from '../../../protocol/rest-snapshot';
-import { resolveSubagentDisplayName } from '../../../services/subagentProjection';
 
 type SnapshotSubagentPhase = NonNullable<SnapshotSubagent['subagent_phase']>;
 type TrackedSubagentStatus = SnapshotSubagent['status'] | 'unknown';

@@ -39,11 +39,12 @@ import {
 } from '@moonshot-ai/transcript';
 import { describe, expect, it, vi } from 'vitest';
 
-import { bindSessionTranscript } from '../../src/services/transcript/coreBinding';
 import {
   AgentTranscriptLiveAdapter,
+  bindSessionTranscript,
   type LiveAdapterBusEvent,
-} from '../../src/services/transcript/liveAdapter';
+} from '@kiki/transcript-live';
+
 import {
   TranscriptService,
   snapshotToOps,
