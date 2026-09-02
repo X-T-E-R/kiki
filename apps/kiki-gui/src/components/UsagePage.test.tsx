@@ -421,4 +421,50 @@ describe('UsagePage (V2)', () => {
     expect(panel!.textContent).toContain('s_1');
     expect(panel!.querySelector('[data-usage-turn="1"]')).not.toBeNull();
   });
+
+  it('rejects an inverted custom date range locally instead of querying', async () => {
+    const startAt = new Date(2026, 7, 20).getTime();
+    const endAt = new Date(2026, 7, 26).getTime();
+    const { container } = await renderPage(
+      `/usage?range=custom&start_at=${startAt}&end_at=${endAt}`,
+    );
+    const endInput = container.querySelector<HTMLInputElement>(
+      'input[aria-label="End date"]',
+    );
+    const startInput = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Start date"]',
+    );
+    expect(endInput).not.toBeNull();
+    // Mutual constraints keep the picker from forming an inverted pair.
+    expect(endInput!.min).toBe('2026-08-20');
+    expect(startInput!.max).toBe('2026-08-25');
+
+    const setDateValue = (input: HTMLInputElement, value: string) => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )!.set!;
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+
+    // An end before the start is blocked: field-level error, no new query.
+    const callsBefore = mainCalls().length;
+    await act(async () => { setDateValue(endInput!, '2026-08-19'); });
+    expect(container.querySelector('[data-usage-range-error]')?.textContent).toContain(
+      'earlier than the end date',
+    );
+    expect(endInput!.getAttribute('aria-invalid')).toBe('true');
+    expect(mainCalls().length).toBe(callsBefore);
+
+    // A valid end clears the error and issues the query with the new bounds.
+    await act(async () => { setDateValue(endInput!, '2026-08-27'); });
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    expect(container.querySelector('[data-usage-range-error]')).toBeNull();
+    const last = mainCalls().at(-1)?.[0] as Record<string, unknown>;
+    expect(last['range']).toBe('custom');
+    expect(last['end_at']).toBe(new Date(2026, 7, 28).getTime());
+  });
 });

@@ -817,6 +817,7 @@ export const zh: Record<I18nKey, string> = {
   'usage.allHistoryChip': '全部历史 · 未套用时间过滤',
   'usage.customRange.start': '开始日期',
   'usage.customRange.end': '结束日期',
+  'usage.customRange.invalid': '开始日期必须早于结束日期。',
   'usage.workspace.label': '工作区',
   'usage.workspace.all': '全部工作区',
   'usage.includeArchived': '包含已归档',

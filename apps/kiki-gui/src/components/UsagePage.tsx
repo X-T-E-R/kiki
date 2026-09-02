@@ -275,6 +275,10 @@ function FilterBar({
   onChange: (next: UsageFilters) => void;
 }) {
   const { t } = useI18n();
+  // Field-level guard for the custom range: an inverted pair (start >= end)
+  // is rejected locally with an inline error instead of being sent to the
+  // server (which would answer 40001 and degrade the page to a load failure).
+  const [rangeInvalid, setRangeInvalid] = useState(false);
   return (
     <div data-usage-filters className="flex flex-wrap items-center gap-x-4 gap-y-2">
       <AxisGroup
@@ -291,6 +295,7 @@ function FilterBar({
         options={USAGE_RANGE_PRESETS}
         value={filters.range}
         onChange={(range) => {
+          setRangeInvalid(false);
           if (range === 'custom') {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
@@ -343,14 +348,24 @@ function FilterBar({
         onChange={(includeArchived) => { onChange({ ...filters, includeArchived }); }}
       />
       {filters.range === 'custom' ? (
-        <div className="flex items-center gap-1.5" data-usage-custom-range>
+        <div className="flex flex-wrap items-center gap-1.5" data-usage-custom-range>
           <input
             type="date"
             aria-label={t('usage.customRange.start')}
+            aria-invalid={rangeInvalid}
             value={toDateInputValue(filters.startAt)}
+            max={toDateInputValue(
+              filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined,
+            )}
             onChange={(event) => {
               const startAt = fromDateInputValue(event.target.value);
-              if (startAt !== undefined) onChange({ ...filters, startAt });
+              if (startAt === undefined) return;
+              if (filters.endAt !== undefined && startAt >= filters.endAt) {
+                setRangeInvalid(true);
+                return;
+              }
+              setRangeInvalid(false);
+              onChange({ ...filters, startAt });
             }}
             className="rounded-lg border border-hairline bg-panel px-2 py-1 font-mono text-[11px] text-ink outline-none focus:border-accent"
           />
@@ -358,15 +373,29 @@ function FilterBar({
           <input
             type="date"
             aria-label={t('usage.customRange.end')}
+            aria-invalid={rangeInvalid}
             value={toDateInputValue(
               filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined,
             )}
+            min={toDateInputValue(filters.startAt)}
             onChange={(event) => {
               const day = fromDateInputValue(event.target.value);
-              if (day !== undefined) onChange({ ...filters, endAt: day + DAY_MS });
+              if (day === undefined) return;
+              const endAt = day + DAY_MS;
+              if (filters.startAt !== undefined && endAt <= filters.startAt) {
+                setRangeInvalid(true);
+                return;
+              }
+              setRangeInvalid(false);
+              onChange({ ...filters, endAt });
             }}
             className="rounded-lg border border-hairline bg-panel px-2 py-1 font-mono text-[11px] text-ink outline-none focus:border-accent"
           />
+          {rangeInvalid ? (
+            <p role="alert" data-usage-range-error className="text-[10.5px] text-danger">
+              {t('usage.customRange.invalid')}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>

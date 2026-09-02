@@ -831,6 +831,7 @@ export const en = {
   'usage.allHistoryChip': 'All history · no time filter applied',
   'usage.customRange.start': 'Start date',
   'usage.customRange.end': 'End date',
+  'usage.customRange.invalid': 'Start date must be earlier than the end date.',
   'usage.workspace.label': 'Workspace',
   'usage.workspace.all': 'All workspaces',
   'usage.includeArchived': 'Include archived',
