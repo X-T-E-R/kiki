@@ -235,6 +235,42 @@ export function searchHasUsageParams(search: string): boolean {
     .some((key) => params.has(key));
 }
 
+// ---------------------------------------------------------------------------
+// Detail view — which detail tab the page shows; URL-carried like the filters
+// so a shared link (e.g. ?view=breakdown&dimension=agent) restores the tab.
+// ---------------------------------------------------------------------------
+
+export type UsageDetailView = 'sessions' | 'breakdown' | 'five_hour';
+
+export const USAGE_DETAIL_VIEWS: readonly UsageDetailView[] = [
+  'sessions',
+  'breakdown',
+  'five_hour',
+];
+
+export const USAGE_DETAIL_VIEW_DEFAULT: UsageDetailView = 'sessions';
+
+/** URL → detail view; an unknown/absent value degrades to the sessions tab. */
+export function parseUsageDetailView(search: string): UsageDetailView {
+  const view = new URLSearchParams(search).get('view');
+  return view !== null && (USAGE_DETAIL_VIEWS as readonly string[]).includes(view)
+    ? (view as UsageDetailView)
+    : USAGE_DETAIL_VIEW_DEFAULT;
+}
+
+/**
+ * Detail view → URL query, preserving unrelated params (server/token keys,
+ * the session locator, the filter axes). The default sessions tab is omitted
+ * so the canonical URL stays clean.
+ */
+export function usageDetailViewToSearch(view: UsageDetailView, existing?: string): string {
+  const params = new URLSearchParams(existing ?? '');
+  params.delete('view');
+  if (view !== USAGE_DETAIL_VIEW_DEFAULT) params.set('view', view);
+  const query = params.toString();
+  return query === '' ? '' : `?${query}`;
+}
+
 /**
  * Filters → URL query. Defaults are omitted so the no-query URL stays the
  * canonical all-history state; non-default axes are always explicit so the

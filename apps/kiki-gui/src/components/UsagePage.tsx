@@ -41,6 +41,7 @@ import {
   burnRatePerHour,
   cacheHitRateOf,
   parseUsageFilters,
+  parseUsageDetailView,
   readStoredUsageFilters,
   searchHasUsageParams,
   totalTokensOf,
@@ -48,8 +49,10 @@ import {
   USAGE_FILTER_DEFAULTS,
   USAGE_GRANULARITIES,
   USAGE_RANGE_PRESETS,
+  usageDetailViewToSearch,
   usageFiltersToSearch,
   writeStoredUsageFilters,
+  type UsageDetailView,
   type UsageDimensionRow,
   type UsageFilters,
   type UsageResponseWire,
@@ -62,6 +65,17 @@ import { Toggle } from './controls';
 const SESSION_PAGE_SIZE = 25;
 
 type DetailTab = 'sessions' | 'breakdown' | 'fiveHour';
+
+const DETAIL_TAB_TO_VIEW: Record<DetailTab, UsageDetailView> = {
+  sessions: 'sessions',
+  breakdown: 'breakdown',
+  fiveHour: 'five_hour',
+};
+const VIEW_TO_DETAIL_TAB: Record<UsageDetailView, DetailTab> = {
+  sessions: 'sessions',
+  breakdown: 'breakdown',
+  five_hour: 'fiveHour',
+};
 
 const INCOMPLETE_REASON_KEYS: Record<
   NonNullable<UsageResponseWire['reliability']['incomplete_reason']>,
@@ -884,10 +898,19 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     ? sessionParam
     : undefined;
 
-  const [tab, setTab] = useState<DetailTab>('sessions');
-  useEffect(() => {
-    if (sessionLocator !== undefined) setTab('sessions');
-  }, [sessionLocator]);
+  // The detail tab rides the URL (`view=`) so breakdown/5h views are
+  // deep-linkable and shareable; a session locator without an explicit view
+  // pins the sessions tab so the located row is actually on screen.
+  const hasExplicitView = new URLSearchParams(location.search).has('view');
+  const tab: DetailTab =
+    sessionLocator !== undefined && !hasExplicitView
+      ? 'sessions'
+      : VIEW_TO_DETAIL_TAB[parseUsageDetailView(location.search)];
+  const selectTab = (next: DetailTab) => {
+    setSearchParams(
+      new URLSearchParams(usageDetailViewToSearch(DETAIL_TAB_TO_VIEW[next], location.search)),
+    );
+  };
   const [selectedBucketKey, setSelectedBucketKey] = useState<string | null>(null);
   // Bucket keys only exist within the query that produced them.
   useEffect(() => { setSelectedBucketKey(null); }, [filters]);
@@ -1115,7 +1138,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         role="tab"
                         aria-selected={tab === id}
                         data-usage-tab={id}
-                        onClick={() => { setTab(id); }}
+                        onClick={() => { selectTab(id); }}
                         className={`rounded-md px-2.5 py-1 text-[11.5px] transition-colors ${
                           tab === id
                             ? 'bg-accent-soft font-semibold text-accent'

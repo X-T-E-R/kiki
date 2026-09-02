@@ -9,12 +9,14 @@ import {
   bucketLabel,
   burnRatePerHour,
   cacheHitRateOf,
+  parseUsageDetailView,
   parseUsageFilters,
   readStoredUsageFilters,
   searchHasUsageParams,
   totalTokensOf,
   USAGE_FILTER_DEFAULTS,
   USAGE_FILTERS_STORAGE_KEY,
+  usageDetailViewToSearch,
   usageFiltersToSearch,
   usageSessionDeepLink,
   writeStoredUsageFilters,
@@ -80,6 +82,29 @@ describe('parseUsageFilters', () => {
     expect(parseUsageFilters('?range=custom&start_at=2000&end_at=1000').range).toBe('all');
     const valid = parseUsageFilters('?range=custom&start_at=1000&end_at=2000');
     expect(valid).toMatchObject({ range: 'custom', startAt: 1000, endAt: 2000 });
+  });
+});
+
+describe('detail view deep links', () => {
+  it('defaults to the sessions tab and degrades unknown values', () => {
+    expect(parseUsageDetailView('')).toBe('sessions');
+    expect(parseUsageDetailView('?view=bogus')).toBe('sessions');
+    expect(parseUsageDetailView('?view=breakdown')).toBe('breakdown');
+    expect(parseUsageDetailView('?view=five_hour')).toBe('five_hour');
+  });
+
+  it('round-trips through the URL while preserving filter and locator params', () => {
+    const search = usageDetailViewToSearch(
+      'breakdown',
+      '?dimension=agent&session=s_1&server=http%3A%2F%2Fexample.com',
+    );
+    const params = new URLSearchParams(search);
+    expect(params.get('view')).toBe('breakdown');
+    expect(params.get('dimension')).toBe('agent');
+    expect(params.get('session')).toBe('s_1');
+    expect(params.get('server')).toBe('http://example.com');
+    // The default view is omitted so the canonical URL stays clean.
+    expect(usageDetailViewToSearch('sessions', '?view=breakdown')).toBe('');
   });
 });
 

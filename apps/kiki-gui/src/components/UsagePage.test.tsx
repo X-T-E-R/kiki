@@ -2,7 +2,7 @@
 
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -144,6 +144,11 @@ function usageResponse(overrides: {
   };
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-location-probe>{location.search}</span>;
+}
+
 async function renderPage(entry = '/usage') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const container = document.createElement('div');
@@ -156,6 +161,7 @@ async function renderPage(entry = '/usage') {
         <I18nProvider>
           <MemoryRouter initialEntries={[entry]}>
             <UsagePage onToggleSidebar={() => {}} />
+            <LocationProbe />
           </MemoryRouter>
         </I18nProvider>
       </QueryClientProvider>,
@@ -294,5 +300,41 @@ describe('UsagePage (V2)', () => {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     }
     expect(mainCalls().at(-1)?.[0]).toMatchObject({ granularity: 'five_hour' });
+  });
+
+  it.each(['model', 'agent', 'project', 'session'])(
+    'restores the breakdown tab directly from ?view=breakdown&dimension=%s',
+    async (dimension) => {
+      const { container } = await renderPage(`/usage?view=breakdown&dimension=${dimension}`);
+      expect(mainCalls()[0]?.[0]).toMatchObject({ dimension });
+      const breakdownTab = container.querySelector('[data-usage-tab="breakdown"]');
+      expect(breakdownTab?.getAttribute('aria-selected')).toBe('true');
+      // The breakdown view is on screen, not the sessions list.
+      expect(container.querySelector('[data-usage-sessions]')).toBeNull();
+      expect(container.textContent).toContain('k2-thinking');
+    },
+  );
+
+  it('writes the detail tab into the URL so the view is shareable', async () => {
+    const { container } = await renderPage('/usage?dimension=agent');
+    // A bare dimension link still opens on the sessions tab.
+    expect(
+      container.querySelector('[data-usage-tab="sessions"]')?.getAttribute('aria-selected'),
+    ).toBe('true');
+    const probe = () => container.querySelector('[data-location-probe]')?.textContent ?? '';
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-tab="breakdown"]')!.click();
+    });
+    expect(probe()).toContain('view=breakdown');
+    expect(probe()).toContain('dimension=agent');
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-tab="fiveHour"]')!.click();
+    });
+    expect(probe()).toContain('view=five_hour');
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-tab="sessions"]')!.click();
+    });
+    expect(probe()).not.toContain('view=');
+    expect(probe()).toContain('dimension=agent');
   });
 });
