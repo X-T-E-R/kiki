@@ -849,6 +849,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     ['供应商', 'st-card-providers'],
     ['提供商', 'st-card-auth'],
     ['模型目录', 'st-card-models'],
+    ['模型目录刷新', 'st-card-catalog-refresh'],
     ['Profiles', 'st-card-subagent-profiles'],
     ['子 Agent', 'st-card-subagents'],
   ])('matches the legacy/synonym term %s in English', (term, cardId) => {
@@ -860,9 +861,17 @@ describe('settings search breadcrumbs and synonyms', () => {
     ['能力', 'st-card-caps'],
     ['供应商', 'st-card-providers'],
     ['model catalog', 'st-card-models'],
+    ['catalog refresh', 'st-card-catalog-refresh'],
   ])('matches the legacy/synonym term %s in Chinese', (term, cardId) => {
     const index = buildSettingsSearchIndex({}, tZh);
     expect(searchSettings(index, term).some((hit) => hit.cardId === cardId)).toBe(true);
+  });
+
+  it('points the catalog-refresh hit at the models tab so the card is mounted on arrival', () => {
+    const index = buildSettingsSearchIndex({}, t);
+    const hit = searchSettings(index, 'Catalog refresh interval')
+      .find((entry) => entry.cardId === 'st-card-catalog-refresh');
+    expect(hit).toMatchObject({ section: 'ai', tab: 'models' });
   });
 });
 
@@ -906,6 +915,10 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'workspaces', cardId: 'st-card-workspaces', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-models'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-models', tab: 'models' });
+    // The catalog-refresh controls moved out of the agents sidecar onto the
+    // models tab of the merged ai entry; old sidecar deep links follow them.
+    expect(resolveSettingsRoute('agents', '#st-card-catalog-refresh'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-catalog-refresh', tab: 'models' });
   });
 
   it('flags genuinely unknown sections instead of silently falling back to general', () => {

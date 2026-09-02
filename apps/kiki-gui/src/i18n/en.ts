@@ -987,6 +987,8 @@ export const en = {
   'st.models.providerDefaultHint': 'Used only when a session on this provider does not name a model; edited inside the provider on the Connections tab.',
   'st.models.emptyCatalog': 'No models yet — connect a provider first, then pull or define its models.',
   'st.models.goProviders': 'Go to Connections',
+  'st.catalogRefresh.title': 'Model catalog refresh',
+  'st.catalogRefresh.hint': 'How often the server re-pulls provider model catalogs, and whether it refreshes them on start. Applies after the next server restart.',
   'st.models.loading': 'Loading model catalog…',
   'st.models.context': 'context',
   'st.models.default': 'Default',

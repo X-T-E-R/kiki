@@ -4,18 +4,25 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../../i18n';
-import { errorText } from '../../i18n/locale';
+import { errorText, issueText } from '../../i18n/locale';
 import {
+  markRestartRequired,
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
+  serverFileSettingsFromConfig,
+  serverFileSettingsPatch,
+  validateDesktopConfigDraft,
   writeSettings,
   type RequestIdentityLayerDraft,
+  type ServerFileSettings,
 } from '../../lib/settings';
 import { formatTokens } from '../../lib/time';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
+import { MsUnitInput } from '../ProviderFields';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
+import { useRestartRequirement } from '../RestartBanner';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { useSavedTick } from './useSavedTick';
@@ -407,11 +414,111 @@ export function ThinkingCard() {
   );
 }
 
+/**
+ * Catalog refresh policy (redesign §10.3: "模型目录刷新" lives with the model
+ * catalog, not the agents sidecar). Owns only the `model_catalog` config
+ * domain — the PATCH diffs just this card's slice against the server echo, so
+ * the sidecar's subagent/skills fields are never touched here. Same
+ * validation, server echo, and restart-required semantics as before the move.
+ */
+export function CatalogRefreshCard() {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const restart = useRestartRequirement();
+  const [catalog, setCatalog] = useState<ServerFileSettings['modelCatalog']>(
+    () => serverFileSettingsFromConfig({}).modelCatalog,
+  );
+  const [savedCatalog, setSavedCatalog] = useState(catalog);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+
+  useEffect(() => {
+    if (configQuery.data === undefined) return;
+    const next = serverFileSettingsFromConfig(configQuery.data).modelCatalog;
+    setCatalog(next);
+    setSavedCatalog(next);
+  }, [configQuery.data]);
+
+  const dirty = catalog.refreshIntervalMs !== savedCatalog.refreshIntervalMs
+    || catalog.refreshOnStart !== savedCatalog.refreshOnStart;
+
+  const save = async () => {
+    // The shared validator also takes the subagent timeout; this card doesn't
+    // edit it, so feed the server-known value through unchanged.
+    const validation = validateDesktopConfigDraft({
+      subagentTimeoutMs: serverFileSettingsFromConfig(configQuery.data ?? {}).subagent.timeoutMs,
+      modelCatalogRefreshIntervalMs: catalog.refreshIntervalMs,
+    });
+    if (validation !== null) {
+      setFeedback({ tone: 'error', text: issueText(locale, validation) });
+      return;
+    }
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const base = serverFileSettingsFromConfig(configQuery.data ?? {});
+      const echoed = await client.patchConfig(serverFileSettingsPatch(
+        { ...base, modelCatalog: catalog },
+        { ...base, modelCatalog: savedCatalog },
+      ));
+      queryClient.setQueryData(['config'], echoed);
+      const next = serverFileSettingsFromConfig(echoed).modelCatalog;
+      setCatalog(next);
+      setSavedCatalog(next);
+      markRestartRequired(['model_catalog']);
+      setFeedback({ tone: 'success', text: t('st.sidecar.savedEcho') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <SectionCard
+      id="st-card-catalog-refresh"
+      title={t('st.catalogRefresh.title')}
+      badge={restart.required && restart.fields.includes('model_catalog') ? 'restart' : undefined}
+    >
+      <div className="space-y-3">
+        <fieldset disabled={configQuery.isLoading || saving} className="space-y-3 disabled:opacity-60">
+          <label className="block text-[11px] font-medium text-ink-soft">{t('st.sidecar.catalogInterval')}
+            <MsUnitInput
+              value={catalog.refreshIntervalMs}
+              onChange={(refreshIntervalMs) => { setCatalog({ ...catalog, refreshIntervalMs }); }}
+              ariaLabel={t('st.sidecar.catalogInterval')}
+            />
+          </label>
+          <Toggle
+            label={t('st.sidecar.refreshOnStart')}
+            checked={catalog.refreshOnStart}
+            onChange={(refreshOnStart) => { setCatalog({ ...catalog, refreshOnStart }); }}
+          />
+        </fieldset>
+        <Hint>{t('st.catalogRefresh.hint')}</Hint>
+        <button
+          type="button"
+          className={PRIMARY_BUTTON}
+          disabled={configQuery.isLoading || saving || !dirty}
+          onClick={() => void save()}
+        >
+          {saving ? t('st.sidecar.saving') : t('common.save')}
+        </button>
+        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
+}
+
 /** Tab 2 body of the merged "Models & providers" entry. */
 export function ModelsTab() {
   return (
     <div className="space-y-4">
       <ModelCatalogCard />
+      <CatalogRefreshCard />
     </div>
   );
 }

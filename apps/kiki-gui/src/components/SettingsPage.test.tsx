@@ -125,4 +125,12 @@ describe('SettingsPage scope header workspace sync', () => {
     expect(header.getAttribute('data-settings-scope-header')).toBe('server');
     expect(header.textContent).not.toContain('Workspace ·');
   });
+
+  it('mounts the catalog-refresh card on the models tab of the merged ai entry', async () => {
+    const container = await renderSettings('/settings/ai?tab=models');
+    const card = container.querySelector('#st-card-catalog-refresh');
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toContain('Model catalog refresh');
+    expect(card!.textContent).toContain('Refresh model catalog when the server starts');
+  });
 });

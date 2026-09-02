@@ -962,6 +962,8 @@ export const zh: Record<I18nKey, string> = {
   'st.models.providerDefaultHint': '仅在该提供商上的会话未指定模型时使用；在“连接服务”页的提供商编辑器中修改。',
   'st.models.emptyCatalog': '还没有可用模型——请先连接一个提供商，再拉取或定义它的模型。',
   'st.models.goProviders': '前往连接服务',
+  'st.catalogRefresh.title': '模型目录刷新',
+  'st.catalogRefresh.hint': '服务器重新拉取提供商模型目录的间隔，以及是否在启动时刷新。将在下次服务器重启后生效。',
   'st.models.loading': '正在加载模型目录…',
   'st.models.context': '上下文',
   'st.models.default': '默认',
