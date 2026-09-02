@@ -6,6 +6,12 @@ import { Writable } from 'node:stream';
 import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import {
+  ISessionExternalDelegationProvisionStore,
+  ISessionManager,
+  resumeSessionById,
+} from '@moonshot-ai/agent-core-v2';
+
 import { type RunningServer, startServer } from '../src/start';
 import { externalDelegationAuthorityFromEnv } from '../src/mcp/externalDelegationAuthority';
 import { authHeaders } from './helpers/auth';
@@ -54,7 +60,6 @@ describe('external delegation REST facade', () => {
         principalId: 'example-principal',
         sessionId: admittedSessionId,
         token: 'DEDICATED_SECRET',
-        sessionOwnership: 'dedicated',
       },
     });
     base = `http://127.0.0.1:${server.port}`;
@@ -328,6 +333,128 @@ describe('external delegation Session bootstrap', () => {
     );
     expect(crossed.code).not.toBe(0);
     expect(crossed.msg).toMatch(/Session is not admitted/i);
+  });
+
+  it('ignores profile metadata attempts to overwrite or delete operator ownership', async () => {
+    const home = join(root!, 'home');
+    const workspace = join(root!, 'workspace');
+    await Promise.all([mkdir(home), mkdir(workspace)]);
+    await writeStubConfig(home);
+    const sessionId = 'session_profile_attack';
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sessionId, workspace),
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.port}`;
+
+    for (const value of [
+      { version: 1, ownership: 'attached' },
+      undefined,
+    ]) {
+      const response = await fetch(`${base}/api/v1/sessions/${sessionId}/profile`, {
+        method: 'POST',
+        headers: authHeaders(server, { 'content-type': 'application/json' }),
+        body: JSON.stringify({
+          metadata: value === undefined ? {} : { externalDelegationProvision: value },
+        }),
+      });
+      expect((await envelope(response)).code).toBe(0);
+      const root = await listRoot(server, base, sessionId);
+      expect(root.data.dispatchables).toEqual(expect.arrayContaining([{ kind: 'main' }]));
+    }
+  });
+
+  it('does not copy operator ownership into a regular fork', async () => {
+    const home = join(root!, 'home');
+    const workspace = join(root!, 'workspace');
+    await Promise.all([mkdir(home), mkdir(workspace)]);
+    await writeStubConfig(home);
+    const sourceId = 'session_fork_source';
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sourceId, workspace),
+    });
+    servers.push(server);
+    const source = await resumeSessionById(server.core.accessor, sourceId);
+    if (source === undefined) throw new Error('source session unavailable');
+    const fork = await server.core.accessor.get(ISessionManager).fork({ sourceSessionId: sourceId });
+
+    await expect(
+      fork.accessor.get(ISessionExternalDelegationProvisionStore).read(),
+    ).resolves.toBeUndefined();
+  });
+
+  it('explicit attached ownership clears a prior dedicated provision across restart', async () => {
+    const home = join(root!, 'home');
+    const workspace = join(root!, 'workspace');
+    await Promise.all([mkdir(home), mkdir(workspace)]);
+    await writeStubConfig(home);
+    const sessionId = 'session_ownership_clear';
+    let server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sessionId, workspace),
+    });
+    await server.close();
+
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: {
+        principalId: `principal-${sessionId}`,
+        sessionId,
+        token: `token-${sessionId}`,
+        sessionOwnership: 'attached',
+      },
+    });
+    await server.close();
+
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: {
+        principalId: `principal-${sessionId}`,
+        sessionId,
+        token: `token-${sessionId}`,
+        sessionOwnership: 'attached',
+      },
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.port}`;
+    const profile = await fetch(`${base}/api/v1/sessions/${sessionId}/profile`, {
+      method: 'POST',
+      headers: authHeaders(server, { 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        metadata: {
+          externalDelegationProvision: { version: 1, ownership: 'dedicated' },
+        },
+      }),
+    });
+    expect((await envelope(profile)).code).toBe(0);
+    const listed = await listRoot(server, base, sessionId);
+    expect(listed.code).toBe(0);
+    expect(listed.data.dispatchables ?? []).not.toEqual(expect.arrayContaining([{ kind: 'main' }]));
+    const rejected = await dispatchMain(server, base, sessionId);
+    expect(rejected.code).not.toBe(0);
+    expect(rejected.msg).toMatch(/dedicated external session/i);
   });
 
   it('classifies environment authorities by Session provisioning', () => {
