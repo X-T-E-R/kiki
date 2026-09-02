@@ -25,8 +25,15 @@ export class SessionExternalDelegationProvisionStore
     this.key = session.sessionId;
   }
 
-  read(): Promise<ExternalDelegationSessionProvision | undefined> {
-    return this.store.get<ExternalDelegationSessionProvision>(this.scope, this.key);
+  async read(): Promise<ExternalDelegationSessionProvision | undefined> {
+    const raw = await this.store.get<unknown>(this.scope, this.key);
+    if (raw === undefined || raw === null || typeof raw !== 'object') return undefined;
+    const candidate = raw as Partial<ExternalDelegationSessionProvision>;
+    if (candidate.version !== 1) return undefined;
+    if (candidate.ownership !== 'dedicated' && candidate.ownership !== 'attached') {
+      return undefined;
+    }
+    return { version: 1, ownership: candidate.ownership };
   }
 
   write(provision: ExternalDelegationSessionProvision): Promise<void> {

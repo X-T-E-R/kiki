@@ -354,16 +354,18 @@ describe('external delegation Session bootstrap', () => {
 
     for (const value of [
       { version: 1, ownership: 'attached' },
-      undefined,
+      null,
     ]) {
       const response = await fetch(`${base}/api/v1/sessions/${sessionId}/profile`, {
         method: 'POST',
         headers: authHeaders(server, { 'content-type': 'application/json' }),
         body: JSON.stringify({
-          metadata: value === undefined ? {} : { externalDelegationProvision: value },
+          metadata: { externalDelegationProvision: value },
         }),
       });
-      expect((await envelope(response)).code).toBe(0);
+      const patched = await envelope(response);
+      expect(patched.code).toBe(0);
+      expect(JSON.stringify(patched.data)).toContain('externalDelegationProvision');
       const root = await listRoot(server, base, sessionId);
       expect(root.data.dispatchables).toEqual(expect.arrayContaining([{ kind: 'main' }]));
     }
