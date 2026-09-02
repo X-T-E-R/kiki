@@ -211,9 +211,92 @@ function containsHookProtocolField(value: unknown): boolean {
 function attemptsHookProtocol(text: string): boolean {
   const objectShaped = text.startsWith('{') || /^\[\s*(?:\{|\[|["']|-|\d|[tfn])/.test(text);
   if (!objectShaped) return false;
-  return /(?:^|[,{]|\s)(?:(["'])(?:message|hookSpecificOutput)\1\s*(?::|(?=[},\]]|[{\["'\d-]|true\b|false\b|null\b))|(?:message|hookSpecificOutput)\s*:)/.test(
-    text,
-  );
+  const strings = scanJsonLikeStrings(text);
+  if (strings.invalid) return true;
+  if (strings.values.some(isHookProtocolField)) return true;
+  return /(?:^|[,{]|\s)(?:message|hookSpecificOutput)\s*:/.test(text);
+}
+
+function scanJsonLikeStrings(text: string): {
+  readonly values: readonly string[];
+  readonly invalid: boolean;
+} {
+  const values: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const quote = text[i];
+    if (quote !== '"' && quote !== "'") continue;
+    const token = readJsonLikeString(text, i, quote);
+    if (token === undefined) return { values, invalid: true };
+    values.push(token.value);
+    i = token.end;
+  }
+  return { values, invalid: false };
+}
+
+function readJsonLikeString(
+  text: string,
+  start: number,
+  quote: '"' | "'",
+): { readonly value: string; readonly end: number } | undefined {
+  let value = '';
+  let i = start + 1;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === undefined) return undefined;
+    if (ch === quote) return { value, end: i };
+    if (ch !== '\\') {
+      const code = text.codePointAt(i);
+      if (code === undefined || code < 0x20 || (code >= 0xd800 && code <= 0xdfff)) return undefined;
+      value += String.fromCodePoint(code);
+      i += code > 0xffff ? 2 : 1;
+      continue;
+    }
+
+    const escaped = text[i + 1];
+    if (escaped === undefined) return undefined;
+    if (escaped !== 'u') {
+      const decoded = decodeSimpleEscape(escaped, quote);
+      if (decoded === undefined) return undefined;
+      value += decoded;
+      i += 2;
+      continue;
+    }
+
+    const firstHex = text.slice(i + 2, i + 6);
+    if (!/^[0-9a-fA-F]{4}$/.test(firstHex)) return undefined;
+    const first = Number.parseInt(firstHex, 16);
+    i += 6;
+    if (first >= 0xd800 && first <= 0xdbff) {
+      if (text.slice(i, i + 2) !== '\\u') return undefined;
+      const secondHex = text.slice(i + 2, i + 6);
+      if (!/^[0-9a-fA-F]{4}$/.test(secondHex)) return undefined;
+      const second = Number.parseInt(secondHex, 16);
+      if (second < 0xdc00 || second > 0xdfff) return undefined;
+      value += String.fromCodePoint(0x10000 + ((first - 0xd800) << 10) + second - 0xdc00);
+      i += 6;
+      continue;
+    }
+    if (first >= 0xdc00 && first <= 0xdfff) return undefined;
+    value += String.fromCodePoint(first);
+  }
+  return undefined;
+}
+
+function decodeSimpleEscape(value: string, quote: '"' | "'"): string | undefined {
+  if (value === quote) return quote;
+  if (value === '"') return '"';
+  if (value === '\\') return '\\';
+  if (value === '/') return '/';
+  if (value === 'b') return '\b';
+  if (value === 'f') return '\f';
+  if (value === 'n') return '\n';
+  if (value === 'r') return '\r';
+  if (value === 't') return '\t';
+  return undefined;
+}
+
+function isHookProtocolField(value: string): boolean {
+  return value === 'message' || value === 'hookSpecificOutput';
 }
 
 function allowResult(input: {

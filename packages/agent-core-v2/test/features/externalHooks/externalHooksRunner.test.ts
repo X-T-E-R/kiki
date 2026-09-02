@@ -2,6 +2,7 @@ import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 import type { ContentPart } from '#/kosong/contract/message';
+import { triggerBlockingResults } from '#/features/externalHooks/app/externalHooksRunner';
 import { describe, expect, it, vi } from 'vitest';
 
 import { makeHookRunner } from './runner-stub';
@@ -217,13 +218,15 @@ describe('ExternalHooksRunnerService', () => {
     );
   });
 
-  it('silently skips hooks whose matcher is not a valid regex', async () => {
+  it('fails the hook snapshot when a matcher is not a valid regex', async () => {
     const runner = makeHookRunner([
       { event: 'PreToolUse', matcher: '[invalid', command: nodeCommand('process.exit(0);'), timeout: 5 },
     ]);
 
-    const results = await runner.trigger('PreToolUse', { matcherValue: 'Bash', inputData: {} });
-    expect(results).toHaveLength(0);
+    await expect(runner.trigger('PreToolUse', { matcherValue: 'Bash', inputData: {} })).resolves.toEqual([]);
+    await expect(
+      triggerBlockingResults(runner, 'PreToolUse', { matcherValue: 'Bash', inputData: {} }),
+    ).resolves.toEqual([{ action: 'block', reason: 'Blocked by PreToolUse hook' }]);
   });
 
   it('fails closed for blocking triggers when the initial hook load fails', async () => {
@@ -233,6 +236,9 @@ describe('ExternalHooksRunnerService', () => {
       block: true,
       reason: 'Blocked by PreToolUse hook',
     });
+    await expect(triggerBlockingResults(runner, 'UserPromptSubmit')).resolves.toEqual([
+      { action: 'block', reason: 'Blocked by UserPromptSubmit hook' },
+    ]);
     await expect(runner.fireAndForgetTrigger('Notification')).resolves.toEqual([]);
   });
 
@@ -254,6 +260,9 @@ describe('ExternalHooksRunnerService', () => {
     await expect(
       runner.triggerBlock('PreToolUse', { matcherValue: 'Bash', inputData }),
     ).resolves.toEqual({ block: true, reason: 'Blocked by PreToolUse hook' });
+    await expect(
+      triggerBlockingResults(runner, 'UserPromptSubmit', { matcherValue: 'prompt', inputData }),
+    ).resolves.toEqual([{ action: 'block', reason: 'Blocked by UserPromptSubmit hook' }]);
   });
 
   it('fails open when fireAndForgetTrigger sees a synchronous trigger error', async () => {

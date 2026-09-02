@@ -237,7 +237,7 @@ export class PluginService extends Service implements IPluginService {
   }
 
   enabledHooks(): Promise<readonly HookDef[]> {
-    return this.runConsumptionRead([], async () => this.manager.enabledHooks());
+    return this.runSecurityConsumptionRead(async () => this.manager.enabledHooks());
   }
 
   hasLoadedSnapshot(): boolean {
@@ -261,6 +261,12 @@ export class PluginService extends Service implements IPluginService {
   private async runConsumptionRead<T>(fallback: T, operation: () => Promise<T>): Promise<T> {
     await this.waitForPendingMutations();
     if (!this.snapshotLoaded) return fallback;
+    return operation();
+  }
+
+  private async runSecurityConsumptionRead<T>(operation: () => Promise<T>): Promise<T> {
+    await this.waitForPendingMutations();
+    if (!this.snapshotLoaded) this.assertLoaded();
     return operation();
   }
 

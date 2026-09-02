@@ -8,16 +8,17 @@ import { IHostProcessService } from '#/os/interface/hostProcess';
 import { HOOKS_SECTION, type HookDefConfig } from '../configSection';
 import {
   IExternalHooksRunnerService,
+  type ExternalHooksRunnerFailureMode,
   type ExternalHooksRunnerTriggerArgs,
 } from './externalHooksRunner';
 import { blockDecision, indexHooks, runMatchedHooks } from '../internal/matchHooks';
-import type { HookRunCallbacks } from '../internal/matchHooks';
-import type { HookBlockDecision, HookDef, HookResult } from '../internal/types';
+import type { HookRunCallbacks, IndexedHookDef } from '../internal/matchHooks';
+import type { HookBlockDecision, HookResult } from '../internal/types';
 
 export class ExternalHooksRunnerService extends Disposable implements IExternalHooksRunnerService {
   declare readonly _serviceBrand: undefined;
 
-  private byEvent = new Map<string, HookDef[]>();
+  private byEvent = new Map<string, IndexedHookDef[]>();
   private hasSuccessfulSnapshot = false;
   private loadFailure: unknown;
   readonly ready: Promise<void>;
@@ -49,11 +50,15 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     return result;
   }
 
-  trigger(event: string, args: ExternalHooksRunnerTriggerArgs = {}): Promise<HookResult[]> {
+  trigger(
+    event: string,
+    args: ExternalHooksRunnerTriggerArgs = {},
+    failureMode: ExternalHooksRunnerFailureMode = 'empty',
+  ): Promise<HookResult[]> {
     try {
-      return this.triggerInner(event, args).catch((): HookResult[] => []);
+      return this.triggerInner(event, args).catch(() => failureResults(event, failureMode));
     } catch {
-      return Promise.resolve([]);
+      return Promise.resolve(failureResults(event, failureMode));
     }
   }
 
@@ -61,11 +66,7 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     event: string,
     args: ExternalHooksRunnerTriggerArgs = {},
   ): Promise<HookBlockDecision | undefined> {
-    try {
-      return blockDecision(event, await this.triggerInner(event, args));
-    } catch {
-      return { block: true, reason: `Blocked by ${event} hook` };
-    }
+    return blockDecision(event, await this.trigger(event, args, 'block'));
   }
 
   fireAndForgetTrigger(
@@ -130,4 +131,8 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     this.loadFailure = undefined;
     this._onDidReload.fire();
   }
+}
+
+function failureResults(event: string, mode: ExternalHooksRunnerFailureMode): HookResult[] {
+  return mode === 'block' ? [{ action: 'block', reason: `Blocked by ${event} hook` }] : [];
 }

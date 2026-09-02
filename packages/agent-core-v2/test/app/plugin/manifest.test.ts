@@ -42,13 +42,13 @@ describe('plugin manifest parser', () => {
     expect(result.diagnostics).toEqual([]);
   });
 
-  it('warns on invalid hooks and command paths', async () => {
+  it('reports invalid hooks as errors and invalid command paths as warnings', async () => {
     await writeFile(
       join(dir, 'kimi.plugin.json'),
       JSON.stringify({
         name: 'demo',
         commands: ['../outside.md'],
-        hooks: [{ event: 'Nope', command: 'echo nope' }],
+        hooks: [{ event: 'PreToolUse', matcher: '[invalid', command: 'echo nope' }],
       }),
       'utf8',
     );
@@ -57,6 +57,7 @@ describe('plugin manifest parser', () => {
 
     expect(result.manifest?.commands).toBeUndefined();
     expect(result.manifest?.hooks).toBeUndefined();
+    expect(result.diagnostics.map((d) => d.severity)).toEqual(['error', 'warn']);
     expect(result.diagnostics.map((d) => d.message)).toEqual([
       expect.stringContaining('Invalid hook at index 0'),
       '"commands" path must start with "./" (got "../outside.md")',

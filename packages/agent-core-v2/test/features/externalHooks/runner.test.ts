@@ -144,10 +144,16 @@ describe('runHook process runner', () => {
     expect(result.structuredOutput).toBeUndefined();
   });
 
-  it('returns block when an explicit hook protocol object is malformed JSON', async () => {
+  it.each([
+    ['literal field', '{"hookSpecificOutput":'],
+    ['unicode-escaped field', '{"hook\\u0053pecificOutput":'],
+    ['truncated escaped field', '{"hook\\u0053pecificOutput'],
+    ['unpaired surrogate', '{"hook\\uD800SpecificOutput":'],
+  ])('returns block when malformed JSON contains a %s', async (_case, output) => {
+    const encoded = Buffer.from(output).toString('base64');
     const result = await runHook(
       hostProcess,
-      nodeCommand('process.stdout.write(\'{"hookSpecificOutput":\');'),
+      nodeCommand(`process.stdout.write(Buffer.from("${encoded}", "base64"));`),
       { tool_name: 'Bash' },
       { timeout: 5 },
     );

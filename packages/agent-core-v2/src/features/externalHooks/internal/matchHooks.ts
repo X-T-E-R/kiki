@@ -1,11 +1,12 @@
 import type { IHostProcessService } from '#/os/interface/hostProcess';
 
 import { runHook } from './runHook';
-import type {
-  HookBlockDecision,
-  HookDef,
-  HookMatcherValue,
-  HookResult,
+import {
+  compileHookMatcher,
+  type HookBlockDecision,
+  type HookDef,
+  type HookMatcherValue,
+  type HookResult,
 } from './types';
 
 import type { ExternalHooksRunnerTriggerArgs } from '../app/externalHooksRunner';
@@ -23,11 +24,22 @@ export interface HookRunCallbacks {
   ) => void;
 }
 
-export function indexHooks(hooks: readonly HookDef[]): Map<string, HookDef[]> {
-  const byEvent = new Map<string, HookDef[]>();
+export interface IndexedHookDef {
+  readonly hook: HookDef;
+  readonly matcher?: RegExp;
+}
+
+export function indexHooks(hooks: readonly HookDef[]): Map<string, IndexedHookDef[]> {
+  const byEvent = new Map<string, IndexedHookDef[]>();
   for (const hook of hooks) {
     const entries = byEvent.get(hook.event) ?? [];
-    entries.push(hook);
+    entries.push({
+      hook,
+      matcher:
+        hook.matcher === undefined || hook.matcher.length === 0
+          ? undefined
+          : compileHookMatcher(hook.matcher),
+    });
     byEvent.set(hook.event, entries);
   }
   return byEvent;
@@ -35,7 +47,7 @@ export function indexHooks(hooks: readonly HookDef[]): Map<string, HookDef[]> {
 
 export async function runMatchedHooks(
   hostProcess: IHostProcessService,
-  byEvent: ReadonlyMap<string, readonly HookDef[]>,
+  byEvent: ReadonlyMap<string, readonly IndexedHookDef[]>,
   event: string,
   args: ExternalHooksRunnerTriggerArgs,
   callbacks: HookRunCallbacks = {},
@@ -44,8 +56,9 @@ export async function runMatchedHooks(
   const cwd = args.cwd ?? '';
   const matched: HookDef[] = [];
   const seen = new Set<string>();
-  for (const hook of byEvent.get(event) ?? []) {
-    if (!matches(hook.matcher ?? '', matcherValue)) continue;
+  for (const indexed of byEvent.get(event) ?? []) {
+    if (indexed.matcher !== undefined && !indexed.matcher.test(matcherValue)) continue;
+    const { hook } = indexed;
     const key = (hook.cwd ?? '') + '\0' + hook.command;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -101,15 +114,6 @@ export function blockDecision(
     block: true,
     reason: reason === undefined || reason.length === 0 ? `Blocked by ${event} hook` : reason,
   };
-}
-
-function matches(pattern: string, value: string): boolean {
-  if (pattern.length === 0) return true;
-  try {
-    return new RegExp(pattern).test(value);
-  } catch {
-    return false;
-  }
 }
 
 function matcherValueText(value: HookMatcherValue | undefined): string {
