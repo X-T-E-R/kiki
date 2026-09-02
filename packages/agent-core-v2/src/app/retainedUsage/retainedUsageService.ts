@@ -18,7 +18,7 @@ import {
   type RetainedUsageRecord,
 } from './retainedUsage';
 
-const RETAINED_USAGE_KEY = 'deleted-sessions-v1.jsonl';
+const RETAINED_USAGE_KEY = 'deleted-sessions-v2.jsonl';
 
 const tokenUsageSchema = z.object({
   inputOther: z.number().finite().nonnegative(),
@@ -53,7 +53,7 @@ const retainedDeletedSessionUsageHeaderSchema = z.object({
   workspaceId: z.string(),
 });
 
-const retainedDeletedSessionUsageMetaSchema = retainedDeletedSessionUsageHeaderSchema.extend({
+const retainedDeletedSessionUsageMetaSchema = z.object({
   cwd: z.string().optional(),
   title: z.string().optional(),
   lastPrompt: z.string().optional(),
@@ -68,6 +68,30 @@ const retainedDeletedSessionUsageMetaSchema = retainedDeletedSessionUsageHeaderS
   deletedAt: z.number().finite().nonnegative(),
   complete: z.boolean(),
 });
+
+const retainedUsageLedgerStartSchema = retainedDeletedSessionUsageHeaderSchema.extend({
+  kind: z.literal('session'),
+});
+
+const retainedUsageLedgerMetaSchema = retainedDeletedSessionUsageMetaSchema.extend({
+  kind: z.literal('meta'),
+});
+
+const retainedUsageLedgerRecordSchema = z.object({
+  kind: z.literal('record'),
+  record: retainedUsageRecordSchema,
+});
+
+const retainedUsageLedgerCommitSchema = z.object({
+  kind: z.literal('commit'),
+});
+
+const retainedUsageLedgerKindSchema = z.object({
+  kind: z.string(),
+});
+
+type RetainedUsageLedgerStart = z.infer<typeof retainedUsageLedgerStartSchema>;
+type RetainedUsageLedgerMeta = z.infer<typeof retainedUsageLedgerMetaSchema>;
 
 export class RetainedUsageService implements IRetainedUsageService {
   declare readonly _serviceBrand: undefined;
@@ -89,7 +113,24 @@ export class RetainedUsageService implements IRetainedUsageService {
       records,
       complete,
     };
-    this.appendLog.append(this.storeScope, RETAINED_USAGE_KEY, snapshot);
+    const {
+      version,
+      id,
+      workspaceId,
+      records: retainedRecords,
+      ...meta
+    } = snapshot;
+    this.appendLog.append(this.storeScope, RETAINED_USAGE_KEY, {
+      kind: 'session',
+      version,
+      id,
+      workspaceId,
+    });
+    this.appendLog.append(this.storeScope, RETAINED_USAGE_KEY, { kind: 'meta', ...meta });
+    for (const record of retainedRecords) {
+      this.appendLog.append(this.storeScope, RETAINED_USAGE_KEY, { kind: 'record', record });
+    }
+    this.appendLog.append(this.storeScope, RETAINED_USAGE_KEY, { kind: 'commit' });
     await this.appendLog.flush();
     return snapshot;
   }
@@ -100,6 +141,15 @@ export class RetainedUsageService implements IRetainedUsageService {
     const records = new Map<string, RetainedDeletedSessionUsage>();
     let scannedRecords = 0;
     let ledgerTruncated = false;
+    let current:
+      | {
+          readonly start: RetainedUsageLedgerStart;
+          meta: RetainedUsageLedgerMeta | undefined;
+          readonly records: RetainedUsageRecord[];
+          readonly included: boolean;
+          valid: boolean;
+        }
+      | undefined;
     const result = (
       incompleteReason?: RetainedUsageIncompleteReason,
     ): RetainedUsageListResult => ({
@@ -108,45 +158,107 @@ export class RetainedUsageService implements IRetainedUsageService {
       incompleteReason,
       scannedRecords,
     });
-    if (query.signal?.aborted || Date.now() >= query.deadlineAt) return result('deadline');
-    for await (const raw of this.appendLog.read<unknown>(
-      this.storeScope,
-      RETAINED_USAGE_KEY,
-      { onTruncate: () => { ledgerTruncated = true; } },
-    )) {
-      if (query.signal?.aborted || Date.now() >= query.deadlineAt) return result('deadline');
-      const header = retainedDeletedSessionUsageHeaderSchema.safeParse(raw);
-      if (!header.success) continue;
-      if (workspaceIds !== undefined && !workspaceIds.has(header.data.workspaceId)) continue;
-      if (scannedRecords >= query.recordLimit) return result('record_budget');
-      scannedRecords += 1;
-      const meta = retainedDeletedSessionUsageMetaSchema.safeParse(raw);
-      if (!meta.success) continue;
-      const rawRecords = (raw as Record<string, unknown>)['records'];
-      if (!Array.isArray(rawRecords)) continue;
-      const parsedRecords: RetainedUsageRecord[] = [];
-      let valid = true;
-      for (const rawRecord of rawRecords) {
-        if (query.signal?.aborted || Date.now() >= query.deadlineAt) {
+    const expired = (): boolean => query.signal?.aborted === true || Date.now() >= query.deadlineAt;
+    if (expired()) return result('deadline');
+    const readController = new AbortController();
+    const abortRead = (): void => readController.abort();
+    query.signal?.addEventListener('abort', abortRead, { once: true });
+    if (query.signal?.aborted === true) abortRead();
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleDeadline = (): void => {
+      const remaining = query.deadlineAt - Date.now();
+      if (remaining <= 0) {
+        abortRead();
+        return;
+      }
+      deadlineTimer = setTimeout(scheduleDeadline, Math.min(remaining, 2_147_483_647));
+    };
+    scheduleDeadline();
+    try {
+      for await (const raw of this.appendLog.read<unknown>(
+        this.storeScope,
+        RETAINED_USAGE_KEY,
+        {
+          onTruncate: () => { ledgerTruncated = true; },
+          signal: readController.signal,
+        },
+      )) {
+        if (expired()) {
+          abortRead();
           return result('deadline');
         }
-        if (scannedRecords >= query.recordLimit) return result('record_budget');
-        scannedRecords += 1;
-        const parsed = retainedUsageRecordSchema.safeParse(rawRecord);
-        if (!parsed.success) {
-          valid = false;
-          break;
+        const kind = retainedUsageLedgerKindSchema.safeParse(raw);
+        if (!kind.success) {
+          if (current !== undefined) current.valid = false;
+          continue;
         }
-        parsedRecords.push(parsed.data);
+        if (kind.data.kind === 'session') {
+          const start = retainedUsageLedgerStartSchema.safeParse(raw);
+          if (!start.success) {
+            current = undefined;
+            continue;
+          }
+          const included = workspaceIds === undefined || workspaceIds.has(start.data.workspaceId);
+          if (included) {
+            if (scannedRecords >= query.recordLimit) return result('record_budget');
+            scannedRecords += 1;
+          }
+          current = { start: start.data, meta: undefined, records: [], included, valid: true };
+          continue;
+        }
+        if (current === undefined) continue;
+        if (kind.data.kind === 'meta') {
+          if (!current.included) continue;
+          const meta = retainedUsageLedgerMetaSchema.safeParse(raw);
+          if (!meta.success) {
+            current.valid = false;
+            continue;
+          }
+          current.meta = meta.data;
+          continue;
+        }
+        if (kind.data.kind === 'record') {
+          if (!current.included) continue;
+          if (scannedRecords >= query.recordLimit) return result('record_budget');
+          scannedRecords += 1;
+          const record = retainedUsageLedgerRecordSchema.safeParse(raw);
+          if (!record.success) {
+            current.valid = false;
+            continue;
+          }
+          current.records.push(record.data.record);
+          continue;
+        }
+        if (kind.data.kind !== 'commit') {
+          current.valid = false;
+          continue;
+        }
+        const commit = retainedUsageLedgerCommitSchema.safeParse(raw);
+        if (!commit.success) {
+          current.valid = false;
+          continue;
+        }
+        if (current.included && current.valid && current.meta !== undefined) {
+          const header = retainedDeletedSessionUsageHeaderSchema.parse(current.start);
+          const meta = retainedDeletedSessionUsageMetaSchema.parse(current.meta);
+          records.set(`${header.workspaceId}\0${header.id}`, {
+            ...header,
+            ...meta,
+            records: current.records,
+          });
+        }
+        current = undefined;
       }
-      if (!valid) continue;
-      records.set(`${meta.data.workspaceId}\0${meta.data.id}`, {
-        ...meta.data,
-        records: parsedRecords,
-      });
+      if (current !== undefined) ledgerTruncated = true;
+      if (expired()) return result('deadline');
+      return result();
+    } catch (error) {
+      if (readController.signal.aborted) return result('deadline');
+      throw error;
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      query.signal?.removeEventListener('abort', abortRead);
     }
-    if (query.signal?.aborted || Date.now() >= query.deadlineAt) return result('deadline');
-    return result();
   }
 
   private get storeScope(): string {

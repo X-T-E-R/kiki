@@ -19,10 +19,58 @@ import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import {
+  IFileSystemStorageService,
+  type StorageReadOptions,
+  type StorageReadRange,
+} from '#/persistence/interface/storage';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 
 import { stubBootstrap } from '../bootstrap/stubs';
+
+class BlockingFileStorageService extends FileStorageService {
+  readonly started: Promise<void>;
+  private markStarted!: () => void;
+
+  constructor(baseDir: string) {
+    super(baseDir);
+    this.started = new Promise<void>((resolve) => {
+      this.markStarted = resolve;
+    });
+  }
+
+  override async *readStream(
+    _scope: string,
+    _key: string,
+    _range?: StorageReadRange,
+    options: StorageReadOptions = {},
+  ): AsyncIterable<Uint8Array> {
+    this.markStarted();
+    options.signal?.throwIfAborted();
+    await new Promise<void>((_resolve, reject) => {
+      const abort = (): void => reject(options.signal?.reason);
+      options.signal?.addEventListener('abort', abort, { once: true });
+    });
+  }
+}
+
+class MeasuringFileStorageService extends FileStorageService {
+  bytesRead = 0;
+  chunksRead = 0;
+
+  override async *readStream(
+    scope: string,
+    key: string,
+    range?: StorageReadRange,
+    options: StorageReadOptions = {},
+  ): AsyncIterable<Uint8Array> {
+    for await (const chunk of super.readStream(scope, key, range, options)) {
+      this.bytesRead += chunk.byteLength;
+      this.chunksRead += 1;
+      yield chunk;
+    }
+  }
+}
 
 const usage = {
   inputOther: 11,
@@ -75,7 +123,9 @@ describe('RetainedUsageService', () => {
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  function build(): {
+  function build(
+    storage: IFileSystemStorageService = new FileStorageService(homeDir),
+  ): {
     readonly service: IRetainedUsageService;
     readonly appendLog: IAppendLogStore;
   } {
@@ -83,7 +133,7 @@ describe('RetainedUsageService', () => {
     stores.push(disposables);
     const ix = disposables.add(new TestInstantiationService());
     ix.stub(IBootstrapService, stubBootstrap(homeDir));
-    ix.stub(IFileSystemStorageService, new FileStorageService(homeDir));
+    ix.stub(IFileSystemStorageService, storage);
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
     ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
     return {
@@ -228,6 +278,87 @@ describe('RetainedUsageService', () => {
     });
   });
 
+  it('returns when the deadline expires after the storage read blocks', async () => {
+    const storage = new BlockingFileStorageService(homeDir);
+    const { service } = build(storage);
+    const startedAt = Date.now();
+    const pending = service.listDeletedSessions(listQuery({ deadlineAt: startedAt + 10 }));
+    await storage.started;
+
+    await expect(pending).resolves.toEqual({
+      items: [],
+      complete: false,
+      incompleteReason: 'deadline',
+      scannedRecords: 0,
+    });
+    expect(Date.now() - startedAt).toBeLessThan(250);
+  });
+
+  it('returns when the signal aborts after the storage read blocks', async () => {
+    const storage = new BlockingFileStorageService(homeDir);
+    const { service } = build(storage);
+    const controller = new AbortController();
+    const pending = service.listDeletedSessions(listQuery({ signal: controller.signal }));
+    await storage.started;
+    const abortedAt = Date.now();
+
+    controller.abort();
+
+    await expect(pending).resolves.toEqual({
+      items: [],
+      complete: false,
+      incompleteReason: 'deadline',
+      scannedRecords: 0,
+    });
+    expect(Date.now() - abortedAt).toBeLessThan(250);
+  });
+
+  it('does not materialize an oversized snapshot when the record budget is zero', async () => {
+    const storage = new MeasuringFileStorageService(homeDir);
+    const ledgerPath = join(homeDir, 'store/deleted-sessions-v2.jsonl');
+    const usageLine = JSON.stringify({
+      kind: 'record',
+      record: { time: 150, model: 'model-a', usage, agentId: 'main' },
+    });
+    const ledger = [
+      JSON.stringify({
+        kind: 'session',
+        version: RETAINED_USAGE_VERSION,
+        id: summary.id,
+        workspaceId: summary.workspaceId,
+      }),
+      JSON.stringify({
+        kind: 'meta',
+        cwd: summary.cwd,
+        title: summary.title,
+        createdAt: summary.createdAt,
+        updatedAt: summary.updatedAt,
+        archived: summary.archived,
+        usage: summary.usage,
+        deleted: true,
+        deletedAt: 300,
+        complete: true,
+      }),
+      ...Array.from({ length: 20_000 }, () => usageLine),
+      JSON.stringify({ kind: 'commit' }),
+      '',
+    ].join('\n');
+    await fsp.mkdir(join(homeDir, 'store'), { recursive: true });
+    await fsp.writeFile(ledgerPath, ledger);
+    const { service } = build(storage);
+
+    await expect(
+      service.listDeletedSessions(listQuery({ recordLimit: 0 })),
+    ).resolves.toEqual({
+      items: [],
+      complete: false,
+      incompleteReason: 'record_budget',
+      scannedRecords: 0,
+    });
+    expect(storage.chunksRead).toBe(1);
+    expect(storage.bytesRead).toBeLessThan(new TextEncoder().encode(ledger).byteLength);
+  });
+
   it('applies the workspace header filter before spending the record budget', async () => {
     const { service, appendLog } = build();
     const sessionScope = 'sessions/workspace-1/session-1';
@@ -263,7 +394,7 @@ describe('RetainedUsageService', () => {
     });
     await appendLog.flush();
     await service.retainDeletedSession(summary);
-    await fsp.appendFile(join(homeDir, 'store/deleted-sessions-v1.jsonl'), '{"version":1');
+    await fsp.appendFile(join(homeDir, 'store/deleted-sessions-v2.jsonl'), '{"version":1');
 
     const result = await service.listDeletedSessions(listQuery());
 
