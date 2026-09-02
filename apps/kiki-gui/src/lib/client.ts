@@ -437,6 +437,31 @@ export interface McpServerTestResult {
   readonly output: string;
 }
 
+/**
+ * Installed-plugin summary from `GET /api/v1/plugins` (mirrors the
+ * kap-server `pluginSummarySchema`): identity + enabled/error state + the
+ * contribution counts the settings Plugins leaf renders.
+ */
+export interface PluginSummary {
+  readonly id: string;
+  readonly displayName: string;
+  readonly version?: string;
+  readonly enabled: boolean;
+  readonly state: 'ok' | 'error';
+  readonly skillCount: number;
+  readonly mcpServerCount: number;
+  readonly enabledMcpServerCount: number;
+  readonly hookCount: number;
+  readonly commandCount: number;
+  readonly hasErrors: boolean;
+  readonly source: 'local-path' | 'zip-url' | 'github';
+  readonly originalSource?: string;
+}
+
+export interface ListPluginsResponse {
+  readonly plugins: readonly PluginSummary[];
+}
+
 export interface KikiClientOptions {
   /** Absolute base (`http://host:port`) or '' for same-origin (dev proxy). */
   readonly baseUrl: string;
@@ -1297,6 +1322,10 @@ export class KikiClient {
 
   listMcpServers(): Promise<ListMcpServersResponse> {
     return this.request<ListMcpServersResponse>('GET', '/mcp/servers');
+  }
+
+  listPlugins(): Promise<ListPluginsResponse> {
+    return this.request<ListPluginsResponse>('GET', '/plugins');
   }
 
   /**

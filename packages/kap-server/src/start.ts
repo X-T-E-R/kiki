@@ -248,7 +248,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
   let externalDelegation: ExternalDelegationAuthorityConfig | undefined;
   try {
-    externalDelegation = opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env);
+    externalDelegation = opts.externalDelegation === undefined
+      ? externalDelegationAuthorityFromEnv(process.env)
+      : {
+          ...opts.externalDelegation,
+          sessionOwnership: opts.externalDelegation.sessionOwnership ?? 'dedicated',
+        };
   } catch (error) {
     logger.warn(
       { err: error instanceof Error ? error.message : String(error) },

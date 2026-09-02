@@ -28,7 +28,6 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -64,11 +63,9 @@ import {
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
 import { resolveExternalPermissionCeiling } from './permissionCeiling';
 import {
-  EXTERNAL_DELEGATION_SESSION_PROVISION_KEY,
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   classifyExternalFailureCode,
   externalFailureDescription,
-  isExternalDelegationSessionProvision,
   type DispatchUsageView,
   type DispatchWaitRequest,
   type DispatchWaitView,
@@ -87,6 +84,7 @@ import {
   type ExternalInteractionsRequest,
   type ExternalInteractionView,
   type ExternalPageLookup,
+  ISessionExternalDelegationProvisionStore,
   type ExternalRespondRequest,
   type ExternalRespondView,
   type ExternalResultPage,
@@ -201,7 +199,8 @@ export class SessionExternalDelegationService
     @IFlagService private readonly flags: IFlagService,
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @ISessionContext session: ISessionContext,
-    @ISessionMetadata private readonly metadata: ISessionMetadata,
+    @ISessionExternalDelegationProvisionStore
+    private readonly provision: ISessionExternalDelegationProvisionStore,
     @IAgentLifecycleService private readonly agents: IAgentLifecycleService,
     @ISessionDispatchService private readonly dispatchDomain: ISessionDispatchService,
     @IAgentCollaborationMessagingService private readonly messaging: IAgentCollaborationMessagingService,
@@ -550,10 +549,7 @@ export class SessionExternalDelegationService
   }
 
   private async load(): Promise<void> {
-    const session = await this.metadata.read();
-    this.dedicatedSession = isExternalDelegationSessionProvision(
-      session.custom?.[EXTERNAL_DELEGATION_SESSION_PROVISION_KEY],
-    );
+    this.dedicatedSession = (await this.provision.read())?.ownership === 'dedicated';
     this.document = await this.store.get<ExternalDelegationDocument>(this.scope, STORE_KEY);
     if (this.document !== undefined) {
       await this.migrateTranscriptBounds(this.document);

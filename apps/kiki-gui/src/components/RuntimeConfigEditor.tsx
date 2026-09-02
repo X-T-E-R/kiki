@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useI18n } from '../i18n';
-import { errorText, type I18nKey } from '../i18n/locale';
+import { errorText } from '../i18n/locale';
 import {
   markRestartRequired,
   runtimeConfigDraftFromConfig,
   runtimeConfigPatch,
-  setToolPolicy,
-  toolPolicyValue,
   type RuntimeConfigDraft,
 } from '../lib/settings';
 import { useConnection } from '../state/connection';
@@ -103,20 +101,10 @@ export function RuntimeConfigEditor() {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const toolsQuery = useQuery({ queryKey: ['tools'], queryFn: () => client.listTools(), staleTime: 60_000 });
 
   useEffect(() => {
     if (configQuery.data !== undefined) setDraft(runtimeConfigDraftFromConfig(configQuery.data));
   }, [configQuery.data]);
-
-  const toolNames = useMemo(() => {
-    const names = new Set<string>([
-      ...(toolsQuery.data?.tools.map((tool) => tool.name) ?? []),
-      ...(draft?.toolsEnabled ?? []),
-      ...(draft?.toolsDisabled ?? []),
-    ]);
-    return [...names].toSorted((a, b) => a.localeCompare(b));
-  }, [draft?.toolsDisabled, draft?.toolsEnabled, toolsQuery.data?.tools]);
 
   if (draft === null) {
     return (
@@ -150,10 +138,9 @@ export function RuntimeConfigEditor() {
       queryClient.setQueryData(['config'], echoed);
       setDraft(runtimeConfigDraftFromConfig(echoed));
       if (identityChanged) markRestartRequired(['identity']);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['tools'] }),
-        queryClient.invalidateQueries({ queryKey: ['mcp-servers'] }),
-      ]);
+      // The patch is narrow: the mcp and tools domains belong to the MCP
+      // timeouts card and the automation leaf's tool policy card, so nothing
+      // here needs their queries invalidated.
       setFeedback({ tone: 'success', text: t('st.runtime.saved') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -203,8 +190,9 @@ export function RuntimeConfigEditor() {
                 <NumberField label={t('st.runtime.workspaceIdle')} value={draft.workspaceIdleTtlMs} onChange={(workspaceIdleTtlMs) => { setDraft({ ...draft, workspaceIdleTtlMs }); }} />
                 <NumberField label={t('st.runtime.imageMaxEdge')} value={draft.imageMaxEdgePx} onChange={(imageMaxEdgePx) => { setDraft({ ...draft, imageMaxEdgePx }); }} />
                 <NumberField label={t('st.runtime.imageBudget')} value={draft.imageReadByteBudget} onChange={(imageReadByteBudget) => { setDraft({ ...draft, imageReadByteBudget }); }} />
-                <NumberField label={t('st.runtime.mcpStartupTimeout')} value={draft.mcpStartupTimeoutMs} onChange={(mcpStartupTimeoutMs) => { setDraft({ ...draft, mcpStartupTimeoutMs }); }} />
-                <NumberField label={t('st.runtime.mcpToolTimeout')} value={draft.mcpToolTimeoutMs} onChange={(mcpToolTimeoutMs) => { setDraft({ ...draft, mcpToolTimeoutMs }); }} />
+                {/* MCP startup/tool timeouts live on Settings → MCP
+                    (st-card-mcp-timeouts) since the batch-3 split; the
+                    runtime draft and patch no longer carry the mcp domain. */}
               </div>
             </Group>
 
@@ -245,36 +233,6 @@ export function RuntimeConfigEditor() {
           <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.runtime.save')}</button>
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
           <FeedbackLine feedback={feedback} />
-        </div>
-      </ConfigCard>
-
-      <ConfigCard id="st-card-tools" title={t('st.tools.title')}>
-        <div className="space-y-3">
-          <Hint>{t('st.tools.policyHint')}</Hint>
-          {toolNames.map((name) => {
-            const descriptor = toolsQuery.data?.tools.find((tool) => tool.name === name);
-            return (
-              <div key={name} className="grid gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                <div className="min-w-0">
-                  <p className="truncate text-[13px] font-medium text-ink">{name}</p>
-                  {descriptor !== undefined ? <p className="text-[11px] text-ink-soft">{descriptor.description}</p> : <Hint>{t('st.tools.configOnly')}</Hint>}
-                </div>
-                <select
-                  className={SMALL_INPUT}
-                  value={toolPolicyValue(draft, name)}
-                  aria-label={t('st.tools.policyAria', { name })}
-                  onChange={(event) => { setDraft(setToolPolicy(draft, name, event.target.value as 'enabled' | 'disabled' | 'inherited')); }}
-                >
-                  <option value="inherited">{t('st.tools.inherited')}</option>
-                  <option value="enabled">{t('st.tools.enabled')}</option>
-                  <option value="disabled">{t('st.tools.disabled')}</option>
-                </select>
-              </div>
-            );
-          })}
-          {toolsQuery.isLoading ? <Hint>{t('st.tools.loading')}</Hint> : null}
-          {toolsQuery.isError ? <InlineError error={toolsQuery.error} /> : null}
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.tools.savePolicy')}</button>
         </div>
       </ConfigCard>
     </>

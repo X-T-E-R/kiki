@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { errorText, issueText, type I18nKey } from '../../i18n/locale';
+import { errorText, type I18nKey } from '../../i18n/locale';
 import {
   disabledProfilePatch,
   mergeNamedAgentProfiles,
@@ -20,27 +19,14 @@ import {
   type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
 } from '../../lib/agentSettings';
-import { useBusySessionCount } from '../../lib/busySessions';
 import type {
   ListNamedAgentProfilesResponse,
   NamedAgentProfile,
 } from '../../lib/client';
-import {
-  acknowledgeRestartRequirement,
-  clearRestartRequirement,
-  isRestartRequirementAcknowledged,
-  markRestartRequired,
-  serverFileSettingsFromConfig,
-  serverFileSettingsPatch,
-  validateDesktopConfigDraft,
-} from '../../lib/settings';
 import { sortWorkspacesByRecency } from '../../lib/sorting';
 import { useConnection } from '../../state/connection';
-import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
-import { MsUnitInput } from '../ProviderFields';
-import { useRestartRequirement } from '../RestartBanner';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 
@@ -64,7 +50,7 @@ const LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
 
 const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
-function SubagentGovernanceCard() {
+export function SubagentGovernanceCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -546,7 +532,12 @@ function NamedAgentProfileRow({
   );
 }
 
-function NamedAgentProfilesCard() {
+/**
+ * One named-profile card per bucket (redesign §10.3): `main` stays on the
+ * Agents leaf, `sub` moves to the Subagents leaf. Both buckets share the
+ * query/merge/override pipeline — only the wrapping card and row set differ.
+ */
+export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   const { client } = useConnection();
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -636,20 +627,8 @@ function NamedAgentProfilesCard() {
     />
   );
 
-  return (
-    <>
-      <SectionCard id="st-card-main-agents" title={t('st.mainAgents.title')}>
-        <div className="space-y-3">
-          <Hint>{t('st.namedAgents.editHint')}</Hint>
-          <div className="space-y-2">
-            {buckets.main.map(renderRow)}
-            {profilesQuery.data !== undefined && buckets.main.length === 0 ? <Hint>{t('st.mainAgents.empty')}</Hint> : null}
-            {profilesQuery.isLoading ? <Hint>{t('st.namedAgents.loading')}</Hint> : null}
-            {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
-            {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-          </div>
-        </div>
-      </SectionCard>
+  if (bucket === 'sub') {
+    return (
       <SectionCard id="st-card-subagent-profiles" title={t('st.subagentProfiles.title')}>
         <div className="space-y-3">
           <div className="space-y-2">
@@ -658,7 +637,22 @@ function NamedAgentProfilesCard() {
           </div>
         </div>
       </SectionCard>
-    </>
+    );
+  }
+
+  return (
+    <SectionCard id="st-card-main-agents" title={t('st.mainAgents.title')}>
+      <div className="space-y-3">
+        <Hint>{t('st.namedAgents.editHint')}</Hint>
+        <div className="space-y-2">
+          {buckets.main.map(renderRow)}
+          {profilesQuery.data !== undefined && buckets.main.length === 0 ? <Hint>{t('st.mainAgents.empty')}</Hint> : null}
+          {profilesQuery.isLoading ? <Hint>{t('st.namedAgents.loading')}</Hint> : null}
+          {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
+          {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+        </div>
+      </div>
+    </SectionCard>
   );
 }
 
@@ -667,126 +661,7 @@ export function AgentsSection() {
   return (
     <div className="space-y-4">
       <Hint>{t('st.agents.webHint')}</Hint>
-      <NamedAgentProfilesCard />
-      <SubagentGovernanceCard />
-      <DesktopServerFileCard />
+      <NamedAgentProfilesCard bucket="main" />
     </div>
-  );
-}
-
-function DesktopServerFileCard() {
-  const host = useHost();
-  const isDesktop = host.kind === 'tauri';
-  const { t, locale } = useI18n();
-  const { client, socket } = useConnection();
-  const queryClient = useQueryClient();
-  const [config, setConfig] = useState(() => serverFileSettingsFromConfig({ providers: {} }));
-  const [savedConfig, setSavedConfig] = useState(config);
-  const restart = useRestartRequirement();
-  const [saving, setSaving] = useState(false);
-  const [restarting, setRestarting] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-  const [confirmRestart, setConfirmRestart] = useState(false);
-  const busySessions = useBusySessionCount();
-  const configQuery = useQuery({
-    queryKey: ['config'],
-    queryFn: () => client.getConfig(),
-    staleTime: 60_000,
-  });
-
-  useEffect(() => {
-    if (configQuery.data !== undefined) {
-      const next = serverFileSettingsFromConfig(configQuery.data);
-      setConfig(next);
-      setSavedConfig(next);
-    }
-  }, [configQuery.data]);
-
-  const save = async () => {
-    const validation = validateDesktopConfigDraft({
-      subagentTimeoutMs: config.subagent.timeoutMs,
-      modelCatalogRefreshIntervalMs: config.modelCatalog.refreshIntervalMs,
-    });
-    if (validation !== null) {
-      setFeedback({ tone: 'error', text: issueText(locale, validation) });
-      return;
-    }
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig(serverFileSettingsPatch(config, savedConfig));
-      queryClient.setQueryData(['config'], echoed);
-      const next = serverFileSettingsFromConfig(echoed);
-      setConfig(next);
-      setSavedConfig(next);
-      markRestartRequired(['subagent', 'agents', 'builtin_product_skills']);
-      setFeedback({ tone: 'success', text: t('st.sidecar.savedEcho') });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const applyRestart = async () => {
-    setRestarting(true);
-    setFeedback(null);
-    try {
-      await host.restartServer?.();
-      clearRestartRequirement();
-      socket?.nudge();
-      await queryClient.invalidateQueries();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setRestarting(false);
-    }
-  };
-
-  return (
-    <SectionCard id="st-card-sidecar" title={t('st.sidecar.title')} badge={restart.required ? 'restart' : undefined}>
-      <div className="space-y-4">
-        <fieldset disabled={configQuery.isLoading || saving} data-testid="desktop-config-fields" className="space-y-4 disabled:opacity-60">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentTimeout')}
-              <MsUnitInput
-                value={config.subagent.timeoutMs}
-                onChange={(timeoutMs) => { setConfig({ ...config, subagent: { ...config.subagent, timeoutMs } }); }}
-                ariaLabel={t('st.sidecar.subagentTimeout')}
-              />
-            </label>
-          </div>
-          {/* The model-catalog refresh controls moved to Settings → Models &
-              providers → Available models (st-card-catalog-refresh) in the
-              batch-2 merge; this card keeps the agents/skills defaults only. */}
-          <Toggle label={t('st.sidecar.builtinSkills')} checked={config.builtinProductSkills} onChange={(checked) => { setConfig({ ...config, builtinProductSkills: checked }); }} />
-        </fieldset>
-        <Hint>{t('st.sidecar.hint')}</Hint>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className={PRIMARY_BUTTON} disabled={configQuery.isLoading || saving} onClick={() => void save()}>{saving ? t('st.sidecar.saving') : t('st.sidecar.save')}</button>
-          <button type="button" className={SECONDARY_BUTTON} disabled={!isDesktop || !restart.required || restarting} onClick={() => { setConfirmRestart(true); }}>{restarting ? t('st.sidecar.restarting') : t('st.sidecar.applyRestart')}</button>
-          {!isDesktop && restart.required && !isRestartRequirementAcknowledged(restart) ? (
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => { acknowledgeRestartRequirement(); }}>{t('st.sidecar.acknowledge')}</button>
-          ) : null}
-        </div>
-        {restart.required ? <Hint>{t('st.sidecar.pendingFields', { fields: restart.fields.join(', ') })}</Hint> : null}
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
-      </div>
-      <ConfirmDialog
-        open={confirmRestart}
-        overlayId="confirm-sidecar-restart"
-        title={t('st.restart.confirmTitle')}
-        body={
-          busySessions !== undefined && busySessions > 0
-            ? t('st.restart.confirmBodyActive', { count: busySessions })
-            : t('st.restart.confirmBodyIdle')
-        }
-        confirmLabel={t('st.sidecar.applyRestart')}
-        tone="danger"
-        onConfirm={() => { setConfirmRestart(false); void applyRestart(); }}
-        onCancel={() => { setConfirmRestart(false); }}
-      />
-    </SectionCard>
   );
 }

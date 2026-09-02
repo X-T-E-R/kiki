@@ -1190,6 +1190,11 @@ class FixtureServer {
         servers: this.scenario?.data.mcpServers ?? [],
       });
     }
+    if (path === '/plugins') {
+      return this.envelope(res, {
+        plugins: this.scenario?.data.plugins ?? [],
+      });
+    }
     const mcpRestartMatch = /^\/mcp\/servers\/([^/]+):restart$/.exec(path);
     if (mcpRestartMatch !== null && body !== undefined) {
       return this.envelope(res, { restarting: true });
