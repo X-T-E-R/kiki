@@ -28,9 +28,9 @@
 //   config.update                      profile                                                               src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory, turn                                                   src/agent/contextMemory/contextEvents.ts
 //   context.append_message             contextMemory, goalForkNotice, plan, task.notificationDelivery, todo  src/agent/contextMemory/contextEvents.ts
-//   context.apply_compaction           contextMemory, plan, task.notificationDelivery, todo                  src/agent/contextMemory/contextEvents.ts
-//   context.clear                      contextMemory, plan, task.notificationDelivery, todo                  src/agent/contextMemory/contextEvents.ts
-//   context.undo                       contextMemory, plan, task.notificationDelivery, todo                  src/agent/contextMemory/contextEvents.ts
+//   context.apply_compaction           contextMemory, plan, task.notificationDelivery, todo, turn            src/agent/contextMemory/contextEvents.ts
+//   context.clear                      contextMemory, plan, task.notificationDelivery, todo, turn            src/agent/contextMemory/contextEvents.ts
+//   context.undo                       contextMemory, plan, task.notificationDelivery, todo, turn            src/agent/contextMemory/contextEvents.ts
 //   executor.plan.remove               externalExecutor                                                      src/agent/execution/externalExecutorOps.ts
 //   executor.plan.update               externalExecutor                                                      src/agent/execution/externalExecutorOps.ts
 //   executor.runtime.update            externalExecutor                                                      src/agent/execution/externalExecutorOps.ts
@@ -157,14 +157,14 @@ interface ContextAppendMessagePayload {
 }
 
 /**
- * states: contextMemory, plan, task.notificationDelivery, todo · blobs: contextMemory
+ * states: contextMemory, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
  * owner: src/agent/contextMemory/contextEvents.ts
  * shared base: ...contextCompactionBaseShape
  */
 type ContextApplyCompactionPayload = { _name: 'context.apply_compaction'; } & ({ summary: string, compactedCount: number, contextSummary?: string } | { contextSummary: string, compactedCount: number, summary?: string } | { summary: ContextMessage, count: number, compactedCount?: number });
 
 /**
- * states: contextMemory, plan, task.notificationDelivery, todo · blobs: contextMemory
+ * states: contextMemory, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
  * owner: src/agent/contextMemory/contextEvents.ts
  */
 interface ContextClearPayload {
@@ -172,7 +172,7 @@ interface ContextClearPayload {
 }
 
 /**
- * states: contextMemory, plan, task.notificationDelivery, todo · blobs: contextMemory
+ * states: contextMemory, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
  * owner: src/agent/contextMemory/contextEvents.ts
  */
 interface ContextUndoPayload {
@@ -924,6 +924,13 @@ interface UsageRecordPayload {
   };
   /** UsageRecordScope */
   usageScope?: 'session' | 'turn';
+  turnId?: number;
+  agentId?: string;
+  parentAgentId?: string;
+  provider?: string;
+  modelAlias?: string;
+  profileName?: string;
+  executorId?: string;
 }
 
 /** Record type → payload sketch. */
