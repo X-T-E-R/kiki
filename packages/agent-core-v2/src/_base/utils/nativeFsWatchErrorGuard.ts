@@ -4,9 +4,11 @@ import { tmpdir } from 'node:os';
 const GUARD_STATE = Symbol.for('kiki.nativeFsWatchErrorGuard');
 const GUARDED_PROTOTYPE = Symbol.for('kiki.nativeFsWatchErrorGuard.prototype');
 
+export type NativeFsWatchErrorReporter = (error: NodeJS.ErrnoException) => void;
+
 interface NativeFsWatchErrorGuardState {
   installed: boolean;
-  report: (error: NodeJS.ErrnoException) => void;
+  report: NativeFsWatchErrorReporter;
 }
 
 type GuardGlobal = typeof globalThis & {
@@ -24,14 +26,6 @@ const guardState = guardGlobal[GUARD_STATE] ??= {
   report: (error) => { console.error('[fs.watch]', error); },
 };
 
-function captureFsWatcherPrototype(): GuardedPrototype | undefined {
-  for (const root of [tmpdir(), process.cwd()]) {
-    const proto = tryCapture(root);
-    if (proto !== undefined) return proto;
-  }
-  return undefined;
-}
-
 function tryCapture(root: string): GuardedPrototype | undefined {
   try {
     const watcher = watch(root, { persistent: false });
@@ -41,6 +35,14 @@ function tryCapture(root: string): GuardedPrototype | undefined {
   } catch {
     return undefined;
   }
+}
+
+function captureFsWatcherPrototype(): GuardedPrototype | undefined {
+  for (const root of [tmpdir(), process.cwd()]) {
+    const proto = tryCapture(root);
+    if (proto !== undefined) return proto;
+  }
+  return undefined;
 }
 
 export function installNativeFsWatchErrorGuard(): void {
@@ -61,6 +63,14 @@ export function installNativeFsWatchErrorGuard(): void {
   };
   proto[GUARDED_PROTOTYPE] = true;
   guardState.installed = true;
+}
+
+export function setNativeFsWatchErrorReporter(reporter: NativeFsWatchErrorReporter): void {
+  guardState.report = reporter;
+}
+
+export function isNativeFsWatchErrorGuardInstalled(): boolean {
+  return guardState.installed;
 }
 
 installNativeFsWatchErrorGuard();

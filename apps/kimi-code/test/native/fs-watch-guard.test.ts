@@ -5,7 +5,10 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-await import('#/native/fs-watch-guard');
+await import('@moonshot-ai/agent-core-v2/_base/utils/nativeFsWatchErrorGuard');
+const earlyWatcher = watch(tmpdir(), { persistent: false });
+const earlyEmit = Object.getPrototypeOf(earlyWatcher).emit as unknown;
+earlyWatcher.close();
 const { isNativeFsWatchErrorGuardInstalled } = await import(
   '@moonshot-ai/agent-core-v2/_base/utils/fsWatchGuard'
 );
@@ -22,7 +25,7 @@ describe('native fs.watch error guard integration', () => {
     root = '';
   });
 
-  it('keeps the early guard observable through a later core reporter', async () => {
+  it('keeps the early app guard while core registers its reporter', async () => {
     expect(isNativeFsWatchErrorGuardInstalled()).toBe(true);
     root = await mkdtemp(join(tmpdir(), 'fswatch-guard-'));
     const seen: unknown[] = [];
@@ -30,6 +33,7 @@ describe('native fs.watch error guard integration', () => {
       seen.push(error);
     });
     const watcher = watch(root, { persistent: false });
+    expect(Object.getPrototypeOf(watcher).emit).toBe(earlyEmit);
     const error = Object.assign(new Error('watch failed'), {
       code: 'EPERM',
       syscall: 'watch',

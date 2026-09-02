@@ -1,23 +1,11 @@
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
+import {
+  installNativeFsWatchErrorGuard,
+  isNativeFsWatchErrorGuardInstalled,
+  setNativeFsWatchErrorReporter,
+} from '#/_base/utils/nativeFsWatchErrorGuard';
 
-const GUARD_STATE = Symbol.for('kiki.nativeFsWatchErrorGuard');
+installNativeFsWatchErrorGuard();
+setNativeFsWatchErrorReporter(onUnexpectedError);
 
-interface NativeFsWatchErrorGuardState {
-  installed: boolean;
-  report: (error: NodeJS.ErrnoException) => void;
-}
-
-type GuardGlobal = typeof globalThis & {
-  [GUARD_STATE]?: NativeFsWatchErrorGuardState;
-};
-
-const guardGlobal = globalThis as GuardGlobal;
-const guardState = guardGlobal[GUARD_STATE] ??= {
-  installed: false,
-  report: onUnexpectedError,
-};
-guardState.report = onUnexpectedError;
-
-export function isNativeFsWatchErrorGuardInstalled(): boolean {
-  return guardState.installed;
-}
+export { installNativeFsWatchErrorGuard, isNativeFsWatchErrorGuardInstalled };
