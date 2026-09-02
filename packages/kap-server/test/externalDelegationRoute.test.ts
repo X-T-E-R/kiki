@@ -223,7 +223,7 @@ describe('external delegation Session bootstrap', () => {
     expect((await listRoot(server, base, sessionId)).code).toBe(0);
   });
 
-  it('starts without the delegation edge when a persisted Session workspace drifts', async () => {
+  it('rejects startup when a persisted Session workspace drifts', async () => {
     const home = join(root!, 'home');
     const workspaceA = join(root!, 'workspace-a');
     const workspaceB = join(root!, 'workspace-b');
@@ -246,27 +246,26 @@ describe('external delegation Session bootstrap', () => {
         callback();
       },
     }));
-    const server = await startServer({
+    await expect(startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
       homeDir: home,
       logger,
       externalDelegation: authority('session_workspace_a', workspaceB),
-    });
-    servers.push(server);
-    const base = `http://127.0.0.1:${server.port}`;
+    })).rejects.toThrow(/workspace binding does not match/i);
 
-    expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
-    const edge = await listRoot(server, base, 'session_workspace_a');
-    expect(edge.code).not.toBe(0);
-    const warning = logs
-      .map((line) => JSON.parse(line) as { level: number; msg: string; err?: string })
+    const failure = logs
+      .map((line) => JSON.parse(line) as {
+        level: number;
+        msg: string;
+        err?: { message?: string };
+      })
       .find((record) => record.msg ===
-        'external delegation Session bootstrap failed; starting without the external delegation edge');
-    expect(warning).toMatchObject({
-      level: 40,
-      err: expect.stringMatching(/workspace binding does not match/i),
+        'external delegation Session bootstrap failed; aborting server startup');
+    expect(failure).toMatchObject({
+      level: 50,
+      err: { message: expect.stringMatching(/workspace binding does not match/i) },
     });
   });
 

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -242,6 +242,64 @@ describe('server-v2 boot', () => {
     }
   });
 
+  it('waits for the session index before bootstrapping external delegation', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-index-'));
+    const workspace = join(home, 'workspace');
+    await mkdir(workspace);
+    await writeFile(
+      join(home, 'config.toml'),
+      [
+        'default_model = "stub"',
+        '',
+        '[providers.stub]',
+        'type = "openai"',
+        'base_url = "http://127.0.0.1:9999"',
+        'api_key = "stub"',
+        '',
+        '[models.stub]',
+        'provider = "stub"',
+        'model = "stub"',
+        'max_context_size = 1000',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const prepareGate = deferred<SessionIndexStatus>();
+    const prepare = vi.fn(() => prepareGate.promise);
+    const index = stubSessionIndex(prepare);
+    const get = vi.fn(index.get);
+
+    const starting = startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [[ISessionIndex, { ...index, get }]],
+      externalDelegation: {
+        principalId: 'example-principal',
+        sessionId: 'session_index_ready',
+        token: 'DELEGATION_SECRET',
+        sessionBootstrap: {
+          workspacePath: workspace,
+          modelAlias: 'stub',
+          thinkingEffort: 'high',
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    expect(get).not.toHaveBeenCalled();
+    prepareGate.resolve({
+      source: 'read-model',
+      state: 'ready',
+      generation: 1,
+      degradedCount: 0,
+    });
+    server = await withTimeout(starting, 2_000);
+    expect(get).toHaveBeenCalledWith('session_index_ready');
+  });
+
   it('keeps the listener available when background session-index prepare fails', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-background-prepare-failure-'));
     const prepareFailure = deferred<SessionIndexStatus>();
@@ -473,7 +531,7 @@ describe('server-v2 boot', () => {
   );
 });
 
-describe('server-v2 boot — external delegation fail-open', () => {
+describe('server-v2 boot — external delegation startup', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
 
@@ -514,9 +572,9 @@ describe('server-v2 boot — external delegation fail-open', () => {
     expect(healthz.status).toBe(200);
   });
 
-  it('starts without the delegation edge when the Session bootstrap fails', async () => {
+  it('rejects startup when the Session bootstrap fails', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-bootstrap-'));
-    server = await startServer({
+    await expect(startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -527,15 +585,13 @@ describe('server-v2 boot — external delegation fail-open', () => {
         sessionId: 'session-operator',
         token: 'DELEGATION_SECRET',
         sessionBootstrap: {
-          workspacePath: 'relative/workspace', // non-absolute → bootstrap throws
+          workspacePath: 'relative/workspace',
           modelAlias: 'grok-4.6',
           thinkingEffort: 'high',
         },
       },
-    });
-
-    const healthz = await fetch(`http://127.0.0.1:${server.port}/api/v1/healthz`);
-    expect(healthz.status).toBe(200);
+    })).rejects.toThrow(/workspace path must be absolute/i);
+    expect(await listLiveServerInstances(home)).toEqual([]);
   });
 });
 

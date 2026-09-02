@@ -96,6 +96,10 @@ export async function ensureExternalDelegationSession(
   const expectedWorkspace = await canonicalPath(bootstrap.workspacePath);
   const registry = core.accessor.get(IWorkspaceService);
   const index = core.accessor.get(ISessionIndex);
+  const indexStatus = await index.prepare();
+  if (indexStatus.source === 'read-model' && indexStatus.state !== 'ready') {
+    throw new Error('External delegation Session index is not ready.');
+  }
   const existing = await index.get(authority.sessionId);
   if (existing === undefined) {
     const workspace = await registry.createOrTouch(expectedWorkspace);

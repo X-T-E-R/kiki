@@ -349,16 +349,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
   };
 
-  try {
-    await ensureExternalDelegationSession(core, externalDelegation);
-  } catch (error) {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'external delegation Session bootstrap failed; starting without the external delegation edge',
-    );
-    externalDelegation = undefined;
-  }
-
   const app = Fastify({
     loggerInstance: logger,
     disableRequestLogging: true,
@@ -524,6 +514,18 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     })
     .catch(() => {
     });
+
+  try {
+    await ensureExternalDelegationSession(core, externalDelegation);
+  } catch (error) {
+    logger.error({ err: error }, 'external delegation Session bootstrap failed; aborting server startup');
+    try {
+      await close();
+    } catch (closeError) {
+      logger.warn({ err: closeError }, 'server cleanup after external delegation failure failed');
+    }
+    throw error;
+  }
 
   async function registerOpenApi(): Promise<void> {
     const { default: swagger } = await import('@fastify/swagger');
