@@ -1,4 +1,4 @@
-import type { ContentPart } from '@moonshot-ai/kosong';
+import type { ContentPart } from '@moonshot-ai/agent-core-v2';
 
 import type { AgentEvent, ToolInputDisplay } from '@moonshot-ai/protocol';
 

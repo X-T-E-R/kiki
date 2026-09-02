@@ -19,7 +19,6 @@ All other workspace packages are private internal packages, are not published to
 - `@moonshot-ai/kaos`
 - `@moonshot-ai/kimi-code-oauth`
 - `@moonshot-ai/kimi-telemetry`
-- `@moonshot-ai/kosong`
 - `@moonshot-ai/protocol`
 - `@moonshot-ai/vis`
 - `@moonshot-ai/vis-server`

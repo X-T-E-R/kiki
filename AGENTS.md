@@ -21,7 +21,6 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - `apps/kiki-gui`: the Kiki GUI (`@kiki/gui`), a private workspace package acting as a downstream client of the inherited kap-server REST/WebSocket surfaces (see `docs/en/guides/kiki-runtime.md` for the fork's runtime boundaries; the zh mirror lives at `docs/zh/guides/kiki-runtime.md`).
 - `packages/agent-core-v2`: the agent engine — the only one. (The historical v1 `packages/agent-core` was deleted; nothing in the repo may reintroduce it.) A DI × Scope design: Four `LifecycleScope` tiers — `App` / `Workspace` / `Session` / `Agent` (`app/scopes.ts`) — plus the L3 unit layer (`Service`/`Fiber` units, collection contribution points, the Feature seam in `src/features/`) and the App-scope `ISessionManager` facade for cross-workspace session lifecycle operations. See `packages/agent-core-v2/AGENTS.md` and use the `agent-core-dev` skill (`.agents/skills/agent-core-dev/SKILL.md`) when developing here.
 - `packages/node-sdk`: the public TypeScript SDK and harness.
-- `packages/kosong`: the LLM / provider abstraction layer.
 - `packages/kaos`: the execution environment and file/process abstractions.
 - `packages/oauth`: Kimi OAuth and managed auth utilities.
 - `packages/telemetry`: shared client-side telemetry infrastructure.

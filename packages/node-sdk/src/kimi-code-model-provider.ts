@@ -10,16 +10,13 @@ import {
   type KimiHostIdentity,
   type ManagedKimiOAuthRef,
 } from '@moonshot-ai/kimi-code-oauth';
-import type {
-  ProviderConfig as KosongProviderConfig,
-  ProviderRequestAuth,
-} from '@moonshot-ai/kosong';
-import { APIStatusError, UNKNOWN_CAPABILITY } from '@moonshot-ai/kosong';
+import type { ProviderRequestAuth } from '@moonshot-ai/agent-core-v2';
+import { APIStatusError, UNKNOWN_CAPABILITY } from '@moonshot-ai/agent-core-v2';
 
 import { ErrorCodes, KimiError } from '#/errors';
 import type { Logger } from '#/logging';
 import { mapOAuthTokenError } from '#/oauth-error';
-import type { ModelProvider, ResolvedRuntimeProvider } from '#/protocol';
+import type { ModelProvider, ResolvedRuntimeProvider, RuntimeProviderConfig } from '#/protocol';
 
 export interface KimiForCodingProviderOptions extends KimiHostIdentity {
   readonly homeDir?: string;
@@ -73,7 +70,7 @@ export class KimiForCodingProvider implements ModelProvider {
       );
     }
 
-    const provider: KosongProviderConfig = {
+    const provider: RuntimeProviderConfig = {
       type: 'kimi',
       model: this.model,
       baseUrl: this.baseUrl,

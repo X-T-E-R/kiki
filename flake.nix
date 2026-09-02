@@ -69,7 +69,6 @@
         ./packages/kap-server
         ./packages/kaos
         ./packages/klient
-        ./packages/kosong
         ./packages/minidb
         ./packages/node-sdk
         ./packages/oauth
@@ -95,7 +94,6 @@
         "@moonshot-ai/codex-client"
         "@moonshot-ai/kap-server"
         "@moonshot-ai/kaos"
-        "@moonshot-ai/kosong"
         "@moonshot-ai/minidb"
         "@moonshot-ai/kimi-code-sdk"
         "@moonshot-ai/kimi-code-oauth"

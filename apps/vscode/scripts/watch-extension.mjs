@@ -11,7 +11,6 @@ const sourceDirectories = [
   join(extensionRoot, 'shared'),
   ...[
     'kaos',
-    'kosong',
     'node-sdk',
     'oauth',
     'protocol',

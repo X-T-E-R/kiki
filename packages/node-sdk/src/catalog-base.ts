@@ -1,5 +1,6 @@
-import type { ModelCapability } from './capability';
-import type { ProviderType } from './providers';
+import type { ModelCapability } from '@moonshot-ai/agent-core-v2';
+
+import type { ProviderType } from '#/config';
 
 /**
  * models.dev-style catalog: a public map of provider/model metadata. Callers

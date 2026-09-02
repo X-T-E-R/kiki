@@ -7,7 +7,8 @@
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type * as KosongModule from '@moonshot-ai/kosong';
+import type { ProtocolAdapterConfig } from '@moonshot-ai/agent-core-v2/kosong/protocol/protocol';
+import { ProtocolAdapterRegistry } from '@moonshot-ai/agent-core-v2/kosong/provider/protocolAdapterRegistry';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import {
@@ -33,36 +34,33 @@ const fakeProviderState = vi.hoisted(() => ({
   responseText: 'skill response',
 }));
 
-vi.mock('@moonshot-ai/kosong', async (importOriginal) => {
-  const actual = await importOriginal<typeof KosongModule>();
-  return {
-    ...actual,
-    createProvider: () => ({
-      name: 'fake',
-      modelName: 'fake-model',
-      thinkingEffort: null,
-      async generate(_systemPrompt: string, _tools: unknown, history: unknown) {
-        fakeProviderState.histories.push(history);
-        return {
-          id: 'fake-response',
-          usage: {
-            inputOther: 0,
-            output: 1,
-            inputCacheRead: 0,
-            inputCacheCreation: 0,
-          },
-          finishReason: 'completed',
-          rawFinishReason: 'stop',
-          async *[Symbol.asyncIterator]() {
-            yield { type: 'text', text: fakeProviderState.responseText };
-          },
-        };
-      },
-      withThinking() {
-        return this;
-      },
-    }),
-  };
+beforeEach(() => {
+  vi.spyOn(ProtocolAdapterRegistry.prototype, 'createChatProvider').mockImplementation(
+    (config: ProtocolAdapterConfig) =>
+      ({
+        name: config.providerType ?? 'fake',
+        modelName: config.modelName,
+        thinkingEffort: null,
+        async generate(_systemPrompt: string, _tools: unknown, history: unknown) {
+          fakeProviderState.histories.push(history);
+          return {
+            id: 'fake-response',
+            usage: {
+              inputOther: 0,
+              output: 1,
+              inputCacheRead: 0,
+              inputCacheCreation: 0,
+            },
+            finishReason: 'completed',
+            rawFinishReason: 'stop',
+            traceId: null,
+            async *[Symbol.asyncIterator]() {
+              yield { type: 'text', text: fakeProviderState.responseText };
+            },
+          };
+        },
+      }) as ReturnType<ProtocolAdapterRegistry['createChatProvider']>,
+  );
 });
 
 const { Session } = await import('#/index');
@@ -94,6 +92,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await removeTempDirs(tempDirs);
   vi.unstubAllEnvs();
 });

@@ -12,13 +12,12 @@ const providerClientShimPath = path.join(dtsRoot, 'provider-clients.d.ts');
 const tscBinPath = packageBinPath('typescript', 'bin/tsc');
 const apiExtractorBinPath = packageBinPath('@microsoft/api-extractor', 'bin/api-extractor');
 
-const packageDirs = new Set(['agent-core-v2', 'kaos', 'klient', 'kosong', 'node-sdk', 'oauth']);
+const packageDirs = new Set(['agent-core-v2', 'kaos', 'klient', 'node-sdk', 'oauth']);
 const workspacePackages = new Map([
   ['@moonshot-ai/agent-core-v2', 'agent-core-v2'],
   ['@moonshot-ai/kaos', 'kaos'],
   ['@moonshot-ai/kimi-code-oauth', 'oauth'],
   ['@moonshot-ai/klient', 'klient'],
-  ['@moonshot-ai/kosong', 'kosong'],
 ]);
 
 try {
