@@ -162,6 +162,14 @@ async function settle(): Promise<void> {
   });
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 /** Click through an element and let the resulting render flush. */
 async function click(element: Element): Promise<void> {
   await act(async () => {
@@ -731,6 +739,26 @@ describe('Composer sendDisabled', () => {
     });
     expect(onSend).toHaveBeenCalledWith('hello', []);
   });
+
+  it('blocks duplicate Enter while VS Code turn preflight is pending', async () => {
+    vscodeRuntime.value = true;
+    const pending = deferred<string>();
+    preparePrompt.mockReturnValue(pending.promise);
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'hello', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(preparePrompt).toHaveBeenCalledTimes(1);
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(true);
+    pending.resolve('hello');
+    await settle();
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
 });
 
 const workspaceSkill = {
@@ -795,7 +823,8 @@ describe('Composer slash skill catalog', () => {
     expect(container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
   });
 
-  it('activates a workspace skill through onActivateSkill instead of sending prompt text', async () => {
+  it('runs VS Code autosave preflight before activating a workspace skill', async () => {
+    vscodeRuntime.value = true;
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onActivateSkill = vi.fn();
     const onSend = vi.fn();
@@ -810,6 +839,8 @@ describe('Composer slash skill catalog', () => {
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
+    await settle();
+    expect(preparePrompt).toHaveBeenCalledWith('', expect.any(String), false);
     expect(onActivateSkill).toHaveBeenCalledWith('review', '--fix', []);
     expect(onSend).not.toHaveBeenCalled();
   });

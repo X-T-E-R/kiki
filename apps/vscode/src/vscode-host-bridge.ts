@@ -163,7 +163,8 @@ export class VscodeHostBridge {
   private async preparePrompt(params: Record<string, unknown>): Promise<string> {
     const content = readString(params, "content");
     if (this.settings.autosave) await vscode.workspace.saveAll(false);
-    if (this.settings.editorContext === "never") return content;
+    const includeEditorContext = readOptionalBoolean(params, "includeEditorContext") ?? true;
+    if (!includeEditorContext || this.settings.editorContext === "never") return content;
 
     const editor = vscode.window.activeTextEditor;
     const workspace = editor === undefined ? undefined : vscode.workspace.getWorkspaceFolder(editor.document.uri);
@@ -223,6 +224,13 @@ function readOptionalNumber(params: Record<string, unknown>, key: string): numbe
   const value = params[key];
   if (value === undefined) return undefined;
   if (typeof value !== "number") throw new TypeError(`${key} must be a number.`);
+  return value;
+}
+
+function readOptionalBoolean(params: Record<string, unknown>, key: string): boolean | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new TypeError(`${key} must be a boolean.`);
   return value;
 }
 

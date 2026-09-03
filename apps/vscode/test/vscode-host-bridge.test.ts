@@ -134,6 +134,40 @@ describe("VS Code host bridge protocol", () => {
     host.activeTextEditor = undefined;
   });
 
+  it("runs autosave-only preflight without consuming editor context", async () => {
+    host.saveAll.mockClear();
+    const position = new host.Position(3, 0);
+    host.activeTextEditor = {
+      document: { uri: new host.Uri("C:/repo/src/file.ts"), isDirty: true },
+      selection: Object.assign(new host.Selection(position, position), {
+        isEmpty: true,
+        start: position,
+        end: position,
+      }),
+    };
+    bridge.updateSettings({ autosave: true, editorContext: "onConversationStart" });
+
+    const skill = await bridge.handle(
+      request("editor.preparePrompt", {
+        content: "",
+        conversationId: "skill-session",
+        includeEditorContext: false,
+      }),
+    );
+    const prompt = await bridge.handle(
+      request("editor.preparePrompt", {
+        content: "Question",
+        conversationId: "skill-session",
+        includeEditorContext: true,
+      }),
+    );
+
+    expect(skill?.result).toBe("");
+    expect(prompt?.result).toContain("Editor context");
+    expect(host.saveAll).toHaveBeenCalledTimes(2);
+    host.activeTextEditor = undefined;
+  });
+
   it("opens a file at a one-based line and column", async () => {
     const response = await bridge.handle(
       request("file.open", { path: "C:/repo/file.ts", line: 8, column: 3 }),

@@ -365,6 +365,8 @@ export function Composer({
   const [menu, setMenu] = useState<ComposerMenu | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const turnInFlightRef = useRef(false);
+  const [turnInFlight, setTurnInFlight] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   // A slash-looking draft that resolved to nothing: send is held until the
   // user confirms plain-text shipping (typo guard) or edits the draft.
@@ -547,7 +549,11 @@ export function Composer({
   );
 
   const canSend =
-    (text.trim() !== '' || attachments.length > 0) && !disabled && !sendDisabled && !pendingAttachments;
+    (text.trim() !== '' || attachments.length > 0) &&
+    !disabled &&
+    !sendDisabled &&
+    !pendingAttachments &&
+    !turnInFlight;
 
   // The chips band (quote/annotations/attachments/errors/typo guard) only
   // exists with content; it gates the wrapper's top padding above the input.
@@ -872,8 +878,7 @@ export function Composer({
         return;
       }
       if (classified.item.kind === 'skill' && onActivateSkill !== undefined) {
-        recordSubmission();
-        onActivateSkill(classified.item.name, classified.args, attachments);
+        activateSkill(classified.item.name, classified.args);
         return;
       }
       if (classified.item.kind === 'action' && classified.item.action !== undefined) {
@@ -885,16 +890,39 @@ export function Composer({
     void sendPrompt(text.trim());
   };
 
-  const sendPrompt = async (content: string) => {
-    try {
-      const prepared = isVscodeWebview()
-        ? await vscodeHost.preparePrompt(content, vscodeConversationId)
-        : content;
+  const runAgentTurn = (turn: () => Promise<void>) => {
+    if (turnInFlightRef.current) return;
+    turnInFlightRef.current = true;
+    setTurnInFlight(true);
+    void turn()
+      .catch((error: unknown) => {
+        setAttachmentError(errorText(locale, error));
+      })
+      .finally(() => {
+        turnInFlightRef.current = false;
+        setTurnInFlight(false);
+      });
+  };
+
+  const prepareAgentTurn = (content: string, includeEditorContext: boolean) =>
+    vscodeRuntime
+      ? vscodeHost.preparePrompt(content, vscodeConversationId, includeEditorContext)
+      : Promise.resolve(content);
+
+  const sendPrompt = (content: string) => {
+    runAgentTurn(async () => {
+      const prepared = await prepareAgentTurn(content, true);
       recordSubmission();
       onSend(prepared, attachments);
-    } catch (error) {
-      setAttachmentError(errorText(locale, error));
-    }
+    });
+  };
+
+  const activateSkill = (name: string, args: string) => {
+    runAgentTurn(async () => {
+      await prepareAgentTurn('', false);
+      recordSubmission();
+      onActivateSkill?.(name, args, attachments);
+    });
   };
 
   /** "Send anyway" from the typo guard: plain prompt, no command resolution. */
