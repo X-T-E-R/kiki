@@ -182,6 +182,9 @@ describe('SessionExternalDelegationService', () => {
       write: async (value) => {
         provision = value;
       },
+      revoke: async () => {
+        provision = undefined;
+      },
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
     ix.stub(IBootstrapService, { getEnv: (name) => bootstrapEnv[name] });

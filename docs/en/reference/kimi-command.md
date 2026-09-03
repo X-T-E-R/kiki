@@ -345,6 +345,9 @@ kimi provider catalog list anthropic          # Browse available models first
 kimi provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
 ```
 
+## Kiki daemon integration
+
+For shared-daemon, external-caller seat, and MCP setup workflows, use [the `kiki` command](./kiki-command.md).
 ## Next steps
 
 - [Slash Commands](./slash-commands.md) — Quick reference for control commands in the interactive TUI

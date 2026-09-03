@@ -90,15 +90,23 @@ export interface ExternalAuthority {
   readonly configFingerprint: string;
 }
 
-export interface ExternalDelegationSessionProvision {
-  readonly version: 1;
-  readonly ownership: 'dedicated' | 'attached';
-}
+export type ExternalDelegationSessionProvision =
+  | {
+      readonly version: 1;
+      readonly ownership: 'dedicated' | 'attached';
+    }
+  | {
+      readonly version: 2;
+      readonly ownership: 'dedicated';
+      readonly principalId: string;
+      readonly delegationToken: string;
+    };
 
 export interface ISessionExternalDelegationProvisionStore {
   readonly _serviceBrand: undefined;
   read(): Promise<ExternalDelegationSessionProvision | undefined>;
   write(provision: ExternalDelegationSessionProvision): Promise<void>;
+  revoke(): Promise<void>;
 }
 
 export const ISessionExternalDelegationProvisionStore: ServiceIdentifier<ISessionExternalDelegationProvisionStore> =

@@ -34,6 +34,7 @@ export const metaFeatureSchema = z.object({
 export type MetaFeature = z.infer<typeof metaFeatureSchema>;
 
 const externalDelegationDisabledReasonSchema = z.enum([
+  'feature_disabled',
   'session_index_unavailable',
   'workspace_drift',
   'bootstrap_failed',
