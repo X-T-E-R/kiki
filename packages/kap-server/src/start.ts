@@ -57,6 +57,10 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import {
+  KLIENT_EVENTS_PATH,
+  registerKlientHttp,
+} from './transport/klient/registerKlientHttp';
+import {
   ConnectionRegistry,
   type IConnectionRegistry,
 } from './transport/ws/connectionRegistry';
@@ -600,6 +604,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     externalDelegation,
   });
 
+  const wssKlient = registerKlientHttp(app, core);
   const wssV1 = registerWsV1(core, {
     validateCredential,
     registry: connectionRegistry,
@@ -616,7 +621,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   ): Promise<void> => {
     const url = req.url ?? '';
     const isV1 = url === WS_PATH_V1 || url.startsWith(`${WS_PATH_V1}?`);
-    if (!isV1) {
+    const isKlient = url === KLIENT_EVENTS_PATH || url.startsWith(`${KLIENT_EVENTS_PATH}?`);
+    if (!isV1 && !isKlient) {
       socket.destroy();
       return;
     }
@@ -678,7 +684,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     }
 
     (socket as Socket).setNoDelay(true);
-    wssV1.handleUpgrade(req, socket, head, (ws) => wssV1.emit('connection', ws, req));
+    const wss = isV1 ? wssV1 : wssKlient;
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   };
   app.server.on('upgrade', (req, socket, head) => {
     void handleUpgrade(req, socket, head).catch((error: unknown) =>

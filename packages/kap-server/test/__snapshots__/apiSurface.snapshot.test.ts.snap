@@ -338,6 +338,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/klient/call",
+    ],
+    [
+      "POST",
       "/api/v1/capabilities/{tail}",
     ],
     [

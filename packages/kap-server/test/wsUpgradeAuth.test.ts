@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
+import {
+  KLIENT_EVENTS_PATH,
+  KLIENT_HTTP_MAX_PAYLOAD_BYTES,
+} from '../src/transport/klient/registerKlientHttp';
 import { WS_V1_MAX_PAYLOAD_BYTES } from '../src/transport/ws/v1/registerWsV1';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
@@ -38,6 +42,16 @@ function openConn(url: string, opts?: ConnectOptions): Promise<{ ws: WebSocket; 
   });
 }
 
+function openSocket(url: string, opts?: ConnectOptions): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url, opts?.protocols, { headers: opts?.headers });
+    ws.once('open', () => {
+      resolve(ws);
+    });
+    ws.once('error', reject);
+  });
+}
+
 function expectRejected(url: string, opts?: ConnectOptions): Promise<void> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url, opts?.protocols, { headers: opts?.headers });
@@ -64,6 +78,7 @@ function expectRejected(url: string, opts?: ConnectOptions): Promise<void> {
 describe('WS upgrade auth', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
+  let klientUrl: string;
   let v1Url: string;
   const sockets: WebSocket[] = [];
 
@@ -77,6 +92,7 @@ describe('WS upgrade auth', () => {
       logLevel: 'silent',
       authTokenService: fixedTokenAuth(TOKEN),
     });
+    klientUrl = `ws://127.0.0.1:${server.port}${KLIENT_EVENTS_PATH}`;
     v1Url = `ws://127.0.0.1:${server.port}/api/v1/ws`;
   });
 
@@ -142,6 +158,48 @@ describe('WS upgrade auth', () => {
 
     it('rejects a connection with no token', async () => {
       await expectRejected(url());
+    });
+  });
+
+  describe('/api/klient/events', () => {
+    it('accepts a valid bearer subprotocol and echoes it', async () => {
+      const ws = await openSocket(klientUrl, {
+        protocols: [`kimi-code.bearer.${TOKEN}`],
+      });
+      sockets.push(ws);
+      expect(ws.protocol).toBe(`kimi-code.bearer.${TOKEN}`);
+    });
+
+    it('accepts a valid Authorization bearer header', async () => {
+      const ws = await openSocket(klientUrl, {
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      });
+      sockets.push(ws);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+    });
+
+    it('closes an oversized message with 1009', async () => {
+      const ws = await openSocket(klientUrl, {
+        protocols: [`kimi-code.bearer.${TOKEN}`],
+      });
+      sockets.push(ws);
+      const closed = new Promise<number>((resolve) => {
+        ws.once('close', (code) => {
+          resolve(code);
+        });
+      });
+
+      ws.send(Buffer.alloc(KLIENT_HTTP_MAX_PAYLOAD_BYTES + 1));
+
+      await expect(closed).resolves.toBe(1009);
+    });
+
+    it('rejects a wrong bearer token', async () => {
+      await expectRejected(klientUrl, { protocols: ['kimi-code.bearer.wrong'] });
+    });
+
+    it('rejects a connection with no token', async () => {
+      await expectRejected(klientUrl);
     });
   });
 
