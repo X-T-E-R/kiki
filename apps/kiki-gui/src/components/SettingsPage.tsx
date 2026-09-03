@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
-import { useI18n } from '../i18n';
-import type { I18nKey } from '../i18n/locale';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   SETTINGS_SECTION_META,
   resolveSettingsRoute,
   settingsGroupForSection,
   type SettingsSearchEntry,
-} from '../lib/settings';
+} from '@kiki/session-core/settings';
+import { useI18n } from '../i18n';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
 import { AdvancedSection } from './settings/AdvancedSection';
@@ -30,8 +30,7 @@ import { UnknownSettingsSection } from './settings/UnknownSection';
 import { SettingsWorkspaceScopeContext } from './settings/workspaceScope';
 import { WorkspacesSection } from './settings/WorkspacesSection';
 
-export { mcpConfigFromDraft } from './settings/McpConfigManager';
-export { parseNamedAgentTools } from './settings/AgentsSection';
+export { mcpConfigFromDraft, parseNamedAgentTools } from '@kiki/session-core/settings';
 
 /** Page-top signpost: what this page is for and whose behavior its edits change. */
 function ScopeHeader({ section, workspaceName }: { section: SectionId; workspaceName: string | null }) {

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
+import { errorText } from '@kiki/session-core/i18n';
+import { clearRestartRequirement } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { errorText } from '../../i18n/locale';
-import { useBusySessionCount } from '../../lib/busySessions';
-import { clearRestartRequirement } from '../../lib/settings';
+import { useBusySessionCount } from '../../lib/busySessionsHook';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from '../controls';

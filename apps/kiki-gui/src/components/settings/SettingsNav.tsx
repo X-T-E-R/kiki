@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { useI18n } from '../../i18n';
 import {
   SETTINGS_NAV_TREE,
   buildSettingsSearchIndex,
   searchSettings,
   settingsSectionLabels,
   type SettingsSearchEntry,
-} from '../../lib/settings';
+} from '@kiki/session-core/settings';
+import { useI18n } from '../../i18n';
 import { SECTIONS, type SectionId } from './sections';
 
 /**

@@ -12,13 +12,13 @@ import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 
-import { I18nProvider } from '../i18n';
 import {
   createViewState,
   type AssistantBlock,
   type SessionViewState,
   type UserBlock,
-} from '../state/transcript';
+} from '@kiki/session-core/session';
+import { I18nProvider } from '../i18n';
 import { Transcript } from './Transcript';
 
 const LEVELS = [500, 1500, 3000] as const;

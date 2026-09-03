@@ -13,6 +13,7 @@
     "src",
     "vite",
     "vite.config.ts",
+    "../../packages/session-core/src",
     "../../packages/protocol/src",
     "../../packages/transcript/src"
   ]

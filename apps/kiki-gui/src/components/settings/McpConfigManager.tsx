@@ -2,28 +2,19 @@ import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router-dom';
 
-import { useI18n } from '../../i18n';
-import { errorText, type I18nKey } from '../../i18n/locale';
+import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { mcpConfigFromDraft, type McpEditorDraft } from '@kiki/session-core/settings';
 import type {
   McpManagedServer,
   McpManagedServerConfig,
   McpServerConfig,
   McpTransport,
-} from '../../lib/client';
+} from '@kiki/session-core/transport';
+import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
-
-interface McpEditorDraft {
-  readonly original?: McpManagedServer;
-  readonly name: string;
-  readonly transport: McpTransport;
-  readonly command: string;
-  readonly args: string;
-  readonly env: string;
-  readonly url: string;
-}
 
 /**
  * Read-only entries reach us redacted (`envKeys` / `headerKeys` instead of the
@@ -54,70 +45,6 @@ function mcpDraft(entry?: McpManagedServer): McpEditorDraft {
       ? Object.entries(mcpSecretMap(config, 'env') ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
       : '',
     url: config.transport === 'stdio' ? '' : config.url,
-  };
-}
-
-function mcpCommonConfig(config: McpManagedServerConfig | undefined) {
-  return {
-    enabled: config?.enabled,
-    startupTimeoutMs: config?.startupTimeoutMs,
-    toolTimeoutMs: config?.toolTimeoutMs,
-    enabledTools: config?.enabledTools,
-    disabledTools: config?.disabledTools,
-  };
-}
-
-function parseMcpEnv(text: string): Record<string, string> | undefined {
-  const entries: Array<[string, string]> = [];
-  for (const raw of text.split(/\r?\n/u)) {
-    if (raw.trim() === '') continue;
-    const separator = raw.indexOf('=');
-    if (separator <= 0) throw new Error('st.mcp.envInvalid');
-    const key = raw.slice(0, separator).trim();
-    if (key === '') throw new Error('st.mcp.envInvalid');
-    entries.push([key, raw.slice(separator + 1)]);
-  }
-  return entries.length === 0 ? undefined : Object.fromEntries(entries);
-}
-
-export function mcpConfigFromDraft(draft: McpEditorDraft): McpServerConfig {
-  const original = draft.original?.config;
-  if (draft.transport === 'stdio') {
-    const command = draft.command.trim();
-    if (command === '') throw new Error('st.mcp.commandRequired');
-    // Fields the editor does not surface are carried forward from the entry
-    // being edited, so a save never silently drops them.
-    const kept = original?.transport === 'stdio'
-      ? { cwd: original.cwd, executor: original.executor, runtime_id: original.runtime_id }
-      : {};
-    const args = draft.args.split(/\r?\n/u).map((value) => value.trim()).filter(Boolean);
-    return {
-      ...mcpCommonConfig(original),
-      ...kept,
-      transport: 'stdio',
-      command,
-      args: args.length === 0 ? undefined : args,
-      env: parseMcpEnv(draft.env),
-    };
-  }
-  const url = draft.url.trim();
-  try {
-    new URL(url);
-  } catch {
-    throw new Error('st.mcp.urlInvalid');
-  }
-  const kept = original !== undefined && original.transport === draft.transport
-    ? {
-        auth: original.auth,
-        bearerTokenEnvVar: original.bearerTokenEnvVar,
-        headers: mcpSecretMap(original, 'headers'),
-      }
-    : {};
-  return {
-    ...mcpCommonConfig(original),
-    ...kept,
-    transport: draft.transport,
-    url,
   };
 }
 

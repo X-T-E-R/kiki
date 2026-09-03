@@ -14,8 +14,8 @@ import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import { I18nProvider } from '../i18n';
-import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '../lib/drafts';
 import { MediaPreviewProvider, useMediaPreview } from './mediaPreview';
 import { relativeToCwd } from './PreviewWorkspace';
 

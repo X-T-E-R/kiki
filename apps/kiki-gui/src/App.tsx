@@ -53,13 +53,17 @@ import {
   groupSessionsByWorkspace,
   mergeSessionFirstPage,
   sortSessionItems,
+  sortWorkspacesByPinnedThenRecency,
   type SessionGroup,
   type SessionListData,
-} from './lib/sessionList';
+} from '@kiki/session-core/sessions';
+import {
+  readLastSessionId,
+  writeDesktopPrefs,
+  writeLayoutPreferences,
+} from '@kiki/session-core/settings';
 import { isSessionIndexBuildingError } from './lib/client';
-import { useLayoutPreferences, writeLayoutPreferences } from './lib/layoutPrefs';
-import { sortWorkspacesByPinnedThenRecency } from './lib/sorting';
-import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
+import { useLayoutPreferences } from './lib/layoutHooks';
 import { pushToast } from './lib/toasts';
 import { anyOverlayOpen } from './lib/uiBusy';
 import { startVisiblePoll } from './lib/visiblePoll';

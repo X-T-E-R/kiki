@@ -10,9 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protocol';
 
-import { useI18n } from '../i18n';
-import { errorText, issueText } from '../i18n/locale';
-import { useConnection } from '../state/connection';
+import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
   createProvider,
   deleteProvider,
@@ -33,8 +31,10 @@ import {
   type ProviderModelDraft,
   type ProviderTemplate,
   type ServerConnection,
-} from '../lib/settings';
-import { formatTokens } from '../lib/time';
+} from '@kiki/session-core/settings';
+import { formatTokens } from '@kiki/session-core/util';
+import { useI18n } from '../i18n';
+import { useConnection } from '../state/connection';
 import { ChipSelect } from './ChipSelect';
 import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from './controls';

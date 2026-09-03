@@ -1,4 +1,4 @@
-import type { CompatibilitySettings, DesktopNativePrefs } from '../lib/settings';
+import type { CompatibilitySettings, DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
 import type { ResolvedTheme } from '../lib/theme';
 

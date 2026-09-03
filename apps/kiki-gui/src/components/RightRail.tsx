@@ -8,18 +8,7 @@ import { useNavigate } from 'react-router-dom';
 
 import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
 
-import { useI18n } from '../i18n';
-import type { I18nKey } from '../i18n/locale';
-import {
-  RAIL_DEFAULT_WIDTH,
-  RAIL_MAX_WIDTH,
-  RAIL_MIN_WIDTH,
-  useLayoutPreferences,
-  usePaneResize,
-  writeLayoutPreferences,
-} from '../lib/layoutPrefs';
-import { sortTasks } from '../lib/sorting';
-import { usageSessionDeepLink } from '../lib/usageV2';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   agentChildren,
   agentSiblings,
@@ -27,8 +16,20 @@ import {
   MAIN_AGENT_ID,
   type AgentForest,
   type AgentTreeNode,
-} from '../state/agentTree';
-import type { SessionViewState, SubagentBlock, TodoItem } from '../state/transcript';
+  type SessionViewState,
+  type SubagentBlock,
+  type TodoItem,
+} from '@kiki/session-core/session';
+import { sortTasks } from '@kiki/session-core/sessions';
+import {
+  RAIL_DEFAULT_WIDTH,
+  RAIL_MAX_WIDTH,
+  RAIL_MIN_WIDTH,
+  writeLayoutPreferences,
+} from '@kiki/session-core/settings';
+import { useI18n } from '../i18n';
+import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
+import { usageSessionDeepLink } from '../lib/usageV2';
 import { AgentTreeView } from './AgentTreeView';
 
 /** Differentiated subagent-page rail context (G-3). */

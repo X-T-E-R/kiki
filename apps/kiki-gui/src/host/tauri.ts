@@ -16,7 +16,7 @@ import type {
   KimiHomePaths,
   SessionsMigrationPlan,
 } from './host';
-import type { DesktopNativePrefs } from '../lib/settings';
+import type { DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
 
 const NATIVE_IMAGE_MIMES: Readonly<Record<string, string>> = {
