@@ -109,7 +109,10 @@ vi.mock('../../src/tui/daemon/daemon-tui', () => ({
 }));
 
 vi.mock('../../src/cli/agent-selection', () => ({
-  resolveAgentProfileSelection: vi.fn(async () => undefined),
+  resolveAgentProfileSelection: vi.fn(async () => {
+    mocks.order.push('agent');
+    return undefined;
+  }),
 }));
 
 vi.mock('../../src/utils/process/resolve-command', () => ({
@@ -159,7 +162,7 @@ describe('runShell daemon experiment', () => {
   it('keeps the legacy KimiTUI as the default path', async () => {
     await runShell(options, '1.0.0');
 
-    expect(mocks.order).toEqual(['legacy', 'start']);
+    expect(mocks.order).toEqual(['agent', 'legacy', 'start']);
     expect(mocks.legacyConstructor).toHaveBeenCalledOnce();
     expect(mocks.daemonConstructor).not.toHaveBeenCalled();
     expect(mocks.trust).not.toHaveBeenCalled();
@@ -170,7 +173,14 @@ describe('runShell daemon experiment', () => {
 
     await runShell(options, '1.0.0');
 
-    expect(mocks.order).toEqual(['harness-close', 'trust', 'discover', 'daemon', 'start']);
+    expect(mocks.order).toEqual([
+      'harness-close',
+      'trust',
+      'agent',
+      'discover',
+      'daemon',
+      'start',
+    ]);
     expect(mocks.trust).toHaveBeenCalledWith({ homeDir: 'C:\\home', workDir: process.cwd() });
     expect(mocks.daemonConstructor.mock.calls[0]?.[1]).toMatchObject({
       startupNotice: expect.stringContaining('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON'),

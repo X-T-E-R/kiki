@@ -58,9 +58,6 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   await harness.ensureConfigFile();
   const config = await harness.getConfig();
   startupTrace('config:loaded');
-  // Resolve --agent/--agent-file once for the startup session; validateOptions
-  // has already rejected them alongside --session/--continue.
-  const agentProfile = await resolveAgentProfileSelection(opts, workDir);
   const useDaemonTui = isTuiDaemonEnabled(config.experimental);
   let tui: KimiTUI | DaemonTUI;
   let closeOnStartFailure: () => Promise<void>;
@@ -68,6 +65,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     await harness.close();
     const homeDir = resolveDaemonHome();
     if (!(await runWorkspaceTrustGate({ homeDir, workDir }))) return;
+    const agentProfile = await resolveAgentProfileSelection(opts, workDir);
     const connection =
       (await discoverDaemon(homeDir, workDir)) ??
       (await ensureDaemon({ homeDir, workspacePath: workDir }));
@@ -84,6 +82,9 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     tui = daemonTui;
     closeOnStartFailure = () => daemonTui.close();
   } else {
+    // Resolve --agent/--agent-file once for the startup session; validateOptions
+    // has already rejected them alongside --session/--continue.
+    const agentProfile = await resolveAgentProfileSelection(opts, workDir);
     tui = new KimiTUI(harness, {
       cliOptions: opts,
       agentProfile,
