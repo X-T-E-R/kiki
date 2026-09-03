@@ -200,10 +200,11 @@ describe('Kiki MCP HTTP daemon mount', () => {
       logLevel: 'silent',
       insecureNoTls: true,
       bindClass: 'lan',
-      externalDelegation: {
-        principalId: 'example-principal',
-        sessionId: 'session_operator',
-        token: 'DELEGATION_SECRET',
+      mcpSeatResolver: {
+        async resolve(bearer) {
+          if (bearer !== 'DELEGATION_SECRET') return null;
+          return { sessionId: 'session_operator', delegationToken: 'DELEGATION_SECRET' };
+        },
       },
     });
     running.push(server);
