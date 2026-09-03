@@ -1,5 +1,11 @@
 # KAP server
 
+## Klient over HTTP
+
+`POST /api/klient/call` accepts `{ procedure: { scope, service, method, ...scopeIds }, params: [...] }` and returns the standard `{ code, msg, data, request_id }` envelope; only declared klient procedures are admitted, with contract input and output validation at the host boundary.
+`GET /api/klient/events` upgrades to WebSocket; clients send `subscribe` / `unsubscribe` frames and receive `subscribed`, `event`, or `error` frames correlated by `id` (streaming procedures use `stream*` frames on the same socket).
+Both endpoints use the normal KAP bearer: HTTP sends `Authorization: Bearer <token>`, while browser WebSockets send the `kimi-code.bearer.<token>` subprotocol.
+
 ## Kiki MCP edge
 
 External delegation is on by default. Start KAP with one admitted
