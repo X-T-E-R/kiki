@@ -357,7 +357,9 @@ describe('acp-server session lifecycle', () => {
         .getOrCreate({ root: homeDir! });
       const dirs = workspace.program.dirs;
       await dirs.ready;
-      expect(dirs.additionalDirs).toContain(extraDir);
+      expect(dirs.additionalDirs.map((dir) => dir.replaceAll('\\', '/'))).toContain(
+        extraDir.replaceAll('\\', '/'),
+      );
     },
     30_000,
   );

@@ -194,6 +194,7 @@ export function registerSessionsRoutes(
   app: SessionRouteHost,
   core: Scope,
   broadcaster?: SessionEventBroadcaster,
+  onWorkspaceServed?: (workspace: string) => void | Promise<void>,
 ): void {
   const createRoute = defineRoute(
     {
@@ -258,6 +259,7 @@ export function registerSessionsRoutes(
 
       try {
         const touched = await registry.createOrTouch(workDir);
+        await onWorkspaceServed?.(touched.root);
         const handle = await core.accessor.get(ISessionManager).create({
           workspaceId: touched.id,
           workDir,

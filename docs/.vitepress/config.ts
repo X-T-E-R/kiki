@@ -94,6 +94,7 @@ const config = withMermaid(defineConfig({
               text: '参考手册',
               items: [
                 { text: 'kimi 命令', link: '/zh/reference/kimi-command' },
+                { text: 'kiki 命令', link: '/zh/reference/kiki-command' },
                 { text: 'kimi acp 子命令', link: '/zh/reference/kimi-acp' },
                 { text: '服务 API', link: '/zh/reference/server-api' },
                 { text: '内置工具', link: '/zh/reference/tools' },
@@ -177,6 +178,7 @@ const config = withMermaid(defineConfig({
               text: 'Reference',
               items: [
                 { text: 'kimi Command', link: '/en/reference/kimi-command' },
+                { text: 'kiki Command', link: '/en/reference/kiki-command' },
                 { text: 'kimi acp Subcommand', link: '/en/reference/kimi-acp' },
                 { text: 'Server API', link: '/en/reference/server-api' },
                 { text: 'Built-in Tools', link: '/en/reference/tools' },

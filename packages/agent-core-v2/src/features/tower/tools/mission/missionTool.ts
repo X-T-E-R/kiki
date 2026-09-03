@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join } from 'pathe';
 
 import { MISSIONS_DIR, missionFileName } from '#/features/tower/protocol/index';
 import type { TowerMission, TowerStore } from '#/features/tower/protocol/index';

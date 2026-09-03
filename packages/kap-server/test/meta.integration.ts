@@ -142,7 +142,7 @@ describe('/api/v1/meta external_delegation', () => {
     }
   });
 
-  it('reports not_configured when no external authority is configured', async () => {
+  it('reports active when the runtime seat surface is available', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-meta-delegation-'));
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -155,7 +155,25 @@ describe('/api/v1/meta external_delegation', () => {
     const response = await authedFetch(server, base, '/api/v1/meta');
     expect(await response.json()).toMatchObject({
       code: 0,
-      data: { external_delegation: { state: 'not_configured' } },
+      data: { external_delegation: { state: 'active' } },
+    });
+  });
+
+  it('reports feature_disabled when the external delegation flag is off', async () => {
+    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP', 'false');
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-meta-delegation-disabled-'));
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+    const response = await authedFetch(server, base, '/api/v1/meta');
+    expect(await response.json()).toMatchObject({
+      code: 0,
+      data: { external_delegation: { state: 'disabled', reason: 'feature_disabled' } },
     });
   });
 });

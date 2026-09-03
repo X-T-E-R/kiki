@@ -5,12 +5,12 @@ import {
   type AgentProfileContext,
   type AgentProfileInput,
   type SystemPromptRenderResult,
-} from '#/app/agentProfileCatalog/agentProfileCatalog';
+} from '#/agentProfile';
 import {
   _clearAgentProfileContributionsForTests,
   getAgentProfileContributions,
   registerAgentProfile,
-} from '#/app/agentProfileCatalog/contribution';
+} from '#/contribution';
 import {
   DEFAULT_REPLY_STYLE_GUIDE,
   renderPromptTemplateResult,
@@ -18,7 +18,7 @@ import {
   subagentAllowlistFor,
   profileNotAllowedMessage,
   systemPromptVars,
-} from '#/app/agentProfileCatalog/profile-shared';
+} from '#/profileShared';
 
 type AssertFalse<T extends false> = T;
 

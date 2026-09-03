@@ -374,14 +374,14 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
     const upgrade = updates.find(
       (u) => u?.sessionUpdate === 'tool_call_update' && u?.locations !== undefined,
     );
-    expect(upgrade?.locations?.[0]?.path).toBe(filePath);
+    expect(upgrade?.locations?.[0]?.path?.replaceAll('\\', '/')).toBe(filePath.replaceAll('\\', '/'));
 
     // …and the terminal tool_call_update re-attaches the same locations
     // (`tool.result` itself carries no args/display).
     const terminal = updates.find(
       (u) => u?.sessionUpdate === 'tool_call_update' && u?.status === 'completed',
     );
-    expect(terminal?.locations?.[0]?.path).toBe(filePath);
+    expect(terminal?.locations?.[0]?.path?.replaceAll('\\', '/')).toBe(filePath.replaceAll('\\', '/'));
   }, 30_000);
 
   it('settles as cancelled without launching a turn when cancel arrives during image compression', async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeAgentProfile, type AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
-import { resolveAgentProfileRoute } from '#/app/agentProfileCatalog/agentProfileRoute';
+import { normalizeAgentProfile, type AgentProfile } from '#/agentProfile';
+import { resolveAgentProfileRoute } from '#/agentProfileRoute';
 import {
   appliedDispatchProfile,
   applyLease,
@@ -11,8 +11,8 @@ import {
   isDispatchBlocked,
   leaseHasBindingPin,
   routePermittedByProfile,
-} from '#/app/agentProfileCatalog/applySubagentLease';
-import type { SubagentLease } from '#/app/agentProfileCatalog/subagentLease';
+} from '#/applySubagentLease';
+import type { SubagentLease } from '#/subagentLease';
 
 function child(overrides: Partial<AgentProfile> = {}): AgentProfile {
   return normalizeAgentProfile({

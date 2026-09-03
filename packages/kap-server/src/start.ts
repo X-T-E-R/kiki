@@ -13,6 +13,7 @@ import {
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
+  ISessionActivityView,
   ICapabilityService,
   IPluginService,
   resolvePluginMarketplaceSource,
@@ -30,6 +31,8 @@ import {
   type Scope,
   type ScopeSeed,
 } from '@moonshot-ai/agent-core-v2';
+import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
+import { EXTERNAL_DELEGATION_FLAG_ID } from '@moonshot-ai/agent-core-v2/session/externalDelegation/flag';
 import {
   createKimiDefaultHeaders,
   type KimiHostIdentity,
@@ -90,12 +93,20 @@ import {
 import { createCredentialValidator } from './services/auth/credentials';
 import { resolvePasswordHash } from './services/auth/password';
 import { createTokenStore } from './services/auth/tokenStore';
+import { LeaseRegistry } from './services/leaseRegistry';
 import {
   ensureExternalDelegationSession,
   externalDelegationAuthorityFromEnv,
   ExternalDelegationBootstrapError,
   type ExternalDelegationAuthorityConfig,
 } from './mcp/externalDelegationAuthority';
+import { ExternalDelegationSeatManager } from './mcp/externalDelegationSeats';
+import { registerKikiMcpHttp } from './mcp/http';
+import {
+  createCompositeSeatResolver,
+  createEnvSeatResolver,
+  type SeatResolver,
+} from './mcp/seatResolver';
 
 import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
 import {
@@ -166,6 +177,9 @@ export interface ServerStartOptions {
   readonly rpcToken?: string;
   /** Operator-owned authority for the experimental external-delegation edge. */
   readonly externalDelegation?: ExternalDelegationAuthorityConfig;
+  readonly idleExitMs?: number;
+  readonly leaseTtlMs?: number;
+  readonly mcpSeatResolver?: SeatResolver;
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
   /**
@@ -205,8 +219,10 @@ export interface RunningServer {
   readonly core: Scope;
   readonly connectionRegistry: IConnectionRegistry;
   readonly authTokenService: IAuthTokenService;
+  readonly serverId: string;
   readonly host: string;
   readonly port: number;
+  readonly closed: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -218,6 +234,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKimiHome(opts.homeDir);
   const serverVersion = opts.serverVersion ?? getServerVersion();
+  const startedAt = Date.now();
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
   const externalDelegation = opts.externalDelegation === undefined
     ? externalDelegationAuthorityFromEnv(process.env)
@@ -232,7 +249,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     pid: process.pid,
     host,
     port,
-    startedAt: Date.now(),
+    startedAt,
     serverVersion,
   });
   const exposureClass = classify(host, { bindClass: opts.bindClass });
@@ -361,8 +378,15 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
 
   const shutdownController = new AbortController();
+  const leaseRegistry = new LeaseRegistry(opts.leaseTtlMs);
+  let idleTimer: NodeJS.Timeout | undefined;
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
   const doClose = async (): Promise<void> => {
     shutdownController.abort();
+    if (idleTimer !== undefined) clearInterval(idleTimer);
     const closeErrors: unknown[] = [];
     let appClosing: Promise<void>;
     try {
@@ -437,7 +461,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   };
   let closeFlight: Promise<void> | undefined;
   const close = (): Promise<void> => {
-    closeFlight ??= doClose();
+    if (closeFlight === undefined) {
+      closeFlight = doClose();
+      void closeFlight.then(resolveClosed, resolveClosed);
+    }
     return closeFlight;
   };
 
@@ -485,21 +512,36 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     .catch(() => {
     });
 
-  let externalDelegationState: ExternalDelegationState =
-    externalDelegation === undefined ? { state: 'not_configured' } : { state: 'active' };
-  try {
-    await ensureExternalDelegationSession(core, externalDelegation);
-  } catch (error) {
-    const reason = error instanceof ExternalDelegationBootstrapError
-      ? error.reason
-      : 'bootstrap_failed';
-    const message = error instanceof Error ? error.message : String(error);
-    externalDelegationState = { state: 'disabled', reason, message };
-    logger.warn(
-      { err: error, reason },
-      'external delegation Session bootstrap failed; disabling the edge and continuing server startup',
-    );
+  await configService.ready;
+  const externalDelegationEnabled = core.accessor
+    .get(IFlagService)
+    .enabled(EXTERNAL_DELEGATION_FLAG_ID);
+  let externalDelegationState: ExternalDelegationState = externalDelegationEnabled
+    ? { state: 'active' }
+    : { state: 'disabled', reason: 'feature_disabled' };
+  if (externalDelegationEnabled) {
+    try {
+      await ensureExternalDelegationSession(core, externalDelegation);
+      if (externalDelegation?.sessionBootstrap !== undefined) {
+        await registration.update({ workspaces: [externalDelegation.sessionBootstrap.workspacePath] });
+      }
+    } catch (error) {
+      const reason = error instanceof ExternalDelegationBootstrapError
+        ? error.reason
+        : 'bootstrap_failed';
+      const message = error instanceof Error ? error.message : String(error);
+      externalDelegationState = { state: 'disabled', reason, message };
+      logger.warn(
+        { err: error, reason },
+        'external delegation Session bootstrap failed; disabling the edge and continuing server startup',
+      );
+    }
   }
+  const seatManager = new ExternalDelegationSeatManager(
+    core,
+    homeDir,
+    (workspace) => registration.update({ workspaces: [workspace] }),
+  );
 
   async function registerOpenApi(): Promise<void> {
     const { default: swagger } = await import('@fastify/swagger');
@@ -546,6 +588,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   await registerApiV1Routes(app, core, {
     serverVersion,
+    serverId: registration.serverId,
+    startedAt: new Date(startedAt).toISOString(),
     hostIdentity: opts.hostIdentity,
     debugEndpoints,
     enableShutdown,
@@ -565,16 +609,48 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     connectionRegistry,
     broadcaster,
     transcriptService,
+    leaseRegistry,
+    onWorkspaceServed: (workspace) => registration.update({ workspaces: [workspace] }),
     dangerousBypassAuth: opts.disableAuth === true,
     externalDelegation: externalDelegationState,
     webTitle: opts.webTitle,
   });
 
   await registerApiV2Routes(app, core, {
-    externalDelegation: externalDelegation === undefined
-      ? undefined
-      : { ...externalDelegation, state: externalDelegationState },
+    externalDelegation,
+    externalDelegationState,
+    seatManager,
   });
+
+  let kapEndpoint = loopbackOrigin(host, port);
+  const runtimeSeatResolver: SeatResolver = {
+    resolve: async (bearer) => (await seatManager.resolveBearer(bearer)) ?? null,
+  };
+  const envSeatResolver =
+    externalDelegation !== undefined && externalDelegationState.state === 'active'
+      ? createEnvSeatResolver({
+          sessionId: externalDelegation.sessionId,
+          delegationToken: externalDelegation.token,
+        })
+      : undefined;
+  const seatResolver = createCompositeSeatResolver(
+    createCompositeSeatResolver(runtimeSeatResolver, opts.mcpSeatResolver),
+    envSeatResolver,
+  );
+  if (exposureClass === 'loopback') {
+    registerKikiMcpHttp(app, {
+      seatResolver,
+      resolveConfig: async (seat) => ({
+        endpoint: kapEndpoint,
+        token: authTokenService.getToken(),
+        delegationToken: seat.delegationToken,
+        sessionId: seat.sessionId,
+        workspacePath:
+          seat.workspacePath ??
+          (await resolveSeatWorkspacePath(core, seat.sessionId, externalDelegation)),
+      }),
+    });
+  }
 
   const wssKlient = registerKlientHttp(app, core);
   const wssV1 = registerWsV1(core, {
@@ -709,10 +785,32 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+  kapEndpoint = loopbackOrigin(host, boundPort);
 
   postListenWarmup = runPostListenWarmup();
 
   await registration.update({ port: boundPort });
+  await postListenWarmup;
+
+  if (opts.idleExitMs !== undefined) {
+    const idleExitMs = opts.idleExitMs;
+    let idleSince = Date.now();
+    const intervalMs = Math.min(1_000, Math.max(10, Math.floor(idleExitMs / 4)));
+    idleTimer = setInterval(() => {
+      const busy = core.accessor
+        .get(ISessionManager)
+        .list()
+        .some((session) => session.accessor.get(ISessionActivityView).state().busy);
+      if (leaseRegistry.activeCount() > 0 || busy) {
+        idleSince = Date.now();
+        return;
+      }
+      if (Date.now() - idleSince >= idleExitMs) {
+        void close().catch((error) => logger.error({ err: error }, 'idle server close failed'));
+      }
+    }, intervalMs);
+    idleTimer.unref();
+  }
 
   void modelCatalogRefreshScheduler.start().catch((error) => {
     logger.warn(
@@ -721,7 +819,35 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     );
   });
 
-  return { app, core, connectionRegistry, authTokenService, host, port: boundPort, close };
+  return {
+    app,
+    core,
+    connectionRegistry,
+    authTokenService,
+    serverId: registration.serverId,
+    host,
+    port: boundPort,
+    closed,
+    close,
+  };
+}
+
+function loopbackOrigin(boundHost: string, boundPort: number): string {
+  const hostname = boundHost === '0.0.0.0' || boundHost === '::' ? '127.0.0.1' : boundHost;
+  const hostPart = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname;
+  return `http://${hostPart}:${String(boundPort)}`;
+}
+
+async function resolveSeatWorkspacePath(
+  core: Scope,
+  sessionId: string,
+  authority: ExternalDelegationAuthorityConfig | undefined,
+): Promise<string | undefined> {
+  if (authority?.sessionId === sessionId && authority.sessionBootstrap !== undefined) {
+    return authority.sessionBootstrap.workspacePath;
+  }
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  return summary?.cwd;
 }
 
 /**

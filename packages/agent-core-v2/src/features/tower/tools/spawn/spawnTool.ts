@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join } from 'pathe';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentProfileService } from '#/agent/profile/profile';

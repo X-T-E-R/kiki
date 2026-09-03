@@ -26,11 +26,25 @@ import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import type { RuntimeBinding } from '#/runtime/runtime';
 
+import {
+  closeServer,
+  crashAfterConnectFixture,
+  createMemoryMcpOAuthStore,
+  cwdStdioFixture,
+  hangingListStdioFixture,
+  hostProcessPathClass,
+  slowStdioFixture,
+  slowToolStdioFixture,
+  stderrThenExitFixture,
+  stdioFixture,
+} from './stubs';
+
 const testRuntimeBinding: RuntimeBinding = { workspaceId: 'test-workspace', runtimeId: 'local' };
 const testProcess = new HostProcessService();
 const testRuntime = Object.assign(
   new FakeRuntime({ ...testRuntimeBinding, generation: 'test-generation' }, {
     capabilities: ['process'],
+    pathClass: hostProcessPathClass,
   }),
   { process: testProcess },
 );
@@ -53,18 +67,6 @@ function createManager(options: McpConnectionManagerOptions = {}): McpConnection
     ...options,
   });
 }
-
-import {
-  closeServer,
-  crashAfterConnectFixture,
-  createMemoryMcpOAuthStore,
-  cwdStdioFixture,
-  hangingListStdioFixture,
-  slowStdioFixture,
-  slowToolStdioFixture,
-  stderrThenExitFixture,
-  stdioFixture,
-} from './stubs';
 
 function stdioConfig(args: string[] = [stdioFixture]) {
   return {

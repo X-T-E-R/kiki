@@ -48,6 +48,7 @@ import { stubLog } from '../../_base/log/stubs';
 import { registerAgentIdentityStub } from '../../app/agentIdentity/stubs';
 import {
   createMemoryMcpOAuthStore,
+  hostProcessPathClass,
   ManualMcpOAuthScheduler,
   startInProcessHttpMcpServer,
   stdioFixture,
@@ -120,7 +121,7 @@ describe('WorkspaceMcpService', () => {
         const runtime = Object.assign(
           new FakeRuntime(
             { workspaceId: 'test-workspace', runtimeId: 'local', generation: 'test-generation' },
-            { capabilities: ['process'] },
+            { capabilities: ['process'], pathClass: hostProcessPathClass },
           ),
           { process: new HostProcessService() },
         );
