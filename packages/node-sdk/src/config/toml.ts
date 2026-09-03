@@ -387,6 +387,9 @@ function transformPermissionData(data: Record<string, unknown>): Record<string, 
   if (rules.length > 0) {
     out['rules'] = rules;
   }
+  if (raw['dangerousBash'] !== undefined) {
+    out['dangerousBash'] = raw['dangerousBash'];
+  }
   return out;
 }
 
@@ -619,6 +622,7 @@ function permissionToToml(
   } else {
     delete out['rules'];
   }
+  setDefined(out, 'dangerous_bash', permission.dangerousBash);
   return out;
 }
 
