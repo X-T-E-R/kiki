@@ -195,6 +195,46 @@ describe('RetainedUsageService', () => {
     await expect(listItems(service)).resolves.toEqual([]);
   });
 
+  it('ignores a v1 ledger without blocking v2 reads and writes', async () => {
+    const storeDir = join(homeDir, 'store');
+    const v1Path = join(storeDir, 'deleted-sessions-v1.jsonl');
+    const v2Path = join(storeDir, 'deleted-sessions-v2.jsonl');
+    const v1Ledger = `${JSON.stringify({
+      version: RETAINED_USAGE_VERSION,
+      ...summary,
+      deleted: true,
+      deletedAt: 250,
+      records: [],
+      complete: true,
+    })}\n`;
+    await fsp.mkdir(storeDir, { recursive: true });
+    await fsp.writeFile(v1Path, v1Ledger);
+    const { service, appendLog } = build();
+
+    await expect(service.listDeletedSessions(listQuery())).resolves.toEqual({
+      items: [],
+      complete: true,
+      incompleteReason: undefined,
+      scannedRecords: 0,
+    });
+    await expect(fsp.stat(v2Path)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const sessionScope = 'sessions/workspace-1/session-1';
+    appendLog.append(`${sessionScope}/agents/main`, AGENT_WIRE_RECORD_KEY, {
+      type: 'metadata',
+      protocol_version: '1',
+      created_at: 100,
+    });
+    await appendLog.flush();
+    await service.retainDeletedSession(summary);
+
+    await expect(listItems(service)).resolves.toEqual([
+      expect.objectContaining({ id: 'session-1', workspaceId: 'workspace-1' }),
+    ]);
+    await expect(fsp.readFile(v1Path, 'utf8')).resolves.toBe(v1Ledger);
+    await expect(fsp.stat(v2Path)).resolves.toMatchObject({ isFile: expect.any(Function) });
+  });
+
   it('preserves archive state only when an archived session is later deleted', async () => {
     const { service, appendLog } = build();
     const archived = { ...summary, archived: true, archivedAt: 250 };
