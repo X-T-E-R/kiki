@@ -26,6 +26,7 @@ import {
   IAppendLogStore,
   IHostEnvironment,
   ISessionContext,
+  ISessionIndex,
   ISessionIndexMirror,
   IWorkspaceInstanceManager,
   logSeed,
@@ -119,6 +120,26 @@ export async function runAcpServerWithStream(
     },
     [...logSeed(logging), ...(opts.extraSeeds ?? [])],
   );
+  try {
+    const status = await core.accessor.get(ISessionIndex).prepare();
+    // `prepare()` resolves on a failed first projection (`degraded`) instead of
+    // rejecting. Refuse to serve in that state — the same ready-check Lane B
+    // uses for external-delegation session lookup.
+    if (status.source === 'read-model' && status.state !== 'ready') {
+      throw new Error(
+        status.reason === undefined
+          ? 'ACP session index is not ready'
+          : `ACP session index is not ready: ${status.reason}`,
+      );
+    }
+  } catch (error) {
+    core.dispose();
+    await drainSessionIndexMirror();
+    await drainQueryStoreDisposals();
+    await drainSessionMetadataWrites();
+    await drainLogCloses();
+    throw error;
+  }
 
   // The klient dispatches against the same app scope — calls and events stay
   // in-process but observe wire-shaped (JSON-cloned) data. The klient does

@@ -80,7 +80,7 @@ export class SessionManager implements ISessionManager {
     return this.serializeLifecycle(options.sessionId, create);
   }
 
-  async resume(
+  resume(
     sessionId: string,
     options?: ResumeSessionOptions,
   ): Promise<ISessionScopeHandle | undefined> {

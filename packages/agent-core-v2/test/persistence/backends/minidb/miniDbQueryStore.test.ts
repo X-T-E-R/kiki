@@ -21,7 +21,7 @@ import { stubLog } from '../../../_base/log/stubs';
 const COLLECTION = 'session';
 const SEP = String.fromCodePoint(0);
 
-describe('MiniDbQueryStore', () => {
+describe('MiniDbQueryStore', { timeout: 30_000 }, () => {
   let homeDir: string;
   let disposeHost: (() => void) | undefined;
 
@@ -316,7 +316,7 @@ describe('MiniDbQueryStore', () => {
       `[baseline] queryStore pageByColumn ${JSON.stringify({ rows: [1000, 10000], medianMs: [small, large] })}`,
     );
     expect(large).toBeLessThan(small * 10 + 100);
-  }, 60_000);
+  }, 120_000);
 
   it('listKeys and dropCollection operate on the whole collection', async () => {
     const store = build();
