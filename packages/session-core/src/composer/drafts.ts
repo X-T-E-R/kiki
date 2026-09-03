@@ -3,7 +3,7 @@
 import type { PermissionMode, PromptPlanGate } from '@moonshot-ai/protocol';
 
 import type { ComposerAttachment } from './attachments';
-import { readSettings } from './settings';
+import { readSettings } from '../settings/settings';
 
 const KEY = 'kiki.drafts';
 

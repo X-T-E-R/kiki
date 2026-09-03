@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { MessageContent, Session, SessionSnapshotResponse } from '@moonshot-ai/protocol';
 
-import { resolveSelectedEffort } from '../components/Composer';
-import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
-import type { SessionEventFrame } from '../lib/types';
-import type { KikiSocket } from '../lib/ws';
+import type {
+  AgentTranscriptResponse,
+  SessionSocket as KikiSocket,
+  SessionTransport as KikiClient,
+} from '../transport';
+import { resolveSelectedEffort } from '../settings/agentSettings';
+import type { SessionEventFrame } from '../wire';
 import type { TranscriptEvent } from '@moonshot-ai/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';

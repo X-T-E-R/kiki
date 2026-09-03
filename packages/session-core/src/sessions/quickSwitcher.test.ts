@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Session } from '@moonshot-ai/protocol';
 
-import type { SearchMessageHit } from './client';
+import type { SearchMessageHit } from '../transport';
 import {
   buildSwitcherItems,
   settingsCardRoute,

@@ -1,4 +1,4 @@
-import type { AgentTranscriptResponse } from '../../lib/client';
+import type { AgentTranscriptResponse } from '../../transport';
 import type { Block, SpawnInstruction, ToolBlock } from './types';
 
 function spawnInstructionFromToolArgs(args: unknown, agentId: string): string | undefined {

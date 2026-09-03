@@ -24,9 +24,16 @@ import {
   type TranscriptOperation,
 } from '@moonshot-ai/transcript';
 
-import { API_CODES, ApiError, type KikiClient, type SessionCursor } from '../lib/client';
-import { isHistoryRewrittenEvent, type ResyncRequiredPayload, type SessionEventFrame } from '../lib/types';
-import { DEFAULT_TRANSCRIPT_GRADES, transcriptGradesForFocus, type KikiSocket } from '../lib/ws';
+import {
+  API_CODES,
+  ApiError,
+  DEFAULT_TRANSCRIPT_GRADES,
+  transcriptGradesForFocus,
+  type SessionCursor,
+  type SessionSocket,
+  type SessionTransport,
+} from '../transport';
+import { isHistoryRewrittenEvent, type ResyncRequiredPayload, type SessionEventFrame } from '../wire';
 import {
   MAIN_AGENT_ID,
   applyTranscriptShell,
@@ -121,8 +128,8 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 export class SessionController {
-  private readonly client: KikiClient;
-  private readonly socket: KikiSocket;
+  private readonly client: SessionTransport;
+  private readonly socket: SessionSocket;
   readonly sessionId: string;
   private state: SessionViewState;
   private publishedState: SessionViewState;
@@ -161,8 +168,8 @@ export class SessionController {
   >();
 
   constructor(
-    client: KikiClient,
-    socket: KikiSocket,
+    client: SessionTransport,
+    socket: SessionSocket,
     sessionId: string,
     options: { scheduler?: PublicationScheduler; rewriteResetTimeoutMs?: number } = {},
   ) {

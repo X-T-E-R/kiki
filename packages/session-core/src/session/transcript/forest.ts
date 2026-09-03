@@ -1,7 +1,7 @@
 import type { SnapshotSubagent, Task } from '@moonshot-ai/protocol';
 import type { AgentState, AgentTranscriptSnapshot } from '@moonshot-ai/transcript';
 
-import type { AgentTranscriptAgent, AgentTranscriptResponse, AgentTranscriptTask } from '../../lib/client';
+import type { AgentTranscriptAgent, AgentTranscriptResponse, AgentTranscriptTask } from '../../transport';
 import {
   MAIN_AGENT_ID,
   buildAgentForest,

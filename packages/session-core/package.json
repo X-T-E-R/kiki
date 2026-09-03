@@ -13,6 +13,42 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./transport": {
+      "types": "./src/transport.ts",
+      "default": "./src/transport.ts"
+    },
+    "./wire": {
+      "types": "./src/wire.ts",
+      "default": "./src/wire.ts"
+    },
+    "./commands/*": {
+      "types": "./src/commands/*.ts",
+      "default": "./src/commands/*.ts"
+    },
+    "./composer/*": {
+      "types": "./src/composer/*.ts",
+      "default": "./src/composer/*.ts"
+    },
+    "./i18n/*": {
+      "types": "./src/i18n/*.ts",
+      "default": "./src/i18n/*.ts"
+    },
+    "./session/*": {
+      "types": "./src/session/*.ts",
+      "default": "./src/session/*.ts"
+    },
+    "./sessions/*": {
+      "types": "./src/sessions/*.ts",
+      "default": "./src/sessions/*.ts"
+    },
+    "./settings/*": {
+      "types": "./src/settings/*.ts",
+      "default": "./src/settings/*.ts"
+    },
+    "./util/*": {
+      "types": "./src/util/*.ts",
+      "default": "./src/util/*.ts"
+    },
     "./*": {
       "types": "./src/*/index.ts",
       "default": "./src/*/index.ts"

@@ -1,6 +1,6 @@
 import type { Message } from '@moonshot-ai/protocol';
 
-import { mediaFromContentParts, type MediaRef } from '../../lib/media';
+import { mediaFromContentParts, type MediaRef } from '../../composer/media';
 import type { SystemVariant } from './types';
 
 export interface SplitSystemRemindersResult {

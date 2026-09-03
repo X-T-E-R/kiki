@@ -17,7 +17,7 @@ import {
   userTurnSnapshot,
 } from './__fixtures__/canonicalTranscript';
 
-import type { AgentTranscriptResponse } from '../lib/client';
+import type { AgentTranscriptResponse } from '../transport';
 
 import { buildAgentForest } from './agentTree';
 import { groupBlocks } from './grouping';

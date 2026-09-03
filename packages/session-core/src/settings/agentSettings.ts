@@ -1,8 +1,29 @@
-import type { KikiConfigPatch, KikiConfigResponse, NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease } from './client';
+import type { NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease } from '@moonshot-ai/protocol';
+
+import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
 import { configObjectOrEmpty, normalizeConfigStringList } from './settings';
 
 export interface SubagentGovernanceDraft {
   readonly denyModels: string;
+}
+
+export function parseNamedAgentTools(value: string): string[] | null {
+  const tools = value
+    .split(/[\n,]/u)
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+  return tools.length === 0 ? null : tools;
+}
+
+export function resolveSelectedEffort(
+  efforts: readonly string[] | undefined,
+  effortOverride: string | undefined,
+  defaultEffort: string | undefined,
+): string | undefined {
+  if (efforts === undefined || efforts.length === 0) return undefined;
+  if (effortOverride !== undefined && efforts.includes(effortOverride)) return effortOverride;
+  if (defaultEffort !== undefined && efforts.includes(defaultEffort)) return defaultEffort;
+  return efforts[0];
 }
 
 export function subagentGovernanceFromConfig(config: unknown): SubagentGovernanceDraft {

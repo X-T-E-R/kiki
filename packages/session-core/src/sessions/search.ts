@@ -7,7 +7,7 @@
  * session — message-level jumps are not feasible on this wire.
  */
 
-import type { SearchMessageHit } from './client';
+import type { SearchMessageHit } from '../transport';
 
 export interface SearchSessionGroup {
   sessionId: string;

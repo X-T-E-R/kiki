@@ -7,13 +7,23 @@
 
 import type { Session } from '@moonshot-ai/protocol';
 
-import type { HostAdapter } from '../host/host';
 import { translate, type I18nKey, type Locale } from '../i18n/locale';
-import { API_CODES, ApiError, type KikiClient } from './client';
+import { API_CODES, ApiError } from '../transport';
+
+export interface SessionActionClient {
+  forkSession(sessionId: string, body: Record<string, never>): Promise<Session>;
+  undoSession(sessionId: string, body: { readonly count: number }): Promise<unknown>;
+  compactSession(sessionId: string, body: Record<string, never>): Promise<unknown>;
+  exportSession(sessionId: string): Promise<{ blob: Blob; filename: string }>;
+}
+
+export interface SessionActionHost {
+  saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
+}
 
 export interface SessionActionContext {
-  client: KikiClient;
-  host: HostAdapter;
+  client: SessionActionClient;
+  host: SessionActionHost;
   refreshSessions: () => void;
   navigate: (path: string) => void;
 }

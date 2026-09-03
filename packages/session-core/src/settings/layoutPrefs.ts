@@ -11,9 +11,7 @@
  * after a window resize.
  */
 
-import { useCallback, useSyncExternalStore } from 'react';
-
-import type { SessionSortOrder } from './sessionList';
+import type { SessionSortOrder } from '../sessions/sessionList';
 
 export interface SessionListPreferences {
   /** `time` (four recency buckets) or `workspace` (one bucket per workspace). */
@@ -38,7 +36,7 @@ export const RAIL_MAX_WIDTH = 520;
 
 const STORAGE_KEY = 'kiki.layout';
 
-const DEFAULTS: LayoutPreferences = {
+export const DEFAULT_LAYOUT_PREFERENCES: LayoutPreferences = {
   groupBy: 'time',
   sortBy: 'updated-desc',
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
@@ -78,15 +76,15 @@ export function readLayoutPreferences(): LayoutPreferences {
   const sidebarWidth = stored['sidebarWidth'];
   const railWidth = stored['railWidth'];
   return {
-    groupBy: isGroupBy(groupBy) ? groupBy : DEFAULTS.groupBy,
-    sortBy: isSortBy(sortBy) ? sortBy : DEFAULTS.sortBy,
+    groupBy: isGroupBy(groupBy) ? groupBy : DEFAULT_LAYOUT_PREFERENCES.groupBy,
+    sortBy: isSortBy(sortBy) ? sortBy : DEFAULT_LAYOUT_PREFERENCES.sortBy,
     sidebarWidth: clamp(
-      typeof sidebarWidth === 'number' ? sidebarWidth : DEFAULTS.sidebarWidth,
+      typeof sidebarWidth === 'number' ? sidebarWidth : DEFAULT_LAYOUT_PREFERENCES.sidebarWidth,
       SIDEBAR_MIN_WIDTH,
       SIDEBAR_MAX_WIDTH,
     ),
     railWidth: clamp(
-      typeof railWidth === 'number' ? railWidth : DEFAULTS.railWidth,
+      typeof railWidth === 'number' ? railWidth : DEFAULT_LAYOUT_PREFERENCES.railWidth,
       RAIL_MIN_WIDTH,
       RAIL_MAX_WIDTH,
     ),
@@ -160,64 +158,3 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
   return publish(next);
 }
 
-export function useLayoutPreferences(): LayoutPreferences {
-  const getSnapshot = useCallback(() => layoutPreferencesSnapshot(), []);
-  const getServerSnapshot = useCallback(() => DEFAULTS, []);
-  return useSyncExternalStore(subscribeLayoutPreferences, getSnapshot, getServerSnapshot);
-}
-
-/**
- * Pointer-drag width hook. Returns the current width (kept in a CSS variable
- * by the caller), a `startResize` pointer-down handler for the grab handle,
- * and a `reset` callback (double-click) that restores the default. `final`
- * reports whether the pointer has been released, so the caller can persist
- * only once per gesture.
- */
-export function usePaneResize(options: {
-  value: number;
-  min: number;
-  max: number;
-  onChange: (value: number, final: boolean) => void;
-  onReset?: () => void;
-  /** +1 for a left-edge handle (drag right grows), -1 for a right-edge. */
-  direction?: 1 | -1;
-}) {
-  const { value, min, max, onChange, onReset, direction = 1 } = options;
-
-  const startResize = useCallback(
-    (event: React.PointerEvent<HTMLElement>) => {
-      // Only the primary button drags.
-      if (event.button !== 0) return;
-      event.preventDefault();
-      const handle = event.currentTarget;
-      const startX = event.clientX;
-      const startValue = value;
-      handle.setPointerCapture(event.pointerId);
-
-      const up = () => {
-        onChange(clamp(valueRef, min, max), true);
-        handle.removeEventListener('pointermove', trackedMove);
-        handle.removeEventListener('pointerup', up);
-        handle.removeEventListener('pointercancel', up);
-      };
-      // Track the latest value so `up` persists the final width even when the
-      // last move event was coalesced out.
-      let valueRef = startValue;
-      const trackedMove = (moveEvent: Event) => {
-        const clientX = (moveEvent as PointerEvent).clientX;
-        valueRef = clamp(startValue + (clientX - startX) * direction, min, max);
-        onChange(valueRef, false);
-      };
-      handle.addEventListener('pointermove', trackedMove);
-      handle.addEventListener('pointerup', up);
-      handle.addEventListener('pointercancel', up);
-    },
-    [value, min, max, onChange, direction],
-  );
-
-  const reset = useCallback(() => {
-    onReset?.();
-  }, [onReset]);
-
-  return { startResize, reset };
-}

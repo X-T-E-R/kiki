@@ -1,7 +1,7 @@
 import type { Session, SessionPendingInteraction } from '@moonshot-ai/protocol';
 import type { AgentTranscriptSnapshot, TranscriptItem } from '@moonshot-ai/transcript';
 
-import type { AgentTranscriptResponse } from '../../lib/client';
+import type { AgentTranscriptResponse } from '../../transport';
 import { MAIN_AGENT_ID, countToolBlocks, type AgentForest, type AgentTreeNode } from '../agentTree';
 import { bump, type ApprovalBlock, type ApprovalResolution, type Block, type FloorEntry, type QueuedPromptPreview, type QuestionBlock, type QuestionOutcome, type SessionViewState, type SubagentBlock, type UserBlock } from './types';
 

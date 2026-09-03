@@ -10,7 +10,7 @@ import {
   translatePlural,
   type I18nKey,
 } from './locale';
-import { formatDuration, relativeTime, timeUntil } from '../lib/time';
+import { formatDuration, relativeTime, timeUntil } from '../util/time';
 
 describe('detectLocale', () => {
   it('honors a stored explicit choice over the browser language', () => {

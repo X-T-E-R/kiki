@@ -1,11 +1,12 @@
 /** Session-list cache helpers: page-1 poll merge + overlap dedupe, plus
  * client-local pin state keyed off the wire `Session.metadata`. */
 
-import type { InfiniteData } from '@tanstack/react-query';
-
 import type { PageResponse, Session, Workspace } from '@moonshot-ai/protocol';
 
-export type SessionListData = InfiniteData<PageResponse<Session>>;
+export interface SessionListData {
+  readonly pages: PageResponse<Session>[];
+  readonly pageParams: unknown[];
+}
 
 /** Custom-metadata key carrying the client-local pin at (`true` pins, absent
  * or `false` is unpinned). Lives on the session's `metadata.custom` document,

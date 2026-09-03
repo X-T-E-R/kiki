@@ -62,9 +62,10 @@ import {
   writeSettings,
   type ProviderDraft,
 } from './settings';
-import { clearStoredDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from './drafts';
+import { clearStoredDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from '../composer/drafts';
 import { translate, type I18nKey } from '../i18n/locale';
-import { mcpConfigFromDraft, parseNamedAgentTools } from '../components/SettingsPage';
+import { parseNamedAgentTools } from './agentSettings';
+import { mcpConfigFromDraft } from './mcp';
 
 class MemoryStorage implements Storage {
   readonly #items = new Map<string, string>();
@@ -729,7 +730,7 @@ describe('settings search index', () => {
   // including the editors SettingsPage delegates whole sections to. Section
   // components live under components/settings/, so the scan recurses.
   it('indexes every card the settings page renders', () => {
-    const dir = new URL('../components/', import.meta.url);
+    const dir = new URL('../../../../apps/kiki-gui/src/components/', import.meta.url);
     const rendered = new Set(
       readdirSync(dir, { recursive: true })
         .map((name) => String(name).replaceAll('\\', '/'))

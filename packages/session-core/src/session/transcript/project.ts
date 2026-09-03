@@ -29,8 +29,8 @@ import type {
   AgentTranscriptInteraction,
   AgentTranscriptResponse,
   AgentTranscriptTask,
-} from '../../lib/client';
-import { mediaFromContentParts, type MediaRef } from '../../lib/media';
+} from '../../transport';
+import { mediaFromContentParts, type MediaRef } from '../../composer/media';
 import type { I18nKey } from '../../i18n/locale';
 import { MAIN_AGENT_ID } from '../agentTree';
 import {

@@ -8,7 +8,7 @@
 
 import type { Session } from '@moonshot-ai/protocol';
 
-import type { SearchMessageHit } from './client';
+import type { SearchMessageHit } from '../transport';
 
 export interface SwitcherSessionItem {
   kind: 'session';

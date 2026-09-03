@@ -7,7 +7,7 @@ import {
 } from '@moonshot-ai/protocol';
 
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
-import type { KikiConfigPatch, KikiConfigResponse } from './client';
+import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
 
 /** Client-local preferences stored in localStorage (`kiki.settings`). */
 export type SendShortcut = 'enter' | 'cmd-enter';

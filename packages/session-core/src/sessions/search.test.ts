@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SearchMessageHit } from './client';
+import type { SearchMessageHit } from '../transport';
 import { groupSearchHits, isSearchable } from './search';
 
 function hit(sessionId: string, overrides: Partial<SearchMessageHit> = {}): SearchMessageHit {

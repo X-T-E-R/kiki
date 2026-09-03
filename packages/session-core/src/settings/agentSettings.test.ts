@@ -16,7 +16,7 @@ import {
   workspaceChipDisplay,
   type SubagentGovernanceDraft,
 } from './agentSettings';
-import type { NamedAgentProfile, NamedAgentSubagentLease } from './client';
+import type { NamedAgentProfile, NamedAgentSubagentLease } from '@moonshot-ai/protocol';
 
 const validDraft: SubagentGovernanceDraft = {
   denyModels: 'provider/blocked\nprovider/legacy',

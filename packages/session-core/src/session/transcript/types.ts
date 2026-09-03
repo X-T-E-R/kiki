@@ -15,8 +15,8 @@ import type {
 } from '@moonshot-ai/protocol';
 
 import type { I18nKey, I18nParams } from '../../i18n/locale';
-import type { ContextBreakdown, WireTokenUsage } from '../../lib/types';
-import type { MediaRef } from '../../lib/media';
+import type { MediaRef } from '../../composer/media';
+import type { ContextBreakdown, WireTokenUsage } from '../../wire';
 
 export interface UserBlock {
   readonly kind: 'user';
