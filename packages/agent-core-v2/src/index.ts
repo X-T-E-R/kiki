@@ -256,6 +256,8 @@ export * from '#/app/plugin/github-resolver';
 export * from '#/app/plugin/archive';
 export * from '#/app/plugin/manager';
 export * from '#/app/plugin/marketplace';
+import '#/app/plugin/configSection';
+export * from '#/app/plugin/configSection';
 export * from '#/app/plugin/plugin';
 export * from '#/app/plugin/pluginEvents';
 export * from '#/app/plugin/pluginService';

@@ -7,7 +7,6 @@ import { registerDoctorCommand } from './sub/doctor';
 import { registerExportCommand } from './sub/export';
 import { registerLoginCommand } from './sub/login';
 import { registerProviderCommand } from './sub/provider';
-import { registerVisCommand } from './sub/vis';
 import { registerWebCommand } from './sub/web';
 
 export type MainCommandHandler = (opts: CLIOptions) => void;
@@ -120,7 +119,6 @@ export function createProgram(
   registerWebCommand(program);
   registerLoginCommand(program);
   registerDoctorCommand(program);
-  registerVisCommand(program);
 
   program
     .command('__plugin_run_node', { hidden: true })

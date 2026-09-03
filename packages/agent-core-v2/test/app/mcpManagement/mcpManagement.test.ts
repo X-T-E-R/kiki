@@ -49,6 +49,7 @@ import {
 import { stubLog } from '../../_base/log/stubs';
 import {
   createMemoryMcpOAuthStore,
+  hostProcessPathClass,
   startInProcessHttpMcpServer,
   stdioFixture,
 } from '../../mcpCore/stubs';
@@ -103,7 +104,7 @@ describe('McpManagementService', () => {
     const runtime = Object.assign(
       new FakeRuntime(
         { workspaceId: 'test-workspace', runtimeId: 'local', generation: 'test-generation' },
-        { capabilities: ['process'] },
+        { capabilities: ['process'], pathClass: hostProcessPathClass },
       ),
       { process: hostProcess },
     );

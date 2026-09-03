@@ -402,7 +402,7 @@ describe('kimi-webbridge entry', () => {
     await expect(entry.install(() => {})).rejects.toThrow(/not supported/);
     expect(plugins.installs).toEqual([]);
   });
-  it('treats a non-executable leftover binary as missing and re-downloads it', async () => {
+  it.skipIf(process.platform === 'win32')('treats a non-executable leftover binary as missing and re-downloads it', async () => {
     const userHome = path.join(root, 'user-home');
     await mkdir(path.join(userHome, '.kimi-webbridge', 'bin'), { recursive: true });
     const binPath = path.join(userHome, '.kimi-webbridge', 'bin', 'kimi-webbridge');

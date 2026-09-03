@@ -10,12 +10,12 @@ import {
   IConfigService,
   IEventService,
   IMcpOAuthService,
-  IOAuthService,
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
   ICapabilityService,
   IPluginService,
+  resolvePluginMarketplaceSource,
   IHomeRuntimeService,
   ISessionManager,
   IThreadCommunicationService,
@@ -32,7 +32,6 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 import {
   createKimiDefaultHeaders,
-  kimiRegionProfile,
   type KimiHostIdentity,
 } from '@moonshot-ai/kimi-code-oauth';
 import { createAsyncApiDocument } from './protocol/asyncapi';
@@ -97,6 +96,12 @@ import {
   ExternalDelegationBootstrapError,
   type ExternalDelegationAuthorityConfig,
 } from './mcp/externalDelegationAuthority';
+import { registerKikiMcpHttp } from './mcp/http';
+import {
+  createCompositeSeatResolver,
+  createEnvSeatResolver,
+  type SeatResolver,
+} from './mcp/seatResolver';
 
 import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
 import {
@@ -125,8 +130,9 @@ export interface ServerStartOptions {
   readonly env?: NodeJS.ProcessEnv;
   /**
    * Plugin marketplace catalog URL for `GET /api/v1/plugins/marketplace`.
-   * Defaults to the `KIMI_CODE_PLUGIN_MARKETPLACE_URL` env var, then the
-   * production catalog.
+   * Takes precedence over `KIMI_CODE_PLUGIN_MARKETPLACE_URL` and
+   * `[plugins] marketplace_url` in config.toml. An empty or omitted value
+   * means the marketplace is unconfigured and is not fetched.
    */
   readonly pluginMarketplaceUrl?: string;
   readonly configPath?: string;
@@ -166,6 +172,7 @@ export interface ServerStartOptions {
   readonly rpcToken?: string;
   /** Operator-owned authority for the experimental external-delegation edge. */
   readonly externalDelegation?: ExternalDelegationAuthorityConfig;
+  readonly mcpSeatResolver?: SeatResolver;
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
   /**
@@ -186,7 +193,7 @@ export interface ServerStartOptions {
   readonly skillDirs?: readonly string[];
   readonly userSkillDir?: string;
   /**
-   * Directory of the built Kimi web UI (`dist-web`). When set, `GET /` and the
+   * Directory of the built Kimi web UI. When set, `GET /` and the
    * `/*` SPA fallback serve these assets (auth-exempt, matching v1). Omit to run
    * the API server without the web UI.
    */
@@ -551,16 +558,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableShutdown,
     enableTerminals,
     guiStore,
-    pluginMarketplaceUrl: (() => {
-      const configured = opts.pluginMarketplaceUrl ?? process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'];
-      if (configured !== undefined) return () => configured;
-      return () =>
-        `${kimiRegionProfile(core.accessor.get(IOAuthService).getRegion()).cdnBase}/plugins/marketplace.json`;
-    })(),
-    pluginMarketplaceIsDefault:
-      opts.pluginMarketplaceUrl === undefined &&
-      (process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] === undefined ||
-        process.env['KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] === '1'),
+    pluginMarketplaceUrl: () =>
+      resolvePluginMarketplaceSource({
+        optionUrl: opts.pluginMarketplaceUrl,
+        envUrl: process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'],
+        configUrl: core.accessor.get(IConfigService).get<{ marketplaceUrl?: string }>('plugins')
+          ?.marketplaceUrl,
+      }),
     onShutdown: () => {
       void close().catch((err: unknown) => logger.error({ err }, 'server close failed'));
     },
@@ -578,6 +582,30 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       ? undefined
       : { ...externalDelegation, state: externalDelegationState },
   });
+
+  let kapEndpoint = loopbackOrigin(host, port);
+  const envSeatResolver =
+    externalDelegation !== undefined && externalDelegationState.state === 'active'
+      ? createEnvSeatResolver({
+          sessionId: externalDelegation.sessionId,
+          delegationToken: externalDelegation.token,
+        })
+      : undefined;
+  if (
+    exposureClass === 'loopback' &&
+    (opts.mcpSeatResolver !== undefined || envSeatResolver !== undefined)
+  ) {
+    registerKikiMcpHttp(app, {
+      seatResolver: createCompositeSeatResolver(opts.mcpSeatResolver, envSeatResolver),
+      resolveConfig: async (seat) => ({
+        endpoint: kapEndpoint,
+        token: authTokenService.getToken(),
+        delegationToken: seat.delegationToken,
+        sessionId: seat.sessionId,
+        workspacePath: await resolveSeatWorkspacePath(core, seat.sessionId, externalDelegation),
+      }),
+    });
+  }
 
   const wssKlient = registerKlientHttp(app, core);
   const wssV1 = registerWsV1(core, {
@@ -712,6 +740,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+  kapEndpoint = loopbackOrigin(host, boundPort);
 
   postListenWarmup = runPostListenWarmup();
 
@@ -725,6 +754,24 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
 
   return { app, core, connectionRegistry, authTokenService, host, port: boundPort, close };
+}
+
+function loopbackOrigin(boundHost: string, boundPort: number): string {
+  const hostname = boundHost === '0.0.0.0' || boundHost === '::' ? '127.0.0.1' : boundHost;
+  const hostPart = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname;
+  return `http://${hostPart}:${String(boundPort)}`;
+}
+
+async function resolveSeatWorkspacePath(
+  core: Scope,
+  sessionId: string,
+  authority: ExternalDelegationAuthorityConfig | undefined,
+): Promise<string | undefined> {
+  if (authority?.sessionId === sessionId && authority.sessionBootstrap !== undefined) {
+    return authority.sessionBootstrap.workspacePath;
+  }
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  return summary?.cwd;
 }
 
 /**

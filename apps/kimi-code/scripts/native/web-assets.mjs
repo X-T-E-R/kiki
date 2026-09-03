@@ -11,7 +11,7 @@ import {
 
 export { WEB_ASSET_MANIFEST_VERSION };
 
-const WEB_ASSETS_DIR = 'dist-web';
+const WEB_ASSETS_DIR = 'dist/web';
 
 function toPosixPath(path) {
   return path.split('\\').join('/');
@@ -106,7 +106,7 @@ async function collectAssetRoot({
 
 export async function collectWebAssets({ appRoot, target }) {
   const buildCommand =
-    'pnpm --filter @moonshot-ai/kimi-web run build && pnpm --filter @moonshot-ai/kimi-code run build';
+    'pnpm -C ../kiki-gui build && node scripts/copy-web-assets.mjs';
   return collectAssetRoot({
     appRoot,
     target,

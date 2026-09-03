@@ -30,10 +30,8 @@ import { Error2, ErrorCodes } from '#/errors';
 import type {
   AgentProfile,
   AgentProfileRouteCatalogEntry,
-  AgentProfileRouteDefinition,
   ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
-import { resolveAgentProfileRoute } from '#/app/agentProfileCatalog/agentProfileRoute';
 import {
   scopedBinding,
   type AgentProfileCatalogSnapshot,
@@ -47,7 +45,7 @@ import {
   IAgentProfileRegistry,
   type AgentProfileRegistration,
 } from '#/app/agentProfileCatalog/agentProfileRegistry';
-import { BUILTIN_AGENT_PROFILE_SOURCE_ID } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import { projectAgentProfileCatalog } from '@kiki/agent-profiles/profileCatalog';
 import { IConfigService } from '#/app/config/config';
 import {
   DISABLED_BUILTIN_PROFILES_SECTION,
@@ -60,16 +58,9 @@ import { ISessionAgentProfileCatalogSeed } from './agentProfileCatalogSeed';
 import {
   ISessionAgentProfileCatalog,
   type AgentProfileInspection,
-  type AgentProfileSuppressedCandidate,
   type AgentProfileRouteDiagnostic,
   type AgentProfileSelection,
 } from './sessionAgentProfileCatalog';
-
-interface ProfileCandidate {
-  readonly profile: AgentProfile;
-  readonly sourceId: string;
-  readonly priority: number;
-}
 
 export class SessionAgentProfileCatalogService
   extends Disposable
@@ -262,182 +253,19 @@ export class SessionAgentProfileCatalogService
   }
 
   private reproject(): void {
-    const merged = new Map<string, AgentProfile>();
-    let defaultBindingProfile: AgentProfile | undefined;
-    const inspections = new Map<string, AgentProfileInspection>();
-    const entries = this.relevantEntries();
-    const disabledBuiltinProfiles = this.disabledBuiltinProfileNames();
-    const disabledNamedProfiles = this.disabledNamedProfileNames();
-
-    const builtinEntry = entries.find((e) => e.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID);
-    if (builtinEntry !== undefined) {
-      for (const profile of builtinEntry.contribution.profiles) {
-        if (profile.name === DEFAULT_AGENT_PROFILE_NAME) defaultBindingProfile = profile;
-        if (disabledBuiltinProfiles.has(profile.name)) continue;
-        merged.set(profile.name, profile);
-        inspections.set(profile.name, {
-          name: profile.name,
-          profile,
-          sourceId: builtinEntry.sourceId,
-          priority: builtinEntry.priority,
-          suppressed: [],
-        });
-      }
-    }
-
-    const fileCandidates = new Map<string, ProfileCandidate[]>();
-    const ordered = entries
-      .filter((e) => e.sourceId !== BUILTIN_AGENT_PROFILE_SOURCE_ID)
-      .toSorted((a, b) => b.priority - a.priority);
-    for (const entry of ordered) {
-      const entryProfiles = new Map<string, AgentProfile>();
-      for (const profile of entry.contribution.profiles) {
-        entryProfiles.set(profile.name, profile);
-      }
-      for (const profile of entryProfiles.values()) {
-        if (disabledNamedProfiles.has(profile.name)) continue;
-        const candidates = fileCandidates.get(profile.name) ?? [];
-        candidates.push({
-          profile,
-          sourceId: entry.sourceId,
-          priority: entry.priority,
-        });
-        fileCandidates.set(profile.name, candidates);
-      }
-    }
-
-    for (const candidates of fileCandidates.values()) {
-      const suppressed: AgentProfileSuppressedCandidate[] = [];
-      let winner = false;
-      for (const candidate of candidates) {
-        if (merged.has(candidate.profile.name) && candidate.profile.override !== true) {
-          this.log.warn(
-            `agent file profile "${candidate.profile.name}" ignored: a same-name builtin profile exists; set "override: true" in the frontmatter to replace it`,
-          );
-          suppressed.push({
-            sourceId: candidate.sourceId,
-            priority: candidate.priority,
-            reason: 'builtin-override-required',
-          });
-          continue;
-        }
-        merged.set(candidate.profile.name, candidate.profile);
-        inspections.set(candidate.profile.name, {
-          name: candidate.profile.name,
-          profile: candidate.profile,
-          sourceId: candidate.sourceId,
-          priority: candidate.priority,
-          suppressed: [
-            ...suppressed,
-            ...candidates.slice(candidates.indexOf(candidate) + 1).map((rest) => ({
-              sourceId: rest.sourceId,
-              priority: rest.priority,
-              reason: 'priority' as const,
-            })),
-          ],
-        });
-        winner = true;
-        break;
-      }
-      if (!winner && suppressed.length > 0) {
-        const name = candidates[0]?.profile.name;
-        const existing = name === undefined ? undefined : inspections.get(name);
-        if (existing !== undefined) {
-          inspections.set(existing.name, { ...existing, suppressed });
-        }
-      }
-    }
-
-    this.merged = merged;
-    this.defaultBindingProfile = defaultBindingProfile;
-    this.inspections = inspections;
-    this.reprojectRoutes(entries, merged);
-    this.reprojectSnapshot(entries, merged, defaultBindingProfile);
-  }
-
-  private reprojectSnapshot(
-    entries: readonly AgentProfileRegistration[],
-    profiles: ReadonlyMap<string, AgentProfile>,
-    defaultBindingProfile: AgentProfile | undefined,
-  ): void {
-    const ordered = entries.toSorted((a, b) => b.priority - a.priority);
-    const scopedBindings = new Map<string, ReadonlyMap<string, ScopedAgentProfileBinding>>();
-    const sourceDefinitions = new Map<string, AgentProfile>();
-    const dependencyIndex = new Map<string, readonly string[]>();
-    const diagnostics: AgentProfileDiagnostic[] = [];
-    const visited = new Set<string>();
-    const visit = (definitionId: string): void => {
-      if (visited.has(definitionId)) return;
-      visited.add(definitionId);
-      for (const entry of ordered) {
-        const table = entry.contribution.scopedBindings?.get(definitionId);
-        if (table === undefined) continue;
-        scopedBindings.set(definitionId, new Map(table));
-        for (const binding of table.values()) {
-          if (binding.diagnostic !== undefined) diagnostics.push(binding.diagnostic);
-          if (binding.sourceDefinitionId === undefined) continue;
-          const source = entry.contribution.sourceDefinitions?.get(binding.sourceDefinitionId);
-          if (source !== undefined && !sourceDefinitions.has(binding.sourceDefinitionId)) {
-            sourceDefinitions.set(binding.sourceDefinitionId, source);
-          }
-          const owners = entry.contribution.dependencyIndex?.get(binding.sourceDefinitionId);
-          if (owners !== undefined) dependencyIndex.set(binding.sourceDefinitionId, [...owners]);
-          visit(binding.sourceDefinitionId);
-        }
-        return;
-      }
-    };
-    for (const profile of profiles.values()) {
-      if (profile.definitionId !== undefined) visit(profile.definitionId);
-    }
-    const defaultProfile = profiles.get(DEFAULT_AGENT_PROFILE_NAME) ?? defaultBindingProfile;
-    this.snapshotValue = {
-      publicProfiles: new Map(profiles),
-      defaultProfile,
-      routes: new Map(this.routes),
-      scopedBindings,
-      sourceDefinitions,
-      dependencyIndex,
-      diagnostics,
-    };
-  }
-
-  private reprojectRoutes(
-    entries: readonly AgentProfileRegistration[],
-    profiles: ReadonlyMap<string, AgentProfile>,
-  ): void {
-    const diagnostics: AgentProfileRouteDiagnostic[] = [];
-    for (const entry of entries) {
-      for (const skipped of entry.contribution.skipped ?? []) {
-        if (skipped.code?.startsWith('agent_profile_route.') !== true) continue;
-        diagnostics.push({ code: skipped.code, message: skipped.reason, path: skipped.path });
-      }
-    }
-    const candidates = new Map<string, AgentProfileRouteDefinition>();
-    const ordered = entries.toSorted((a, b) => b.priority - a.priority);
-    for (const entry of ordered) {
-      for (const route of entry.contribution.routes ?? []) {
-        if (!candidates.has(route.id)) candidates.set(route.id, route);
-      }
-    }
-    const routes = new Map<string, ResolvedAgentProfileRoute>();
-    for (const route of candidates.values()) {
-      const base = profiles.get(route.profile);
-      if (base === undefined) {
-        const message = `Agent profile route "${route.id}" ignored because base profile "${route.profile}" is unavailable`;
-        diagnostics.push({
-          code: ErrorCodes.ROUTE_BASE_MISSING,
-          message,
-          path: route.path,
-          routeId: route.id,
-        });
-        this.log.warn(message);
-        continue;
-      }
-      routes.set(route.id, resolveAgentProfileRoute(route, base));
-    }
-    this.routes = routes;
-    this.routeDiagnosticsValue = diagnostics;
+    const projection = projectAgentProfileCatalog({
+      entries: this.relevantEntries(),
+      disabledBuiltinProfiles: this.disabledBuiltinProfileNames(),
+      disabledNamedProfiles: this.disabledNamedProfileNames(),
+      routeBaseMissingCode: ErrorCodes.ROUTE_BASE_MISSING,
+      warn: (message) => this.log.warn(message),
+    });
+    this.merged = new Map(projection.profiles);
+    this.defaultBindingProfile = projection.defaultBindingProfile;
+    this.inspections = new Map(projection.inspections);
+    this.routes = new Map(projection.routes);
+    this.routeDiagnosticsValue = [...projection.routeDiagnostics];
+    this.snapshotValue = projection.snapshot;
   }
 }
 

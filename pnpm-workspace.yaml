@@ -1,8 +1,6 @@
 packages:
   - packages/*
   - apps/*
-  - apps/vis/server
-  - apps/vis/web
   - docs
 
 catalog:

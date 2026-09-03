@@ -79,6 +79,7 @@ describe('Kiki external delegation MCP server', () => {
       'kiki_events',
       'kiki_interactions',
       'kiki_list',
+      'kiki_profiles',
       'kiki_respond',
       'kiki_result',
       'kiki_send',
@@ -86,21 +87,32 @@ describe('Kiki external delegation MCP server', () => {
       'kiki_transcript',
       'kiki_wait',
     ]);
-    const called = await client.callTool({ name: 'kiki_list', arguments: {} });
-    expect(called.structuredContent).toEqual({
-      delegationId: 'delegation_1',
-      dispatchables: [{ kind: 'main' }, { kind: 'named', ...exploreCatalogEntry }],
+    const listed = await client.callTool({ name: 'kiki_list', arguments: {} });
+    expect(listed.structuredContent).toEqual({
+      children: [],
+      continuations: [],
       binding: {
         version: 1,
         workspacePath: '/example/workspace',
         sessionId: 'session-operator',
       },
     });
-    expect(JSON.parse(((called as { content: Array<{ text: string }> }).content[0]!).text)).toEqual(called.structuredContent);
+    expect(JSON.parse(((listed as { content: Array<{ text: string }> }).content[0]!).text)).toEqual(listed.structuredContent);
+    const profiles = await client.callTool({ name: 'kiki_profiles', arguments: {} });
+    expect(profiles.structuredContent).toEqual({
+      profiles: [exploreCatalogEntry],
+      binding: {
+        version: 1,
+        workspacePath: '/example/workspace',
+        sessionId: 'session-operator',
+      },
+    });
     const renderedCatalog = renderProfileCatalogEntries([exploreCatalogEntry]);
     const refreshedTools = await client.listTools();
-    expect(refreshedTools.tools.find((tool) => tool.name === 'kiki_list')?.description).toContain(renderedCatalog);
+    expect(refreshedTools.tools.find((tool) => tool.name === 'kiki_list')?.description).not.toContain(renderedCatalog);
+    expect(refreshedTools.tools.find((tool) => tool.name === 'kiki_profiles')?.description).toContain(renderedCatalog);
     expect(refreshedTools.tools.find((tool) => tool.name === 'kiki_dispatch')?.description).toContain(renderedCatalog);
+    expect(refreshedTools.tools.find((tool) => tool.name === 'kiki_wait')?.description).toContain('timeout_s ≤ 45');
   });
 
   it('pins the workspace and Session binding when the MCP server is created', async () => {

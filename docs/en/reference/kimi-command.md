@@ -133,7 +133,7 @@ In `stream-json` mode, regular replies produce an Assistant message; when the mo
 
 ## Subcommands
 
-`kimi` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `web` (run the local REST/WebSocket/web service in the foreground and open the web UI), `doctor` (validate configuration files), `export` (export a session), `migrate` (migrate legacy data), `upgrade` (check for updates), and `provider` (manage providers).
+`kimi` provides the following subcommands: `login` (non-interactive login), `acp` (ACP IDE mode), `web` (run the local REST/WebSocket/web service in the foreground and open the Kiki GUI), `doctor` (validate configuration files), `export` (export a session), `migrate` (migrate legacy data), `upgrade` (check for updates), and `provider` (manage providers).
 
 ### `kimi login`
 
@@ -155,7 +155,7 @@ kimi acp
 
 ### `kimi web`
 
-Run the local Kimi server in the foreground of the current terminal — a single process that exposes the REST + WebSocket API and serves the web UI from the same origin — and open the web UI in the default browser once it is ready. The command stays attached to the terminal and shuts down cleanly on `SIGINT` / `SIGTERM` (e.g. `Ctrl-C`).
+Run the local Kimi server in the foreground of the current terminal — a single process that exposes the REST + WebSocket API and serves the Kiki GUI from the same origin — and open the Kiki GUI in the default browser once it is ready. The command stays attached to the terminal and shuts down cleanly on `SIGINT` / `SIGTERM` (e.g. `Ctrl-C`).
 
 When the server is running, `GET /openapi.json` returns the REST OpenAPI document and `GET /asyncapi.json` returns the local WebSocket AsyncAPI document. For an end-to-end walkthrough of driving sessions over the API, see [Local server and API](../guides/server.md); for the protocol details, see the [Server API](./server-api.md) reference.
 
@@ -174,10 +174,10 @@ Multiple instances can share one home directory: each registers itself under `~/
 | `--allowed-host <host...>` | Extra Host header values allowed through the DNS-rebinding check; repeatable or comma-separated |
 | `--log-level <level>` | Enable server logs at the selected level; omitted by default |
 | `--debug-endpoints` | Mount `/api/v1/debug/*` routes (off by default) |
-| `--dangerous-bypass-auth` | Disable bearer-token auth on all REST and WebSocket routes so the web UI connects without a token; only for trusted networks or behind an authenticating proxy |
+| `--dangerous-bypass-auth` | Disable bearer-token auth on all REST and WebSocket routes so the Kiki GUI connects without a token; only for trusted networks or behind an authenticating proxy |
 | `--no-open` | Do not open the browser once the server is ready |
 
-`kimi web` binds to local loopback only by default and prints the bearer token in the startup banner; the web UI authenticates automatically via the `#token=` URL fragment.
+`kimi web` binds to local loopback only by default and prints the bearer token in the startup banner; the Kiki GUI authenticates automatically via the `#token=` URL fragment.
 
 ::: info
 The `kimi server` command tree is deprecated: any `kimi server …` invocation (including all legacy subcommands) only prints a deprecation notice and exits with code 1 — use `kimi web` instead. The one exception is `kimi server kill`, which stays functional for stopping servers started by a version before 0.28.0. The notice will be removed in the next major version of Kimi Code.
@@ -265,32 +265,6 @@ kimi migrate
 ```
 
 For full migration instructions, see [Migrating from kimi-cli](../guides/migration.md).
-
-### `kimi vis`
-
-Launch the session visualizer in your browser to inspect a session as it unfolds. The command starts an in-process server pointed at your local sessions, prints the URL, opens your browser, and keeps running until you press `Ctrl-C`.
-
-```sh
-kimi vis [sessionId] [options]
-```
-
-| Parameter / Option | Description |
-| --- | --- |
-| `sessionId` | Open the visualizer directly to this session. When omitted, it opens the home view listing your sessions |
-| `--port <number>` | Port to bind. By default an available port is picked automatically |
-| `--host <host>` | Host to bind. Default: `127.0.0.1` |
-| `--no-open` | Do not open the browser automatically; just print the URL |
-
-```sh
-# Start the visualizer and open the browser at the home view
-kimi vis
-
-# Open directly to a specific session
-kimi vis 01HZ...XYZ
-
-# Bind a fixed port and host without opening a browser (e.g. on a remote host)
-kimi vis --host 0.0.0.0 --port 8123 --no-open
-```
 
 ### `kimi provider`
 

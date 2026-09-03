@@ -65,6 +65,7 @@
         ./packages/acp-client
         ./packages/acp-server
         ./packages/agent-core-v2
+        ./packages/agent-profiles
         ./packages/codex-client
         ./packages/kap-server
         ./packages/kaos
@@ -81,10 +82,6 @@
         ./apps/kimi-code
         ./apps/kiki-gui
         ./apps/vscode
-        ./apps/kimi-inspect
-        ./apps/vis
-        ./apps/vis/server
-        ./apps/vis/web
         ./docs
       ];
 
@@ -92,6 +89,7 @@
         "@moonshot-ai/acp-client"
         "@moonshot-ai/acp-server"
         "@moonshot-ai/agent-core-v2"
+        "@kiki/agent-profiles"
         "@moonshot-ai/codex-client"
         "@moonshot-ai/kap-server"
         "@moonshot-ai/kaos"
@@ -108,10 +106,6 @@
         "@moonshot-ai/kimi-code"
         "@kiki/gui"
         "kimi-code"
-        "@moonshot-ai/kimi-inspect"
-        "@moonshot-ai/vis"
-        "@moonshot-ai/vis-server"
-        "@moonshot-ai/vis-web"
         "kimi-code-docs"
       ];
     in
@@ -199,12 +193,6 @@
                     "await runVerifyStep({ requireGatekeeper: false });" \
                     "// runVerifyStep skipped in nix sandbox (sigtool lacks -dv)"
               ''}
-              # The SEA blob step (scripts/native/02-sea-blob.mjs) embeds the
-              # Kimi web assets from apps/kimi-code/dist-web and fails if that
-              # directory is missing. The bundle is committed (synced from the
-              # code-app repo) — verify it is in place before producing the
-              # native executable.
-              node apps/kimi-code/scripts/check-web-assets.mjs
               pnpm --filter=@moonshot-ai/kimi-code run build:native:sea
               runHook postBuild
             '';

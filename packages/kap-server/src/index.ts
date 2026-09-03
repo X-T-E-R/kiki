@@ -22,6 +22,10 @@ export {
 } from './instanceRegistry';
 export { createKikiMcpServer, kikiMcpConfigFromEnv } from './mcp/server';
 export type { KikiMcpConfig, KikiMcpServerOptions } from './mcp/server';
+export { registerKikiMcpHttp, KIKI_MCP_HTTP_PATH } from './mcp/http';
+export type { RegisterKikiMcpHttpOptions, KikiMcpHttpHandle } from './mcp/http';
+export { createEnvSeatResolver, createCompositeSeatResolver } from './mcp/seatResolver';
+export type { McpSeat, SeatResolver } from './mcp/seatResolver';
 export type {
   IInstanceRegistry,
   InstanceRegistration,

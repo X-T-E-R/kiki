@@ -19,9 +19,6 @@ All other workspace packages are private internal packages, are not published to
 - `@moonshot-ai/kaos`
 - `@moonshot-ai/kimi-code-oauth`
 - `@moonshot-ai/protocol`
-- `@moonshot-ai/vis`
-- `@moonshot-ai/vis-server`
-- `@moonshot-ai/vis-web`
 
 Version impact from internal dependencies must be judged manually. The published artifacts for CLI and SDK bundle internal workspace packages into the artifact itself; runtime `dependencies` of published packages must not include any `@moonshot-ai/*` internal workspace packages.
 

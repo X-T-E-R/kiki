@@ -16,7 +16,24 @@ at startup by passing `KIKI_EXTERNAL_WORKSPACE_PATH`,
 optional `KIKI_EXTERNAL_PERMISSION_MODE` (`manual`, `auto`, or `yolo`); an
 existing Session must retain the same workspace/model binding. If provisioning
 fails, KAP keeps running with the edge disabled and reports the reason through
-`GET /api/v1/meta`. Then launch `kiki-mcp` with these environment variables:
+`GET /api/v1/meta`.
+
+The default inbound transport is streamable HTTP on loopback:
+
+```json
+{
+  "url": "http://127.0.0.1:<port>/mcp",
+  "headers": { "Authorization": "Bearer <delegation token>" }
+}
+```
+
+`Authorization: Bearer` is the seat delegation token (not the KAP daemon
+token). Each MCP session gets its own transport and `createKikiMcpServer`
+instance, keyed by `Mcp-Session-Id`. Auth failures return HTTP 401 with
+`{ "code", "msg" }` and are not folded into `40001`.
+
+stdio `kiki-mcp` remains as a compatibility entry. Launch it with these
+environment variables:
 
 - `KIKI_KAP_ENDPOINT`: KAP origin, such as `http://127.0.0.1:58627`
 - `KIKI_KAP_TOKEN`: KAP bearer token
@@ -26,7 +43,8 @@ fails, KAP keeps running with the edge disabled and reports the reason through
 
 The MCP caller can choose a listed named profile, task name, and prompt. It
 cannot choose the endpoint, token, Session, workspace, model credentials,
-permission mode, tools, or profile definitions.
+permission mode, tools, or profile definitions. `kiki_profiles` is the
+cacheable catalog; `kiki_list` returns owned children and continuations only.
 
 ## Launcher operations
 
