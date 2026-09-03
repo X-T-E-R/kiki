@@ -11,19 +11,20 @@ import { useQuery } from '@tanstack/react-query';
 
 import type { Session } from '@moonshot-ai/protocol';
 
-import { useI18n } from '../i18n';
 import {
   buildSwitcherItems,
+  isSearchable,
+  SEARCH_DEBOUNCE_MS,
   settingsCardRoute,
   type SwitcherItem,
   type SwitcherSettingItem,
-} from '../lib/quickSwitcher';
-import { isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
+} from '@kiki/session-core/sessions';
 import {
   buildSettingsSearchIndex,
   searchSettings,
   settingsSectionLabels,
-} from '../lib/settings';
+} from '@kiki/session-core/settings';
+import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';

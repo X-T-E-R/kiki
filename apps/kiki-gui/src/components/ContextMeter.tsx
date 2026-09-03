@@ -21,10 +21,10 @@ import { Link } from 'react-router-dom';
 
 import type { SessionUsage } from '@moonshot-ai/protocol';
 
+import { formatCostUsd } from '@kiki/session-core/util';
+import type { ContextBreakdown } from '@kiki/session-core/wire';
 import { useI18n } from '../i18n';
-import { formatCostUsd } from '../lib/usage';
 import { usageSessionDeepLink } from '../lib/usageV2';
-import type { ContextBreakdown } from '../lib/types';
 
 /** Usage fraction at which the meter warns (yellow) and compaction becomes available. */
 export const CONTEXT_WARN_RATIO = 0.5;

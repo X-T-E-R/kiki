@@ -21,8 +21,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 
 import type { Task, TaskStatus } from '@moonshot-ai/protocol';
 
+import { sortTasks } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
-import { sortTasks } from '../lib/sorting';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 

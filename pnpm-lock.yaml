@@ -101,6 +101,9 @@ importers:
       '@fontsource/space-grotesk':
         specifier: ^5.2.5
         version: 5.3.0
+      '@kiki/session-core':
+        specifier: workspace:^
+        version: link:../../packages/session-core
       '@moonshot-ai/protocol':
         specifier: workspace:^
         version: link:../../packages/protocol
@@ -934,6 +937,21 @@ importers:
       zod:
         specifier: ^4.3.6
         version: 4.3.6
+
+  packages/session-core:
+    dependencies:
+      '@moonshot-ai/klient':
+        specifier: workspace:^
+        version: link:../klient
+      '@moonshot-ai/protocol':
+        specifier: workspace:^
+        version: link:../protocol
+      '@moonshot-ai/transcript':
+        specifier: workspace:^
+        version: link:../transcript
+      diff:
+        specifier: ^8.0.2
+        version: 8.0.4
 
   packages/transcript:
     dependencies:

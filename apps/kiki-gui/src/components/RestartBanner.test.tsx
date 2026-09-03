@@ -18,11 +18,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { clearRestartRequirement, markRestartRequired } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
-import {
-  clearRestartRequirement,
-  markRestartRequired,
-} from '../lib/settings';
 import { RestartBanner } from './RestartBanner';
 
 const { listSessions, restartNativeServer, nudge } = vi.hoisted(() => ({

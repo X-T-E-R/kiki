@@ -29,11 +29,13 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
 
-import { I18nProvider } from '../i18n';
-import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
-import type { KikiSocket } from '../lib/ws';
-import { SessionController } from '../state/sessionController';
-import { assistantMessageIdFromBlockId, createViewState, type Block, type SessionViewState } from '../state/transcript';
+import {
+  SessionController,
+  assistantMessageIdFromBlockId,
+  createViewState,
+  type Block,
+  type SessionViewState,
+} from '@kiki/session-core/session';
 import {
   ASSISTANT_FRAME_ID,
   CHILD_AGENT_ID,
@@ -48,7 +50,10 @@ import {
   resetEvent,
   spawnChildOps,
   userTurnSnapshot,
-} from '../state/__fixtures__/canonicalTranscript';
+} from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
+import { I18nProvider } from '../i18n';
+import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
+import type { KikiSocket } from '../lib/ws';
 import { Markdown } from './Markdown';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { ToolCard } from './ToolCard';

@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
-import { resolveSettingsRoute } from '../lib/settings';
+import { resolveSettingsRoute } from '@kiki/session-core/settings';
 
 /**
  * /capabilities retired in the batch-3 settings split (redesign §10.2 rule

@@ -23,17 +23,13 @@ import {
   type TranscriptGradeSpec,
 } from '@moonshot-ai/transcript';
 
-import type { ResyncRequiredPayload, SessionEventFrame } from './types';
+import {
+  DEFAULT_TRANSCRIPT_GRADES,
+  transcriptGradesForFocus,
+} from '@kiki/session-core/transport';
+import type { ResyncRequiredPayload, SessionEventFrame } from '@kiki/session-core/wire';
 
-export const DEFAULT_TRANSCRIPT_GRADES: TranscriptGradeSpec = {
-  '*': 'turn',
-  main: 'delta',
-};
-
-export function transcriptGradesForFocus(focusedAgentId: string | undefined): TranscriptGradeSpec {
-  if (focusedAgentId === undefined || focusedAgentId === 'main') return DEFAULT_TRANSCRIPT_GRADES;
-  return { '*': 'turn', main: 'delta', [focusedAgentId]: 'delta' };
-}
+export { DEFAULT_TRANSCRIPT_GRADES, transcriptGradesForFocus } from '@kiki/session-core/transport';
 
 export type WsStatus = 'connecting' | 'open' | 'closed';
 

@@ -32,7 +32,7 @@ import type {
   Terminal,
 } from '@moonshot-ai/protocol';
 
-import { appendPlainTail } from '../lib/ansi';
+import { appendPlainTail } from '@kiki/session-core/util';
 import { API_CODES, ApiError } from '../lib/client';
 import type { TerminalSignal } from '../lib/ws';
 

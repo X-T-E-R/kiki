@@ -4,6 +4,7 @@ export interface IAgentAgentsMdReminderService {
   readonly _serviceBrand: undefined;
 
   seedInjected(paths: readonly string[], cwd: string): void;
+  flushStepHead(): Promise<void>;
 }
 
 export const IAgentAgentsMdReminderService: ServiceIdentifier<IAgentAgentsMdReminderService> =

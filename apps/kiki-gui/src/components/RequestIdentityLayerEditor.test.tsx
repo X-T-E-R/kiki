@@ -4,8 +4,8 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+import type { RequestIdentityLayerDraft } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
-import type { RequestIdentityLayerDraft } from '../lib/settings';
 import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
 
 const roots: Root[] = [];

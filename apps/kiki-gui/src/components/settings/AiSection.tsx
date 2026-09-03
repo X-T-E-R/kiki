@@ -1,13 +1,13 @@
 import { useLocation } from 'react-router-dom';
 
-import { useI18n } from '../../i18n';
 import {
   AI_SETTINGS_DEFAULT_TAB,
   AI_SETTINGS_TABS,
   aiTabLabelKey,
   normalizeAiTab,
   type AiSettingsTab,
-} from '../../lib/settings';
+} from '@kiki/session-core/settings';
+import { useI18n } from '../../i18n';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DefaultsTab, ModelsTab } from './ModelsSection';
 import { ConnectionsTab } from './ProvidersSection';

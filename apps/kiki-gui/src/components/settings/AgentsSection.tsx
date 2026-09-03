@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { useI18n } from '../../i18n';
-import { errorText, type I18nKey } from '../../i18n/locale';
+import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   disabledProfilePatch,
   mergeNamedAgentProfiles,
   namedAgentNewSessionBlocked,
   namedAgentOverrideRelations,
   namedAgentSessionHref,
+  parseNamedAgentTools,
   partitionNamedAgentProfiles,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
@@ -18,12 +18,13 @@ import {
   type NamedAgentLeaseDetailLabel,
   type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
-} from '../../lib/agentSettings';
+} from '@kiki/session-core/settings';
+import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
+import { useI18n } from '../../i18n';
 import type {
   ListNamedAgentProfilesResponse,
   NamedAgentProfile,
 } from '../../lib/client';
-import { sortWorkspacesByRecency } from '../../lib/sorting';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
@@ -99,14 +100,6 @@ export function SubagentGovernanceCard() {
     </SectionCard>
   );
 }
-export function parseNamedAgentTools(value: string): string[] | null {
-  const tools = value
-    .split(/[\n,]/u)
-    .map((item) => item.trim())
-    .filter((item) => item !== '');
-  return tools.length === 0 ? null : tools;
-}
-
 function NamedAgentProfileRow({
   profile,
   workspaceFallbackId,

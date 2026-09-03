@@ -17,43 +17,39 @@ import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tansta
 
 import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
 
-import { useI18n } from '../i18n';
-import type { I18nKey } from '../i18n/locale';
-import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
-import { formatTokensPerSecond } from '../lib/usage';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   agentChildren,
-  stabilizeAgentForest,
-  type AgentForest,
-  type AgentTreeNode,
-} from '../state/agentTree';
-import {
   groupBlocks,
   groupHasError,
   groupHasRunning,
   groupToolNames,
+  latestFinalAssistantBlockId,
+  stabilizeAgentForest,
+  type AgentForest,
+  type AgentTreeNode,
+  type AssistantBlock,
+  type Block,
   type DisplayNode,
+  type NoticeBlock,
+  type SessionViewState,
+  type ShellBlock,
+  type SkillBlock,
+  type SubagentBlock,
+  type SubagentEventBlock,
+  type SystemBlock,
+  type SystemReminderBlock,
+  type ThinkingBlock,
+  type ToolBlock,
   type ToolGroup,
-} from '../state/grouping';
-import { latestFinalAssistantBlockId } from '../state/transcript';
-import type {
-  AssistantBlock,
-  Block,
-  NoticeBlock,
-  SessionViewState,
-  ShellBlock,
-  SkillBlock,
-  SubagentBlock,
-  SubagentEventBlock,
-  SystemBlock,
-  SystemReminderBlock,
-  ThinkingBlock,
-  ToolBlock,
-  TurnExecutionInfo,
-  TurnRetryInfo,
-  TurnTailInfo,
-  UserBlock,
-} from '../state/transcript';
+  type TurnExecutionInfo,
+  type TurnRetryInfo,
+  type TurnTailInfo,
+  type UserBlock,
+} from '@kiki/session-core/session';
+import { formatTokensPerSecond } from '@kiki/session-core/util';
+import { useI18n } from '../i18n';
+import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import { FloorNavRail } from './FloorNavRail';
 import { ApprovalCard, QuestionCard } from './Interactions';
 import { Markdown } from './Markdown';

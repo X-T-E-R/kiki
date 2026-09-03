@@ -19,7 +19,7 @@ import { createPortal } from 'react-dom';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { basenameOf, formatBytes, type MediaRef } from '../lib/media';
+import { basenameOf, formatBytes, type MediaRef } from '@kiki/session-core/composer/media';
 import { useOptionalConnection } from '../state/connection';
 import {
   closeAllPreviewTabs,

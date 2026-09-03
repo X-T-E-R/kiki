@@ -1,5 +1,5 @@
+import type { SettingsSearchEntry } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
-import type { SettingsSearchEntry } from '../../lib/settings';
 import { SettingsSearch } from './SettingsNav';
 
 /**

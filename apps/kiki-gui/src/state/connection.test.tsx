@@ -6,12 +6,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { ConnectionProvider, useConnection } from './connection';
+import { ConnectionProvider, nextGuiLeaseClientId, useConnection } from './connection';
 
 const mocks = vi.hoisted(() => ({
   detectLocalConnection: vi.fn(),
   invoke: vi.fn(),
   meta: vi.fn(),
+  renewLease: vi.fn(),
   sockets: [] as Array<{
     baseUrl: string;
     connect: ReturnType<typeof vi.fn>;
@@ -48,6 +49,10 @@ vi.mock('../lib/client', () => ({
 
     meta() {
       return mocks.meta(this.baseUrl);
+    }
+
+    renewLease(body: { clientId: string; kind: 'gui' }) {
+      return mocks.renewLease(body);
     }
   },
 }));
@@ -99,6 +104,8 @@ beforeEach(() => {
   mocks.detectLocalConnection.mockReset();
   mocks.invoke.mockReset();
   mocks.meta.mockReset();
+  mocks.renewLease.mockReset();
+  mocks.renewLease.mockResolvedValue(undefined);
   mocks.sockets.length = 0;
   mocks.stageListener = undefined;
 });
@@ -236,5 +243,59 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.querySelector('[data-connected-url]')).toBeNull();
     expect(mocks.sockets).toHaveLength(1);
     expect(mocks.sockets[0]!.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('builds lease client ids without crypto.randomUUID', () => {
+    const crypto = globalThis.crypto as Crypto & { randomUUID?: () => `${string}-${string}-${string}-${string}-${string}` };
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, 'randomUUID');
+    Object.defineProperty(crypto, 'randomUUID', { configurable: true, value: undefined });
+    try {
+      const first = nextGuiLeaseClientId(1234);
+      const second = nextGuiLeaseClientId(1234);
+      expect(first).toMatch(/^gui-ya-[0-9a-z]+$/);
+      expect(second).not.toBe(first);
+    } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(crypto, 'randomUUID');
+      else Object.defineProperty(crypto, 'randomUUID', descriptor);
+    }
+  });
+
+  it('renders and renews one GUI lease when crypto.randomUUID is unavailable', async () => {
+    vi.useFakeTimers();
+    const crypto = globalThis.crypto as Crypto & { randomUUID?: () => `${string}-${string}-${string}-${string}-${string}` };
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, 'randomUUID');
+    Object.defineProperty(crypto, 'randomUUID', { configurable: true, value: undefined });
+    try {
+      mocks.detectLocalConnection.mockResolvedValue({
+        config: { url: 'http://127.0.0.1:41001', token: 'home-token' },
+        persist: false,
+      });
+      mocks.meta.mockResolvedValue({ serverVersion: 'test' });
+
+      await mountProvider();
+      expect(mocks.renewLease).toHaveBeenCalledTimes(1);
+      expect(mocks.renewLease).toHaveBeenLastCalledWith({
+        clientId: expect.any(String),
+        kind: 'gui',
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(mocks.renewLease).toHaveBeenCalledTimes(2);
+
+      const entry = mounted.pop();
+      expect(entry).toBeDefined();
+      await act(async () => {
+        entry!.root.unmount();
+      });
+      entry!.container.remove();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(mocks.renewLease).toHaveBeenCalledTimes(2);
+    } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(crypto, 'randomUUID');
+      else Object.defineProperty(crypto, 'randomUUID', descriptor);
+      vi.useRealTimers();
+    }
   });
 });

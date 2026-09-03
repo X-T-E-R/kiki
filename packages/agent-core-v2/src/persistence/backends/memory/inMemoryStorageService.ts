@@ -28,6 +28,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
   private readonly scopes = new Map<string, Map<string, Uint8Array>>();
   private readonly watchers = new Map<string, WatchEntry>();
   private readonly locks = new Map<string, symbol>();
+  private readonly mtimes = new Map<string, number>();
 
   async read(scope: string, key: string): Promise<Uint8Array | undefined> {
     return this.scopes.get(scope)?.get(key);
@@ -57,6 +58,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
   ): Promise<void> {
     options.signal?.throwIfAborted();
     this.bucket(scope).set(key, data);
+    this.mtimes.set(this.watchKey(scope, key), Date.now());
     this.notifyWatchers(scope, key);
   }
 
@@ -81,6 +83,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
       offset += chunk.byteLength;
     }
     this.bucket(scope).set(key, merged);
+    this.mtimes.set(this.watchKey(scope, key), Date.now());
     this.notifyWatchers(scope, key);
   }
 
@@ -94,6 +97,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     const existing = bucket.get(key);
     if (existing === undefined) {
       bucket.set(key, data);
+      this.mtimes.set(this.watchKey(scope, key), Date.now());
       this.notifyWatchers(scope, key);
       return;
     }
@@ -101,6 +105,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     merged.set(existing, 0);
     merged.set(data, existing.byteLength);
     bucket.set(key, merged);
+    this.mtimes.set(this.watchKey(scope, key), Date.now());
     this.notifyWatchers(scope, key);
   }
 
@@ -137,11 +142,16 @@ export class InMemoryStorageService implements IFileSystemStorageService {
 
   async delete(scope: string, key: string): Promise<void> {
     this.scopes.get(scope)?.delete(key);
+    this.mtimes.delete(this.watchKey(scope, key));
     this.notifyWatchers(scope, key);
   }
 
   async size(scope: string, key: string): Promise<number | undefined> {
     return this.scopes.get(scope)?.get(key)?.byteLength;
+  }
+
+  async mtime(scope: string, key: string): Promise<number | undefined> {
+    return this.mtimes.get(this.watchKey(scope, key));
   }
 
   pathFor(_scope: string, _key: string): undefined {

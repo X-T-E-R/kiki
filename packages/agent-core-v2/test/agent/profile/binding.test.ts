@@ -1725,6 +1725,7 @@ describe('agentsMdReminder seeding', () => {
       agentService(IAgentAgentsMdReminderService, {
         _serviceBrand: undefined,
         seedInjected,
+        flushStepHead: async () => {},
       }),
     );
     return ctx.get(IAgentProfileService);
