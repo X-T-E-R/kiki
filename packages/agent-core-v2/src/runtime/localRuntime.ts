@@ -2,7 +2,6 @@ import * as posixPath from 'node:path/posix';
 import * as win32Path from 'node:path/win32';
 
 import { Emitter } from '#/_base/event';
-import { hostAwareResolve, isWindowsAbsolutePath } from '#/_base/utils/paths';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
@@ -57,17 +56,17 @@ export class LocalRuntime implements Runtime {
     this.path = {
       separator: path.sep as '/' | '\\',
       delimiter: path.delimiter as ':' | ';',
-      isAbsolute: (p) => path.isAbsolute(p) || isWindowsAbsolutePath(p),
+      isAbsolute: (p) => path.isAbsolute(p),
       join: (...paths) => path.join(...paths),
       relative: (from, to) => path.relative(from, to),
-      resolve: (...paths) => hostAwareResolve(path, ...paths),
+      resolve: (...paths) => path.resolve(...paths),
       basename: (p) => path.basename(p),
       dirname: (p) => path.dirname(p),
     };
     this.workspace = {
       mapRoots: (roots) => ({
-        workDir: hostAwareResolve(path, roots.workDir),
-        additionalDirs: roots.additionalDirs?.map((root) => hostAwareResolve(path, root)),
+        workDir: path.resolve(roots.workDir),
+        additionalDirs: roots.additionalDirs?.map((root) => path.resolve(root)),
       }),
     };
     this.fs = fs;

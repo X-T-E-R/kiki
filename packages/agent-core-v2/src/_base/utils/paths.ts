@@ -12,21 +12,6 @@ export function isWindowsAbsolutePath(value: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(value) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(value);
 }
 
-export function hostAwareResolve(
-  path: { readonly sep: string; resolve(...paths: string[]): string },
-  ...paths: string[]
-): string {
-  if (path.sep === '/') {
-    for (let i = paths.length - 1; i >= 0; i--) {
-      const segment = paths[i];
-      if (segment !== undefined && isWindowsAbsolutePath(segment)) {
-        return nodePath.win32.resolve(...paths.slice(i)).replaceAll('\\', '/');
-      }
-    }
-  }
-  return path.resolve(...paths);
-}
-
 export function resolvePath(base: string, value: string): string {
   if (isWindowsAbsolutePath(base)) {
     return nodePath.win32.resolve(base, value).replaceAll('\\', '/');

@@ -4,7 +4,7 @@ import nodePath, { win32 } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { canonicalWorkspaceRoot, findUpwardRoot, hostAwareResolve, resolvePath, subtreeWatchFilter } from '#/_base/utils/paths';
+import { canonicalWorkspaceRoot, findUpwardRoot, resolvePath, subtreeWatchFilter } from '#/_base/utils/paths';
 
 describe('subtree watch filtering', () => {
   const root = '/repo';
@@ -190,22 +190,6 @@ describe('resolvePath', () => {
   it('keeps POSIX resolution identical to plain absolute/normalize semantics', () => {
     expect(resolvePath('/repo', 'tools/../mcp')).toBe('/repo/mcp');
     expect(resolvePath('/repo', '/abs/path')).toBe('/abs/path');
-  });
-});
-
-describe('hostAwareResolve', () => {
-  it('keeps posix resolution when every segment is posix', () => {
-    expect(hostAwareResolve(nodePath.posix, '/repo', 'tools/mcp')).toBe('/repo/tools/mcp');
-  });
-
-  it('does not join a Windows absolute segment onto a posix base', () => {
-    expect(hostAwareResolve(nodePath.posix, '/repo', 'C:\\Users\\fake\\cwd')).toBe('C:/Users/fake/cwd');
-    expect(hostAwareResolve(nodePath.posix, 'C:/Users/fake/cwd')).toBe('C:/Users/fake/cwd');
-    expect(hostAwareResolve({ sep: '/', resolve: (...parts: string[]) => nodePath.posix.resolve(...parts) }, 'C:/Users/fake/cwd')).toBe('C:/Users/fake/cwd');
-  });
-
-  it('keeps win32 resolution when the path class is win32', () => {
-    expect(hostAwareResolve(nodePath.win32, 'C:\\repo', 'tools')).toBe('C:\\repo\\tools');
   });
 });
 

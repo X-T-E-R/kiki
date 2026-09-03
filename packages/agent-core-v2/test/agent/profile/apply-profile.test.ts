@@ -100,7 +100,7 @@ describe('AgentProfileService.applyProfile', () => {
     const fs = new HostFileSystem();
     ctx = createTestAgent(
       execEnvServices({ hostFs: fs }),
-      hostEnvironmentServices(homeDir),
+      hostEnvironmentServices(homeDir, process.platform === 'win32' ? 'win32' : 'posix'),
       { cwd: workDir },
       ...extra,
     );
@@ -152,9 +152,7 @@ describe('AgentProfileService.applyProfile', () => {
 
     await svc.applyProfile(exactProfile);
 
-    expect(svc.data().systemPrompt).toBe(
-      exactSystemPrompt(workDir.replaceAll('\\', '/'), 'project instructions'),
-    );
+    expect(svc.data().systemPrompt).toBe(exactSystemPrompt(workDir, 'project instructions'));
   });
 
   it('maps prompt context roots through the bound runtime workspace view', async () => {
@@ -203,7 +201,7 @@ describe('AgentProfileService.applyProfile', () => {
     await svc.applyProfile(exactProfile);
 
     const prompt = svc.data().systemPrompt;
-    expect(prompt).toContain(`cwd:${workDir}`);
+    expect(prompt).toContain(`cwd:${workDir.replaceAll('\\', '/')}`);
     expect(prompt).toContain('ls:\nextra:');
   });
 
@@ -488,8 +486,9 @@ function pluginStub(
 }
 
 function exactSystemPrompt(workDir: string, agentsMd: string): string {
+  const cwd = process.platform === 'win32' ? workDir.replaceAll('/', '\\') : workDir;
   return [
-    `cwd:${workDir}`,
+    `cwd:${cwd}`,
     'os:Linux',
     'shell:bash:/bin/bash',
     `agents:<!-- From: ${join(workDir, 'AGENTS.md')} -->\n${agentsMd}`,
