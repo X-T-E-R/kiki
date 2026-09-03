@@ -384,6 +384,7 @@ merge_all_available_skills = true
   # scope: "turn-override" | "session-runtime" | "project" | "user" (default: "user")
   # pattern: string
   # reason: string
+# dangerous_bash: "on" | "off" | "default"
 
 # ##########################################################################
 # plan
