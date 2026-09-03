@@ -2,4 +2,4 @@
 "@moonshot-ai/kap-server": patch
 ---
 
-Require configured external delegation sessions to finish bootstrapping before startup and allow their permission mode to be set with `KIKI_EXTERNAL_PERMISSION_MODE`.
+Keep KAP running when external delegation provisioning fails and report the disabled edge and reason through server metadata.
