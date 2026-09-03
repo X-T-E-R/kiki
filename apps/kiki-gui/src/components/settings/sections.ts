@@ -1,4 +1,4 @@
-import { SETTINGS_SECTIONS } from '../../lib/settings';
+import { SETTINGS_SECTIONS } from '@kiki/session-core/settings';
 
 const SECTIONS = SETTINGS_SECTIONS;
 

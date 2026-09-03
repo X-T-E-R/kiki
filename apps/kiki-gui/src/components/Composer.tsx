@@ -26,21 +26,6 @@ import { useNavigate } from 'react-router-dom';
 
 import type { FsSearchHit, PermissionMode, PromptPlanGate, SessionUsage } from '@moonshot-ai/protocol';
 
-import { useHost } from '../host';
-import { isVscodeWebview, vscodeHost } from '../host/vscode';
-import { useI18n } from '../i18n';
-import { errorText, issueText, type I18nKey } from '../i18n/locale';
-import type { NamedAgentProfile } from '../lib/client';
-import {
-  ACCEPTED_IMAGE_MIMES,
-  fileToImageAttachment,
-  formatBytes,
-  hasMention,
-  parseMentionTrigger,
-  reserveImageFiles,
-  reserveUploadFiles,
-  type ComposerAttachment,
-} from '../lib/attachments';
 import {
   buildSlashItems,
   classifySlashSubmission,
@@ -49,17 +34,34 @@ import {
   parseSlashTrigger,
   type SlashActionId,
   type SlashItem,
-} from '../lib/slashCommands';
-import { pushInputHistory, readInputHistory } from '../lib/drafts';
-import { registerOverlay } from '../lib/uiBusy';
-import type { SelectionAnnotation } from '../lib/selectionQuote';
+} from '@kiki/session-core/commands';
+import {
+  ACCEPTED_IMAGE_MIMES,
+  fileToImageAttachment,
+  formatBytes,
+  hasMention,
+  parseMentionTrigger,
+  pushInputHistory,
+  readInputHistory,
+  reserveImageFiles,
+  reserveUploadFiles,
+  type ComposerAttachment,
+  type SelectionAnnotation,
+} from '@kiki/session-core/composer';
+import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   isComposerSendKey,
+  resolveSelectedEffort,
   settingsServerSnapshot,
   settingsSnapshot,
   subscribeSettings,
   type ComposerModelSource,
-} from '../lib/settings';
+} from '@kiki/session-core/settings';
+import { useHost } from '../host';
+import { isVscodeWebview, vscodeHost } from '../host/vscode';
+import { useI18n } from '../i18n';
+import type { NamedAgentProfile } from '../lib/client';
+import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
 import { ContextMeter } from './ContextMeter';
 import { useComposerContextMenu } from './ComposerContextMenu';
@@ -90,17 +92,7 @@ function nextVscodeConversationKey(): string {
   return `vscode-conversation-${vscodeConversationSequence}`;
 }
 
-/** The effort visible in the select is also the value submitted on send. */
-export function resolveSelectedEffort(
-  efforts: readonly string[] | undefined,
-  effortOverride: string | undefined,
-  defaultEffort: string | undefined,
-): string | undefined {
-  if (efforts === undefined || efforts.length === 0) return undefined;
-  if (effortOverride !== undefined && efforts.includes(effortOverride)) return effortOverride;
-  if (defaultEffort !== undefined && efforts.includes(defaultEffort)) return defaultEffort;
-  return efforts[0];
-}
+export { resolveSelectedEffort };
 
 /** Fallback display/binding when the server echoes no profile on a session. */
 export const DEFAULT_AGENT_PROFILE = 'agent';

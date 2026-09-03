@@ -8,10 +8,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { Session, Workspace } from '@moonshot-ai/protocol';
 
+import {
+  SEARCH_DEBOUNCE_MS,
+  SESSION_PIN_META_KEY,
+  type SessionGroup,
+} from '@kiki/session-core/sessions';
 import { I18nProvider } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
-import { SEARCH_DEBOUNCE_MS } from '../lib/search';
-import { SESSION_PIN_META_KEY, type SessionGroup } from '../lib/sessionList';
 import {
   mergeSearchPages,
   searchNextPageParam,

@@ -1,12 +1,12 @@
 /**
  * Local kap-server detection — a dev/preview middleware answering
  * `GET /__kiki/local-server` with the newest verified kap-server on this
- * machine. Registered PIDs are only candidates: `/meta` must echo the
- * registry's per-process server id before credentials are returned.
+ * machine. Registered PIDs are only candidates: an authenticated `/meta`
+ * response must identify a Kiki server before credentials are returned.
  *
  * kap-server self-registers under
- * `<kimi home>/server/instances/<serverId>.json` and keeps the token at
- * `<kimi home>/server.token`. The token is included only when Vite is bound to
+ * `<kiki home>/server/instances/<serverId>.json` and keeps the token at
+ * `<kiki home>/server.token`. The token is included only when Vite is bound to
  * loopback; non-loopback dev/preview listeners still report the URL but never
  * disclose the bearer credential over HTTP.
  */
@@ -23,16 +23,24 @@ const IDENTITY_PROBE_TIMEOUT_MS = 1_000;
 
 interface ServerInstanceDisk {
   server_id?: string;
+  serverId?: string;
+  url?: string;
   pid?: number;
   host?: string;
   port?: number;
   started_at?: number;
+  startedAt?: number;
+  heartbeat_at?: number;
+  heartbeatAt?: number;
+  workspaces?: string[];
 }
 
-interface MetaEnvelope {
-  readonly data?: {
-    readonly server_id?: string;
-  };
+export interface LocalServerCandidate {
+  readonly pid: number;
+  readonly url: string;
+  readonly startedAt: number;
+  readonly heartbeatAt: number;
+  readonly workspaces: readonly string[];
 }
 
 export interface LocalServerPayload {
@@ -44,13 +52,13 @@ export interface LocalServerPayload {
 interface DetectLocalServerOptions {
   readonly home?: string;
   readonly includeToken?: boolean;
+  readonly currentWorkspace?: string;
 }
 
-function kimiHomeDir(): string {
-  const fromEnv = process.env['KIMI_CODE_HOME'];
-  return fromEnv !== undefined && fromEnv.length > 0
-    ? fromEnv
-    : join(homedir(), '.kimi-code');
+function kikiHomeDir(): string {
+  return process.env['KIKI_HOME']
+    ?? process.env['KIMI_CODE_HOME']
+    ?? join(homedir(), '.kiki');
 }
 
 function pidAlive(pid: number): boolean {
@@ -69,66 +77,116 @@ function normalizeHost(host: string | undefined): string {
   return host;
 }
 
-async function probeServerId(url: string, token: string): Promise<string | undefined> {
+function isLoopbackHost(host: string): boolean {
+  const normalized = normalizeHost(host).replace(/^\[(.*)\]$/, '$1').toLowerCase();
+  return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
+}
+
+export function parseServerInstance(raw: string): LocalServerCandidate | undefined {
+  let disk: ServerInstanceDisk;
+  try {
+    disk = JSON.parse(raw) as ServerInstanceDisk;
+  } catch {
+    return undefined;
+  }
+  if (typeof disk.pid !== 'number' || disk.pid <= 0) return undefined;
+
+  let port: number;
+  if (typeof disk.url === 'string') {
+    let url: URL;
+    try {
+      url = new URL(disk.url);
+    } catch {
+      return undefined;
+    }
+    if (url.protocol !== 'http:' || !isLoopbackHost(url.hostname)) return undefined;
+    port = Number(url.port);
+  } else {
+    if (typeof disk.port !== 'number' || !isLoopbackHost(disk.host ?? '')) return undefined;
+    port = disk.port;
+  }
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) return undefined;
+
+  const startedAt = disk.started_at ?? disk.startedAt;
+  if (typeof startedAt !== 'number') return undefined;
+  const heartbeatAt = disk.heartbeat_at ?? disk.heartbeatAt ?? startedAt;
+  const workspaces = Array.isArray(disk.workspaces)
+    ? disk.workspaces.filter((workspace): workspace is string => typeof workspace === 'string')
+    : [];
+  return {
+    pid: disk.pid,
+    url: `http://127.0.0.1:${port}`,
+    startedAt,
+    heartbeatAt,
+    workspaces,
+  };
+}
+
+function normalizeWorkspace(path: string): string {
+  const normalized = path.replaceAll('\\', '/').replace(/\/$/, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function matchesWorkspace(candidate: LocalServerCandidate, currentWorkspace: string): boolean {
+  const current = normalizeWorkspace(currentWorkspace);
+  return candidate.workspaces.some((workspace) => {
+    const root = normalizeWorkspace(workspace);
+    return current === root || current.startsWith(`${root}/`);
+  });
+}
+
+export function rankServerInstances(
+  candidates: readonly LocalServerCandidate[],
+  currentWorkspace: string,
+): LocalServerCandidate[] {
+  return [...candidates].sort((left, right) =>
+    Number(matchesWorkspace(right, currentWorkspace)) - Number(matchesWorkspace(left, currentWorkspace))
+    || right.heartbeatAt - left.heartbeatAt
+    || right.startedAt - left.startedAt,
+  );
+}
+
+async function probeServer(url: string, token: string): Promise<boolean> {
   try {
     const response = await fetch(`${url}/api/v1/meta`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(IDENTITY_PROBE_TIMEOUT_MS),
     });
-    if (!response.ok) return undefined;
-    const payload = (await response.json()) as MetaEnvelope;
-    const serverId = payload.data?.server_id;
-    return typeof serverId === 'string' && serverId.length > 0 ? serverId : undefined;
+    if (!response.ok) return false;
+    const payload = (await response.json()) as { data?: { server_version?: unknown } };
+    return typeof payload.data?.server_version === 'string';
   } catch {
-    return undefined;
+    return false;
   }
 }
 
-/** Newest registered instance whose pid and server-id nonce both verify. */
 export async function findLiveInstance(
   home: string,
   token: string | undefined,
+  currentWorkspace = process.cwd(),
 ): Promise<string | undefined> {
   if (token === undefined) return undefined;
-  const instancesDir = join(home, 'server', 'instances');
-  let names: string[];
-  try {
-    names = await readdir(instancesDir);
-  } catch {
-    return undefined;
-  }
-
-  const candidates: Array<{ serverId: string; startedAt: number; url: string }> = [];
-  for (const name of names) {
-    if (!name.endsWith('.json')) continue;
-    let disk: ServerInstanceDisk;
+  const candidates: LocalServerCandidate[] = [];
+  for (const instancesDir of [join(home, 'server', 'instances'), join(home, 'instances')]) {
+    let names: string[];
     try {
-      disk = JSON.parse(await readFile(join(instancesDir, name), 'utf8')) as ServerInstanceDisk;
+      names = await readdir(instancesDir);
     } catch {
       continue;
     }
-    if (
-      typeof disk.server_id !== 'string' ||
-      disk.server_id.length === 0 ||
-      typeof disk.pid !== 'number' ||
-      typeof disk.port !== 'number' ||
-      disk.port <= 0 ||
-      !pidAlive(disk.pid)
-    ) {
-      continue;
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      try {
+        const candidate = parseServerInstance(await readFile(join(instancesDir, name), 'utf8'));
+        if (candidate !== undefined && pidAlive(candidate.pid)) candidates.push(candidate);
+      } catch {
+        continue;
+      }
     }
-    candidates.push({
-      serverId: disk.server_id,
-      startedAt: typeof disk.started_at === 'number' ? disk.started_at : 0,
-      url: `http://${normalizeHost(disk.host)}:${disk.port}`,
-    });
   }
 
-  candidates.sort((left, right) => right.startedAt - left.startedAt);
-  for (const candidate of candidates) {
-    if ((await probeServerId(candidate.url, token)) === candidate.serverId) {
-      return candidate.url;
-    }
+  for (const candidate of rankServerInstances(candidates, currentWorkspace)) {
+    if (await probeServer(candidate.url, token)) return candidate.url;
   }
   return undefined;
 }
@@ -156,9 +214,9 @@ export async function detectLocalServer(
   proxyTarget: string,
   options: DetectLocalServerOptions = {},
 ): Promise<LocalServerPayload> {
-  const home = options.home ?? kimiHomeDir();
+  const home = options.home ?? kikiHomeDir();
   const token = await readToken(home);
-  const instanceUrl = await findLiveInstance(home, token);
+  const instanceUrl = await findLiveInstance(home, token, options.currentWorkspace);
   // Fall back to the dev-proxy target: it is a kap-server URL by construction.
   return {
     url: instanceUrl ?? proxyTarget,

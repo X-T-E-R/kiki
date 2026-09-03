@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { errorText } from '@kiki/session-core/i18n';
+import { parseAdvancedServerConfig } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
-import { errorText } from '../../i18n/locale';
-import { parseAdvancedServerConfig } from '../../lib/settings';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON } from '../ui';

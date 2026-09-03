@@ -6,9 +6,9 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '@kiki/session-core/composer';
 import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
-import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '../lib/drafts';
 import { Composer } from './Composer';
 
 const { selectFilesNative, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({

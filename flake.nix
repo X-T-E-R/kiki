@@ -74,6 +74,7 @@
         ./packages/oauth
         ./packages/pi-tui
         ./packages/protocol
+        ./packages/session-core
         ./packages/transcript
         ./packages/transcript-live
         ./packages/tree-sitter-bash
@@ -96,6 +97,7 @@
         "@moonshot-ai/klient"
         "@moonshot-ai/pi-tui"
         "@moonshot-ai/protocol"
+        "@kiki/session-core"
         "@moonshot-ai/transcript"
         "@kiki/transcript-live"
         "@moonshot-ai/tree-sitter-bash"

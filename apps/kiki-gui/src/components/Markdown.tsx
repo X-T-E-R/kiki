@@ -18,7 +18,7 @@ import {
   resolveFileHref,
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
-} from '../lib/media';
+} from '@kiki/session-core/composer/media';
 import { KikiCodeBlock } from './markdown/KikiCodeBlock';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { useMediaPreview } from './mediaPreviewContext';

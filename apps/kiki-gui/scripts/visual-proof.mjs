@@ -184,6 +184,16 @@ const STRINGS = {
     terminalKillConfirm: 'sure?',
     terminalExited: 'Process exited (code 0)',
     capPlugin: 'Plugin skills',
+    pluginsAdd: 'Add a plugin',
+    pluginsMarketplaceTab: 'Marketplace',
+    pluginsUnconfigured: 'Save a catalog URL to show its plugins here.',
+    pluginsSaveCatalog: 'Save catalog URL',
+    pluginsCatalogNotes: 'Catalog Notes',
+    pluginsUninstall: 'Uninstall',
+    pluginsManifest: 'Manifest',
+    pluginsMcpOn: 'On',
+    pluginsInstall: 'Install',
+    cancel: 'Cancel',
     capBuiltin: 'Built-in skills',
     capFilterAria: 'Filter capabilities',
     capEmptyFilter: 'No capabilities match',
@@ -330,6 +340,16 @@ const STRINGS = {
     terminalKillConfirm: '确认？',
     terminalExited: '进程已退出（代码 0）',
     capPlugin: '插件技能',
+    pluginsAdd: '添加插件',
+    pluginsMarketplaceTab: '市场',
+    pluginsUnconfigured: '保存 URL 后目录将在此出现。',
+    pluginsSaveCatalog: '保存目录 URL',
+    pluginsCatalogNotes: 'Catalog Notes',
+    pluginsUninstall: '卸载',
+    pluginsManifest: '清单',
+    pluginsMcpOn: '开',
+    pluginsInstall: '安装',
+    cancel: '取消',
     capBuiltin: '内置技能',
     capFilterAria: '过滤能力',
     capEmptyFilter: '没有匹配',
@@ -1297,13 +1317,39 @@ async function scenarioSettings() {
   await page.waitForTimeout(400);
   await shot('settings-mcp');
 
-  // Plugins leaf (batch-3 reviewer ruling): installed plugins with enabled /
-  // error state and contribution summaries; the marketplace stays batch 5.
+  // Plugins leaf (batch 5): installed list plus the add card. Default fixture
+  // has no marketplace URL, so the Marketplace tab is a how-to, not an error.
   await page.locator('nav [data-settings-nav-leaf="plugins"]').click();
   await page.waitForSelector('#st-card-plugins', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-plugins-add', { timeout: 10_000 });
   await page.waitForSelector('text=fixture-plugin', { timeout: 10_000 });
-  await page.waitForTimeout(400);
+  await page.locator('[data-plugin-details-toggle="fixture-plugin"]').click();
+  await page.waitForSelector('[data-plugin-details="fixture-plugin"]', { timeout: 10_000 });
+  await page.waitForSelector('text=fixture-plugin-mcp', { timeout: 10_000 });
+  await page.waitForTimeout(300);
   await shot('settings-plugins');
+  await page.locator(`[data-plugin-add-tab-button="marketplace"]`).click();
+  await page.waitForSelector('[data-marketplace-empty]', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.pluginsUnconfigured}`, { timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('settings-plugins-marketplace');
+  await page.locator('[data-plugin-add-tab="marketplace"] input').fill('https://example.test/marketplace.json');
+  await page.getByRole('button', { name: S.pluginsSaveCatalog }).click();
+  await page.waitForSelector('[data-marketplace-row="catalog-notes"]', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.pluginsCatalogNotes}`, { timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('settings-plugins-marketplace-catalog');
+  await page.locator('[data-plugin-details-toggle="fixture-plugin"]').click();
+  await page.locator('[data-marketplace-row="catalog-update"]').scrollIntoViewIfNeeded();
+  await page.waitForSelector('[data-marketplace-action="fixture-plugin"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-marketplace-action="catalog-update"]', { timeout: 10_000 });
+  await page.waitForTimeout(200);
+  await shot('settings-plugins-marketplace-states');
+  await page.locator('[data-plugin-uninstall="fixture-plugin"]').click();
+  await page.waitForSelector('[role="alertdialog"]', { timeout: 10_000 });
+  await page.waitForTimeout(200);
+  await shot('settings-plugins-uninstall');
+  await page.locator('[role="alertdialog"]').getByRole('button', { name: S.cancel, exact: true }).click();
 
   // Automation leaf: tool policy plus the raw hooks editor.
   await page.locator('nav [data-settings-nav-leaf="automation"]').click();

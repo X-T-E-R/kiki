@@ -459,6 +459,28 @@ describe('KikiClient.listSessions', () => {
   });
 });
 
+describe('KikiClient.renewLease', () => {
+  it('posts the GUI lease and treats an older server 404 as unsupported', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new URL(String(input)).pathname).toBe('/api/v1/leases');
+      expect(init?.method).toBe('POST');
+      expect(init?.headers).toMatchObject({ Authorization: 'Bearer home-token' });
+      expect(JSON.parse(init?.body as string)).toEqual({ clientId: 'gui-window', kind: 'gui' });
+      return new Response(JSON.stringify({ statusCode: 404 }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      const client = new KikiClient({ baseUrl: 'http://example.test', token: 'home-token' });
+      await expect(client.renewLease({ clientId: 'gui-window', kind: 'gui' })).resolves.toBeUndefined();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
 describe('KikiClient workspace lifecycle', () => {
   it('PATCHes the rename route and returns the server echo', async () => {
     const original = globalThis.fetch;

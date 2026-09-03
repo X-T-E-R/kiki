@@ -32,6 +32,7 @@ export const taskSchema = z.object({
   thinking_effort: z.string().optional(),
   agent_id: z.string().optional(),
   profile: z.string().optional(),
+  run_in_background: z.boolean().optional(),
 });
 export type Task = z.infer<typeof taskSchema>;
 

@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { useI18n } from '../i18n';
-import { errorText } from '../i18n/locale';
+import { errorText } from '@kiki/session-core/i18n';
 import {
   markRestartRequired,
   runtimeConfigDraftFromConfig,
   runtimeConfigPatch,
   type RuntimeConfigDraft,
-} from '../lib/settings';
+} from '@kiki/session-core/settings';
+import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from './controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';

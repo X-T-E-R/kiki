@@ -38,6 +38,8 @@ Stop:    Ctrl+C
 
 token 泄露时运行 `kimi web rotate-token` 轮换：新 token 立即写入 `server.token`，旧 token 即刻失效，正在运行的实例无需重启。
 
+桌面 GUI 使用的就是这个 home token。启动时它会先在实例注册表里找活着的服务实例并直接连接，找不到时才启动自己的 sidecar。因此 GUI 启动的服务其他本机客户端也能用 home token 连上；别处启动的服务也会连同全部会话出现在 GUI 里。
+
 如果把服务绑定到非本机地址（`--host`），建议额外设置 `KIMI_CODE_PASSWORD` 环境变量作为并列凭证；此时服务端会对鉴权失败自动限流。
 
 ::: danger 警告

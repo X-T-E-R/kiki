@@ -38,6 +38,8 @@ Pick the carrying method that fits your client:
 
 If the token leaks, run `kimi web rotate-token`: the new token is written to `server.token` immediately, the old one stops working at once, and running instances pick up the new token without a restart.
 
+The desktop GUI uses this same home token. On launch it looks for a running server in the instance registry and attaches to it when one is alive; only when none is found does it start its own sidecar. A server started by the GUI is therefore reachable by other local clients with the home token, and a server started elsewhere shows up in the GUI with all of its sessions.
+
 If you bind the server to a non-loopback address (`--host`), also set the `KIMI_CODE_PASSWORD` environment variable as a parallel credential; the server then rate-limits authentication failures automatically.
 
 ::: danger

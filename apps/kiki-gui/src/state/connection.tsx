@@ -31,12 +31,13 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import { ConnectScreen } from '../components/ConnectScreen';
 import { useHost } from '../host';
+import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
+import type { SessionController } from '@kiki/session-core/session';
+import type { SessionEventFrame } from '@kiki/session-core/wire';
 import { isVscodeWebview } from '../host/vscode';
-import { translate, type I18nKey, type I18nParams } from '../i18n/locale';
 import { useI18n } from '../i18n';
 import { ApiError, KikiClient } from '../lib/client';
 import { KikiSocket, type WsStatus } from '../lib/ws';
-import type { SessionEventFrame } from '../lib/types';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -52,7 +53,6 @@ import {
   type DesktopBootStatus,
   type DesktopFailureInfo,
 } from './desktopConnection';
-import type { SessionController } from './sessionController';
 
 export type { ConnectionConfig } from './connectionConfig';
 
@@ -147,6 +147,13 @@ class LiveControllerRegistry implements ControllerRegistry {
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null);
+const GUI_LEASE_INTERVAL_MS = 15_000;
+let guiLeaseClientSequence = 0;
+
+export function nextGuiLeaseClientId(now = Date.now()): string {
+  guiLeaseClientSequence += 1;
+  return `gui-${now.toString(36)}-${guiLeaseClientSequence.toString(36)}`;
+}
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const host = useHost();
@@ -177,6 +184,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const controllersRef = useRef(new LiveControllerRegistry());
   const liveSocketRef = useRef<KikiSocket | null>(null);
   const connectionEpochRef = useRef(0);
+  const leaseClientIdRef = useRef(nextGuiLeaseClientId());
 
   useEffect(() => {
     if (!vscodeRuntime) return;
@@ -205,9 +213,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     };
   }, [host, vscodeRuntime]);
 
-  // The desktop shell owns its backend. Resolve that connection before
-  // considering browser handoffs or persisted remote connections, and keep
-  // the bearer token in React memory only.
+  // The desktop shell resolves an existing daemon before spawning its own.
+  // Keep the shared home token in React memory only.
   useEffect(() => {
     if (host.kind !== 'tauri') return;
     let cancelled = false;
@@ -361,6 +368,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   // One socket per connection; frames route to registered session controllers.
   const connected = config !== null && meta !== null && client !== null;
+
+  useEffect(() => {
+    if (!connected || client === null) return;
+    const renew = () => {
+      void client.renewLease({ clientId: leaseClientIdRef.current, kind: 'gui' }).catch(() => undefined);
+    };
+    renew();
+    const interval = window.setInterval(renew, GUI_LEASE_INTERVAL_MS);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [client, connected]);
+
   const socket = useMemo(() => {
     if (!connected || config === null || client === null || meta === null) return null;
     const instance = new KikiSocket({
@@ -490,9 +510,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       : connectError.kind === 'key'
         ? translate(locale, connectError.key, connectError.params)
         : connectError.text;
-  // In desktop mode every failure (spawn, early exit, timeout, /meta) goes to
-  // the dedicated failure card; the browser URL/token form is meaningless
-  // there (the port is random and the token is process-owned).
+  // In desktop mode every failure (attach, spawn, early exit, timeout, /meta)
+  // goes to the dedicated failure card; the browser URL/token form is not an
+  // actionable recovery path for the native shell.
   const desktopFailureView =
     desktopFailure ??
     (desktopRuntime && connectErrorText !== null

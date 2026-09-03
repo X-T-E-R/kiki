@@ -26,8 +26,8 @@
 
 import { useEffect, useId, useState } from 'react';
 
+import type { QueuedPromptPreview } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
-import type { QueuedPromptPreview } from '../state/transcript';
 
 export function QueueStrip({
   items,

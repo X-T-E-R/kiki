@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { useI18n } from '../../i18n';
-import { errorText, issueText } from '../../i18n/locale';
+import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
   markRestartRequired,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
   validateDesktopConfigDraft,
-} from '../../lib/settings';
+} from '@kiki/session-core/settings';
+import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { MsUnitInput } from '../ProviderFields';

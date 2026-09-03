@@ -41,6 +41,14 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
   - Missing a name in `flake.nix`'s `workspaceNames` will break `pnpmConfigHook` because dependencies for that workspace will not be fetched.
 - The automated "Check flake.nix workspace sync" (`scripts/check-nix-workspace.mjs`) verifies the full workspace in both directions: every package selected by `pnpm-workspace.yaml` must appear in both flake.nix lists, and stale flake entries with no workspace package fail the check. Keep it green on every add/remove, but still update both files by hand in the same change — the check only runs in CI.
 
+## Upstream Synchronization
+
+- Never merge upstream into `apps/*` or `packages/*`; receive selected upstream changes only through isolated cherry-picks or semantic ports.
+- Review upstream at every release tag or every four weeks, whichever comes first. Filter candidates by commit title and touched paths before reading full diffs.
+- Review security/CVE fixes, provider protocol mismatches, and wire or persistence data-corruption fixes as soon as they appear rather than waiting for the regular review.
+- Exclude UI changes, cloud features, secondary-model work, and runtime-to-DI/actor migrations in the first filter unless a separate Kiki decision explicitly reopens that area.
+- Record every accepted, rejected, or deferred upstream commit in `handoffs/2026-08-31-kiki-parallel-campaigns/merge-log.md` using the existing date / source / local HEAD / notes table format.
+
 ## General Coding Rules
 
 - `packages/agent-core-v2`, `packages/kap-server`, and `packages/transcript` are comment-free zones: no line/block comments; the exceptions are JSDoc attached to exported symbols and load-bearing lint-suppression directives (`oxlint-disable` / `eslint-disable`), while other tooling directives (`@ts-expect-error`, …) stay banned. Enforced by `scripts/check-no-comments.mjs`, which runs as part of `pnpm lint`.
@@ -58,7 +66,7 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 
 ## Experimental Features
 
-- Gate a not-yet-public feature behind an experimental flag. Flags are env-driven and default off: `KIMI_CODE_EXPERIMENTAL_<NAME>` toggles one, `KIMI_CODE_EXPERIMENTAL_FLAG` enables all. Release by flipping the entry's `default` to `true`.
+- Gate a not-yet-public feature behind an experimental flag. Flags are env-driven and default off: `KIMI_CODE_EXPERIMENTAL_<NAME>` toggles one, `KIMI_CODE_EXPERIMENTAL_FLAG` enables all. Precedence is per-flag env > `[experimental]` config > master env > the flag's `default`. Release by flipping the entry's `default` to `true`.
   - `packages/agent-core-v2` and kap-server modules: there is no central catalog — declare the flag in the owning domain via `registerFlagDefinition` at import time (see `packages/agent-core-v2/docs/flag.md`), then check it with `IFlagService.enabled(id)`. Current search-index-separation flags: `persistence_minidb_readmodel` (session read model, default on) and `search_worker` (global search worker host, default on).
 
 ## Where to Update Instructions
