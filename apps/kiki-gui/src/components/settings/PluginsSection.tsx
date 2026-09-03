@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
@@ -38,6 +38,16 @@ function contributionSummary(
   if (plugin.hookCount > 0) parts.push(t('st.plugins.contrib.hooks', { count: plugin.hookCount }));
   if (plugin.commandCount > 0) parts.push(t('st.plugins.contrib.commands', { count: plugin.commandCount }));
   return parts.length === 0 ? t('st.plugins.contrib.none') : parts.join(' · ');
+}
+
+function uninstallConsequences(
+  plugin: PluginSummary,
+  t: ReturnType<typeof useI18n>['t'],
+  queryClient: QueryClient,
+): readonly string[] {
+  const info = queryClient.getQueryData<PluginInfo>(['plugin', plugin.id]);
+  const mcpNames = info?.mcpServers.map((server) => server.name) ?? [];
+  return [contributionSummary(plugin, t), ...mcpNames];
 }
 
 function PluginDetails({ pluginId }: { pluginId: string }) {
@@ -264,6 +274,7 @@ function InstalledPluginsCard() {
           overlayId="confirm-plugin-uninstall"
           title={t('st.plugins.uninstallTitle', { name: removing.displayName })}
           body={t('st.plugins.uninstallBody')}
+          consequences={uninstallConsequences(removing, t, queryClient)}
           confirmLabel={t('st.plugins.uninstall')}
           tone="danger"
           onCancel={() => { setRemoving(null); }}

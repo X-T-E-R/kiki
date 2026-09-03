@@ -231,4 +231,34 @@ describe('PluginsSection', () => {
     await flush();
     expect(installPlugin).toHaveBeenCalledWith('https://example.test/notes-2.zip');
   });
+
+  it('lists contribution counts on uninstall confirm, and MCP names once info is loaded', async () => {
+    const container = await renderLeaf();
+    await act(async () => {
+      (container.querySelector('[data-plugin-uninstall="notes"]') as HTMLButtonElement).click();
+    });
+    await flush();
+    const dialog = container.querySelector('[role="alertdialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain('1 skills');
+    expect(dialog?.textContent).toContain('1 MCP servers');
+    expect(dialog?.textContent).not.toContain('notes-mcp');
+    await act(async () => {
+      [...dialog!.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!.click();
+    });
+    await flush();
+
+    await act(async () => {
+      (container.querySelector('[data-plugin-details-toggle="notes"]') as HTMLButtonElement).click();
+    });
+    await flush();
+    expect(container.querySelector('[data-plugin-mcp="notes-mcp"]')).not.toBeNull();
+    await act(async () => {
+      (container.querySelector('[data-plugin-uninstall="notes"]') as HTMLButtonElement).click();
+    });
+    await flush();
+    const informed = container.querySelector('[role="alertdialog"]');
+    expect(informed?.textContent).toContain('1 skills');
+    expect(informed?.textContent).toContain('notes-mcp');
+  });
 });
