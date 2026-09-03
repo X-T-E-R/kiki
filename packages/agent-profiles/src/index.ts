@@ -7,6 +7,7 @@ export * from './agentProfileFromFile';
 export * from './agentProfileRoute';
 export * from './applySubagentLease';
 export * from './agentRouteFile';
+export * from './contribution';
 export * from './agentSourceGraph';
 export * from './hostFs';
 export * from './modelProfileOverlay';

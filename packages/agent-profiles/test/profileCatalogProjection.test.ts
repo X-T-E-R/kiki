@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildProfileDescriptions } from '#/agent/tools/agent/agentTool';
 import {
   normalizeAgentProfile,
   type AgentProfile,
   type AgentRecommendedModel,
-} from '#/app/agentProfileCatalog/agentProfileCatalog';
+} from '#/agentProfile';
+import { buildProfileDescriptions } from '#/profileCatalogProjection';
 
 const RECOMMENDATIONS: readonly AgentRecommendedModel[] = [
   {
