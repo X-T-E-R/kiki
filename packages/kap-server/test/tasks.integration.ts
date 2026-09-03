@@ -181,6 +181,12 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     expect(body.data.items).toEqual([]);
   });
 
+  it('materializes the main agent with the AGENTS.md reminder step bridge', async () => {
+    const id = await createSession();
+    const tasks = await mainAgentTasks(id);
+    expect(tasks.list()).toEqual([]);
+  });
+
   it('lists registered tasks with mapped kind/status and wire-shaped fields', async () => {
     const id = await createSession();
     const tasks = await mainAgentTasks(id);

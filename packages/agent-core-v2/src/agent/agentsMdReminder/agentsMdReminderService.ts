@@ -13,7 +13,6 @@ import {
   ContextApplyCompaction,
   ContextClear,
 } from '#/agent/contextMemory/contextEvents';
-import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { ContextUndone } from '#/agent/undo/undoService';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -70,7 +69,6 @@ export class AgentAgentsMdReminderService
 
   constructor(
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
-    @IAgentLoopService loop: IAgentLoopService,
     @IEventBus eventBus: IEventBus,
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
     @IAgentStateService private readonly states: IAgentStateService,
@@ -96,12 +94,6 @@ export class AgentAgentsMdReminderService
         await next();
       }),
     );
-    this._register(
-      loop.hooks.onWillBeginStep.register('agentsMdReminder', async (_ctx, next) => {
-        await this.flushReminderQueue();
-        await next();
-      }),
-    );
     this._register(eventBus.subscribe(ContextApplyCompaction, () => this.reminded.clear()));
     this._register(eventBus.subscribe(ContextClear, () => this.reminded.clear()));
     this._register(eventBus.subscribe(ContextUndone, () => this.reminded.clear()));
@@ -124,7 +116,7 @@ export class AgentAgentsMdReminderService
     return this.states.get(agentsMdReminderKnownKey);
   }
 
-  private async flushReminderQueue(): Promise<void> {
+  async flushStepHead(): Promise<void> {
     const readRecently = new Set(this.readRecently);
     this.readRecently.clear();
     const queued = [...this.remindQueue].filter(

@@ -59,6 +59,10 @@ import {
   IAgentsMdDiscoveryService,
 } from '#/agent/agentsMdReminder/agentsMdDiscoveryService';
 import { AgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminderService';
+import {
+  AgentAgentsMdReminderStepBridge,
+  IAgentAgentsMdReminderStepBridge,
+} from '#/agent/agentsMdReminder/agentsMdReminderStepBridge';
 import { extractBashTargetDirs } from '#/agent/agentsMdReminder/bashTargets';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 import { stubToolExecutorEvents, type ToolExecutorEventStubs } from '../toolExecutor/stubs';
@@ -220,10 +224,12 @@ function createHarness(
         reg.defineInstance(IAgentsMdDiscoveryService, options.discovery);
       }
       reg.define(IAgentAgentsMdReminderService, AgentAgentsMdReminderService);
+      reg.define(IAgentAgentsMdReminderStepBridge, AgentAgentsMdReminderStepBridge);
     },
     strict: true,
   });
   const reminder = ix.get(IAgentAgentsMdReminderService);
+  ix.get(IAgentAgentsMdReminderStepBridge);
   const dispatcher = ix.get(IEventDispatcher);
   return { ix, events, loop, reminder, dispatcher, telemetryEvents, reminders };
 }
