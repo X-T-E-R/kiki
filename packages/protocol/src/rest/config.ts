@@ -61,6 +61,7 @@ export const configResponseSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   disabled_builtin_profiles: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
+  plugins: z.object({ marketplaceUrl: z.string().optional() }).passthrough().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
@@ -98,5 +99,6 @@ export const patchConfigRequestSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   disabled_builtin_profiles: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
+  plugins: z.object({ marketplace_url: z.string().optional() }).optional(),
 });
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;
