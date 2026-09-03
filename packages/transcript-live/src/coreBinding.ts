@@ -132,6 +132,7 @@ export function bindSessionTranscript(
       adapter = new TranscriptWireAdapter(agentId, {
         turn: (turnId) => store.getAgent(agentId)?.getTurn(turnId),
         tool: (toolCallId) => toolFrameFor(agentId, toolCallId),
+        task: (taskId) => store.getAgent(agentId)?.getTask(taskId),
       });
       wireAdapters.set(agentId, adapter);
     }
@@ -307,7 +308,9 @@ export function bindSessionTranscript(
       origin: interaction.origin,
       createdAt: interaction.createdAt,
     };
-    applyOps(agentId, liveAdapterFor(agentId).mapInteractionRequested(request));
+    for (const target of agentId === MAIN_AGENT_ID ? [agentId] : [agentId, MAIN_AGENT_ID]) {
+      applyOps(target, liveAdapterFor(target).mapInteractionRequested(request));
+    }
   };
 
   const refreshDescriptors = (): void => {
@@ -361,9 +364,12 @@ export function bindSessionTranscript(
       if (early === undefined) continue;
       interactionAgents.delete(id);
       earlyResolves.delete(id);
-      const liveAdapter = liveAdapters.get(early.agentId);
-      if (liveAdapter !== undefined) {
-        applyOps(early.agentId, liveAdapter.mapInteractionResolved(id, early.response));
+      for (const target of
+        early.agentId === MAIN_AGENT_ID ? [early.agentId] : [early.agentId, MAIN_AGENT_ID]) {
+        const liveAdapter = liveAdapters.get(target);
+        if (liveAdapter !== undefined) {
+          applyOps(target, liveAdapter.mapInteractionResolved(id, early.response));
+        }
       }
     }
     for (const pending of interactions.listPending()) {
@@ -396,9 +402,12 @@ export function bindSessionTranscript(
         earlyResolves.set(id, { agentId, response });
         return;
       }
-      const liveAdapter = liveAdapters.get(agentId);
-      if (liveAdapter === undefined) return;
-      applyOps(agentId, liveAdapter.mapInteractionResolved(id, response));
+      for (const target of agentId === MAIN_AGENT_ID ? [agentId] : [agentId, MAIN_AGENT_ID]) {
+        const liveAdapter = liveAdapters.get(target);
+        if (liveAdapter !== undefined) {
+          applyOps(target, liveAdapter.mapInteractionResolved(id, response));
+        }
+      }
     }),
   );
 

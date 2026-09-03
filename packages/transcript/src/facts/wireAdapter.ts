@@ -277,7 +277,14 @@ export class TranscriptWireAdapter {
       const info = objectOf(record['info']);
       const taskId = stringOf(info?.['taskId']);
       if (taskId === undefined) return [];
-      const previous = this.#tasks.get(taskId) ?? this.lookups?.task?.(taskId);
+      const cached = this.#tasks.get(taskId);
+      const projected = this.lookups?.task?.(taskId);
+      const previous =
+        cached === undefined
+          ? projected
+          : projected === undefined
+            ? cached
+            : { ...cached, ...projected };
       const agentId = stringOf(info?.['agentId']) ?? previous?.agentId;
       const state = taskStateOf(info?.['status']) ?? previous?.state ?? 'running';
       const stopReason = stringOf(info?.['stopReason']);
@@ -318,9 +325,7 @@ export class TranscriptWireAdapter {
           beforeTurn: this.taskRefBeforeTurn(),
         });
       }
-      if (task.kind !== 'subagent' || task.state !== 'running') {
-        operations.push({ op: 'task.upsert', task });
-      }
+      operations.push({ op: 'task.upsert', task });
       return operations;
     }
     if (record.type === 'task.notified') {

@@ -1027,6 +1027,9 @@ export class AgentTranscriptLiveAdapter {
       status: TranscriptTask['state'];
       detached?: boolean;
       agentId?: string;
+      profile?: string;
+      collaborationTaskName?: string;
+      stopReason?: string;
       startedAt: number;
       endedAt: number | null;
     };
@@ -1037,6 +1040,8 @@ export class AgentTranscriptLiveAdapter {
       kind: mapTaskKind(info.kind),
       state: info.status,
       detached: info.detached ?? prev?.detached ?? true,
+      name: info.collaborationTaskName ?? prev?.name,
+      subagentName: info.profile ?? prev?.subagentName,
       description: info.description,
       agentId: info.agentId ?? prev?.agentId,
       outputTail: prev?.outputTail ?? '',
@@ -1044,8 +1049,11 @@ export class AgentTranscriptLiveAdapter {
       endedAt: info.endedAt === null ? prev?.endedAt : epochMsToIso(info.endedAt),
       resultSummary: prev?.resultSummary,
       usage: prev?.usage,
-      error: prev?.error,
-      stateReason: prev?.stateReason,
+      error:
+        info.status === 'failed' || info.status === 'timed_out' || info.status === 'lost'
+          ? (info.stopReason ?? prev?.error)
+          : undefined,
+      stateReason: info.stopReason ?? prev?.stateReason,
     }));
     const ops: TranscriptOperation[] = [{ op: 'task.upsert', task }];
     if (event.type === 'task.started') {
@@ -1215,7 +1223,7 @@ export class AgentTranscriptLiveAdapter {
         description: event.description ?? previous?.description,
         agentId: event.subagentId,
         outputTail: previous?.outputTail ?? '',
-        startedAt,
+        startedAt: previous?.startedAt ?? startedAt,
       };
       this.tasks.set(taskKey, task);
       ops.push({ op: 'task.upsert', task });
@@ -1276,15 +1284,18 @@ export class AgentTranscriptLiveAdapter {
       return [{ op: 'task.upsert', task }];
     }
     const terminal = event.type === 'subagent.completed' || event.type === 'subagent.failed';
+    const state =
+      event.type === 'subagent.completed'
+        ? 'completed'
+        : event.type === 'subagent.failed'
+          ? event.error === 'terminated'
+            ? 'killed'
+            : 'failed'
+          : 'running';
     const task = this.upsertTask(taskKey, (prev) => ({
       taskId: taskKey,
       kind: 'subagent',
-      state:
-        event.type === 'subagent.completed'
-          ? 'completed'
-          : event.type === 'subagent.failed'
-            ? 'failed'
-            : 'running',
+      state,
       detached: prev?.detached ?? true,
       name: prev?.name,
       subagentName: prev?.subagentName,
@@ -1295,8 +1306,8 @@ export class AgentTranscriptLiveAdapter {
       endedAt: terminal ? at : prev?.endedAt,
       resultSummary: event.resultSummary ?? prev?.resultSummary,
       usage: event.usage ?? prev?.usage,
-      error: event.error ?? prev?.error,
-      stateReason: event.reason ?? prev?.stateReason,
+      error: state === 'failed' ? (event.error ?? prev?.error) : undefined,
+      stateReason: event.reason ?? event.error ?? prev?.stateReason,
     }));
     return [{ op: 'task.upsert', task }];
   }

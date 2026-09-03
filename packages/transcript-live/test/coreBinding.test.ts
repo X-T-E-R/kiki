@@ -769,10 +769,29 @@ describe('bindSessionTranscript', () => {
     );
     main.bus.emit(
       ev({
+        type: 'task.started',
+        time: 1_900,
+        info: {
+          taskId: 'task-9',
+          kind: 'agent',
+          status: 'running',
+          agentId: 'agent-1',
+          profile: 'explore',
+          collaborationTaskName: 'inspect_task',
+          description: 'Inspect',
+          detached: true,
+          startedAt: 1_900,
+          endedAt: null,
+        },
+      }),
+    );
+    main.bus.emit(
+      ev({
         type: 'subagent.spawned',
         time: 2_000,
         subagentId: 'agent-1',
         subagentName: 'explore',
+        name: 'inspect_task',
         parentToolCallId: 'call-agent',
         description: 'Inspect',
         runInBackground: true,
@@ -800,6 +819,25 @@ describe('bindSessionTranscript', () => {
         resultSummary: 'done',
       }),
     );
+    main.bus.emit(
+      ev({
+        type: 'task.terminated',
+        time: 5_100,
+        info: {
+          taskId: 'task-9',
+          kind: 'agent',
+          status: 'completed',
+          agentId: 'agent-1',
+          profile: 'explore',
+          collaborationTaskName: 'inspect_task',
+          description: 'Inspect',
+          detached: true,
+          startedAt: 1_900,
+          endedAt: 5_100,
+        },
+        outputTail: 'done',
+      }),
+    );
 
     const turn = store.getAgent('main')?.getTurn('t0');
     const notificationFrames = turn?.steps
@@ -812,9 +850,13 @@ describe('bindSessionTranscript', () => {
     expect(tool).toMatchObject({ agentRefs: [{ agentId: 'agent-1', role: 'child' }] });
     expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
       state: 'completed',
+      name: 'inspect_task',
+      subagentName: 'explore',
+      description: 'Inspect',
+      outputTail: 'done',
       resultSummary: 'done',
-      startedAt: new Date(2_000).toISOString(),
-      endedAt: new Date(5_000).toISOString(),
+      startedAt: new Date(1_900).toISOString(),
+      endedAt: new Date(5_100).toISOString(),
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
     binding.dispose();
@@ -939,7 +981,7 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
-  it('seeds pending interactions per agent, not before that agent is backfilled', () => {
+  it('seeds child interactions on both the owner and main transcript after owner backfill', () => {
     const interactions = new SessionInteractionService(new TestSessionStateService());
     interactions.enqueue({ id: 'q-main', kind: 'question', payload: { toolCallId: 'call_main' }, origin: { agentId: 'main', turnId: 0 } });
     interactions.enqueue({ id: 'q-sub', kind: 'question', payload: { toolCallId: 'call_sub' }, origin: { agentId: 'sub-1', turnId: 0 } });
@@ -955,6 +997,12 @@ describe('bindSessionTranscript', () => {
 
     binding.seedPendingInteractions('sub-1');
     expect([...byAgent.keys()].toSorted()).toEqual(['main', 'sub-1']);
+    expect(store.getAgent('main')?.getInteraction('q-sub')?.state).toBe('pending');
+    expect(store.getAgent('sub-1')?.getInteraction('q-sub')?.state).toBe('pending');
+
+    interactions.respond('q-sub', { answers: {} });
+    expect(store.getAgent('main')?.getInteraction('q-sub')?.state).toBe('answered');
+    expect(store.getAgent('sub-1')?.getInteraction('q-sub')?.state).toBe('answered');
     binding.dispose();
   });
 
@@ -973,7 +1021,7 @@ describe('bindSessionTranscript', () => {
     expect(byAgent.size).toBe(0);
 
     binding.seedPendingInteractions('sub-1');
-    expect([...byAgent.keys()]).toEqual(['sub-1']);
+    expect([...byAgent.keys()].toSorted()).toEqual(['main', 'sub-1']);
     binding.dispose();
   });
 
@@ -988,7 +1036,7 @@ describe('bindSessionTranscript', () => {
 
     agents.add('sub-1');
     interactions.enqueue({ id: 'q1', kind: 'question', payload: { toolCallId: 'call_q1' }, origin: { agentId: 'sub-1', turnId: 0 } });
-    expect([...byAgent.keys()]).toEqual(['sub-1']);
+    expect([...byAgent.keys()].toSorted()).toEqual(['main', 'sub-1']);
     binding.dispose();
   });
 
@@ -1004,6 +1052,7 @@ describe('bindSessionTranscript', () => {
 
     binding.seedPendingInteractions('sub-1');
     expect(byAgent.get('sub-1')?.map((op) => op.op)).toEqual(['interaction.upsert']);
+    expect(byAgent.get('main')?.map((op) => op.op)).toEqual(['interaction.upsert']);
 
     const sub = agents.add('sub-1');
     sub.bus.emit(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
