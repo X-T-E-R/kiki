@@ -98,5 +98,5 @@ export const patchConfigRequestSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   disabled_builtin_profiles: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
-}).strict();
+});
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;
