@@ -375,7 +375,7 @@ export class UsageAggregationService {
     );
     let earliestAt: number | undefined;
     let latestAt: number | undefined;
-    let includesDeletedSessions = false;
+    const includesDeletedSessions = sessions.some((session) => session.deleted);
     const pricing = this.core.accessor.get(IModelPricingService);
 
     sessionLoop: for (let sessionIndex = 0; sessionIndex < sessions.length; sessionIndex += 1) {
@@ -389,7 +389,6 @@ export class UsageAggregationService {
           break sessionLoop;
         }
         if (!inRange(record.time, query.range) || !matchesFilters(record, query)) continue;
-        if (session.deleted) includesDeletedSessions = true;
         const cost = pricing.calculate(record.model, record.usage);
         addAggregate(total, record.usage, cost);
         if (cost === undefined) unknownPriceModels.add(record.model);
