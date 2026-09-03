@@ -150,7 +150,10 @@ function PanelIcon({ className = '' }: { className?: string }) {
   );
 }
 
-function useActiveController(sessionId: string | undefined): SessionController | null {
+function useActiveController(
+  sessionId: string | undefined,
+  focusedAgentId?: string,
+): SessionController | null {
   const { client, socket } = useConnection();
   const registry = useControllerRegistry();
   const [controller, setController] = useState<SessionController | null>(null);
@@ -161,6 +164,7 @@ function useActiveController(sessionId: string | undefined): SessionController |
       return;
     }
     const next = new SessionController(client, socket, sessionId);
+    next.setFocusedAgent(focusedAgentId);
     registry.add(next);
     setController(next);
     void next.open().catch(() => {
@@ -1187,7 +1191,7 @@ export function SessionView({
     setAnnotations((current) => removeAnnotation(current, id));
   }, []);
 
-  const controller = useActiveController(sessionId);
+  const controller = useActiveController(sessionId, selectedAgentId);
   const queryClient = useQueryClient();
 
   // Embedded terminal panel: per-session manager (terminal list + attach
