@@ -371,41 +371,9 @@ kimi provider catalog list anthropic          # 先看可选的模型
 kimi provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
 ```
 
-## `kiki` daemon 命令
+## Kiki daemon 集成
 
-`kiki` 命令管理共享的本地 daemon，供 Cursor、Claude Code、Codex 等外部调用方调用 Kiki（inbound）。它不配置 Kiki 用于运行 subagent 的外部执行器或外部 harness（outbound）。
-
-以前台模式启动 daemon，或连接已有健康实例并在需要时启动一个新实例：
-
-```sh
-kiki serve
-kiki serve --ensure --workspace . --json
-kiki serve --stop
-```
-
-Daemon 共用 `<home>/server.token` 中的一份 bearer token。`--idle-exit` 默认是 `30m`；存在活跃客户端 lease 或运行中的派遣时，daemon 不会因空闲退出。客户端通过 `POST /api/v1/leases` 续期 lease。
-
-创建和管理外部调用方席位。外部调用方连接前，席位会固定 workspace、principal、权限模式、模型和 thinking effort：
-
-```sh
-kiki seat create --workspace . --principal cursor --mode auto --json
-kiki seat list --json
-kiki seat revoke <seatId>
-```
-
-为支持的客户端安装 stdio MCP 配置：
-
-```sh
-kiki seat install --client cursor --workspace .
-kiki seat install --client claude --workspace .
-kiki seat install --client codex --workspace .
-kiki seat install --client generic --workspace .
-```
-
-Cursor 写入 `~/.cursor/mcp.json`；Claude Code 写入 workspace 下的 `.mcp.json`；Codex 打印 `config.toml` 片段；`generic` 打印 JSON。覆盖已有 `kiki` 条目前会先创建备份。
-
-对于能够启动命令的 MCP 客户端，配置 `kiki mcp --workspace <dir>`。该命令会确保 daemon 已运行，创建或复用 workspace 席位，并启动 MCP stdio 边。运行 `kiki doctor` 可检查 daemon 可达性、token 文件权限、席位列表及每个席位的权限模式。
-
+共享 daemon、外部调用方席位与 MCP 配置流程请使用 [`kiki` 命令](./kiki-command.md)。
 ## 下一步
 
 - [斜杠命令](./slash-commands.md) — 交互式 TUI 内的控制命令速查
