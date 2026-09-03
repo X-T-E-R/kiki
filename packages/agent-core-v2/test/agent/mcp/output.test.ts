@@ -12,6 +12,7 @@ import { createMcpTool } from '#/agent/mcp/tools/mcp';
 import { StdioMcpClient } from '#/mcpCore/client-stdio';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
+import { hostProcessPathClass } from '../../mcpCore/stubs';
 import type { MCPClient, MCPContentBlock, MCPToolResult } from '#/mcpCore/types';
 import type { ToolExecution } from '#/tool/toolContract';
 import { sniffImageDimensions } from '#/agent/media/file-type';
@@ -782,7 +783,7 @@ describe('mcpResultToExecutableOutput over a real stdio server', () => {
     const runtime = Object.assign(
       new FakeRuntime(
         { workspaceId: 'workspace', runtimeId: 'local', generation: 'test' },
-        { capabilities: ['process'] },
+        { capabilities: ['process'], pathClass: hostProcessPathClass },
       ),
       { process: new HostProcessService() },
     );

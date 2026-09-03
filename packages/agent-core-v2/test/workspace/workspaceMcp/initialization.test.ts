@@ -41,6 +41,7 @@ import { stubLog } from '../../_base/log/stubs';
 import { registerAgentIdentityStub } from '../../app/agentIdentity/stubs';
 import {
   createMemoryMcpOAuthStore,
+  hostProcessPathClass,
   slowToolStdioFixture,
   stdioFixture,
 } from '../../mcpCore/stubs';
@@ -87,7 +88,7 @@ describe('Workspace MCP initialization', () => {
         reg.defineInstance(ILogService, stubLog());
         reg.defineInstance(ITelemetryService, noopTelemetryService);
         const runtime = Object.assign(
-          new FakeRuntime({ workspaceId: 'test-workspace', runtimeId: 'local', generation: 'test-generation' }, { capabilities: ['process'] }),
+          new FakeRuntime({ workspaceId: 'test-workspace', runtimeId: 'local', generation: 'test-generation' }, { capabilities: ['process'], pathClass: hostProcessPathClass }),
           { process: new HostProcessService() },
         );
         reg.defineInstance(IRuntimeResolver, { _serviceBrand: undefined, inspect: () => runtime, acquire: () => ({ runtime, track: (resource) => resource, dispose: () => {} }) });
