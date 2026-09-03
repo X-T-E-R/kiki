@@ -579,6 +579,7 @@ describe('TranscriptWireAdapter', () => {
         }
         return undefined;
       },
+      task: (taskId) => transcript.getTask(taskId),
     });
     for (const record of all) reducer.apply(adapter.add(record));
     reducer.apply(adapter.finish());
@@ -1542,6 +1543,17 @@ describe('TranscriptWireAdapter', () => {
       startedAt: new Date(3_000).toISOString(),
       endedAt: new Date(4_000).toISOString(),
     });
+    expect(ended.getMeta()).toMatchObject({
+      activity: 'idle',
+      agent: {
+        phase: {
+          kind: 'ended',
+          turnId: 0,
+          reason: 'completed',
+          at: 4_000,
+        },
+      },
+    });
 
     const unfinished = replay([
       {
@@ -1615,6 +1627,36 @@ describe('TranscriptWireAdapter', () => {
       endedAt: undefined,
     });
   });
+
+  it.each(['interrupted', 'error'] as const)(
+    'keeps durable step.end finishReason=%s aligned with the live interrupted state',
+    (finishReason) => {
+      const transcript = replay([
+        { type: 'turn.prompt', turnId: 0, input: [], origin: { kind: 'user' }, time: 1_000 },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+          time: 2_000,
+        },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1', finishReason },
+          time: 3_000,
+        },
+        {
+          type: 'turn.ended',
+          turnId: 0,
+          reason: finishReason === 'error' ? 'failed' : 'cancelled',
+          time: 4_000,
+        },
+      ]);
+      expect(transcript.getTurn('t0')?.steps[0]).toMatchObject({
+        state: 'interrupted',
+        finishReason,
+        endReason: finishReason,
+      });
+    },
+  );
 
   it('deduplicates a projected task notification from its legacy context message', () => {
     const transcript = replay([
@@ -1754,6 +1796,23 @@ describe('TranscriptWireAdapter', () => {
         time: 5_000,
       },
       {
+        type: 'task.terminated',
+        info: {
+          taskId: 'agent-task',
+          kind: 'agent',
+          status: 'completed',
+          agentId: 'child-1',
+          profile: 'explore',
+          collaborationTaskName: 'smoke_explore',
+          description: 'scan files',
+          detached: true,
+          startedAt: 4_000,
+          endedAt: 5_000,
+        },
+        outputTail: 'scanned 12 files',
+        time: 5_000,
+      },
+      {
         type: 'subagent.spawned',
         subagentId: 'child-1',
         subagentName: 'explore',
@@ -1817,6 +1876,7 @@ describe('TranscriptWireAdapter', () => {
       description: 'scan files',
       agentId: 'child-1',
       resultSummary: 'scanned 12 files',
+      outputTail: 'scanned 12 files',
       stateReason: 'approval',
       usage: { inputOther: 10, output: 5, inputCacheRead: 3, inputCacheCreation: 2 },
       startedAt: new Date(4_100).toISOString(),
@@ -1834,6 +1894,32 @@ describe('TranscriptWireAdapter', () => {
       endedAt: new Date(5_200).toISOString(),
     });
     expect(transcript.getTurn('t1')?.origin).toMatchObject({ kind: 'task', taskId: 'shell-2' });
+  });
+
+  it('projects a terminated AgentRun as killed instead of failed', () => {
+    const transcript = replay([
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-terminated',
+        subagentName: 'explore',
+        parentToolCallId: 'agent-call',
+        runInBackground: false,
+        time: 1_000,
+      },
+      { type: 'subagent.started', subagentId: 'child-terminated', time: 1_100 },
+      {
+        type: 'subagent.failed',
+        subagentId: 'child-terminated',
+        error: 'terminated',
+        time: 1_200,
+      },
+    ]);
+    expect(transcript.getTask('child-terminated')).toMatchObject({
+      state: 'killed',
+      error: undefined,
+      stateReason: 'terminated',
+      endedAt: new Date(1_200).toISOString(),
+    });
   });
 
   it('resets terminal fields when one agent starts a second run without a task id', () => {
