@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  daemonRegistryDirectories,
   discoverDaemon,
   ensureDaemon,
   parseDaemonInstance,
@@ -29,18 +30,22 @@ async function writeInstance(
     readonly host: string;
     readonly port: number;
     readonly startedAt: number;
+    readonly heartbeatAt?: number;
     readonly workspaces?: readonly string[];
   },
+  legacy = false,
 ): Promise<void> {
+  const directory = legacy ? join(home, "instances") : join(home, "server", "instances");
+  await mkdir(directory, { recursive: true });
   await writeFile(
-    join(home, "server", "instances", `${name}.json`),
+    join(directory, `${name}.json`),
     JSON.stringify({
       server_id: values.serverId,
       pid: 123,
       host: values.host,
       port: values.port,
       started_at: values.startedAt,
-      heartbeat_at: values.startedAt,
+      heartbeat_at: values.heartbeatAt ?? values.startedAt,
       workspaces: values.workspaces,
     }),
   );
@@ -57,70 +62,90 @@ describe("daemon registry discovery", () => {
     expect(resolveDaemonHome({ HOME: "C:/users/example" })).toMatch(/[\\/]\.kiki$/);
   });
 
-  it("parses optional workspace ownership", () => {
+  it("parses both registry shapes and normalizes wildcard hosts", () => {
     expect(
       parseDaemonInstance(
         JSON.stringify({
           server_id: "server-1",
-          host: "127.0.0.1",
+          host: "0.0.0.0",
           port: 8123,
           started_at: 42,
+          heartbeat_at: 45,
           workspaces: ["C:/workspace"],
         }),
       ),
     ).toEqual({
       serverId: "server-1",
-      host: "127.0.0.1",
-      port: 8123,
+      url: "http://127.0.0.1:8123",
       startedAt: 42,
+      heartbeatAt: 45,
       workspaces: ["C:/workspace"],
     });
+    expect(
+      parseDaemonInstance(
+        JSON.stringify({
+          serverId: "server-2",
+          url: "http://localhost:8124",
+          startedAt: 50,
+          heartbeatAt: 55,
+        }),
+      ),
+    ).toEqual({
+      serverId: "server-2",
+      url: "http://127.0.0.1:8124",
+      startedAt: 50,
+      heartbeatAt: 55,
+      workspaces: [],
+    });
+    expect(parseDaemonInstance('{"url":"http://example.test:8125","startedAt":50}')).toBeNull();
   });
 
-  it("prefers a matching workspace and then the newest instance", () => {
+  it("prefers normalized workspace coverage, heartbeat, then start time", () => {
     const ranked = rankDaemonInstances(
       [
-        { serverId: "newest", host: "127.0.0.1", port: 3, startedAt: 30 },
-        {
-          serverId: "workspace-old",
-          host: "127.0.0.1",
-          port: 1,
-          startedAt: 10,
-          workspaces: ["C:/repo"],
-        },
-        {
-          serverId: "workspace-new",
-          host: "127.0.0.1",
-          port: 2,
-          startedAt: 20,
-          workspaces: ["C:/repo"],
-        },
+        { serverId: "other", url: "http://127.0.0.1:3", startedAt: 30, heartbeatAt: 90, workspaces: ["C:/other"] },
+        { serverId: "workspace-old", url: "http://127.0.0.1:1", startedAt: 10, heartbeatAt: 20, workspaces: ["C:\\Repo"] },
+        { serverId: "workspace-new", url: "http://127.0.0.1:2", startedAt: 20, heartbeatAt: 30, workspaces: ["c:/repo"] },
       ],
-      "C:/repo",
+      "C:/REPO/worktree",
     );
 
     expect(ranked.map((instance) => instance.serverId)).toEqual([
       "workspace-new",
       "workspace-old",
-      "newest",
+      "other",
+    ]);
+  });
+
+  it("reads current and historical registry directories", () => {
+    expect(daemonRegistryDirectories("C:/home")).toEqual([
+      join("C:/home", "server", "instances"),
+      join("C:/home", "instances"),
     ]);
   });
 
   it("returns the first registry instance with an authenticated meta endpoint", async () => {
     const home = await createHome();
     await writeFile(join(home, "server.token"), "secret-token\n");
-    await writeInstance(home, "old", {
-      serverId: "old",
-      host: "127.0.0.1",
-      port: 7001,
-      startedAt: 10,
-      workspaces: ["C:/repo"],
-    });
+    await writeInstance(
+      home,
+      "old",
+      {
+        serverId: "old",
+        host: "127.0.0.1",
+        port: 7001,
+        startedAt: 10,
+        heartbeatAt: 30,
+        workspaces: ["C:/repo"],
+      },
+      true,
+    );
     await writeInstance(home, "new", {
       serverId: "new",
       host: "127.0.0.1",
       port: 7002,
       startedAt: 20,
+      heartbeatAt: 40,
       workspaces: ["C:/repo"],
     });
     const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
