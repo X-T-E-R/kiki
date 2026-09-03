@@ -229,7 +229,6 @@ export function bindSessionTranscript(
   const processEvent = (agentId: string, event: TranscriptWireRecord): void => {
     if (event.type === 'context.spliced') return;
     const liveOwned =
-      event.type === 'task.notified' ||
       event.type === 'subagent.spawned' ||
       event.type === 'subagent.started' ||
       event.type === 'subagent.completed' ||

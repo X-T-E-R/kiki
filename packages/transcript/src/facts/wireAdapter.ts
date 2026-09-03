@@ -60,6 +60,7 @@ export class TranscriptWireAdapter {
   readonly #turnOwnedItemIds = new Map<string, string[]>();
   readonly #steeredMessageIds = new Set<string>();
   readonly #pendingSteers = new Map<string, PendingSteer[]>();
+  readonly #pendingTaskNotifications = new Map<string, TranscriptWireRecord[]>();
   readonly #unpairedSteerCredits = new Map<string, Map<string, number>>();
   readonly #executions = new Map<string, TranscriptTurnExecution>();
   #goal: GoalMeta | undefined;
@@ -312,39 +313,31 @@ export class TranscriptWireAdapter {
     }
     if (record.type === 'task.notified') {
       const turnId = this.#currentTurnId;
-      const turn = turnId === undefined ? undefined : this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);
-      const stepRef = turnId === undefined ? undefined : this.#steps.get(turnId);
-      const step = stepRef === undefined ? undefined : this.#stepHeaders.get(stepRef.stepId);
+      const turn =
+        turnId === undefined ? undefined : this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);
       const sourceId = stringOf(record['sourceId']);
       const title = stringOf(record['title']);
       const body = stringOf(record['body']);
       if (
         turnId === undefined ||
         turn === undefined ||
-        step === undefined ||
         turn.state !== 'running' ||
-        step.state !== 'running' ||
         sourceId === undefined ||
         title === undefined ||
-        body === undefined
+        body === undefined ||
+        (turn.origin.kind === 'task' && turn.origin.taskId === sourceId)
       ) {
         return [];
       }
-      return [
-        {
-          op: 'frame.upsert',
-          turnId,
-          stepId: step.stepId,
-          frame: {
-            kind: 'text',
-            frameId: taskNotificationFrameId(sourceId),
-            role: 'user',
-            text: `${title}\n${body}`.trim(),
-            taskId: sourceId,
-            origin: { kind: 'task', taskId: sourceId },
-          },
-        },
-      ];
+      const stepRef = this.#steps.get(turnId);
+      const step = stepRef === undefined ? undefined : this.#stepHeaders.get(stepRef.stepId);
+      if (step?.state === 'running') {
+        return [this.taskNotificationOp(record, turnId, step.stepId)];
+      }
+      const pending = this.#pendingTaskNotifications.get(turnId);
+      if (pending === undefined) this.#pendingTaskNotifications.set(turnId, [record]);
+      else pending.push(record);
+      return [];
     }
     if (record.type === 'subagent.spawned') {
       const subagentId = stringOf(record['subagentId']);
@@ -516,6 +509,34 @@ export class TranscriptWireAdapter {
       return [this.marker(record, ordinal, 'interruption')];
     }
     return [];
+  }
+
+  private taskNotificationOp(
+    record: TranscriptWireRecord,
+    turnId: string,
+    stepId: string,
+  ): TranscriptOperation {
+    const sourceId = stringOf(record['sourceId'])!;
+    return {
+      op: 'frame.upsert',
+      turnId,
+      stepId,
+      frame: {
+        kind: 'text',
+        frameId: taskNotificationFrameId(sourceId),
+        role: 'user',
+        text: `${stringOf(record['title'])!}\n${stringOf(record['body'])!}`.trim(),
+        taskId: sourceId,
+        origin: { kind: 'task', taskId: sourceId },
+      },
+    };
+  }
+
+  private takePendingTaskNotifications(turnId: string, stepId: string): TranscriptOperation[] {
+    const pending = this.#pendingTaskNotifications.get(turnId);
+    if (pending === undefined) return [];
+    this.#pendingTaskNotifications.delete(turnId);
+    return pending.map((record) => this.taskNotificationOp(record, turnId, stepId));
   }
 
   private marker(
@@ -960,6 +981,7 @@ export class TranscriptWireAdapter {
         this.ensureTurn(turnId),
         { op: 'step.upsert', turnId, step },
         ...this.takePendingSteers(turnId, stepId),
+        ...this.takePendingTaskNotifications(turnId, stepId),
       ];
     }
     if (type === 'step.end') return this.stepEnd(event, time);
@@ -1131,6 +1153,7 @@ export class TranscriptWireAdapter {
     const n = numberOf(record['turnId']);
     if (n === undefined) return [];
     const turnId = `t${n}`;
+    this.#pendingTaskNotifications.delete(turnId);
     const previous = this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);
     if (previous === undefined && !this.#turns.includes(turnId)) return [];
     const endedAt = isoOf(record.time);
@@ -1256,6 +1279,7 @@ export class TranscriptWireAdapter {
       this.#steps.delete(turnId);
       this.#stepUsages.delete(turnId);
       this.#pendingSteers.delete(turnId);
+      this.#pendingTaskNotifications.delete(turnId);
       this.#unpairedSteerCredits.delete(turnId);
       for (const [stepId, step] of this.#stepHeaders) {
         if (step.turnId === turnId) this.#stepHeaders.delete(stepId);

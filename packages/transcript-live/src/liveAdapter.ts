@@ -103,6 +103,7 @@ type PromptAbortedEvent = { readonly type: 'prompt.aborted' } & PromptAborted;
 type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
 type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued;
 type PromptReplacedEvent = { readonly type: 'prompt.replaced' } & PromptReplaced;
+type TaskNotifiedEvent = { readonly type: 'task.notified' } & TaskNotified;
 
 export type LiveAdapterBusEvent =
   | PlanRevisionEvent
@@ -120,7 +121,7 @@ export type LiveAdapterBusEvent =
   | ({ readonly type: 'tool.result' } & ToolResultEvent)
   | ({ readonly type: 'task.started' } & TaskStarted)
   | ({ readonly type: 'task.terminated' } & TaskTerminatedNotice)
-  | ({ readonly type: 'task.notified' } & TaskNotified)
+  | TaskNotifiedEvent
   | ({ readonly type: 'shell.started' } & ShellStarted)
   | ({ readonly type: 'shell.output' } & ShellOutput)
   | ({ readonly type: 'shell.completed' } & ShellCompleted)
@@ -255,6 +256,7 @@ export class AgentTranscriptLiveAdapter {
   private readonly interactions = new Map<string, TranscriptInteraction>();
   /** promptId → the prompt queue entity as last emitted (`prompt.upsert` replaces). */
   private readonly prompts = new Map<string, TranscriptPrompt>();
+  private readonly pendingTaskNotifications: TaskNotifiedEvent[] = [];
   /** turnId → step usages reported so far; folded into the turn header at `turn.ended`. */
   private readonly stepUsageByTurn = new Map<string, StepUsage[]>();
   private markerSeq = 0;
@@ -426,6 +428,7 @@ export class AgentTranscriptLiveAdapter {
     interruptReason?: string;
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
+    this.pendingTaskNotifications.length = 0;
     this.flushOpenFrames(ops);
     const turnId = `t${event.turnId}`;
     const endedAt = event.time === undefined ? nowIso() : epochMsToIso(event.time);
@@ -540,7 +543,11 @@ export class AgentTranscriptLiveAdapter {
     this.frameOrdinal = 0;
     this.openText = undefined;
     this.openThinking = undefined;
-    return [{ op: 'step.upsert', turnId, step: this.currentStep }];
+    const operations: TranscriptOperation[] = [{ op: 'step.upsert', turnId, step: this.currentStep }];
+    for (const notification of this.pendingTaskNotifications.splice(0)) {
+      operations.push(this.taskNotificationOp(notification, turnId, stepId));
+    }
+    return operations;
   }
 
   private onStepCompleted(event: {
@@ -978,22 +985,28 @@ export class AgentTranscriptLiveAdapter {
    * notification opens a fresh turn with `origin.kind === 'task'` instead
    * (the `turn.started` path owns that case).
    */
-  private onTaskNotified(event: {
-    notificationType: string;
-    title: string;
-    body: string;
-    severity: string;
-    sourceKind: string;
-    sourceId: string;
-  }): TranscriptOperation[] {
-    const step = this.currentStep;
+  private onTaskNotified(event: TaskNotifiedEvent): TranscriptOperation[] {
     const turn = this.currentTurn;
-    const midTurn =
-      step !== undefined &&
-      turn !== undefined &&
-      step.state === 'running' &&
-      turn.state === 'running';
-    if (!midTurn) return [];
+    if (
+      turn === undefined ||
+      turn.state !== 'running' ||
+      (turn.origin.kind === 'task' && turn.origin.taskId === event.sourceId)
+    ) {
+      return [];
+    }
+    const step = this.currentStep;
+    if (step?.state === 'running') {
+      return [this.taskNotificationOp(event, turn.turnId, step.stepId)];
+    }
+    this.pendingTaskNotifications.push(event);
+    return [];
+  }
+
+  private taskNotificationOp(
+    event: TaskNotifiedEvent,
+    turnId: string,
+    stepId: string,
+  ): TranscriptOperation {
     const frame: TextFrame = {
       kind: 'text',
       frameId: taskNotificationFrameId(event.sourceId),
@@ -1002,7 +1015,7 @@ export class AgentTranscriptLiveAdapter {
       taskId: event.sourceId,
       origin: { kind: 'task', taskId: event.sourceId },
     };
-    return [{ op: 'frame.upsert', turnId: turn.turnId, stepId: step.stepId, frame }];
+    return { op: 'frame.upsert', turnId, stepId, frame };
   }
 
   private onTaskLifecycle(event: {
