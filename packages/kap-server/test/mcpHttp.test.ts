@@ -11,6 +11,7 @@ import { registerKikiMcpHttp } from '../src/mcp/http';
 import { createEnvSeatResolver, type SeatResolver } from '../src/mcp/seatResolver';
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+import { authHeaders } from './helpers/auth';
 
 const close: Array<() => Promise<void>> = [];
 
@@ -36,9 +37,9 @@ describe('Kiki MCP HTTP transport', () => {
       resolver: createEnvSeatResolver({
         sessionId: 'session-operator',
         delegationToken: 'DELEGATION_SECRET',
-        workspacePath: '/example/workspace',
       }),
       fetch: fetchMock,
+      workspaceBySession: { 'session-operator': '/example/workspace' },
     });
     const { client } = await connect(url, 'DELEGATION_SECRET');
 
@@ -68,7 +69,6 @@ describe('Kiki MCP HTTP transport', () => {
       resolver: createEnvSeatResolver({
         sessionId: 'session-operator',
         delegationToken: 'DELEGATION_SECRET',
-        workspacePath: '/example/workspace',
       }),
       fetch: restFetch(),
     });
@@ -100,15 +100,19 @@ describe('Kiki MCP HTTP transport', () => {
     const resolver: SeatResolver = {
       resolve(bearer) {
         if (bearer === 'TOKEN_A') {
-          return { sessionId: 'session-a', delegationToken: 'TOKEN_A', workspacePath: '/example/a' };
+          return { sessionId: 'session-a', delegationToken: 'TOKEN_A' };
         }
         if (bearer === 'TOKEN_B') {
-          return { sessionId: 'session-b', delegationToken: 'TOKEN_B', workspacePath: '/example/b' };
+          return { sessionId: 'session-b', delegationToken: 'TOKEN_B' };
         }
         return null;
       },
     };
-    const { url } = await listenMcp({ resolver, fetch: fetchMock });
+    const { url } = await listenMcp({
+      resolver,
+      fetch: fetchMock,
+      workspaceBySession: { 'session-a': '/example/a', 'session-b': '/example/b' },
+    });
     const a = await connect(url, 'TOKEN_A');
     const b = await connect(url, 'TOKEN_B');
 
@@ -134,12 +138,10 @@ describe('env seat resolver', () => {
     const resolver = createEnvSeatResolver({
       sessionId: 'session-operator',
       delegationToken: 'DELEGATION_SECRET',
-      workspacePath: '/example/workspace',
     });
     expect(resolver.resolve('DELEGATION_SECRET')).toEqual({
       sessionId: 'session-operator',
       delegationToken: 'DELEGATION_SECRET',
-      workspacePath: '/example/workspace',
     });
     expect(resolver.resolve('other')).toBeNull();
     expect(resolver.resolve('DELEGATION_SECRE')).toBeNull();
@@ -151,6 +153,7 @@ describe('Kiki MCP HTTP daemon mount', () => {
   const homes: string[] = [];
 
   afterEach(async () => {
+    await Promise.all(close.splice(0).map((dispose) => dispose()));
     for (const server of running.splice(0)) {
       await server.close();
     }
@@ -189,11 +192,56 @@ describe('Kiki MCP HTTP daemon mount', () => {
     });
     expect(response.status).toBe(404);
   });
+
+  it('binds an attached env seat without inventing an empty workspace path', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-mcp-http-attached-'));
+    homes.push(home);
+    const bootstrap = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    running.push(bootstrap);
+    const created = await fetch(`http://127.0.0.1:${String(bootstrap.port)}/api/v1/sessions`, {
+      method: 'POST',
+      headers: authHeaders(bootstrap, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    });
+    expect(created.status).toBe(200);
+    const sessionId = ((await created.json()) as { data: { id: string } }).data.id;
+    await bootstrap.close();
+    running.pop();
+
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: {
+        principalId: 'example-principal',
+        sessionId,
+        token: 'DELEGATION_SECRET',
+      },
+    });
+    running.push(server);
+    const { client } = await connect(`http://127.0.0.1:${String(server.port)}/mcp`, 'DELEGATION_SECRET');
+    const listed = await client.callTool({ name: 'kiki_list', arguments: {} });
+    expect(listed.isError).not.toBe(true);
+    expect(listed.structuredContent).toMatchObject({
+      binding: { version: 1, sessionId, workspacePath: home },
+    });
+    const binding = (listed.structuredContent as { binding: { workspacePath?: string } }).binding;
+    expect(binding.workspacePath).not.toBe('');
+  });
 });
 
 async function listenMcp(opts: {
   readonly resolver: SeatResolver;
   readonly fetch: typeof fetch;
+  readonly workspaceBySession?: Readonly<Record<string, string>>;
 }): Promise<{ url: string }> {
   const app: FastifyInstance = Fastify({ logger: false });
   registerKikiMcpHttp(app, {
@@ -204,7 +252,7 @@ async function listenMcp(opts: {
       token: 'KAP_TOKEN',
       delegationToken: seat.delegationToken,
       sessionId: seat.sessionId,
-      workspacePath: seat.workspacePath,
+      workspacePath: opts.workspaceBySession?.[seat.sessionId],
     }),
   });
   await app.listen({ host: '127.0.0.1', port: 0 });

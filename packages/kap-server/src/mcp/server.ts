@@ -24,7 +24,7 @@ export interface KikiMcpConfig {
   readonly token: string;
   readonly delegationToken: string;
   readonly sessionId: string;
-  readonly workspacePath: string;
+  readonly workspacePath?: string;
 }
 
 export interface KikiMcpServerOptions {
@@ -175,8 +175,8 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
   const progressPollIntervalMs = Math.max(0, options.progressPollIntervalMs ?? 250);
   const binding = Object.freeze({
     version: 1,
-    workspacePath: pinnedConfig.workspacePath,
     sessionId: pinnedConfig.sessionId,
+    workspacePath: pinnedConfig.workspacePath,
   });
   const server = new McpServer({ name: 'kiki-external-delegation', version: '0.1.0' });
 
@@ -562,7 +562,7 @@ function updateProfileCatalogDescriptions(
 
 function bindList(
   root: unknown,
-  binding: Readonly<{ version: 1; workspacePath: string; sessionId: string }>,
+  binding: Readonly<{ version: 1; sessionId: string; workspacePath?: string }>,
 ): Record<string, unknown> {
   const parsed = z
     .object({

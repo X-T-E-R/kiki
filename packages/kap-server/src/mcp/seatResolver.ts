@@ -3,7 +3,6 @@ import { timingSafeEqual } from 'node:crypto';
 export interface McpSeat {
   readonly sessionId: string;
   readonly delegationToken: string;
-  readonly workspacePath: string;
 }
 
 export interface SeatResolver {

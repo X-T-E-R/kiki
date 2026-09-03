@@ -11,7 +11,7 @@ export const KIKI_MCP_HTTP_PATH = '/mcp';
 
 export interface RegisterKikiMcpHttpOptions {
   readonly seatResolver: SeatResolver;
-  readonly resolveConfig: (seat: McpSeat) => KikiMcpConfig;
+  readonly resolveConfig: (seat: McpSeat) => KikiMcpConfig | Promise<KikiMcpConfig>;
   readonly serverOptions?: KikiMcpServerOptions;
 }
 
@@ -85,7 +85,7 @@ export function registerKikiMcpHttp(
           void closed.server.close();
         },
       });
-      const server = createKikiMcpServer(options.resolveConfig(seat), options.serverOptions);
+      const server = createKikiMcpServer(await options.resolveConfig(seat), options.serverOptions);
       session = { seat, transport, server };
       await server.connect(transport);
       await dispatch(transport, req, reply);

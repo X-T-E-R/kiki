@@ -587,19 +587,17 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     externalDelegation !== undefined &&
     externalDelegationState.state === 'active'
   ) {
-    const envSeat = {
-      sessionId: externalDelegation.sessionId,
-      delegationToken: externalDelegation.token,
-      workspacePath: externalDelegation.sessionBootstrap?.workspacePath ?? '',
-    };
     registerKikiMcpHttp(app, {
-      seatResolver: createEnvSeatResolver(envSeat),
-      resolveConfig: (seat) => ({
+      seatResolver: createEnvSeatResolver({
+        sessionId: externalDelegation.sessionId,
+        delegationToken: externalDelegation.token,
+      }),
+      resolveConfig: async (seat) => ({
         endpoint: kapEndpoint,
         token: authTokenService.getToken(),
         delegationToken: seat.delegationToken,
         sessionId: seat.sessionId,
-        workspacePath: seat.workspacePath,
+        workspacePath: await resolveSeatWorkspacePath(core, seat.sessionId, externalDelegation),
       }),
     });
   }
@@ -757,6 +755,18 @@ function loopbackOrigin(boundHost: string, boundPort: number): string {
   const hostname = boundHost === '0.0.0.0' || boundHost === '::' ? '127.0.0.1' : boundHost;
   const hostPart = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname;
   return `http://${hostPart}:${String(boundPort)}`;
+}
+
+async function resolveSeatWorkspacePath(
+  core: Scope,
+  sessionId: string,
+  authority: ExternalDelegationAuthorityConfig | undefined,
+): Promise<string | undefined> {
+  if (authority?.sessionId === sessionId && authority.sessionBootstrap !== undefined) {
+    return authority.sessionBootstrap.workspacePath;
+  }
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  return summary?.cwd;
 }
 
 /**
