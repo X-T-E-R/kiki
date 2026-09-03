@@ -239,6 +239,12 @@ const kimiEndpoint: ProtocolEndpoint = {
   defaultBaseUrl: KIMI_DEFAULT_BASE_URL,
 };
 
+export const kimiResponsesTrait: ProtocolTrait = {
+  endpoint: () => kimiEndpoint,
+
+  convertError: (error) => classifyKimiQuotaError(error),
+};
+
 registerProviderDefinition({
   id: 'kimi',
   baseProtocol: 'openai',
@@ -252,6 +258,15 @@ registerProviderDefinition({
   id: 'kimi',
   baseProtocol: 'anthropic',
   traits: [kimiAnthropicTrait],
+  endpoint: kimiEndpoint,
+  hostHeaders: 'full',
+  modelSource: 'oauth-catalog',
+});
+
+registerProviderDefinition({
+  id: 'kimi',
+  baseProtocol: 'openai_responses',
+  traits: [kimiResponsesTrait],
   endpoint: kimiEndpoint,
   hostHeaders: 'full',
   modelSource: 'oauth-catalog',
