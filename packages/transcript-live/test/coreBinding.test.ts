@@ -537,6 +537,146 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
+  it('keeps foreground subagent terminals, interactions, and ended phase block-equivalent', () => {
+    const records = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-foreground',
+        input: [{ type: 'text', text: 'Inspect the session.' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.call',
+          turnId: 0,
+          stepUuid: 'step-1',
+          uuid: 'part-agent-run',
+          toolCallId: 'call-agent-run',
+          name: 'AgentRun',
+          args: { profile: 'explore', prompt: 'Inspect the session.' },
+        },
+        time: 2_100,
+      },
+      {
+        type: 'subagent.spawned',
+        subagentId: 'agent-1',
+        subagentName: 'explore',
+        name: 'session_inspector',
+        parentToolCallId: 'call-agent-run',
+        description: 'Inspect the session.',
+        runInBackground: false,
+        taskId: 'task-foreground',
+        time: 2_200,
+      },
+      { type: 'subagent.started', subagentId: 'agent-1', time: 2_300 },
+      {
+        type: 'interaction.request',
+        id: 'approval-1',
+        kind: 'approval',
+        toolCallId: 'call-agent-run',
+        request: { toolCallId: 'call-agent-run', action: 'Inspect' },
+        origin: { agentId: 'main', turnId: 0 },
+        time: 2_400,
+      },
+      {
+        type: 'interaction.resolved',
+        id: 'approval-1',
+        response: { decision: 'approved', scope: 'session' },
+        time: 2_500,
+      },
+      {
+        type: 'subagent.failed',
+        subagentId: 'agent-1',
+        error: 'terminated',
+        time: 3_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.result',
+          turnId: 0,
+          stepUuid: 'step-1',
+          toolCallId: 'call-agent-run',
+          result: { output: 'terminated', isError: false },
+        },
+        time: 3_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_200,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', durationMs: 2_300, time: 3_300 },
+    ];
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+      tool: (toolCallId) => {
+        for (const item of cold.getItems()) {
+          if (item.kind !== 'turn') continue;
+          for (const step of item.steps) {
+            const frame = step.frames.find(
+              (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+            );
+            if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
+          }
+        }
+        return undefined;
+      },
+      task: (taskId) => cold.getTask(taskId),
+    });
+    for (const record of records) coldReducer.apply(coldAdapter.add(record));
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    for (const record of records) main.bus.emit(record as unknown as Event2<any>);
+
+    const live = store.getAgent('main')!;
+    const liveBlocks = normalizedBlocks(live.snapshot());
+    expect(liveBlocks).toEqual(normalizedBlocks(cold.snapshot()));
+    expect(liveBlocks.filter((block) => block['kind'] === 'subagent')).toEqual([
+      expect.objectContaining({
+        subagentId: 'agent-1',
+        status: 'cancelled',
+        name: 'session_inspector',
+      }),
+    ]);
+    expect(liveBlocks.filter((block) => block['kind'] === 'approval')).toHaveLength(1);
+    expect(live.getTask('task-foreground')).toMatchObject({
+      state: 'killed',
+      error: undefined,
+      stateReason: 'terminated',
+    });
+    expect(live.getMeta()).toMatchObject({
+      activity: 'idle',
+      agent: {
+        phase: {
+          kind: 'ended',
+          turnId: 0,
+          reason: 'completed',
+          durationMs: 2_300,
+          at: 3_300,
+        },
+      },
+    });
+    expect(cold.getMeta()).toEqual(live.getMeta());
+    binding.dispose();
+  });
+
   it('projects an interrupted live turn as a stopped assistant block', () => {
     const agents = new FakeAgents();
     const main = agents.add('main');

@@ -608,6 +608,62 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('preserves projected agent references when a durable tool result replaces the frame', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => transcript.getTurn(turnId),
+      tool: (toolCallId) => {
+        for (const item of transcript.getItems()) {
+          if (item.kind !== 'turn') continue;
+          for (const step of item.steps) {
+            const frame = step.frames.find(
+              (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+            );
+            if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
+          }
+        }
+        return undefined;
+      },
+    });
+    for (const record of records.slice(0, 4)) reducer.apply(adapter.add(record));
+    const turn = transcript.getTurn('t0')!;
+    const step = turn.steps[0]!;
+    const frame = step.frames.find((candidate) => candidate.kind === 'tool');
+    if (frame?.kind !== 'tool') throw new Error('tool frame not found');
+    reducer.apply([
+      {
+        factId: 'transient:subagent-ref',
+        durability: 'transient',
+        operations: [
+          {
+            op: 'frame.upsert',
+            turnId: turn.turnId,
+            stepId: step.stepId,
+            frame: { ...frame, agentRefs: [{ agentId: 'agent-1', role: 'child' }] },
+          },
+        ],
+      },
+    ]);
+    reducer.apply(
+      adapter.add({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.result',
+          toolCallId: 'call-1',
+          result: { output: '/repo', isError: false },
+        },
+        time: 5_000,
+      }),
+    );
+
+    expect(transcript.getTurn('t0')?.steps[0]?.frames.find((candidate) => candidate.kind === 'tool')).toMatchObject({
+      state: 'done',
+      output: '/repo',
+      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
+    });
+  });
+
   it('projects external execution metadata and plans additively', () => {
     const transcript = replay([
       ...records.slice(0, -1),

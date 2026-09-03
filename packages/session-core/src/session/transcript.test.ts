@@ -2100,6 +2100,88 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       expect(projected.blocks.indexOf(events[2]!)).toBeGreaterThan(t2Index);
     });
 
+    it('uses the latest task state when a foreground task-id run has no taskref', () => {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'taskref',
+              refId: 'ref-background-run',
+              taskId: 'task-background-run',
+              at: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              kind: 'turn',
+              turnId: 't2',
+              ordinal: 2,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'run it in the foreground',
+              startedAt: '2026-01-01T00:00:10.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't2.1',
+                  turnId: 't2',
+                  ordinal: 1,
+                  state: 'completed',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-foreground-run',
+                      toolCallId: 'call-foreground-run',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { resume: 'worker', prompt: 'finish' },
+                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
+                      startedAt: '2026-01-01T00:00:11.000Z',
+                      endedAt: '2026-01-01T00:00:12.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-background-run',
+              kind: 'subagent',
+              state: 'running',
+              detached: true,
+              name: 'worker',
+              agentId: 'agent-1',
+              description: 'first run',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              taskId: 'task-foreground-run',
+              kind: 'subagent',
+              state: 'completed',
+              detached: false,
+              name: 'worker',
+              agentId: 'agent-1',
+              description: 'finish',
+              outputTail: 'done',
+              resultSummary: 'Foreground run completed.',
+              startedAt: '2026-01-01T00:00:11.000Z',
+              endedAt: '2026-01-01T00:00:20.000Z',
+            },
+          ],
+        }),
+      );
+
+      expect(projected.blocks.find((block) => block.id === 'subagent-agent-1')).toMatchObject({
+        kind: 'subagent',
+        status: 'completed',
+        summary: 'Foreground run completed.',
+        startedAt: '2026-01-01T00:00:11.000Z',
+        endedAt: '2026-01-01T00:00:20.000Z',
+      });
+    });
+
     it('addresses resume/send refs by the projected stable name, never tool input labels', () => {
       const spawnFrame = (
         frameId: string,

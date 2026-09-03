@@ -387,3 +387,48 @@ test('mirrors child interactions onto the main transcript with the origin agent'
   assert.equal(projector.snapshot('main').interactions[0].state, 'approved');
   assert.equal(projector.snapshot('agent-worker').interactions[0].state, 'approved');
 });
+
+test('projects a terminated foreground task-id subagent as cancelled', () => {
+  const projector = new TranscriptProjector('session_fixture_terminated');
+  projector.ingestFrame({
+    type: 'subagent.spawned',
+    agentId: 'main',
+    payload: {
+      subagentId: 'agent-worker',
+      subagentName: 'explore',
+      name: 'worker',
+      parentToolCallId: 'call-worker',
+      description: 'Inspect',
+      runInBackground: false,
+      taskId: 'task-foreground',
+    },
+  });
+  projector.ingestFrame({
+    type: 'subagent.failed',
+    agentId: 'main',
+    payload: {
+      subagentId: 'agent-worker',
+      taskId: 'task-foreground',
+      error: 'terminated',
+    },
+  });
+
+  assert.deepEqual(projector.snapshot('main').tasks[0], {
+    taskId: 'task-foreground',
+    kind: 'subagent',
+    state: 'killed',
+    detached: false,
+    name: 'worker',
+    subagentName: 'explore',
+    description: 'Inspect',
+    agentId: 'agent-worker',
+    outputTail: '',
+    resultSummary: undefined,
+    error: undefined,
+    stateReason: 'terminated',
+    startedAt: projector.snapshot('main').tasks[0].startedAt,
+    endedAt: projector.snapshot('main').tasks[0].endedAt,
+    usage: undefined,
+  });
+  assert.equal(projector.snapshot('agent-worker').meta.agent.phase.reason, 'cancelled');
+});

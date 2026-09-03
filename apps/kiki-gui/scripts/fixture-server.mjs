@@ -769,8 +769,9 @@ class FixtureServer {
       case 'task.terminated': {
         const task = session.tasks.find((t) => t.id === payload.info.taskId);
         if (task !== undefined) {
-          task.status = payload.info.status === 'completed' ? 'completed' : 'failed';
+          task.status = payload.info.status === 'killed' ? 'cancelled' : payload.info.status;
           task.completed_at = now();
+          task.stop_reason = payload.info.stopReason;
         }
         break;
       }

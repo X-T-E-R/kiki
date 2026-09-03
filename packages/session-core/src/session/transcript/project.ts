@@ -917,20 +917,17 @@ function subagentBlocksFromSnapshot(
             model: existing?.model,
             thinkingEffort: existing?.thinkingEffort,
             status:
-              existing?.status ??
-              (task === undefined
-                ? frame.state === 'running'
-                  ? 'running'
-                  : 'unknown'
-                : mapTaskState(task.state)),
+              task === undefined
+                ? (existing?.status ?? (frame.state === 'running' ? 'running' : 'unknown'))
+                : mapTaskState(task.state),
             summary:
-              existing?.summary ??
               task?.resultSummary ??
-              (task?.outputTail === '' ? undefined : task?.outputTail),
-            error: existing?.error ?? task?.error,
-            usage: existing?.usage ?? task?.usage,
-            startedAt: existing?.startedAt ?? task?.startedAt ?? frame.startedAt,
-            endedAt: existing?.endedAt ?? task?.endedAt,
+              (task?.outputTail === '' ? undefined : task?.outputTail) ??
+              existing?.summary,
+            error: task?.error ?? existing?.error,
+            usage: task?.usage ?? existing?.usage,
+            startedAt: task?.startedAt ?? existing?.startedAt ?? frame.startedAt,
+            endedAt: task?.endedAt ?? existing?.endedAt,
             toolCallCount: existing?.toolCallCount ?? 0,
             transcript: [],
           });

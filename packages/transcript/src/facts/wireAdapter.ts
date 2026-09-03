@@ -1204,13 +1204,16 @@ export class TranscriptWireAdapter {
   ): TranscriptOperation[] {
     const toolCallId = stringOf(event['toolCallId']);
     if (toolCallId === undefined) return [];
-    const hit = this.#tools.get(toolCallId) ?? this.lookups?.tool?.(toolCallId);
+    const cached = this.#tools.get(toolCallId);
+    const projected = this.lookups?.tool?.(toolCallId);
+    const hit = cached ?? projected;
     if (hit === undefined) return [];
     const result = objectOf(event['result']);
     const output = result?.['output'];
     const isError = result?.['isError'] === true;
     const frame: ToolCallFrame = {
       ...hit.frame,
+      ...projected?.frame,
       state: isError ? 'error' : 'done',
       output,
       error: isError && typeof output === 'string' ? output : undefined,

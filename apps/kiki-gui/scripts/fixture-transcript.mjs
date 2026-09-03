@@ -988,6 +988,7 @@ export class TranscriptProjector {
         const spawnTurn = parent.live.turnId ?? 't1';
         const spawnStep = parent.live.stepId ?? stepIdOf(spawnTurn, 1);
         const toolCallId = payload.parentToolCallId ?? `call-${payload.subagentId}`;
+        const taskId = payload.taskId ?? `task-${payload.subagentId}`;
         const parentOps = [];
         if (findTurn(parent.snapshot, spawnTurn) === undefined) {
           parentOps.push({
@@ -1028,7 +1029,7 @@ export class TranscriptProjector {
           {
             op: 'task.upsert',
             task: {
-              taskId: `task-${payload.subagentId}`,
+              taskId,
               kind: 'subagent',
               state: 'running',
               detached: payload.runInBackground === true,
@@ -1042,7 +1043,7 @@ export class TranscriptProjector {
           },
           {
             op: 'taskref.upsert',
-            item: { kind: 'taskref', refId: `ref-${payload.subagentId}`, taskId: `task-${payload.subagentId}`, at },
+            item: { kind: 'taskref', refId: `ref-${taskId}`, taskId, at },
           },
         );
         push(this.commit('main', parentOps));
@@ -1076,9 +1077,18 @@ export class TranscriptProjector {
       case 'subagent.completed':
       case 'subagent.failed': {
         const childId = payload.subagentId ?? agentId;
-        const state = type === 'subagent.failed' ? 'failed' : 'completed';
-        const taskId = `task-${childId}`;
-        const previous = this.ensure('main').snapshot.tasks.find((task) => task.taskId === taskId);
+        const state =
+          type === 'subagent.completed'
+            ? 'completed'
+            : payload.error === 'terminated'
+              ? 'killed'
+              : 'failed';
+        const main = this.ensure('main');
+        const taskId =
+          payload.taskId ??
+          main.snapshot.tasks.find((task) => task.agentId === childId && task.state === 'running')?.taskId ??
+          `task-${childId}`;
+        const previous = main.snapshot.tasks.find((task) => task.taskId === taskId);
         push(this.commit('main', [
           {
             op: 'task.upsert',
@@ -1094,7 +1104,8 @@ export class TranscriptProjector {
               agentId: childId,
               outputTail: payload.output ?? payload.resultSummary ?? previous?.outputTail ?? '',
               resultSummary: payload.output ?? payload.resultSummary ?? previous?.resultSummary,
-              error: payload.error,
+              error: state === 'failed' ? payload.error : undefined,
+              stateReason: payload.reason ?? payload.error ?? previous?.stateReason,
               startedAt: previous?.startedAt,
               endedAt: at,
               usage: payload.usage ?? previous?.usage,
@@ -1111,7 +1122,7 @@ export class TranscriptProjector {
                   phase: {
                     kind: 'ended',
                     turnId: 1,
-                    reason: state === 'failed' ? 'failed' : 'completed',
+                    reason: state === 'failed' ? 'failed' : state === 'killed' ? 'cancelled' : 'completed',
                     at: 0,
                   },
                 },

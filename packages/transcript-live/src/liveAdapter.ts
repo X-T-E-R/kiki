@@ -434,12 +434,13 @@ export class AgentTranscriptLiveAdapter {
     const endedAt = event.time === undefined ? nowIso() : epochMsToIso(event.time);
     const closedFrames = new Set<string>();
     const closeFrame = (hit: ToolFrameRecord): void => {
-      const key = `${hit.stepId}\0${hit.frame.frameId}`;
-      if (hit.frame.state !== 'running' || closedFrames.has(key)) return;
+      const current = this.lookups?.toolFrame?.(hit.frame.toolCallId) ?? hit;
+      const key = `${current.stepId}\0${current.frame.frameId}`;
+      if (current.frame.state !== 'running' || closedFrames.has(key)) return;
       closedFrames.add(key);
-      const frame: ToolCallFrame = { ...hit.frame, state: 'interrupted', endedAt };
-      this.toolFrames.set(frame.toolCallId, { ...hit, frame });
-      ops.push({ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame });
+      const frame: ToolCallFrame = { ...current.frame, state: 'interrupted', endedAt };
+      this.toolFrames.set(frame.toolCallId, { ...current, frame });
+      ops.push({ op: 'frame.upsert', turnId: current.turnId, stepId: current.stepId, frame });
     };
     const closedSteps = new Set<string>();
     const details = this.lookups?.turnDetails?.(turnId);
