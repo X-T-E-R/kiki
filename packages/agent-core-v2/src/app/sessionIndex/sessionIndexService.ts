@@ -40,7 +40,11 @@ import {
 } from './sessionIndexModel';
 import { SessionIndexBuildingError } from './errors';
 import { SessionIndexProjector } from './sessionIndexProjector';
-import { readSessionSummary, summaryMatchesChildOf } from './sessionIndexSource';
+import {
+  readSessionSummary,
+  scanSessionsMaxMtime,
+  summaryMatchesChildOf,
+} from './sessionIndexSource';
 
 const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 const RECONCILE_INTERVAL_MS = 60_000;
@@ -165,7 +169,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.emitStatusIfChanged();
     try {
       const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-      if (manifest === undefined) {
+      if (manifest === undefined || !(await this.manifestFresh(manifest))) {
         const projection = this.ensureProjection();
         if (deadlineMs === undefined) {
           await projection;
@@ -191,6 +195,22 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       this.markDegraded('prepare failed', error);
     }
     return this.status();
+  }
+
+  private async manifestFresh(manifest: Checkpoint): Promise<boolean> {
+    const published = manifest.sourceMaxMtimeMs;
+    if (published === undefined) return false;
+
+    try {
+      return (
+        (await scanSessionsMaxMtime(this.storage, this.bootstrap.scope('sessions'))) <= published
+      );
+    } catch (error) {
+      this.log.warn('session index freshness check failed; re-projecting', {
+        error: String(error),
+      });
+      return false;
+    }
   }
 
   private ensureProjection(fresh = false): Promise<boolean> {

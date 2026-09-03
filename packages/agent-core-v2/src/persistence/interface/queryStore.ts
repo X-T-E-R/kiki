@@ -71,6 +71,7 @@ export type WriteOp =
 
 export interface Checkpoint {
   readonly seq: number;
+  readonly sourceMaxMtimeMs?: number;
 }
 
 /** Numeric range bounds over an ordered column; every bound is optional. */
