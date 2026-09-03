@@ -60,7 +60,7 @@ export class TranscriptWireAdapter {
   readonly #turnOwnedItemIds = new Map<string, string[]>();
   readonly #steeredMessageIds = new Set<string>();
   readonly #pendingSteers = new Map<string, PendingSteer[]>();
-  readonly #unpairedSteerCredits = new Map<string, number>();
+  readonly #unpairedSteerCredits = new Map<string, Map<string, number>>();
   readonly #executions = new Map<string, TranscriptTurnExecution>();
   #goal: GoalMeta | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
@@ -636,7 +636,13 @@ export class TranscriptWireAdapter {
     if (pending === undefined) this.#pendingSteers.set(turnId, [steer]);
     else pending.push(steer);
     if (explicitPromptId === undefined) {
-      this.#unpairedSteerCredits.set(turnId, (this.#unpairedSteerCredits.get(turnId) ?? 0) + 1);
+      let credits = this.#unpairedSteerCredits.get(turnId);
+      if (credits === undefined) {
+        credits = new Map();
+        this.#unpairedSteerCredits.set(turnId, credits);
+      }
+      const originKind = legacyOriginKind(record['origin']);
+      credits.set(originKind, (credits.get(originKind) ?? 0) + 1);
     }
     return [];
   }
@@ -697,9 +703,11 @@ export class TranscriptWireAdapter {
       return true;
     }
     if (turnId === undefined || !isVisibleLegacyTurnOrigin(this.agentId, origin)) return false;
-    const credits = this.#unpairedSteerCredits.get(turnId) ?? 0;
-    if (credits === 0) return false;
-    this.#unpairedSteerCredits.set(turnId, credits - 1);
+    const credits = this.#unpairedSteerCredits.get(turnId);
+    const originKind = legacyOriginKind(origin);
+    const count = credits?.get(originKind) ?? 0;
+    if (count === 0) return false;
+    credits!.set(originKind, count - 1);
     this.#steeredMessageIds.add(messageId);
     return true;
   }
@@ -1347,6 +1355,10 @@ function hashText(value: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
+}
+
+function legacyOriginKind(origin: unknown): string {
+  return stringOf(objectOf(origin)?.['kind']) ?? 'user';
 }
 
 function isVisibleLegacyTurnOrigin(

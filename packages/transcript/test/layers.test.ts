@@ -1119,6 +1119,58 @@ describe('TranscriptWireAdapter', () => {
     expect(JSON.stringify(frame)).not.toContain('activation-1');
   });
 
+  it('does not let a marker-origin message consume a user steer credit', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'turn.steer',
+        turnId: 0,
+        input: [{ type: 'text', text: 'same content' }],
+        origin: { kind: 'user' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'same content' }],
+          toolCalls: [],
+          origin: { kind: 'skill_activation', trigger: 'auto', skillName: 'review' },
+        },
+        time: 3_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'same content' }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+        time: 4_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 5_000,
+      },
+    ]);
+
+    expect(transcript.getItems().filter((item) => item.kind === 'turn')).toHaveLength(1);
+    expect(transcript.getTurn('t0')?.steps[0]?.frames[0]).toMatchObject({
+      kind: 'text',
+      role: 'user',
+      text: 'same content',
+    });
+  });
+
   it('drops a steer frame when no later step begins and still suppresses the paired append_message', () => {
     const transcript = replay([
       {
