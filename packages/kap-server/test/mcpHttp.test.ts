@@ -8,7 +8,11 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerKikiMcpHttp } from '../src/mcp/http';
-import { createEnvSeatResolver, type SeatResolver } from '../src/mcp/seatResolver';
+import {
+  createCompositeSeatResolver,
+  createEnvSeatResolver,
+  type SeatResolver,
+} from '../src/mcp/seatResolver';
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
@@ -98,7 +102,7 @@ describe('Kiki MCP HTTP transport', () => {
       return restResponse(sessionId);
     });
     const resolver: SeatResolver = {
-      resolve(bearer) {
+      async resolve(bearer) {
         if (bearer === 'TOKEN_A') {
           return { sessionId: 'session-a', delegationToken: 'TOKEN_A' };
         }
@@ -134,17 +138,40 @@ describe('Kiki MCP HTTP transport', () => {
 });
 
 describe('env seat resolver', () => {
-  it('matches the embedded delegation token and rejects others', () => {
+  it('matches the embedded delegation token and rejects others', async () => {
     const resolver = createEnvSeatResolver({
       sessionId: 'session-operator',
       delegationToken: 'DELEGATION_SECRET',
     });
-    expect(resolver.resolve('DELEGATION_SECRET')).toEqual({
+    await expect(resolver.resolve('DELEGATION_SECRET')).resolves.toEqual({
       sessionId: 'session-operator',
       delegationToken: 'DELEGATION_SECRET',
     });
-    expect(resolver.resolve('other')).toBeNull();
-    expect(resolver.resolve('DELEGATION_SECRE')).toBeNull();
+    await expect(resolver.resolve('other')).resolves.toBeNull();
+    await expect(resolver.resolve('DELEGATION_SECRE')).resolves.toBeNull();
+  });
+
+  it('prefers a runtime seat resolver and falls back to the env seat', async () => {
+    const runtime: SeatResolver = {
+      async resolve(bearer) {
+        if (bearer === 'RUNTIME') return { sessionId: 'session-runtime', delegationToken: 'RUNTIME' };
+        return null;
+      },
+    };
+    const env = createEnvSeatResolver({
+      sessionId: 'session-env',
+      delegationToken: 'ENV',
+    });
+    const resolver = createCompositeSeatResolver(runtime, env);
+    await expect(resolver.resolve('RUNTIME')).resolves.toEqual({
+      sessionId: 'session-runtime',
+      delegationToken: 'RUNTIME',
+    });
+    await expect(resolver.resolve('ENV')).resolves.toEqual({
+      sessionId: 'session-env',
+      delegationToken: 'ENV',
+    });
+    await expect(resolver.resolve('OTHER')).resolves.toBeNull();
   });
 });
 

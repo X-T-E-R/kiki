@@ -56,7 +56,7 @@ export function registerKikiMcpHttp(
     schema: { hide: true },
     handler: async (req, reply) => {
       const bearer = readBearer(req.headers.authorization);
-      const seat = bearer === undefined ? null : options.seatResolver.resolve(bearer);
+      const seat = bearer === undefined ? null : await options.seatResolver.resolve(bearer);
       if (seat === null) {
         return reply.code(401).send(UNAUTHORIZED);
       }

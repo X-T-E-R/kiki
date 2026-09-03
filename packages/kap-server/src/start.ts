@@ -98,7 +98,11 @@ import {
   type ExternalDelegationAuthorityConfig,
 } from './mcp/externalDelegationAuthority';
 import { registerKikiMcpHttp } from './mcp/http';
-import { createEnvSeatResolver } from './mcp/seatResolver';
+import {
+  createCompositeSeatResolver,
+  createEnvSeatResolver,
+  type SeatResolver,
+} from './mcp/seatResolver';
 
 import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
 import {
@@ -168,6 +172,7 @@ export interface ServerStartOptions {
   readonly rpcToken?: string;
   /** Operator-owned authority for the experimental external-delegation edge. */
   readonly externalDelegation?: ExternalDelegationAuthorityConfig;
+  readonly mcpSeatResolver?: SeatResolver;
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
   /**
@@ -582,16 +587,19 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
 
   let kapEndpoint = loopbackOrigin(host, port);
+  const envSeatResolver =
+    externalDelegation !== undefined && externalDelegationState.state === 'active'
+      ? createEnvSeatResolver({
+          sessionId: externalDelegation.sessionId,
+          delegationToken: externalDelegation.token,
+        })
+      : undefined;
   if (
     exposureClass === 'loopback' &&
-    externalDelegation !== undefined &&
-    externalDelegationState.state === 'active'
+    (opts.mcpSeatResolver !== undefined || envSeatResolver !== undefined)
   ) {
     registerKikiMcpHttp(app, {
-      seatResolver: createEnvSeatResolver({
-        sessionId: externalDelegation.sessionId,
-        delegationToken: externalDelegation.token,
-      }),
+      seatResolver: createCompositeSeatResolver(opts.mcpSeatResolver, envSeatResolver),
       resolveConfig: async (seat) => ({
         endpoint: kapEndpoint,
         token: authTokenService.getToken(),

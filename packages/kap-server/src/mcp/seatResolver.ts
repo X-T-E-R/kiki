@@ -6,13 +6,29 @@ export interface McpSeat {
 }
 
 export interface SeatResolver {
-  resolve(bearer: string): McpSeat | null;
+  resolve(bearer: string): Promise<McpSeat | null>;
 }
 
 export function createEnvSeatResolver(seat: McpSeat): SeatResolver {
   return {
-    resolve(bearer) {
+    async resolve(bearer) {
       return tokensEqual(bearer, seat.delegationToken) ? seat : null;
+    },
+  };
+}
+
+export function createCompositeSeatResolver(
+  primary: SeatResolver | undefined,
+  fallback: SeatResolver | undefined,
+): SeatResolver {
+  return {
+    async resolve(bearer) {
+      if (primary !== undefined) {
+        const seat = await primary.resolve(bearer);
+        if (seat !== null) return seat;
+      }
+      if (fallback === undefined) return null;
+      return fallback.resolve(bearer);
     },
   };
 }
