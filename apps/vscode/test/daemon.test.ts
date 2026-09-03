@@ -139,7 +139,7 @@ describe("daemon registry discovery", () => {
 describe("daemon startup", () => {
   it("spawns kimi web once and waits for its registry entry", async () => {
     const home = await createHome();
-    const child = { exitCode: null, unref: vi.fn() };
+    const child = { exitCode: null, once: vi.fn(), unref: vi.fn() };
     const spawnImpl = vi.fn(() => child);
     let polls = 0;
     const sleep = vi.fn(async () => {
@@ -176,5 +176,28 @@ describe("daemon startup", () => {
       }),
     );
     expect(child.unref).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces a missing kimi executable", async () => {
+    const home = await createHome();
+    let onError: ((error: Error) => void) | undefined;
+    const child = {
+      exitCode: null,
+      once: vi.fn((_event: string, listener: (error: Error) => void) => {
+        onError = listener;
+        return child;
+      }),
+      unref: vi.fn(),
+    };
+    const missing = new Error("spawn kimi ENOENT");
+
+    await expect(
+      ensureDaemon({
+        homeDir: home,
+        spawn: vi.fn(() => child) as never,
+        sleep: async () => onError?.(missing),
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toThrow("spawn kimi ENOENT");
   });
 });

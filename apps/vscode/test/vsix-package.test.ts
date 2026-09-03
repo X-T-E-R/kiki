@@ -97,7 +97,7 @@ describe('VSIX verifier CLI (package contract and failure details)', () => {
 
   it('names a missing required Webview resource', async () => {
     const fixture = await makeVsixFixture('darwin-x64');
-    await rm(join(fixture, 'extension', 'dist', 'webview.js'));
+    await rm(join(fixture, 'extension', 'media', 'gui', 'index.html'));
 
     const result = runNode(verifierScript, [
       '--target',
@@ -107,7 +107,7 @@ describe('VSIX verifier CLI (package contract and failure details)', () => {
     ]);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('Required VSIX resource is missing: extension/dist/webview.js');
+    expect(result.stderr).toContain('Required VSIX resource is missing: extension/media/gui/index.html');
   });
 
   it('reports a bare runtime dependency left in the extension bundle', async () => {
@@ -222,9 +222,11 @@ async function makeVsixFixture(target: string): Promise<string> {
   const root = await makeTempDir('kimi-vsix-fixture-');
   const extensionDir = join(root, 'extension');
   const distDir = join(extensionDir, 'dist');
+  const guiDir = join(extensionDir, 'media', 'gui');
   const resourcesDir = join(extensionDir, 'resources');
   await Promise.all([
     mkdir(distDir, { recursive: true }),
+    mkdir(guiDir, { recursive: true }),
     mkdir(resourcesDir, { recursive: true }),
   ]);
 
@@ -242,10 +244,10 @@ async function makeVsixFixture(target: string): Promise<string> {
       join(distDir, 'extension.js'),
       "/** @type {import('../types/index').Extension} */\nimport * as vscode from 'vscode';\nexport function activate() { return vscode; }\n",
     ),
-    writeFile(join(distDir, 'webview.js'), 'globalThis.__kimiWebview = true;\n'),
-    writeFile(join(distDir, 'kimi-banner-dark.svg'), '<svg />'),
-    writeFile(join(distDir, 'kimi-banner-light.svg'), '<svg />'),
-    writeFile(join(distDir, 'kimi-logo.png'), 'fixture'),
+    writeFile(
+      join(guiDir, 'index.html'),
+      '<!doctype html><html><head></head><body><div id="root"></div></body></html>',
+    ),
     writeFile(join(resourcesDir, 'kimi-icon-storefront.png'), 'fixture'),
     writeFile(join(resourcesDir, 'kimi-icon.svg'), '<svg />'),
   ]);

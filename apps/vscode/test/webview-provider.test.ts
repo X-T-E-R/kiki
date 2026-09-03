@@ -75,8 +75,7 @@ describe("GUI webview carrier", () => {
     expect(webview.html).toContain('Content-Security-Policy');
     expect(webview.html).toContain('connect-src vscode-webview://test http://127.0.0.1:*');
     expect(webview.html).toContain('ws://127.0.0.1:*');
-    expect(webview.html).toContain('u.searchParams.set("server",c.url)');
-    expect(webview.html).toContain('"token":"secret-token"');
+    expect(webview.html).not.toContain('secret-token');
     expect(webview.html).toContain(`src="vscode-resource:${root.replaceAll("\\", "/")}/media/gui/assets/app.js"`);
     expect(webview.html).toContain(`href="vscode-resource:${root.replaceAll("\\", "/")}/media/gui/assets/app.css"`);
 
