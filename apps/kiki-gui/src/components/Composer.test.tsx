@@ -15,7 +15,7 @@ const { selectFilesNative, desktopRuntime, vscodeRuntime, preparePrompt } = vi.h
   selectFilesNative: vi.fn(),
   desktopRuntime: { value: false },
   vscodeRuntime: { value: false },
-  preparePrompt: vi.fn(async (content: string) => content),
+  preparePrompt: vi.fn(async (content: string, _conversationId?: string) => content),
 }));
 const listModels = vi.fn();
 const listSessionSkills = vi.fn();
@@ -64,7 +64,7 @@ beforeEach(() => {
   selectFilesNative.mockReset();
   desktopRuntime.value = false;
   vscodeRuntime.value = false;
-  preparePrompt.mockReset().mockImplementation(async (content: string) => content);
+  preparePrompt.mockReset().mockImplementation(async (content: string, _conversationId?: string) => content);
   listNamedAgentProfiles.mockReset().mockResolvedValue({
     items: [
       {
@@ -100,52 +100,59 @@ afterAll(() => {
 
 async function renderComposer(
   props: Partial<Parameters<typeof Composer>[0]> = {},
-): Promise<{ container: HTMLDivElement; root: Root }> {
+): Promise<{
+  container: HTMLDivElement;
+  root: Root;
+  rerender: (props: Partial<Parameters<typeof Composer>[0]>) => Promise<void>;
+}> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () => {
-    root.render(
-      <QueryClientProvider client={client}>
-        <I18nProvider>
-          <MemoryRouter>
-            <Composer
-              busy={false}
-              disabled={false}
-              value=""
-              onChange={() => {}}
-              model={undefined}
-              defaultModel={undefined}
-              serverDefaultModel="fixture/kiki-pro"
-              modelSource="server-default"
-              permissionMode="manual"
-              planMode={false}
-              swarmMode={false}
-              goalObjective=""
-              goalStatus={undefined}
-              goalControl={undefined}
-              efforts={undefined}
-              effort={undefined}
-              attachments={[]}
-              onChangeAttachments={() => {}}
-              onChangeModel={() => {}}
-              onChangePermissionMode={() => {}}
-              onChangePlanMode={() => {}}
-              onChangeSwarmMode={() => {}}
-              onChangeGoalObjective={() => {}}
-              onChangeGoalControl={() => {}}
-              onChangeEffort={() => {}}
-              onSend={() => {}}
-              {...props}
-            />
-          </MemoryRouter>
-        </I18nProvider>
-      </QueryClientProvider>,
-    );
-  });
-  return { container, root };
+  const rerender = async (nextProps: Partial<Parameters<typeof Composer>[0]>) => {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <MemoryRouter>
+              <Composer
+                busy={false}
+                disabled={false}
+                value=""
+                onChange={() => {}}
+                model={undefined}
+                defaultModel={undefined}
+                serverDefaultModel="fixture/kiki-pro"
+                modelSource="server-default"
+                permissionMode="manual"
+                planMode={false}
+                swarmMode={false}
+                goalObjective=""
+                goalStatus={undefined}
+                goalControl={undefined}
+                efforts={undefined}
+                effort={undefined}
+                attachments={[]}
+                onChangeAttachments={() => {}}
+                onChangeModel={() => {}}
+                onChangePermissionMode={() => {}}
+                onChangePlanMode={() => {}}
+                onChangeSwarmMode={() => {}}
+                onChangeGoalObjective={() => {}}
+                onChangeGoalControl={() => {}}
+                onChangeEffort={() => {}}
+                onSend={() => {}}
+                {...nextProps}
+              />
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+  };
+  await rerender(props);
+  return { container, root, rerender };
 }
 
 /** Let react-query promises land and the re-render flush, on a macrotask cadence. */
@@ -196,6 +203,37 @@ describe('Composer host compatibility', () => {
 
     await expect(renderComposer({ sessionId: undefined })).resolves.toBeDefined();
     vi.stubGlobal('crypto', originalCrypto);
+  });
+
+  it('preserves a new-session key for creation and rotates between resident sessions', async () => {
+    vscodeRuntime.value = true;
+    const onSend = vi.fn();
+    const rendered = await renderComposer({ value: 'new', sessionId: undefined, onSend });
+    const textarea = rendered.container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+    const newKey = preparePrompt.mock.calls[0]?.[1];
+
+    await rendered.rerender({ value: 'session-a', sessionId: 'session-a', onSend });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+
+    await rendered.rerender({ value: 'session-b', sessionId: 'session-b', onSend });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+
+    expect(newKey).toMatch(/^vscode-conversation-/);
+    expect(preparePrompt.mock.calls.map((call) => call[1])).toEqual([
+      newKey,
+      newKey,
+      'session-b',
+    ]);
   });
 });
 

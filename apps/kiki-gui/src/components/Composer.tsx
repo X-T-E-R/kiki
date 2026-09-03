@@ -85,6 +85,11 @@ const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
 let vscodeConversationSequence = 0;
 
+function nextVscodeConversationKey(): string {
+  vscodeConversationSequence += 1;
+  return `vscode-conversation-${vscodeConversationSequence}`;
+}
+
 /** The effort visible in the select is also the value submitted on send. */
 export function resolveSelectedEffort(
   efforts: readonly string[] | undefined,
@@ -296,12 +301,26 @@ export function Composer({
 }) {
   const host = useHost();
   const vscodeRuntime = isVscodeWebview();
-  const vscodeConversationKeyRef = useRef<string | undefined>(undefined);
-  if (vscodeRuntime && vscodeConversationKeyRef.current === undefined) {
-    vscodeConversationSequence += 1;
-    vscodeConversationKeyRef.current = `vscode-conversation-${vscodeConversationSequence}`;
+  const vscodeConversationRef = useRef<
+    { key: string; sessionId: string | undefined } | undefined
+  >(undefined);
+  if (vscodeRuntime) {
+    const conversation = vscodeConversationRef.current;
+    if (conversation === undefined) {
+      vscodeConversationRef.current = {
+        key: sessionId ?? nextVscodeConversationKey(),
+        sessionId,
+      };
+    } else if (conversation.sessionId === undefined && sessionId !== undefined) {
+      conversation.sessionId = sessionId;
+    } else if (conversation.sessionId !== sessionId) {
+      vscodeConversationRef.current = {
+        key: sessionId ?? nextVscodeConversationKey(),
+        sessionId,
+      };
+    }
   }
-  const vscodeConversationId = sessionId ?? vscodeConversationKeyRef.current;
+  const vscodeConversationId = vscodeConversationRef.current?.key;
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
