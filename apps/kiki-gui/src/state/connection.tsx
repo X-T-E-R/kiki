@@ -147,6 +147,12 @@ class LiveControllerRegistry implements ControllerRegistry {
 
 const ConnectionContext = createContext<ConnectionValue | null>(null);
 const GUI_LEASE_INTERVAL_MS = 15_000;
+let guiLeaseClientSequence = 0;
+
+export function nextGuiLeaseClientId(now = Date.now()): string {
+  guiLeaseClientSequence += 1;
+  return `gui-${now.toString(36)}-${guiLeaseClientSequence.toString(36)}`;
+}
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const host = useHost();
@@ -176,7 +182,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const controllersRef = useRef(new LiveControllerRegistry());
   const liveSocketRef = useRef<KikiSocket | null>(null);
   const connectionEpochRef = useRef(0);
-  const leaseClientIdRef = useRef(crypto.randomUUID());
+  const leaseClientIdRef = useRef(nextGuiLeaseClientId());
 
   // The desktop shell resolves an existing daemon before spawning its own.
   // Keep the shared home token in React memory only.

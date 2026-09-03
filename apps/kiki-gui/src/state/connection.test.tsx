@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { ConnectionProvider, useConnection } from './connection';
+import { ConnectionProvider, nextGuiLeaseClientId, useConnection } from './connection';
 
 const mocks = vi.hoisted(() => ({
   detectLocalConnection: vi.fn(),
@@ -245,8 +245,26 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(mocks.sockets[0]!.close).toHaveBeenCalledTimes(1);
   });
 
-  it('renews one GUI lease while connected and stops after unmount', async () => {
+  it('builds lease client ids without crypto.randomUUID', () => {
+    const crypto = globalThis.crypto as Crypto & { randomUUID?: () => `${string}-${string}-${string}-${string}-${string}` };
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, 'randomUUID');
+    Object.defineProperty(crypto, 'randomUUID', { configurable: true, value: undefined });
+    try {
+      const first = nextGuiLeaseClientId(1234);
+      const second = nextGuiLeaseClientId(1234);
+      expect(first).toMatch(/^gui-ya-[0-9a-z]+$/);
+      expect(second).not.toBe(first);
+    } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(crypto, 'randomUUID');
+      else Object.defineProperty(crypto, 'randomUUID', descriptor);
+    }
+  });
+
+  it('renders and renews one GUI lease when crypto.randomUUID is unavailable', async () => {
     vi.useFakeTimers();
+    const crypto = globalThis.crypto as Crypto & { randomUUID?: () => `${string}-${string}-${string}-${string}-${string}` };
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, 'randomUUID');
+    Object.defineProperty(crypto, 'randomUUID', { configurable: true, value: undefined });
     try {
       mocks.detectLocalConnection.mockResolvedValue({
         config: { url: 'http://127.0.0.1:41001', token: 'home-token' },
@@ -275,6 +293,8 @@ describe('ConnectionProvider desktop backend recovery', () => {
       await vi.advanceTimersByTimeAsync(15_000);
       expect(mocks.renewLease).toHaveBeenCalledTimes(2);
     } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(crypto, 'randomUUID');
+      else Object.defineProperty(crypto, 'randomUUID', descriptor);
       vi.useRealTimers();
     }
   });
