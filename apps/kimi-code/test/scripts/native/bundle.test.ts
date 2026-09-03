@@ -16,15 +16,19 @@ describe('resolvePnpmInvocation', () => {
     });
   });
 
-  it('uses the Windows shim when invoked directly with node', () => {
-    expect(resolvePnpmInvocation({}, 'win32', 'C:\\node\\node.exe')).toEqual({
-      command: 'pnpm.cmd',
-      args: [],
+  it('uses Corepack beside the active Node executable when invoked directly', () => {
+    expect(resolvePnpmInvocation({}, 'win32', 'C:\\node\\node.exe', () => true)).toEqual({
+      command: 'C:\\node\\node.exe',
+      args: ['C:\\node\\node_modules\\corepack\\dist\\pnpm.js'],
     });
   });
 
-  it('uses pnpm on non-Windows platforms when npm_execpath is absent', () => {
-    expect(resolvePnpmInvocation({}, 'linux', '/usr/bin/node')).toEqual({
+  it('uses the platform shim when the active Node installation has no Corepack', () => {
+    expect(resolvePnpmInvocation({}, 'win32', 'C:\\node\\node.exe', () => false)).toEqual({
+      command: 'pnpm.cmd',
+      args: [],
+    });
+    expect(resolvePnpmInvocation({}, 'linux', '/usr/bin/node', () => false)).toEqual({
       command: 'pnpm',
       args: [],
     });
