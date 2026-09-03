@@ -2,6 +2,7 @@ import * as posixPath from 'node:path/posix';
 import * as win32Path from 'node:path/win32';
 
 import { Emitter } from '#/_base/event';
+import { hostAwareResolve, isWindowsAbsolutePath } from '#/_base/utils/paths';
 
 import type { Runtime, RuntimeCapability, RuntimePath, RuntimeStatus } from './runtime';
 
@@ -45,17 +46,17 @@ export class FakeRuntime implements Runtime {
     this.path = {
       separator: path.sep as '/' | '\\',
       delimiter: path.delimiter as ':' | ';',
-      isAbsolute: (p) => path.isAbsolute(p),
+      isAbsolute: (p) => path.isAbsolute(p) || isWindowsAbsolutePath(p),
       join: (...paths) => path.join(...paths),
       relative: (from, to) => path.relative(from, to),
-      resolve: (...paths) => path.resolve(...paths),
+      resolve: (...paths) => hostAwareResolve(path, ...paths),
       basename: (p) => path.basename(p),
       dirname: (p) => path.dirname(p),
     };
     this.workspace = {
       mapRoots: options.mapWorkspaceRoots ?? ((roots) => ({
-        workDir: path.resolve(roots.workDir),
-        additionalDirs: roots.additionalDirs?.map((root) => path.resolve(root)),
+        workDir: hostAwareResolve(path, roots.workDir),
+        additionalDirs: roots.additionalDirs?.map((root) => hostAwareResolve(path, root)),
       })),
     };
   }
