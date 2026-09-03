@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import type { Command } from 'commander';
 
-import { getDataDir } from '../utils/paths';
+import { resolveKikiHome } from './home';
 import { ensureServer, type ServerConnection } from './serve';
 
 export type SeatMode = 'manual' | 'auto' | 'yolo';
@@ -24,6 +24,7 @@ interface SeatCreateOptions {
   readonly mode: SeatMode;
   readonly model?: string;
   readonly thinking?: string;
+  readonly home?: string;
   readonly json?: boolean;
 }
 
@@ -36,6 +37,7 @@ export function registerSeatCommand(program: Command): Command {
     .option('--mode <mode>', '', parseMode, 'manual')
     .option('--model <alias>')
     .option('--thinking <effort>')
+    .option('--home <dir>')
     .option('--json')
     .action(async (options: SeatCreateOptions) => {
       const result = await createSeat(options);
@@ -44,9 +46,10 @@ export function registerSeatCommand(program: Command): Command {
 
   seat
     .command('list')
+    .option('--home <dir>')
     .option('--json')
-    .action(async (options: { readonly json?: boolean }) => {
-      const connection = await ensureServer({ homeDir: getDataDir() });
+    .action(async (options: { readonly home?: string; readonly json?: boolean }) => {
+      const connection = await ensureServer({ homeDir: resolveKikiHome(options.home) });
       const seats = await daemonRequest<readonly Omit<SeatConnection, 'delegationToken'>[]>(
         connection,
         'GET',
@@ -57,9 +60,10 @@ export function registerSeatCommand(program: Command): Command {
 
   seat
     .command('revoke <seatId>')
+    .option('--home <dir>')
     .option('--json')
-    .action(async (seatId: string, options: { readonly json?: boolean }) => {
-      const connection = await ensureServer({ homeDir: getDataDir() });
+    .action(async (seatId: string, options: { readonly home?: string; readonly json?: boolean }) => {
+      const connection = await ensureServer({ homeDir: resolveKikiHome(options.home) });
       const revoked = await daemonRequest<Omit<SeatConnection, 'delegationToken'>>(
         connection,
         'DELETE',
@@ -76,9 +80,10 @@ export async function createSeat(input: {
   readonly mode?: SeatMode;
   readonly model?: string;
   readonly thinking?: string;
+  readonly home?: string;
 }): Promise<SeatConnection> {
   const workspace = resolve(input.workspace);
-  const connection = await ensureServer({ homeDir: getDataDir(), workspace });
+  const connection = await ensureServer({ homeDir: resolveKikiHome(input.home), workspace });
   return createSeatOnConnection(connection, { ...input, workspace });
 }
 

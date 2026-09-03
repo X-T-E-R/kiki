@@ -4,7 +4,7 @@ import { platform } from 'node:os';
 import { serverTokenPath } from '@moonshot-ai/kap-server';
 import type { Command } from 'commander';
 
-import { getDataDir } from '../utils/paths';
+import { resolveKikiHome } from './home';
 import { daemonRequest, type SeatConnection } from './seat';
 import { findReachableServer } from './serve';
 
@@ -29,12 +29,16 @@ interface DoctorReport {
 }
 
 export function registerDoctorCommand(program: Command): void {
-  program.command('doctor').option('--json').action(async () => {
-    process.stdout.write(`${JSON.stringify(await doctor(), null, 2)}\n`);
-  });
+  program
+    .command('doctor')
+    .option('--home <dir>')
+    .option('--json')
+    .action(async (options: { readonly home?: string }) => {
+      process.stdout.write(`${JSON.stringify(await doctor(resolveKikiHome(options.home)), null, 2)}\n`);
+    });
 }
 
-export async function doctor(homeDir = getDataDir()): Promise<DoctorReport> {
+export async function doctor(homeDir = resolveKikiHome()): Promise<DoctorReport> {
   const tokenPath = serverTokenPath(homeDir);
   let tokenExists = false;
   let tokenSecure = false;

@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { doctor } from '../../src/kiki/doctor';
+import { resolveKikiHome } from '../../src/kiki/home';
 import { mcpCommandConfig, upsertMcpServer } from '../../src/kiki/install';
 import { createSeatOnConnection } from '../../src/kiki/seat';
 import { mcpPrincipal } from '../../src/kiki/mcp';
@@ -13,6 +15,7 @@ const roots: string[] = [];
 
 afterEach(async () => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -23,6 +26,21 @@ describe('kiki command helpers', () => {
     expect(parseDuration('30m')).toBe(1_800_000);
     expect(parseDuration('2h')).toBe(7_200_000);
     expect(() => parseDuration('30')).toThrow('Invalid duration.');
+  });
+
+  it('resolves Kiki home consistently and reports the KIKI_HOME token path', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-home-test-'));
+    roots.push(root);
+    const kikiHome = join(root, 'configured-kiki');
+    const legacyHome = join(root, 'legacy-kimi');
+    vi.stubEnv('KIKI_HOME', kikiHome);
+    vi.stubEnv('KIMI_CODE_HOME', legacyHome);
+    vi.stubEnv('USERPROFILE', join(root, 'profile'));
+
+    expect(resolveKikiHome()).toBe(kikiHome);
+    expect(resolveKikiHome(join(root, 'explicit'))).toBe(join(root, 'explicit'));
+    expect(resolveKikiHome(undefined, {}, root)).toBe(join(root, '.kiki'));
+    expect((await doctor()).token.path).toBe(join(kikiHome, 'server.token'));
   });
 
   it('derives a stable MCP principal from the workspace', () => {

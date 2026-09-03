@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import type { Command } from 'commander';
 
-import { getDataDir } from '../utils/paths';
+import { resolveKikiHome } from './home';
 import { mcpPrincipal } from './mcp';
 import { createSeatOnConnection } from './seat';
 import { ensureServer } from './serve';
@@ -13,7 +13,7 @@ export type InstallClient = 'cursor' | 'claude' | 'codex' | 'generic';
 
 interface McpCommandConfig {
   readonly command: 'kiki';
-  readonly args: readonly ['mcp', '--workspace', string];
+  readonly args: readonly string[];
 }
 
 export function registerSeatInstallCommand(seat: Command): void {
@@ -22,18 +22,24 @@ export function registerSeatInstallCommand(seat: Command): void {
     .requiredOption('--client <client>', '', parseClient)
     .requiredOption('--workspace <dir>')
     .option('--transport <transport>', '', parseTransport, 'stdio')
+    .option('--home <dir>')
     .action(async (options: {
       readonly client: InstallClient;
       readonly workspace: string;
       readonly transport: 'stdio';
+      readonly home?: string;
     }) => {
       const workspace = resolve(options.workspace);
-      const connection = await ensureServer({ homeDir: getDataDir(), workspace });
+      const homeDir = resolveKikiHome(options.home);
+      const connection = await ensureServer({ homeDir, workspace });
       await createSeatOnConnection(connection, {
         workspace,
         principal: mcpPrincipal(workspace),
       });
-      const config = mcpCommandConfig(workspace);
+      const config = mcpCommandConfig(
+        workspace,
+        options.home === undefined ? undefined : homeDir,
+      );
       if (options.client === 'cursor') {
         await upsertMcpServer(join(homedir(), '.cursor', 'mcp.json'), config);
         return;
@@ -50,8 +56,13 @@ export function registerSeatInstallCommand(seat: Command): void {
     });
 }
 
-export function mcpCommandConfig(workspace: string): McpCommandConfig {
-  return { command: 'kiki', args: ['mcp', '--workspace', workspace] };
+export function mcpCommandConfig(workspace: string, homeDir?: string): McpCommandConfig {
+  return {
+    command: 'kiki',
+    args: homeDir === undefined
+      ? ['mcp', '--workspace', workspace]
+      : ['mcp', '--workspace', workspace, '--home', homeDir],
+  };
 }
 
 export async function upsertMcpServer(

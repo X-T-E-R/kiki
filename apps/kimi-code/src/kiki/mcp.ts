@@ -6,7 +6,7 @@ import { normalize, resolve } from 'node:path';
 import { runKikiMcpStdio } from '@moonshot-ai/kap-server';
 import type { Command } from 'commander';
 
-import { getDataDir } from '../utils/paths';
+import { resolveKikiHome } from './home';
 import { createSeatOnConnection } from './seat';
 import { ensureServer } from './serve';
 
@@ -14,9 +14,10 @@ export function registerMcpCommand(program: Command): void {
   program
     .command('mcp')
     .requiredOption('--workspace <dir>')
-    .action(async (options: { readonly workspace: string }) => {
+    .option('--home <dir>')
+    .action(async (options: { readonly workspace: string; readonly home?: string }) => {
       const workspace = normalize(await realpath(resolve(options.workspace)));
-      const connection = await ensureServer({ homeDir: getDataDir(), workspace });
+      const connection = await ensureServer({ homeDir: resolveKikiHome(options.home), workspace });
       const seat = await createSeatOnConnection(connection, {
         workspace,
         principal: mcpPrincipal(workspace),

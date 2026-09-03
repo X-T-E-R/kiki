@@ -12,8 +12,8 @@ import {
 } from '@moonshot-ai/kap-server';
 import type { Command } from 'commander';
 
-import { getDataDir } from '../utils/paths';
 import { createKimiCodeHostIdentity, getVersion } from '../cli/version';
+import { resolveKikiHome } from './home';
 
 export interface ServerConnection {
   readonly url: string;
@@ -45,7 +45,7 @@ export function registerServeCommand(program: Command): void {
     .option('--json')
     .option('--stop')
     .action(async (options: ServeOptions) => {
-      const homeDir = resolve(options.home ?? getDataDir());
+      const homeDir = resolveKikiHome(options.home);
       const idleExitMs = parseDuration(options.idleExit);
       if (options.ensure === true && options.stop === true) {
         throw new Error('--ensure and --stop cannot be used together.');
