@@ -3,6 +3,8 @@ import { createKlient } from '@moonshot-ai/klient/http';
 import type {
   ApprovalResolveRequest,
   ApprovalResolveResult,
+  ListModelsResponse,
+  ListNamedAgentProfilesResponse,
   PageResponse,
   PromptAbortResponse,
   PromptReplaceRequest,
@@ -15,6 +17,7 @@ import type {
   QuestionResolveResult,
   Session,
   SessionSnapshotResponse,
+  UpdateSessionProfileRequest,
 } from '@moonshot-ai/protocol';
 
 import {
@@ -95,20 +98,32 @@ export class DaemonClient implements SessionTransport {
     return this.klient.global.sessions.create(input);
   }
 
-  listModels() {
-    return this.klient.global.kosong.listModels();
+  listModels(): Promise<ListModelsResponse> {
+    return this.request('GET', '/models');
   }
 
-  setModel(sessionId: string, model: string) {
-    return this.klient.session(sessionId).agent('main').setModel(model);
+  listAgentProfiles(): Promise<ListNamedAgentProfilesResponse> {
+    return this.request('GET', '/agents', undefined, { expand: 'true' });
   }
 
-  setPermission(sessionId: string, mode: 'manual' | 'yolo' | 'auto') {
-    return this.klient.session(sessionId).agent('main').setPermission(mode);
+  updateSessionProfile(sessionId: string, body: UpdateSessionProfileRequest): Promise<Session> {
+    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}/profile`, body);
   }
 
-  runCommand(sessionId: string, name: string, args?: string) {
-    return this.klient.session(sessionId).agent('main').runCommand({ name, args });
+  setModel(sessionId: string, model: string): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { agent_config: { model } });
+  }
+
+  setPermission(sessionId: string, mode: 'manual' | 'yolo' | 'auto'): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { agent_config: { permission_mode: mode } });
+  }
+
+  setProfile(sessionId: string, profile: string): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { agent_config: { profile } });
+  }
+
+  setThinking(sessionId: string, thinking: string): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { agent_config: { thinking } });
   }
 
   runShellCommand(sessionId: string, command: string) {

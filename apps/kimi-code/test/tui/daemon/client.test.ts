@@ -37,15 +37,9 @@ describe('DaemonClient', () => {
     });
 
     await client.createSession({ workDir: 'C:\\repo' });
-    await client.setModel('session-1', 'kimi-k2');
-    await client.setPermission('session-1', 'auto');
-    await client.runCommand('session-1', 'status');
     await client.runShellCommand('session-1', 'pwd');
 
     expect(fake.sessions.create).toHaveBeenCalledWith({ workDir: 'C:\\repo' });
-    expect(fake.agent.setModel).toHaveBeenCalledWith('kimi-k2');
-    expect(fake.agent.setPermission).toHaveBeenCalledWith('auto');
-    expect(fake.agent.runCommand).toHaveBeenCalledWith({ name: 'status', args: undefined });
     expect(fake.agent.runShellCommand).toHaveBeenCalledWith({ command: 'pwd' });
   });
 
@@ -92,6 +86,44 @@ describe('DaemonClient', () => {
     expect(String(fetch.mock.calls[0]?.[0])).toBe(
       'http://127.0.0.1:57580/api/v1/sessions?page_size=25',
     );
+  });
+
+  it('uses REST model, agent profile, and session profile endpoints', async () => {
+    const fake = fakeKlient();
+    const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => ({
+      json: async () => ({
+        code: 0,
+        msg: 'ok',
+        data: String(input).endsWith('/models') || String(input).includes('/agents?')
+          ? { items: [] }
+          : { id: 'session-1' },
+      }),
+    }) as Response);
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580',
+      token: 'secret',
+      fetch: fetch as typeof globalThis.fetch,
+      klient: fake.klient as never,
+    });
+
+    await client.listModels();
+    await client.listAgentProfiles();
+    await client.setModel('session-1', 'model-b');
+    await client.setPermission('session-1', 'auto');
+    await client.setProfile('session-1', 'reviewer');
+
+    expect(fetch.mock.calls.map(([input]) => String(input))).toEqual([
+      'http://127.0.0.1:57580/api/v1/models',
+      'http://127.0.0.1:57580/api/v1/agents?expand=true',
+      'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
+      'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
+      'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
+    ]);
+    expect(fetch.mock.calls.slice(2).map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { agent_config: { model: 'model-b' } },
+      { agent_config: { permission_mode: 'auto' } },
+      { agent_config: { profile: 'reviewer' } },
+    ]);
   });
 
   it('loads transcript snapshots through authenticated kap-server REST', async () => {

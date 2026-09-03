@@ -13,6 +13,7 @@ import type {
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
 import { ApprovalPanelComponent } from '#/tui/components/dialogs/approval-panel';
+import { ChoicePickerComponent } from '#/tui/components/dialogs/choice-picker';
 import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialog';
 import { SessionPickerComponent, type SessionRow } from '#/tui/components/dialogs/session-picker';
 import type { TuiConfig } from '#/tui/config';
@@ -53,6 +54,40 @@ export interface DaemonTUIStartupInput {
 }
 
 type SessionSummary = Awaited<ReturnType<DaemonClient['listSessions']>>['items'][number];
+
+const DAEMON_UNAVAILABLE_COMMANDS = new Set([
+  'add-dir',
+  'btw',
+  'compact',
+  'copy',
+  'editor',
+  'experiments',
+  'export-debug-zip',
+  'export-md',
+  'fork',
+  'goal',
+  'help',
+  'init',
+  'login',
+  'logout',
+  'mcp',
+  'plan',
+  'plugins',
+  'provider',
+  'providers',
+  'reload',
+  'reload-tui',
+  'settings',
+  'status',
+  'swarm',
+  'task',
+  'tasks',
+  'theme',
+  'title',
+  'undo',
+  'usage',
+  'web',
+]);
 
 export class DaemonTUI {
   readonly state: TUIState;
@@ -266,12 +301,16 @@ export class DaemonTUI {
       await this.handleSlash(text);
       return;
     }
+    await this.sendPrompt(raw);
+  }
+
+  private async sendPrompt(text: string): Promise<void> {
     const controller = await this.ensureSession();
     await controller.sendPrompt({
-      text: raw,
+      text,
       profile: this.state.appState.agentProfile,
-      model: this.startup.cliOptions.model,
-      thinking: this.startup.cliOptions.thinking,
+      model: this.state.appState.model === '' ? undefined : this.state.appState.model,
+      thinking: this.state.appState.thinkingEffort,
       permissionMode: this.state.appState.permissionMode,
       planMode: this.state.appState.planMode,
       swarmMode: this.state.appState.swarmMode,
@@ -295,40 +334,144 @@ export class DaemonTUI {
         await this.createSession();
         return;
       case 'agent':
-        if (args !== '') this.setAppState({ agentProfile: args });
+        if (args === '') await this.showAgentPicker();
+        else await this.applyAgentProfile(args);
         return;
-      case 'model': {
-        if (args === '') return;
-        const controller = await this.ensureSession();
-        const result = await this.client.setModel(controller.sessionId, args);
-        this.setAppState({ model: result.model });
+      case 'model':
+        if (args === '') await this.showModelPicker();
+        else await this.applyModel(args);
         return;
-      }
-      case 'permission': {
-        if (args !== 'manual' && args !== 'yolo' && args !== 'auto') return;
-        const controller = await this.ensureSession();
-        await this.client.setPermission(controller.sessionId, args);
-        this.setAppState({ permissionMode: args });
+      case 'permission':
+        if (args === '') this.showPermissionPicker();
+        else if (args === 'manual' || args === 'yolo' || args === 'auto') {
+          await this.applyPermission(args);
+        }
         return;
-      }
+      case 'yolo':
+      case 'yes':
+        await this.applyPermission(
+          this.state.appState.permissionMode === 'yolo' ? 'manual' : 'yolo',
+        );
+        return;
+      case 'auto':
+        await this.applyPermission(
+          this.state.appState.permissionMode === 'auto' ? 'manual' : 'auto',
+        );
+        return;
       case 'agents': {
         const controller = await this.ensureSession();
-        const agents = await this.client.listAgents(controller.sessionId);
-        this.showStatus(Object.keys(agents).join('  '));
+        const ids = Object.keys(controller.getForest()?.byId ?? { main: true });
+        this.showStatus(ids.join('  '));
         return;
       }
       case 'agent-transcript':
         await this.openAgentTranscript(args === '' ? 'main' : args);
         return;
-      default: {
-        const controller = await this.ensureSession();
-        try {
-          await this.client.runCommand(controller.sessionId, token, args === '' ? undefined : args);
-        } catch {
+      case 'version':
+        this.showStatus(this.state.appState.version);
+        return;
+      default:
+        if (DAEMON_UNAVAILABLE_COMMANDS.has(token)) {
           this.showStatus(`Command is unavailable in daemon mode: /${token}`, 'error');
+          return;
         }
-      }
+        await this.sendPrompt(text);
     }
+  }
+
+  private async applyModel(model: string): Promise<void> {
+    const models = await this.client.listModels();
+    if (!models.items.some((item) => item.model === model)) {
+      throw new Error(`Model "${model}" was not found.`);
+    }
+    const controller = await this.ensureSession();
+    const session = await this.client.setModel(controller.sessionId, model);
+    controller.handleSessionRecord(session);
+    this.setAppState({ model });
+  }
+
+  private async showModelPicker(): Promise<void> {
+    const models = await this.client.listModels();
+    const picker = new ChoicePickerComponent({
+      title: 'Switch LLM model',
+      options: models.items.map((item) => ({
+        value: item.model,
+        label: item.display_name ?? item.model,
+        description: item.provider,
+      })),
+      currentValue: this.state.appState.model,
+      searchable: true,
+      onSelect: (model) => {
+        this.restoreEditor();
+        void this.applyModel(model).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => this.restoreEditor(),
+    });
+    this.mountEditorReplacement(picker);
+  }
+
+  private async applyAgentProfile(profile: string): Promise<void> {
+    const profiles = await this.client.listAgentProfiles();
+    if (!profiles.items.some((item) => item.name === profile && !item.disabled)) {
+      throw new Error(`Agent profile "${profile}" was not found.`);
+    }
+    const controller = await this.ensureSession();
+    const session = await this.client.setProfile(controller.sessionId, profile);
+    controller.handleSessionRecord(session);
+    this.setAppState({ agentProfile: profile });
+  }
+
+  private async showAgentPicker(): Promise<void> {
+    const profiles = await this.client.listAgentProfiles();
+    const picker = new ChoicePickerComponent({
+      title: 'Select the agent profile for new sessions',
+      options: profiles.items
+        .filter((item) => !item.disabled)
+        .map((item) => ({
+          value: item.name,
+          label: item.name,
+          description: item.description,
+        })),
+      currentValue: this.state.appState.agentProfile,
+      searchable: true,
+      onSelect: (profile) => {
+        this.restoreEditor();
+        void this.applyAgentProfile(profile).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => this.restoreEditor(),
+    });
+    this.mountEditorReplacement(picker);
+  }
+
+  private async applyPermission(mode: PermissionMode): Promise<void> {
+    const controller = await this.ensureSession();
+    const session = await this.client.setPermission(controller.sessionId, mode);
+    controller.handleSessionRecord(session);
+    this.setAppState({ permissionMode: mode });
+  }
+
+  private showPermissionPicker(): void {
+    const picker = new ChoicePickerComponent({
+      title: 'Select permission mode',
+      options: [
+        { value: 'manual', label: 'Manual' },
+        { value: 'yolo', label: 'YOLO' },
+        { value: 'auto', label: 'Auto' },
+      ],
+      currentValue: this.state.appState.permissionMode,
+      onSelect: (mode) => {
+        this.restoreEditor();
+        void this.applyPermission(mode as PermissionMode).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => this.restoreEditor(),
+    });
+    this.mountEditorReplacement(picker);
   }
 
   private async openAgentTranscript(agentId: string): Promise<void> {
