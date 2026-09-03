@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { adaptApprovalRequest, adaptPanelResponse } from '#/tui/daemon/approval-adapter';
+import { adaptApprovalRequest, adaptPanelResponse } from '#/tui/reverse-rpc/approval/adapter';
 
 describe('approval adapter', () => {
   it('adapts generic command displays into shell blocks with approval choices', () => {

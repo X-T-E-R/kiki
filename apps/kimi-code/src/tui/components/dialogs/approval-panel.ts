@@ -24,7 +24,7 @@ import type {
   DisplayBlock,
   FileContentDisplayBlock,
   PendingApproval,
-} from '#/tui/components/dialogs/interaction-types';
+} from '#/tui/reverse-rpc/types';
 
 export interface ApprovalPanelResponse {
   readonly response: 'approved' | 'approved_for_session' | 'rejected' | 'cancelled';

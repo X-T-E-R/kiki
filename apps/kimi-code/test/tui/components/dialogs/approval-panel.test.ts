@@ -6,7 +6,7 @@ import type {
   DiffDisplayBlock,
   FileContentDisplayBlock,
   PendingApproval,
-} from '#/tui/components/dialogs/interaction-types';
+} from '#/tui/reverse-rpc/types';
 
 import { captureProcessWrite } from '../../../helpers/process';
 

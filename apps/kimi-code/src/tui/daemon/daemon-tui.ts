@@ -20,20 +20,28 @@ import {
 import { ChoicePickerComponent } from '#/tui/components/dialogs/choice-picker';
 import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialog';
 import { SessionPickerComponent, type SessionRow } from '#/tui/components/dialogs/session-picker';
+import { FileMentionProvider } from '#/tui/components/editor/file-mention-provider';
 import type { TuiConfig } from '#/tui/config';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import type {
   ApprovalPanelData,
   QuestionPanelData,
   QuestionPanelResponse,
-} from '#/tui/components/dialogs/interaction-types';
-import { adaptApprovalRequest } from '#/tui/daemon/approval-adapter';
+} from '#/tui/reverse-rpc/types';
+import { adaptApprovalRequest } from '#/tui/reverse-rpc/approval/adapter';
 import { currentTheme } from '#/tui/theme';
 import { createTUIState, type TUIState } from '#/tui/tui-state';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
 import { formatErrorMessage } from '#/tui/utils/event-payload';
 
 import { DaemonClient } from './client';
+import {
+  daemonAutocompleteCommands,
+  daemonCommandHelp,
+  resolveDaemonCommand,
+  validateDaemonCommandArgs,
+  type DaemonSkillCommand,
+} from './commands';
 import type { DaemonConnection } from './discovery';
 import { DaemonSocket } from './socket';
 import { DaemonTranscriptRenderer } from './transcript-renderer';
@@ -59,40 +67,6 @@ export interface DaemonTUIStartupInput {
 
 type SessionSummary = Awaited<ReturnType<DaemonClient['listSessions']>>['items'][number];
 
-const DAEMON_UNAVAILABLE_COMMANDS = new Set([
-  'add-dir',
-  'btw',
-  'compact',
-  'copy',
-  'editor',
-  'experiments',
-  'export-debug-zip',
-  'export-md',
-  'fork',
-  'goal',
-  'help',
-  'init',
-  'login',
-  'logout',
-  'mcp',
-  'plan',
-  'plugins',
-  'provider',
-  'providers',
-  'reload',
-  'reload-tui',
-  'settings',
-  'status',
-  'swarm',
-  'task',
-  'tasks',
-  'theme',
-  'title',
-  'undo',
-  'usage',
-  'web',
-]);
-
 export class DaemonTUI {
   readonly state: TUIState;
   public onExit?: (exitCode?: number) => Promise<void>;
@@ -107,6 +81,8 @@ export class DaemonTUI {
   private mainControllerDispose: (() => void) | undefined;
   private focusedControllerDispose: (() => void) | undefined;
   private activeInteractionId: string | undefined;
+  private readonly skillCommands = new Map<string, DaemonSkillCommand>();
+  private readonly agentProfileCommands = new Set<string>();
   private focusedAgentId = 'main';
   private stopped = false;
 
@@ -139,6 +115,7 @@ export class DaemonTUI {
     );
     this.buildLayout();
     this.installEditor();
+    this.setupAutocomplete();
   }
 
   async start(): Promise<void> {
@@ -149,6 +126,7 @@ export class DaemonTUI {
     this.state.ui.setFocus(this.state.editor);
     this.mountFooter();
     if (this.startup.startupNotice !== undefined) this.showStatus(this.startup.startupNotice);
+    await this.refreshAgentCommands();
     await this.initializeSession();
   }
 
@@ -221,6 +199,62 @@ export class DaemonTUI {
     };
   }
 
+  private setupAutocomplete(): void {
+    const commands = daemonAutocompleteCommands(this.skillCommands, this.agentProfileCommands);
+    this.state.editor.setAutocompleteProvider(
+      new FileMentionProvider(
+        commands,
+        this.startup.workDir,
+        null,
+        this.startup.additionalDirs ?? [],
+        () => this.state.appState.inputMode,
+        new Set(this.skillCommands.keys()),
+      ),
+    );
+    this.state.editor.setArgumentHints(
+      new Map(
+        commands.flatMap((command) => {
+          const hint = command.argumentHint;
+          if (hint === undefined) return [];
+          return [command.name, ...(command.aliases ?? [])].map(
+            (name) => [name, hint] as const,
+          );
+        }),
+      ),
+    );
+    this.state.editor.setSkillCommandNames(new Set(this.skillCommands.keys()));
+  }
+
+  private async refreshAgentCommands(): Promise<void> {
+    const profiles = await this.client.listAgentProfiles();
+    this.agentProfileCommands.clear();
+    for (const profile of profiles.items) {
+      if (!profile.disabled) this.agentProfileCommands.add(profile.name);
+    }
+    this.setupAutocomplete();
+  }
+
+  private async refreshSkillCommands(sessionId: string): Promise<void> {
+    const response = await this.client.listSkills(sessionId);
+    this.skillCommands.clear();
+    for (const skill of response.skills) {
+      if (
+        skill.type !== undefined &&
+        skill.type !== 'prompt' &&
+        skill.type !== 'inline' &&
+        skill.type !== 'flow'
+      ) {
+        continue;
+      }
+      const commandName = skill.source === 'builtin' ? skill.name : `skill:${skill.name}`;
+      this.skillCommands.set(commandName, {
+        name: skill.name,
+        description: skill.description,
+      });
+    }
+    this.setupAutocomplete();
+  }
+
   private async initializeSession(): Promise<void> {
     const sessionFlag = this.startup.cliOptions.session;
     if (sessionFlag === '') {
@@ -268,6 +302,7 @@ export class DaemonTUI {
     });
     await controller.open();
     this.renderSession(controller.getState());
+    await this.refreshSkillCommands(sessionId);
   }
 
   private renderSession(view: SessionViewState): void {
@@ -308,11 +343,14 @@ export class DaemonTUI {
     await this.sendPrompt(raw);
   }
 
-  private async sendPrompt(text: string): Promise<void> {
+  private async sendPrompt(
+    text: string,
+    profile = this.state.appState.agentProfile,
+  ): Promise<void> {
     const controller = await this.ensureSession();
     await controller.sendPrompt({
       text,
-      profile: this.state.appState.agentProfile,
+      profile,
       model: this.state.appState.model === '' ? undefined : this.state.appState.model,
       thinking: this.state.appState.thinkingEffort,
       permissionMode: this.state.appState.permissionMode,
@@ -322,19 +360,49 @@ export class DaemonTUI {
   }
 
   private async handleSlash(text: string): Promise<void> {
-    const [token = '', ...rest] = text.slice(1).split(/\s+/u);
+    const [rawToken = '', ...rest] = text.slice(1).split(/\s+/u);
+    const token = rawToken.toLowerCase();
     const args = rest.join(' ');
-    switch (token) {
-      case 'quit':
+    const resolved = resolveDaemonCommand(token, args);
+    if (resolved === undefined) {
+      const skill = this.skillCommands.get(token);
+      if (skill !== undefined) {
+        const controller = await this.ensureSession();
+        await this.client.activateSkill(
+          controller.sessionId,
+          skill.name,
+          args === '' ? undefined : args,
+        );
+        return;
+      }
+      if (this.agentProfileCommands.has(token)) {
+        if (args === '') {
+          this.showStatus(`/${token} requires a prompt.`, 'error');
+          return;
+        }
+        await this.sendPrompt(args, token);
+        return;
+      }
+      this.showStatus(`Unknown daemon TUI command: /${token}`, 'error');
+      return;
+    }
+    if ('status' in resolved) {
+      this.showStatus(`Command is disabled in daemon TUI: /${resolved.name}`, 'error');
+      return;
+    }
+    const argumentError = validateDaemonCommandArgs(resolved);
+    if (argumentError !== undefined) {
+      this.showStatus(argumentError, 'error');
+      return;
+    }
+    switch (resolved.name) {
       case 'exit':
         await this.stop();
         return;
       case 'sessions':
-      case 'resume':
         await this.showSessionPicker();
         return;
       case 'new':
-      case 'clear':
         await this.createSession();
         return;
       case 'agent':
@@ -347,12 +415,9 @@ export class DaemonTUI {
         return;
       case 'permission':
         if (args === '') this.showPermissionPicker();
-        else if (args === 'manual' || args === 'yolo' || args === 'auto') {
-          await this.applyPermission(args);
-        }
+        else await this.applyPermission(args as PermissionMode);
         return;
       case 'yolo':
-      case 'yes':
         await this.applyPermission(
           this.state.appState.permissionMode === 'yolo' ? 'manual' : 'yolo',
         );
@@ -371,15 +436,19 @@ export class DaemonTUI {
       case 'agent-transcript':
         await this.openAgentTranscript(args === '' ? 'main' : args);
         return;
+      case 'effort':
+        if (args === '') {
+          this.showStatus(`Thinking effort: ${this.state.appState.thinkingEffort}`);
+        } else {
+          await this.applyThinking(args);
+        }
+        return;
+      case 'help':
+        this.showStatus(daemonCommandHelp());
+        return;
       case 'version':
         this.showStatus(this.state.appState.version);
         return;
-      default:
-        if (DAEMON_UNAVAILABLE_COMMANDS.has(token)) {
-          this.showStatus(`Command is unavailable in daemon mode: /${token}`, 'error');
-          return;
-        }
-        await this.sendPrompt(text);
     }
   }
 
@@ -392,6 +461,13 @@ export class DaemonTUI {
     const session = await this.client.setModel(controller.sessionId, model);
     controller.handleSessionRecord(session);
     this.setAppState({ model });
+  }
+
+  private async applyThinking(thinking: string): Promise<void> {
+    const controller = await this.ensureSession();
+    const session = await this.client.setThinking(controller.sessionId, thinking);
+    controller.handleSessionRecord(session);
+    this.setAppState({ thinkingEffort: thinking });
   }
 
   private async showModelPicker(): Promise<void> {
@@ -411,7 +487,9 @@ export class DaemonTUI {
           this.showStatus(formatErrorMessage(error), 'error');
         });
       },
-      onCancel: () => this.restoreEditor(),
+      onCancel: () => {
+        this.restoreEditor();
+      },
     });
     this.mountEditorReplacement(picker);
   }
@@ -446,7 +524,9 @@ export class DaemonTUI {
           this.showStatus(formatErrorMessage(error), 'error');
         });
       },
-      onCancel: () => this.restoreEditor(),
+      onCancel: () => {
+        this.restoreEditor();
+      },
     });
     this.mountEditorReplacement(picker);
   }
@@ -473,7 +553,9 @@ export class DaemonTUI {
           this.showStatus(formatErrorMessage(error), 'error');
         });
       },
-      onCancel: () => this.restoreEditor(),
+      onCancel: () => {
+        this.restoreEditor();
+      },
     });
     this.mountEditorReplacement(picker);
   }
@@ -539,7 +621,9 @@ export class DaemonTUI {
 
   private showApproval(block: ApprovalBlock): void {
     const panel = new ApprovalPanelComponent({ data: approvalPanelData(block) }, (response) => {
-      void this.respondApproval(block, response);
+      void this.respondApproval(block, response).catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
     });
     this.mountEditorReplacement(panel);
   }
@@ -552,29 +636,24 @@ export class DaemonTUI {
       response.response === 'approved' || response.response === 'approved_for_session'
         ? 'approved'
         : response.response;
-    try {
-      await this.client.resolveApproval(this.controller!.sessionId, block.request.approval_id, {
+    await this.handleInteractionResponse(() =>
+      this.client.resolveApproval(this.controller!.sessionId, block.request.approval_id, {
         decision,
         scope: response.response === 'approved_for_session' ? 'session' : undefined,
         feedback: response.feedback,
         selected_label: response.selected_label,
         selected_option_id: response.selected_option_id,
-      });
-      await this.finishInteractionResponse();
-    } catch (error) {
-      if (isSettledInteractionError(error)) {
-        await this.finishInteractionResponse();
-        return;
-      }
-      this.showStatus(formatErrorMessage(error), 'error');
-    }
+      }),
+    );
   }
 
   private showQuestion(block: QuestionBlock): void {
     const dialog = new QuestionDialogComponent(
       { data: questionPanelData(block) },
       (response) => {
-        void this.respondQuestion(block, response);
+        void this.respondQuestion(block, response).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
       },
     );
     this.mountEditorReplacement(dialog);
@@ -584,21 +663,28 @@ export class DaemonTUI {
     block: QuestionBlock,
     response: QuestionPanelResponse,
   ): Promise<void> {
+    await this.handleInteractionResponse(() =>
+      response.answers.length === 0
+        ? this.client.dismissQuestion(this.controller!.sessionId, block.request.question_id)
+        : this.client.resolveQuestion(this.controller!.sessionId, block.request.question_id, {
+            answers: questionAnswersFromPanel(block, response),
+            method: response.method,
+          }),
+    );
+  }
+
+  private async handleInteractionResponse(request: () => Promise<unknown>): Promise<void> {
     try {
-      if (response.answers.length === 0) {
-        await this.client.dismissQuestion(this.controller!.sessionId, block.request.question_id);
-      } else {
-        await this.client.resolveQuestion(this.controller!.sessionId, block.request.question_id, {
-          answers: questionAnswersFromPanel(block, response),
-          method: response.method,
-        });
-      }
-      await this.finishInteractionResponse();
+      await request();
     } catch (error) {
-      if (isSettledInteractionError(error)) {
-        await this.finishInteractionResponse();
+      if (!isSettledInteractionError(error)) {
+        this.showStatus(formatErrorMessage(error), 'error');
         return;
       }
+    }
+    try {
+      await this.finishInteractionResponse();
+    } catch (error) {
       this.showStatus(formatErrorMessage(error), 'error');
     }
   }

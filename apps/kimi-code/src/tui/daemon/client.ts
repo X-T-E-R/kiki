@@ -106,6 +106,29 @@ export class DaemonClient implements SessionTransport {
     return this.request('GET', '/agents', undefined, { expand: 'true' });
   }
 
+  listSkills(sessionId: string): Promise<{
+    readonly skills: readonly {
+      readonly name: string;
+      readonly description: string;
+      readonly source: 'project' | 'user' | 'extra' | 'builtin';
+      readonly type?: string;
+    }[];
+  }> {
+    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/skills`);
+  }
+
+  activateSkill(
+    sessionId: string,
+    name: string,
+    args?: string,
+  ): Promise<{ readonly activated: true; readonly skill_name: string }> {
+    return this.request(
+      'POST',
+      `/sessions/${encodeURIComponent(sessionId)}/skills/${encodeURIComponent(name)}:activate`,
+      { args },
+    );
+  }
+
   updateSessionProfile(sessionId: string, body: UpdateSessionProfileRequest): Promise<Session> {
     return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}/profile`, body);
   }

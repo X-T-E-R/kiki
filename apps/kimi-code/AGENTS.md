@@ -32,6 +32,13 @@ Main directories:
 - `src/tui/utils/`: TUI-only utility functions.
 - `src/utils/`: app-wide utilities — clipboard, git, history, image, process, usage, and so on.
 
+## Experimental Daemon TUI
+
+- `KimiTUI` remains the default interactive shell. The daemon-backed TUI is experimental, defaults off, and is selected by `KIMI_CODE_EXPERIMENTAL_TUI_DAEMON=1` or `experimental.tui_daemon = true`; the per-feature env value overrides config and the master experimental env.
+- Keep the legacy `KimiTUI` path intact so setting the per-feature env to `0` (and removing any `experimental.tui_daemon` config entry) is a complete rollback.
+- The daemon TUI command registry must identify supported and disabled commands in both autocomplete and `/help`; unknown slash input must not become a prompt unless it matches a discovered Skill or agent profile.
+- The daemon TUI currently disables settings/config, experiments, session rename, provider login/logout, export, tasks, goals, plugins, plan mode, theme/editor changes, MCP/status/usage, undo, web, and the other commands marked disabled by its registry.
+
 ## Module Responsibilities
 
 - `cli` only interprets command-line input, assembles startup arguments, and invokes the TUI. Do not put TUI interaction logic into the CLI.

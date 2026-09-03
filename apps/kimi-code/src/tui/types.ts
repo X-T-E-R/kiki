@@ -10,7 +10,7 @@ import type {
 } from '@moonshot-ai/kimi-code-sdk';
 
 import type { NotificationsConfig, StatusLineConfig } from './config';
-import type { PendingApproval, PendingQuestion } from './components/dialogs/interaction-types';
+import type { PendingApproval, PendingQuestion } from './reverse-rpc/types';
 import type { ColorToken, ThemeName } from './theme';
 
 export type BannerDisplay = 'always' | 'once' | 'cooldown';

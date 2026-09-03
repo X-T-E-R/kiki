@@ -36,12 +36,17 @@ function driver() {
   };
   const internal = tui as unknown as {
     controller: typeof controller;
+    skillCommands: Map<string, { name: string; description: string }>;
+    agentProfileCommands: Set<string>;
     client: {
       listModels: ReturnType<typeof vi.fn>;
       listAgentProfiles: ReturnType<typeof vi.fn>;
+      listSkills: ReturnType<typeof vi.fn>;
+      activateSkill: ReturnType<typeof vi.fn>;
       setModel: ReturnType<typeof vi.fn>;
       setPermission: ReturnType<typeof vi.fn>;
       setProfile: ReturnType<typeof vi.fn>;
+      setThinking: ReturnType<typeof vi.fn>;
       resolveApproval: ReturnType<typeof vi.fn>;
       resolveQuestion: ReturnType<typeof vi.fn>;
       dismissQuestion: ReturnType<typeof vi.fn>;
@@ -77,9 +82,12 @@ function driver() {
       },
     ],
   }));
+  internal.client.listSkills = vi.fn(async () => ({ skills: [] }));
+  internal.client.activateSkill = vi.fn();
   internal.client.setModel = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.setPermission = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.setProfile = vi.fn(async () => ({ id: 'session-1' }));
+  internal.client.setThinking = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.resolveApproval = vi.fn();
   internal.client.resolveQuestion = vi.fn();
   internal.client.dismissQuestion = vi.fn();
@@ -122,18 +130,48 @@ describe('DaemonTUI commands', () => {
     expect(tui.state.appState.permissionMode).toBe('auto');
   });
 
-  it('labels known unavailable commands and preserves unknown slash input as a prompt', async () => {
-    const { internal, controller } = driver();
+  it('normalizes aliases, reports disabled commands, and rejects unknown slash input', async () => {
+    const { tui, internal, controller } = driver();
 
-    await internal.handleSlash('/help');
+    await internal.handleSlash('/thinking high');
+    await internal.handleSlash('/h');
+    await internal.handleSlash('/config');
     await internal.handleSlash('/custom value');
 
+    expect(internal.client.setThinking).toHaveBeenCalledWith('session-1', 'high');
+    expect(tui.state.appState.thinkingEffort).toBe('high');
     expect(internal.showStatus).toHaveBeenCalledWith(
-      'Command is unavailable in daemon mode: /help',
+      expect.stringContaining('Supported:'),
+    );
+    expect(internal.showStatus).toHaveBeenCalledWith(
+      'Command is disabled in daemon TUI: /settings',
       'error',
     );
+    expect(internal.showStatus).toHaveBeenCalledWith(
+      'Unknown daemon TUI command: /custom',
+      'error',
+    );
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it('passes only confirmed skill and agent-profile slash commands', async () => {
+    const { internal, controller } = driver();
+    internal.skillCommands.set('skill:review', {
+      name: 'review',
+      description: 'Review changes',
+    });
+    internal.agentProfileCommands.add('reviewer');
+
+    await internal.handleSlash('/skill:review staged changes');
+    await internal.handleSlash('/reviewer inspect tests');
+
+    expect(internal.client.activateSkill).toHaveBeenCalledWith(
+      'session-1',
+      'review',
+      'staged changes',
+    );
     expect(controller.sendPrompt).toHaveBeenCalledWith(
-      expect.objectContaining({ text: '/custom value' }),
+      expect.objectContaining({ text: 'inspect tests', profile: 'reviewer' }),
     );
   });
 
@@ -174,7 +212,15 @@ describe('DaemonTUI commands', () => {
       },
       outcome: undefined,
     };
-    internal.client.resolveApproval.mockRejectedValueOnce(new Error('offline'));
+    internal.client.resolveApproval
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(
+        new ApiError({
+          code: API_CODES.APPROVAL_ALREADY_RESOLVED,
+          msg: 'already resolved',
+          data: null,
+        }),
+      );
     internal.client.resolveQuestion.mockRejectedValueOnce(
       new ApiError({
         code: API_CODES.QUESTION_EXPIRED,
@@ -182,7 +228,11 @@ describe('DaemonTUI commands', () => {
         data: null,
       }),
     );
+    controller.resync.mockRejectedValueOnce(new Error('resync offline')).mockResolvedValueOnce(undefined);
 
+    await expect(
+      internal.respondApproval(approval, { response: 'approved' }),
+    ).resolves.toBeUndefined();
     await expect(
       internal.respondApproval(approval, { response: 'approved' }),
     ).resolves.toBeUndefined();
@@ -191,6 +241,7 @@ describe('DaemonTUI commands', () => {
     ).resolves.toBeUndefined();
 
     expect(internal.showStatus).toHaveBeenCalledWith('offline', 'error');
-    expect(controller.resync).toHaveBeenCalledTimes(1);
+    expect(internal.showStatus).toHaveBeenCalledWith('resync offline', 'error');
+    expect(controller.resync).toHaveBeenCalledTimes(2);
   });
 });

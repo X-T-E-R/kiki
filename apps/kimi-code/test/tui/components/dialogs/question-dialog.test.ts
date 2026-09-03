@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialog';
-import type { PendingQuestion } from '#/tui/components/dialogs/interaction-types';
+import type { PendingQuestion } from '#/tui/reverse-rpc/types';
 import { currentTheme } from '#/tui/theme';
 
 function strip(text: string): string {

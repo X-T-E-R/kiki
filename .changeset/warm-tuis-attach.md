@@ -2,4 +2,4 @@
 "@moonshot-ai/kimi-code": patch
 ---
 
-Use the local Kimi daemon for interactive terminal sessions.
+Add an experimental daemon-backed TUI, disabled by default and enabled with `KIMI_CODE_EXPERIMENTAL_TUI_DAEMON=1`.

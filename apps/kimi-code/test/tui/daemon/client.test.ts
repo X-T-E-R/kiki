@@ -26,6 +26,16 @@ function fakeKlient() {
   return { klient, sessions, agent, interactions };
 }
 
+function requestUrl(input: string | URL | Request): string {
+  if (typeof input === 'string') return input;
+  return input instanceof URL ? input.href : input.url;
+}
+
+function jsonRequestBody(init: RequestInit | undefined): unknown {
+  if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body.');
+  return JSON.parse(init.body) as unknown;
+}
+
 describe('DaemonClient', () => {
   it('uses klient http facades for creation and agent commands', async () => {
     const fake = fakeKlient();
@@ -83,7 +93,7 @@ describe('DaemonClient', () => {
       ],
       has_more: false,
     });
-    expect(String(fetch.mock.calls[0]?.[0])).toBe(
+    expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
       'http://127.0.0.1:57580/api/v1/sessions?page_size=25',
     );
   });
@@ -94,7 +104,7 @@ describe('DaemonClient', () => {
       json: async () => ({
         code: 0,
         msg: 'ok',
-        data: String(input).endsWith('/models') || String(input).includes('/agents?')
+        data: requestUrl(input).endsWith('/models') || requestUrl(input).includes('/agents?')
           ? { items: [] }
           : { id: 'session-1' },
       }),
@@ -108,21 +118,29 @@ describe('DaemonClient', () => {
 
     await client.listModels();
     await client.listAgentProfiles();
+    await client.listSkills('session-1');
+    await client.activateSkill('session-1', 'review', 'staged changes');
     await client.setModel('session-1', 'model-b');
     await client.setPermission('session-1', 'auto');
     await client.setProfile('session-1', 'reviewer');
+    await client.setThinking('session-1', 'high');
 
-    expect(fetch.mock.calls.map(([input]) => String(input))).toEqual([
+    expect(fetch.mock.calls.map(([input]) => requestUrl(input))).toEqual([
       'http://127.0.0.1:57580/api/v1/models',
       'http://127.0.0.1:57580/api/v1/agents?expand=true',
+      'http://127.0.0.1:57580/api/v1/sessions/session-1/skills',
+      'http://127.0.0.1:57580/api/v1/sessions/session-1/skills/review:activate',
+      'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
       'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
       'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
       'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
     ]);
-    expect(fetch.mock.calls.slice(2).map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+    expect(fetch.mock.calls.slice(3).map(([, init]) => jsonRequestBody(init))).toEqual([
+      { args: 'staged changes' },
       { agent_config: { model: 'model-b' } },
       { agent_config: { permission_mode: 'auto' } },
       { agent_config: { profile: 'reviewer' } },
+      { agent_config: { thinking: 'high' } },
     ]);
   });
 
@@ -142,7 +160,7 @@ describe('DaemonClient', () => {
       as_of_seq: 4,
       epoch: 'e1',
     });
-    expect(String(fetch.mock.calls[0]?.[0])).toBe(
+    expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
       'http://127.0.0.1:57580/api/v1/sessions/session%201/snapshot?mode=transcript',
     );
     expect(fetch.mock.calls[0]?.[1]).toMatchObject({
