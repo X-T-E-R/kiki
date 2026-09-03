@@ -23,6 +23,8 @@ import {
   type ISessionStateService,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
+import { projectAgentTranscriptView } from '@kiki/session-core/session/transcript/project';
+import { createViewState } from '@kiki/session-core/session/transcript/types';
 import {
   AgentTranscript,
   TranscriptFactReducer,
@@ -59,6 +61,21 @@ function turnOps(turnId: string, items: ReturnType<AgentTranscript['getItems']>)
   );
   if (turn === undefined) throw new Error(`turn ${turnId} not found`);
   return turn;
+}
+
+function normalizedBlocks(
+  snapshot: AgentTranscriptSnapshot,
+): ReadonlyArray<Record<string, unknown>> {
+  const blocks = projectAgentTranscriptView(
+    createViewState('session_test'),
+    'main',
+    snapshot,
+  ).blocks;
+  return JSON.parse(
+    JSON.stringify(blocks, (key, value) =>
+      key === 'createdAt' || key === 'startedAt' || key === 'endedAt' ? undefined : value,
+    ),
+  ) as ReadonlyArray<Record<string, unknown>>;
 }
 
 describe('bindSessionTranscript', () => {
@@ -299,7 +316,7 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
-  it('keeps live and cold turn removal equivalent after undo', () => {
+  it('keeps live and cold block projection equivalent after undo', () => {
     const records = [
       {
         type: 'turn.prompt',
@@ -309,6 +326,27 @@ describe('bindSessionTranscript', () => {
         origin: { kind: 'user' },
         time: 1_000,
       },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 1_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-1',
+          uuid: 'part-1',
+          part: { type: 'text', text: 'first answer' },
+        },
+        time: 1_200,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 1_300,
+      },
       { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 },
       {
         type: 'turn.prompt',
@@ -317,6 +355,27 @@ describe('bindSessionTranscript', () => {
         input: [{ type: 'text', text: 'second' }],
         origin: { kind: 'user' },
         time: 3_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 1, step: 1, uuid: 'step-2' },
+        time: 3_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 1,
+          stepUuid: 'step-2',
+          uuid: 'part-2',
+          part: { type: 'text', text: 'second answer' },
+        },
+        time: 3_200,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 1, step: 1, uuid: 'step-2' },
+        time: 3_300,
       },
       { type: 'turn.ended', turnId: 1, reason: 'completed', time: 4_000 },
       { type: 'context.undo', count: 1, time: 5_000 },
@@ -338,19 +397,31 @@ describe('bindSessionTranscript', () => {
     for (const record of records) main.bus.emit(record as unknown as Event2<any>);
 
     const live = store.getAgent('main')!;
-    expect(live.snapshot()).toEqual(cold.snapshot());
-    expect(live.getTurn('t0')?.prompt).toBe('first');
-    expect(live.getTurn('t1')).toBeUndefined();
+    const liveBlocks = normalizedBlocks(live.snapshot());
+    const coldBlocks = normalizedBlocks(cold.snapshot());
+    expect(liveBlocks).toEqual(coldBlocks);
+    expect(liveBlocks).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({ kind: 'user', turnId: 't1' }),
+        expect.objectContaining({ kind: 'assistant', turnId: 't1' }),
+      ]),
+    );
+    expect(liveBlocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'user', turnId: 't0', text: 'first' }),
+        expect.objectContaining({ kind: 'assistant', turnId: 't0', text: 'first answer' }),
+      ]),
+    );
     binding.dispose();
   });
 
-  it('keeps live and cold mid-turn task notification folding equivalent', () => {
+  it('keeps live and cold task notification blocks equivalent without a user bubble', () => {
     const records = [
       {
         type: 'turn.prompt',
         turnId: 0,
         promptId: 'prompt-1',
-        input: [{ type: 'text', text: 'start' }],
+        input: [{ type: 'text', text: 'Run the fixture suite in the background.' }],
         origin: { kind: 'user' },
         time: 1_000,
       },
@@ -361,24 +432,73 @@ describe('bindSessionTranscript', () => {
       },
       {
         type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-1',
+          uuid: 'part-1',
+          part: { type: 'text', text: 'Started the suite as a background task.' },
+        },
+        time: 2_500,
+      },
+      {
+        type: 'context.append_loop_event',
         event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
         time: 3_000,
       },
       {
         type: 'task.notified',
-        notificationType: 'completed',
-        title: 'Task completed',
-        body: 'Result ready',
+        notificationType: 'task.completed',
+        title: 'Background process completed',
+        body: 'pnpm test — 42 passed',
         severity: 'info',
-        sourceKind: 'agent',
+        sourceKind: 'background_task',
         sourceId: 'task-1',
         time: 4_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'notification-message',
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: '<notification id="task:task-1:completed" category="task" type="task.completed" source_kind="background_task" source_id="task-1">\nTitle: Background process completed\npnpm test — 42 passed\n</notification>',
+            },
+          ],
+          toolCalls: [],
+          origin: {
+            kind: 'task',
+            taskId: 'task-1',
+            status: 'completed',
+            notificationId: 'task:task-1:completed',
+          },
+        },
+        time: 4_100,
       },
       {
         type: 'context.append_loop_event',
         event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
         time: 5_000,
       },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-2',
+          uuid: 'part-2',
+          part: { type: 'text', text: 'Suite is green — 42 passed.' },
+        },
+        time: 5_500,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 6_000,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 7_000 },
     ];
     const cold = new AgentTranscript('main');
     const coldReducer = new TranscriptFactReducer(cold);
@@ -397,14 +517,86 @@ describe('bindSessionTranscript', () => {
     for (const record of records) main.bus.emit(record as unknown as Event2<any>);
 
     const live = store.getAgent('main')!;
-    expect(live.snapshot()).toEqual(cold.snapshot());
-    expect(live.getTurn('t0')?.steps[1]?.frames).toContainEqual(
+    const liveBlocks = normalizedBlocks(live.snapshot());
+    const coldBlocks = normalizedBlocks(cold.snapshot());
+    expect(liveBlocks).toEqual(coldBlocks);
+    expect(liveBlocks.filter((block) => block['kind'] === 'user')).toEqual([
       expect.objectContaining({
-        frameId: 'task-notified:task-1',
-        role: 'user',
-        taskId: 'task-1',
+        turnId: 't0',
+        text: 'Run the fixture suite in the background.',
       }),
+    ]);
+    expect(liveBlocks.filter((block) => block['kind'] === 'system')).toEqual([
+      expect.objectContaining({
+        turnId: 't0',
+        variant: 'task',
+        text: 'Background process completed\npnpm test — 42 passed',
+      }),
+    ]);
+    expect(live.getTurn('t1')).toBeUndefined();
+    binding.dispose();
+  });
+
+  it('projects an interrupted live turn as a stopped assistant block', () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
     );
+
+    main.bus.emit(
+      ev({
+        type: 'turn.started',
+        time: 1_000,
+        turnId: 1,
+        prompt: 'Abort me mid-stream.',
+        origin: { kind: 'user' },
+      }) as unknown as Event2<any>,
+    );
+    main.bus.emit(
+      ev({ type: 'turn.step.started', time: 1_100, turnId: 1, step: 1, stepId: 'step-1' }) as unknown as Event2<any>,
+    );
+    main.bus.emit(
+      ev({
+        type: 'assistant.delta',
+        time: 1_200,
+        turnId: 1,
+        step: 1,
+        stepId: 'step-1',
+        delta: 'This half-finished sentence keeps streaming',
+      }) as unknown as Event2<any>,
+    );
+    main.bus.emit(
+      ev({
+        type: 'turn.step.interrupted',
+        time: 1_300,
+        turnId: 1,
+        step: 1,
+        stepId: 'step-1',
+        reason: 'user_cancelled',
+      }) as unknown as Event2<any>,
+    );
+    main.bus.emit(
+      ev({
+        type: 'turn.ended',
+        time: 1_400,
+        turnId: 1,
+        reason: 'cancelled',
+        interruptReason: 'user_cancelled',
+      }) as unknown as Event2<any>,
+    );
+
+    const blocks = normalizedBlocks(store.getAgent('main')!.snapshot());
+    expect(blocks.filter((block) => block['kind'] === 'assistant')).toEqual([
+      expect.objectContaining({
+        turnId: 't1',
+        text: 'This half-finished sentence keeps streaming',
+        stopped: true,
+        streaming: false,
+      }),
+    ]);
     binding.dispose();
   });
 
