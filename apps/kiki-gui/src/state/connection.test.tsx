@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   detectLocalConnection: vi.fn(),
   invoke: vi.fn(),
   meta: vi.fn(),
+  renewLease: vi.fn(),
   sockets: [] as Array<{
     baseUrl: string;
     connect: ReturnType<typeof vi.fn>;
@@ -48,6 +49,10 @@ vi.mock('../lib/client', () => ({
 
     meta() {
       return mocks.meta(this.baseUrl);
+    }
+
+    renewLease(body: { clientId: string; kind: 'gui' }) {
+      return mocks.renewLease(body);
     }
   },
 }));
@@ -99,6 +104,8 @@ beforeEach(() => {
   mocks.detectLocalConnection.mockReset();
   mocks.invoke.mockReset();
   mocks.meta.mockReset();
+  mocks.renewLease.mockReset();
+  mocks.renewLease.mockResolvedValue(undefined);
   mocks.sockets.length = 0;
   mocks.stageListener = undefined;
 });
@@ -236,5 +243,39 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.querySelector('[data-connected-url]')).toBeNull();
     expect(mocks.sockets).toHaveLength(1);
     expect(mocks.sockets[0]!.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('renews one GUI lease while connected and stops after unmount', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.detectLocalConnection.mockResolvedValue({
+        config: { url: 'http://127.0.0.1:41001', token: 'home-token' },
+        persist: false,
+      });
+      mocks.meta.mockResolvedValue({ serverVersion: 'test' });
+
+      await mountProvider();
+      expect(mocks.renewLease).toHaveBeenCalledTimes(1);
+      expect(mocks.renewLease).toHaveBeenLastCalledWith({
+        clientId: expect.any(String),
+        kind: 'gui',
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(mocks.renewLease).toHaveBeenCalledTimes(2);
+
+      const entry = mounted.pop();
+      expect(entry).toBeDefined();
+      await act(async () => {
+        entry!.root.unmount();
+      });
+      entry!.container.remove();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(mocks.renewLease).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
