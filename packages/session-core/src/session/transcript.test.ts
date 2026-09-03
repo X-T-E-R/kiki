@@ -127,6 +127,14 @@ describe('classifyTranscriptText', () => {
         origin: { kind: 'system_trigger', name: 'goal_continuation' },
       }),
     ).toMatchObject({ lane: 'system', systemVariant: 'system_trigger' });
+    expect(
+      classifyTranscriptText({
+        text: 'Inspect the renderer',
+        role: 'user',
+        origin: { kind: 'system_trigger', name: 'subagent' },
+        subagentPromptAsUser: true,
+      }),
+    ).toMatchObject({ lane: 'you', text: 'Inspect the renderer' });
   });
 });
 
