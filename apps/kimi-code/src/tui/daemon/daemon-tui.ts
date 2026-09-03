@@ -2,6 +2,7 @@ import { Text, TuiAltScreen } from '@moonshot-ai/pi-tui';
 import type { PermissionMode } from '@moonshot-ai/kimi-code-sdk';
 import type { QuestionResponse } from '@moonshot-ai/protocol';
 
+import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { SessionController } from '@kiki/session-core/session/sessionController';
 import type {
   ApprovalBlock,
@@ -12,7 +13,10 @@ import type {
 
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
-import { ApprovalPanelComponent } from '#/tui/components/dialogs/approval-panel';
+import {
+  ApprovalPanelComponent,
+  type ApprovalPanelResponse,
+} from '#/tui/components/dialogs/approval-panel';
 import { ChoicePickerComponent } from '#/tui/components/dialogs/choice-picker';
 import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialog';
 import { SessionPickerComponent, type SessionRow } from '#/tui/components/dialogs/session-picker';
@@ -535,46 +539,74 @@ export class DaemonTUI {
 
   private showApproval(block: ApprovalBlock): void {
     const panel = new ApprovalPanelComponent({ data: approvalPanelData(block) }, (response) => {
-      const decision =
-        response.response === 'approved' || response.response === 'approved_for_session'
-          ? 'approved'
-          : response.response;
-      void this.client
-        .resolveApproval(this.controller!.sessionId, block.request.approval_id, {
-          decision,
-          scope: response.response === 'approved_for_session' ? 'session' : undefined,
-          feedback: response.feedback,
-          selected_label: response.selected_label,
-          selected_option_id: response.selected_option_id,
-        })
-        .then(() => {
-          this.activeInteractionId = undefined;
-          this.restoreEditor();
-          return this.controller?.resync();
-        });
+      void this.respondApproval(block, response);
     });
     this.mountEditorReplacement(panel);
+  }
+
+  private async respondApproval(
+    block: ApprovalBlock,
+    response: ApprovalPanelResponse,
+  ): Promise<void> {
+    const decision =
+      response.response === 'approved' || response.response === 'approved_for_session'
+        ? 'approved'
+        : response.response;
+    try {
+      await this.client.resolveApproval(this.controller!.sessionId, block.request.approval_id, {
+        decision,
+        scope: response.response === 'approved_for_session' ? 'session' : undefined,
+        feedback: response.feedback,
+        selected_label: response.selected_label,
+        selected_option_id: response.selected_option_id,
+      });
+      await this.finishInteractionResponse();
+    } catch (error) {
+      if (isSettledInteractionError(error)) {
+        await this.finishInteractionResponse();
+        return;
+      }
+      this.showStatus(formatErrorMessage(error), 'error');
+    }
   }
 
   private showQuestion(block: QuestionBlock): void {
     const dialog = new QuestionDialogComponent(
       { data: questionPanelData(block) },
       (response) => {
-        const request =
-          response.answers.length === 0
-            ? this.client.dismissQuestion(this.controller!.sessionId, block.request.question_id)
-            : this.client.resolveQuestion(this.controller!.sessionId, block.request.question_id, {
-                answers: questionAnswersFromPanel(block, response),
-                method: response.method,
-              });
-        void request.then(() => {
-          this.activeInteractionId = undefined;
-          this.restoreEditor();
-          return this.controller?.resync();
-        });
+        void this.respondQuestion(block, response);
       },
     );
     this.mountEditorReplacement(dialog);
+  }
+
+  private async respondQuestion(
+    block: QuestionBlock,
+    response: QuestionPanelResponse,
+  ): Promise<void> {
+    try {
+      if (response.answers.length === 0) {
+        await this.client.dismissQuestion(this.controller!.sessionId, block.request.question_id);
+      } else {
+        await this.client.resolveQuestion(this.controller!.sessionId, block.request.question_id, {
+          answers: questionAnswersFromPanel(block, response),
+          method: response.method,
+        });
+      }
+      await this.finishInteractionResponse();
+    } catch (error) {
+      if (isSettledInteractionError(error)) {
+        await this.finishInteractionResponse();
+        return;
+      }
+      this.showStatus(formatErrorMessage(error), 'error');
+    }
+  }
+
+  private async finishInteractionResponse(): Promise<void> {
+    this.activeInteractionId = undefined;
+    this.restoreEditor();
+    await this.controller?.resync();
   }
 
   private mountEditorReplacement(component: Parameters<TUIState['editorContainer']['addChild']>[0]): void {
@@ -604,6 +636,16 @@ export class DaemonTUI {
     this.state.footer.setState({ ...this.state.appState });
     this.state.ui.requestRender();
   }
+}
+
+function isSettledInteractionError(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.code === API_CODES.APPROVAL_ALREADY_RESOLVED ||
+      error.code === API_CODES.APPROVAL_EXPIRED ||
+      error.code === API_CODES.QUESTION_EXPIRED ||
+      error.code === API_CODES.QUESTION_DISMISSED)
+  );
 }
 
 function approvalPanelData(block: ApprovalBlock): ApprovalPanelData {
