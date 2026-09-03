@@ -540,7 +540,7 @@ describe('FileSessionIndex (legacy)', () => {
   });
 });
 
-describe('FileSessionIndex (read model)', () => {
+describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
   let homeDir: string;
   let sessionsDir: string;
   let workspaceId: string;

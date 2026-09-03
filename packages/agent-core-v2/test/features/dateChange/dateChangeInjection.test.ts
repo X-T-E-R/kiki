@@ -270,7 +270,11 @@ describe('AgentDateChangeService', () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-date-bind-home-'));
     try {
       await ctx.dispose();
-      ctx = createTestAgent(appService(IHostClock, clock), hostEnvironmentServices(homeDir));
+      ctx = createTestAgent(
+        { cwd: '/workspace' },
+        appService(IHostClock, clock),
+        hostEnvironmentServices(homeDir),
+      );
       context = ctx.get(IAgentContextMemoryService);
       loop = ctx.get(IAgentLoopService);
       profile = ctx.get(IAgentProfileService);

@@ -124,8 +124,11 @@ export const PermissionRuleSchema = z.object({
   reason: z.string().optional(),
 });
 
+export const DangerousBashGuardSchema = z.enum(['on', 'off', 'default']);
+
 export const PermissionConfigSchema = z.object({
   rules: z.array(PermissionRuleSchema).optional(),
+  dangerousBash: DangerousBashGuardSchema.optional(),
 });
 
 export type PermissionConfig = z.infer<typeof PermissionConfigSchema>;
