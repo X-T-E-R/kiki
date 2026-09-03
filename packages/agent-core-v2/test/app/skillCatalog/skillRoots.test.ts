@@ -107,10 +107,10 @@ describe('skillRoots', () => {
       const paths = roots.map((root) => root.path);
 
       expect(roots.every((root) => root.source === 'extra')).toBe(true);
-      expect(paths).toContain(await realpath(homeDir));
-      expect(paths).toContain(await realpath(join(homeDir, 'notes')));
-      expect(paths).toContain(await realpath(absDir));
-      expect(paths).toContain(await realpath(join(root, 'relative')));
+      expect(paths).toContain((await realpath(homeDir)).replaceAll('\\', '/'));
+      expect(paths).toContain((await realpath(join(homeDir, 'notes'))).replaceAll('\\', '/'));
+      expect(paths).toContain((await realpath(absDir)).replaceAll('\\', '/'));
+      expect(paths).toContain((await realpath(join(root, 'relative'))).replaceAll('\\', '/'));
     });
   });
 });

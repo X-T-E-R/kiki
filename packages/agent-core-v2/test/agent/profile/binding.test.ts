@@ -1738,7 +1738,10 @@ describe('agentsMdReminder seeding', () => {
     seedInjected.mockClear();
     await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
 
-    expect(seedInjected).toHaveBeenCalledWith([normalize(join(workDir, 'AGENTS.md'))], workDir);
+    expect(seedInjected).toHaveBeenCalledWith(
+      [normalize(join(workDir, 'AGENTS.md'))],
+      workDir.replaceAll('\\', '/'),
+    );
     expect(profile.data().agentsMdPaths).toEqual([normalize(join(workDir, 'AGENTS.md'))]);
   });
 

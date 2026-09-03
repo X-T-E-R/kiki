@@ -152,7 +152,9 @@ describe('AgentProfileService.applyProfile', () => {
 
     await svc.applyProfile(exactProfile);
 
-    expect(svc.data().systemPrompt).toBe(exactSystemPrompt(workDir, 'project instructions'));
+    expect(svc.data().systemPrompt).toBe(
+      exactSystemPrompt(workDir.replaceAll('\\', '/'), 'project instructions'),
+    );
   });
 
   it('maps prompt context roots through the bound runtime workspace view', async () => {
