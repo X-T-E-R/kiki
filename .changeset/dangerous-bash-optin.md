@@ -3,4 +3,4 @@
 "@moonshot-ai/kimi-code-sdk": patch
 ---
 
-Ask before running dangerous Bash commands in auto and manual by default. `permission.dangerous_bash` is a three-state `on | off | default` override; yolo stays hands-off unless set to `on`.
+Ask before running dangerous Bash commands in auto and manual modes by default, with `permission.dangerous_bash` (`on | off | default`) as the override and yolo staying hands-off unless set to `on`.
