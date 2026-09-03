@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { run } from './exec.mjs';
 
@@ -7,10 +8,10 @@ const requireFromScript = createRequire(import.meta.url);
 const tsdownCliPath = requireFromScript.resolve('tsdown/run');
 const checkBundlePath = resolve(import.meta.dirname, 'check-bundle.mjs');
 const copyWebAssetsPath = resolve(import.meta.dirname, '..', 'copy-web-assets.mjs');
-const pnpmCommand = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+const pnpmCliPath = process.env.npm_execpath;
 
 export async function runBundleStep() {
-  await run(pnpmCommand, ['-C', '../kiki-gui', 'build']);
+  await run(process.execPath, [pnpmCliPath, '-C', '../kiki-gui', 'build']);
   await run(process.execPath, [copyWebAssetsPath]);
   await run(process.execPath, [tsdownCliPath, '--config', 'tsdown.native.config.ts']);
   // Bundle the off-main-thread workers (the minidb text-build worker and
@@ -23,6 +24,6 @@ export async function runBundleStep() {
   await run(process.execPath, [checkBundlePath]);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   await runBundleStep();
 }
