@@ -4,21 +4,19 @@ import {
   AGENT_WIRE_RECORD_KEY,
   IAppendLogStore,
   IFileSystemStorageService,
+  IRetainedUsageService,
   ISessionIndex,
   agentScopeOf,
   sessionScopeOf,
   workspacePersistenceScope,
+  type RetainedUsageRecord,
   type Scope,
   type SessionSummary,
   type TokenUsage,
   type WireRecord,
 } from '@moonshot-ai/agent-core-v2';
+import type { UsageAggregateWire, UsageQuery, UsageResponse } from '@moonshot-ai/protocol';
 
-import type {
-  UsageAggregateWire,
-  UsageQuery,
-  UsageResponse,
-} from '../protocol/rest-usage';
 import { IModelPricingService } from '../pricing/modelPricingService';
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -65,6 +63,7 @@ interface SessionRecords {
   readonly summary: SessionSummary;
   readonly records: readonly NormalizedUsageRecord[];
   readonly complete: boolean;
+  readonly deleted: boolean;
 }
 
 interface SessionCacheEntry {
@@ -76,6 +75,7 @@ interface SessionCacheEntry {
 interface ScanBudget {
   remainingRecords: number;
   readonly deadlineAt: number;
+  sourcesComplete: boolean;
   incompleteReason: UsageResponse['reliability']['incomplete_reason'];
 }
 
@@ -90,10 +90,18 @@ interface NormalizedQuery {
   readonly granularity: UsageResponse['query']['granularity'];
   readonly range: RangeBounds;
   readonly dimension: UsageResponse['query']['dimension'];
+  readonly models: readonly string[];
+  readonly providers: readonly string[];
+  readonly agentIds: readonly string[];
   readonly workspaceIds: readonly string[];
   readonly includeArchived: boolean;
   readonly timezoneOffsetMinutes: number;
   readonly pageSize: number;
+}
+
+interface ListedSessions {
+  readonly items: readonly SessionSummary[];
+  readonly activeKeys: ReadonlySet<string>;
 }
 
 interface AggregateAccumulator {
@@ -128,6 +136,7 @@ interface BucketAccumulator {
 
 interface SessionAccumulator extends AggregateAccumulator {
   readonly summary: SessionSummary;
+  readonly deleted: boolean;
   readonly unknownPriceModels: Set<string>;
 }
 
@@ -159,11 +168,12 @@ export class UsageAggregationService {
     const budget: ScanBudget = {
       remainingRecords: this.limits.wireRecordBudget,
       deadlineAt: now + this.limits.deadlineMs,
+      sourcesComplete: true,
       incompleteReason: null,
     };
     const listed = await this.listSessions(query, budget);
     const sessions: SessionRecords[] = [];
-    for (const summary of listed) {
+    for (const summary of listed.items) {
       if (this.now() >= budget.deadlineAt) {
         budget.incompleteReason = 'deadline';
         break;
@@ -172,15 +182,19 @@ export class UsageAggregationService {
       if (session !== undefined) sessions.push(session);
       if (budget.incompleteReason === 'record_budget' || budget.incompleteReason === 'deadline') break;
     }
+    if (budget.incompleteReason === null) {
+      sessions.push(...await this.readRetainedSessions(query, budget, listed.activeKeys, sessions.length));
+    }
     return this.aggregate(query, sessions, fingerprint, cursor, budget);
   }
 
   private async listSessions(
     query: NormalizedQuery,
     budget: ScanBudget,
-  ): Promise<readonly SessionSummary[]> {
+  ): Promise<ListedSessions> {
     const index = this.core.accessor.get(ISessionIndex);
     const items: SessionSummary[] = [];
+    const activeKeys = new Set<string>();
     let before: string | undefined;
     while (items.length <= this.limits.sessionScanLimit) {
       const page = await index.listRecent({
@@ -190,6 +204,7 @@ export class UsageAggregationService {
         before,
       });
       for (const item of page.items) {
+        activeKeys.add(sessionKey(item));
         if (query.includeArchived || !item.archived) items.push(item);
         if (items.length > this.limits.sessionScanLimit) break;
       }
@@ -202,16 +217,16 @@ export class UsageAggregationService {
     }
     if (items.length > this.limits.sessionScanLimit) {
       budget.incompleteReason = 'session_cap';
-      return items.slice(0, this.limits.sessionScanLimit);
+      return { items: items.slice(0, this.limits.sessionScanLimit), activeKeys };
     }
-    return items;
+    return { items, activeKeys };
   }
 
   private async readSession(
     summary: SessionSummary,
     budget: ScanBudget,
   ): Promise<SessionRecords | undefined> {
-    const cacheKey = `${summary.workspaceId}\0${summary.id}`;
+    const cacheKey = sessionKey(summary);
     const cached = this.cache.get(cacheKey);
     const now = this.now();
     if (cached !== undefined) {
@@ -222,7 +237,7 @@ export class UsageAggregationService {
       budget.remainingRecords -= cached.scannedRecordCount;
       this.cache.delete(cacheKey);
       this.cache.set(cacheKey, cached);
-      return { summary, records: cached.records, complete: true };
+      return { summary, records: cached.records, complete: true, deleted: false };
     }
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const appendLog = this.core.accessor.get(IAppendLogStore);
@@ -267,7 +282,45 @@ export class UsageAggregationService {
       if (budget.incompleteReason === 'deadline' || budget.incompleteReason === 'record_budget') break;
     }
     if (complete) this.cacheSession(cacheKey, now, records, scannedRecordCount);
-    return { summary, records, complete };
+    return { summary, records, complete, deleted: false };
+  }
+
+  private async readRetainedSessions(
+    query: NormalizedQuery,
+    budget: ScanBudget,
+    activeKeys: ReadonlySet<string>,
+    activeSessionCount: number,
+  ): Promise<readonly SessionRecords[]> {
+    const retained = await this.core.accessor.get(IRetainedUsageService).listDeletedSessions({
+      workspaceIds: query.workspaceIds.length === 0 ? undefined : query.workspaceIds,
+      deadlineAt: budget.deadlineAt,
+      recordLimit: budget.remainingRecords,
+    });
+    budget.remainingRecords -= retained.scannedRecords;
+    if (!retained.complete) budget.sourcesComplete = false;
+    if (retained.incompleteReason !== undefined) {
+      budget.incompleteReason = retained.incompleteReason;
+    }
+    const sessions: SessionRecords[] = [];
+    for (const snapshot of retained.items) {
+      if (activeKeys.has(sessionKey(snapshot))) continue;
+      if (!query.includeArchived && snapshot.archived) continue;
+      if (this.now() >= budget.deadlineAt) {
+        budget.incompleteReason = 'deadline';
+        break;
+      }
+      if (activeSessionCount + sessions.length >= this.limits.sessionScanLimit) {
+        budget.incompleteReason = 'session_cap';
+        break;
+      }
+      sessions.push({
+        summary: snapshot,
+        records: snapshot.records.map(normalizeRetainedRecord),
+        complete: snapshot.complete,
+        deleted: true,
+      });
+    }
+    return sessions;
   }
 
   private pruneExpired(now: number): void {
@@ -322,6 +375,7 @@ export class UsageAggregationService {
     );
     let earliestAt: number | undefined;
     let latestAt: number | undefined;
+    const includesDeletedSessions = sessions.some((session) => session.deleted);
     const pricing = this.core.accessor.get(IModelPricingService);
 
     sessionLoop: for (let sessionIndex = 0; sessionIndex < sessions.length; sessionIndex += 1) {
@@ -334,7 +388,7 @@ export class UsageAggregationService {
           }
           break sessionLoop;
         }
-        if (!inRange(record.time, query.range)) continue;
+        if (!inRange(record.time, query.range) || !matchesFilters(record, query)) continue;
         const cost = pricing.calculate(record.model, record.usage);
         addAggregate(total, record.usage, cost);
         if (cost === undefined) unknownPriceModels.add(record.model);
@@ -401,6 +455,7 @@ export class UsageAggregationService {
         if (sessionAcc === undefined) {
           sessionAcc = {
             summary: session.summary,
+            deleted: session.deleted,
             ...emptyAggregate(),
             unknownPriceModels: new Set(),
           };
@@ -427,6 +482,9 @@ export class UsageAggregationService {
           defaulted_to_all_history: query.range.defaultedToAllHistory,
         },
         dimension: query.dimension,
+        models: [...query.models],
+        providers: [...query.providers],
+        agent_ids: [...query.agentIds],
         workspace_ids: [...query.workspaceIds],
         include_archived: query.includeArchived,
         timezone_offset_minutes: query.timezoneOffsetMinutes,
@@ -473,7 +531,7 @@ export class UsageAggregationService {
           created_at: item.summary.createdAt,
           updated_at: item.summary.updatedAt,
           archived: item.summary.archived,
-          deleted: false,
+          deleted: item.deleted,
           usage: aggregateWire(item),
           unknown_price_models: [...item.unknownPriceModels].toSorted(),
         })),
@@ -483,11 +541,15 @@ export class UsageAggregationService {
           hasMore && last !== undefined ? encodePageToken(fingerprint, last.cost, last.summary.id) : null,
       },
       reliability: {
+        complete:
+          budget.sourcesComplete &&
+          budget.incompleteReason === null &&
+          incompleteSessionIds.size === 0,
         coverage: { earliest_at: earliestAt ?? null, latest_at: latestAt ?? null },
         scanned_sessions: sessions.length,
         incomplete_sessions: incompleteSessionIds.size,
         unknown_price_models: [...unknownPriceModels].toSorted(),
-        includes_deleted_sessions: false,
+        includes_deleted_sessions: includesDeletedSessions,
         incomplete_reason: budget.incompleteReason,
       },
     };
@@ -501,6 +563,9 @@ function normalizeQuery(raw: UsageQuery, now: number): NormalizedQuery {
     granularity: raw.granularity ?? 'day',
     range: resolveRange(preset, raw.start_at, raw.end_at, timezoneOffsetMinutes, now, raw.range === undefined),
     dimension: raw.dimension ?? 'model',
+    models: normalizeRepeated(raw.model),
+    providers: normalizeRepeated(raw.provider),
+    agentIds: normalizeRepeated(raw['agent.id']),
     workspaceIds: normalizeRepeated(raw['workspace.id']),
     includeArchived: raw.include_archived === 'true',
     timezoneOffsetMinutes,
@@ -583,6 +648,20 @@ function normalizeRecord(raw: WireRecord): NormalizedUsageRecord | undefined {
   };
 }
 
+function normalizeRetainedRecord(record: RetainedUsageRecord): NormalizedUsageRecord {
+  return {
+    time: record.time,
+    model: record.model,
+    usage: record.usage,
+    turnId: record.turnId,
+    agentId: record.agentId,
+    parentAgentId: record.parentAgentId,
+    provider: record.provider,
+    modelAlias: record.modelAlias,
+    profileName: record.profileName,
+  };
+}
+
 function nonnegativeFinite(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -598,6 +677,27 @@ function optionalString(value: unknown): string | undefined {
 function inRange(time: number, range: RangeBounds): boolean {
   return (range.startAt === undefined || time >= range.startAt) &&
     (range.endAt === undefined || time < range.endAt);
+}
+
+function matchesFilters(record: NormalizedUsageRecord, query: NormalizedQuery): boolean {
+  if (
+    query.models.length > 0 &&
+    !query.models.includes(record.model) &&
+    (record.modelAlias === undefined || !query.models.includes(record.modelAlias))
+  ) return false;
+  if (
+    query.providers.length > 0 &&
+    (record.provider === undefined || !query.providers.includes(record.provider))
+  ) return false;
+  if (
+    query.agentIds.length > 0 &&
+    (record.agentId === undefined || !query.agentIds.includes(record.agentId))
+  ) return false;
+  return true;
+}
+
+function sessionKey(summary: Pick<SessionSummary, 'id' | 'workspaceId'>): string {
+  return `${summary.workspaceId}\0${summary.id}`;
 }
 
 function dimensionKey(
@@ -704,6 +804,9 @@ function queryFingerprint(query: NormalizedQuery): string {
       query.range.startAt ?? null,
       query.range.endAt ?? null,
       query.dimension,
+      query.models,
+      query.providers,
+      query.agentIds,
       query.workspaceIds,
       query.includeArchived,
       query.timezoneOffsetMinutes,
