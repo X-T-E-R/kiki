@@ -1,7 +1,13 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  IAtomicDocumentStore,
+  ISessionContext,
+  ISessionExternalDelegationProvisionStore,
+  resumeSessionById,
+} from '@moonshot-ai/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';
@@ -44,20 +50,50 @@ afterEach(async () => {
   await rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
+async function createSeat() {
+  const base = `http://127.0.0.1:${server!.port}`;
+  const response = await authedFetch(server!, base, '/api/v2/external-delegation/seats', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workspace, principal: 'cursor', mode: 'auto' }),
+  });
+  return response.json() as Promise<{ code: number; data: Record<string, unknown> }>;
+}
+
+async function invokeSeat(sessionId: string, delegationToken: string) {
+  const base = `http://127.0.0.1:${server!.port}`;
+  const response = await authedFetch(
+    server!,
+    base,
+    `/api/v2/sessions/${encodeURIComponent(sessionId)}/external-delegation/list`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-kiki-delegation-token': delegationToken,
+      },
+      body: '{}',
+    },
+  );
+  return response.json() as Promise<{ code: number; data: unknown }>;
+}
+
+async function provisionAddress(sessionId: string) {
+  const session = await resumeSessionById(server!.core.accessor, sessionId);
+  const context = session!.accessor.get(ISessionContext);
+  return {
+    documents: server!.core.accessor.get(IAtomicDocumentStore),
+    scope: `external-delegation-provisions/${context.workspaceId}`,
+    key: sessionId,
+    store: session!.accessor.get(ISessionExternalDelegationProvisionStore),
+  };
+}
+
 describe('external delegation seats', () => {
   it('creates, reuses, lists, authorizes, and revokes a runtime seat', async () => {
     const base = `http://127.0.0.1:${server!.port}`;
-    const create = async () => {
-      const response = await authedFetch(server!, base, '/api/v2/external-delegation/seats', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspace, principal: 'cursor', mode: 'auto' }),
-      });
-      return response.json() as Promise<{ code: number; data: Record<string, unknown> }>;
-    };
-
-    const first = await create();
-    const second = await create();
+    const first = await createSeat();
+    const second = await createSeat();
     expect(first.code).toBe(0);
     expect(second.data).toMatchObject({
       seatId: first.data['seatId'],
@@ -75,20 +111,12 @@ describe('external delegation seats', () => {
 
     const sessionId = String(first.data['sessionId']);
     const delegationToken = String(first.data['delegationToken']);
-    const delegated = await authedFetch(
-      server!,
-      base,
-      `/api/v2/sessions/${encodeURIComponent(sessionId)}/external-delegation/list`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-kiki-delegation-token': delegationToken,
-        },
-        body: '{}',
-      },
+    const catalog = await readFile(
+      join(home, 'server', 'external-delegation-seats.json'),
+      'utf8',
     );
-    expect(await delegated.json()).toMatchObject({
+    expect(catalog).not.toContain(delegationToken);
+    expect(await invokeSeat(sessionId, delegationToken)).toMatchObject({
       code: 0,
       data: { version: 1, lifecycle: 'active' },
     });
@@ -106,19 +134,27 @@ describe('external delegation seats', () => {
     );
     expect(await revoked.json()).toMatchObject({ code: 0, data: { seatId } });
 
-    const rejected = await authedFetch(
-      server!,
-      base,
-      `/api/v2/sessions/${encodeURIComponent(sessionId)}/external-delegation/list`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-kiki-delegation-token': delegationToken,
-        },
-        body: '{}',
-      },
-    );
-    expect(await rejected.json()).toMatchObject({ code: 40001 });
+    expect(await invokeSeat(sessionId, delegationToken)).toMatchObject({ code: 40001 });
+  });
+
+  it.each([
+    ['unknown version', { version: 3, ownership: 'dedicated', principalId: 'cursor', delegationToken: 'secret' }],
+    ['unknown ownership', { version: 2, ownership: 'attached', principalId: 'cursor', delegationToken: 'secret' }],
+  ])('rejects a seat with %s provision', async (_name, malformed) => {
+    const created = await createSeat();
+    const sessionId = String(created.data['sessionId']);
+    const delegationToken = String(created.data['delegationToken']);
+    const address = await provisionAddress(sessionId);
+    await address.documents.set(address.scope, address.key, malformed);
+    expect(await invokeSeat(sessionId, delegationToken)).toMatchObject({ code: 40001 });
+  });
+
+  it('rejects a seat with missing provision', async () => {
+    const created = await createSeat();
+    const sessionId = String(created.data['sessionId']);
+    const delegationToken = String(created.data['delegationToken']);
+    const address = await provisionAddress(sessionId);
+    await address.store.revoke();
+    expect(await invokeSeat(sessionId, delegationToken)).toMatchObject({ code: 40001 });
   });
 });

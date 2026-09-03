@@ -6,10 +6,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ExternalDelegationSeatManager } from '../src/mcp/externalDelegationSeats';
 
-const provision = vi.hoisted(() => vi.fn());
+const mocks = vi.hoisted(() => ({
+  provision: vi.fn(),
+  resume: vi.fn(),
+  documents: new Map<string, {
+    version: 2;
+    ownership: 'dedicated';
+    principalId: string;
+    delegationToken: string;
+  }>(),
+}));
+
+vi.mock('@moonshot-ai/agent-core-v2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@moonshot-ai/agent-core-v2')>();
+  return { ...actual, resumeSessionById: mocks.resume };
+});
 
 vi.mock('../src/mcp/externalDelegationAuthority', () => ({
-  ensureExternalDelegationSeatSession: provision,
+  ensureExternalDelegationSeatSession: mocks.provision,
 }));
 
 let homeDir: string;
@@ -18,11 +32,30 @@ let workspace: string;
 beforeEach(() => {
   homeDir = mkdtempSync(join(tmpdir(), 'kiki-seat-home-'));
   workspace = mkdtempSync(join(tmpdir(), 'kiki-seat-workspace-'));
-  provision.mockImplementation(async (_core, input) => ({
-    workspacePath: input.workspacePath,
-    modelAlias: input.modelAlias ?? 'default-model',
-    thinkingEffort: input.thinkingEffort ?? 'medium',
-    permissionMode: input.permissionMode,
+  mocks.documents.clear();
+  mocks.provision.mockImplementation(async (_core, input) => {
+    mocks.documents.set(input.sessionId, {
+      version: 2,
+      ownership: 'dedicated',
+      principalId: input.principalId,
+      delegationToken: input.delegationToken,
+    });
+    return {
+      workspacePath: input.workspacePath,
+      modelAlias: input.modelAlias ?? 'default-model',
+      thinkingEffort: input.thinkingEffort ?? 'medium',
+      permissionMode: input.permissionMode,
+    };
+  });
+  mocks.resume.mockImplementation(async (_accessor, sessionId) => ({
+    accessor: {
+      get: () => ({
+        read: async () => mocks.documents.get(sessionId),
+        revoke: async () => {
+          mocks.documents.delete(sessionId);
+        },
+      }),
+    },
   }));
 });
 

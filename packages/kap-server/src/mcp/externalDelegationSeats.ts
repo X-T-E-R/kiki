@@ -3,7 +3,12 @@ import { realpath } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 
-import type { PermissionMode, Scope } from '@moonshot-ai/agent-core-v2';
+import {
+  ISessionExternalDelegationProvisionStore,
+  resumeSessionById,
+  type PermissionMode,
+  type Scope,
+} from '@moonshot-ai/agent-core-v2';
 import { ulid } from 'ulid';
 import { z } from 'zod';
 
@@ -14,44 +19,26 @@ const seatSchema = z.object({
   seatId: z.string().min(1),
   sessionId: z.string().min(1),
   principal: z.string().min(1),
-  delegationToken: z.string().min(1),
   workspace: z.string().min(1),
   mode: z.enum(['manual', 'auto', 'yolo']),
   model: z.string().min(1).optional(),
   thinking: z.string().min(1).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
-});
+}).strict();
 
 const documentSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   seats: z.array(seatSchema),
-});
+}).strict();
 
-export interface ExternalDelegationSeat {
-  readonly seatId: string;
-  readonly sessionId: string;
-  readonly principal: string;
+type ExternalDelegationSeatRecord = z.infer<typeof seatSchema>;
+
+export type ExternalDelegationSeatView = ExternalDelegationSeatRecord;
+
+export type ExternalDelegationSeat = ExternalDelegationSeatView & {
   readonly delegationToken: string;
-  readonly workspace: string;
-  readonly mode: PermissionMode;
-  readonly model?: string;
-  readonly thinking?: string;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-}
-
-export interface ExternalDelegationSeatView {
-  readonly seatId: string;
-  readonly sessionId: string;
-  readonly principal: string;
-  readonly workspace: string;
-  readonly mode: PermissionMode;
-  readonly model?: string;
-  readonly thinking?: string;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-}
+};
 
 export class ExternalDelegationSeatManager {
   private readonly filePath: string;
@@ -80,11 +67,10 @@ export class ExternalDelegationSeatManager {
       );
       const existing = existingIndex === -1 ? undefined : document.seats[existingIndex];
       const now = Date.now();
-      const seat: ExternalDelegationSeat = existing ?? {
+      const seat: ExternalDelegationSeatRecord = existing ?? {
         seatId: `seat_${ulid()}`,
         sessionId: `session_seat_${ulid()}`,
         principal: input.principal,
-        delegationToken: randomBytes(32).toString('base64url'),
         workspace,
         mode: input.mode ?? 'manual',
         model: input.model,
@@ -92,15 +78,28 @@ export class ExternalDelegationSeatManager {
         createdAt: now,
         updatedAt: now,
       };
+      const existingProvision = existing === undefined
+        ? undefined
+        : await this.readSeatProvision(seat.sessionId);
+      if (
+        existing !== undefined &&
+        (existingProvision === undefined || existingProvision.principalId !== seat.principal)
+      ) {
+        throw new Error('External delegation seat provision is unavailable.');
+      }
+      const delegationToken = existingProvision?.delegationToken
+        ?? randomBytes(32).toString('base64url');
       const provisioned = await ensureExternalDelegationSeatSession(this.core, {
         sessionId: seat.sessionId,
         workspacePath: workspace,
+        principalId: seat.principal,
+        delegationToken,
         modelAlias: input.model ?? seat.model,
         thinkingEffort: input.thinking ?? seat.thinking,
         permissionMode: input.mode ?? seat.mode,
         title: input.principal,
       });
-      const updated: ExternalDelegationSeat = {
+      const updated: ExternalDelegationSeatRecord = {
         ...seat,
         workspace: provisioned.workspacePath,
         mode: provisioned.permissionMode,
@@ -112,7 +111,7 @@ export class ExternalDelegationSeatManager {
       else document.seats[existingIndex] = updated;
       await this.write(document);
       await this.onWorkspaceServed(updated.workspace);
-      return updated;
+      return { ...updated, delegationToken };
     });
   }
 
@@ -126,9 +125,15 @@ export class ExternalDelegationSeatManager {
       const document = await this.read();
       const index = document.seats.findIndex((seat) => seat.seatId === seatId);
       if (index === -1) return undefined;
-      const [seat] = document.seats.splice(index, 1);
+      const seat = document.seats[index]!;
+      const provisionStore = await this.provisionStore(seat.sessionId);
+      if (provisionStore === undefined) {
+        throw new Error('External delegation seat Session is unavailable.');
+      }
+      await provisionStore.revoke();
+      document.seats.splice(index, 1);
       await this.write(document);
-      return toView(seat!);
+      return toView(seat);
     });
   }
 
@@ -137,23 +142,40 @@ export class ExternalDelegationSeatManager {
     token: string,
   ): Promise<{ readonly principalId: string; readonly sessionId: string } | undefined> {
     const document = await this.read();
-    const seat = document.seats.find(
-      (candidate) => candidate.sessionId === sessionId && tokenMatches(token, candidate.delegationToken),
-    );
-    return seat === undefined ? undefined : { principalId: seat.principal, sessionId: seat.sessionId };
+    const seat = document.seats.find((candidate) => candidate.sessionId === sessionId);
+    if (seat === undefined) return undefined;
+    const provision = await this.readSeatProvision(sessionId);
+    if (
+      provision === undefined ||
+      provision.principalId !== seat.principal ||
+      !tokenMatches(token, provision.delegationToken)
+    ) {
+      return undefined;
+    }
+    return { principalId: provision.principalId, sessionId: seat.sessionId };
   }
 
-  private async read(): Promise<{ version: 1; seats: ExternalDelegationSeat[] }> {
+  private async read(): Promise<{ version: 2; seats: ExternalDelegationSeatRecord[] }> {
     try {
       return documentSchema.parse(JSON.parse((await readPrivateFile(this.filePath)).toString('utf8')));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, seats: [] };
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 2, seats: [] };
       throw error;
     }
   }
 
-  private write(document: { version: 1; seats: ExternalDelegationSeat[] }): Promise<void> {
+  private write(document: { version: 2; seats: ExternalDelegationSeatRecord[] }): Promise<void> {
     return writePrivateFile(this.filePath, JSON.stringify(document));
+  }
+
+  private async provisionStore(sessionId: string) {
+    const session = await resumeSessionById(this.core.accessor, sessionId);
+    return session?.accessor.get(ISessionExternalDelegationProvisionStore);
+  }
+
+  private async readSeatProvision(sessionId: string) {
+    const provision = await (await this.provisionStore(sessionId))?.read();
+    return provision?.version === 2 ? provision : undefined;
   }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {
@@ -163,7 +185,7 @@ export class ExternalDelegationSeatManager {
   }
 }
 
-function toView(seat: ExternalDelegationSeat): ExternalDelegationSeatView {
+function toView(seat: ExternalDelegationSeatRecord): ExternalDelegationSeatView {
   return {
     seatId: seat.seatId,
     sessionId: seat.sessionId,

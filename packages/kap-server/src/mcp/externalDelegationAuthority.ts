@@ -208,6 +208,8 @@ export async function ensureExternalDelegationSeatSession(
   input: {
     readonly sessionId: string;
     readonly workspacePath: string;
+    readonly principalId: string;
+    readonly delegationToken: string;
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;
     readonly permissionMode: PermissionMode;
@@ -270,8 +272,10 @@ export async function ensureExternalDelegationSeatSession(
   }
   agent.accessor.get(IAgentLifecycleService).broadcastPermissionMode(input.permissionMode);
   await session.accessor.get(ISessionExternalDelegationProvisionStore).write({
-    version: 1,
+    version: 2,
     ownership: 'dedicated',
+    principalId: input.principalId,
+    delegationToken: input.delegationToken,
   });
   const data = profile.data();
   return {
