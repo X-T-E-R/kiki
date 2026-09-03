@@ -96,6 +96,26 @@ async function flush(): Promise<void> {
   });
 }
 
+async function click(element: Element): Promise<void> {
+  await act(async () => {
+    (element as HTMLElement).click();
+  });
+}
+
+async function setInputValue(input: HTMLInputElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+function labeledButton(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = [...container.querySelectorAll('button')].find((candidate) => candidate.textContent === label);
+  expect(button).toBeDefined();
+  return button as HTMLButtonElement;
+}
+
 async function renderLeaf(): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -260,5 +280,95 @@ describe('PluginsSection', () => {
     const informed = container.querySelector('[role="alertdialog"]');
     expect(informed?.textContent).toContain('1 skills');
     expect(informed?.textContent).toContain('notes-mcp');
+  });
+
+  it('saves and clears the marketplace catalog URL', async () => {
+    const source = 'https://example.test/marketplace.json';
+    patchConfig.mockImplementation(async (body: { plugins?: { marketplace_url?: string } }) => ({
+      plugins: { marketplaceUrl: body.plugins?.marketplace_url },
+    }));
+    listPluginMarketplace
+      .mockResolvedValueOnce({ configured: false, entries: [] })
+      .mockResolvedValueOnce({
+        configured: true,
+        source,
+        entries: [{ id: 'fresh', tier: 'curated', displayName: 'Fresh', source: 'https://example.test/fresh.zip' }],
+      })
+      .mockResolvedValueOnce({ configured: false, entries: [] });
+    const container = await renderLeaf();
+    await click(container.querySelector('[data-plugin-add-tab-button="marketplace"]')!);
+    await flush();
+    const input = container.querySelector<HTMLInputElement>('input[placeholder="https://example.test/marketplace.json"]')!;
+    expect(input).not.toBeNull();
+    await setInputValue(input, source);
+    await click(labeledButton(container, 'Save catalog URL'));
+    await flush();
+    expect(patchConfig).toHaveBeenCalledWith({
+      plugins: { marketplace_url: source },
+      replace_domains: ['plugins'],
+    });
+    expect(container.querySelector('[data-marketplace-row="fresh"]')).not.toBeNull();
+    await setInputValue(input, '');
+    await click(labeledButton(container, 'Save catalog URL'));
+    await flush();
+    expect(patchConfig).toHaveBeenLastCalledWith({
+      plugins: { marketplace_url: undefined },
+      replace_domains: ['plugins'],
+    });
+    expect(container.textContent).toContain('No marketplace is configured');
+  });
+
+  it('installs from a local path and reports success', async () => {
+    const container = await renderLeaf();
+    const input = container.querySelector<HTMLInputElement>('input[placeholder="C:/plugins/example"]')!;
+    await setInputValue(input, '/tmp/fresh-plugin');
+    await click(labeledButton(container, 'Install'));
+    await flush();
+    expect(installPlugin).toHaveBeenCalledWith('/tmp/fresh-plugin');
+    expect(container.textContent).toContain('Installed Notes.');
+  });
+
+  it('toggles a plugin off through the enable switch', async () => {
+    const container = await renderLeaf();
+    const toggle = container.querySelector('[data-plugin-row="notes"] [role="switch"]') as HTMLElement;
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    await click(toggle);
+    await flush();
+    expect(setPluginEnabled).toHaveBeenCalledWith('notes', false);
+  });
+
+  it('confirms uninstall and removes the plugin', async () => {
+    const container = await renderLeaf();
+    await click(container.querySelector('[data-plugin-uninstall="notes"]')!);
+    await flush();
+    const dialog = container.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain('Uninstall Notes?');
+    await click(labeledButton(dialog as HTMLElement, 'Uninstall'));
+    await flush();
+    expect(removePlugin).toHaveBeenCalledWith('notes');
+  });
+
+  it('surfaces API errors from enable, install, and catalog save', async () => {
+    setPluginEnabled.mockRejectedValueOnce(new Error('enable failed'));
+    installPlugin.mockRejectedValueOnce(new Error('install failed'));
+    patchConfig.mockRejectedValueOnce(new Error('save failed'));
+    const container = await renderLeaf();
+    await click(container.querySelector('[data-plugin-row="notes"] [role="switch"]')!);
+    await flush();
+    expect(container.textContent).toContain('enable failed');
+
+    const pathInput = container.querySelector<HTMLInputElement>('input[placeholder="C:/plugins/example"]')!;
+    await setInputValue(pathInput, '/tmp/broken');
+    await click(labeledButton(container, 'Install'));
+    await flush();
+    expect(container.textContent).toContain('install failed');
+
+    await click(container.querySelector('[data-plugin-add-tab-button="marketplace"]')!);
+    await flush();
+    const sourceInput = container.querySelector<HTMLInputElement>('input[placeholder="https://example.test/marketplace.json"]')!;
+    await setInputValue(sourceInput, 'https://example.test/marketplace.json');
+    await click(labeledButton(container, 'Save catalog URL'));
+    await flush();
+    expect(container.textContent).toContain('save failed');
   });
 });
