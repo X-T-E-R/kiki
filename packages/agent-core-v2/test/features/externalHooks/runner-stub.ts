@@ -11,7 +11,7 @@ export function nodeCommand(source: string): string {
   const compact = source
     .replaceAll(/\s*\n\s*/g, ' ')
     .replaceAll('\\n', '" + String.fromCharCode(10) + "');
-  return `node -e ${JSON.stringify(compact)}`;
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(compact)}`;
 }
 
 export function makeHookRunner(
