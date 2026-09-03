@@ -1,4 +1,4 @@
-﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   GOAL_EXIT_CODES,
@@ -124,7 +124,7 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
       homeDir: '/tmp/kimi-goal-home',
       auth: { getCachedAccessToken: vi.fn() },
       ensureConfigFile: vi.fn(),
-      getConfig: vi.fn(async () => ({ providers: {}, defaultModel: 'k2', telemetry: true })),
+      getConfig: vi.fn(async () => ({ providers: {}, defaultModel: 'k2' })),
       getConfigDiagnostics: vi.fn(async () => ({ warnings: [] as readonly string[] })),
       getExperimentalFeatures: vi.fn(async () => mocks.experimentalFeatures),
       createSession: vi.fn(async () => mocks.session),
@@ -135,15 +135,6 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
     }),
   };
 });
-
-vi.mock('@moonshot-ai/kimi-telemetry', () => ({
-  initializeTelemetry: vi.fn(),
-  setCrashPhase: vi.fn(),
-  shutdownTelemetry: vi.fn(),
-  track: vi.fn(),
-  setTelemetryContext: vi.fn(),
-  withTelemetryContext: vi.fn(() => ({ track: vi.fn() })),
-}));
 
 function opts(overrides: Partial<Parameters<typeof runPrompt>[0]> = {}) {
   return {

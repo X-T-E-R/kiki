@@ -43,7 +43,7 @@ import {
   showSettingsSelector,
 } from './config';
 import { handleGoalCommand } from './goal';
-import { handleFeedbackCommand, showMcpServers, showStatusReport, showUsage } from './info';
+import { showMcpServers, showStatusReport, showUsage } from './info';
 import { handleAddDirCommand } from './add-dir';
 import { parseSlashInput } from './parse';
 import { handlePluginsCommand } from './plugins';
@@ -70,7 +70,7 @@ import {
 } from './session';
 import { handleSwarmCommand } from './swarm';
 import { handleUndoCommand } from './undo';
-import { handleRemoteControlCommand, handleWebCommand } from './web';
+import { handleWebCommand } from './web';
 
 // ---------------------------------------------------------------------------
 // Re-exports — keep existing consumers working
@@ -95,7 +95,7 @@ export {
   showSettingsSelector,
 } from './config';
 export { handleSwarmCommand } from './swarm';
-export { handleFeedbackCommand, showMcpServers, showStatusReport, showUsage } from './info';
+export { showMcpServers, showStatusReport, showUsage } from './info';
 export { handlePluginsCommand } from './plugins';
 export { handleReloadCommand, handleReloadTuiCommand } from './reload';
 export { handleGoalCommand } from './goal';
@@ -107,7 +107,7 @@ export {
   handleTitleCommand,
 } from './session';
 export { handleUndoCommand } from './undo';
-export { handleRemoteControlCommand, handleWebCommand } from './web';
+export { handleWebCommand } from './web';
 
 // ---------------------------------------------------------------------------
 // Host interface
@@ -551,9 +551,6 @@ async function handleBuiltInSlashCommand(
     case 'status':
       void showStatusReport(host);
       return;
-    case 'feedback':
-      await handleFeedbackCommand(host);
-      return;
     case 'btw':
       await handleBtwCommand(host, args);
       return;
@@ -604,9 +601,6 @@ async function handleBuiltInSlashCommand(
       return;
     case 'web':
       await handleWebCommand(host);
-      return;
-    case 'remote-control':
-      await handleRemoteControlCommand(host);
       return;
     default:
       host.showError(`Unknown slash command: /${String(name)}`);

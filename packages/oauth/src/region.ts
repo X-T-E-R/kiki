@@ -43,7 +43,6 @@ export interface KimiRegionProfile {
   readonly cdnBase: string;
   /** Official site root (docs, console, signup, upgrade pages). */
   readonly siteBase: string;
-  readonly telemetryEndpoint: string;
 }
 
 export const KIMI_REGION_PROFILES: Record<KimiRegion, KimiRegionProfile> = {
@@ -52,14 +51,12 @@ export const KIMI_REGION_PROFILES: Record<KimiRegion, KimiRegionProfile> = {
     baseUrl: DEFAULT_KIMI_CODE_BASE_URL,
     cdnBase: 'https://code.kimi.com/kimi-code',
     siteBase: 'https://www.kimi.com',
-    telemetryEndpoint: 'https://telemetry-logs.kimi.com/v1/event',
   },
   global: {
     oauthHost: 'https://auth.kimi.ai',
     baseUrl: 'https://api.kimi.ai/coding/v1',
     cdnBase: 'https://code.kimi.ai/kimi-code',
     siteBase: 'https://www.kimi.ai',
-    telemetryEndpoint: 'https://telemetry-logs.kimi.ai/v1/event',
   },
 };
 

@@ -1,4 +1,6 @@
-import type { KimiConfig, ModelAlias } from '#/config';
+import type { ModelCapability } from '@moonshot-ai/agent-core-v2';
+
+import type { KimiConfig, ModelAlias, ProviderType } from '#/config';
 import {
   catalogBaseUrl,
   catalogProviderModels,
@@ -9,9 +11,7 @@ import {
   type CatalogImportResolution,
   type CatalogModel,
   type CatalogProviderEntry,
-  type ModelCapability,
-  type ProviderType,
-} from '@moonshot-ai/kosong';
+} from './catalog-base';
 
 export { catalogBaseUrl, catalogProviderModels, inferWireType, resolveCatalogImport };
 export type { CatalogImportInvalidReason, CatalogImportResolution };

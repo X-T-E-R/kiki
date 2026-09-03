@@ -36,6 +36,7 @@ import {
   type KimiHostIdentity,
 } from '@moonshot-ai/kimi-code-oauth';
 import { createAsyncApiDocument } from './protocol/asyncapi';
+import type { ExternalDelegationState } from './protocol/rest-meta';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { installErrorHandler } from './error-handler';
@@ -57,6 +58,10 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import {
+  KLIENT_EVENTS_PATH,
+  registerKlientHttp,
+} from './transport/klient/registerKlientHttp';
+import {
   ConnectionRegistry,
   type IConnectionRegistry,
 } from './transport/ws/connectionRegistry';
@@ -76,11 +81,6 @@ import { createOriginHook, isOriginAllowed, parseCorsOrigins } from './middlewar
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
 import { createAuthHook } from './middleware/auth';
 import { GuiStoreService } from './services/guiStore/guiStoreService';
-import {
-  initializeServerTelemetry,
-  type ServerTelemetry,
-  shutdownServerTelemetry,
-} from './services/telemetry';
 import { TranscriptService } from './services/transcript/transcriptService';
 import { ModelCatalogRefreshScheduler } from './services/modelCatalog/modelCatalogRefreshScheduler';
 import { createAuthFailureLimiter } from './middleware/rateLimit';
@@ -94,6 +94,7 @@ import { createTokenStore } from './services/auth/tokenStore';
 import {
   ensureExternalDelegationSession,
   externalDelegationAuthorityFromEnv,
+  ExternalDelegationBootstrapError,
   type ExternalDelegationAuthorityConfig,
 } from './mcp/externalDelegationAuthority';
 
@@ -197,14 +198,6 @@ export interface ServerStartOptions {
    * `hostIdentity.version` instead.
    */
   readonly serverVersion?: string;
-  /**
-   * Opt-in cloud telemetry for the engine's `ITelemetryService` events: when
-   * true, a `CloudAppender` is attached at startup (still gated by the config
-   * `telemetry` toggle) and flushed on close. Defaults to false so tests and
-   * embedding hosts that wire their own telemetry never post to the real
-   * endpoint unintentionally; the CLI's `kimi web` host passes true.
-   */
-  readonly telemetry?: boolean;
 }
 
 export interface RunningServer {
@@ -225,6 +218,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKimiHome(opts.homeDir);
   const serverVersion = opts.serverVersion ?? getServerVersion();
+  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
+  const externalDelegation = opts.externalDelegation === undefined
+    ? externalDelegationAuthorityFromEnv(process.env)
+    : {
+        ...opts.externalDelegation,
+        sessionOwnership: opts.externalDelegation.sessionOwnership ?? 'dedicated',
+      };
   const registry = createInstanceRegistry({
     instancesDir: opts.instancesDir ?? join(homeDir, 'server', 'instances'),
   });
@@ -245,21 +245,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const enableShutdown = exposureClass === 'loopback' || opts.allowRemoteShutdown === true;
   const enableTerminals = exposureClass === 'loopback';
   const debugEndpoints = exposureClass === 'loopback' && opts.debugEndpoints === true;
-  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
-  let externalDelegation: ExternalDelegationAuthorityConfig | undefined;
-  try {
-    externalDelegation = opts.externalDelegation === undefined
-      ? externalDelegationAuthorityFromEnv(process.env)
-      : {
-          ...opts.externalDelegation,
-          sessionOwnership: opts.externalDelegation.sessionOwnership ?? 'dedicated',
-        };
-  } catch (error) {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'external delegation configuration is invalid; starting without the external delegation edge',
-    );
-  }
   const authFailureLimiter =
     exposureClass === 'loopback' ? undefined : createAuthFailureLimiter({ logger });
 
@@ -299,18 +284,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     },
     [...logSeed(logging), ...(opts.seeds ?? [])],
   );
-
-  let telemetry: ServerTelemetry = {};
-  if (opts.telemetry === true) {
-    try {
-      telemetry = await initializeServerTelemetry(core, homeDir);
-    } catch (error) {
-      logger.warn(
-        { err: error instanceof Error ? error.message : String(error) },
-        'telemetry initialization failed; continuing without telemetry',
-      );
-    }
-  }
 
   if (exposureClass !== 'loopback') {
     logger.warn(
@@ -353,16 +326,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
     core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
   };
-
-  try {
-    await ensureExternalDelegationSession(core, externalDelegation);
-  } catch (error) {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'external delegation Session bootstrap failed; starting without the external delegation edge',
-    );
-    externalDelegation = undefined;
-  }
 
   const app = Fastify({
     loggerInstance: logger,
@@ -446,14 +409,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     authFailureLimiter?.dispose();
     modelCatalogRefreshScheduler.dispose();
     try {
-      await shutdownServerTelemetry(telemetry);
-    } catch (error) {
-      logger.warn(
-        { err: error instanceof Error ? error.message : String(error) },
-        'telemetry shutdown failed; continuing server cleanup',
-      );
-    }
-    try {
       await postListenWarmup;
       await drainSessionMetadataWrites();
       await core.accessor.get(ISessionIndexMirror).drain();
@@ -530,6 +485,22 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     .catch(() => {
     });
 
+  let externalDelegationState: ExternalDelegationState =
+    externalDelegation === undefined ? { state: 'not_configured' } : { state: 'active' };
+  try {
+    await ensureExternalDelegationSession(core, externalDelegation);
+  } catch (error) {
+    const reason = error instanceof ExternalDelegationBootstrapError
+      ? error.reason
+      : 'bootstrap_failed';
+    const message = error instanceof Error ? error.message : String(error);
+    externalDelegationState = { state: 'disabled', reason, message };
+    logger.warn(
+      { err: error, reason },
+      'external delegation Session bootstrap failed; disabling the edge and continuing server startup',
+    );
+  }
+
   async function registerOpenApi(): Promise<void> {
     const { default: swagger } = await import('@fastify/swagger');
     await app.register(swagger, {
@@ -598,13 +569,17 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     broadcaster,
     transcriptService,
     dangerousBypassAuth: opts.disableAuth === true,
+    externalDelegation: externalDelegationState,
     webTitle: opts.webTitle,
   });
 
   await registerApiV2Routes(app, core, {
-    externalDelegation,
+    externalDelegation: externalDelegation === undefined
+      ? undefined
+      : { ...externalDelegation, state: externalDelegationState },
   });
 
+  const wssKlient = registerKlientHttp(app, core);
   const wssV1 = registerWsV1(core, {
     validateCredential,
     registry: connectionRegistry,
@@ -621,7 +596,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   ): Promise<void> => {
     const url = req.url ?? '';
     const isV1 = url === WS_PATH_V1 || url.startsWith(`${WS_PATH_V1}?`);
-    if (!isV1) {
+    const isKlient = url === KLIENT_EVENTS_PATH || url.startsWith(`${KLIENT_EVENTS_PATH}?`);
+    if (!isV1 && !isKlient) {
       socket.destroy();
       return;
     }
@@ -683,7 +659,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     }
 
     (socket as Socket).setNoDelay(true);
-    wssV1.handleUpgrade(req, socket, head, (ws) => wssV1.emit('connection', ws, req));
+    const wss = isV1 ? wssV1 : wssKlient;
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   };
   app.server.on('upgrade', (req, socket, head) => {
     void handleUpgrade(req, socket, head).catch((error: unknown) =>

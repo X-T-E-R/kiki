@@ -24,7 +24,7 @@ export type {
   AgentBackgroundTaskInfo,
   QuestionBackgroundTaskInfo,
 } from '@moonshot-ai/kimi-code-sdk';
-export type { Message, ContentPart, ToolCall, TokenUsage } from '@moonshot-ai/kosong';
+export type { Message, ContentPart, ToolCall, TokenUsage } from '@moonshot-ai/agent-core-v2';
 
 // Local bindings for the upstream types referenced by the vis-only DTOs
 // below. The `export type { … }` re-export above forwards the names to

@@ -71,6 +71,23 @@ describe('server-v2 /api/v1/config', () => {
     return configResponseSchema.parse(body.data);
   }
 
+  it('omits legacy telemetry config and rejects telemetry patches without persisting them', async () => {
+    await boot('telemetry = true\n');
+    expect(await getConfig()).not.toHaveProperty('telemetry');
+    const configPath = join(home as string, 'config.toml');
+    const before = await readFile(configPath, 'utf-8');
+
+    const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ telemetry: false }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Envelope<null>;
+    expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(await readFile(configPath, 'utf-8')).toBe(before);
+  });
+
   it('GET echoes default_permission_mode and derives yolo = false', async () => {
     await boot('default_permission_mode = "auto"\n');
     const cfg = await getConfig();
@@ -146,7 +163,7 @@ describe('server-v2 /api/v1/config', () => {
       overrides: { client: { user_agent: 'host' } },
     });
 
-    const omitted = await patchConfig({ telemetry: true });
+    const omitted = await patchConfig({ builtin_product_skills: true });
     expect(omitted.request_identity).toEqual(first.request_identity);
 
     const replaced = await patchConfig({
@@ -183,8 +200,6 @@ describe('server-v2 /api/v1/config', () => {
 
   it('POST persists GUI server settings through the config service without dropping other domains', async () => {
     await boot([
-      'telemetry = true',
-      '',
       '[providers.example]',
       'type = "openai"',
       'api_key = "secret-kept"',

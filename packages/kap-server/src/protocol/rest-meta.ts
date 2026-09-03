@@ -33,6 +33,24 @@ export const metaFeatureSchema = z.object({
 
 export type MetaFeature = z.infer<typeof metaFeatureSchema>;
 
+const externalDelegationDisabledReasonSchema = z.enum([
+  'session_index_unavailable',
+  'workspace_drift',
+  'bootstrap_failed',
+]);
+
+export const externalDelegationStateSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('active') }),
+  z.object({
+    state: z.literal('disabled'),
+    reason: externalDelegationDisabledReasonSchema,
+    message: z.string().min(1).optional(),
+  }),
+  z.object({ state: z.literal('not_configured') }),
+]);
+
+export type ExternalDelegationState = z.infer<typeof externalDelegationStateSchema>;
+
 export const metaResponseSchema = z.object({
   server_version: z.string().min(1),
   capabilities: metaCapabilitiesSchema,
@@ -40,6 +58,7 @@ export const metaResponseSchema = z.object({
   started_at: isoDateTimeSchema,
   open_in_apps: z.array(fsOpenInAppIdSchema),
   dangerous_bypass_auth: z.boolean(),
+  external_delegation: externalDelegationStateSchema,
   experimental_flags: z.record(z.string(), z.boolean()).optional(),
   backend: z.enum(['v1', 'v2']).optional(),
   web_title: z.string().optional(),

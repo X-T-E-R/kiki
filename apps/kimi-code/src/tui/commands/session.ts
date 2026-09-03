@@ -4,8 +4,8 @@ import { pathToFileURL } from 'node:url';
 
 import type { Session } from '@moonshot-ai/kimi-code-sdk';
 
-import { detectInstallSource } from '#/cli/update/source';
 import { copyTextToClipboard } from '#/utils/clipboard/clipboard-text';
+import { detectInstallSource } from '#/utils/install-source';
 import { detectShellEnvironment } from '#/utils/process/shell-env';
 import { quoteShellArg } from '#/utils/shell-quote';
 import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';

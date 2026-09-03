@@ -1,4 +1,4 @@
-﻿import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -81,7 +81,6 @@ function makeStartupInput(
       disablePasteBurst: false,
       editorCommand: null,
       notifications: { enabled: true, condition: 'unfocused' },
-      upgrade: { autoInstall: true },
       statusLine: { items: null, command: null },
       ...tuiConfig,
     },

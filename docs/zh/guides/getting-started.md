@@ -20,23 +20,11 @@ Kimi Code CLI 是一个运行在终端中的 AI Agent，帮助你完成软件开
 Kimi Code CLI 为全交互式 TUI 应用，推荐在支持真彩色与连字的现代终端中运行以获得最佳体验，例如 [Kitty](https://sw.kovidgoyal.net/kitty/) 或 [Ghostty](https://ghostty.org/)。
 :::
 
-### 脚本安装（推荐）
+### Release 下载（推荐）
 
-- **macOS / Linux**：
-
-```sh
-curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash
-```
-
-- **Windows（PowerShell）**：
-
-```powershell
-irm https://code.kimi.com/kimi-code/install.ps1 | iex
-```
+请从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载适合当前平台的构建。
 
 > Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Kimi Code CLI 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `KIMI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
-
-脚本会自动下载最新版本、校验 checksum，并把 `kimi` 可执行文件放到你的 `PATH` 中。
 
 ### npm 安装
 
@@ -61,7 +49,7 @@ pnpm add -g @moonshot-ai/kimi-code
 kimi --version
 ```
 
-**升级**：运行 `kimi upgrade`，CLI 会检查最新版本并展示更新选项。选择 `Install update now` 后根据当前安装来源执行升级；也可以直接用包管理器：
+**升级**：从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载较新构建，或直接使用包管理器升级：
 
 ```sh
 npm install -g @moonshot-ai/kimi-code@latest

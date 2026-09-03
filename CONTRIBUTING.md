@@ -1,4 +1,4 @@
-﻿# Contributing to kimi-code
+# Contributing to kimi-code
 
 Thanks for taking the time to contribute! This project moves quickly, and thoughtful contributions from the community are what keep it sharp. The guide below walks you through how we work so your PR has the best chance of landing smoothly.
 
@@ -30,7 +30,7 @@ This is a pnpm monorepo. The most relevant entry points are:
 - `apps/kimi-code` — CLI / TUI
 - `apps/vis` — session replay & debugging visualizer
 - `packages/node-sdk` — public TypeScript SDK (`@moonshot-ai/kimi-code-sdk`)
-- `packages/agent-core-v2`, `kosong`, `kaos`, `oauth`, `telemetry` — internal engine packages
+- `packages/agent-core-v2`, `kaos`, `oauth`, `telemetry` — internal engine packages
 - `docs/` — VitePress bilingual docs site
 
 For the full project map, see [AGENTS.md](AGENTS.md).
@@ -51,7 +51,7 @@ Useful scripts:
 - `pnpm test` — run tests (vitest; L0 + L1; L2 files self-skip unless env-gated)
 - `pnpm test:fast` — L0 only (`*.test.ts`, skips `*.integration.ts` / `*.e2e.ts`)
 - `pnpm test:integration` — L1 files (`*.integration.ts`)
-- `pnpm test:promote` — local promote extra gate: engine/CLI/GUI L0+L1 plus `packages/pi-tui` (`node --test`). kap-server stays out until its import/contention work lands
+- `pnpm test:promote` — local promote extra gate: engine/CLI/GUI L0+L1, the kap-server L0/fast subset, plus `packages/pi-tui` (`node --test`). Run `pnpm test:kap-server:integration` for kap-server's 56 `*.integration.ts` suites
 - `pnpm typecheck` — TypeScript check (note: builds packages first)
 - `pnpm lint` — oxlint
 - `pnpm lint:fix` — oxlint with auto-fix
@@ -67,7 +67,7 @@ All commits and PR titles must follow [Conventional Commits](https://www.convent
 | fix      | A bug fix                                   | fix(tui): correct status bar alignment    |
 | docs     | Documentation only                          | docs: clarify install instructions        |
 | chore    | Tooling / housekeeping                      | chore: bump dependencies                  |
-| refactor | Internal refactor without behavior change   | refactor(kosong): extract retry helper    |
+| refactor | Internal refactor without behavior change   | refactor(core): extract retry helper      |
 | test     | Adding or improving tests                   | test(agent-core-v2): cover skill resolver    |
 | ci       | CI / build pipeline changes                 | ci: cache pnpm store                      |
 | build    | Build system / artifact changes             | build(native): add win32-arm64 target     |

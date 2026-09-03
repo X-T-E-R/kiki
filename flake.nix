@@ -69,13 +69,11 @@
         ./packages/kap-server
         ./packages/kaos
         ./packages/klient
-        ./packages/kosong
         ./packages/minidb
         ./packages/node-sdk
         ./packages/oauth
         ./packages/pi-tui
         ./packages/protocol
-        ./packages/telemetry
         ./packages/transcript
         ./packages/transcript-live
         ./packages/tree-sitter-bash
@@ -96,14 +94,12 @@
         "@moonshot-ai/codex-client"
         "@moonshot-ai/kap-server"
         "@moonshot-ai/kaos"
-        "@moonshot-ai/kosong"
         "@moonshot-ai/minidb"
         "@moonshot-ai/kimi-code-sdk"
         "@moonshot-ai/kimi-code-oauth"
         "@moonshot-ai/klient"
         "@moonshot-ai/pi-tui"
         "@moonshot-ai/protocol"
-        "@moonshot-ai/kimi-telemetry"
         "@moonshot-ai/transcript"
         "@kiki/transcript-live"
         "@moonshot-ai/tree-sitter-bash"

@@ -266,16 +266,6 @@ kimi migrate
 
 完整迁移说明见[从 kimi-cli 迁移](../guides/migration.md)。
 
-### `kimi upgrade`
-
-立即检查最新版本并展示更新提示，选择操作后退出。也可以使用别名 `kimi update`。
-
-```sh
-kimi upgrade
-```
-
-对全局 npm、pnpm、yarn、bun 安装，`kimi upgrade` 会展示更新选项；选择 `Install update now` 后运行对应的前台安装命令。对 native 安装（含 Windows），会在前台下载并校验新二进制，并在下次启动时替换生效。当前安装方式无法自动升级时，改为打印手动更新命令。
-
 ### `kimi vis`
 
 在浏览器中启动会话可视化工具，直观查看一次会话的全过程。命令会启动一个指向本地会话的进程内服务器，打印访问地址并打开浏览器，持续运行直到你按下 `Ctrl-C`。

@@ -47,11 +47,6 @@ $KIMI_CODE_HOME  (default: ~/.kimi-code)
 │   └── fd                  # managed fd binary for file references (fd.exe on Windows)
 ├── logs/
 │   └── kimi-code.log       # Global diagnostic log
-├── updates/
-│   ├── latest.json
-│   ├── install.json
-│   ├── install.lock
-│   └── rollout.log
 └── user-history/
     └── <md5(workDir)>.jsonl
 ```
@@ -61,7 +56,7 @@ $KIMI_CODE_HOME  (default: ~/.kimi-code)
 Each top-level file under the data root serves a specific purpose; most are managed automatically by the CLI:
 
 - **`config.toml`**: the main runtime configuration file, storing user-level settings such as providers, models, and loop control. See [Configuration files](./config-files.md).
-- **`tui.toml`**: terminal UI client preferences, including `[upgrade].auto_install` (auto-update, on by default). You can disable it in `/settings` or by manually setting `auto_install = false`.
+- **`tui.toml`**: terminal UI client preferences such as theme, editor, notifications, and status line.
 - **`AGENTS.md`**: global Kimi-specific agent instructions. This file moves with `KIMI_CODE_HOME`; generic cross-tool instructions can still live under `~/.agents/AGENTS.md`.
 - **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kimi-code/mcp.json` on startup. See [MCP](../customization/mcp.md).
 - **`skills/`**: Kimi-specific user-level Skills. This directory moves with `KIMI_CODE_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
@@ -87,14 +82,12 @@ Inside each session directory:
 
 The first time the `Grep` tool needs ripgrep, the CLI can automatically download `rg` and cache it at `bin/rg` (`bin/rg.exe` on Windows). File-reference completion in the terminal UI uses `fd`; the CLI downloads and caches it at `bin/fd` (`bin/fd.exe` on Windows) in the background when needed. Subsequent runs reuse the cached binaries. `rg` prefers the system `PATH` before the cache, while `fd` checks the managed cache before falling back to system `fd` / `fdfind`. Deleting the `bin/` directory triggers a fresh download on the next use.
 
-## Logs and update state
+## Logs
 
 - **`logs/kimi-code.log`** (global): records startup, login, export, and other cross-session events.
 - **`<sessionDir>/logs/kimi-code.log`** (session-level): records diagnostic events within a single session.
 
 When reporting a bug, prefer exporting the relevant session with `kimi export` (see [kimi command](../reference/kimi-command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
-
-The files under `updates/` (`latest.json`, `install.json`, `install.lock`, `rollout.log`) are maintained automatically by the auto-update mechanism and normally do not need manual editing. `rollout.log` records which staged-rollout case each update check hit, which helps explain when a device will receive a new release.
 
 ## Input history
 
@@ -111,7 +104,6 @@ Deleting the data root directory (`~/.kimi-code/` or the path set by `KIMI_CODE_
 | Clear all sessions | Delete `~/.kimi-code/sessions/` and `session_index.jsonl` |
 | Clear diagnostic logs | Delete `~/.kimi-code/logs/` |
 | Clear input history | Delete `~/.kimi-code/user-history/` |
-| Reset update state | Delete `~/.kimi-code/updates/latest.json` |
 | Force re-download of managed `rg` and `fd` | Delete `~/.kimi-code/bin/` |
 | Clear provider OAuth login state | Run `/logout`, or delete the corresponding `credentials/<name>.json` |
 | Clear MCP server OAuth login state | Delete `credentials/mcp/` (`/logout` does not clear MCP credentials) |

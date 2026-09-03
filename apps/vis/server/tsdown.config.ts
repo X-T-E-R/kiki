@@ -8,7 +8,6 @@ export default defineConfig({
   external: [
     '@moonshot-ai/agent-core-v2',
     '@moonshot-ai/kimi-code-sdk',
-    '@moonshot-ai/kosong',
     '@moonshot-ai/kaos',
   ],
 });

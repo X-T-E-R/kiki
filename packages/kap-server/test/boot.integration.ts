@@ -1,10 +1,10 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { pino } from 'pino';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   IBootstrapService,
@@ -27,6 +27,38 @@ import { createServerLogger } from '../src/services/pinoLoggerService';
 import { listenWithPortRetry, type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authedFetch } from './helpers/auth';
+
+const EXTERNAL_DELEGATION_ENV_NAMES = [
+  'KIKI_EXTERNAL_PRINCIPAL_ID',
+  'KIKI_EXTERNAL_SESSION_ID',
+  'KIKI_EXTERNAL_DELEGATION_TOKEN',
+  'KIKI_EXTERNAL_WORKSPACE_PATH',
+  'KIKI_EXTERNAL_MODEL_ALIAS',
+  'KIKI_EXTERNAL_THINKING_EFFORT',
+  'KIKI_EXTERNAL_PERMISSION_MODE',
+  'KIKI_EXTERNAL_SESSION_TITLE',
+] as const;
+
+type ExternalDelegationEnvName = (typeof EXTERNAL_DELEGATION_ENV_NAMES)[number];
+type ExternalDelegationEnv = Partial<Record<ExternalDelegationEnvName, string>>;
+
+function takeExternalDelegationEnv(): ExternalDelegationEnv {
+  const values: ExternalDelegationEnv = {};
+  for (const name of EXTERNAL_DELEGATION_ENV_NAMES) {
+    const value = process.env[name];
+    if (value !== undefined) values[name] = value;
+    delete process.env[name];
+  }
+  return values;
+}
+
+function restoreExternalDelegationEnv(values: ExternalDelegationEnv): void {
+  for (const name of EXTERNAL_DELEGATION_ENV_NAMES) {
+    const value = values[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -126,6 +158,11 @@ describe('server logger', () => {
 describe('server-v2 boot', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
+  let externalDelegationEnv: ExternalDelegationEnv;
+
+  beforeEach(() => {
+    externalDelegationEnv = takeExternalDelegationEnv();
+  });
 
   afterEach(async () => {
     if (server !== undefined) {
@@ -136,6 +173,7 @@ describe('server-v2 boot', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
     }
+    restoreExternalDelegationEnv(externalDelegationEnv);
   });
 
   it('boots agent-core-v2 and serves the basic /api/v1 routes', async () => {
@@ -240,6 +278,126 @@ describe('server-v2 boot', () => {
       prepareGate.resolve({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
       workspaceSync.resolve([]);
     }
+  });
+
+  it('waits for the session index before bootstrapping external delegation', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-index-'));
+    const workspace = join(home, 'workspace');
+    await mkdir(workspace);
+    await writeFile(
+      join(home, 'config.toml'),
+      [
+        'default_model = "stub"',
+        '',
+        '[providers.stub]',
+        'type = "openai"',
+        'base_url = "http://127.0.0.1:9999"',
+        'api_key = "stub"',
+        '',
+        '[models.stub]',
+        'provider = "stub"',
+        'model = "stub"',
+        'max_context_size = 1000',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const prepareGate = deferred<SessionIndexStatus>();
+    const prepare = vi.fn(() => prepareGate.promise);
+    const index = stubSessionIndex(prepare);
+    const get = vi.fn(index.get);
+
+    const starting = startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [[ISessionIndex, { ...index, get }]],
+      externalDelegation: {
+        principalId: 'example-principal',
+        sessionId: 'session_index_ready',
+        token: 'DELEGATION_SECRET',
+        sessionBootstrap: {
+          workspacePath: workspace,
+          modelAlias: 'stub',
+          thinkingEffort: 'high',
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    expect(get).not.toHaveBeenCalled();
+    prepareGate.resolve({
+      source: 'read-model',
+      state: 'ready',
+      generation: 1,
+      degradedCount: 0,
+    });
+    server = await starting;
+    expect(get).toHaveBeenCalledWith('session_index_ready');
+  });
+
+  it('disables external delegation when session index preparation fails', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-index-failure-'));
+    const workspace = join(home, 'workspace');
+    await mkdir(workspace);
+    const prepare = vi.fn(async () => {
+      throw new Error('injected index failure');
+    });
+    const index = stubSessionIndex(prepare);
+    const get = vi.fn(index.get);
+
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [[ISessionIndex, { ...index, get }]],
+      externalDelegation: {
+        principalId: 'example-principal',
+        sessionId: 'session_index_unavailable',
+        token: 'DELEGATION_SECRET',
+        sessionBootstrap: {
+          workspacePath: workspace,
+          modelAlias: 'stub',
+          thinkingEffort: 'high',
+        },
+      },
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+
+    expect(prepare).toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    const metaResponse = await authedFetch(server, base, '/api/v1/meta');
+    expect(await metaResponse.json()).toMatchObject({
+      code: 0,
+      data: {
+        external_delegation: {
+          state: 'disabled',
+          reason: 'session_index_unavailable',
+          message: expect.stringContaining('injected index failure'),
+        },
+      },
+    });
+    const edgeResponse = await authedFetch(
+      server,
+      base,
+      '/api/v2/sessions/session_index_unavailable/external-delegation/list',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-kiki-delegation-token': 'DELEGATION_SECRET',
+        },
+        body: '{}',
+      },
+    );
+    expect(await edgeResponse.json()).toMatchObject({
+      code: 40002,
+      msg: expect.stringContaining('session_index_unavailable'),
+    });
   });
 
   it('keeps the listener available when background session-index prepare fails', async () => {
@@ -380,7 +538,7 @@ describe('server-v2 boot', () => {
 
   it('does not shut down a host-injected telemetry service when server telemetry is disabled', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-host-telemetry-'));
-    await writeFile(join(home, 'config.toml'), 'telemetry = false\n', 'utf8');
+    await writeFile(join(home, 'config.toml'), '', 'utf8');
     const shutdown = vi.fn(async () => {});
 
     server = await startServer({
@@ -396,43 +554,6 @@ describe('server-v2 boot', () => {
     server = undefined;
 
     expect(shutdown).not.toHaveBeenCalled();
-  });
-
-  it('completes server cleanup when owned telemetry shutdown fails', async () => {
-    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-telemetry-failure-'));
-    const storage = new InMemoryStorageService();
-    const write = storage.write.bind(storage);
-    vi.spyOn(storage, 'write').mockImplementation(async (scope, key, data, options) => {
-      if (scope === 'telemetry') throw new Error('telemetry storage unavailable');
-      await write(scope, key, data, options);
-    });
-    const auth = {
-      _serviceBrand: undefined,
-      getCachedAccessToken: async () => {
-        throw new Error('telemetry auth unavailable');
-      },
-    } as unknown as IOAuthToolkit;
-
-    server = await startServer({
-      hostIdentity: TEST_HOST_IDENTITY,
-      host: '127.0.0.1',
-      port: 0,
-      homeDir: home,
-      logLevel: 'silent',
-      telemetry: true,
-      seeds: [
-        [IFileSystemStorageService, storage],
-        [IOAuthToolkit, auth],
-      ],
-    });
-    const core = server.core;
-    core.accessor.get(ITelemetryService).track('server_probe');
-
-    await server.close();
-    server = undefined;
-
-    expect(() => core.accessor.get(IBootstrapService)).toThrow();
-    expect(await listLiveServerInstances(home)).toEqual([]);
   });
 
   it.each(['listener', 'thread'] as const)(
@@ -473,13 +594,14 @@ describe('server-v2 boot', () => {
   );
 });
 
-describe('server-v2 boot — external delegation fail-open', () => {
+describe('server-v2 boot — external delegation startup', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
+  let externalDelegationEnv: ExternalDelegationEnv;
 
-  const originalPrincipal = process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
-  const originalSession = process.env['KIKI_EXTERNAL_SESSION_ID'];
-  const originalToken = process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
+  beforeEach(() => {
+    externalDelegationEnv = takeExternalDelegationEnv();
+  });
 
   afterEach(async () => {
     if (server !== undefined) {
@@ -490,31 +612,38 @@ describe('server-v2 boot — external delegation fail-open', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
     }
-    if (originalPrincipal === undefined) delete process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
-    else process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = originalPrincipal;
-    if (originalSession === undefined) delete process.env['KIKI_EXTERNAL_SESSION_ID'];
-    else process.env['KIKI_EXTERNAL_SESSION_ID'] = originalSession;
-    if (originalToken === undefined) delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
-    else process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'] = originalToken;
+    restoreExternalDelegationEnv(externalDelegationEnv);
   });
 
-  it('starts without the delegation edge when the env authority is incomplete', async () => {
+  it('rejects startup when the env authority is incomplete', async () => {
     process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = 'example-principal';
-    // SESSION_ID and TOKEN stay unset → the env authority is incomplete.
+    delete process.env['KIKI_EXTERNAL_SESSION_ID'];
+    delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-env-'));
-    server = await startServer({
+    await expect(startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
       homeDir: home,
       logLevel: 'silent',
-    });
-
-    const healthz = await fetch(`http://127.0.0.1:${server.port}/api/v1/healthz`);
-    expect(healthz.status).toBe(200);
+    })).rejects.toThrow(/authority configuration is incomplete/i);
+    expect(await listLiveServerInstances(home)).toEqual([]);
   });
 
-  it('starts without the delegation edge when the Session bootstrap fails', async () => {
+  it('rejects startup when the external permission mode is invalid', async () => {
+    process.env['KIKI_EXTERNAL_PERMISSION_MODE'] = 'elevated';
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-permission-'));
+    await expect(startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    })).rejects.toThrow(/permission mode is invalid/i);
+    expect(await listLiveServerInstances(home)).toEqual([]);
+  });
+
+  it('keeps the server available and exposes disabled delegation when bootstrap fails', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-bootstrap-'));
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -527,15 +656,54 @@ describe('server-v2 boot — external delegation fail-open', () => {
         sessionId: 'session-operator',
         token: 'DELEGATION_SECRET',
         sessionBootstrap: {
-          workspacePath: 'relative/workspace', // non-absolute → bootstrap throws
+          workspacePath: 'relative/workspace',
           modelAlias: 'grok-4.6',
           thinkingEffort: 'high',
         },
       },
     });
+    const base = `http://127.0.0.1:${server.port}`;
 
-    const healthz = await fetch(`http://127.0.0.1:${server.port}/api/v1/healthz`);
-    expect(healthz.status).toBe(200);
+    expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+    const metaResponse = await authedFetch(server, base, '/api/v1/meta');
+    const meta = await metaResponse.json() as {
+      code: number;
+      data: {
+        external_delegation: {
+          state: string;
+          reason?: string;
+          message?: string;
+        };
+      };
+    };
+    expect(meta).toMatchObject({
+      code: 0,
+      data: {
+        external_delegation: {
+          state: 'disabled',
+          reason: 'bootstrap_failed',
+          message: expect.stringMatching(/workspace path must be absolute/i),
+        },
+      },
+    });
+
+    const edgeResponse = await authedFetch(
+      server,
+      base,
+      '/api/v2/sessions/session-operator/external-delegation/list',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-kiki-delegation-token': 'DELEGATION_SECRET',
+        },
+        body: '{}',
+      },
+    );
+    expect(await edgeResponse.json()).toMatchObject({
+      code: 40002,
+      msg: expect.stringContaining('bootstrap_failed'),
+    });
   });
 });
 
@@ -667,6 +835,11 @@ describe('listenWithPortRetry', () => {
 describe('server-v2 boot — port retry', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
+  let externalDelegationEnv: ExternalDelegationEnv;
+
+  beforeEach(() => {
+    externalDelegationEnv = takeExternalDelegationEnv();
+  });
 
   afterEach(async () => {
     if (server !== undefined) {
@@ -677,6 +850,7 @@ describe('server-v2 boot — port retry', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
     }
+    restoreExternalDelegationEnv(externalDelegationEnv);
   });
 
   it('retries on port+1 and advertises the bound port in the instance registry', async () => {

@@ -24,18 +24,17 @@ export {
   showSettingsSelector,
 } from './config';
 export { handleSwarmCommand } from './swarm';
-export { handleFeedbackCommand, showMcpServers, showStatusReport, showUsage } from './info';
+export { showMcpServers, showStatusReport, showUsage } from './info';
 export { handlePluginsCommand } from './plugins';
 export { handleReloadCommand, handleReloadTuiCommand } from './reload';
 export { handleGoalCommand, parseGoalCommand, goalObjectiveLengthWarning } from './goal';
 export { goalArgumentCompletions } from './registry';
 export { handleForkCommand, handleInitCommand, handleTitleCommand } from './session';
 export { handleUndoCommand } from './undo';
-export { handleRemoteControlCommand, handleWebCommand } from './web';
+export { handleWebCommand } from './web';
 export {
   promptApiKey,
   promptCatalogProviderSelection,
-  promptFeedbackInput,
   promptLogoutProviderSelection,
   promptModelSelectionForCatalog,
   promptModelSelectionForOpenPlatform,

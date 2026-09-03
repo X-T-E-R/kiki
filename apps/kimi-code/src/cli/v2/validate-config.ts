@@ -43,14 +43,12 @@ import {
  * Top-level domains the v2 engine reads via `IConfigService.get` / `inspect`
  * without registering a schema (free-form values, structurally validated
  * nowhere): `defaultModel` / `defaultProvider` (`kosongConfig` default
- * pointers), `modelOverrides` (`llmRequester` / `profile`), and `telemetry`
- * (read by the CLI itself).
+ * pointers) and `modelOverrides` (`llmRequester` / `profile`).
  */
 const SCHEMALESS_DOMAINS: ReadonlySet<string> = new Set([
   'defaultModel',
   'defaultProvider',
   'modelOverrides',
-  'telemetry',
 ]);
 
 interface V2ConfigValidationIssue {

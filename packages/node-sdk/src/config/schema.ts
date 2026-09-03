@@ -360,7 +360,6 @@ export const KimiConfigSchema = z.object({
   image: ImageConfigSchema.optional(),
   modelCatalog: ModelCatalogConfigSchema.optional(),
   experimental: ExperimentalConfigSchema.optional(),
-  telemetry: z.boolean().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -409,7 +408,6 @@ export const KimiConfigPatchSchema = z
     image: ImageConfigPatchSchema.optional(),
     modelCatalog: ModelCatalogConfigPatchSchema.optional(),
     experimental: ExperimentalConfigPatchSchema.optional(),
-    telemetry: z.boolean().optional(),
   })
   .strict();
 

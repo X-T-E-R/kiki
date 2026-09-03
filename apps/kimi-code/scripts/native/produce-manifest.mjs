@@ -9,7 +9,7 @@
  * (produced by package.mjs across the 6 native-build matrix runners).
  *
  * Output:
- *   <input-dir>/manifest.json   ← consumed by install.sh / install.ps1
+ *   <input-dir>/manifest.json
  *
  */
 

@@ -25,7 +25,7 @@ import type {
   ToolInfo,
 } from '@moonshot-ai/agent-core-v2';
 import type { McpServerConfigView } from '@moonshot-ai/agent-core-v2/mcpCore/configView';
-import type { ContentPart } from '@moonshot-ai/kosong';
+import type { ContentPart } from '@moonshot-ai/agent-core-v2';
 import type { SessionWarning, UsageStatus } from '@moonshot-ai/protocol';
 
 import type { KimiConfig, KimiConfigPatch, McpServerConfig } from '../config';

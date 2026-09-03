@@ -56,13 +56,11 @@ workspace_node_modules=(
   "pkg_kap-server:/workspace/kimi-code/packages/kap-server/node_modules"
   "pkg_server-e2e:/workspace/kimi-code/packages/klient/node_modules"
   "pkg_kaos:/workspace/kimi-code/packages/kaos/node_modules"
-  "pkg_kosong:/workspace/kimi-code/packages/kosong/node_modules"
   "pkg_migration-legacy:/workspace/kimi-code/packages/migration-legacy/node_modules"
   "pkg_node-sdk:/workspace/kimi-code/packages/node-sdk/node_modules"
   "pkg_oauth:/workspace/kimi-code/packages/oauth/node_modules"
   "pkg_protocol:/workspace/kimi-code/packages/protocol/node_modules"
   "pkg_services:/workspace/kimi-code/packages/services/node_modules"
-  "pkg_telemetry:/workspace/kimi-code/packages/telemetry/node_modules"
 )
 
 mkdir -p "${STATE_ROOT}" "${KIMI_HOME_HOST}" "${REPORT_DIR_HOST}" "${NM_ROOT}"

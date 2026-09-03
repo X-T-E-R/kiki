@@ -6,7 +6,6 @@ export type SettingsSelection =
   | 'editor'
   | 'permission'
   | 'experiments'
-  | 'upgrade'
   | 'usage';
 
 const SETTINGS_OPTIONS: readonly ChoiceOption[] = [
@@ -36,11 +35,6 @@ const SETTINGS_OPTIONS: readonly ChoiceOption[] = [
     description: 'Turn experimental features on or off.',
   },
   {
-    value: 'upgrade',
-    label: 'Automatic updates',
-    description: 'Turn automatic CLI updates on or off.',
-  },
-  {
     value: 'usage',
     label: 'Usage',
     description: 'Show session tokens, context window, and plan quotas.',
@@ -54,7 +48,6 @@ function isSettingsSelection(value: string): value is SettingsSelection {
     value === 'editor' ||
     value === 'permission' ||
     value === 'experiments' ||
-    value === 'upgrade' ||
     value === 'usage'
   );
 }

@@ -46,7 +46,7 @@ Business events go through `ITelemetryService.track2` — never the low-level `t
 - All other events use `defineTelemetryEvent<P>({ owner, comment, properties })`. This includes Session/App-level events and events with any non-Agent emission path (e.g. `image_compress`, which the kap-server prompt routes emit through a session-scoped view). Per-event agent identity outside the Agent scope (e.g. `subagent_created`, `cron_scheduled`) stays as explicit `agent_id` business properties.
 
 - **Naming**: event names and property keys are snake_case (`tool_call`, `duration_ms`). Durations, counts, and sizes carry a unit suffix (`_ms` / `_count` / `_bytes`). Use specific names (`error_type`, not `error`).
-- **Privacy**: never register user content, prompts, or file paths as properties. `CloudAppender` redacts URLs, emails, tokens, and absolute paths from string values before events leave the process, but that is a safety net, not a license.
+- **Privacy**: never register user content, prompts, or file paths as properties.
 - **Stability**: registered event names and property keys are wire data consumed by dashboards — treat renames as breaking changes.
 - The registry is the single source of truth; `test/app/telemetry/events.test.ts` enforces the naming conventions.
 

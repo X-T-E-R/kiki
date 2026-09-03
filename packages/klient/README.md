@@ -1,6 +1,6 @@
 # @moonshot-ai/klient
 
-Contract-driven client SDK for the agent-core-v2 engine. One facade, two
+Contract-driven client SDK for the agent-core-v2 engine. One facade, three
 transports — you pick the transport **once** at creation; everything after
 that is byte-identical:
 
@@ -32,9 +32,9 @@ facade (klient.global.*, klient.session(id).*, session.agent(id).*, *.events.*)
    ↓ single-object params, zod-validated
 contract (procedure schemas, shared by all transports)
    ↓
-KlientChannel { call, listen }   ← the only transport SPI
+KlientChannel { call, stream, listen }   ← the only transport SPI
    ↓
-ipc │ memory
+http │ ipc │ memory
 ```
 
 - **Facade** — aggregated methods, no engine service tokens, no
@@ -42,7 +42,7 @@ ipc │ memory
   the facade is the public contract.
   - `klient.global.*` — `sessions.*` (incl. `create`), `workspaces.*`,
     `config.*`, `providers.*`, `models.*`, `catalog.*`, `auth.*`, `flags.*`,
-    `plugins.*`, `hostFs.*`, `env()`.
+    `plugins.*`, `hostFs.*`, `files.*`, `env()`.
   - `klient.session(id).*` — `get/setTitle/update/status/close/archive/
     restore/fork/createChild`, `approvals.*`, `questions.*`,
     `interactions.*`, `agents()`.
@@ -65,16 +65,16 @@ ipc │ memory
 
 | entry | options | events |
 |---|---|---|
+| `@moonshot-ai/klient/http` | `{ endpoint, token, fetch?, WebSocket? }` | authenticated `/api/klient/events` WebSocket |
 | `@moonshot-ai/klient/ipc` | `{ socketPath, token? }` | same socket |
 | `@moonshot-ai/klient/memory` | `{ scope }` (a bootstrapped engine app scope) | direct emitter/bus subscription |
 
-`ipc` and `memory` share one in-process dispatcher, so they behave identically
-by construction; `memory` additionally JSON round-trips every value so results
-cross the same JSON boundary a socket transport would impose. The IPC host
-ships with the transport: `serveKlientIpc({ scope, socketPath })`.
+All three transports use the same dispatcher contract and JSON frame codec.
+The memory transport JSON-round-trips values in process, kap-server hosts the
+HTTP projection, and the IPC host ships as `serveKlientIpc({ scope, socketPath })`.
 
-The same conformance suite runs against both transports in this
-package's tests (`test/helpers/conformance.ts` — one test file per transport).
+The same conformance suite runs against all three transports in this package's
+tests (`test/helpers/conformance.ts` — one test file per transport).
 
 This package also hosts the e2e suites (the retired `server-e2e` package was
 folded in here):
@@ -89,11 +89,11 @@ rules.
 
 ## Scope
 
-The facade covers the global (app), session, and agent surfaces shown above.
-What it deliberately leaves out (for now): onWill/hook-style interception
-(engine hooks are in-process `OrderedHookSlot`s and not wire-exposable), file
-upload (v1 multipart REST only), and the terminal surface (v1 REST + WS
-only).
+The facade covers the global (app), session, and agent surfaces shown above,
+including file save/get/delete with bytes encoded across the JSON boundary.
+It deliberately leaves out onWill/hook-style interception (engine hooks are
+in-process `OrderedHookSlot`s and not wire-exposable) and the PTY terminal
+surface, which remains on the legacy REST + WebSocket API.
 
 ## Smoke check
 

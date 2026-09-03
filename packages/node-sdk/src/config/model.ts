@@ -2,7 +2,7 @@ import {
   BUDGET_THINKING_EFFORTS,
   matchKnownAnthropicModelProfile,
   matchUnknownClaudeProfile,
-} from '@moonshot-ai/kosong/providers/anthropic-profile';
+} from '@moonshot-ai/agent-core-v2/kosong/provider/bases/anthropic/anthropic-profile';
 
 import { ErrorCodes, KimiError } from '../errors';
 

@@ -1,7 +1,11 @@
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { metaResponseSchema } from '../protocol/rest-meta';
-import type { MetaFeature, MetaResponse } from '../protocol/rest-meta';
+import type {
+  ExternalDelegationState,
+  MetaFeature,
+  MetaResponse,
+} from '../protocol/rest-meta';
 
 interface RouteHost {
   get(
@@ -25,6 +29,7 @@ export interface MetaRouteOptions {
    * the web UI can skip the token prompt and connect without a credential.
    */
   readonly dangerousBypassAuth: boolean;
+  readonly externalDelegation: ExternalDelegationState;
   /**
    * Custom browser tab title for this instance (the CLI's `--web-title`).
    * Surfaced as `web_title` in the `/meta` payload; instance-level and frozen
@@ -64,6 +69,7 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
     started_at: opts.startedAt,
     open_in_apps: [],
     dangerous_bypass_auth: opts.dangerousBypassAuth,
+    external_delegation: Object.freeze(opts.externalDelegation),
     backend: 'v2' as const,
     web_title: opts.webTitle,
   });

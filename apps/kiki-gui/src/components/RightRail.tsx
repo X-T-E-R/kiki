@@ -19,6 +19,7 @@ import {
   writeLayoutPreferences,
 } from '../lib/layoutPrefs';
 import { sortTasks } from '../lib/sorting';
+import { usageSessionDeepLink } from '../lib/usageV2';
 import {
   agentChildren,
   agentSiblings,
@@ -724,7 +725,9 @@ export function RightRail({
             <div className="pt-1">
               <button
                 type="button"
-                onClick={() => void navigate('/usage')}
+                onClick={() => void navigate(
+                  session !== undefined ? usageSessionDeepLink(session.id) : '/usage',
+                )}
                 className="text-[10.5px] font-medium text-accent transition-colors hover:text-accent-deep"
               >
                 {t('usage.viewAll')}

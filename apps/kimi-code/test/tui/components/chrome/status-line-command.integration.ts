@@ -36,7 +36,6 @@ const baseState: AppState = {
   theme: 'dark',
   editorCommand: null,
   notifications: { enabled: true, condition: 'unfocused' },
-  upgrade: { autoInstall: true },
   availableModels: {},
   availableProviders: {},
   mcpServersSummary: null,

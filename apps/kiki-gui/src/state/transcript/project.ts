@@ -833,7 +833,7 @@ function subagentBlocksFromSnapshot(
         parentToolCallId: existing?.parentToolCallId,
         parentTurnId:
           existing?.parentTurnId ?? (timestampMs(startedAt) === undefined ? previousTurnId : undefined),
-        name: task.name ?? existing?.name ?? task.agentId,
+        name: task.name ?? task.subagentName ?? task.agentId,
         description: existing?.description ?? task.description,
         instruction: existing?.instruction,
         model: existing?.model,
@@ -911,7 +911,7 @@ function subagentBlocksFromSnapshot(
             parentAgentId,
             parentToolCallId: frame.toolCallId,
             parentTurnId: item.turnId,
-            name: task?.name ?? existing?.name ?? ref.agentId,
+            name: task?.name ?? task?.subagentName ?? existing?.name ?? ref.agentId,
             description: existing?.description ?? task?.description ?? instruction,
             instruction: instruction ?? existing?.instruction,
             model: existing?.model,

@@ -27,7 +27,6 @@ default_model = "kimi-code/k3"
 default_permission_mode = "manual"
 default_plan_mode = false
 merge_all_available_skills = true
-telemetry = true
 
 [providers."managed:kimi-code"]
 type = "kimi"
@@ -105,7 +104,6 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `extra_agent_dirs` | `array<string>` | — | Extra custom agent search directories, layered on top of the default directories |
 | `disabled_builtin_profiles` | `array<string>` | `[]` | Built-in profile names to remove from subagent discovery and dispatch: `agent`, `coder`, `explore`, or `plan`. Dispatching a disabled profile fails as an unknown role. Disabling `agent` leaves the main agent's default binding available; a same-name file profile no longer needs `override: true` when its built-in is disabled |
 | `builtin_product_skills` | `boolean` | `true` | Whether the built-in skills that document Kimi Code itself are offered to the model: `update-config`, `custom-theme`, `mcp-config`, `check-kimi-code-docs`, and `import-from-cc-codex`. Turning them off trims their names and descriptions from the system prompt, at the cost of the guided flows for those tasks |
-| `telemetry` | `boolean` | `true` | Whether anonymous telemetry is enabled; disabled only when explicitly set to `false` |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
@@ -536,7 +534,6 @@ Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a c
 | `[editor].command` | `string` | `""` | External editor command for composing long input; empty falls back to `$VISUAL` / `$EDITOR` |
 | `[notifications].enabled` | `boolean` | `true` | Whether desktop notifications are sent |
 | `[notifications].notification_condition` | `string` | `unfocused` | When to notify: `unfocused` (only when the terminal is not focused) or `always` |
-| `[upgrade].auto_install` | `boolean` | `true` | Whether new versions are installed automatically |
 | `[status_line].items` | `string[]` | `[]` | Built-in slots to show on the first footer line and their order: `mode`, `goal`, `model`, `tasks`, `cwd`, `git`, `tips`. Unset keeps the default layout; unknown ids are skipped with a warning |
 | `[status_line].command` | `string` | `""` | Custom status line command. Its first stdout line replaces the first footer line, with a JSON snapshot (model, cwd, git branch, permission mode, plan mode, context usage, session id, version) passed on stdin. Runs are capped at 300ms and throttled to once per second; failures fall back to the built-in layout |
 
@@ -553,9 +550,6 @@ command = "" # empty uses $VISUAL / $EDITOR
 [notifications]
 enabled = true
 notification_condition = "unfocused" # "unfocused" | "always"
-
-[upgrade]
-auto_install = true
 
 # [status_line]
 # items = ["mode", "goal", "model", "tasks", "cwd", "git", "tips"]
