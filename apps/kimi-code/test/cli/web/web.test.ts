@@ -656,12 +656,12 @@ describe('Kiki desktop inheritance source', () => {
 describe('server web asset directory resolution', () => {
   it('uses extracted SEA web assets when available', async () => {
     const { resolveServerWebAssetsDir } = await import('#/cli/sub/web/run');
-    expect(resolveServerWebAssetsDir('/cache/kimi/dist-web')).toBe('/cache/kimi/dist-web');
+    expect(resolveServerWebAssetsDir('/cache/kimi/dist/web')).toBe('/cache/kimi/dist/web');
   });
 
-  it('falls back to package dist-web outside SEA mode', async () => {
+  it('falls back to package dist/web outside SEA mode', async () => {
     const { resolveServerWebAssetsDir } = await import('#/cli/sub/web/run');
-    expect(resolveServerWebAssetsDir(null)).toMatch(/[/\\]dist-web$/);
+    expect(resolveServerWebAssetsDir(null)).toMatch(/[/\\]dist[/\\]web$/);
   });
 
   it('returns the assets dir when it is built, dev mode or not', async () => {

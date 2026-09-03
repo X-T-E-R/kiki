@@ -1,8 +1,7 @@
 {
   // Mirror the repo root tsconfig; @moonshot-ai/protocol is consumed through
-  // source `exports`, so its sources are part of this program too (same trick
-  // as apps/kimi-inspect with agent-core-v2). Only the environment (DOM + vite
-  // client types) differs.
+  // source `exports`, so its sources are part of this program too. Only the
+  // environment (DOM + vite client types) differs.
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2023", "DOM", "DOM.Iterable"],

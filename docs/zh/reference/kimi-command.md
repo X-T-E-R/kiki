@@ -133,7 +133,7 @@ kimi -p "List changed files" --output-format stream-json
 
 ## 子命令
 
-`kimi` 提供以下子命令：`login`（非交互式登录）、`acp`（ACP IDE 模式）、`web`（前台运行本地 REST/WebSocket/web 服务并打开 web UI）、`doctor`（校验配置文件）、`export`（导出会话）、`migrate`（迁移旧版数据）、`upgrade`（检查更新）、`provider`（管理供应商）。
+`kimi` 提供以下子命令：`login`（非交互式登录）、`acp`（ACP IDE 模式）、`web`（前台运行本地 REST/WebSocket/web 服务并打开 Kiki GUI）、`doctor`（校验配置文件）、`export`（导出会话）、`migrate`（迁移旧版数据）、`upgrade`（检查更新）、`provider`（管理供应商）。
 
 ### `kimi login`
 
@@ -155,7 +155,7 @@ kimi acp
 
 ### `kimi web`
 
-在当前终端前台运行本地 Kimi 服务 —— 同一个进程同时挂载 REST + WebSocket API 与 web UI —— 并在服务就绪后用默认浏览器打开 web UI。命令会一直挂在终端，直到收到 `SIGINT` / `SIGTERM`（如 `Ctrl-C`）时干净退出。
+在当前终端前台运行本地 Kimi 服务 —— 同一个进程同时挂载 REST + WebSocket API 与 Kiki GUI —— 并在服务就绪后用默认浏览器打开 Kiki GUI。命令会一直挂在终端，直到收到 `SIGINT` / `SIGTERM`（如 `Ctrl-C`）时干净退出。
 
 服务运行时，`GET /openapi.json` 会返回 REST OpenAPI 文档，`GET /asyncapi.json` 会返回本地 WebSocket 协议的 AsyncAPI 文档。用 API 驱动会话的完整流程见[本地服务与 API](../guides/server.md)，协议细节见[服务 API](./server-api.md)。
 
@@ -174,10 +174,10 @@ kimi web --port 58628    # 指定绑定端口
 | `--allowed-host <host...>` | DNS 重绑定检查额外允许的 Host 头，可重复或逗号分隔 |
 | `--log-level <level>` | 按所选级别开启服务日志；默认不输出 |
 | `--debug-endpoints` | 挂载 `/api/v1/debug/*` 调试路由（默认关闭） |
-| `--dangerous-bypass-auth` | 关闭所有 REST 与 WebSocket 路由的 bearer token 鉴权，使 web UI 无需 token 即可连接；仅用于可信网络或自有鉴权代理之后 |
+| `--dangerous-bypass-auth` | 关闭所有 REST 与 WebSocket 路由的 bearer token 鉴权，使 Kiki GUI 无需 token 即可连接；仅用于可信网络或自有鉴权代理之后 |
 | `--no-open` | 就绪后不自动打开浏览器 |
 
-`kimi web` 默认只绑定本机 loopback 地址，并在启动横幅中打印 bearer token；web UI 通过 URL 的 `#token=` 片段自动完成鉴权。
+`kimi web` 默认只绑定本机 loopback 地址，并在启动横幅中打印 bearer token；Kiki GUI 通过 URL 的 `#token=` 片段自动完成鉴权。
 
 ::: info 提示
 `kimi server` 命令树已废弃：任何 `kimi server …` 调用（含全部旧子命令）只会打印弃用提示并以退出码 1 结束，请改用 `kimi web`。唯一的例外是 `kimi server kill`，它仍然可用，仅用于停止 0.28.0 之前版本启动的服务。该提示将在 Kimi Code 下个大版本移除。
@@ -265,32 +265,6 @@ kimi migrate
 ```
 
 完整迁移说明见[从 kimi-cli 迁移](../guides/migration.md)。
-
-### `kimi vis`
-
-在浏览器中启动会话可视化工具，直观查看一次会话的全过程。命令会启动一个指向本地会话的进程内服务器，打印访问地址并打开浏览器，持续运行直到你按下 `Ctrl-C`。
-
-```sh
-kimi vis [sessionId] [options]
-```
-
-| 参数 / 选项 | 说明 |
-| --- | --- |
-| `sessionId` | 直接打开指定会话的可视化页面。省略时打开列出所有会话的首页 |
-| `--port <number>` | 绑定的端口。默认自动挑选一个空闲端口 |
-| `--host <host>` | 绑定的主机。默认 `127.0.0.1` |
-| `--no-open` | 不自动打开浏览器，仅打印访问地址 |
-
-```sh
-# 启动可视化工具并在浏览器中打开首页
-kimi vis
-
-# 直接打开指定会话
-kimi vis 01HZ...XYZ
-
-# 绑定固定主机和端口且不打开浏览器（例如在远程主机上）
-kimi vis --host 0.0.0.0 --port 8123 --no-open
-```
 
 ### `kimi provider`
 

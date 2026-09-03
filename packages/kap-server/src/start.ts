@@ -186,7 +186,7 @@ export interface ServerStartOptions {
   readonly skillDirs?: readonly string[];
   readonly userSkillDir?: string;
   /**
-   * Directory of the built Kimi web UI (`dist-web`). When set, `GET /` and the
+   * Directory of the built Kimi web UI. When set, `GET /` and the
    * `/*` SPA fallback serve these assets (auth-exempt, matching v1). Omit to run
    * the API server without the web UI.
    */

@@ -28,7 +28,6 @@ Start at the owner for the feature, then follow its links to implementation and 
 | Transcript contract and projections | [`packages/transcript/AGENTS.md`](packages/transcript/AGENTS.md) | [`docs/en/guides/sessions.md`](docs/en/guides/sessions.md) |
 | CLI and terminal UI | [`apps/kimi-code/AGENTS.md`](apps/kimi-code/AGENTS.md) | [`apps/kimi-code/README.md`](apps/kimi-code/README.md), [`docs/en/reference/kimi-command.md`](docs/en/reference/kimi-command.md) |
 | Kiki GUI runtime client | [`apps/kiki-gui/package.json`](apps/kiki-gui/package.json) and adjacent source/tests | [`docs/en/guides/kiki-runtime.md`](docs/en/guides/kiki-runtime.md), [`apps/kiki-gui/docs/server-heartbeat.md`](apps/kiki-gui/docs/server-heartbeat.md) |
-| Inspector and debug RPC UI | [`apps/kimi-inspect/AGENTS.md`](apps/kimi-inspect/AGENTS.md) | [`apps/kimi-inspect/README.md`](apps/kimi-inspect/README.md) |
 | Embedded persistence | [`packages/minidb/AGENTS.md`](packages/minidb/AGENTS.md) | [`packages/minidb/README.md`](packages/minidb/README.md) |
 
 For a new deep feature, add or update the nearest owner entry rather than growing this table into a second architecture document.
