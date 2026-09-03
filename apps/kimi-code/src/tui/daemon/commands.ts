@@ -34,8 +34,15 @@ export interface ResolvedDaemonCommand {
 }
 
 export interface DaemonSkillCommand {
+  readonly commandName: string;
   readonly name: string;
   readonly description: string;
+}
+
+export interface DaemonSlashInput {
+  readonly token: string;
+  readonly rawToken: string;
+  readonly args: string;
 }
 
 const SUPPORTED_COMMANDS = [
@@ -96,6 +103,17 @@ for (const definition of DAEMON_COMMANDS) {
   for (const alias of definition.aliases) COMMAND_BY_TOKEN.set(alias, definition);
 }
 
+export function parseDaemonSlashInput(text: string): DaemonSlashInput {
+  const body = text.slice(1);
+  const tokenEnd = body.search(/\s/u);
+  const rawToken = tokenEnd === -1 ? body : body.slice(0, tokenEnd);
+  return {
+    token: rawToken.toLowerCase(),
+    rawToken,
+    args: tokenEnd === -1 ? '' : body.slice(tokenEnd).trim(),
+  };
+}
+
 export function resolveDaemonCommand(
   token: string,
   args: string,
@@ -129,7 +147,7 @@ export function validateDaemonCommandArgs(command: ResolvedDaemonCommand): strin
 
 export function daemonAutocompleteCommands(
   skills: ReadonlyMap<string, DaemonSkillCommand>,
-  agentProfiles: ReadonlySet<string>,
+  agentProfiles: ReadonlyMap<string, string>,
 ): SlashAutocompleteCommand[] {
   const builtins = DAEMON_COMMANDS.map((definition) => ({
     name: definition.name,
@@ -138,19 +156,19 @@ export function daemonAutocompleteCommands(
     argumentHint: definition.argumentHint,
   }));
   const dynamic = [
-    ...[...skills].map(([commandName, skill]) => ({
-      name: commandName,
+    ...[...skills.values()].map((skill) => ({
+      name: skill.commandName,
       aliases: [],
       description: skill.description,
       argumentHint: '[arguments]',
     })),
-    ...[...agentProfiles].map((name) => ({
+    ...[...agentProfiles.values()].map((name) => ({
       name,
       aliases: [],
       description: `Run a prompt with the ${name} agent profile`,
       argumentHint: '<prompt>',
     })),
-  ].filter((command) => !COMMAND_BY_TOKEN.has(command.name));
+  ].filter((command) => !COMMAND_BY_TOKEN.has(command.name.toLowerCase()));
   return [...builtins, ...dynamic];
 }
 

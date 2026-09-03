@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   daemonAutocompleteCommands,
   daemonCommandHelp,
+  parseDaemonSlashInput,
   resolveDaemonCommand,
   validateDaemonCommandArgs,
 } from '#/tui/daemon/commands';
@@ -44,10 +45,27 @@ describe('daemon command registry', () => {
     );
   });
 
+  it('canonicalizes the token without collapsing argument whitespace', () => {
+    expect(parseDaemonSlashInput('/SkIlL:ReviewSkill   first  \t second   ')).toEqual({
+      token: 'skill:reviewskill',
+      rawToken: 'SkIlL:ReviewSkill',
+      args: 'first  \t second',
+    });
+  });
+
   it('installs supported, disabled, skill, and agent commands in autocomplete', () => {
     const commands = daemonAutocompleteCommands(
-      new Map([['skill:review', { name: 'review', description: 'Review changes' }]]),
-      new Set(['reviewer']),
+      new Map([
+        [
+          'skill:reviewskill',
+          {
+            commandName: 'skill:ReviewSkill',
+            name: 'ReviewSkill',
+            description: 'Review changes',
+          },
+        ],
+      ]),
+      new Map([['reviewer', 'Reviewer']]),
     );
 
     expect(commands).toEqual(
@@ -58,8 +76,8 @@ describe('daemon command registry', () => {
           aliases: ['config'],
           description: expect.stringContaining('disabled'),
         }),
-        expect.objectContaining({ name: 'skill:review', description: 'Review changes' }),
-        expect.objectContaining({ name: 'reviewer', argumentHint: '<prompt>' }),
+        expect.objectContaining({ name: 'skill:ReviewSkill', description: 'Review changes' }),
+        expect.objectContaining({ name: 'Reviewer', argumentHint: '<prompt>' }),
       ]),
     );
     expect(daemonCommandHelp()).toContain('Supported:');

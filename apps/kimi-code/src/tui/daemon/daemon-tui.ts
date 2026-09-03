@@ -38,6 +38,7 @@ import { DaemonClient } from './client';
 import {
   daemonAutocompleteCommands,
   daemonCommandHelp,
+  parseDaemonSlashInput,
   resolveDaemonCommand,
   validateDaemonCommandArgs,
   type DaemonSkillCommand,
@@ -82,7 +83,7 @@ export class DaemonTUI {
   private focusedControllerDispose: (() => void) | undefined;
   private activeInteractionId: string | undefined;
   private readonly skillCommands = new Map<string, DaemonSkillCommand>();
-  private readonly agentProfileCommands = new Set<string>();
+  private readonly agentProfileCommands = new Map<string, string>();
   private focusedAgentId = 'main';
   private stopped = false;
 
@@ -201,6 +202,9 @@ export class DaemonTUI {
 
   private setupAutocomplete(): void {
     const commands = daemonAutocompleteCommands(this.skillCommands, this.agentProfileCommands);
+    const skillCommandNames = new Set(
+      [...this.skillCommands.values()].map((skill) => skill.commandName),
+    );
     this.state.editor.setAutocompleteProvider(
       new FileMentionProvider(
         commands,
@@ -208,7 +212,7 @@ export class DaemonTUI {
         null,
         this.startup.additionalDirs ?? [],
         () => this.state.appState.inputMode,
-        new Set(this.skillCommands.keys()),
+        skillCommandNames,
       ),
     );
     this.state.editor.setArgumentHints(
@@ -222,14 +226,14 @@ export class DaemonTUI {
         }),
       ),
     );
-    this.state.editor.setSkillCommandNames(new Set(this.skillCommands.keys()));
+    this.state.editor.setSkillCommandNames(skillCommandNames);
   }
 
   private async refreshAgentCommands(): Promise<void> {
     const profiles = await this.client.listAgentProfiles();
     this.agentProfileCommands.clear();
     for (const profile of profiles.items) {
-      if (!profile.disabled) this.agentProfileCommands.add(profile.name);
+      if (!profile.disabled) this.agentProfileCommands.set(profile.name.toLowerCase(), profile.name);
     }
     this.setupAutocomplete();
   }
@@ -247,7 +251,8 @@ export class DaemonTUI {
         continue;
       }
       const commandName = skill.source === 'builtin' ? skill.name : `skill:${skill.name}`;
-      this.skillCommands.set(commandName, {
+      this.skillCommands.set(commandName.toLowerCase(), {
+        commandName,
         name: skill.name,
         description: skill.description,
       });
@@ -360,9 +365,7 @@ export class DaemonTUI {
   }
 
   private async handleSlash(text: string): Promise<void> {
-    const [rawToken = '', ...rest] = text.slice(1).split(/\s+/u);
-    const token = rawToken.toLowerCase();
-    const args = rest.join(' ');
+    const { token, rawToken, args } = parseDaemonSlashInput(text);
     const resolved = resolveDaemonCommand(token, args);
     if (resolved === undefined) {
       const skill = this.skillCommands.get(token);
@@ -375,15 +378,16 @@ export class DaemonTUI {
         );
         return;
       }
-      if (this.agentProfileCommands.has(token)) {
+      const profile = this.agentProfileCommands.get(token);
+      if (profile !== undefined) {
         if (args === '') {
-          this.showStatus(`/${token} requires a prompt.`, 'error');
+          this.showStatus(`/${profile} requires a prompt.`, 'error');
           return;
         }
-        await this.sendPrompt(args, token);
+        await this.sendPrompt(args, profile);
         return;
       }
-      this.showStatus(`Unknown daemon TUI command: /${token}`, 'error');
+      this.showStatus(`Unknown daemon TUI command: /${rawToken}`, 'error');
       return;
     }
     if ('status' in resolved) {
@@ -822,7 +826,7 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       additionalDirs: [...(input.additionalDirs ?? [])],
       sessionId: '',
       permissionMode,
-      planMode: input.cliOptions.plan,
+      planMode: false,
       agentProfile: input.agentProfile,
       agentFiles: input.cliOptions.agentFiles,
       inputMode: 'prompt',
@@ -855,7 +859,7 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       continueLast: input.cliOptions.continue,
       yolo: input.cliOptions.yolo,
       auto: input.cliOptions.auto,
-      plan: input.cliOptions.plan,
+      plan: false,
       model: input.cliOptions.model,
       thinking: input.cliOptions.thinking,
       agentProfile: input.agentProfile,

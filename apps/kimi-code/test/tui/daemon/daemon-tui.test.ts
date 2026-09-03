@@ -7,7 +7,7 @@ import { DaemonTUI } from '#/tui/daemon/daemon-tui';
 
 const created: DaemonTUI[] = [];
 
-function driver() {
+function driver(plan = false) {
   const tui = new DaemonTUI(
     { url: 'http://127.0.0.1:57580', token: 'secret' },
     {
@@ -16,7 +16,7 @@ function driver() {
         continue: false,
         yolo: false,
         auto: false,
-        plan: false,
+        plan,
         model: 'model-a',
         thinking: 'off',
         agentFiles: [],
@@ -36,8 +36,11 @@ function driver() {
   };
   const internal = tui as unknown as {
     controller: typeof controller;
-    skillCommands: Map<string, { name: string; description: string }>;
-    agentProfileCommands: Set<string>;
+    skillCommands: Map<
+      string,
+      { commandName: string; name: string; description: string }
+    >;
+    agentProfileCommands: Map<string, string>;
     client: {
       listModels: ReturnType<typeof vi.fn>;
       listAgentProfiles: ReturnType<typeof vi.fn>;
@@ -54,6 +57,8 @@ function driver() {
     };
     handleInput(text: string): Promise<void>;
     handleSlash(text: string): Promise<void>;
+    refreshAgentCommands(): Promise<void>;
+    refreshSkillCommands(sessionId: string): Promise<void>;
     respondApproval(block: unknown, response: unknown): Promise<void>;
     respondQuestion(block: unknown, response: unknown): Promise<void>;
     showStatus: ReturnType<typeof vi.fn>;
@@ -116,6 +121,17 @@ describe('DaemonTUI commands', () => {
     );
   });
 
+  it('ignores plan mode in daemon startup and prompt submissions', async () => {
+    const { tui, internal, controller } = driver(true);
+
+    await internal.handleInput('hello');
+
+    expect(tui.state.appState.planMode).toBe(false);
+    expect(controller.sendPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'hello', planMode: false }),
+    );
+  });
+
   it('validates agent profiles and applies permission aliases through REST', async () => {
     const { tui, internal } = driver();
 
@@ -154,24 +170,49 @@ describe('DaemonTUI commands', () => {
     expect(controller.sendPrompt).not.toHaveBeenCalled();
   });
 
-  it('passes only confirmed skill and agent-profile slash commands', async () => {
+  it('matches mixed-case catalog slashes without collapsing argument whitespace', async () => {
     const { internal, controller } = driver();
-    internal.skillCommands.set('skill:review', {
-      name: 'review',
-      description: 'Review changes',
+    internal.client.listSkills.mockResolvedValue({
+      skills: [
+        {
+          name: 'ReviewSkill',
+          description: 'Review changes',
+          source: 'user',
+        },
+      ],
     });
-    internal.agentProfileCommands.add('reviewer');
+    internal.client.listAgentProfiles.mockResolvedValue({
+      items: [
+        {
+          name: 'Reviewer',
+          source: 'user',
+          workspace_id: 'workspace-1',
+          path: 'reviewer.md',
+          description: 'Review changes',
+          disabled: false,
+          routes: [],
+        },
+      ],
+    });
+    await internal.refreshSkillCommands('session-1');
+    await internal.refreshAgentCommands();
 
-    await internal.handleSlash('/skill:review staged changes');
-    await internal.handleSlash('/reviewer inspect tests');
+    expect(internal.skillCommands.get('skill:reviewskill')).toMatchObject({
+      commandName: 'skill:ReviewSkill',
+      name: 'ReviewSkill',
+    });
+    expect(internal.agentProfileCommands.get('reviewer')).toBe('Reviewer');
+
+    await internal.handleSlash('/skill:ReviewSkill   staged  \t changes   ');
+    await internal.handleSlash('/REVIEWER   inspect  \t tests   ');
 
     expect(internal.client.activateSkill).toHaveBeenCalledWith(
       'session-1',
-      'review',
-      'staged changes',
+      'ReviewSkill',
+      'staged  \t changes',
     );
     expect(controller.sendPrompt).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'inspect tests', profile: 'reviewer' }),
+      expect.objectContaining({ text: 'inspect  \t tests', profile: 'Reviewer' }),
     );
   });
 

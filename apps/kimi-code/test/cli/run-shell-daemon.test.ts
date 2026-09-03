@@ -187,6 +187,17 @@ describe('runShell daemon experiment', () => {
     });
   });
 
+  it('ignores --plan only on the experimental daemon path and reports it', async () => {
+    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '1');
+
+    await runShell({ ...options, plan: true }, '1.0.0');
+
+    expect(mocks.daemonConstructor.mock.calls[0]?.[1]).toMatchObject({
+      cliOptions: { plan: false },
+      startupNotice: expect.stringContaining('--plan option was ignored'),
+    });
+  });
+
   it('uses the shared-home ensure entry when no daemon is already reachable', async () => {
     vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '1');
     mocks.discover.mockResolvedValue(null);

@@ -71,13 +71,13 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
       (await ensureDaemon({ homeDir, workspacePath: workDir }));
     startupTrace('daemon:connected');
     const daemonTui = new DaemonTUI(connection, {
-      cliOptions: opts,
+      cliOptions: { ...opts, plan: false },
       agentProfile,
       additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
       tuiConfig,
       version,
       workDir,
-      startupNotice: daemonStartupNotice(configWarning),
+      startupNotice: daemonStartupNotice(configWarning, opts.plan),
     });
     tui = daemonTui;
     closeOnStartFailure = () => daemonTui.close();
@@ -231,8 +231,13 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
-function daemonStartupNotice(configWarning: string | undefined): string {
+function daemonStartupNotice(configWarning: string | undefined, planIgnored: boolean): string {
   const notice =
     'Experimental daemon TUI is enabled. Unsupported: settings/config, experiments, rename, authentication, exports, tasks, goals, plugins, plan/theme/editor changes, MCP/status/usage, undo, and web. Run /help for the complete list. Set KIMI_CODE_EXPERIMENTAL_TUI_DAEMON=0 and remove experimental.tui_daemon from config to return to the default TUI.';
-  return configWarning === undefined ? notice : `${configWarning}\n${notice}`;
+  const planNotice = planIgnored
+    ? '\nThe --plan option was ignored because plan mode is disabled in daemon TUI.'
+    : '';
+  return configWarning === undefined
+    ? `${notice}${planNotice}`
+    : `${configWarning}\n${notice}${planNotice}`;
 }
