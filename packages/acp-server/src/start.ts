@@ -26,6 +26,7 @@ import {
   IAppendLogStore,
   IHostEnvironment,
   ISessionContext,
+  ISessionIndex,
   ISessionIndexMirror,
   IWorkspaceInstanceManager,
   logSeed,
@@ -119,6 +120,7 @@ export async function runAcpServerWithStream(
     },
     [...logSeed(logging), ...(opts.extraSeeds ?? [])],
   );
+  await core.accessor.get(ISessionIndex).prepare();
 
   // The klient dispatches against the same app scope — calls and events stay
   // in-process but observe wire-shaped (JSON-cloned) data. The klient does
