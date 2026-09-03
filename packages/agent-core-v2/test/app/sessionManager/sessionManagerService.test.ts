@@ -101,7 +101,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -129,7 +129,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -170,7 +170,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -208,7 +208,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -246,7 +246,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -284,7 +284,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -322,7 +322,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -359,7 +359,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -397,7 +397,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {

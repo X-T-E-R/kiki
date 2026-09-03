@@ -83,7 +83,8 @@ const SESSION_NOT_FOUND_CODE = 40404;
 
 function isSessionNotFound(error: unknown): boolean {
   return (
-    (error instanceof RPCError && error.code === SESSION_NOT_FOUND_CODE) ||
+    (error instanceof RPCError &&
+      (error.code === SESSION_NOT_FOUND_CODE || error.reason === ErrorCodes.SESSION_NOT_FOUND)) ||
     (isError2(error) && error.code === ErrorCodes.SESSION_NOT_FOUND)
   );
 }
@@ -358,6 +359,11 @@ export class AcpServer {
    * `invalid_params` (-32602).
    */
   async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+    const acpSession = this.sessions.get(params.sessionId);
+    if (acpSession !== undefined) {
+      this.sessions.delete(params.sessionId);
+      await acpSession.dispose();
+    }
     try {
       await this.klient.session(params.sessionId).delete();
     } catch (error) {
@@ -368,11 +374,6 @@ export class AcpServer {
         );
       }
       throw error;
-    }
-    const acpSession = this.sessions.get(params.sessionId);
-    if (acpSession !== undefined) {
-      this.sessions.delete(params.sessionId);
-      await acpSession.dispose();
     }
     await this.unbindSessionRuntime?.(params.sessionId);
     return {};

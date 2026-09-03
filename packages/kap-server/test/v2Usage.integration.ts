@@ -4,10 +4,10 @@ import { join } from 'node:path';
 
 import { ISessionIndex, type SessionSummary } from '@moonshot-ai/agent-core-v2';
 import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
+import { usageResponseSchema, type UsageResponse } from '@moonshot-ai/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
-import { usageResponseSchema, type UsageResponse } from '../src/protocol/rest-usage';
 import { type RunningServer, startServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';

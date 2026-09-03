@@ -77,9 +77,14 @@ export class GitService implements IGitService {
 
     let diffStdout: string;
     if (untracked || !hasHead) {
+      const workspaceId = this.resolveWorkspaceId(cwd);
+      const nullDevice =
+        this.resolver.inspect({ workspaceId, runtimeId: 'local' }).environment.pathClass === 'win32'
+          ? 'NUL'
+          : '/dev/null';
       const res = await this.runCommand(
         'git',
-        ['diff', '--no-color', '--no-index', '--', '/dev/null', relPath],
+        ['diff', '--no-color', '--no-index', '--', nullDevice, relPath],
         cwd,
       );
       if (res.exitCode !== 0 && res.exitCode !== 1) {

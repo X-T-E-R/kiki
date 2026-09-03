@@ -20,12 +20,19 @@ import { IAgentPermissionPolicyService, type PermissionPolicyEvaluation } from '
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { AgentPermissionPolicyService } from '#/agent/permissionPolicy/permissionPolicyService';
 import {
+  type DangerousBashGuard,
+  PERMISSION_SECTION,
+} from '#/agent/permissionRules/configSection';
+import {
   IAgentPermissionRulesService,
   type IAgentPermissionRulesService as PermissionRulesServiceContract,
   type PermissionRule,
 } from '#/agent/permissionRules/permissionRules';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IBashParserService } from '#/app/bashParser/bashParser';
+import { BashParserService } from '#/app/bashParser/bashParserService';
+import { IConfigService } from '#/app/config/config';
 import { IGitService } from '#/app/git/git';
 import { findGitWorkTree } from '#/app/git/workTree';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -47,6 +54,7 @@ describe('AgentPermissionPolicyService chain', () => {
   let rules: PermissionRule[];
   let sessionApprovalRulePatterns: string[];
   let workspace: ReturnType<typeof workspaceStub>;
+  let dangerousBash: DangerousBashGuard | undefined;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -54,9 +62,17 @@ describe('AgentPermissionPolicyService chain', () => {
     rules = [];
     sessionApprovalRulePatterns = [];
     workspace = workspaceStub('/workspace');
+    dangerousBash = undefined;
     ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.defineInstance(IAgentPermissionModeService, stubPermissionModeService(() => mode));
+        reg.definePartialInstance(IConfigService, {
+          get: ((section: string) =>
+            section === PERMISSION_SECTION
+              ? { dangerousBash }
+              : undefined) as IConfigService['get'],
+        });
+        reg.define(IBashParserService, BashParserService);
         reg.defineInstance(
           IAgentScopeContext,
           makeAgentScopeContext({ agentId: 'main', agentScope: '' }),
@@ -263,6 +279,125 @@ describe('AgentPermissionPolicyService chain', () => {
       });
     },
   );
+
+  it('does not intercept dangerous bash in yolo by default', async () => {
+    mode = 'yolo';
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: 'shutdown -h now', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'yolo-mode-approve',
+      result: { kind: 'approve' },
+    });
+  });
+
+  it('asks for dangerous bash in auto by default after auto-mode approval', async () => {
+    mode = 'auto';
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: 'shutdown -h now', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'dangerous-bash',
+      result: { kind: 'ask', reason: { dangerous_command: 'shutdown' } },
+    });
+  });
+
+  it('still approves safe bash in auto by default', async () => {
+    mode = 'auto';
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: 'echo ok', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'auto-mode-approve',
+      result: { kind: 'approve' },
+    });
+  });
+
+  it('does not intercept dangerous bash in auto when dangerous_bash is off', async () => {
+    mode = 'auto';
+    dangerousBash = 'off';
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: 'shutdown -h now', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'auto-mode-approve',
+      result: { kind: 'approve' },
+    });
+  });
+
+  it('asks for dangerous bash in yolo when dangerous_bash is on', async () => {
+    mode = 'yolo';
+    dangerousBash = 'on';
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: 'shutdown -h now', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'dangerous-bash',
+      result: { kind: 'ask', reason: { dangerous_command: 'shutdown' } },
+    });
+  });
+
+  it('keeps deny rules above dangerous bash ask', async () => {
+    mode = 'auto';
+    rules.push({
+      decision: 'deny',
+      scope: 'user',
+      pattern: 'Bash(shutdown *)',
+    });
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: 'shutdown -h now', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'user-configured-deny',
+      result: { kind: 'deny' },
+    });
+  });
+
+  it('does not let user allow rules exempt dangerous bash in manual', async () => {
+    rules.push({
+      decision: 'allow',
+      scope: 'user',
+      pattern: 'Bash',
+    });
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: 'rm -rf /tmp/build', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'dangerous-bash',
+      result: { kind: 'ask', reason: { dangerous_command: 'rm -rf' } },
+    });
+  });
+
+  it('does not let session approval history exempt dangerous bash', async () => {
+    sessionApprovalRulePatterns.push('Bash(shutdown -h now)');
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: 'shutdown -h now', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'dangerous-bash',
+      result: { kind: 'ask', reason: { dangerous_command: 'shutdown' } },
+    });
+  });
+
+  it('does not ask for unanalyzable bash in auto', async () => {
+    mode = 'auto';
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: '$CMD --force', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'auto-mode-approve',
+      result: { kind: 'approve' },
+    });
+  });
 });
 
 describe('AgentPermissionPolicyService git cwd write approval', () => {
@@ -283,6 +418,10 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
     ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.defineInstance(IAgentPermissionModeService, stubPermissionModeService(() => mode));
+        reg.definePartialInstance(IConfigService, {
+          get: (() => undefined) as IConfigService['get'],
+        });
+        reg.define(IBashParserService, BashParserService);
         reg.defineInstance(
           IAgentScopeContext,
           makeAgentScopeContext({ agentId: 'main', agentScope: '' }),

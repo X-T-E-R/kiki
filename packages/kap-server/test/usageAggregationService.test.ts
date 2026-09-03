@@ -1,21 +1,28 @@
 import {
   IAppendLogStore,
   IFileSystemStorageService,
+  IRetainedUsageService,
   ISessionIndex,
+  RETAINED_USAGE_VERSION,
+  type RetainedDeletedSessionUsage,
+  type RetainedUsageListQuery,
+  type RetainedUsageListResult,
+  type RetainedUsageRecord,
   type Scope,
   type SessionSummary,
   type WireRecord,
 } from '@moonshot-ai/agent-core-v2';
 import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
+import type { UsageQuery } from '@moonshot-ai/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
-import type { UsageQuery } from '../src/protocol/rest-usage';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 
 interface Fixture {
   readonly service: UsageAggregationService;
   readonly reads: Map<string, number>;
+  readonly retainedQueries: readonly RetainedUsageListQuery[];
 }
 
 function summary(id: string, workspaceId: string): SessionSummary {
@@ -43,13 +50,53 @@ function usageRecord(time: number, turnId?: number): WireRecord {
   };
 }
 
+function retainedRecord(
+  time: number,
+  overrides: Partial<RetainedUsageRecord> = {},
+): RetainedUsageRecord {
+  return {
+    time,
+    model: 'priced-model',
+    usage: {
+      inputOther: 1,
+      output: 1,
+      inputCacheRead: 1,
+      inputCacheCreation: 1,
+    },
+    ...overrides,
+  };
+}
+
+function retainedSession(
+  id: string,
+  workspaceId: string,
+  records: readonly RetainedUsageRecord[],
+  overrides: Partial<RetainedDeletedSessionUsage> = {},
+): RetainedDeletedSessionUsage {
+  return {
+    version: RETAINED_USAGE_VERSION,
+    ...summary(id, workspaceId),
+    deleted: true,
+    deletedAt: 2,
+    records,
+    complete: true,
+    ...overrides,
+  };
+}
+
 function fixture(
   sessions: readonly SessionSummary[],
   records: Readonly<Record<string, readonly WireRecord[]>>,
   now: () => number,
   limits: ConstructorParameters<typeof UsageAggregationService>[2] = {},
+  retainedResult: RetainedUsageListResult = {
+    items: [],
+    complete: true,
+    scannedRecords: 0,
+  },
 ): Fixture {
   const reads = new Map<string, number>();
+  const retainedQueries: RetainedUsageListQuery[] = [];
   const index: ISessionIndex = {
     _serviceBrand: undefined,
     prepare: async () => ({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }),
@@ -79,6 +126,14 @@ function fixture(
       })();
     },
   } as unknown as IAppendLogStore;
+  const retainedUsage: IRetainedUsageService = {
+    _serviceBrand: undefined,
+    retainDeletedSession: async () => { throw new Error('retain is not used'); },
+    listDeletedSessions: async (query) => {
+      retainedQueries.push(query);
+      return retainedResult;
+    },
+  };
   const pricing: IModelPricingService = {
     _serviceBrand: undefined,
     resolve: () => undefined,
@@ -92,12 +147,17 @@ function fixture(
         if (identifier === ISessionIndex) return index;
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IAppendLogStore) return appendLog;
+        if (identifier === IRetainedUsageService) return retainedUsage;
         if (identifier === IModelPricingService) return pricing;
         throw new Error('unexpected service');
       },
     },
   } as unknown as Scope;
-  return { service: new UsageAggregationService(core, now, limits), reads };
+  return {
+    service: new UsageAggregationService(core, now, limits),
+    reads,
+    retainedQueries,
+  };
 }
 
 function scope(workspaceId: string, sessionId: string): string {
@@ -149,10 +209,12 @@ describe('UsageAggregationService cache budgets', () => {
     const second = await query(service);
 
     expect(first.reliability).toMatchObject({
+      complete: false,
       incomplete_sessions: 1,
       incomplete_reason: 'record_budget',
     });
     expect(second.reliability).toMatchObject({
+      complete: false,
       incomplete_sessions: 1,
       incomplete_reason: 'record_budget',
     });
@@ -259,5 +321,145 @@ describe('UsageAggregationService timezone ranges', () => {
       end_at: Date.UTC(2026, 8, 2, 5),
     });
     expect(westResult.summary.tokens.output).toBe(1);
+  });
+});
+
+describe('UsageAggregationService retained sessions', () => {
+  it('keeps active wire usage authoritative over a retained snapshot', async () => {
+    const active = summary('session-a', 'workspace-a');
+    const { service, retainedQueries } = fixture(
+      [active],
+      { [scope('workspace-a', 'session-a')]: [usageRecord(10, 1)] },
+      () => 0,
+      { deadlineMs: 10_000 },
+      {
+        items: [retainedSession('session-a', 'workspace-a', [retainedRecord(20)])],
+        complete: true,
+        scannedRecords: 2,
+      },
+    );
+
+    const result = await query(service);
+
+    expect(result.summary.tokens.output).toBe(1);
+    expect(result.sessions.items).toEqual([
+      expect.objectContaining({ id: 'session-a', deleted: false }),
+    ]);
+    expect(result.reliability).toMatchObject({
+      complete: true,
+      includes_deleted_sessions: false,
+    });
+    expect(retainedQueries).toHaveLength(1);
+  });
+
+  it('includes deleted sessions from retained usage', async () => {
+    const { service } = fixture(
+      [],
+      {},
+      () => 0,
+      { deadlineMs: 10_000 },
+      {
+        items: [retainedSession('session-deleted', 'workspace-a', [retainedRecord(10)])],
+        complete: true,
+        scannedRecords: 2,
+      },
+    );
+
+    const result = await query(service);
+
+    expect(result.summary).toMatchObject({ session_count: 1 });
+    expect(result.summary.tokens.output).toBe(1);
+    expect(result.sessions.items).toEqual([
+      expect.objectContaining({ id: 'session-deleted', deleted: true }),
+    ]);
+    expect(result.reliability).toMatchObject({
+      complete: true,
+      includes_deleted_sessions: true,
+      incomplete_reason: null,
+    });
+  });
+
+  it.each(['deadline', 'record_budget'] as const)(
+    'maps retained %s incompleteness into response reliability',
+    async (incompleteReason) => {
+      const { service } = fixture(
+        [],
+        {},
+        () => 0,
+        { deadlineMs: 10_000 },
+        { items: [], complete: false, incompleteReason, scannedRecords: 0 },
+      );
+
+      const result = await query(service);
+
+      expect(result.reliability).toMatchObject({
+        complete: false,
+        includes_deleted_sessions: false,
+        incomplete_reason: incompleteReason,
+      });
+    },
+  );
+
+  it('applies range and attribution filters to retained records', async () => {
+    const records = [
+      retainedRecord(12, {
+        modelAlias: 'model-target',
+        provider: 'provider-target',
+        agentId: 'agent-target',
+      }),
+      retainedRecord(9, {
+        modelAlias: 'model-target',
+        provider: 'provider-target',
+        agentId: 'agent-target',
+      }),
+      retainedRecord(13, {
+        modelAlias: 'model-other',
+        provider: 'provider-target',
+        agentId: 'agent-target',
+      }),
+      retainedRecord(14, {
+        modelAlias: 'model-target',
+        provider: 'provider-other',
+        agentId: 'agent-target',
+      }),
+      retainedRecord(15, {
+        modelAlias: 'model-target',
+        provider: 'provider-target',
+        agentId: 'agent-other',
+      }),
+    ];
+    const { service, retainedQueries } = fixture(
+      [],
+      {},
+      () => 0,
+      { deadlineMs: 10_000 },
+      {
+        items: [retainedSession('session-deleted', 'workspace-a', records)],
+        complete: true,
+        scannedRecords: records.length + 1,
+      },
+    );
+
+    const result = await query(service, {
+      range: 'custom',
+      start_at: 10,
+      end_at: 20,
+      model: 'model-target',
+      provider: 'provider-target',
+      'agent.id': 'agent-target',
+      'workspace.id': 'workspace-a',
+    });
+
+    expect(result.summary.tokens.output).toBe(1);
+    expect(result.query).toMatchObject({
+      models: ['model-target'],
+      providers: ['provider-target'],
+      agent_ids: ['agent-target'],
+      workspace_ids: ['workspace-a'],
+    });
+    expect(result.reliability.includes_deleted_sessions).toBe(true);
+    expect(retainedQueries).toEqual([
+      expect.objectContaining({ workspaceIds: ['workspace-a'] }),
+    ]);
   });
 });
