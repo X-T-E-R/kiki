@@ -17,6 +17,7 @@ import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { IPluginService } from '#/app/plugin/plugin';
 import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
+import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IBuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
 import { IAppStateService } from '#/app/state/appState';
@@ -80,6 +81,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     @IAgentIdentity private readonly identity: IAgentIdentity,
     @ISessionIndex private readonly index: ISessionIndex,
     @ISessionIndexMirror private readonly indexMirror: ISessionIndexMirror,
+    @IRetainedUsageService private readonly retainedUsage: IRetainedUsageService,
     @ILogService private readonly log: ILogService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
@@ -347,6 +349,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           this.config,
           this.index,
           this.indexMirror,
+          this.retainedUsage,
           this.appendLogStore,
           this.docs,
           this.storage,
