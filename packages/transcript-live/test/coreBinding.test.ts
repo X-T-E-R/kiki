@@ -299,6 +299,51 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
+  it('keeps live and cold turn removal equivalent after undo', () => {
+    const records = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'first' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 },
+      {
+        type: 'turn.prompt',
+        turnId: 1,
+        promptId: 'prompt-2',
+        input: [{ type: 'text', text: 'second' }],
+        origin: { kind: 'user' },
+        time: 3_000,
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 4_000 },
+      { type: 'context.undo', count: 1, time: 5_000 },
+    ];
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+    });
+    for (const record of records) coldReducer.apply(coldAdapter.add(record));
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    for (const record of records) main.bus.emit(record as unknown as Event2<any>);
+
+    const live = store.getAgent('main')!;
+    expect(live.snapshot()).toEqual(cold.snapshot());
+    expect(live.getTurn('t0')?.prompt).toBe('first');
+    expect(live.getTurn('t1')).toBeUndefined();
+    binding.dispose();
+  });
+
   it('registers pre-bind pendings without frames and replays an early resolve at seed time', () => {
     const interactions = new SessionInteractionService(new TestSessionStateService());
     interactions.enqueue({
