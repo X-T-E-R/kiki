@@ -563,7 +563,6 @@ describe('CLI options parsing', () => {
         'server',
         'login',
         'doctor',
-        'vis',
       ]);
     });
 

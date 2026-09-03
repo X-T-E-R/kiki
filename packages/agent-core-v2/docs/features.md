@@ -56,9 +56,9 @@ compositions over the existing seams:
 3. At App-scope creation the `IFeatureAssemblyService`
    (`src/features/featureAssemblyService.ts`) drains the table and assembles each
    recipe through `IFeatureManager.provideUnit` — the same provide path as static
-   scope batches. Every feature is named, introspectable (`IFeatureManager.units()`,
-   visible in the kimi-inspect DI view), and individually retractable
-   (`unprovideUnit(name)` / `updateUnit(name, config)`).
+   scope batches. Every feature is named, introspectable through
+   `IFeatureManager.units()`, and individually retractable (`unprovideUnit(name)` /
+   `updateUnit(name, config)`).
 4. Per-scope materialization goes through the kernel's `ScopeUnits` fold: a service a
    feature contributes at Agent scope appears in every existing and future Agent scope,
    bound by the same cascade rules as a static registration.

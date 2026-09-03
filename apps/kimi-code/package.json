@@ -27,7 +27,6 @@
   },
   "files": [
     "dist",
-    "dist-web",
     "native",
     "scripts/postinstall.mjs",
     "scripts/postinstall",
@@ -39,10 +38,6 @@
     "#/tui/commands": "./src/tui/commands/index.ts",
     "#/cli/sub/web": "./src/cli/sub/web/index.ts",
     "#/cli/sub/web/*": "./src/cli/sub/web/*.ts",
-    "#/generated/vis-web-asset": [
-      "./src/generated/vis-web-asset.ts",
-      "./src/generated/vis-web-asset.d.ts"
-    ],
     "#/*": "./src/*.ts"
   },
   "publishConfig": {
@@ -50,8 +45,8 @@
     "provenance": true
   },
   "scripts": {
-    "build": "tsdown && tsdown --config tsdown.dist-worker.config.ts && node scripts/copy-native-assets.mjs && node scripts/check-web-assets.mjs",
-    "prebuild": "node scripts/build-vis-asset.mjs",
+    "build": "tsdown && tsdown --config tsdown.dist-worker.config.ts && node scripts/copy-native-assets.mjs && node scripts/copy-web-assets.mjs",
+    "prebuild": "pnpm -C ../kiki-gui build",
     "catalog:update": "node scripts/update-catalog.mjs --out dist/built-in-catalog.json",
     "smoke": "node scripts/smoke.mjs",
     "build:native:js": "node scripts/native/01-bundle.mjs",
@@ -91,8 +86,6 @@
     "@moonshot-ai/kimi-code-sdk": "workspace:^",
     "@moonshot-ai/minidb": "workspace:^",
     "@moonshot-ai/pi-tui": "workspace:^",
-    "@moonshot-ai/vis-server": "workspace:^",
-    "@moonshot-ai/vis-web": "workspace:*",
     "@types/semver": "^7.7.0",
     "@types/ws": "^8.18.0",
     "@types/yazl": "^2.4.6",

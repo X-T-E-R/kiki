@@ -1,6 +1,6 @@
 # Local Server and API
 
-Kimi Code CLI ships with a built-in local server: running `kimi web` starts a foreground process that mounts three things at once — the web UI in your browser, a REST API (`/api/v1`), and a WebSocket event stream (`/api/v1/ws`). The web UI lets you use Kimi Code in a browser; the REST and WebSocket APIs are for scripts and third-party tools, letting you create sessions, submit prompts, and follow execution from code — all reading and writing the same session data as the TUI and the web UI.
+Kimi Code CLI ships with a built-in local server: running `kimi web` starts a foreground process that mounts three things at once — the Kiki GUI in your browser, a REST API (`/api/v1`), and a WebSocket event stream (`/api/v1/ws`). The Kiki GUI lets you use Kimi Code in a browser; the REST and WebSocket APIs are for scripts and third-party tools, letting you create sessions, submit prompts, and follow execution from code — all reading and writing the same session data as the TUI and the Kiki GUI.
 
 > Make sure Kimi Code CLI is installed and ready to use first — either logged in via `/login` (in the TUI, or `kimi login`), or with a provider configured in `config.toml`. The server shares the CLI's login state and configuration, so no separate credential is needed for it.
 
@@ -33,7 +33,7 @@ Every `/api/*` endpoint requires a bearer token (any request carrying this strin
 Pick the carrying method that fits your client:
 
 - **REST**: the `Authorization: Bearer <token>` request header.
-- **web UI**: the URL in the startup banner carries a `#token=` fragment, so opening it in a browser completes sign-in automatically. The fragment is never sent to the server.
+- **Kiki GUI**: the URL in the startup banner carries a `#token=` fragment, so opening it in a browser completes sign-in automatically. The fragment is never sent to the server.
 - **WebSocket**: clients that can set headers use `Authorization: Bearer`; clients that cannot (such as browsers) pass the subprotocol (a protocol name declared during the WebSocket handshake) `kimi-code.bearer.<token>` instead.
 
 If the token leaks, run `kimi web rotate-token`: the new token is written to `server.token` immediately, the old one stops working at once, and running instances pick up the new token without a restart.
