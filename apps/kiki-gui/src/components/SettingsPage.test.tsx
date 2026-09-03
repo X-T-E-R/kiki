@@ -34,6 +34,27 @@ const client = {
   listManagedMcpServers: vi.fn(async () => []),
   listMcpServers: vi.fn(async () => ({ servers: [] })),
   listPlugins: vi.fn(async () => ({ plugins: [] })),
+  listPluginMarketplace: vi.fn(async () => ({ configured: false, entries: [] })),
+  getPlugin: vi.fn(async () => ({
+    id: 'fixture-plugin',
+    displayName: 'fixture-plugin',
+    enabled: true,
+    state: 'ok',
+    skillCount: 0,
+    mcpServerCount: 0,
+    enabledMcpServerCount: 0,
+    hookCount: 0,
+    commandCount: 0,
+    hasErrors: false,
+    source: 'local-path',
+    root: '/tmp/plugin',
+    installedAt: '2026-01-01T00:00:00.000Z',
+    mcpServers: [],
+    diagnostics: [],
+  })),
+  installPlugin: vi.fn(async () => ({ id: 'installed' })),
+  setPluginEnabled: vi.fn(async () => ({ ok: true })),
+  removePlugin: vi.fn(async () => ({ ok: true })),
   listWorkspaceSkills: vi.fn(async () => ({ skills: [] })),
   listTools: vi.fn(async () => ({ tools: [] })),
   listNamedAgentProfiles: vi.fn(async () => ({ items: [] })),
@@ -227,6 +248,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/plugins');
     await flush();
     expect(container.querySelector('#st-card-plugins')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins-add')).not.toBeNull();
     expect(client.listPlugins).toHaveBeenCalled();
   });
 

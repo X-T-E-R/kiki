@@ -1,13 +1,10 @@
-import { stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
-
 import {
   computeUpdateStatus,
   ErrorCodes as DomainErrorCodes,
-  ICapabilityService,
   IPluginService,
   PluginErrors,
   isError2,
+  nonemptyMarketplaceSource,
   parsePluginMarketplace,
   readPluginMarketplace,
   withLatestVersions,
@@ -23,6 +20,8 @@ import { ErrorCode } from '../protocol/error-codes';
 import {
   installPluginRequestSchema,
   listPluginsResponseSchema,
+  pluginInfoParamSchema,
+  pluginInfoSchema,
   pluginMarketplaceResponseSchema,
   pluginIdParamSchema,
   pluginSummarySchema,
@@ -51,21 +50,6 @@ interface PluginsRouteHost {
 
 const PLUGIN_ACTIONS = ['enable', 'disable', 'remove'] as const;
 
-const CAPABILITY_ROW_IDS: Readonly<
-  Record<string, { capabilityId: string; wiringPluginIds: readonly string[] }>
-> = {
-  'kimi-cu': { capabilityId: 'kimi-cu', wiringPluginIds: ['kimi-cu', 'kimi-cu-win'] },
-  'kimi-cu-win': { capabilityId: 'kimi-cu', wiringPluginIds: ['kimi-cu', 'kimi-cu-win'] },
-  'kimi-webbridge': { capabilityId: 'kimi-webbridge', wiringPluginIds: ['kimi-webbridge'] },
-};
-
-function orderedWiringPluginIds(ids: readonly string[]): readonly string[] {
-  if (process.platform === 'win32' && process.arch === 'x64' && ids.includes('kimi-cu-win')) {
-    return ['kimi-cu-win', ...ids.filter((id) => id !== 'kimi-cu-win')];
-  }
-  return ids;
-}
-
 const MARKETPLACE_FETCH_TIMEOUT_MS = 10_000;
 
 function fetchWithTimeout(...args: Parameters<typeof fetch>): Promise<Response> {
@@ -73,25 +57,13 @@ function fetchWithTimeout(...args: Parameters<typeof fetch>): Promise<Response> 
   return fetch(input, { ...init, signal: AbortSignal.timeout(MARKETPLACE_FETCH_TIMEOUT_MS) });
 }
 
-async function getSourceCheckoutLocation(): Promise<MarketplaceLocation | undefined> {
-  const candidate = resolve(import.meta.dirname, '../../../../plugins/marketplace.json');
-  const info = await stat(candidate).catch(() => undefined);
-  if (info?.isFile() !== true) return undefined;
-  return { raw: candidate, kind: 'local', resolved: candidate };
-}
-
 export interface PluginsRouteOptions {
-  /** Catalog URL resolver, invoked per request so a login region switch is
-      reflected without a restart (an explicitly configured URL from the
-      server option or env stays static). */
-  readonly marketplaceUrl: () => string;
   /**
-   * True when the catalog location is the built-in default (neither the
-   * server option nor the env var set) — only then does a failed remote read
-   * fall back to the source-checkout catalog and get capability markers
-   * (an explicitly configured catalog fails hard and stays unmarked).
+   * Catalog URL resolver, invoked per request so a config.toml or env change is
+   * reflected without a restart. `undefined` means no marketplace is configured
+   * and the route returns `{ configured: false }` without fetching.
    */
-  readonly marketplaceIsDefault?: boolean;
+  readonly marketplaceUrl: () => string | undefined;
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -111,15 +83,18 @@ export function registerPluginsRoutes(
       operationId: 'listPluginMarketplace',
     },
     async (req, reply) => {
+      const source = nonemptyMarketplaceSource(opts.marketplaceUrl());
+      if (source === undefined) {
+        reply.send(okEnvelope({ configured: false, entries: [] }, req.id));
+        return;
+      }
       const fetchImpl = opts.fetchImpl ?? fetchWithTimeout;
       let read: { raw: string; location: MarketplaceLocation };
       try {
         read = await readPluginMarketplace({
-          source: opts.marketplaceUrl(),
+          source,
           workDir: process.cwd(),
           fetchImpl,
-          sourceCheckoutLocation:
-            opts.marketplaceIsDefault === true ? getSourceCheckoutLocation : undefined,
         });
       } catch (error) {
         reply.send(
@@ -144,50 +119,12 @@ export function registerPluginsRoutes(
         );
         return;
       }
-      if (opts.marketplaceIsDefault === true) {
-        const presentIds = new Set(marketplace.plugins.map((entry) => entry.id));
-        const missing = core.accessor
-          .get(ICapabilityService)
-          .describeCapabilities()
-          .filter((descriptor) => descriptor.supported && !presentIds.has(descriptor.id))
-          .map((descriptor) => ({
-            id: descriptor.id,
-            tier: 'official' as const,
-            displayName: descriptor.displayName,
-            description: descriptor.description,
-            source: `capability:${descriptor.id}`,
-          }));
-        if (missing.length > 0) {
-          marketplace = { ...marketplace, plugins: [...marketplace.plugins, ...missing] };
-        }
-      }
       marketplace = await withLatestVersions(marketplace, fetchImpl);
       const installed = await core.accessor.get(IPluginService).listPlugins();
       const byId = new Map(installed.map((p) => [p.id, p]));
-      const supportedCapabilityIds = new Set<string>(
-        core.accessor
-          .get(ICapabilityService)
-          .describeCapabilities()
-          .filter((descriptor) => descriptor.supported)
-          .map((descriptor) => descriptor.id),
-      );
       const entries: PluginMarketplaceEntryWire[] = [];
       for (const entry of marketplace.plugins) {
-        const capabilityRow =
-          opts.marketplaceIsDefault === true ? CAPABILITY_ROW_IDS[entry.id] : undefined;
-        if (
-          capabilityRow !== undefined &&
-          !supportedCapabilityIds.has(capabilityRow.capabilityId)
-        ) {
-          continue;
-        }
-
-        const record =
-          capabilityRow !== undefined
-            ? (orderedWiringPluginIds(capabilityRow.wiringPluginIds)
-                .map((id) => byId.get(id))
-                .find((candidate) => candidate !== undefined) ?? byId.get(entry.id))
-            : byId.get(entry.id);
+        const record = byId.get(entry.id);
         const installedInfo =
           record === undefined
             ? undefined
@@ -206,10 +143,9 @@ export function registerPluginsRoutes(
           source: entry.source,
           installed: installedInfo,
           updateAvailable: updateAvailable ? true : undefined,
-          capabilityId: capabilityRow?.capabilityId,
         });
       }
-      reply.send(okEnvelope({ entries }, req.id));
+      reply.send(okEnvelope({ configured: true, source: read.location.resolved, entries }, req.id));
     },
   );
   app.get(
@@ -237,6 +173,36 @@ export function registerPluginsRoutes(
     listRoute.path,
     listRoute.options,
     listRoute.handler as Parameters<PluginsRouteHost['get']>[2],
+  );
+
+  const infoRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/plugins/{plugin_id}',
+      params: pluginInfoParamSchema,
+      success: { data: pluginInfoSchema },
+      errors: {
+        [ErrorCode.PLUGIN_NOT_FOUND]: {},
+      },
+      description: 'Get one installed plugin including its manifest and MCP servers',
+      tags: ['plugins'],
+      operationId: 'getPlugin',
+    },
+    async (req, reply) => {
+      try {
+        const plugin = await core.accessor
+          .get(IPluginService)
+          .getPluginInfo({ id: req.params.plugin_id });
+        reply.send(okEnvelope(plugin, req.id));
+      } catch (error) {
+        reply.send(mapPluginError(error, req.id));
+      }
+    },
+  );
+  app.get(
+    infoRoute.path,
+    infoRoute.options,
+    infoRoute.handler as Parameters<PluginsRouteHost['get']>[2],
   );
 
   const installRoute = defineRoute(

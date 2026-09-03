@@ -5,9 +5,28 @@ import { fileURLToPath } from 'node:url';
 
 import { gt, valid } from 'semver';
 
-export const KIMI_CODE_PLUGIN_MARKETPLACE_URL =
-  'https://code.kimi.com/kimi-code/plugins/marketplace.json';
 export const KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV = 'KIMI_CODE_PLUGIN_MARKETPLACE_URL';
+
+export interface ResolvePluginMarketplaceSourceOptions {
+  readonly optionUrl?: string;
+  readonly envUrl?: string;
+  readonly configUrl?: string;
+}
+
+export function nonemptyMarketplaceSource(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function resolvePluginMarketplaceSource(
+  options: ResolvePluginMarketplaceSourceOptions,
+): string | undefined {
+  return (
+    nonemptyMarketplaceSource(options.optionUrl) ??
+    nonemptyMarketplaceSource(options.envUrl) ??
+    nonemptyMarketplaceSource(options.configUrl)
+  );
+}
 
 export const PLUGIN_MARKETPLACE_TIERS = ['official', 'curated'] as const;
 

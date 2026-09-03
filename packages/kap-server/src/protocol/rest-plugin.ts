@@ -60,11 +60,49 @@ export const pluginMarketplaceEntrySchema = z.object({
 export type PluginMarketplaceEntryWire = z.infer<typeof pluginMarketplaceEntrySchema>;
 
 export const pluginMarketplaceResponseSchema = z.object({
+  configured: z.boolean(),
+  source: z.string().optional(),
   entries: z.array(pluginMarketplaceEntrySchema),
 });
 export type PluginMarketplaceResponse = z.infer<typeof pluginMarketplaceResponseSchema>;
+
+export const pluginMcpServerInfoSchema = z.object({
+  name: z.string(),
+  runtimeName: z.string(),
+  enabled: z.boolean(),
+  transport: z.enum(['stdio', 'http', 'sse']),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  url: z.string().optional(),
+  envKeys: z.array(z.string()).optional(),
+  headerKeys: z.array(z.string()).optional(),
+});
+
+export const pluginDiagnosticSchema = z.object({
+  severity: z.enum(['error', 'warn', 'info']),
+  message: z.string(),
+});
+
+export const pluginInfoSchema = pluginSummarySchema.extend({
+  root: z.string(),
+  installedAt: z.string(),
+  updatedAt: z.string().optional(),
+  manifestKind: z.enum(['kimi-plugin-root', 'kimi-plugin-dir']).optional(),
+  manifestPath: z.string().optional(),
+  manifest: z.unknown().optional(),
+  mcpServers: z.array(pluginMcpServerInfoSchema),
+  shadowedManifestPath: z.string().optional(),
+  diagnostics: z.array(pluginDiagnosticSchema),
+});
+export type PluginInfoWire = z.infer<typeof pluginInfoSchema>;
 
 export const pluginIdParamSchema = z.object({
   tail: z.string().min(1),
 });
 export type PluginIdParam = z.infer<typeof pluginIdParamSchema>;
+
+export const pluginInfoParamSchema = z.object({
+  plugin_id: z.string().min(1),
+});
+export type PluginInfoParam = z.infer<typeof pluginInfoParamSchema>;
