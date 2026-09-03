@@ -49,6 +49,8 @@ export * from '#/agent/runtimeBinding/runtimeBindingService';
 export * from '#/agent/runtimeBinding/agentRuntime';
 export * from '#/app/sessionManager/sessionManager';
 export * from '#/app/sessionManager/sessionManagerService';
+export * from '#/app/retainedUsage/retainedUsage';
+export * from '#/app/retainedUsage/retainedUsageService';
 export * from '#/app/runtimeHost/index';
 
 export * from '#/_base/log/log';
