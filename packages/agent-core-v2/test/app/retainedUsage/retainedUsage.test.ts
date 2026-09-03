@@ -2,7 +2,7 @@ import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -326,6 +326,7 @@ describe('RetainedUsageService', () => {
         version: RETAINED_USAGE_VERSION,
         id: summary.id,
         workspaceId: summary.workspaceId,
+        recordCount: 20_000,
       }),
       JSON.stringify({
         kind: 'meta',
@@ -357,6 +358,64 @@ describe('RetainedUsageService', () => {
     });
     expect(storage.chunksRead).toBe(1);
     expect(storage.bytesRead).toBeLessThan(new TextEncoder().encode(ledger).byteLength);
+  });
+
+  it('does not read or parse an oversized record beyond the record budget', async () => {
+    const storage = new MeasuringFileStorageService(homeDir);
+    const ledgerPath = join(homeDir, 'store/deleted-sessions-v2.jsonl');
+    const ledger = [
+      JSON.stringify({
+        kind: 'session',
+        version: RETAINED_USAGE_VERSION,
+        id: summary.id,
+        workspaceId: summary.workspaceId,
+        recordCount: 1,
+      }),
+      JSON.stringify({
+        kind: 'meta',
+        cwd: summary.cwd,
+        title: summary.title,
+        createdAt: summary.createdAt,
+        updatedAt: summary.updatedAt,
+        archived: summary.archived,
+        usage: summary.usage,
+        deleted: true,
+        deletedAt: 300,
+        complete: true,
+      }),
+      JSON.stringify({
+        kind: 'record',
+        record: { time: 150, model: 'm'.repeat(5_000_000), usage, agentId: 'main' },
+      }),
+      JSON.stringify({ kind: 'commit' }),
+      '',
+    ].join('\n');
+    const fileBytes = new TextEncoder().encode(ledger).byteLength;
+    await fsp.mkdir(join(homeDir, 'store'), { recursive: true });
+    await fsp.writeFile(ledgerPath, ledger);
+    const { service } = build(storage);
+    const originalParse = JSON.parse;
+    let parsedOversizedEntry = false;
+    const parse = vi.spyOn(JSON, 'parse').mockImplementation((text, reviver) => {
+      if (text.length > 1_000_000) parsedOversizedEntry = true;
+      return originalParse(text, reviver);
+    });
+
+    try {
+      await expect(
+        service.listDeletedSessions(listQuery({ recordLimit: 1 })),
+      ).resolves.toEqual({
+        items: [],
+        complete: false,
+        incompleteReason: 'record_budget',
+        scannedRecords: 1,
+      });
+    } finally {
+      parse.mockRestore();
+    }
+    expect(storage.chunksRead).toBe(1);
+    expect(storage.bytesRead).toBeLessThan(fileBytes / 10);
+    expect(parsedOversizedEntry).toBe(false);
   });
 
   it('applies the workspace header filter before spending the record budget', async () => {

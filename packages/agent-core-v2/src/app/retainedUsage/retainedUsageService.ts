@@ -71,6 +71,7 @@ const retainedDeletedSessionUsageMetaSchema = z.object({
 
 const retainedUsageLedgerStartSchema = retainedDeletedSessionUsageHeaderSchema.extend({
   kind: z.literal('session'),
+  recordCount: z.number().int().nonnegative(),
 });
 
 const retainedUsageLedgerMetaSchema = retainedDeletedSessionUsageMetaSchema.extend({
@@ -125,6 +126,7 @@ export class RetainedUsageService implements IRetainedUsageService {
       version,
       id,
       workspaceId,
+      recordCount: retainedRecords.length,
     });
     this.appendLog.append(this.storeScope, RETAINED_USAGE_KEY, { kind: 'meta', ...meta });
     for (const record of retainedRecords) {
@@ -202,6 +204,9 @@ export class RetainedUsageService implements IRetainedUsageService {
           if (included) {
             if (scannedRecords >= query.recordLimit) return result('record_budget');
             scannedRecords += 1;
+            if (start.data.recordCount > query.recordLimit - scannedRecords) {
+              return result('record_budget');
+            }
           }
           current = { start: start.data, meta: undefined, records: [], included, valid: true };
           continue;
@@ -238,7 +243,12 @@ export class RetainedUsageService implements IRetainedUsageService {
           current.valid = false;
           continue;
         }
-        if (current.included && current.valid && current.meta !== undefined) {
+        if (
+          current.included &&
+          current.valid &&
+          current.meta !== undefined &&
+          current.records.length === current.start.recordCount
+        ) {
           const header = retainedDeletedSessionUsageHeaderSchema.parse(current.start);
           const meta = retainedDeletedSessionUsageMetaSchema.parse(current.meta);
           records.set(`${header.workspaceId}\0${header.id}`, {
