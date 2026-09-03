@@ -5,11 +5,7 @@ import type { ContentPart } from '#/kosong/contract/message';
 import { triggerBlockingResults } from '#/features/externalHooks/app/externalHooksRunner';
 import { describe, expect, it, vi } from 'vitest';
 
-import { makeHookRunner } from './runner-stub';
-
-function nodeCommand(source: string): string {
-  return `node -e ${JSON.stringify(source.replaceAll(/\s*\n\s*/g, ' '))}`;
-}
+import { makeHookRunner, nodeCommand } from './runner-stub';
 
 describe('ExternalHooksRunnerService', () => {
   it('fires a hook whose matcher regex matches the matcher value', async () => {
@@ -213,7 +209,7 @@ describe('ExternalHooksRunnerService', () => {
 
     const results = await runner.trigger('Stop', { inputData: {} });
     expect(results).toHaveLength(2);
-    expect(new Set(results.map((result) => result.stdout?.trim()))).toEqual(
+    expect(new Set(results.map((result) => result.stdout?.replace(/\r\n/g, '\n').trim()))).toEqual(
       new Set([realpathSync(process.cwd()), realpathSync(tmpdir())]),
     );
   });

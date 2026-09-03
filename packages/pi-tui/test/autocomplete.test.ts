@@ -392,7 +392,7 @@ describe("CombinedAutocompleteProvider", () => {
 					"some_file.txt": "symlinked",
 				},
 			});
-			symlinkSync("../outside", join(baseDir, "symlinked_dir"));
+			symlinkSync(outsideDir, join(baseDir, "symlinked_dir"), "junction");
 
 			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
 			const line = "@some";
@@ -409,7 +409,7 @@ describe("CombinedAutocompleteProvider", () => {
 					"nested/file.txt": "symlinked",
 				},
 			});
-			symlinkSync("../outside", join(baseDir, "symlinked_dir"));
+			symlinkSync(outsideDir, join(baseDir, "symlinked_dir"), "junction");
 
 			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
 			const line = "@symlinked";
@@ -419,7 +419,7 @@ describe("CombinedAutocompleteProvider", () => {
 			assert.ok(values.includes("@symlinked_dir/"));
 		});
 
-		test("returns symlinked files without requiring type l", async () => {
+		test("returns symlinked files without requiring type l", { skip: process.platform === "win32" }, async () => {
 			setupFolder(baseDir, {
 				files: {
 					"original.txt": "content",

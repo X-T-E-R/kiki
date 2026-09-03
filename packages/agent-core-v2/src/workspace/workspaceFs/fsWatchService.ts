@@ -1,4 +1,4 @@
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'pathe';
 
 import ignore, { type Ignore } from 'ignore';
 

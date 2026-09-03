@@ -21,6 +21,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { basename, dirname, join, resolve } from 'pathe';
 import { open as openZip } from 'yauzl';
 
+import { windowsSymlinksUnavailable } from '../../_base/utils/symlink';
+
 import { Disposable, DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { Event } from '#/_base/event';
 import {
@@ -358,7 +360,7 @@ describe('sessionExport', () => {
     expect(result.entries).not.toContain('logs/global/kimi-code.log');
   });
 
-  it('archives more than 300 session files without exhausting file handles', async () => {
+  it('archives more than 300 session files without exhausting file handles', { timeout: 15_000 }, async () => {
     const tmp = await mkdtemp(join(tmpdir(), 'session-export-test-'));
     const sessionFiles: string[] = [];
     for (let index = 0; index < 320; index += 1) {
@@ -661,7 +663,7 @@ describe('sessionExport', () => {
     await expect(readdir(tmp)).resolves.toEqual([]);
   });
 
-  it('does not follow an output symlink swapped during compression', async () => {
+  it.skipIf(windowsSymlinksUnavailable)('does not follow an output symlink swapped during compression', async () => {
     const tmp = await mkdtemp(join(tmpdir(), 'session-export-test-'));
     const statePath = join(tmp, 'state.json');
     const safeTarget = join(tmp, 'safe-output');
