@@ -1,13 +1,17 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import {
-  IConfigService,
-  renderProfileCatalogEntries,
-  type DispatchProfileCatalogEntry,
-} from '@moonshot-ai/agent-core-v2';
+import { EXTERNAL_INTERACTION_NOT_OWNED_CODE as CORE_INTERACTION_NOT_OWNED_CODE, IConfigService } from '@moonshot-ai/agent-core-v2';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createKikiMcpServer, kikiMcpConfigFromEnv } from '../src/mcp/server';
+import {
+  createKikiMcpServer,
+  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
+  kikiMcpConfigFromEnv,
+} from '../src/mcp/server';
+import {
+  renderProfileCatalogEntries,
+  type DispatchProfileCatalogEntry,
+} from '../src/mcp/profileCatalog';
 import { registerApiV2Routes } from '../src/routes/registerApiV2Routes';
 import { descriptorFromMeta } from '../src/services/transcript/coreBinding';
 
@@ -146,6 +150,10 @@ describe('Kiki external delegation MCP server', () => {
       workspacePath: '/example/workspace',
     });
     expect(() => kikiMcpConfigFromEnv({ ...env, KIKI_WORKSPACE_PATH: 'relative' })).toThrow();
+  });
+
+  it('keeps the interaction-not-owned failure code aligned with the engine', () => {
+    expect(EXTERNAL_INTERACTION_NOT_OWNED_CODE).toBe(CORE_INTERACTION_NOT_OWNED_CODE);
   });
 
   it('pages result text on a UTF-8 byte boundary without leaking operator configuration', async () => {

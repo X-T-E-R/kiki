@@ -244,7 +244,7 @@ async function cleanupSessionDir(
     await fixture.ctx.get(ISessionMetadata).ready;
     await fixture.ctx.dispose();
   }
-  await rm(sessionDir, { recursive: true, force: true });
+  await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 }
 
 function firstAppendedContextMessage(agent: FakeTaskAgent): TestContextMessage {
@@ -255,7 +255,7 @@ function firstAppendedContextMessage(agent: FakeTaskAgent): TestContextMessage {
 }
 
 function notifiedCount(ctx: TestAgentContext): number {
-  return ctx.allEvents.filter((e) => e.event === 'task.notified').length;
+  return ctx.allEvents.filter((e) => e.type === '[rpc]' && e.event === 'task.notified').length;
 }
 
 async function drainNotifications(ctx: TestAgentContext): Promise<void> {

@@ -102,6 +102,11 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'token_counting.measured',
   'token_counting.truncated',
   'token_counting.rebased',
+  'executor.turn.metadata',
+  'executor.session.updated',
+  'executor.plan.update',
+  'executor.plan.remove',
+  'executor.runtime.update',
 ]);
 
 describe('v1 wire vocabulary', () => {
@@ -194,6 +199,7 @@ describe('v1 wire vocabulary', () => {
 describe('conversation-time checkpoint registration', () => {
   const CHECKPOINT_EXEMPT_STATES: ReadonlySet<string> = new Set([
     'goalForkNotice',
+    'turn',
   ]);
   const CONTEXT_OWNER_STATE = 'contextMemory';
   const CONTEXT_EVENTS: readonly Event2Class[] = [

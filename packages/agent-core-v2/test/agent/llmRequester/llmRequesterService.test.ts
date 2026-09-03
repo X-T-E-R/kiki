@@ -296,6 +296,7 @@ function createService(
     clientIdentity: { productName: 'test', version: '1.0.0', platform: 'test' },
     platform: 'linux',
     arch: 'x64',
+    getEnv: (name) => options.env?.[name],
     args: {
       requestHeaders: options.hostRequestHeaders ?? {
         'X-Msh-Device-Name': 'example-host',

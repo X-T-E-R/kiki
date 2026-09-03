@@ -14,6 +14,7 @@ import type {
   IStorageLock,
   StorageAppendOptions,
   StorageLockOptions,
+  StorageReadOptions,
   StorageReadRange,
   StorageWriteOptions,
 } from '#/persistence/interface/storage';
@@ -52,17 +53,20 @@ export class FileStorageService implements IFileSystemStorageService {
     scope: string,
     key: string,
     range?: StorageReadRange,
+    options: StorageReadOptions = {},
   ): AsyncIterable<Uint8Array> {
     const filePath = this.pathFor(scope, key);
-    const stream = createReadStream(
-      filePath,
-      range === undefined ? undefined : { start: range.start, end: range.end },
-    );
+    const stream = createReadStream(filePath, {
+      start: range?.start,
+      end: range?.end,
+      signal: options.signal,
+    });
     try {
       for await (const chunk of stream) {
         yield chunk as Uint8Array;
       }
     } catch (error) {
+      options.signal?.throwIfAborted();
       if (isEnoent(error)) return;
       throw toStorageIoError(error, { path: filePath, op: 'read' });
     }
