@@ -1,0 +1,35 @@
+{
+  "name": "@kiki/session-core",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Framework-free session state and command logic for Kiki clients.",
+  "license": "MIT",
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./*": {
+      "types": "./src/*/index.ts",
+      "default": "./src/*/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@moonshot-ai/klient": "workspace:^",
+    "@moonshot-ai/protocol": "workspace:^",
+    "@moonshot-ai/transcript": "workspace:^",
+    "diff": "^8.0.2"
+  }
+}
