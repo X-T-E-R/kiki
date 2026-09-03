@@ -9,18 +9,21 @@
  *   - ≥ 50%  amber (warn, and the minimum at which manual compaction is advised)
  *   - ≥ 80%  red (danger / over the keep-under threshold)
  *
- * The detail card layers the lifetime session usage (input / output /
- * cache-read / cache-write tokens + cost) on top of the existing used /
- * available / limit fields, reusing the wire `SessionUsage` counters already
- * aggregated by lib/usage — the same data source the /usage dashboard reads.
+ * The detail card keeps the two §9.5 semantics apart: a "Context window"
+ * section (used / available / limit, right now) and a "This session —
+ * cumulative" section (lifetime input / output / cache-read / cache-write
+ * tokens + cost), plus a prefiltered deep link to the session on /usage.
  */
 
 import { createContext, useContext, useId, useState, type ReactNode } from 'react';
+
+import { Link } from 'react-router-dom';
 
 import type { SessionUsage } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import { formatCostUsd } from '../lib/usage';
+import { usageSessionDeepLink } from '../lib/usageV2';
 import type { ContextBreakdown } from '../lib/types';
 
 /** Usage fraction at which the meter warns (yellow) and compaction becomes available. */
@@ -86,6 +89,7 @@ export function ContextMeter({
   used,
   limit,
   usage,
+  sessionId,
   onCompact,
   placement = 'above',
 }: {
@@ -93,6 +97,8 @@ export function ContextMeter({
   limit: number;
   /** Lifetime session usage (lifetime cumulative `session.usage`) for the detail card. */
   usage?: SessionUsage;
+  /** Enables the prefetched deep link to this session on the /usage page (§9.5). */
+  sessionId?: string;
   /** Requests a compaction (the session view's /compact action). */
   onCompact?: () => void;
   placement?: 'above' | 'below';
@@ -187,7 +193,13 @@ export function ContextMeter({
             <p className="text-[11px] font-semibold text-ink">{t('context.detailsTitle')}</p>
             <span className="font-mono text-[11px] text-ink-soft">{label}</span>
           </div>
-          <div className="mt-2.5 flex items-center gap-3">
+          {/* §9.5 split: the ring answers "how much context is left right now";
+              the cumulative block below answers "what has this session spent". */}
+          <div className="mt-2 flex items-baseline justify-between gap-3">
+            <p className="text-[10.5px] font-medium text-ink-soft">{t('context.windowTitle')}</p>
+            <span className="text-[9.5px] text-ink-faint">{t('context.windowHint')}</span>
+          </div>
+          <div className="mt-1.5 flex items-center gap-3">
             <span aria-hidden className="relative flex h-10 w-10 shrink-0 items-center justify-center">
               <svg viewBox="0 0 24 24" className="h-10 w-10 -rotate-90">
                 <circle
@@ -254,6 +266,16 @@ export function ContextMeter({
                   <dt className="text-ink-faint">{t('usage.card.tokens')}</dt>
                   <dd className="font-mono text-ink tabular-nums">{time.formatTokens(usageTotal)}</dd>
                 </div>
+              ) : null}
+              {sessionId !== undefined ? (
+                <Link
+                  data-context-usage-link
+                  to={usageSessionDeepLink(sessionId)}
+                  onClick={() => { setOpen(false); }}
+                  className="block pt-1 text-[10.5px] font-medium text-accent hover:underline"
+                >
+                  {t('context.viewInUsage')}
+                </Link>
               ) : null}
             </dl>
           ) : null}

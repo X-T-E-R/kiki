@@ -2,6 +2,7 @@
 
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
@@ -176,13 +177,58 @@ describe('ContextMeter interaction', () => {
     });
 
     const usage = container.querySelector('[data-context-usage]');
-    expect(usage?.textContent).toContain('Session usage');
+    expect(usage?.textContent).toContain('Session cumulative');
+    expect(container.querySelector('[data-context-details]')?.textContent).toContain(
+      'Context window',
+    );
     expect(usage?.textContent).toContain('Input');
     expect(usage?.textContent).toContain('Output');
     expect(usage?.textContent).toContain('Cache read');
     expect(usage?.textContent).toContain('Cache write');
     expect(usage?.textContent).toContain('$0.043');
     expect(usage?.textContent).toContain('Total tokens');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('links to the prefetched session view on /usage when sessionId is set', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <MemoryRouter>
+            <ContextMeter
+              used={80_000}
+              limit={200_000}
+              sessionId="session_abc"
+              usage={{
+                input_tokens: 100,
+                output_tokens: 10,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                total_cost_usd: 0.01,
+                context_tokens: 80_000,
+                context_limit: 200_000,
+                turn_count: 1,
+              }}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click();
+    });
+
+    const link = container.querySelector<HTMLAnchorElement>('[data-context-usage-link]');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toBe(
+      '/usage?dimension=session&session=session_abc',
+    );
+    expect(link?.textContent).toContain('Usage');
     await act(async () => { root.unmount(); });
   });
 
