@@ -1,4 +1,8 @@
-import type { TelemetryContextPatch, TelemetryProperties } from '@moonshot-ai/agent-core-v2';
+import type {
+  ContentPart,
+  TelemetryContextPatch,
+  TelemetryProperties,
+} from '@moonshot-ai/agent-core-v2';
 import type { Kaos } from '@moonshot-ai/kaos';
 
 import type {
@@ -8,7 +12,7 @@ import type {
   TelemetryClient,
 } from '#/protocol';
 import type { KimiHostIdentity, OAuthRefreshOutcome } from '@moonshot-ai/kimi-code-oauth';
-import type { ContentPart } from '@moonshot-ai/kosong';
+
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
@@ -95,7 +99,7 @@ export type {
 
 export type { KimiHostIdentity, OAuthRefreshOutcome };
 export type { TelemetryClient, TelemetryContextPatch, TelemetryProperties };
-export type { ContentPart, Role, ThinkingEffort, ToolCall } from '@moonshot-ai/kosong';
+export type { ContentPart, Role, ThinkingEffort, ToolCall } from '@moonshot-ai/agent-core-v2';
 // Contributed commands are an agent-core-v2 seam; the type is re-exported
 // from the v2 engine (v1 sessions report an empty command set).
 export type { AgentCommandInfo } from '@moonshot-ai/agent-core-v2/agent/command/agentCommand';

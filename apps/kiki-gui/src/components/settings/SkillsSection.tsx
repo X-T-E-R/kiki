@@ -48,10 +48,10 @@ const GROUP_TITLE_KEYS = {
 } as const;
 
 /**
- * Skills defaults (redesign §10.3): the old capabilities skills card minus
- * telemetry (now under Data), plus the builtin product-skills switch from the
- * dissolved sidecar card. All three fields patch the server config file; the
- * builtin switch needs a restart to take effect.
+ * Skills defaults (redesign §10.3): the old capabilities skills card plus the
+ * builtin product-skills switch from the dissolved sidecar card. All three
+ * fields patch the server config file; the builtin switch needs a restart to
+ * take effect.
  */
 function SkillsDefaultsCard() {
   const { client } = useConnection();

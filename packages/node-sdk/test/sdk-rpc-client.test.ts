@@ -1236,27 +1236,6 @@ describe('SDKRpcClient engine telemetry', () => {
     }
   });
 
-  it('honors telemetry = false for engine-side events', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-tel-off-'));
-    tempDirs.push(homeDir);
-    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-tel-off-work-'));
-    tempDirs.push(workDir);
-    await writeFile(join(homeDir, 'config.toml'), 'telemetry = false\n', 'utf-8');
-    const records: TelemetryRecord[] = [];
-    const harness = createKimiHarness({
-      homeDir,
-      identity: TEST_IDENTITY,
-      telemetry: recordingTelemetry(records),
-    });
-    try {
-      const session = await harness.createSession({ workDir });
-      await session.setPermission('yolo');
-      expect(records.some((record) => record.event === 'yolo_toggle')).toBe(false);
-      await session.close();
-    } finally {
-      await harness.close();
-    }
-  });
 });
 
 describe('removeProviderFromConfig', () => {

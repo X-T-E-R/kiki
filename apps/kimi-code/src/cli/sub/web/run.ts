@@ -12,18 +12,14 @@ import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 import { createServerLogger, startServer, type ServerLogger } from '@moonshot-ai/kap-server';
-import { shutdownTelemetry, track } from '@moonshot-ai/kimi-telemetry';
 import chalk from 'chalk';
-import { type Command, Option } from 'commander';
+import type { Command } from 'commander';
 
-import { CLI_SHUTDOWN_TIMEOUT_MS, WEB_USER_AGENT_SUFFIX } from '#/constant/app';
+import { WEB_USER_AGENT_SUFFIX } from '#/constant/app';
 import { getNativeWebAssetsDir } from '#/native/web-assets';
 import { darkColors } from '#/tui/theme/colors';
 import { openUrl as defaultOpenUrl } from '#/utils/open-url';
 import { getDataDir } from '#/utils/paths';
-import { generateRemoteControlQr } from '#/utils/remote-control-qr';
-
-import { initializeServerTelemetry } from '../../telemetry';
 import {
   createKimiCodeHostIdentity,
   getHostPackageRoot,
@@ -37,16 +33,6 @@ import {
 } from './access-urls';
 import { resolveHeapWatchdogPolicy, startHeapWatchdog } from './heap-watchdog';
 import { type NetworkAddress } from './networks';
-import {
-  formatRemoteControlOutput,
-  formatRemoteControlStatus,
-  isRemoteControlEnabled,
-  REMOTE_CONTROL_FLAG_ENV,
-  startRemoteControl,
-  type RemoteControlHandle,
-  type RemoteControlOptions,
-  type RemoteControlStatus,
-} from './remote-control';
 import {
   DEFAULT_FOREGROUND_LOG_LEVEL,
   DEFAULT_LAN_HOST,
@@ -74,7 +60,6 @@ interface RoutedServer {
 
 export interface WebCliOptions extends ServerCliOptions {
   open?: boolean;
-  remoteControl?: boolean;
 }
 
 export interface ExternalCatalogSourceOptions {
@@ -100,7 +85,6 @@ export interface WebCommandDeps {
     options: ParsedServerOptions,
     hooks?: StartForegroundHooks,
   ) => Promise<never>;
-  startRemoteControl?: (options: RemoteControlOptions) => Promise<RemoteControlHandle>;
   openUrl(url: string): void;
   /**
    * Best-effort read of the server's persistent bearer token. When it returns
@@ -131,12 +115,8 @@ export function buildWebUrl(origin: string, token: string): string {
 }
 
 /** Build the `web` command, mounting the runner action on `cmd` itself. */
-export function buildWebCommand(
-  cmd: Command,
-  opts: { forceRemoteControl?: boolean } = {},
-): Command {
-  const forceRemoteControl = opts.forceRemoteControl === true;
-  const withServerOptions = cmd
+export function buildWebCommand(cmd: Command): Command {
+  return cmd
     .option(
       '--port <port>',
       `Bind port (default ${DEFAULT_SERVER_PORT})`,
@@ -177,24 +157,11 @@ export function buildWebCommand(
     .option(
       '--web-title <title>',
       'Set a custom browser tab title for this web UI instance (default: "<workspace dir> | Kimi Code").',
-    );
-  if (!forceRemoteControl) {
-    withServerOptions.addOption(
-      new Option(
-        '--rc, --remote-control',
-        'Expose the web UI through Kimi Remote Control (experimental).',
-      )
-        .default(false)
-        .hideHelp(!isRemoteControlEnabled()),
-    );
-  }
-  return withServerOptions
+    )
     .option('--no-open', 'Do not open the web UI in the default browser.', true)
     .action(async (opts: WebCliOptions) => {
       try {
-        await handleWebCommand(
-          forceRemoteControl ? { ...opts, remoteControl: true } : opts,
-        );
+        await handleWebCommand(opts);
       } catch (error) {
         process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
         process.exit(1);
@@ -207,21 +174,9 @@ export async function handleWebCommand(
   deps: WebCommandDeps = DEFAULT_WEB_COMMAND_DEPS,
 ): Promise<void> {
   const parsed = parseServerOptions(opts);
-  if (opts.remoteControl === true && !isRemoteControlEnabled()) {
-    throw new Error(
-      `--remote-control is experimental: set ${REMOTE_CONTROL_FLAG_ENV}=1 (or KIMI_CODE_EXPERIMENTAL_FLAG=1) to enable it.`,
-    );
-  }
-  if (opts.remoteControl === true && parsed.dangerousBypassAuth) {
-    throw new Error('--remote-control cannot be combined with --dangerous-bypass-auth.');
-  }
-  if (opts.remoteControl === true && !isLoopbackHost(parsed.host)) {
-    throw new Error('--remote-control requires a loopback host.');
-  }
   const run = deps.startServerForeground ?? startServerForeground;
-  let remoteControl: RemoteControlHandle | undefined;
   await run(parsed, {
-    onReady: async (origin) => {
+    onReady: (origin) => {
       // Resolve the persistent token only once the server is up: a fresh
       // server writes `server.token` on first boot, so reading it beforehand
       // would miss first-time starts and the browser would hit the auth gate.
@@ -230,38 +185,6 @@ export async function handleWebCommand(
       // token line when unavailable. When auth is bypassed, the token is
       // meaningless and is intentionally NOT shown or carried in the URL.
       const token = parsed.dangerousBypassAuth ? undefined : deps.resolveToken?.();
-      if (opts.remoteControl === true) {
-        if (token === undefined) throw new Error('Unable to read the local server token.');
-        const dataDir = getDataDir();
-        let outputReady = false;
-        const pendingStatuses: string[] = [];
-        const onStatus = (status: RemoteControlStatus): void => {
-          const line = formatRemoteControlStatus(status);
-          if (outputReady) deps.stdout.write(line);
-          else pendingStatuses.push(line);
-        };
-        remoteControl = await (deps.startRemoteControl ?? startRemoteControl)({
-          homeDir: dataDir,
-          localOrigin: origin,
-          localServerToken: token,
-          stderr: deps.stderr,
-          onStatus,
-        });
-        const qrCode = await generateRemoteControlQr(remoteControl.url, dataDir);
-        deps.stdout.write(
-          formatRemoteControlOutput({
-            url: remoteControl.url,
-            localOrigin: origin,
-            deviceName: remoteControl.deviceName,
-            qrCode: qrCode.terminal,
-            pngPath: qrCode.pngPath,
-          }),
-        );
-        outputReady = true;
-        for (const line of pendingStatuses) deps.stdout.write(line);
-        if (opts.open === true) deps.openUrl(remoteControl.url);
-        return;
-      }
       deps.stdout.write(
         parsed.logLevel === DEFAULT_FOREGROUND_LOG_LEVEL
           ? formatReadyBanner(origin, parsed.host, {
@@ -274,9 +197,6 @@ export async function handleWebCommand(
       if (opts.open === true) {
         deps.openUrl(token !== undefined ? buildWebUrl(origin, token) : origin);
       }
-    },
-    onShutdown: async () => {
-      await remoteControl?.close();
     },
   });
 }
@@ -328,12 +248,6 @@ async function runServerInProcess(
 ): Promise<never> {
   const version = getVersion();
   const externalCatalog = externalCatalogSourceFromEnv(process.env);
-  // Registers the telemetry provider for `track` / `shutdownTelemetry`; the
-  // client itself is not passed into kap-server.
-  const telemetry = initializeServerTelemetry({
-    version,
-    configPath: externalCatalog?.configPath,
-  });
 
   let running: RoutedServer | undefined;
   let stopping = false;
@@ -352,7 +266,6 @@ async function runServerInProcess(
     }
     try {
       await running?.close();
-      await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS });
     } catch (error) {
       running?.logger.error(
         { err: error instanceof Error ? error : new Error(String(error)) },
@@ -402,10 +315,6 @@ async function runServerInProcess(
     allowedHosts: options.allowedHosts,
     disableAuth: options.dangerousBypassAuth,
     webTitle: options.webTitle,
-    // Attach the engine's cloud telemetry appender (still gated by the config
-    // `telemetry` toggle). Complements the v1 client registered above, which
-    // only covers host-level events.
-    telemetry: telemetry.cloudEnabled,
     webAssetsDir,
   });
   logger.info('serving the REST/WS API and the bundled web UI');
@@ -414,8 +323,6 @@ async function runServerInProcess(
     logger,
     close: () => v2.close(),
   };
-
-  track('server_started', { daemon: false });
 
   const heapPolicy = resolveHeapWatchdogPolicy(process.env);
   if (heapPolicy !== undefined) {
@@ -457,7 +364,6 @@ async function runServerInProcess(
       await hooks.onShutdown?.('startup_failed');
     } finally {
       await running.close();
-      await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS });
     }
     throw error;
   }

@@ -18,7 +18,6 @@ import { TabbedModelSelectorComponent } from '../components/dialogs/tabbed-model
 import { PermissionSelectorComponent } from '../components/dialogs/permission-selector';
 import { SettingsSelectorComponent, type SettingsSelection } from '../components/dialogs/settings-selector';
 import { ThemeSelectorComponent } from '../components/dialogs/theme-selector';
-import { UpdatePreferenceSelectorComponent } from '../components/dialogs/update-preference-selector';
 import { DEFAULT_TUI_CONFIG, saveTuiConfig, type TuiConfig } from '../config';
 import type { ThemeName } from '#/tui/theme';
 import { currentTheme, isBuiltInTheme, lightColors, loadCustomThemeMerged } from '#/tui/theme';
@@ -58,7 +57,6 @@ export function currentTuiConfig(host: Pick<SlashCommandHost, 'state'>): TuiConf
     renderLatex: host.state.appState.renderLatex ?? DEFAULT_TUI_CONFIG.renderLatex ?? true,
     cacheExpiryHint: host.state.appState.cacheExpiryHint ?? DEFAULT_TUI_CONFIG.cacheExpiryHint,
     notifications: host.state.appState.notifications,
-    upgrade: host.state.appState.upgrade,
     statusLine: host.state.appState.statusLine ?? DEFAULT_TUI_CONFIG.statusLine,
   };
 }
@@ -651,21 +649,6 @@ export function showPermissionPicker(host: SlashCommandHost): void {
   );
 }
 
-export function showUpdatePreferencePicker(host: SlashCommandHost): void {
-  host.mountEditorReplacement(
-    new UpdatePreferenceSelectorComponent({
-      currentValue: host.state.appState.upgrade.autoInstall,
-      onSelect: (value) => {
-        host.restoreEditor();
-        void applyUpdatePreferenceChoice(host, value);
-      },
-      onCancel: () => {
-        host.restoreEditor();
-      },
-    }),
-  );
-}
-
 export async function showExperimentsPanel(host: SlashCommandHost): Promise<void> {
   let features: readonly ExperimentalFeatureState[];
   try {
@@ -732,46 +715,6 @@ function mountExperimentsPanel(
   );
 }
 
-type UpdatePreferenceHost = {
-  readonly state: {
-    readonly appState: Pick<
-      SlashCommandHost['state']['appState'],
-      'theme' | 'editorCommand' | 'notifications' | 'upgrade'
-    >;
-  };
-  setAppState(patch: Pick<SlashCommandHost['state']['appState'], 'upgrade'>): void;
-  showStatus(msg: string, color?: string): void;
-  track: SlashCommandHost['track'];
-};
-
-export async function applyUpdatePreferenceChoice(
-  host: UpdatePreferenceHost,
-  autoInstall: boolean,
-): Promise<void> {
-  if (autoInstall === host.state.appState.upgrade.autoInstall) {
-    host.showStatus(`Automatic updates already ${autoInstall ? 'enabled' : 'disabled'}.`);
-    return;
-  }
-
-  const upgrade = { autoInstall };
-  try {
-    await saveTuiConfig({
-      ...currentTuiConfig(host as unknown as SlashCommandHost),
-      upgrade,
-    });
-  } catch (error) {
-    host.showStatus(
-      `Failed to save automatic update setting: ${formatErrorMessage(error)}`,
-      'error',
-    );
-    return;
-  }
-
-  host.setAppState({ upgrade });
-  host.track('upgrade_preference_changed', { auto_install: autoInstall });
-  host.showStatus(`Automatic updates ${autoInstall ? 'enabled' : 'disabled'}.`);
-}
-
 async function applyPermissionChoice(host: SlashCommandHost, mode: PermissionMode): Promise<void> {
   if (mode === host.state.appState.permissionMode) {
     host.showStatus(`Permission mode unchanged: ${mode}.`);
@@ -818,7 +761,6 @@ function handleSettingsSelection(host: SlashCommandHost, value: SettingsSelectio
     case 'theme': showThemePicker(host); return;
     case 'editor': showEditorPicker(host); return;
     case 'experiments': void showExperimentsPanel(host); return;
-    case 'upgrade': showUpdatePreferencePicker(host); return;
     case 'usage': void showUsage(host); return;
   }
 }

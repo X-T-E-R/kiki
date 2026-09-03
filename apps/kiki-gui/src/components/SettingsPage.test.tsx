@@ -174,9 +174,8 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-tools')).toBeNull();
   });
 
-  it('mounts the data, experimental, and advanced leaves under Data & advanced', async () => {
+  it('mounts the experimental and advanced leaves under Data & advanced', async () => {
     for (const [section, cardId] of [
-      ['data', 'st-card-telemetry'],
       ['experimental', 'st-card-experimental'],
       ['advanced', 'st-card-advanced'],
     ] as const) {

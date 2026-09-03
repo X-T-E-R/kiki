@@ -27,7 +27,6 @@ export default {
     merge_all_available_skills: true,
     extra_skill_dirs: ['C:/fixture/skills'],
     experimental: { search_worker: true },
-    telemetry: true,
     providers: {
       fixture: {
         type: 'openai',

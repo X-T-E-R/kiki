@@ -46,9 +46,6 @@ command = "vim"
 [notifications]
 enabled = false
 notification_condition = "always"
-
-[upgrade]
-auto_install = false
 `);
     const session = { reloadSession: vi.fn() };
     const host = makeHost({ session });
@@ -63,7 +60,6 @@ auto_install = false
       editorCommand: 'vim',
       cacheExpiryHint: false,
       notifications: { enabled: false, condition: 'always' },
-      upgrade: { autoInstall: false },
     });
     expect(host.showStatus).toHaveBeenCalledWith(
       'TUI config reloaded.',
@@ -188,7 +184,6 @@ function makeHost({
       theme: 'dark',
       editorCommand: null,
       notifications: { enabled: true, condition: 'unfocused' },
-      upgrade: { autoInstall: true },
       availableModels: {},
       availableProviders: {},
     },

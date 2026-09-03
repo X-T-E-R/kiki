@@ -11,19 +11,7 @@ Kimi Code CLI is an AI coding agent that runs in your terminal — it can read a
 
 ## Install
 
-Install with the official script. No Node.js required.
-
-- **macOS or Linux**:
-
-```sh
-curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash
-```
-
-- **Windows (PowerShell)**:
-
-```powershell
-irm https://code.kimi.com/kimi-code/install.ps1 | iex
-```
+Download the appropriate build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases).
 
 > On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Kimi Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
 
@@ -33,7 +21,7 @@ Then, run it with a new shell session:
 kimi --version
 ```
 
-For npm install, upgrade, uninstall, see [Getting Started](https://moonshotai.github.io/kimi-code/en/guides/getting-started).
+For npm install and uninstall, see [Getting Started](https://moonshotai.github.io/kimi-code/en/guides/getting-started).
 
 ## Quick Start
 

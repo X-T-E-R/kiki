@@ -46,7 +46,6 @@ function fakeInitialAppState(): AppState {
     version: '0.0.0-test',
     editorCommand: null,
     notifications: { enabled: true, condition: 'unfocused' },
-    upgrade: { autoInstall: true },
     availableModels: {},
     availableProviders: {},
     sessionTitle: null,

@@ -357,7 +357,6 @@ describe('KimiHarness config API', () => {
     expect(features.map((feature) => feature.id)).toEqual([
       'agent-profile-routes',
       'auto_session_title',
-      'remote-control',
       'task_wait',
       'tool-select',
       'subagent_release_idle',

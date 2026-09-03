@@ -2,7 +2,7 @@
  * Client-owned preferences.
  *
  * Agent/runtime settings live in core's `config.toml`; this file owns
- * kimi-code client preferences such as terminal UI and update behavior.
+ * kimi-code client preferences such as terminal UI behavior.
  */
 
 import { existsSync } from 'node:fs';
@@ -24,10 +24,6 @@ export const NotificationConditionSchema = z.enum(['unfocused', 'always']);
 export const NotificationsConfigSchema = z.object({
   enabled: z.boolean(),
   condition: NotificationConditionSchema,
-});
-
-export const UpgradePreferencesSchema = z.object({
-  autoInstall: z.boolean(),
 });
 
 export const STATUS_LINE_ITEMS = ['mode', 'goal', 'model', 'tasks', 'cwd', 'git', 'tips'] as const;
@@ -67,11 +63,6 @@ export const TuiConfigFileSchema = z.object({
       notification_condition: NotificationConditionSchema.optional(),
     })
     .optional(),
-  upgrade: z
-    .object({
-      auto_install: z.boolean().optional(),
-    })
-    .optional(),
   status_line: StatusLineFileConfigSchema.optional(),
 });
 
@@ -86,7 +77,6 @@ export const TuiConfigSchema = z.object({
   cacheExpiryHint: z.boolean().optional(),
   editorCommand: z.string().nullable(),
   notifications: NotificationsConfigSchema,
-  upgrade: UpgradePreferencesSchema,
   /** Present in every normalized config; optional only so hand-built test
    * fixtures from before this field existed still typecheck. */
   statusLine: StatusLineConfigSchema.optional(),
@@ -95,15 +85,10 @@ export const TuiConfigSchema = z.object({
 export type TuiConfigFileShape = z.infer<typeof TuiConfigFileSchema>;
 export type TuiConfig = z.infer<typeof TuiConfigSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsConfigSchema>;
-export type UpgradePreferences = z.infer<typeof UpgradePreferencesSchema>;
 
 export const DEFAULT_NOTIFICATIONS_CONFIG: NotificationsConfig = {
   enabled: true,
   condition: 'unfocused',
-};
-
-export const DEFAULT_UPGRADE_PREFERENCES: UpgradePreferences = {
-  autoInstall: true,
 };
 
 export const DEFAULT_TUI_CONFIG: TuiConfig = TuiConfigSchema.parse({
@@ -113,7 +98,6 @@ export const DEFAULT_TUI_CONFIG: TuiConfig = TuiConfigSchema.parse({
   cacheExpiryHint: true,
   editorCommand: null,
   notifications: DEFAULT_NOTIFICATIONS_CONFIG,
-  upgrade: DEFAULT_UPGRADE_PREFERENCES,
   statusLine: DEFAULT_STATUS_LINE_CONFIG,
 });
 
@@ -204,9 +188,6 @@ export function normalizeTuiConfig(
       condition:
         config.notifications?.notification_condition ?? DEFAULT_NOTIFICATIONS_CONFIG.condition,
     },
-    upgrade: {
-      autoInstall: config.upgrade?.auto_install ?? DEFAULT_UPGRADE_PREFERENCES.autoInstall,
-    },
     statusLine: {
       items: statusLineItems,
       command:
@@ -255,9 +236,6 @@ command = "${escapeTomlBasicString(config.editorCommand ?? '')}" # Empty uses $V
 [notifications]
 enabled = ${String(config.notifications.enabled)} # true | false
 notification_condition = "${config.notifications.condition}" # "unfocused" | "always"
-
-[upgrade]
-auto_install = ${String(config.upgrade.autoInstall)} # true | false
 
 ${statusSection}`;
 }

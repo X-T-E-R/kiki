@@ -11,11 +11,9 @@ const sourceDirectories = [
   join(extensionRoot, 'shared'),
   ...[
     'kaos',
-    'kosong',
     'node-sdk',
     'oauth',
     'protocol',
-    'telemetry',
   ].map((name) => resolve(extensionRoot, `../../packages/${name}/src`)),
 ].filter(existsSync);
 const rootConfigFiles = ['package.json', 'tsconfig.json', 'tsdown.config.ts'].map((name) =>

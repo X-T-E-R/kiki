@@ -1,8 +1,4 @@
-import type {
-  ModelCapability,
-  ProviderConfig as KosongProviderConfig,
-  ProviderRequestAuth,
-} from '@moonshot-ai/kosong';
+import type { ModelCapability, ProviderRequestAuth } from '@moonshot-ai/agent-core-v2';
 
 import type { ModelAlias, ProviderType } from '#/config';
 import type { Logger } from '#/logging';
@@ -11,9 +7,19 @@ export interface BearerTokenProvider {
   getAccessToken(options?: { readonly force?: boolean }): Promise<string>;
 }
 
+export interface RuntimeProviderConfig {
+  readonly type: ProviderType;
+  readonly model: string;
+  readonly apiKey?: string;
+  readonly baseUrl?: string;
+  readonly stream?: boolean;
+  readonly defaultHeaders?: Record<string, string>;
+  readonly generationKwargs?: Record<string, unknown>;
+}
+
 export interface ResolvedRuntimeProvider {
   readonly providerName: string;
-  readonly provider: KosongProviderConfig;
+  readonly provider: RuntimeProviderConfig;
   readonly modelCapabilities: ModelCapability;
   /** Declared 'always_thinking' capability — the model cannot disable thinking. */
   readonly alwaysThinking?: boolean;

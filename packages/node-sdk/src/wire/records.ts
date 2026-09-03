@@ -1,4 +1,4 @@
-import type { ContentPart, ThinkingEffort, TokenUsage } from '@moonshot-ai/kosong';
+import type { ContentPart, ThinkingEffort, TokenUsage } from '@moonshot-ai/agent-core-v2';
 
 import type {
   AgentConfigUpdateData,

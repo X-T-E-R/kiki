@@ -83,9 +83,6 @@ command = "code --wait"
 [notifications]
 enabled = true
 notification_condition = "unfocused"
-
-[upgrade]
-auto_install = true
 `,
     'utf-8',
   );

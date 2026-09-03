@@ -135,15 +135,8 @@ export type {
 } from '@moonshot-ai/agent-core-v2/agent/media/mediaRef';
 
 export type {
-  KimiAuthCompleteFeedbackUploadInput,
-  KimiAuthCompleteFeedbackUploadPart,
-  KimiAuthCreateFeedbackUploadUrlInput,
-  KimiAuthCreateFeedbackUploadUrlOk,
-  KimiAuthCreateFeedbackUploadUrlResult,
-  KimiAuthFeedbackUploadPart,
   KimiAuthLoginResult,
   KimiAuthLogoutResult,
-  KimiAuthSubmitFeedbackInput,
 } from '#/auth';
 
 export * from '#/events';

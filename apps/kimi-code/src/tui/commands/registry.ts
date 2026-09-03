@@ -341,13 +341,6 @@ export const BUILTIN_SLASH_COMMANDS = [
     availability: 'always',
   },
   {
-    name: 'feedback',
-    aliases: ['bug'],
-    description: 'Send feedback to make Kimi Code better',
-    priority: 60,
-    availability: 'always',
-  },
-  {
     name: 'undo',
     aliases: [],
     description: 'Withdraw the last prompt from the transcript',
@@ -404,14 +397,6 @@ export const BUILTIN_SLASH_COMMANDS = [
     description: 'Open the current session in the Web UI by starting a new server',
     priority: 40,
     availability: 'always',
-  },
-  {
-    name: 'remote-control',
-    aliases: ['rc'],
-    description: 'Open the current session through Kimi Remote Control (experimental)',
-    priority: 40,
-    availability: 'always',
-    experimentalFlag: 'remote-control',
   },
   {
     name: 'exit',

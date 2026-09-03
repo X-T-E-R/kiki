@@ -47,11 +47,6 @@ $KIMI_CODE_HOME  （默认 ~/.kimi-code）
 │   └── fd                  # 文件引用使用的托管 fd 二进制（Windows 为 fd.exe）
 ├── logs/
 │   └── kimi-code.log       # 全局诊断日志
-├── updates/
-│   ├── latest.json
-│   ├── install.json
-│   ├── install.lock
-│   └── rollout.log
 └── user-history/
     └── <md5(workDir)>.jsonl
 ```
@@ -61,7 +56,7 @@ $KIMI_CODE_HOME  （默认 ~/.kimi-code）
 数据根下的顶层文件各有用途，大部分由 CLI 自动管理：
 
 - **`config.toml`**：主运行时配置，存放供应商、模型、循环控制等用户级设置。详见[配置文件](./config-files.md)。
-- **`tui.toml`**：终端界面客户端偏好，包括 `[upgrade].auto_install`（自动更新，默认开启）。可在 `/settings` 关闭，或手动设为 `auto_install = false`。
+- **`tui.toml`**：终端界面客户端偏好，例如主题、编辑器、通知和状态栏。
 - **`AGENTS.md`**：全局 Kimi 专属 Agent 指令。该文件会随 `KIMI_CODE_HOME` 移动；跨工具通用指令仍可放在 `~/.agents/AGENTS.md`。
 - **`mcp.json`**：用户级 MCP server 声明，启动时与项目内的 `.kimi-code/mcp.json` 合并加载。详见 [MCP](../customization/mcp.md)。
 - **`skills/`**：Kimi 专属用户级 Skills。该目录会随 `KIMI_CODE_HOME` 移动；跨工具通用 Skills 仍可放在 `~/.agents/skills/`。详见 [Agent Skills](../customization/skills.md)。
@@ -87,14 +82,12 @@ $KIMI_CODE_HOME  （默认 ~/.kimi-code）
 
 `Grep` 工具第一次需要 ripgrep 时，CLI 可自动下载 `rg` 并缓存到 `bin/rg`（Windows 为 `bin/rg.exe`）。终端界面的文件引用补全使用 `fd`；需要时 CLI 会在后台自动下载并缓存到 `bin/fd`（Windows 为 `bin/fd.exe`）。之后的运行会直接复用缓存的二进制。`rg` 优先使用系统 `PATH`，再使用缓存；`fd` 优先检查托管缓存，再回退到系统 `fd` / `fdfind`。删除 `bin/` 目录会在下次需要时触发重新下载。
 
-## 日志与更新状态
+## 日志
 
 - **`logs/kimi-code.log`**（全局）：记录启动、登录、导出等跨会话事件。
 - **`<sessionDir>/logs/kimi-code.log`**（会话级）：记录单个会话内的诊断事件。
 
 报 bug 时，优先用 `kimi export` 导出相关会话（详见 [kimi 命令](../reference/kimi-command.md)）；会话日志默认包含在导出包里。不想分享全局日志时加 `--no-include-global-log`。
-
-`updates/` 下的文件（`latest.json`、`install.json`、`install.lock`、`rollout.log`）由自动更新机制维护，通常无需手动编辑。`rollout.log` 记录每次更新检查命中的灰度分批情况，可用于排查设备何时能收到新版本。
 
 ## 输入历史
 
@@ -111,7 +104,6 @@ $KIMI_CODE_HOME  （默认 ~/.kimi-code）
 | 清理所有会话 | 删除 `~/.kimi-code/sessions/` 和 `session_index.jsonl` |
 | 清理诊断日志 | 删除 `~/.kimi-code/logs/` |
 | 清理输入历史 | 删除 `~/.kimi-code/user-history/` |
-| 重置更新状态 | 删除 `~/.kimi-code/updates/latest.json` |
 | 强制重新下载托管 `rg` 和 `fd` | 删除 `~/.kimi-code/bin/` |
 | 清除供应商 OAuth 登录态 | 运行 `/logout`，或删除对应的 `credentials/<name>.json` |
 | 清除 MCP server OAuth 登录态 | 删除 `credentials/mcp/`（`/logout` 不会清理 MCP 凭据） |

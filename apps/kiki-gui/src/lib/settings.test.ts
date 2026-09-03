@@ -183,7 +183,7 @@ describe('settings persistence and validation', () => {
     expect(readRestartRequirement().required).toBe(true);
     expect(readRestartRequirement().fields).toEqual(['subagent']);
     // A new change re-arms the banner even within this acknowledged run.
-    let second = markRestartRequired(['telemetry']);
+    let second = markRestartRequired(['modelCatalog']);
     while (second.changedAt === first.changedAt) second = markRestartRequired(['mcp']);
     expect(isRestartRequirementAcknowledged(second)).toBe(false);
     clearRestartRequirement();
@@ -798,7 +798,6 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(settingsGroupForSection('automation')?.id).toBe('extensions');
     expect(settingsGroupForSection('subagents')?.id).toBe('agents');
     expect(settingsGroupForSection('runtime')?.id).toBe('system');
-    expect(settingsGroupForSection('data')?.id).toBe('advanced');
     expect(settingsGroupForSection('experimental')?.id).toBe('advanced');
     expect(settingsGroupForSection('advanced')?.id).toBe('advanced');
     expect(settingsGroupForSection('workspaces')?.id).toBe('system');
@@ -828,7 +827,6 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_SECTION_META['ai']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['runtime']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['automation']?.scopes).toEqual(['server']);
-    expect(SETTINGS_SECTION_META['data']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['experimental']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['advanced']?.scopes).toEqual(['server']);
   });

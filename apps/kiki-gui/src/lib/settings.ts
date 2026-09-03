@@ -1237,7 +1237,6 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
   { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'runtime', labelKey: 'st.section.runtime' },
-  { id: 'data', labelKey: 'st.section.data' },
   { id: 'experimental', labelKey: 'st.section.experimental' },
   { id: 'advanced', labelKey: 'st.section.advanced' },
   { id: 'about', labelKey: 'st.section.about' },
@@ -1252,8 +1251,8 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
  *
  * Batch 3 landed the capabilities split (redesign §10.3): the old single
  * "capabilities" leaf dissolved into skills / mcp / automation under
- * "Capabilities & extensions", runtime moved to "System", and the dangerous
- * tails (telemetry, experimental flags, raw JSON) fill "Data & advanced".
+ * "Capabilities & extensions", runtime moved to "System", and experimental
+ * flags plus raw JSON fill "Data & advanced".
  * Groups with zero leaves are not rendered — every group now has content.
  */
 export interface SettingsNavGroupSpec {
@@ -1276,7 +1275,7 @@ export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents', 'subagents'] },
   { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'automation'] },
   { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection', 'runtime'] },
-  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['data', 'experimental', 'advanced'] },
+  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['experimental', 'advanced'] },
   { kind: 'leaf', section: 'about' },
 ];
 
@@ -1311,7 +1310,6 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
   runtime: { scopes: ['server'], purposeKey: 'st.purpose.runtime' },
-  data: { scopes: ['server'], purposeKey: 'st.purpose.data' },
   experimental: { scopes: ['server'], purposeKey: 'st.purpose.experimental' },
   advanced: { scopes: ['server'], purposeKey: 'st.purpose.advanced' },
   about: { scopes: ['app', 'server'], purposeKey: 'st.purpose.about' },
@@ -1350,7 +1348,6 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'mcp', cardId: 'st-card-mcp-status', titleKey: 'st.mcp.statusTitle', keywordKeys: ['st.mcp.restart', 'st.mcp.toolsCount'], synonyms: ['mcp 状态', 'mcp status'] },
   { section: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
   { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理'] },
-  { section: 'data', cardId: 'st-card-telemetry', titleKey: 'st.telemetry.title', keywordKeys: ['st.caps.telemetry', 'st.caps.telemetryHint'], synonyms: ['遥测', 'telemetry'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
 ];

@@ -123,7 +123,9 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
 function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
   const wire: Record<string, unknown> = {};
   for (const [domain, value] of Object.entries(resolved)) {
-    if (domain === 'providers') {
+    if (domain === 'telemetry') {
+      continue;
+    } else if (domain === 'providers') {
       wire['providers'] = toProviderResponses(value);
     } else if (domain === REQUEST_IDENTITY_SECTION) {
       wire['request_identity'] = requestIdentityToWire(value as RequestIdentityPolicy);

@@ -1,28 +1,19 @@
 /**
  * Kimi Code entry point.
  *
- * Parses CLI arguments via Commander.js, validates options, runs the
- * outer update preflight, then delegates to the requested UI runner.
+ * Parses CLI arguments via Commander.js, validates options, then delegates to
+ * the requested UI runner.
  */
 
 import '@moonshot-ai/kimi-code-sdk/native-fs-watch-error-guard';
 
 import {
-  createKimiHarness,
   flushDiagnosticLogs,
   installGlobalProxyDispatcher,
   log,
   resolveGlobalLogPath,
   resolveKimiHome,
-  type TelemetryClient,
 } from '@moonshot-ai/kimi-code-sdk';
-import {
-  installCrashHandlers,
-  setTelemetryContext,
-  shutdownTelemetry,
-  track,
-  withTelemetryContext,
-} from '@moonshot-ai/kimi-telemetry';
 
 import { createProgram } from './cli/commands';
 import { finalizeHeadlessRun } from './cli/headless-exit';
@@ -33,19 +24,8 @@ import { runPrompt } from './cli/run-prompt';
 import { runShell } from './cli/run-shell';
 import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
-import { runUpdateDownloadCommand } from './cli/sub/update-download';
-import { handleUpgrade } from './cli/sub/upgrade';
-import { createCliTelemetryBootstrap, initializeCliTelemetry } from './cli/telemetry';
-import { runUpdatePreflight } from './cli/update/preflight';
-import { detectNativeInstall } from './cli/update/source';
-import { maybeRelaunchWithStagedNativeUpdate } from './cli/update/native-swap';
-import { createKimiCodeHostIdentity, getVersion } from './cli/version';
-import {
-  CLI_SHUTDOWN_TIMEOUT_MS,
-  CLI_UI_MODE,
-  isKikiDesktopBundled,
-  PROCESS_NAME,
-} from './constant/app';
+import { getVersion } from './cli/version';
+import { PROCESS_NAME } from './constant/app';
 import { cleanupStaleNativeCacheForCurrent } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
@@ -81,18 +61,6 @@ export async function handleMainCommand(
     throw error;
   }
 
-  if (!isKikiDesktopBundled()) {
-    startupTrace('preflight:begin');
-    const preflightResult = await runUpdatePreflight(
-      version,
-      validated.uiMode === 'print' ? { track, isTTY: false } : { track },
-    );
-    startupTrace('preflight:end');
-    if (preflightResult === 'exit') {
-      process.exit(0);
-    }
-  }
-
   if (validated.uiMode === 'print') {
     await runPrompt(validated.options, version);
     return { headlessCompleted: true };
@@ -103,55 +71,9 @@ export async function handleMainCommand(
   return { headlessCompleted: false };
 }
 
-export async function handleUpgradeCommand(version: string): Promise<void> {
-  const telemetryBootstrap = createCliTelemetryBootstrap();
-  const telemetryClient: TelemetryClient = {
-    track,
-    withContext: withTelemetryContext,
-    setContext: setTelemetryContext,
-  };
-  const harness = createKimiHarness({
-    homeDir: telemetryBootstrap.homeDir,
-    identity: createKimiCodeHostIdentity(version),
-    telemetry: telemetryClient,
-  });
-  let exitCode = 1;
-  try {
-    await harness.ensureConfigFile();
-    const config = await harness.getConfig();
-    initializeCliTelemetry({
-      harness,
-      bootstrap: telemetryBootstrap,
-      config,
-      version,
-      uiMode: CLI_UI_MODE,
-    });
-    exitCode = await handleUpgrade(version, { track, logger: log });
-  } finally {
-    await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS }).catch(() => {});
-    await harness.close().catch(() => {});
-  }
-  process.exit(exitCode);
-}
-
 export function main(): void {
   process.title = PROCESS_NAME;
-  installCrashHandlers();
-  // A staged native update is swapped in and re-exec'd here, before any other
-  // initialization, so the user session immediately runs the new binary (and
-  // the old process never replaces itself while running). Every failure path
-  // inside falls back to a normal startup with the current exe.
-  void maybeRelaunchWithStagedNativeUpdate({
-    exePath: process.execPath,
-    argv: process.argv,
-    env: process.env,
-    currentVersion: getVersion(),
-    isNative: detectNativeInstall(),
-  })
-    .catch(() => false)
-    .then((relaunched) => {
-      if (!relaunched) bootstrap();
-    });
+  bootstrap();
 }
 
 function bootstrap(): void {
@@ -248,25 +170,6 @@ function bootstrap(): void {
         process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
         process.exit(1);
       });
-    },
-    () => {
-      void handleUpgradeCommand(version).catch(async (error: unknown) => {
-        await logStartupFailure('upgrade', error);
-        process.stderr.write(formatStartupError(error, { operation: 'upgrade' }));
-        process.stderr.write(`See log: ${resolveGlobalLogPath(resolveKimiHome())}\n`);
-        process.exit(1);
-      });
-    },
-    (targetVersion, manual) => {
-      void runUpdateDownloadCommand(targetVersion, manual).then(
-        (code) => {
-          process.exit(code);
-        },
-        async (error: unknown) => {
-          await logStartupFailure('download update', error);
-          process.exit(1);
-        },
-      );
     },
   );
 

@@ -1,41 +1,39 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type * as KosongModule from '@moonshot-ai/kosong';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ProtocolAdapterConfig } from '@moonshot-ai/agent-core-v2/kosong/protocol/protocol';
+import { ProtocolAdapterRegistry } from '@moonshot-ai/agent-core-v2/kosong/provider/protocolAdapterRegistry';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, type KimiError, type Event } from '#/index';
 
 import { makeTempDir, removeTempDirs, waitForSDKEvent } from './session-runtime-helpers';
 import { TEST_IDENTITY } from './test-identity';
 
-vi.mock('@moonshot-ai/kosong', async (importOriginal) => {
-  const actual = await importOriginal<typeof KosongModule>();
-  return {
-    ...actual,
-    createProvider: () => ({
-      name: 'fake',
-      modelName: 'fake-model',
-      thinkingEffort: null,
-      async generate(
-        _systemPrompt: string,
-        _tools: unknown,
-        _history: unknown,
-        options?: { readonly signal?: AbortSignal },
-      ) {
-        await waitForAbort(options?.signal);
-        throwAbortError();
-      },
-      withThinking() {
-        return this;
-      },
-    }),
-  };
+beforeEach(() => {
+  vi.spyOn(ProtocolAdapterRegistry.prototype, 'createChatProvider').mockImplementation(
+    (config: ProtocolAdapterConfig) =>
+      ({
+        name: config.providerType ?? 'fake',
+        modelName: config.modelName,
+        thinkingEffort: null,
+        async generate(
+          _systemPrompt: string,
+          _tools: unknown,
+          _history: unknown,
+          options?: { readonly signal?: AbortSignal },
+        ) {
+          await waitForAbort(options?.signal);
+          throwAbortError();
+        },
+      }) as ReturnType<ProtocolAdapterRegistry['createChatProvider']>,
+  );
 });
 
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await removeTempDirs(tempDirs);
 });
 

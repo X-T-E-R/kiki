@@ -925,7 +925,6 @@ export const en = {
   'st.section.automation': 'Tools & hooks',
   'st.section.workspaces': 'Workspaces',
   'st.section.runtime': 'Runtime',
-  'st.section.data': 'Data & diagnostics',
   'st.section.experimental': 'Experimental',
   'st.section.advanced': 'Advanced',
   'st.section.about': 'About & updates',
@@ -950,7 +949,6 @@ export const en = {
   'st.purpose.workspaces': 'Workspaces registered on the connected Server: pin, rename, open, remove.',
   'st.purpose.connection': 'Server address, token, connection state, and the bundled local server for this app.',
   'st.purpose.runtime': 'Runtime engine configuration on the connected Server: scheduling, resources, tasks, and agent runtime.',
-  'st.purpose.data': 'Telemetry and diagnostics on the connected Server; changes can require a restart.',
   'st.purpose.experimental': 'Experimental feature flags on the connected Server, with inherited and overridden state.',
   'st.purpose.advanced': 'Raw JSON config domains on the connected Server — for when the structured editors are not enough.',
   'st.purpose.about': 'Version, build, server identity, and updates.',
@@ -1235,9 +1233,6 @@ export const en = {
   'st.unit.hours': '{n} h',
   'st.caps.title': 'Skill defaults',
   'st.caps.mergeSkills': 'Merge all available skills',
-  'st.caps.telemetry': 'Enable telemetry',
-  'st.caps.telemetryHint':
-    'Telemetry is wired at server start. Saving this toggle marks a restart as required; it does not hot-reload.',
   'st.caps.savedRestart': 'Saved. Restart the server for this change to take effect.',
   'st.caps.extraDirs': 'Extra skill directories',
   'st.caps.selectDirs': 'Choose folders…',
@@ -1463,7 +1458,6 @@ export const en = {
   'st.mcp.timeoutsHint':
     'Server-wide MCP timeouts in milliseconds. An empty field removes the saved value and falls back to the default.',
   'st.mcp.timeoutsSaved': 'MCP timeouts saved and echoed by the server.',
-  'st.telemetry.title': 'Telemetry',
   'st.workspaces.title': 'Workspaces',
   'st.workspaces.loading': 'Loading workspaces…',
   'st.workspaces.newSession': 'New session',

@@ -15,12 +15,9 @@ import {
   IBootstrapService,
   IConfigService,
   IEventBus,
-  IFileSystemStorageService,
-  IOAuthToolkit,
   ISessionCronService,
   ISessionIndex,
   ISessionManager,
-  ITelemetryService,
   type BootstrapInput,
   type Event2,
 } from '@moonshot-ai/agent-core-v2';
@@ -62,16 +59,6 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
     resolveKimiHome: mocks.resolveKimiHome,
   };
 });
-
-vi.mock('@moonshot-ai/kimi-telemetry', () => ({
-  initializeTelemetry: vi.fn(),
-  setCrashPhase: vi.fn(),
-  shouldEnableTelemetry: ({ enabled }: { enabled?: boolean }) => enabled === true,
-  shutdownTelemetry: vi.fn(),
-  track: vi.fn(),
-  setTelemetryContext: vi.fn(),
-  withTelemetryContext: vi.fn(() => ({ track: vi.fn() })),
-}));
 
 interface FakeScope {
   readonly id: string;
@@ -121,7 +108,7 @@ function opts(overrides: Record<string, unknown> = {}) {
   } as const;
 }
 
-function makeFakeHarness(telemetry?: boolean) {
+function makeFakeHarness() {
   // Native event listeners registered on the main agent's IEventBus; the turn
   // emits a streaming assistant delta before completing.
   const eventListeners = new Set<(event: Event2<any>) => void>();
@@ -183,11 +170,7 @@ function makeFakeHarness(telemetry?: boolean) {
       IConfigService,
       {
         ready: Promise.resolve(),
-        get: vi.fn((section: string) => {
-          if (section === 'defaultModel') return 'k2';
-          if (section === 'telemetry') return telemetry;
-          return undefined;
-        }),
+        get: vi.fn((section: string) => (section === 'defaultModel' ? 'k2' : undefined)),
         // `applyPrintModeConfigDefaults` inspects each section and fills unset
         // keys via the memory layer; an empty section means everything is unset.
         inspect: vi.fn(() => ({ value: {} })),
@@ -233,22 +216,6 @@ function makeFakeHarness(telemetry?: boolean) {
         getEnv: () => undefined,
       },
     ],
-    [IOAuthToolkit, { getCachedAccessToken: vi.fn(async () => undefined) }],
-    [IFileSystemStorageService, {}],
-    [
-      ITelemetryService,
-      (() => {
-        const svc = {
-          setAppender: vi.fn(),
-          setContext: vi.fn(),
-          track: vi.fn(),
-          track2: vi.fn(),
-          shutdown: vi.fn(async () => {}),
-          withContext: vi.fn(() => svc),
-        };
-        return svc;
-      })(),
-    ],
   ]);
   const app = fakeScope('app', appServices);
   return { app, agent, session, agentServices, appServices, profileState };
@@ -265,10 +232,10 @@ describe('runV2Print', () => {
     vi.unstubAllEnvs();
   });
 
-  it('submits a prompt without creating a cloud appender by default', async () => {
+  it('submits a prompt through the native session', async () => {
     const stdout = writer();
     const stderr = writer();
-    const { app, agent, agentServices, appServices } = makeFakeHarness();
+    const { app, agent, agentServices } = makeFakeHarness();
 
     mocks.bootstrap.mockReturnValue({ app });
     mocks.ensureMainAgent.mockResolvedValue(agent);
@@ -284,29 +251,9 @@ describe('runV2Print', () => {
         origin: { kind: 'user' },
       },
     });
-    const telemetryService = appServices.get(ITelemetryService) as {
-      setAppender: ReturnType<typeof vi.fn>;
-    };
-    expect(telemetryService.setAppender).not.toHaveBeenCalled();
     expect(stderr.write).toHaveBeenNthCalledWith(1, 'kimi version 1.2.3-test\n');
     expect(stdout.text()).toContain('hello world');
     expect(app.dispose).toHaveBeenCalled();
-  });
-
-  it('creates the cloud appender after config.toml explicitly opts in', async () => {
-    const stdout = writer();
-    const stderr = writer();
-    const { app, agent, appServices } = makeFakeHarness(true);
-
-    mocks.bootstrap.mockReturnValue({ app });
-    mocks.ensureMainAgent.mockResolvedValue(agent);
-
-    await runV2Print(opts() as never, '1.2.3-test', { stdout, stderr });
-
-    const telemetryService = appServices.get(ITelemetryService) as {
-      setAppender: ReturnType<typeof vi.fn>;
-    };
-    expect(telemetryService.setAppender).toHaveBeenCalledTimes(1);
   });
 
   it('passes explicit skill dirs from --skillsDir into bootstrap args', async () => {

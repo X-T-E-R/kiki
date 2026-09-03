@@ -137,7 +137,6 @@ export const configResponseSchema = z.object({
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
   mcp: McpSectionSchema.optional(),
   tools: ToolsConfigSchema.optional(),
-  telemetry: z.boolean().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
@@ -186,6 +185,5 @@ export const patchConfigRequestSchema = z.object({
   mcp: mcpConfigRequestSchema.optional(),
   tools: ToolsConfigSchema.optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
-  telemetry: z.boolean().optional(),
 }).strict();
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

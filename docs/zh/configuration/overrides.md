@@ -8,13 +8,12 @@ Kimi Code CLI 有三个地方可以影响运行参数：配置文件、命令行
 
 这个区别很关键：很多人会在 shell 里 `export KIMI_API_KEY=xxx`，以为 CLI 会自动取到，但实际上不会。原因见下文[供应商凭证](#供应商凭证)。
 
-## 环境变量的三类作用
+## 环境变量的两类作用
 
-环境变量按作用分三类，不能合并成一条线性优先级：
+环境变量按作用分两类，不能合并成一条线性优先级：
 
 1. **定位配置文件**：`KIMI_CODE_HOME` 决定数据根目录，配置文件路径因此变为 `$KIMI_CODE_HOME/config.toml`。这一步先于其他所有解析，不是普通参数的后备来源。
-2. **运行时开关**：`KIMI_DISABLE_TELEMETRY` 等少量变量直接关闭对应子系统——即使 `config.toml` 里 `telemetry = true`，只要这个变量是真值，遥测就会被禁用。语义是"额外禁用"，不是"普通覆盖"。
-3. **运行端点与诊断**：`KIMI_CODE_OAUTH_HOST`、`KIMI_CODE_BASE_URL`、`KIMI_LOG_LEVEL` 等在 OAuth 或日志子系统初始化时读取。完整列表见[环境变量](./env-vars.md)。
+2. **运行端点与诊断**：`KIMI_CODE_OAUTH_HOST`、`KIMI_CODE_BASE_URL`、`KIMI_LOG_LEVEL` 等在 OAuth 或日志子系统初始化时读取。完整列表见[环境变量](./env-vars.md)。
 
 ## 普通运行参数的优先级
 

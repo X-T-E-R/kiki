@@ -16,7 +16,6 @@ import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
 import { AutomationSection } from './settings/AutomationSection';
 import { ConnectionSection } from './settings/ConnectionSection';
-import { DataSection } from './settings/DataSection';
 import { ExperimentalSection } from './settings/ExperimentalSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { McpSection } from './settings/McpSection';
@@ -209,7 +208,6 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'automation' ? <AutomationSection />
     : active === 'workspaces' ? <WorkspacesSection />
     : active === 'runtime' ? <RuntimeSection />
-    : active === 'data' ? <DataSection />
     : active === 'experimental' ? <ExperimentalSection />
     : active === 'advanced' ? <AdvancedSection />
     : <AboutSection />;
