@@ -67,15 +67,21 @@ describe("GUI webview carrier", () => {
     };
     const provider = new KimiWebviewProvider(
       new host.Uri(root) as never,
-      { url: "http://127.0.0.1:8123", token: "secret-token" },
+      {
+        url: "https://remote-tunnel.example.test/forwarded/8123",
+        token: "secret-token",
+        restOrigin: "https://remote-tunnel.example.test",
+        socketOrigin: "wss://remote-tunnel.example.test",
+      },
       { autosave: true, editorContext: "never" },
     );
 
     await provider.resolveWebviewView(view as never);
 
     expect(webview.html).toContain('Content-Security-Policy');
-    expect(webview.html).toContain('connect-src vscode-webview://test http://127.0.0.1:*');
-    expect(webview.html).toContain('ws://127.0.0.1:*');
+    expect(webview.html).toContain(
+      'connect-src vscode-webview://test https://remote-tunnel.example.test wss://remote-tunnel.example.test',
+    );
     expect(webview.html).not.toContain('secret-token');
     expect(webview.html).toContain(`src="vscode-resource:${root.replaceAll("\\", "/")}/media/gui/assets/app.js"`);
     expect(webview.html).toContain(`href="vscode-resource:${root.replaceAll("\\", "/")}/media/gui/assets/app.css"`);
@@ -91,7 +97,10 @@ describe("GUI webview carrier", () => {
       id: "connection-1",
       ok: true,
       result: {
-        config: { url: "http://127.0.0.1:8123", token: "secret-token" },
+        config: {
+          url: "https://remote-tunnel.example.test/forwarded/8123",
+          token: "secret-token",
+        },
         persist: false,
       },
     });

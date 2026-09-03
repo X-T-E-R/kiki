@@ -2,9 +2,9 @@ import { readFile } from "node:fs/promises";
 
 import * as vscode from "vscode";
 
-import type { DaemonConnection } from "./daemon";
 import type { VscodeIntegrationSettings } from "./settings";
 import { VscodeHostBridge } from "./vscode-host-bridge";
+import type { WebviewConnection } from "./webview-connection";
 
 export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private readonly webviews = new Set<vscode.Webview>();
@@ -12,7 +12,7 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    connection: DaemonConnection,
+    private readonly connection: WebviewConnection,
     settings: VscodeIntegrationSettings,
   ) {
     this.bridge = new VscodeHostBridge(connection, settings);
@@ -77,10 +77,10 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
     const csp = [
       "default-src 'none'",
       `style-src ${webview.cspSource} 'unsafe-inline'`,
-      `img-src ${webview.cspSource} data: blob: http://127.0.0.1:* http://localhost:*`,
+      `img-src ${webview.cspSource} data: blob: ${this.connection.restOrigin}`,
       `font-src ${webview.cspSource} data:`,
-      `media-src ${webview.cspSource} data: blob: http://127.0.0.1:* http://localhost:*`,
-      `connect-src ${webview.cspSource} http://127.0.0.1:* http://localhost:* http://[::1]:* ws://127.0.0.1:* ws://localhost:* ws://[::1]:*`,
+      `media-src ${webview.cspSource} data: blob: ${this.connection.restOrigin}`,
+      `connect-src ${webview.cspSource} ${this.connection.restOrigin} ${this.connection.socketOrigin}`,
       `worker-src ${webview.cspSource} blob:`,
       `script-src ${webview.cspSource}`,
     ].join("; ");

@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { ensureDaemon } from "./daemon";
 import { KimiWebviewProvider } from "./KimiWebviewProvider";
 import { readIntegrationSettings } from "./settings";
+import { resolveWebviewConnection } from "./webview-connection";
 
 let outputChannel: vscode.OutputChannel | undefined;
 let provider: KimiWebviewProvider | undefined;
@@ -14,9 +15,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const connection = await ensureDaemon({ workspacePath });
+  const webviewConnection = await resolveWebviewConnection(connection);
   log(`Attached to Kimi daemon at ${connection.url}`);
 
-  provider = new KimiWebviewProvider(context.extensionUri, connection, readIntegrationSettings());
+  provider = new KimiWebviewProvider(context.extensionUri, webviewConnection, readIntegrationSettings());
   context.subscriptions.push(
     provider,
     outputChannel,

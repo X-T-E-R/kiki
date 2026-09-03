@@ -22,11 +22,14 @@ interface HostResponse {
 
 export class VscodeHostBridge {
   private readonly injectedEditorContext = new Map<string, string>();
+  private readonly connection: DaemonConnection;
 
   constructor(
-    private readonly connection: DaemonConnection,
+    connection: DaemonConnection,
     private settings: VscodeIntegrationSettings,
-  ) {}
+  ) {
+    this.connection = { url: connection.url, token: connection.token };
+  }
 
   updateSettings(settings: VscodeIntegrationSettings): void {
     this.settings = settings;
