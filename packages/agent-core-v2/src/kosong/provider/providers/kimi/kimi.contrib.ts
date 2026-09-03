@@ -246,6 +246,7 @@ registerProviderDefinition({
   endpoint: kimiEndpoint,
   hostHeaders: 'full',
   modelSource: 'oauth-catalog',
+  requestIdentityDeviceHeaders: true,
 });
 
 registerProviderDefinition({
@@ -255,4 +256,5 @@ registerProviderDefinition({
   endpoint: kimiEndpoint,
   hostHeaders: 'full',
   modelSource: 'oauth-catalog',
+  requestIdentityDeviceHeaders: true,
 });

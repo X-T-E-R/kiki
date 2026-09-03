@@ -514,6 +514,23 @@ decision = "ask"
 pattern = "Bash"
 ```
 
+### 危险 Bash 命令
+
+`permission.dangerous_bash` 是三态开关，控制 tree-sitter Bash 分析器。它识别 `rm -rf`、`shutdown`、向块设备 `dd`，以及 `sudo` / `bash -c` 等包装后的危险命令。开启后，原本会被自动放行的危险命令升级为 `ask`，走既有审批路径；既有 deny 路径不变。无法分析的命令不会升级。
+
+| 取值 | 效果 |
+| --- | --- |
+| `default`（未设置） | `manual` / `auto` 开启，`yolo` 关闭 |
+| `on` | 始终把危险 Bash 升级为 `ask`，包括 `yolo` |
+| `off` | 不介入 |
+
+`yolo` 默认关闭，是为了不改写 Never Ask / yolo 的明确承诺。只有你确实要在该模式下也拦危险命令时，才设为 `on`。
+
+```toml
+[permission]
+dangerous_bash = "default"
+```
+
 ::: tip
 MCP server 的声明配置写在 `~/.kimi-code/mcp.json` 或项目内 `.kimi-code/mcp.json` 中，不在 `config.toml` 里。交互式配置入口是 `/mcp-config`，详见 [Model Context Protocol](../customization/mcp.md)。
 :::
