@@ -113,6 +113,15 @@ const STRINGS = {
     delegationNoticeLabel: 'delegation notice',
     scopedBadgeLabel: 'Scoped',
     planGateTimeoutInvalid: 'Timeout must be at least 5 seconds.',
+    nbSearchSave: 'Save search & retrieval',
+    nbSearchSaved: 'Search & retrieval saved',
+    nbSearchRunCheck: 'Run readiness check',
+    nbSearchCheckFailed: 'Readiness check failed',
+    nbSearchFailClosed: 'refuses to run',
+    nbSearchRevision: 'Config revision',
+    nbSearchReady: 'Ready',
+    nbSearchDegraded: 'Degraded',
+    nbSearchUnconfigured: 'Not configured',
     loadMore: 'Load more sessions',
     searchLoadMore: 'Load more results',
     workspaceFilterAll: 'All workspaces',
@@ -269,6 +278,15 @@ const STRINGS = {
     delegationNoticeLabel: '委派通知',
     scopedBadgeLabel: '专用',
     planGateTimeoutInvalid: '超时时间最短为 5 秒。',
+    nbSearchSave: '保存搜索与抓取',
+    nbSearchSaved: '搜索与抓取配置已保存',
+    nbSearchRunCheck: '运行就绪检查',
+    nbSearchCheckFailed: '就绪检查失败',
+    nbSearchFailClosed: '不会执行',
+    nbSearchRevision: '配置修订',
+    nbSearchReady: '就绪',
+    nbSearchDegraded: '部分可用',
+    nbSearchUnconfigured: '未配置',
     loadMore: '加载更多会话',
     searchLoadMore: '加载更多结果',
     workspaceFilterAll: '全部工作区',
@@ -1738,6 +1756,86 @@ async function scenarioSettingsAgents() {
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
   await shot('settings-agents-disabled-reloaded');
 }
+
+/**
+ * Search & retrieval leaf (nb_search domain): partial seed renders WebSearch
+ * ready on exa.search and FetchURL degraded; the walker changes the default
+ * lane, sets tavily's credential env NAME (never a secret value), saves the
+ * replace-domain patch, and proves the echo survives reload. Diagnostics run
+ * only on demand; empty + error scenarios cover fail-closed and check-failed.
+ */
+async function scenarioSettingsNbSearch() {
+  const searchUrl = `${WEB_URL}/settings/search?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#st-card-search-status', { timeout: 10_000 });
+  await waitForText(S.nbSearchDegraded);
+  const statusText = await page.locator('#st-card-search-status').textContent();
+  if (!statusText?.includes(S.nbSearchReady) || !statusText.includes(S.nbSearchDegraded)) {
+    throw new Error(`status card must show WebSearch ready + FetchURL degraded, saw "${statusText}"`);
+  }
+  await shot('settings-nbsearch');
+
+  // Default lane is a radio over existing lanes only (no new lane creation).
+  await page.locator('#st-card-search-defaults label', { hasText: 'github.repositories' })
+    .locator('input[type="radio"]').click();
+  // Credential slot editing is the env-var name; the secret never appears.
+  const tavilyCard = page.locator('#st-card-search-providers details', { hasText: 'tavily.default' });
+  await tavilyCard.locator('input[placeholder="NB_SEARCH_EXA_API_KEY"]').fill('NB_SEARCH_TAVILY_API_KEY');
+  await tavilyCard.scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-provider-edit');
+  await page.locator('button', { hasText: S.nbSearchSave }).click();
+  await waitForText(S.nbSearchSaved);
+  await shot('settings-nbsearch-saved');
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#st-card-search-defaults', { timeout: 10_000 });
+  const checkedLane = await page.locator('#st-card-search-defaults input[type="radio"]:checked')
+    .evaluate((element) => element.closest('label')?.textContent ?? '');
+  if (!checkedLane.includes('github.repositories')) {
+    throw new Error(`nb_search lane choice did not survive reload, checked="${checkedLane}"`);
+  }
+  const savedEnv = await tavilyCard.locator('input[placeholder="NB_SEARCH_EXA_API_KEY"]').inputValue();
+  if (savedEnv !== 'NB_SEARCH_TAVILY_API_KEY') {
+    throw new Error(`credential env name did not survive reload, saw "${savedEnv}"`);
+  }
+  await shot('settings-nbsearch-reloaded');
+
+  // Diagnostics are explicit: nothing runs until the button is pressed.
+  await page.locator('#st-card-search-diagnostics').scrollIntoViewIfNeeded();
+  await page.locator('button', { hasText: S.nbSearchRunCheck }).click();
+  await waitForText(S.nbSearchRevision);
+  await page.locator('#st-card-search-diagnostics').scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-diagnostics');
+
+  // Mobile width: single-column cards, provider details still reachable.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#st-card-search-status', { timeout: 10_000 });
+  await waitForText(S.nbSearchDegraded);
+  await shot('settings-nbsearch-mobile');
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // Empty nb_search: WebSearch fails closed, FetchURL stays ready.
+  await control({ action: 'scenario', name: 'settings-nbsearch-empty' });
+  await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#st-card-search-status', { timeout: 10_000 });
+  await waitForText(S.nbSearchFailClosed);
+  const emptyStatus = await page.locator('#st-card-search-status').textContent();
+  if (!emptyStatus?.includes(S.nbSearchUnconfigured) || !emptyStatus.includes(S.nbSearchReady)) {
+    throw new Error(`empty config must show WebSearch unconfigured + FetchURL ready, saw "${emptyStatus}"`);
+  }
+  await shot('settings-nbsearch-empty');
+
+  // Readiness check failure surfaces as an inline error, not a crash.
+  await control({ action: 'scenario', name: 'settings-nbsearch-down' });
+  await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#st-card-search-diagnostics', { timeout: 10_000 });
+  await page.locator('button', { hasText: S.nbSearchRunCheck }).click();
+  await waitForText(S.nbSearchCheckFailed);
+  await page.locator('#st-card-search-diagnostics').scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-error');
+}
+
 
 /** Grouping, sorting, scope and archived visibility all live behind the
  * sidebar's ⋮ view menu now, so every view change opens it first. */
@@ -3335,6 +3433,7 @@ const SCENARIOS = [
   ['settings-browser-editable', scenarioSettingsBrowserEditable],
   ['settings-workspaces', scenarioWorkspaces],
   ['settings-agents', scenarioSettingsAgents],
+  ['settings-nbsearch', scenarioSettingsNbSearch],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
   ['selection-annotate', scenarioSelectionAnnotate],

@@ -773,6 +773,7 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(settingsGroupForSection('mcp')?.id).toBe('extensions');
     expect(settingsGroupForSection('plugins')?.id).toBe('extensions');
     expect(settingsGroupForSection('automation')?.id).toBe('extensions');
+    expect(settingsGroupForSection('search')?.id).toBe('extensions');
     expect(settingsGroupForSection('subagents')?.id).toBe('agents');
     expect(settingsGroupForSection('runtime')?.id).toBe('system');
     expect(settingsGroupForSection('experimental')?.id).toBe('advanced');
@@ -804,6 +805,7 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_SECTION_META['ai']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['runtime']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['automation']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['search']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['experimental']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['advanced']?.scopes).toEqual(['server']);
   });

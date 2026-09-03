@@ -27,6 +27,25 @@ export default {
     merge_all_available_skills: true,
     extra_skill_dirs: ['C:/fixture/skills'],
     experimental: { search_worker: true },
+    // nb_search: partial setup — exa has a credential slot and the default
+    // lane, tavily is declared but its credential env var is missing, so the
+    // Search & retrieval leaf renders ready and attention states together.
+    nb_search: {
+      credential_slots: {
+        'exa.default': { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY' },
+      },
+      provider_instances: {
+        'exa.default': {
+          provider_id: 'exa',
+          enabled: true,
+          credential_slot_id: 'exa.default',
+          options: {},
+        },
+        'tavily.default': { provider_id: 'tavily', enabled: false, options: {} },
+      },
+      defaults: { search_lane: 'exa.search' },
+      execution: { max_concurrency: 4, search_timeout_ms: 30000 },
+    },
     providers: {
       fixture: {
         type: 'openai',
@@ -37,6 +56,59 @@ export default {
         has_api_key: false,
       },
     },
+  },
+  // /api/v1/nb-search/* — secret-free capabilities + on-demand readiness for
+  // the Search & retrieval settings leaf. Matches the partial nb_search seed
+  // above: WebSearch ready on exa.search, FetchURL degraded (jina.reader has
+  // no credential), tavily/searxng attention states for the provider cards.
+  nbSearchCapabilities: {
+    schema_version: '3.0',
+    revision: 'config-fixture-nbsearch',
+    providers: {
+      descriptors: [
+        { provider_id: 'exa', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'required', endpoint: 'optional' }, option_keys: ['user_location'] },
+        { provider_id: 'tavily', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
+        { provider_id: 'searxng', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'none', endpoint: 'required' }, option_keys: [] },
+        { provider_id: 'direct-http', adapter_version: '1', query_operations: [], fetch_operations: [], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] },
+        { provider_id: 'jina-reader', adapter_version: '1', query_operations: [], fetch_operations: [], activation: { credential: 'none', endpoint: 'optional' }, option_keys: [] },
+      ],
+      instances: [
+        { id: 'exa.default', provider_id: 'exa', enabled: true, availability: 'ready', issues: [], credential: { requirement: 'required', configured: true, slot_id: 'exa.default' }, endpoint: { requirement: 'optional', configured: false } },
+        { id: 'tavily.default', provider_id: 'tavily', enabled: false, availability: 'unavailable', issues: [{ code: 'CREDENTIAL_NOT_CONFIGURED' }, { code: 'PROVIDER_DISABLED' }], credential: { requirement: 'required', configured: false, slot_id: 'tavily.default' }, endpoint: { requirement: 'optional', configured: false } },
+        { id: 'searxng.default', provider_id: 'searxng', enabled: true, availability: 'unavailable', issues: [{ code: 'ENDPOINT_NOT_CONFIGURED' }], credential: { requirement: 'none', configured: false }, endpoint: { requirement: 'required', configured: false } },
+        { id: 'direct-http.default', provider_id: 'direct-http', enabled: true, availability: 'ready', issues: [], credential: { requirement: 'none', configured: false }, endpoint: { requirement: 'none', configured: false } },
+        { id: 'jina-reader.default', provider_id: 'jina-reader', enabled: true, availability: 'ready', issues: [], credential: { requirement: 'none', configured: false, slot_id: 'jina-reader.default' }, endpoint: { requirement: 'optional', configured: false } },
+      ],
+    },
+    search: {
+      default_lane: 'exa.search',
+      lanes: [
+        { id: 'exa.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'fast', cost: 'cheap' },
+        { id: 'tavily.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: [], availability: 'unavailable', issues: [{ code: 'CREDENTIAL_NOT_CONFIGURED' }, { code: 'PROVIDER_DISABLED' }], latency: 'fast', cost: 'cheap' },
+        { id: 'searxng.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: [], availability: 'unavailable', issues: [{ code: 'ENDPOINT_NOT_CONFIGURED' }], latency: 'medium', cost: 'free' },
+        { id: 'github.repositories', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [{ code: 'RATE_LIMIT_UNAUTHENTICATED' }], latency: 'fast', cost: 'free' },
+      ],
+      presets: [],
+      limits: { max_queries: 64, max_results: 100, max_timeout_ms: 3_600_000, max_inline_bytes: 65_536 },
+    },
+    fetch: {
+      default_representation: 'markdown',
+      inputs: [{ kind: 'url', enabled: true, max_bytes: 2_097_152 }],
+      chains: [{ input_kind: 'url', representation: 'markdown', pipelines: ['direct.fetch', 'jina.reader'] }],
+      pipelines: [
+        { id: 'direct.fetch', input_kinds: ['url'], media_types: ['text/html', 'text/plain'], representations: ['markdown', 'text'], execution_modes: ['sync', 'async'], egress: 'url', stages: [{ id: 'direct-http', role: 'acquire' }], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
+        { id: 'jina.reader', input_kinds: ['url'], media_types: ['text/html'], representations: ['markdown', 'text'], execution_modes: ['sync', 'async'], egress: 'url', stages: [{ id: 'jina-reader', role: 'reader' }], availability: 'unavailable', issues: [{ code: 'LANE_NOT_CONFIGURED' }], latency: 'medium', cost: 'free' },
+        { id: 'tavily.extract', input_kinds: ['url'], media_types: ['text/html'], representations: ['markdown', 'text'], execution_modes: [], egress: 'url', stages: [{ id: 'tavily-extract', role: 'extract' }], availability: 'unavailable', issues: [{ code: 'CREDENTIAL_NOT_CONFIGURED' }], latency: 'medium', cost: 'cheap' },
+        { id: 'browser.render', input_kinds: ['url'], media_types: ['text/html'], representations: ['markdown', 'text'], execution_modes: ['async'], egress: 'url', stages: [{ id: 'browser.chromium', role: 'acquire' }], availability: 'ready', issues: [], latency: 'slow', cost: 'expensive' },
+      ],
+      limits: { max_source_bytes: 2_097_152, max_response_bytes: 2_097_152, max_content_chars: 200_000, max_redirects: 5, max_timeout_ms: 60_000, max_inline_bytes: 65_536 },
+    },
+    jobs: { result_ttl_seconds: 259_200, cancel_supported: true },
+  },
+  nbSearchTest: {
+    revision: 'config-fixture-nbsearch',
+    search: { configured: true, available: true, selection: 'exa.search', issues: [] },
+    fetch: { configured: true, available: true, selection: 'direct.fetch -> jina.reader', issues: ['LANE_NOT_CONFIGURED'] },
   },
   models: [
     {

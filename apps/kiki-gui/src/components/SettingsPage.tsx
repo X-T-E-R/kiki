@@ -19,6 +19,7 @@ import { ConnectionSection } from './settings/ConnectionSection';
 import { ExperimentalSection } from './settings/ExperimentalSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { McpSection } from './settings/McpSection';
+import { NbSearchSection } from './settings/NbSearchSection';
 import { PluginsSection } from './settings/PluginsSection';
 import { RuntimeSection } from './settings/RuntimeSection';
 import { SECTIONS, type SectionId } from './settings/sections';
@@ -205,6 +206,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'mcp' ? <McpSection />
     : active === 'plugins' ? <PluginsSection />
     : active === 'automation' ? <AutomationSection />
+    : active === 'search' ? <NbSearchSection />
     : active === 'workspaces' ? <WorkspacesSection />
     : active === 'runtime' ? <RuntimeSection />
     : active === 'experimental' ? <ExperimentalSection />
