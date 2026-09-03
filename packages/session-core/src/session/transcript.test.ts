@@ -1102,6 +1102,39 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
   });
 
+  it('keeps identical prompt text separate when the prompt identities differ', () => {
+    const turn = (ordinal: number, messageId: string) => ({
+      kind: 'turn' as const,
+      turnId: `t${ordinal}`,
+      ordinal,
+      state: 'completed' as const,
+      origin: { kind: 'user' as const },
+      prompt: 'same prompt',
+      message: {
+        messageId,
+        role: 'user' as const,
+        revision: 0,
+        provenance: { source: 'engine' as const },
+      },
+      startedAt: FIXED_AT,
+      steps: [],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      items: [turn(0, 'prompt-1'), turn(1, 'prompt-2')],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    });
+
+    expect(projected.blocks.filter((block) => block.kind === 'user')).toMatchObject([
+      { id: 'user-prompt-1', userMessageId: 'prompt-1', text: 'same prompt' },
+      { id: 'user-prompt-2', userMessageId: 'prompt-2', text: 'same prompt' },
+    ]);
+  });
+
   it('keeps a user frame as the only body when the legacy turn prompt is missing', () => {
     const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
       items: [
