@@ -221,7 +221,7 @@ describe('TasksBrowserApp — full-screen rendering', () => {
         .render(120)
         .join('\n'),
     );
-    expect(out).toContain('Agent type:');
+    expect(out).toContain('Profile:');
     expect(out).toContain('explore');
     expect(out).toContain('Model:');
     expect(out).toContain('kimi-code/k3-256k');

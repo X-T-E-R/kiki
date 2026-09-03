@@ -34,7 +34,7 @@ function agentTask(
 }
 
 function notifiedCount(ctx: TestAgentContext): number {
-  return ctx.allEvents.filter((e) => e.event === 'task.notified').length;
+  return ctx.allEvents.filter((e) => e.type === '[rpc]' && e.event === 'task.notified').length;
 }
 
 describe('task notification → main agent (real Agent instance)', () => {

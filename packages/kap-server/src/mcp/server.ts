@@ -8,16 +8,30 @@
  */
 
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
-import {
-  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
-  isExternalFailureCategory,
-  renderProfileCatalogEntries,
-  type DispatchProfileCatalogEntry,
-} from '@moonshot-ai/agent-core-v2';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+
+import {
+  renderProfileCatalogEntries,
+  type DispatchProfileCatalogEntry,
+} from './profileCatalog';
+
+export const EXTERNAL_INTERACTION_NOT_OWNED_CODE = 'interaction.not_owned';
+
+const EXTERNAL_FAILURE_CATEGORIES = new Set([
+  'auth_expired',
+  'quota_exceeded',
+  'model_not_supported',
+  'network',
+  'invalid_input',
+  'internal',
+]);
+
+function isExternalFailureCategory(value: unknown): value is string {
+  return typeof value === 'string' && EXTERNAL_FAILURE_CATEGORIES.has(value);
+}
 
 export interface KikiMcpConfig {
   readonly endpoint: string;

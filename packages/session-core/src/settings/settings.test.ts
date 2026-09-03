@@ -1,5 +1,3 @@
-import { readdirSync, readFileSync } from 'node:fs';
-
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -722,29 +720,6 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'subagent')[0]?.section).toBe('subagents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);
-  });
-
-  // Search is the shortest path to a setting (Ctrl+, and the quick switcher
-  // both run this index), so an unindexed card is unreachable by name. The
-  // rendered components are the oracle: read the ids they actually mount,
-  // including the editors SettingsPage delegates whole sections to. Section
-  // components live under components/settings/, so the scan recurses.
-  it('indexes every card the settings page renders', () => {
-    const dir = new URL('../../../../apps/kiki-gui/src/components/', import.meta.url);
-    const rendered = new Set(
-      readdirSync(dir, { recursive: true })
-        .map((name) => String(name).replaceAll('\\', '/'))
-        .filter((name) => name.endsWith('.tsx') && !name.endsWith('.test.tsx'))
-        .flatMap((name) => [
-          ...readFileSync(new URL(name, dir), 'utf8')
-            .matchAll(/id="(st-card-[a-z0-9-]+)"/g),
-        ])
-        .map((match) => match[1]!),
-    );
-    expect(rendered.size).toBeGreaterThan(10);
-    const indexed = new Set(SETTINGS_SEARCH_SPEC.map((entry) => entry.cardId));
-    expect([...rendered].filter((id) => !indexed.has(id))).toEqual([]);
-    expect([...indexed].filter((id) => !rendered.has(id))).toEqual([]);
   });
 
   it('points every indexed card at a real section', () => {

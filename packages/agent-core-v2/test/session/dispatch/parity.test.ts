@@ -76,6 +76,7 @@ import {
   type ExternalAuthority,
   type ExternalDispatchRequest,
   type ExternalDispatchView,
+  ISessionExternalDelegationProvisionStore,
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
@@ -870,6 +871,10 @@ function createLane(
     list: async () => [],
     watch: () => () => ({ dispose: () => {} }),
     acquire: () => ({ dispose: () => {} }),
+  });
+  ix.stub(ISessionExternalDelegationProvisionStore, {
+    read: async () => undefined,
+    write: async () => {},
   });
   ix.stub(ISessionContext, {
     _serviceBrand: undefined,
