@@ -11,6 +11,7 @@ import { Link } from 'react-router-dom';
 import { Streamdown, defaultRemarkPlugins, type Components } from 'streamdown';
 
 import { useHost } from '../host';
+import { isVscodeWebview, vscodeHost } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
@@ -49,6 +50,10 @@ export function isInAppHref(href: string | undefined): href is string {
 }
 
 function openExternalLink(url: string): void {
+  if (isVscodeWebview()) {
+    void vscodeHost.openExternal(url);
+    return;
+  }
   if (window.open(url, '_blank', 'noreferrer,noopener') === null) {
     throw new Error('The browser blocked the new window.');
   }
@@ -177,6 +182,11 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
         href={href}
         target="_blank"
         rel="noreferrer noopener"
+        onClick={(event) => {
+          if (!isVscodeWebview()) return;
+          event.preventDefault();
+          openExternalLink(url);
+        }}
         onContextMenu={openMenu}
       >
         {children}
