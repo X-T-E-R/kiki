@@ -250,11 +250,29 @@ describe('Composer host compatibility', () => {
     });
     await settle();
 
+    await rendered.rerender({ value: 'new-again', sessionId: undefined, onSend });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+    const newKeyAfterSession = preparePrompt.mock.calls[3]?.[1];
+
+    await rendered.rerender({ value: 'session-c', sessionId: 'session-c', onSend });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+
     expect(newKey).toMatch(/^vscode-conversation-/);
+    expect(newKeyAfterSession).toMatch(/^vscode-conversation-/);
+    expect(newKeyAfterSession).not.toBe(newKey);
+    expect(newKeyAfterSession).not.toBe('session-b');
     expect(preparePrompt.mock.calls.map((call) => call[1])).toEqual([
       newKey,
       newKey,
       'session-b',
+      newKeyAfterSession,
+      newKeyAfterSession,
     ]);
   });
 });
