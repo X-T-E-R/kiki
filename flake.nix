@@ -81,9 +81,6 @@
         ./apps/kiki-gui
         ./apps/vscode
         ./apps/kimi-inspect
-        ./apps/vis
-        ./apps/vis/server
-        ./apps/vis/web
         ./docs
       ];
 
@@ -107,9 +104,6 @@
         "@kiki/gui"
         "kimi-code"
         "@moonshot-ai/kimi-inspect"
-        "@moonshot-ai/vis"
-        "@moonshot-ai/vis-server"
-        "@moonshot-ai/vis-web"
         "kimi-code-docs"
       ];
     in

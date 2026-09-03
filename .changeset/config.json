@@ -6,12 +6,7 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": [
-    "@moonshot-ai/vis",
-    "@moonshot-ai/vis-server",
-    "@moonshot-ai/vis-web",
-    "@moonshot-ai/kimi-inspect"
-  ],
+  "ignore": ["@moonshot-ai/kimi-inspect"],
   "snapshot": {
     "useCalculatedVersion": true,
     "prereleaseTemplate": "{tag}-{commit}"
