@@ -11,8 +11,8 @@
 
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 
+import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
-import { filterSelectOptions } from '../lib/sorting';
 
 export interface SearchableSelectOption {
   readonly value: string;

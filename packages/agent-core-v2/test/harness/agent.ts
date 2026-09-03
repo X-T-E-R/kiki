@@ -595,7 +595,10 @@ export function homeDirServices(homeDir: string | undefined): TestAgentServiceOv
   });
 }
 
-export function hostEnvironmentServices(homeDir: string): TestAgentServiceOverride {
+export function hostEnvironmentServices(
+  homeDir: string,
+  pathClass: IHostEnvironment['pathClass'] = 'posix',
+): TestAgentServiceOverride {
   return appServices((reg) => {
     reg.defineInstance(
       IHostEnvironment,
@@ -606,7 +609,7 @@ export function hostEnvironmentServices(homeDir: string): TestAgentServiceOverri
         osVersion: 'test',
         shellName: 'bash',
         shellPath: '/bin/bash',
-        pathClass: 'posix',
+        pathClass,
         homeDir,
         ready: Promise.resolve(),
       } satisfies IHostEnvironment,
@@ -954,6 +957,7 @@ function reassertServiceOverrides(
 
 class PersistenceAppendLogStore implements IAppendLogStore {
   declare readonly _serviceBrand: undefined;
+  readonly onDidWrite: IAppendLogStore['onDidWrite'] = Event.None as IAppendLogStore['onDidWrite'];
   private readonly history: WireRecord[] = [];
   private readSeeded = false;
 

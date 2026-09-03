@@ -9,15 +9,15 @@
 
 import { useSyncExternalStore } from 'react';
 
-import { useHost } from '../host';
-import { useI18n } from '../i18n';
-import type { I18nKey } from '../i18n/locale';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   settingsServerSnapshot,
   settingsSnapshot,
   subscribeSettings,
   type SendShortcut,
-} from '../lib/settings';
+} from '@kiki/session-core/settings';
+import { useHost } from '../host';
+import { useI18n } from '../i18n';
 import { Dialog } from './Dialog';
 
 interface ShortcutRow {

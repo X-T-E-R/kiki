@@ -23,7 +23,7 @@
  *   - timezone_offset_minutes is east-positive: -new Date().getTimezoneOffset().
  */
 
-import type { Locale } from '../i18n/locale';
+import type { Locale } from '@kiki/session-core/i18n';
 
 // ---------------------------------------------------------------------------
 // Wire types (mirror of kap-server src/protocol/rest-usage.ts)

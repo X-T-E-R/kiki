@@ -1,5 +1,6 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { type IDisposable } from '#/_base/di/lifecycle';
+import type { Event } from '#/_base/event';
 
 import { StorageError, StorageErrors } from '#/persistence/interface/storage';
 
@@ -29,10 +30,18 @@ export interface AppendLogTruncation {
 
 export interface AppendLogReadOptions {
   readonly onTruncate?: (truncation: AppendLogTruncation) => void;
+  readonly signal?: AbortSignal;
+}
+
+export interface AppendLogWrite {
+  readonly scope: string;
+  readonly key: string;
 }
 
 export interface IAppendLogStore {
   readonly _serviceBrand: undefined;
+
+  readonly onDidWrite: Event<AppendLogWrite>;
 
   append<R>(scope: string, key: string, record: R, options?: AppendLogOptions): void;
   read<R>(scope: string, key: string, options?: AppendLogReadOptions): AsyncIterable<R>;

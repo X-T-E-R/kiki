@@ -3,9 +3,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ListWorkspacesResponse, Workspace } from '@moonshot-ai/protocol';
 
+import { errorText } from '@kiki/session-core/i18n';
+import { filterWorkspaces, sortWorkspacesByPinnedThenRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
-import { errorText } from '../../i18n/locale';
-import { filterWorkspaces, sortWorkspacesByPinnedThenRecency } from '../../lib/sorting';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';

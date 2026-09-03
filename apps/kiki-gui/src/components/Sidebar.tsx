@@ -22,29 +22,6 @@ import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { Session, Workspace } from '@moonshot-ai/protocol';
 
-import { useHost } from '../host';
-import { useI18n } from '../i18n';
-import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
-import { copyTextToClipboard } from '../lib/clipboard';
-import { clampOverlayPosition } from '../lib/overlayPosition';
-import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
-import { runToastAction } from '../lib/toasts';
-import {
-  isPinnedSession,
-  pinMetadataPatch,
-  shortCwd,
-  togglePinned,
-  type SessionGroup,
-  type SessionSortOrder,
-} from '../lib/sessionList';
-import {
-  SIDEBAR_DEFAULT_WIDTH,
-  SIDEBAR_MAX_WIDTH,
-  SIDEBAR_MIN_WIDTH,
-  useLayoutPreferences,
-  usePaneResize,
-  writeLayoutPreferences,
-} from '../lib/layoutPrefs';
 import {
   compactSessionContext,
   exportSessionArchive,
@@ -52,7 +29,31 @@ import {
   sessionActionErrorText,
   undoLastTurn,
   type SessionActionContext,
-} from '../lib/sessionActions';
+} from '@kiki/session-core/commands';
+import {
+  groupSearchHits,
+  isPinnedSession,
+  isSearchable,
+  pinMetadataPatch,
+  SEARCH_DEBOUNCE_MS,
+  shortCwd,
+  togglePinned,
+  type SessionGroup,
+  type SessionSortOrder,
+} from '@kiki/session-core/sessions';
+import {
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  writeLayoutPreferences,
+} from '@kiki/session-core/settings';
+import { useHost } from '../host';
+import { useI18n } from '../i18n';
+import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
+import { copyTextToClipboard } from '../lib/clipboard';
+import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
+import { clampOverlayPosition } from '../lib/overlayPosition';
+import { runToastAction } from '../lib/toasts';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
 import { ActivityPanel } from './ActivityPanel';

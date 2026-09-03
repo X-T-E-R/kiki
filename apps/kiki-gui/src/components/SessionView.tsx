@@ -30,24 +30,6 @@ import { Transcript, useStableForest, type TranscriptRowActions } from './Transc
 import { MediaPreviewProvider, PreviewToggleButton } from './mediaPreview';
 import { KikiMark } from './Wordmark';
 import {
-  buildPromptContent,
-  buildSkillActivation,
-  type ComposerAttachment,
-} from '../lib/attachments';
-import { useHost } from '../host';
-import { composerDefaultsForProfile } from '../lib/agentSettings';
-import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
-import { readComposerState, readDraft, subscribeDraftAppends, writeComposerState, writeDraft } from '../lib/drafts';
-import {
-  addAnnotation,
-  buildAnnotationsPrefix,
-  buildQuotePrefix,
-  removeAnnotation,
-  type SelectionAnnotation,
-} from '../lib/selectionQuote';
-import { useI18n } from '../i18n';
-import type { I18nKey } from '../i18n/locale';
-import {
   SESSION_REWRITTEN_EVENT,
   compactSessionContext,
   exportSessionArchive,
@@ -55,37 +37,28 @@ import {
   sessionActionErrorText,
   undoLastTurn,
   type SessionActionContext,
-} from '../lib/sessionActions';
-import { shortCwd } from '../lib/sessionList';
+} from '@kiki/session-core/commands';
 import {
-  readTerminalPanelPrefs,
-  writeTerminalPanelPrefs,
-} from '../lib/terminalPrefs';
-import { pushToast } from '../lib/toasts';
-import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
+  addAnnotation,
+  buildAnnotationsPrefix,
+  buildPromptContent,
+  buildQuotePrefix,
+  buildSkillActivation,
+  readComposerState,
+  readDraft,
+  removeAnnotation,
+  subscribeDraftAppends,
+  writeComposerState,
+  writeDraft,
+  type ComposerAttachment,
+  type SelectionAnnotation,
+} from '@kiki/session-core/composer';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
-  readDesktopPrefs,
-  readLastSessionId,
-  readSettings,
-  resolveEffectiveModel,
-  resolveModelSource,
-  resolveSessionModelOverride,
-  settingsServerSnapshot,
-  settingsSnapshot,
-  subscribeSettings,
-  writeLastSessionId,
-  type ComposerModelSource,
-} from '../lib/settings';
-import { useConnection, useControllerRegistry } from '../state/connection';
-import { assertSessionWritable, SessionController } from '../state/sessionController';
-import {
-  activeTerminalManager,
-  terminalCapabilityAvailable,
-  TerminalManager,
-} from '../state/terminalManager';
-import { agentPath } from '../state/agentTree';
-import {
+  agentPath,
+  assertSessionWritable,
   MAIN_AGENT_ID,
+  SessionController,
   assistantMessageIdFromBlock,
   createViewState,
   filterBlocksToDirectChildren,
@@ -98,7 +71,35 @@ import {
   type SessionViewState,
   type SubagentBlock,
   type UserBlock,
-} from '../state/transcript';
+} from '@kiki/session-core/session';
+import { shortCwd } from '@kiki/session-core/sessions';
+import {
+  composerDefaultsForProfile,
+  readDesktopPrefs,
+  readLastSessionId,
+  readSettings,
+  readTerminalPanelPrefs,
+  resolveEffectiveModel,
+  resolveModelSource,
+  resolveSessionModelOverride,
+  settingsServerSnapshot,
+  settingsSnapshot,
+  subscribeSettings,
+  writeLastSessionId,
+  writeTerminalPanelPrefs,
+  type ComposerModelSource,
+} from '@kiki/session-core/settings';
+import { useHost } from '../host';
+import { useI18n } from '../i18n';
+import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
+import { pushToast } from '../lib/toasts';
+import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
+import { useConnection, useControllerRegistry } from '../state/connection';
+import {
+  activeTerminalManager,
+  terminalCapabilityAvailable,
+  TerminalManager,
+} from '../state/terminalManager';
 
 export async function replaceQueuedPrompt(
   promptId: string,

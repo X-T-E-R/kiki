@@ -17,13 +17,13 @@ import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { IPluginService } from '#/app/plugin/plugin';
 import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
+import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IBuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
 import { IAppStateService } from '#/app/state/appState';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { LifecycleScope } from '#/app/scopes';
 import { IWorkspaceService, type Workspace } from '#/app/workspace/workspace';
-import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IProviderService } from '#/kosong/provider/provider';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -80,8 +80,8 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     @IAgentIdentity private readonly identity: IAgentIdentity,
     @ISessionIndex private readonly index: ISessionIndex,
     @ISessionIndexMirror private readonly indexMirror: ISessionIndexMirror,
+    @IRetainedUsageService private readonly retainedUsage: IRetainedUsageService,
     @ILogService private readonly log: ILogService,
-    @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
     @IMcpOAuthService private readonly oauth: McpOAuthService,
     @IMcpConfigStore private readonly configStore: IMcpConfigStore,
@@ -347,6 +347,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           this.config,
           this.index,
           this.indexMirror,
+          this.retainedUsage,
           this.appendLogStore,
           this.docs,
           this.storage,
@@ -364,10 +365,8 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           input.skills,
           input.instructions,
           input.mcp,
-          this.modelCatalog,
           this.models,
           this.modelProviders,
-          this.flags,
           input.acquireWorkspaceReference,
           input.onDispose,
         ),

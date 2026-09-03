@@ -1,8 +1,8 @@
 import { useState } from 'react';
 
+import { readDesktopPrefs, writeDesktopPrefs } from '@kiki/session-core/settings';
 import { useHost, type DesktopUpdate } from '../../host';
 import { useI18n } from '../../i18n';
-import { readDesktopPrefs, writeDesktopPrefs } from '../../lib/settings';
 import { useConnection } from '../../state/connection';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';

@@ -34,7 +34,7 @@ import {
 import { languages } from '@codemirror/language-data';
 import { highlightSelectionMatches } from '@codemirror/search';
 
-import { basenameOf } from '../lib/media';
+import { basenameOf } from '@kiki/session-core/composer/media';
 
 /** Kiki-palette chrome: paper surface, hairline gutters, accent caret. */
 const KIKI_THEME = EditorView.theme({

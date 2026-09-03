@@ -15,6 +15,7 @@ export interface ProviderDefinition {
   readonly endpoint?: ProtocolEndpoint;
   readonly hostHeaders?: 'full' | 'user-agent';
   readonly modelSource?: ModelSource;
+  readonly requestIdentityDeviceHeaders?: boolean;
 }
 
 const providerDefinitions = new Map<string, Map<Protocol, ProviderDefinition>>();

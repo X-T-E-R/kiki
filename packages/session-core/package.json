@@ -1,0 +1,71 @@
+{
+  "name": "@kiki/session-core",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Framework-free session state and command logic for Kiki clients.",
+  "license": "MIT",
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./transport": {
+      "types": "./src/transport.ts",
+      "default": "./src/transport.ts"
+    },
+    "./wire": {
+      "types": "./src/wire.ts",
+      "default": "./src/wire.ts"
+    },
+    "./commands/*": {
+      "types": "./src/commands/*.ts",
+      "default": "./src/commands/*.ts"
+    },
+    "./composer/*": {
+      "types": "./src/composer/*.ts",
+      "default": "./src/composer/*.ts"
+    },
+    "./i18n/*": {
+      "types": "./src/i18n/*.ts",
+      "default": "./src/i18n/*.ts"
+    },
+    "./session/*": {
+      "types": "./src/session/*.ts",
+      "default": "./src/session/*.ts"
+    },
+    "./sessions/*": {
+      "types": "./src/sessions/*.ts",
+      "default": "./src/sessions/*.ts"
+    },
+    "./settings/*": {
+      "types": "./src/settings/*.ts",
+      "default": "./src/settings/*.ts"
+    },
+    "./util/*": {
+      "types": "./src/util/*.ts",
+      "default": "./src/util/*.ts"
+    },
+    "./*": {
+      "types": "./src/*/index.ts",
+      "default": "./src/*/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@moonshot-ai/klient": "workspace:^",
+    "@moonshot-ai/protocol": "workspace:^",
+    "@moonshot-ai/transcript": "workspace:^",
+    "diff": "^8.0.2"
+  }
+}

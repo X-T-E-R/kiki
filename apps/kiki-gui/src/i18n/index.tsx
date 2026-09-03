@@ -15,7 +15,6 @@ import {
   type ReactNode,
 } from 'react';
 
-import { formatDuration, formatTokens, relativeTime, timeUntil } from '../lib/time';
 import {
   detectLocale,
   LOCALE_STORAGE_KEY,
@@ -25,9 +24,10 @@ import {
   type I18nParams,
   type Locale,
   type PluralBase,
-} from './locale';
+} from '@kiki/session-core/i18n';
+import { formatDuration, formatTokens, relativeTime, timeUntil } from '@kiki/session-core/util';
 
-export type { Locale } from './locale';
+export type { Locale } from '@kiki/session-core/i18n';
 
 export interface TimeFormatters {
   readonly relativeTime: (iso: string) => string;

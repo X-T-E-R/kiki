@@ -44,6 +44,7 @@
     "proof:test": "node --test scripts/visual-proof-options.test.mjs scripts/fixture-transcript.test.mjs"
   },
   "dependencies": {
+    "@kiki/session-core": "workspace:^",
     "@codemirror/commands": "^6.11.0",
     "@codemirror/language": "^6.12.4",
     "@codemirror/language-data": "^6.5.2",

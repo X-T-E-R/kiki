@@ -4,16 +4,20 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@moonshot-ai/protocol';
 
-import { I18nProvider } from '../i18n';
-import { buildAgentForest } from '../state/agentTree';
 import {
   assistantMessageIdFromBlock,
+  buildAgentForest,
   createViewState,
   projectAgentTranscriptView,
   sessionAgentForestFromAgentSnapshots,
   type SubagentBlock,
-} from '../state/transcript';
-import { capabilityMatrixSnapshot, CHILD_AGENT_ID, USER_MESSAGE_ID } from '../state/__fixtures__/canonicalTranscript';
+} from '@kiki/session-core/session';
+import {
+  capabilityMatrixSnapshot,
+  CHILD_AGENT_ID,
+  USER_MESSAGE_ID,
+} from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
+import { I18nProvider } from '../i18n';
 import {
   AgentBreadcrumb,
   AgentRelations,

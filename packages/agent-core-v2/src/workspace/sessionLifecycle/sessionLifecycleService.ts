@@ -29,6 +29,7 @@ import {
   PARENT_SESSION_ID_KEY,
   type SessionUsageSummary,
 } from '#/app/sessionIndex/sessionIndex';
+import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
 import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSystem';
@@ -63,10 +64,8 @@ import {
 } from '#/wire/record';
 import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { repairWireJournal } from '#/wire/repair';
-import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IProviderService } from '#/kosong/provider/provider';
-import { IFlagService } from '#/app/flag/flag';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
 import { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
@@ -193,6 +192,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IConfigService private readonly config: IConfigService,
     @ISessionIndex private readonly index: ISessionIndex,
     @ISessionIndexMirror private readonly indexMirror: ISessionIndexMirror,
+    @IRetainedUsageService private readonly retainedUsage: IRetainedUsageService,
     @IAppendLogStore private readonly appendLogStore: IAppendLogStore,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
@@ -215,10 +215,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IWorkspaceSkillCatalog private readonly workspaceSkillCatalog: IWorkspaceSkillCatalog,
     @IWorkspaceInstructionsService private readonly workspaceInstructions: IWorkspaceInstructionsService,
     @IWorkspaceMcpService private readonly workspaceMcp: IWorkspaceMcpService,
-    @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
     @IProviderService private readonly providers: IProviderService,
-    @IFlagService private readonly flags: IFlagService,
     private readonly acquireWorkspaceReference: () => IDisposable,
     onDispose?: () => void,
   ) {
@@ -547,6 +545,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (handle !== undefined) {
       await this.close(sessionId);
     }
+    await this.retainedUsage.retainDeletedSession((await this.index.get(sessionId))!);
     await this.hostFs.remove(sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sessionId));
     await this.index.remove(sessionId);
     this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });

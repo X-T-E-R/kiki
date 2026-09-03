@@ -73,6 +73,7 @@ describe('turnKey lastEnded', () => {
     s = fold(s, new TurnEnded({ turnId: 0, reason: 'completed', durationMs: 10 }));
     s = fold(s, new TurnPrompt({ input: [], origin: { kind: 'user' } }));
     s = fold(s, new TurnEnded({ turnId: 1, reason: 'cancelled', durationMs: 10 }));
+    expect(s.lastEnded?.reason).toBe('cancelled');
     s = fold(s, new ContextUndo({ count: 1 }));
     expect(s.anchorTurnIds).toEqual([0]);
     expect(s.lastEnded).toBeUndefined();

@@ -2,11 +2,11 @@ import { useContext, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 
+import { errorText } from '@kiki/session-core/i18n';
+import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
+import { mcpTimeoutsPatch } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
-import { errorText } from '../../i18n/locale';
 import { pickWorkspace } from '../../lib/capabilities';
-import { mcpTimeoutsPatch } from '../../lib/settings';
-import { sortWorkspacesByRecency } from '../../lib/sorting';
 import { useConnection } from '../../state/connection';
 import { McpServerRow } from '../capabilities/rows';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';

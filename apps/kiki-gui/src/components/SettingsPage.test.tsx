@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+import { readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 /**
  * SettingsPage scope header: a workspace-scoped section (Skills' catalog,
  * MCP's config card) reports its selected workspace, and the header names it
@@ -13,6 +16,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import { SettingsPage } from './SettingsPage';
 
@@ -264,5 +268,25 @@ describe('SettingsPage batch-3 leaves', () => {
     const invalidated = invalidateSpy.mock.calls.map(([arg]) => (arg as { queryKey?: unknown[] }).queryKey);
     expect(invalidated).toContainEqual(['tools']);
     expect(invalidated).not.toContainEqual(['mcp-servers']);
+  });
+});
+
+describe('SettingsPage search ownership', () => {
+  it('indexes every card the settings page renders', () => {
+    const dir = resolve(process.cwd(), 'src/components');
+    const rendered = new Set(
+      readdirSync(dir, { recursive: true })
+        .map((name) => String(name).replaceAll('\\', '/'))
+        .filter((name) => name.endsWith('.tsx') && !name.endsWith('.test.tsx'))
+        .flatMap((name) => [
+          ...readFileSync(resolve(dir, name), 'utf8')
+            .matchAll(/id="(st-card-[a-z0-9-]+)"/g),
+        ])
+        .map((match) => match[1]!),
+    );
+    expect(rendered.size).toBeGreaterThan(10);
+    const indexed = new Set(SETTINGS_SEARCH_SPEC.map((entry) => entry.cardId));
+    expect([...rendered].filter((id) => !indexed.has(id))).toEqual([]);
+    expect([...indexed].filter((id) => !rendered.has(id))).toEqual([]);
   });
 });

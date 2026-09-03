@@ -49,6 +49,8 @@ export * from '#/agent/runtimeBinding/runtimeBindingService';
 export * from '#/agent/runtimeBinding/agentRuntime';
 export * from '#/app/sessionManager/sessionManager';
 export * from '#/app/sessionManager/sessionManagerService';
+export * from '#/app/retainedUsage/retainedUsage';
+export * from '#/app/retainedUsage/retainedUsageService';
 export * from '#/app/runtimeHost/index';
 
 export * from '#/_base/log/log';
@@ -400,6 +402,7 @@ export * from '#/agent/toolDedupe/toolDedupe';
 export * from '#/agent/toolDedupe/toolDedupeService';
 export * from '#/agent/agentsMdReminder/agentsMdReminder';
 export * from '#/agent/agentsMdReminder/agentsMdReminderService';
+import '#/agent/agentsMdReminder/agentsMdReminderStepBridge';
 import '#/agent/toolSelect/flag';
 export * from '#/agent/tools/select-tools/select-tools';
 import '#/agent/tools/select-tools/selectToolsTool';

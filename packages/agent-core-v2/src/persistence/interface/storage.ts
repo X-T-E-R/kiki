@@ -140,11 +140,20 @@ export interface StorageReadRange {
   readonly end: number;
 }
 
+export interface StorageReadOptions {
+  readonly signal?: AbortSignal;
+}
+
 export interface IFileSystemStorageService {
   readonly _serviceBrand: undefined;
 
   read(scope: string, key: string): Promise<Uint8Array | undefined>;
-  readStream(scope: string, key: string, range?: StorageReadRange): AsyncIterable<Uint8Array>;
+  readStream(
+    scope: string,
+    key: string,
+    range?: StorageReadRange,
+    options?: StorageReadOptions,
+  ): AsyncIterable<Uint8Array>;
   write(scope: string, key: string, data: Uint8Array, options?: StorageWriteOptions): Promise<void>;
   writeStream(
     scope: string,
@@ -157,6 +166,7 @@ export interface IFileSystemStorageService {
   list(scope: string, prefix?: string): Promise<readonly string[]>;
   delete(scope: string, key: string): Promise<void>;
   size(scope: string, key: string): Promise<number | undefined>;
+  mtime(scope: string, key: string): Promise<number | undefined>;
   pathFor(scope: string, key: string): string | undefined;
   watch?(scope: string, key: string): Event<void>;
   flush(): Promise<void>;

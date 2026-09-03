@@ -11,10 +11,8 @@
 import { useRef, useState, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { useHost } from '../host';
-import { useI18n } from '../i18n';
-import { errorText } from '../i18n/locale';
-import { fetchBusySessionCount, type BusySessionProbe } from '../lib/busySessions';
+import { errorText } from '@kiki/session-core/i18n';
+import { fetchBusySessionCount, type BusySessionProbe } from '@kiki/session-core/sessions';
 import {
   acknowledgeRestartRequirement,
   clearRestartRequirement,
@@ -22,7 +20,9 @@ import {
   restartRequirementSnapshot,
   subscribeRestartRequirement,
   type RestartRequirement,
-} from '../lib/settings';
+} from '@kiki/session-core/settings';
+import { useHost } from '../host';
+import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';

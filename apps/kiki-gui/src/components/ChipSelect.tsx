@@ -5,7 +5,7 @@
 
 import { useState } from 'react';
 
-import { normalizeTags } from '../lib/settings';
+import { normalizeTags } from '@kiki/session-core/settings';
 
 export interface ChipSelectProps {
   readonly values: readonly string[];

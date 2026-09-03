@@ -1,10 +1,10 @@
 import type { Scope } from '@moonshot-ai/agent-core-v2';
+import { usageQuerySchema, usageResponseSchema } from '@moonshot-ai/protocol';
 import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../../protocol/envelope';
 import { ErrorCode } from '../../protocol/error-codes';
-import { usageQuerySchema, usageResponseSchema } from '../../protocol/rest-usage';
 import {
   UsageAggregationService,
   UsagePageTokenMismatchError,
