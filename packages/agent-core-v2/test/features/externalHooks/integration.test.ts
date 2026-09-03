@@ -82,9 +82,7 @@ import { stubLoopWithHooks, stubToolExecutor } from '../../agent/loop/stubs';
 import { registerStateServices } from '../../state/stubs';
 import { registerTestAgentWireServices } from '../../wire/stubs';
 
-function nodeCommand(source: string): string {
-  return `node -e ${JSON.stringify(source.replaceAll(/\s*\n\s*/g, ' '))}`;
-}
+import { nodeCommand } from './runner-stub';
 
 function stdinScript(body: string): string {
   return nodeCommand([

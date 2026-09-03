@@ -223,7 +223,7 @@ async function withSkillCatalogWorkspace(
   const skillRoot = join(workDir, '.kimi-code', 'skills');
   await mkdir(skillRoot, { recursive: true });
   try {
-    await run({ workDir, skillRoot: await realpath(skillRoot) });
+    await run({ workDir, skillRoot: (await realpath(skillRoot)).replaceAll('\\', '/') });
   } finally {
     await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }

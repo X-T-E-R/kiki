@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { AgentFileParseError, parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentFile';
-import { agentProfileFromFile } from '#/workspace/workspaceAgentProfileLoader/internal/agentProfileFromFile';
-import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoader/internal/types';
-import type { SystemPromptRenderResult } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { AgentFileParseError, parseAgentFileText } from '#/agentFile';
+import type { AgentFileDefinition } from '#/agentFileTypes';
+import { agentProfileFromFile } from '#/agentProfileFromFile';
+import type { SystemPromptRenderResult } from '#/agentProfile';
 
 const FULL_FILE = `---
 name: code-reviewer

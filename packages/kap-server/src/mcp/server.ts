@@ -38,7 +38,7 @@ export interface KikiMcpConfig {
   readonly token: string;
   readonly delegationToken: string;
   readonly sessionId: string;
-  readonly workspacePath: string;
+  readonly workspacePath?: string;
 }
 
 export interface KikiMcpServerOptions {
@@ -169,7 +169,9 @@ const delegationRoot = z.object({
   dispatchables: z.array(z.object({ kind: z.enum(['main', 'named']) }).passthrough()),
 }).passthrough();
 
-const KIKI_LIST_DESCRIPTION = 'List admitted main/named dispatchables and owned continuations.';
+const KIKI_LIST_DESCRIPTION = 'List owned children and continuations.';
+const KIKI_PROFILES_DESCRIPTION =
+  'List named agent profiles (whenToUse, models, tools). Clients may cache this catalog.';
 const INTERACTION_PENDING_NEXT_STEP =
   'Call kiki_interactions to inspect pending requests, call kiki_respond to answer each one, then call kiki_wait again.';
 const KIKI_DISPATCH_DESCRIPTION =
@@ -177,6 +179,9 @@ const KIKI_DISPATCH_DESCRIPTION =
   + 'task_name (named children only) must be lowercase [a-z0-9_] and must not be "root" '
   + '(uppercase letters, hyphens, and other scripts are rejected). '
   + 'Exact model_alias and thinking_effort bindings apply only when the named child is first created.';
+const KIKI_WAIT_DESCRIPTION =
+  'Wait for one owned dispatch or the next owned dispatch to finish or request an external interaction response. '
+  + 'Honor the client timeout budget (Cursor ≈ 60 s → timeout_s ≤ 45).';
 
 export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServerOptions = {}): McpServer {
   const pinnedConfig = Object.freeze({ ...config });
@@ -184,8 +189,8 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
   const progressPollIntervalMs = Math.max(0, options.progressPollIntervalMs ?? 250);
   const binding = Object.freeze({
     version: 1,
-    workspacePath: pinnedConfig.workspacePath,
     sessionId: pinnedConfig.sessionId,
+    workspacePath: pinnedConfig.workspacePath,
   });
   const server = new McpServer({ name: 'kiki-external-delegation', version: '0.1.0' });
 
@@ -201,16 +206,25 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
   };
 
   let dispatchTool: RegisteredTool;
-  const listTool = server.registerTool(
-    'kiki_list',
-    { description: KIKI_LIST_DESCRIPTION, inputSchema: emptyInput },
+  const profilesTool = server.registerTool(
+    'kiki_profiles',
+    { description: KIKI_PROFILES_DESCRIPTION, inputSchema: emptyInput },
     async () =>
       toolResult(async () => {
         const root = await client.call('list', {});
         const catalog = profileCatalogEntries(root);
         const rendered = renderProfileCatalogEntries(catalog);
-        updateProfileCatalogDescriptions(listTool, dispatchTool, rendered);
-        return bindRoot(root, binding);
+        updateProfileCatalogDescriptions(profilesTool, dispatchTool, rendered);
+        return { profiles: catalog, binding };
+      }),
+  );
+  server.registerTool(
+    'kiki_list',
+    { description: KIKI_LIST_DESCRIPTION, inputSchema: emptyInput },
+    async () =>
+      toolResult(async () => {
+        const root = await client.call('list', {});
+        return bindList(root, binding);
       }),
   );
   dispatchTool = server.registerTool(
@@ -276,7 +290,7 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
   server.registerTool(
     'kiki_wait',
     {
-      description: 'Wait for one owned dispatch or the next owned dispatch to finish or request an external interaction response.',
+      description: KIKI_WAIT_DESCRIPTION,
       inputSchema: waitInput,
     },
     async (input, extra) =>
@@ -551,19 +565,34 @@ function profileCatalogEntries(root: unknown): DispatchProfileCatalogEntry[] {
 }
 
 function updateProfileCatalogDescriptions(
-  listTool: RegisteredTool,
+  profilesTool: RegisteredTool,
   dispatchTool: RegisteredTool,
   rendered: string,
 ): void {
   const catalog = rendered.length === 0 ? '' : `\n\nAvailable agent profiles:\n${rendered}`;
-  listTool.update({ description: `${KIKI_LIST_DESCRIPTION}${catalog}` });
+  profilesTool.update({ description: `${KIKI_PROFILES_DESCRIPTION}${catalog}` });
   dispatchTool.update({ description: `${KIKI_DISPATCH_DESCRIPTION}${catalog}` });
 }
 
-function bindRoot(
+function bindList(
   root: unknown,
-  binding: Readonly<{ version: 1; workspacePath: string; sessionId: string }>,
+  binding: Readonly<{ version: 1; sessionId: string; workspacePath?: string }>,
 ): Record<string, unknown> {
+  const parsed = z
+    .object({
+      children: z.array(z.unknown()).optional(),
+      continuations: z.array(z.unknown()).optional(),
+    })
+    .passthrough()
+    .parse(asRootObject(root));
+  return {
+    children: parsed.children ?? [],
+    continuations: parsed.continuations ?? [],
+    binding,
+  };
+}
+
+function asRootObject(root: unknown): Record<string, unknown> {
   if (root === null || typeof root !== 'object' || Array.isArray(root)) {
     throw new KikiMcpEdgeError(
       'invalid_response',
@@ -571,7 +600,7 @@ function bindRoot(
       'Retry; if the response stays invalid, ask the operator to inspect the Kiki server.',
     );
   }
-  return { ...(root as Record<string, unknown>), binding };
+  return root as Record<string, unknown>;
 }
 
 function result(data: unknown) {

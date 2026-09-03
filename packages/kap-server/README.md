@@ -13,16 +13,32 @@ The recommended flow for an external caller such as Cursor, Claude Code, or Code
 ```sh
 kiki serve --ensure --workspace /path/to/workspace --json
 kiki seat create --workspace /path/to/workspace --principal cursor --mode auto --json
-kiki mcp --workspace /path/to/workspace
 ```
 
 `kiki serve --ensure` reuses a healthy daemon or starts one. The daemon shares the bearer token in `<home>/server.token`, records the workspaces it serves, and exits after the configured idle period only when it has no active client lease or running dispatch. `kiki serve --stop` requests a graceful shutdown through the REST API.
 
-`kiki seat create` creates or reuses the seat for a `(workspace, principal)` pair. The server generates and persists the delegation token, fixes the permission mode and optional model/thinking binding, and returns the Session binding needed by the stdio MCP edge. Use `kiki seat list`, `kiki seat revoke <seatId>`, and `kiki seat install --client cursor|claude|codex|generic --workspace <dir>` for lifecycle and client configuration.
+`kiki seat create` creates or reuses the seat for a `(workspace, principal)` pair. The server generates and persists the delegation token, fixes the permission mode and optional model/thinking binding, and returns the Session binding used by both MCP transports. Use `kiki seat list`, `kiki seat revoke <seatId>`, and `kiki seat install --client cursor|claude|codex|generic --workspace <dir>` for lifecycle and client configuration.
 
-The startup environment variables `KIKI_EXTERNAL_PRINCIPAL_ID`, `KIKI_EXTERNAL_SESSION_ID`, `KIKI_EXTERNAL_DELEGATION_TOKEN`, `KIKI_EXTERNAL_WORKSPACE_PATH`, `KIKI_EXTERNAL_MODEL_ALIAS`, `KIKI_EXTERNAL_THINKING_EFFORT`, `KIKI_EXTERNAL_PERMISSION_MODE`, and `KIKI_EXTERNAL_SESSION_TITLE` remain available for compatibility. The MCP caller cannot choose the endpoint, token, Session, workspace, model credentials, permission mode, tools, or profile definitions.
+The default inbound transport is streamable HTTP on the loopback listener:
 
-This edge does not configure the external executors or harnesses that Kiki uses to run subagents (outbound).
+```json
+{
+  "url": "http://127.0.0.1:<port>/mcp",
+  "headers": { "Authorization": "Bearer <delegation token>" }
+}
+```
+
+`Authorization: Bearer` is the seat delegation token, not the daemon bearer token. Each MCP session gets its own transport and `createKikiMcpServer` instance keyed by `Mcp-Session-Id`. Authentication failures return HTTP 401 with `{ "code", "msg" }` and are not folded into `40001`.
+
+The stdio transport remains available through:
+
+```sh
+kiki mcp --workspace /path/to/workspace
+```
+
+The startup environment variables `KIKI_EXTERNAL_PRINCIPAL_ID`, `KIKI_EXTERNAL_SESSION_ID`, `KIKI_EXTERNAL_DELEGATION_TOKEN`, `KIKI_EXTERNAL_WORKSPACE_PATH`, `KIKI_EXTERNAL_MODEL_ALIAS`, `KIKI_EXTERNAL_THINKING_EFFORT`, `KIKI_EXTERNAL_PERMISSION_MODE`, and `KIKI_EXTERNAL_SESSION_TITLE` remain available for compatibility.
+
+The MCP caller can choose a listed named profile, task name, and prompt. It cannot choose the endpoint, token, Session, workspace, model credentials, permission mode, tools, or profile definitions. `kiki_profiles` is the cacheable catalog; `kiki_list` returns owned children and continuations only. This edge does not configure the external executors or harnesses that Kiki uses to run subagents (outbound).
 
 ## Launcher operations
 

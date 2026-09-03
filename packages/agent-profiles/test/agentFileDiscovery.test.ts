@@ -4,13 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { discoverAgentFiles } from '#/workspace/workspaceAgentProfileLoader/internal/agentFileDiscovery';
-import type { AgentFileRoot } from '#/workspace/workspaceAgentProfileLoader/internal/types';
-import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
-import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
-import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
+import { discoverAgentFiles } from '#/agentFileDiscovery';
+import type { AgentFileRoot } from '#/agentFileTypes';
+import type { HostFs } from '#/hostFs';
 
-const hostFs = new HostFileSystem();
+import { HostFsError, nodeHostFs as hostFs, OsFsErrors } from './nodeHostFs';
 
 function agentMd(name: string): string {
   return `---\nname: ${name}\ndescription: ${name} agent\n---\n\n${name} prompt\n`;
@@ -110,7 +108,7 @@ describe('discoverAgentFiles', () => {
           'readdir failed: filesystem resource unavailable',
         );
       },
-    } as unknown as IHostFileSystem;
+    } as unknown as HostFs;
 
     await expect(discoverAgentFiles(failingFs, [fileRoot(root)])).rejects.toMatchObject({
       code: OsFsErrors.codes.OS_FS_UNAVAILABLE,
@@ -124,13 +122,13 @@ describe('discoverAgentFiles', () => {
       readdir: hostFs.readdir.bind(hostFs),
       stat: hostFs.stat.bind(hostFs),
       realpath: hostFs.realpath.bind(hostFs),
-      readText: async () => {
+      readFile: async () => {
         throw new HostFsError(
           OsFsErrors.codes.OS_FS_UNAVAILABLE,
           'read failed: filesystem resource unavailable',
         );
       },
-    } as unknown as IHostFileSystem;
+    } as unknown as HostFs;
 
     await expect(discoverAgentFiles(failingFs, [fileRoot(root)])).rejects.toMatchObject({
       code: OsFsErrors.codes.OS_FS_UNAVAILABLE,
@@ -145,7 +143,7 @@ describe('discoverAgentFiles', () => {
           'readdir failed: path does not exist',
         );
       },
-    } as unknown as IHostFileSystem;
+    } as unknown as HostFs;
 
     const result = await discoverAgentFiles(disappearingFs, [fileRoot(root)]);
 
@@ -167,8 +165,8 @@ describe('discoverAgentFiles', () => {
         }
         return [{ name: 'locked' }, { name: 'solo.md' }];
       },
-      readText: async () => agentMd('solo'),
-    } as unknown as IHostFileSystem;
+      readFile: async () => agentMd('solo'),
+    } as unknown as HostFs;
 
     const warnings: string[] = [];
     const result = await discoverAgentFiles(fakeFs, [fileRoot(root)], (message) =>
@@ -194,8 +192,8 @@ describe('discoverAgentFiles', () => {
         return { isDirectory: false, isFile: p === available };
       },
       readdir: async () => [{ name: 'blocked.md' }, { name: 'available.md' }],
-      readText: async () => agentMd('available'),
-    } as unknown as IHostFileSystem;
+      readFile: async () => agentMd('available'),
+    } as unknown as HostFs;
 
     const warnings: string[] = [];
     const result = await discoverAgentFiles(fakeFs, [fileRoot(root)], (message) =>
@@ -221,8 +219,8 @@ describe('discoverAgentFiles', () => {
           }
           return [{ name: 'solo.md' }];
         },
-        readText: async () => agentMd('solo'),
-      } as unknown as IHostFileSystem;
+        readFile: async () => agentMd('solo'),
+      } as unknown as HostFs;
 
       const warnings: string[] = [];
       const result = await discoverAgentFiles(
