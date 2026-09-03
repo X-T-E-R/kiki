@@ -50,3 +50,15 @@
 - `15da84606` workspace-grouped sessions：Kiki 基座自行定义。
 - `f1208c8d7` 标题摘录：不接收上游用户可见标题策略。
 - `4b9888b73` dangerous bash：不接收上游强制审批策略；仅分析器能力另立 opt-in policy lane，manual/auto 默认开、yolo 默认关。
+
+## Review 1 修正与最终态验证口径
+
+- `56511fd51` 将 step-head flush 注册移入独立的 Agent-scope eager bridge。`AgentAgentsMdReminderService` 不再构造依赖 `IAgentLoopService`，生产 Agent DI 图不再形成 `usage → profile → reminder → loop → requester → usage` 环。
+- `b349d7a49` 补齐 ACP stdio MCP 在 `session/new` 与 `session/load` 的行为覆盖；`27279bf1e` 让 ACP composition root 在接收请求前等待 session index ready。
+- 合入主线 `6d63e0956` 的 merge commit 为 `0dd083f12`；自动合并保留了 Lane G 对 standalone `packages/kosong`、`packages/telemetry` 的删除，以及本批 upstream 封口章节和 experimental flag 优先级说明。
+- 最终 HEAD 的 `packages/kap-server/test/tasks.integration.ts` 为 `12/12` 通过；主线 `6d63e0956` 同命令为 `10/10` 通过。新增真实 Agent materialization 用例与 `run_in_background` 用例均通过。
+- reminder 定向集为 `63/64` 通过；唯一失败是 Windows symlink 创建 `EPERM`，与 Lane I 明确列出的同文件、同失败形态一致。
+- session watermark 新用例为 `1/1` 通过。另行复核的 3 个 session lifecycle 用例在候选与主线 `6d63e0956` 的同命令中均为相同 3 项失败，因此只按本次主线对照记录，不引用 Lane I（Lane I 未覆盖 kap-server integration）。
+- ACP 移植相关 6 个定向用例全部通过；完整 `lifecycle.test.ts` 在候选为 `12/16` 通过、4 项失败，主线 `6d63e0956` 同命令为 `4/16` 通过、12 项失败。候选剩余 4 个失败测试在主线同样失败，但其中 delete 场景的具体错误文本不同，记录为“主线同测试失败”，不声称错误形态完全等价。
+- 先前 Git 定向集的 5 项失败不再整体标为既有基线；Lane I 只支持其中 untracked-diff 与并行清理 `EPERM` 的精确失败簇。
+- 先前 root `test:promote` 的 `140` 个失败文件仅作为失败证据；只有 Lane I 精确分类的 `55` 个文件可称已分类基线，其余 `85` 个不作既有归类。
