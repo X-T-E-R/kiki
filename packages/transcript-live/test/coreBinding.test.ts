@@ -232,6 +232,73 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
+  it('projects a user-origin steer as a live user frame on the next step', () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    const emit = (record: Record<string, unknown>): void => {
+      main.bus.emit(record as unknown as Event2<any>);
+    };
+
+    emit({
+      type: 'turn.prompt',
+      turnId: 0,
+      promptId: 'prompt-1',
+      input: [{ type: 'text', text: 'start' }],
+      origin: { kind: 'user' },
+      time: 1_000,
+    });
+    emit({
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+      time: 2_000,
+    });
+    emit({
+      type: 'context.append_loop_event',
+      event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+      time: 3_000,
+    });
+    emit({
+      type: 'turn.steer',
+      turnId: 0,
+      promptId: 'steer-1',
+      input: [{ type: 'text', text: 'steer this' }],
+      origin: { kind: 'user' },
+      time: 4_000,
+    });
+    emit({
+      type: 'context.append_message',
+      message: {
+        id: 'steer-1',
+        role: 'user',
+        content: [{ type: 'text', text: 'steer this' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      time: 5_000,
+    });
+    emit({
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+      time: 6_000,
+    });
+
+    expect(store.getAgent('main')?.getTurn('t0')?.steps[1]?.frames).toContainEqual(
+      expect.objectContaining({
+        kind: 'text',
+        frameId: 'steer-1',
+        role: 'user',
+        text: 'steer this',
+        origin: { kind: 'user' },
+      }),
+    );
+    binding.dispose();
+  });
+
   it('registers pre-bind pendings without frames and replays an early resolve at seed time', () => {
     const interactions = new SessionInteractionService(new TestSessionStateService());
     interactions.enqueue({
