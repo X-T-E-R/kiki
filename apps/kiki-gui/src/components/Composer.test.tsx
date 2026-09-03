@@ -11,9 +11,11 @@ import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
 import { Composer } from './Composer';
 
-const { selectFilesNative, desktopRuntime } = vi.hoisted(() => ({
+const { selectFilesNative, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   selectFilesNative: vi.fn(),
   desktopRuntime: { value: false },
+  vscodeRuntime: { value: false },
+  preparePrompt: vi.fn(async (content: string, _conversationId?: string) => content),
 }));
 const listModels = vi.fn();
 const listSessionSkills = vi.fn();
@@ -38,6 +40,10 @@ vi.mock('../host', () => ({
       ? { kind: 'tauri', pickFiles: selectFilesNative }
       : { kind: 'browser' },
 }));
+vi.mock('../host/vscode', () => ({
+  isVscodeWebview: () => vscodeRuntime.value,
+  vscodeHost: { preparePrompt },
+}));
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -57,6 +63,8 @@ beforeEach(() => {
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
   selectFilesNative.mockReset();
   desktopRuntime.value = false;
+  vscodeRuntime.value = false;
+  preparePrompt.mockReset().mockImplementation(async (content: string, _conversationId?: string) => content);
   listNamedAgentProfiles.mockReset().mockResolvedValue({
     items: [
       {
@@ -92,52 +100,59 @@ afterAll(() => {
 
 async function renderComposer(
   props: Partial<Parameters<typeof Composer>[0]> = {},
-): Promise<{ container: HTMLDivElement; root: Root }> {
+): Promise<{
+  container: HTMLDivElement;
+  root: Root;
+  rerender: (props: Partial<Parameters<typeof Composer>[0]>) => Promise<void>;
+}> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () => {
-    root.render(
-      <QueryClientProvider client={client}>
-        <I18nProvider>
-          <MemoryRouter>
-            <Composer
-              busy={false}
-              disabled={false}
-              value=""
-              onChange={() => {}}
-              model={undefined}
-              defaultModel={undefined}
-              serverDefaultModel="fixture/kiki-pro"
-              modelSource="server-default"
-              permissionMode="manual"
-              planMode={false}
-              swarmMode={false}
-              goalObjective=""
-              goalStatus={undefined}
-              goalControl={undefined}
-              efforts={undefined}
-              effort={undefined}
-              attachments={[]}
-              onChangeAttachments={() => {}}
-              onChangeModel={() => {}}
-              onChangePermissionMode={() => {}}
-              onChangePlanMode={() => {}}
-              onChangeSwarmMode={() => {}}
-              onChangeGoalObjective={() => {}}
-              onChangeGoalControl={() => {}}
-              onChangeEffort={() => {}}
-              onSend={() => {}}
-              {...props}
-            />
-          </MemoryRouter>
-        </I18nProvider>
-      </QueryClientProvider>,
-    );
-  });
-  return { container, root };
+  const rerender = async (nextProps: Partial<Parameters<typeof Composer>[0]>) => {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <MemoryRouter>
+              <Composer
+                busy={false}
+                disabled={false}
+                value=""
+                onChange={() => {}}
+                model={undefined}
+                defaultModel={undefined}
+                serverDefaultModel="fixture/kiki-pro"
+                modelSource="server-default"
+                permissionMode="manual"
+                planMode={false}
+                swarmMode={false}
+                goalObjective=""
+                goalStatus={undefined}
+                goalControl={undefined}
+                efforts={undefined}
+                effort={undefined}
+                attachments={[]}
+                onChangeAttachments={() => {}}
+                onChangeModel={() => {}}
+                onChangePermissionMode={() => {}}
+                onChangePlanMode={() => {}}
+                onChangeSwarmMode={() => {}}
+                onChangeGoalObjective={() => {}}
+                onChangeGoalControl={() => {}}
+                onChangeEffort={() => {}}
+                onSend={() => {}}
+                {...nextProps}
+              />
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+  };
+  await rerender(props);
+  return { container, root, rerender };
 }
 
 /** Let react-query promises land and the re-render flush, on a macrotask cadence. */
@@ -145,6 +160,14 @@ async function settle(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }
 
 /** Click through an element and let the resulting render flush. */
@@ -180,6 +203,79 @@ async function openPlanPanel(container: HTMLDivElement): Promise<HTMLButtonEleme
   await click(trigger);
   return trigger;
 }
+
+describe('Composer host compatibility', () => {
+  it('renders a new-session composer without Web Crypto randomUUID', async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal('crypto', { ...originalCrypto, randomUUID: undefined });
+
+    await expect(renderComposer({ sessionId: undefined })).resolves.toBeDefined();
+    vi.stubGlobal('crypto', originalCrypto);
+  });
+
+  it('submits browser prompts synchronously without VS Code preflight state', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'browser prompt', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(onSend).toHaveBeenCalledWith('browser prompt', []);
+    expect(preparePrompt).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
+  });
+
+  it('preserves a new-session key for creation and rotates between resident sessions', async () => {
+    vscodeRuntime.value = true;
+    const onSend = vi.fn();
+    const rendered = await renderComposer({ value: 'new', sessionId: undefined, onSend });
+    const textarea = rendered.container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+    const newKey = preparePrompt.mock.calls[0]?.[1];
+
+    await rendered.rerender({ value: 'session-a', sessionId: 'session-a', onSend });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+
+    await rendered.rerender({ value: 'session-b', sessionId: 'session-b', onSend });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+
+    await rendered.rerender({ value: 'new-again', sessionId: undefined, onSend });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+    const newKeyAfterSession = preparePrompt.mock.calls[3]?.[1];
+
+    await rendered.rerender({ value: 'session-c', sessionId: 'session-c', onSend });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+
+    expect(newKey).toMatch(/^vscode-conversation-/);
+    expect(newKeyAfterSession).toMatch(/^vscode-conversation-/);
+    expect(newKeyAfterSession).not.toBe(newKey);
+    expect(newKeyAfterSession).not.toBe('session-b');
+    expect(preparePrompt.mock.calls.map((call) => call[1])).toEqual([
+      newKey,
+      newKey,
+      'session-b',
+      newKeyAfterSession,
+      newKeyAfterSession,
+    ]);
+  });
+});
 
 describe('Composer agent profile picker', () => {
   it('renders the bound profile without a main suffix and lists only main profiles', async () => {
@@ -675,6 +771,26 @@ describe('Composer sendDisabled', () => {
     });
     expect(onSend).toHaveBeenCalledWith('hello', []);
   });
+
+  it('blocks duplicate Enter while VS Code turn preflight is pending', async () => {
+    vscodeRuntime.value = true;
+    const pending = deferred<string>();
+    preparePrompt.mockReturnValue(pending.promise);
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'hello', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(preparePrompt).toHaveBeenCalledTimes(1);
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(true);
+    pending.resolve('hello');
+    await settle();
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
 });
 
 const workspaceSkill = {
@@ -739,7 +855,8 @@ describe('Composer slash skill catalog', () => {
     expect(container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
   });
 
-  it('activates a workspace skill through onActivateSkill instead of sending prompt text', async () => {
+  it('runs VS Code autosave preflight before activating a workspace skill', async () => {
+    vscodeRuntime.value = true;
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onActivateSkill = vi.fn();
     const onSend = vi.fn();
@@ -754,8 +871,31 @@ describe('Composer slash skill catalog', () => {
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
+    await settle();
+    expect(preparePrompt).toHaveBeenCalledWith('', expect.any(String), false);
     expect(onActivateSkill).toHaveBeenCalledWith('review', '--fix', []);
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('activates Tauri skills synchronously without VS Code preflight state', async () => {
+    desktopRuntime.value = true;
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onActivateSkill = vi.fn();
+    const { container } = await renderComposer({
+      value: '/review --fix',
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill,
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(onActivateSkill).toHaveBeenCalledWith('review', '--fix', []);
+    expect(preparePrompt).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
   });
 
   it('sends a slash skill as prompt text when onActivateSkill is omitted', async () => {

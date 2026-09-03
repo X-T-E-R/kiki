@@ -4,12 +4,14 @@ import { createContext, useContext, type ReactNode } from 'react';
 import { browserHost } from './browser';
 import type { HostAdapter } from './host';
 import { tauriHost } from './tauri';
+import { isVscodeWebview, vscodeHost } from './vscode';
 
 export * from './host';
 export { browserHost } from './browser';
 export { tauriHost } from './tauri';
+export { vscodeHost } from './vscode';
 
-export const hostAdapter = isTauri() ? tauriHost : browserHost;
+export const hostAdapter = isTauri() ? tauriHost : isVscodeWebview() ? vscodeHost : browserHost;
 
 const HostContext = createContext<HostAdapter>(hostAdapter);
 

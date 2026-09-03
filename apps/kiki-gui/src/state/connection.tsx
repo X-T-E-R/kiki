@@ -34,6 +34,7 @@ import { useHost } from '../host';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import type { SessionController } from '@kiki/session-core/session';
 import type { SessionEventFrame } from '@kiki/session-core/wire';
+import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { ApiError, KikiClient } from '../lib/client';
 import { KikiSocket, type WsStatus } from '../lib/ws';
@@ -157,10 +158,11 @@ export function nextGuiLeaseClientId(now = Date.now()): string {
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const host = useHost();
   const desktopRuntime = host.kind === 'tauri';
+  const vscodeRuntime = isVscodeWebview();
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [selection, setSelection] = useState<ConnectionSelection | null>(() =>
-    desktopRuntime
+    desktopRuntime || vscodeRuntime
       ? null
       : selectInitialConnection({
           deepLink: readDeepLinkConfig(),
@@ -183,6 +185,33 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const liveSocketRef = useRef<KikiSocket | null>(null);
   const connectionEpochRef = useRef(0);
   const leaseClientIdRef = useRef(nextGuiLeaseClientId());
+
+  useEffect(() => {
+    if (!vscodeRuntime) return;
+    let cancelled = false;
+    void host.connection.discover().then(
+      (connection) => {
+        if (cancelled) return;
+        if (connection === null) return;
+        connectionEpochRef.current += 1;
+        setSelection({
+          config: connection.config,
+          persist: connection.persist,
+          source: 'local-detection',
+        });
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        setConnectError({
+          kind: 'raw',
+          text: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [host, vscodeRuntime]);
 
   // The desktop shell resolves an existing daemon before spawning its own.
   // Keep the shared home token in React memory only.

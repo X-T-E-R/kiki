@@ -1,182 +1,98 @@
+import { readFile } from "node:fs/promises";
+
 import * as vscode from "vscode";
-import type { KimiHarness } from "@moonshot-ai/kimi-code-sdk";
-import { Events } from "../shared/bridge";
-import { BridgeHandler } from "./bridge-handler";
 
-function getNonce(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let nonce = "";
-  for (let i = 0; i < 32; i++) {
-    nonce += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return nonce;
-}
+import type { VscodeIntegrationSettings } from "./settings";
+import { VscodeHostBridge } from "./vscode-host-bridge";
+import type { WebviewConnection } from "./webview-connection";
 
-/**
- * Manages webview instances (sidebar and panels).
- * Each webview gets a unique viewId for session isolation.
- */
-export class KimiWebviewProvider implements vscode.WebviewViewProvider {
-  private webviews = new Map<string, vscode.Webview>();
-  private bridgeHandler: BridgeHandler;
+export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+  private readonly webviews = new Set<vscode.Webview>();
+  private readonly bridge: VscodeHostBridge;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    context: vscode.ExtensionContext,
-    showLogs: () => void,
-    writeLog: (message: string) => void,
+    private readonly connection: WebviewConnection,
+    settings: VscodeIntegrationSettings,
   ) {
-    this.bridgeHandler = new BridgeHandler(
-      this.broadcastInternal.bind(this),
-      context.workspaceState,
-      context.globalStorageUri.fsPath,
-      this.reloadWebview.bind(this),
-      showLogs,
-      writeLog,
-    );
+    this.bridge = new VscodeHostBridge(connection, settings);
+  }
+
+  updateSettings(settings: VscodeIntegrationSettings): void {
+    this.bridge.updateSettings(settings);
+    for (const webview of this.webviews) {
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin
+      void webview.postMessage({ channel: "kiki.vscode-host.settingsChanged", settings });
+    }
   }
 
   dispose(): void {
-    void this.bridgeHandler.dispose();
+    this.webviews.clear();
   }
 
-  shutdown(): Promise<void> {
-    return this.bridgeHandler.dispose();
-  }
-
-  get harness(): KimiHarness {
-    return this.bridgeHandler.runtime.harness;
-  }
-
-  resolveWebviewView(webviewView: vscode.WebviewView): void {
-    const webviewId = `sidebar_${crypto.randomUUID()}`;
-    this.setupWebview(webviewId, webviewView.webview);
-
-    webviewView.onDidDispose(() => {
-      void this.bridgeHandler.disposeView(webviewId);
-      this.webviews.delete(webviewId);
-    });
+  async resolveWebviewView(webviewView: vscode.WebviewView): Promise<void> {
+    await this.setupWebview(webviewView.webview);
+    webviewView.onDidDispose(() => this.webviews.delete(webviewView.webview));
   }
 
   createPanel(): vscode.WebviewPanel {
-    const webviewId = `panel_${crypto.randomUUID()}`;
-
     const panel = vscode.window.createWebviewPanel("kimiPanel", "Kimi Code", vscode.ViewColumn.One, {
       enableScripts: true,
       retainContextWhenHidden: true,
-      localResourceRoots: [this.extensionUri],
+      localResourceRoots: [this.guiRoot],
     });
-
-    this.setupWebview(webviewId, panel.webview);
-
-    panel.onDidDispose(() => {
-      void this.bridgeHandler.disposeView(webviewId);
-      this.webviews.delete(webviewId);
-    });
-
+    void this.setupWebview(panel.webview);
+    panel.onDidDispose(() => this.webviews.delete(panel.webview));
     return panel;
   }
 
-  broadcast(event: string, data: unknown): void {
-    this.broadcastInternal(event, data);
+  reloadAllWebviews(): void {
+    for (const webview of this.webviews) void this.loadHtml(webview);
   }
 
-  async insertEditorMention(documentUri: vscode.Uri, selection: vscode.Selection): Promise<boolean> {
-    let inserted = false;
-    await Promise.all(
-      [...this.webviews.keys()].map(async (webviewId) => {
-        const mention = await this.bridgeHandler.getEditorMention(webviewId, documentUri, selection);
-        if (mention === null) return;
-        inserted = true;
-        this.broadcastInternal(Events.InsertMention, { mention }, webviewId);
-      }),
-    );
-    return inserted;
+  private get guiRoot(): vscode.Uri {
+    return vscode.Uri.joinPath(this.extensionUri, "media", "gui");
   }
 
-  private setupWebview(webviewId: string, webview: vscode.Webview): void {
+  private async setupWebview(webview: vscode.Webview): Promise<void> {
     webview.options = {
       enableScripts: true,
-      localResourceRoots: [this.extensionUri],
+      localResourceRoots: [this.guiRoot],
     };
-
-    webview.html = this.getHtml(webviewId, webview);
-    this.webviews.set(webviewId, webview);
-
-    webview.onDidReceiveMessage(async (msg: unknown) => {
-      const result = await this.bridgeHandler.handle(msg, webviewId);
-      webview.postMessage(result);
+    this.webviews.add(webview);
+    webview.onDidReceiveMessage(async (message: unknown) => {
+      const response = await this.bridge.handle(message);
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin
+      if (response !== null) await webview.postMessage(response);
     });
+    await this.loadHtml(webview);
   }
 
-  private broadcastInternal(event: string, data: unknown, targetWebviewId?: string): void {
-    const msg = { event, data };
-
-    if (targetWebviewId) {
-      void this.webviews.get(targetWebviewId)?.postMessage(msg);
-    } else {
-      this.webviews.forEach((webview) => {
-        void webview.postMessage(msg);
-      });
-    }
+  private async loadHtml(webview: vscode.Webview): Promise<void> {
+    const source = await readFile(vscode.Uri.joinPath(this.guiRoot, "index.html").fsPath, "utf8");
+    webview.html = this.renderHtml(source, webview);
   }
 
-  private reloadWebview(webviewId: string): void {
-    const webview = this.webviews.get(webviewId);
-    if (webview) {
-      webview.html = this.getHtml(webviewId, webview);
-    }
-  }
-
-  reloadAllWebviews(): void {
-    this.webviews.forEach((webview, webviewId) => {
-      webview.html = this.getHtml(webviewId, webview);
-    });
-  }
-
-  async resetAllWebviews(): Promise<void> {
-    await Promise.all(
-      [...this.webviews.keys()].map((webviewId) => this.bridgeHandler.disposeView(webviewId)),
-    );
-    this.reloadAllWebviews();
-  }
-
-  getBaselineContent(sessionId: string, filePath: string): Promise<string> {
-    return this.bridgeHandler.getBaselineContent(sessionId, filePath);
-  }
-
-  async setYoloModeForActiveSessions(enabled: boolean): Promise<void> {
-    await this.bridgeHandler.runtime.setYoloModeForActiveSessions(enabled);
-  }
-
-  private getHtml(webviewId: string, webview: vscode.Webview): string {
-    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview.js"));
-    const baseUri = webview.asWebviewUri(this.extensionUri).toString();
-    const nonce = getNonce();
-
+  private renderHtml(source: string, webview: vscode.Webview): string {
+    const nonce = crypto.randomUUID().replaceAll("-", "");
     const csp = [
-      `default-src 'none'`,
+      "default-src 'none'",
       `style-src ${webview.cspSource} 'unsafe-inline'`,
-      `img-src ${webview.cspSource} data: blob:`,
-      `font-src ${webview.cspSource}`,
-      `media-src ${webview.cspSource} data: blob:`,
-      `connect-src ${webview.cspSource}`,
+      `img-src ${webview.cspSource} data: blob: ${this.connection.restOrigin}`,
+      `font-src ${webview.cspSource} data:`,
+      `media-src ${webview.cspSource} data: blob: ${this.connection.restOrigin}`,
+      `connect-src ${webview.cspSource} ${this.connection.restOrigin} ${this.connection.socketOrigin}`,
       `worker-src ${webview.cspSource} blob:`,
-      `script-src 'nonce-${nonce}' ${webview.cspSource}`,
+      `script-src ${webview.cspSource} 'nonce-${nonce}'`,
     ].join("; ");
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="${csp}">
-  <title>Kimi Code</title>
-</head>
-<body data-baseuri="${baseUri}" data-webviewid="${webviewId}">
-  <div id="root"></div>
-  <script nonce="${nonce}" src="${scriptUri.toString()}"></script>
-</body>
-</html>`;
+    const head = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
+    return source
+      .replace("<head>", `<head>${head}`)
+      .replaceAll(/<script(?![^>]*\bnonce=)/gi, `<script nonce="${nonce}"`)
+      .replaceAll(/\b(src|href)="(?![a-z]+:|data:|#)([^"?]+)([^"]*)"/gi, (_match, attribute, path, suffix) => {
+        const segments = String(path).replace(/^\.\//, "").replace(/^\//, "").split("/");
+        const uri = webview.asWebviewUri(vscode.Uri.joinPath(this.guiRoot, ...segments));
+        return `${attribute}="${uri.toString()}${suffix}"`;
+      });
   }
 }

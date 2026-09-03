@@ -1,21 +1,12 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
-import { extname, join, resolve } from 'node:path';
+import { extname, join } from 'node:path';
 
 import { runLocalCli } from './local-cli.mjs';
 import { extensionRoot, isMainModule } from './vsix-targets.mjs';
 
-const sourceDirectories = [
-  join(extensionRoot, 'src'),
-  join(extensionRoot, 'shared'),
-  ...[
-    'kaos',
-    'node-sdk',
-    'oauth',
-    'protocol',
-  ].map((name) => resolve(extensionRoot, `../../packages/${name}/src`)),
-].filter(existsSync);
+const sourceDirectories = [join(extensionRoot, 'src')].filter(existsSync);
 const rootConfigFiles = ['package.json', 'tsconfig.json', 'tsdown.config.ts'].map((name) =>
   join(extensionRoot, name),
 );

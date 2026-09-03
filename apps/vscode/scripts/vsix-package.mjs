@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createRequire } from 'node:module';
+import { cpSync, rmSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
@@ -111,9 +112,11 @@ async function main() {
 
 function buildExtension() {
   runLocalCli('tsdown', 'tsdown', ['--config', 'tsdown.config.ts'], { cwd: extensionRoot });
-  runLocalCli('vite', 'vite', ['build', '--config', 'webview-ui/vite.config.ts'], {
-    cwd: extensionRoot,
-  });
+  const guiRoot = resolve(extensionRoot, '../kiki-gui');
+  runLocalCli('vite', 'vite', ['build', '--base', './'], { cwd: guiRoot });
+  const target = join(extensionRoot, 'media', 'gui');
+  rmSync(target, { recursive: true, force: true });
+  cpSync(join(guiRoot, 'dist'), target, { recursive: true });
 }
 
 function loadVscePack() {
