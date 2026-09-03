@@ -183,6 +183,11 @@ export class DaemonSocket implements SessionSocket {
         this.events.onStatus?.('open');
         this.sendSubscriptions([...this.desired.keys()]);
         return;
+      case 'ping': {
+        const nonce = (message.payload as { readonly nonce?: unknown } | undefined)?.nonce;
+        if (typeof nonce === 'string') this.send({ type: 'pong', payload: { nonce } });
+        return;
+      }
       case 'ack': {
         const payload = message.payload as
           | { accepted?: string[]; accepted_subscriptions?: string[]; resync_required?: string[] }

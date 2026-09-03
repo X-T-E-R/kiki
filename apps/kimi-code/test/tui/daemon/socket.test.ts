@@ -78,6 +78,12 @@ describe('DaemonSocket', () => {
       transcript: { '*': 'turn', main: 'delta' },
     });
 
+    ws.message({ type: 'ping', payload: { nonce: 'heartbeat-1' } });
+    expect(JSON.parse(ws.sent.at(-1)!)).toEqual({
+      type: 'pong',
+      payload: { nonce: 'heartbeat-1' },
+    });
+
     ws.message({
       type: 'transcript.ops',
       seq: 8,
