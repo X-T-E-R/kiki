@@ -152,20 +152,6 @@ export interface CapabilityChangedEvent {
   };
 }
 
-/**
- * DI unit state transition of the engine's scope tree, produced by
- * agent-core-v2's `IDebugCascadeService` (the L5 debug surface feed). Global:
- * carries no owning session and fans out to every connection.
- */
-export interface DiUnitChangedEvent {
-  readonly type: 'event.di.unit_changed';
-  /** Scope path of the container owning the unit (`app` / `app/workspace:<id>` / …). */
-  readonly scope: string;
-  readonly token: string;
-  readonly state: 'Pending' | 'Activating' | 'Active' | 'Unloading' | 'Failed';
-  readonly error?: string;
-}
-
 export interface PromptSubmittedEvent {
   readonly type: 'prompt.submitted';
   readonly promptId: string;
@@ -269,7 +255,6 @@ export type AgentEvent =
   | PluginChangedEvent
   | ModelCatalogChangedEvent
   | CapabilityChangedEvent
-  | DiUnitChangedEvent
   | PromptSubmittedEvent
   | BackgroundTaskStartedEvent
   | BackgroundTaskTerminatedEvent;
@@ -291,7 +276,6 @@ export const VOLATILE_EVENT_TYPES = [
   'shell.started',
   'shell.completed',
   'agent.status.updated',
-  'event.di.unit_changed',
   'event.capability.changed',
 ] as const;
 
