@@ -203,8 +203,20 @@ function spawnDetachedServer(options: {
     '--json',
   ];
   if (options.port !== undefined) args.push('--port', String(options.port));
+  const env = { ...process.env };
+  for (const name of [
+    'KIKI_EXTERNAL_PRINCIPAL_ID',
+    'KIKI_EXTERNAL_SESSION_ID',
+    'KIKI_EXTERNAL_DELEGATION_TOKEN',
+    'KIKI_EXTERNAL_WORKSPACE_PATH',
+    'KIKI_EXTERNAL_MODEL_ALIAS',
+    'KIKI_EXTERNAL_THINKING_EFFORT',
+    'KIKI_EXTERNAL_PERMISSION_MODE',
+    'KIKI_EXTERNAL_SESSION_TITLE',
+  ]) delete env[name];
   const child = spawn(process.execPath, args, {
     detached: true,
+    env,
     stdio: 'ignore',
     windowsHide: true,
   });

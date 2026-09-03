@@ -326,4 +326,33 @@ describe('startServer — instance registry wiring', () => {
     expect(await listLiveServerInstances(home)).toHaveLength(1);
     expect((await listLiveServerInstances(home))[0]?.port).toBe(restarted.port);
   });
+
+  it('keeps an idle server alive for an active lease and closes after the lease expires', async () => {
+    home = mkdtempSync(join(tmpdir(), 'kimi-server-idle-lease-'));
+    const running = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      idleExitMs: 100,
+      leaseTtlMs: 200,
+    });
+    servers.push(running);
+    const base = `http://127.0.0.1:${running.port}`;
+    const lease = await fetch(`${base}/api/v1/leases`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${running.authTokenService.getToken()}`,
+        'content-type': 'application/json',
+      },
+      body: '{}',
+    });
+    expect(await lease.json()).toMatchObject({ code: 0, data: { lease_id: expect.any(String) } });
+    await sleep(150);
+    expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+    await running.closed;
+    servers.splice(servers.indexOf(running), 1);
+    expect(await listLiveServerInstances(home)).toHaveLength(0);
+  });
 });

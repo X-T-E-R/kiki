@@ -96,7 +96,13 @@ export function createSeatOnConnection(
     connection,
     'POST',
     '/api/v2/external-delegation/seats',
-    input,
+    {
+      workspace: input.workspace,
+      principal: input.principal,
+      mode: input.mode,
+      model: input.model,
+      thinking: input.thinking,
+    },
   );
 }
 

@@ -8,10 +8,10 @@ import { BUILT_IN_CATALOG_DEFINE, builtInCatalogDefine } from './scripts/built-i
 const appRoot = import.meta.dirname;
 
 export default defineConfig({
-  entry: ['./src/main.ts'],
+  entry: ['./src/kiki.ts'],
   format: ['esm'],
   outDir: 'dist',
-  clean: true,
+  clean: false,
   dts: false,
   hash: false,
   banner: {
@@ -35,6 +35,6 @@ export default defineConfig({
   },
   outputOptions: {
     codeSplitting: false,
-    entryFileNames: 'main.mjs',
+    entryFileNames: 'kiki.mjs',
   },
 });
