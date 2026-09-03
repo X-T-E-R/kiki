@@ -204,6 +204,18 @@ importers:
 
   apps/kimi-code:
     dependencies:
+      '@kiki/session-core':
+        specifier: workspace:^
+        version: link:../../packages/session-core
+      '@moonshot-ai/klient':
+        specifier: workspace:^
+        version: link:../../packages/klient
+      '@moonshot-ai/protocol':
+        specifier: workspace:^
+        version: link:../../packages/protocol
+      '@moonshot-ai/transcript':
+        specifier: workspace:^
+        version: link:../../packages/transcript
       ws:
         specifier: ^8.18.0
         version: 8.20.0
