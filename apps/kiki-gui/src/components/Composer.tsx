@@ -294,6 +294,7 @@ export function Composer({
   autoFocus?: boolean;
 }) {
   const host = useHost();
+  const vscodeConversationId = useRef(sessionId ?? crypto.randomUUID()).current;
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
@@ -861,7 +862,7 @@ export function Composer({
   const sendPrompt = async (content: string) => {
     try {
       const prepared = isVscodeWebview()
-        ? await vscodeHost.preparePrompt(content, sessionId)
+        ? await vscodeHost.preparePrompt(content, vscodeConversationId)
         : content;
       recordSubmission();
       onSend(prepared, attachments);
