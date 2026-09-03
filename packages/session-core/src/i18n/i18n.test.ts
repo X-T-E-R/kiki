@@ -69,6 +69,12 @@ describe('translatePlural', () => {
     expect(translatePlural('en', 'sv.queueBar', 3)).toContain('3 prompts queued');
     expect(translatePlural('zh', 'sv.queueBar', 1)).toContain('1 条消息已排队');
     expect(translatePlural('zh', 'sv.queueBar', 3)).toContain('3 条消息已排队');
+    expect(translatePlural('en', 'st.plugins.contrib.skills', 1)).toBe('1 skill');
+    expect(translatePlural('en', 'st.plugins.contrib.skills', 2)).toBe('2 skills');
+    expect(translatePlural('en', 'st.plugins.contrib.mcp', 1)).toBe('1 MCP server');
+    expect(translatePlural('en', 'st.plugins.contrib.commands', 2)).toBe('2 commands');
+    expect(translatePlural('zh', 'st.plugins.contrib.skills', 1)).toBe('1 个技能');
+    expect(translatePlural('zh', 'st.plugins.contrib.skills', 2)).toBe('2 个技能');
   });
 });
 

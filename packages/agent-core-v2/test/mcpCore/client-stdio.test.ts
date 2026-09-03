@@ -13,6 +13,7 @@ import { FakeRuntime } from '#/runtime/fakeRuntime';
 import {
   crashAfterConnectFixture,
   cwdStdioFixture,
+  hostProcessPathClass,
   stderrThenExitFixture,
   stdioFixture,
 } from './stubs';
@@ -24,7 +25,7 @@ function createClient(
   const runtime = Object.assign(
     new FakeRuntime(
       { workspaceId: 'workspace', runtimeId: 'local', generation: 'test' },
-      { capabilities: ['process'] },
+      { capabilities: ['process'], pathClass: hostProcessPathClass },
     ),
     { process: new HostProcessService() },
   );

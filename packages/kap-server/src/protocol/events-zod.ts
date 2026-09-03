@@ -671,14 +671,6 @@ export const capabilityChangedEventSchema = z.object({
   }),
 });
 
-export const diUnitChangedEventSchema = z.object({
-  type: z.literal('event.di.unit_changed'),
-  scope: z.string().min(1),
-  token: z.string().min(1),
-  state: z.enum(['Pending', 'Activating', 'Active', 'Unloading', 'Failed']),
-  error: z.string().optional(),
-});
-
 export const goalUpdatedEventSchema = z.object({
   type: z.literal('goal.updated'),
   snapshot: goalSnapshotSchema.nullable(),
@@ -1046,7 +1038,6 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   sessionWorkChangedEventSchema,
   sessionStatusChangedEventSchema,
   configChangedEventSchema,
-  diUnitChangedEventSchema,
   pluginChangedEventSchema,
   modelCatalogChangedEventSchema,
   capabilityChangedEventSchema,

@@ -28,7 +28,6 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 import type {
   ConfigWarningItem,
-  DiUnitChangedEvent,
   SessionCreatedEvent,
   SessionMetaUpdatedEvent,
   Event,
@@ -191,16 +190,6 @@ export class SessionEventBroadcaster {
    */
   private readonly globalTargets = new Set<BroadcastTarget>();
   /**
-   * Opt-in set for the `event.di.*` debug-surface feed. That feed is global
-   * (no owning session) and high-churn, but only kimi-inspect's DI view
-   * consumes it — pushing it to every connection wastes bandwidth on clients
-   * that drop the frames unread. Temporary gate until a client-declared
-   * event-type whitelist exists: `WsConnectionV1` opts a connection in when
-   * its `client_hello` carries `client_id: 'kimi-inspect'`; every other
-   * connection (including subscribed targets) skips `event.di.*` frames.
-   */
-  private readonly diEventTargets = new Set<BroadcastTarget>();
-  /**
    * Single-flight guard for session activation: without it, two concurrent
    * activations (WS subscribe racing a REST snapshot / replay / resync) each
    * built their own SessionState, bus subscriptions, and journal writer. The
@@ -259,16 +248,6 @@ export class SessionEventBroadcaster {
   /** Drop a closed connection from the global fan-out set. Idempotent. */
   removeGlobalTarget(target: BroadcastTarget): void {
     this.globalTargets.delete(target);
-    this.diEventTargets.delete(target);
-  }
-
-  /**
-   * Opt a connection into the `event.di.*` debug-surface feed (see
-   * {@link diEventTargets}). Idempotent; cleaned up by
-   * {@link removeGlobalTarget}.
-   */
-  addDiEventTarget(target: BroadcastTarget): void {
-    this.diEventTargets.add(target);
   }
 
   /**
@@ -1186,19 +1165,6 @@ export class SessionEventBroadcaster {
       );
       return;
     }
-    if (event.type === 'event.di.unit_changed') {
-      const payload = diUnitChangedPayload(corePayload);
-      if (payload === undefined) return;
-      void this.dispatchGlobal({
-        type: 'event.di.unit_changed',
-        ...payload,
-        agentId: 'main',
-        sessionId: GLOBAL_SESSION_ID,
-      } as Event).catch((error: unknown) =>
-        this.logDispatchError(GLOBAL_SESSION_ID, 'event.di.unit_changed', error),
-      );
-      return;
-    }
   }
 
   private async dispatchGlobal(event: Event): Promise<void> {
@@ -1558,9 +1524,7 @@ export class SessionEventBroadcaster {
     if (isGlobalEvent(event.type)) {
       const recipients = new Set<BroadcastTarget>(this.globalTargets);
       for (const target of this.allTargets()) recipients.add(target);
-      const diGated = event.type.startsWith('event.di.');
       for (const target of recipients) {
-        if (diGated && !this.diEventTargets.has(target)) continue;
         try {
           target.send(envelope, 'immediate');
         } catch {
@@ -1687,8 +1651,7 @@ function isGlobalEvent(type: string): boolean {
     type.startsWith('event.config.') ||
     type.startsWith('event.plugin.') ||
     type.startsWith('event.capability.') ||
-    type.startsWith('event.model_catalog.') ||
-    type.startsWith('event.di.')
+    type.startsWith('event.model_catalog.')
   );
 }
 
@@ -1890,32 +1853,6 @@ function sessionMetaUpdatedSessionId(payload: unknown): string | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
   const sessionId = (payload as { sessionId?: unknown }).sessionId;
   return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined;
-}
-
-const DI_UNIT_STATES: ReadonlySet<string> = new Set([
-  'Pending',
-  'Activating',
-  'Active',
-  'Unloading',
-  'Failed',
-]);
-
-function diUnitChangedPayload(
-  payload: unknown,
-): Pick<DiUnitChangedEvent, 'scope' | 'token' | 'state' | 'error'> | undefined {
-  if (typeof payload !== 'object' || payload === null) return undefined;
-  const candidate = payload as Partial<DiUnitChangedEvent>;
-  if (typeof candidate.scope !== 'string' || candidate.scope.length === 0) return undefined;
-  if (typeof candidate.token !== 'string' || candidate.token.length === 0) return undefined;
-  if (typeof candidate.state !== 'string' || !DI_UNIT_STATES.has(candidate.state)) {
-    return undefined;
-  }
-  return {
-    scope: candidate.scope,
-    token: candidate.token,
-    state: candidate.state as DiUnitChangedEvent['state'],
-    error: typeof candidate.error === 'string' ? candidate.error : undefined,
-  };
 }
 
 function sessionCreatedPayload(

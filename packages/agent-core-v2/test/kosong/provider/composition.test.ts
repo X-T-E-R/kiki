@@ -821,11 +821,14 @@ describe('kimi provider definitions', () => {
   it('registers one definition per transport, with shared vendor-level facts', () => {
     const native = getProviderDefinition('kimi', 'openai');
     const anthropic = getProviderDefinition('kimi', 'anthropic');
+    const responses = getProviderDefinition('kimi', 'openai_responses');
     expect(native?.baseProtocol).toBe('openai');
     expect(native?.traits).toHaveLength(1);
     expect(anthropic?.baseProtocol).toBe('anthropic');
     expect(anthropic?.traits).toHaveLength(1);
-    for (const definition of [native, anthropic]) {
+    expect(responses?.baseProtocol).toBe('openai_responses');
+    expect(responses?.traits).toHaveLength(1);
+    for (const definition of [native, anthropic, responses]) {
       expect(definition?.endpoint).toEqual({
         apiKeyEnv: 'KIMI_API_KEY',
         baseUrlEnv: 'KIMI_BASE_URL',
@@ -838,7 +841,7 @@ describe('kimi provider definitions', () => {
 
   it('answers id-level queries and reports unregistered pairs', () => {
     expect(getProviderDefinition('kimi')?.baseProtocol).toBe('openai');
-    expect(getProviderDefinitions('kimi')).toHaveLength(2);
+    expect(getProviderDefinitions('kimi')).toHaveLength(3);
     expect(hasProviderDefinition('kimi')).toBe(true);
     expect(hasProviderDefinition('no-such-vendor')).toBe(false);
     expect(getProviderDefinition('kimi', 'google-genai')).toBeUndefined();

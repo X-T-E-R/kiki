@@ -1,24 +1,19 @@
-import {
-  normalizeAgentProfile,
-  type AgentProfile,
-  type AgentProfileInput,
+import type {
+  AgentProfile,
+  AgentProfileInput,
 } from './agentProfileCatalog';
+import {
+  _clearAgentProfileContributionsForTests,
+  getAgentProfileContributions as getContributions,
+  registerAgentProfile as registerProfile,
+} from '@kiki/agent-profiles/contribution';
 
-const _profileContributions: AgentProfile[] = [];
+export { _clearAgentProfileContributionsForTests };
 
 export function registerAgentProfile(definition: AgentProfileInput): void {
-  const profile = normalizeAgentProfile(definition);
-  const existingIndex = _profileContributions.findIndex((d) => d.name === profile.name);
-  if (existingIndex >= 0) {
-    _profileContributions.splice(existingIndex, 1);
-  }
-  _profileContributions.push(profile);
+  registerProfile(definition);
 }
 
 export function getAgentProfileContributions(): readonly AgentProfile[] {
-  return _profileContributions;
-}
-
-export function _clearAgentProfileContributionsForTests(): void {
-  _profileContributions.length = 0;
+  return getContributions() as readonly AgentProfile[];
 }

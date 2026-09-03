@@ -1,10 +1,12 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { parseManifest, PLUGIN_SYSTEM_PROMPT_MAX_BYTES } from '#/app/plugin/manifest';
+
+import { symlinkDir } from '../../_base/utils/symlink';
 
 describe('plugin manifest parser', () => {
   let dir: string;
@@ -270,20 +272,22 @@ describe('plugin manifest parser', () => {
     expect(absoluteResult.diagnostics.map((d) => d.message)).toEqual([
       `"systemPromptPath" path must start with "./" (got "${absolute}")`,
     ]);
+  });
 
+  it('rejects a systemPromptPath that escapes through a directory junction', async () => {
     const outsideDir = await mkdtemp(join(tmpdir(), 'plugin-outside-'));
     await writeFile(join(outsideDir, 'secret.md'), 'outside content', 'utf8');
-    await symlink(join(outsideDir, 'secret.md'), join(dir, 'linked.md'));
+    await symlinkDir(outsideDir, join(dir, 'linked'));
     await writeFile(
       join(dir, 'kimi.plugin.json'),
-      JSON.stringify({ name: 'demo', systemPromptPath: './linked.md' }),
+      JSON.stringify({ name: 'demo', systemPromptPath: './linked/secret.md' }),
       'utf8',
     );
 
     const linked = await parseManifest(dir);
     expect(linked.manifest?.systemPrompt).toBeUndefined();
     expect(linked.diagnostics.map((d) => d.message)).toEqual([
-      '"systemPromptPath" path resolves outside the plugin (./linked.md)',
+      '"systemPromptPath" path resolves outside the plugin (./linked/secret.md)',
     ]);
     await rm(outsideDir, { recursive: true, force: true });
   });

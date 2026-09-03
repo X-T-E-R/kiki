@@ -5,7 +5,6 @@ on:
     paths:
       - '.github/workflows/kiki-desktop-*.yml'
       - 'apps/kiki-gui/**'
-      - 'apps/kimi-code/dist-web/**'
       - 'apps/kimi-code/scripts/native/**'
       - 'packages/**'
       - 'pnpm-lock.yaml'

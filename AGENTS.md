@@ -15,10 +15,7 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 ## Project Map
 
 - `apps/kimi-code`: the CLI / TUI application. It consumes core capabilities through `@moonshot-ai/kimi-code-sdk` and must not depend directly on `@moonshot-ai/agent-core-v2`. When writing or modifying its terminal UI, use the `write-tui` skill (`.agents/skills/write-tui/SKILL.md`).
-- the browser web UI: **its source no longer lives in this repo.** It is developed in the code-app repo (`apps/web`) and shipped as the committed, prebuilt bundle `apps/kimi-code/dist-web` (gitignored, force-added), synced from code-app with `KIMI_CODE_REPO=<this checkout> pnpm run sync:web` — sync and commit the bundle in the same change whenever the web UI should ship differently. `apps/kimi-code/scripts/check-web-assets.mjs` guards packaging against a missing bundle. To hack on the web UI against this repo's server, run `pnpm dev:server` here and point code-app's `pnpm dev:web` at it via `KIMI_SERVER_URL`.
-- `apps/vis`, `apps/vis/server`, `apps/vis/web`: visual debugging tools for sessions and replays.
-- `apps/kiki-inspect`: web inspector for the kap-server `/api/v1/debug` RPC surface — workspace/session browser, per-session transcript chat, per-scope Service panels, and the DI unit inspection view. See `apps/kimi-inspect/AGENTS.md`.
-- `apps/kiki-gui`: the Kiki GUI (`@kiki/gui`), a private workspace package acting as a downstream client of the inherited kap-server REST/WebSocket surfaces (see `docs/en/guides/kiki-runtime.md` for the fork's runtime boundaries; the zh mirror lives at `docs/zh/guides/kiki-runtime.md`).
+- `apps/kiki-gui`: the shared browser and desktop GUI. `apps/kimi-code` builds it into the CLI package and serves it from `kimi web`; for development, run `pnpm dev:server` and point the GUI Vite server at it with `KIMI_SERVER_URL`.
 - `packages/agent-core-v2`: the agent engine — the only one. (The historical v1 `packages/agent-core` was deleted; nothing in the repo may reintroduce it.) A DI × Scope design: Four `LifecycleScope` tiers — `App` / `Workspace` / `Session` / `Agent` (`app/scopes.ts`) — plus the L3 unit layer (`Service`/`Fiber` units, collection contribution points, the Feature seam in `src/features/`) and the App-scope `ISessionManager` facade for cross-workspace session lifecycle operations. See `packages/agent-core-v2/AGENTS.md` and use the `agent-core-dev` skill (`.agents/skills/agent-core-dev/SKILL.md`) when developing here.
 - `packages/node-sdk`: the public TypeScript SDK and harness.
 - `packages/kaos`: the execution environment and file/process abstractions.
@@ -44,6 +41,14 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
   - Missing a name in `flake.nix`'s `workspaceNames` will break `pnpmConfigHook` because dependencies for that workspace will not be fetched.
 - The automated "Check flake.nix workspace sync" (`scripts/check-nix-workspace.mjs`) verifies the full workspace in both directions: every package selected by `pnpm-workspace.yaml` must appear in both flake.nix lists, and stale flake entries with no workspace package fail the check. Keep it green on every add/remove, but still update both files by hand in the same change — the check only runs in CI.
 
+## Upstream Synchronization
+
+- Never merge upstream into `apps/*` or `packages/*`; receive selected upstream changes only through isolated cherry-picks or semantic ports.
+- Review upstream at every release tag or every four weeks, whichever comes first. Filter candidates by commit title and touched paths before reading full diffs.
+- Review security/CVE fixes, provider protocol mismatches, and wire or persistence data-corruption fixes as soon as they appear rather than waiting for the regular review.
+- Exclude UI changes, cloud features, secondary-model work, and runtime-to-DI/actor migrations in the first filter unless a separate Kiki decision explicitly reopens that area.
+- Record every accepted, rejected, or deferred upstream commit in `handoffs/2026-08-31-kiki-parallel-campaigns/merge-log.md` using the existing date / source / local HEAD / notes table format.
+
 ## General Coding Rules
 
 - `packages/agent-core-v2`, `packages/kap-server`, and `packages/transcript` are comment-free zones: no line/block comments; the exceptions are JSDoc attached to exported symbols and load-bearing lint-suppression directives (`oxlint-disable` / `eslint-disable`), while other tooling directives (`@ts-expect-error`, …) stay banned. Enforced by `scripts/check-no-comments.mjs`, which runs as part of `pnpm lint`.
@@ -61,7 +66,7 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 
 ## Experimental Features
 
-- Gate a not-yet-public feature behind an experimental flag. Flags are env-driven and default off: `KIMI_CODE_EXPERIMENTAL_<NAME>` toggles one, `KIMI_CODE_EXPERIMENTAL_FLAG` enables all. Release by flipping the entry's `default` to `true`.
+- Gate a not-yet-public feature behind an experimental flag. Flags are env-driven and default off: `KIMI_CODE_EXPERIMENTAL_<NAME>` toggles one, `KIMI_CODE_EXPERIMENTAL_FLAG` enables all. Precedence is per-flag env > `[experimental]` config > master env > the flag's `default`. Release by flipping the entry's `default` to `true`.
   - `packages/agent-core-v2` and kap-server modules: there is no central catalog — declare the flag in the owning domain via `registerFlagDefinition` at import time (see `packages/agent-core-v2/docs/flag.md`), then check it with `IFlagService.enabled(id)`. Current search-index-separation flags: `persistence_minidb_readmodel` (session read model, default on) and `search_worker` (global search worker host, default on).
 
 ## Where to Update Instructions

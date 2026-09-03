@@ -458,12 +458,13 @@ describe('SessionEventBroadcaster', () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  it('projects queued and replaced prompt variants into the AsyncAPI session event schema', () => {
+  it('projects supported event variants into the AsyncAPI session event schema', () => {
     const document = createAsyncApiDocument();
     const messages = (document['components'] as { messages: Record<string, unknown> }).messages;
     const sessionEvent = JSON.stringify(messages['session_event']);
     expect(sessionEvent).toContain('prompt.queued');
     expect(sessionEvent).toContain('prompt.replaced');
+    expect(sessionEvent).not.toContain('event.di.unit_changed');
   });
 
   it('preserves a real Event2 time in payload and derives the envelope timestamp from it', async () => {
@@ -1503,52 +1504,6 @@ describe('SessionEventBroadcaster', () => {
     expect(s1View.envelopes[0]!.session_id).not.toBe('__global__');
     expect(s2View.envelopes[0]!.session_id).toBe('s1');
     expect(s1View.envelopes[0]!.volatile).toBeUndefined();
-  });
-
-  it('gates event.di.unit_changed to connections opted into the DI debug feed', async () => {
-    const plainView = collectingTarget();
-    bc.addGlobalTarget(plainView.target);
-    const diView = collectingTarget();
-    bc.addGlobalTarget(diView.target);
-    bc.addDiEventTarget(diView.target);
-
-    eventBus.emit({
-      type: 'event.di.unit_changed',
-      payload: { scope: 'app', token: 'debugCascadeService', state: 'Active' },
-    });
-
-    await vi.waitFor(() => expect(diView.envelopes).toHaveLength(1));
-    expect(diView.envelopes[0]).toMatchObject({
-      type: 'event.di.unit_changed',
-      session_id: '__global__',
-      volatile: true,
-      payload: {
-        type: 'event.di.unit_changed',
-        scope: 'app',
-        token: 'debugCascadeService',
-        state: 'Active',
-        agentId: 'main',
-        sessionId: '__global__',
-      },
-    });
-    expect(diView.deliveries).toEqual(['immediate']);
-    expect(plainView.envelopes).toHaveLength(0);
-
-    eventBus.emit({
-      type: 'event.di.unit_changed',
-      payload: { scope: 'app', token: 'x', state: 'Exploded' },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(diView.envelopes).toHaveLength(1);
-
-    bc.removeGlobalTarget(diView.target);
-    eventBus.emit({
-      type: 'event.di.unit_changed',
-      payload: { scope: 'app', token: 'debugCascadeService', state: 'Unloading' },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(diView.envelopes).toHaveLength(1);
-    expect(plainView.envelopes).toHaveLength(0);
   });
 
   describe('global fan-out to unsubscribed connections', () => {

@@ -28,16 +28,36 @@ export class SessionExternalDelegationProvisionStore
   async read(): Promise<ExternalDelegationSessionProvision | undefined> {
     const raw = await this.store.get<unknown>(this.scope, this.key);
     if (raw === undefined || raw === null || typeof raw !== 'object') return undefined;
-    const candidate = raw as Partial<ExternalDelegationSessionProvision>;
-    if (candidate.version !== 1) return undefined;
-    if (candidate.ownership !== 'dedicated' && candidate.ownership !== 'attached') {
+    const candidate = raw as Record<string, unknown>;
+    if (candidate['version'] === 1) {
+      const ownership = candidate['ownership'];
+      if (ownership !== 'dedicated' && ownership !== 'attached') return undefined;
+      return { version: 1, ownership };
+    }
+    if (
+      candidate['version'] !== 2 ||
+      candidate['ownership'] !== 'dedicated' ||
+      typeof candidate['principalId'] !== 'string' ||
+      candidate['principalId'].length === 0 ||
+      typeof candidate['delegationToken'] !== 'string' ||
+      candidate['delegationToken'].length === 0
+    ) {
       return undefined;
     }
-    return { version: 1, ownership: candidate.ownership };
+    return {
+      version: 2,
+      ownership: 'dedicated',
+      principalId: candidate['principalId'],
+      delegationToken: candidate['delegationToken'],
+    };
   }
 
   write(provision: ExternalDelegationSessionProvision): Promise<void> {
     return this.store.set(this.scope, this.key, provision);
+  }
+
+  revoke(): Promise<void> {
+    return this.store.delete(this.scope, this.key);
   }
 }
 

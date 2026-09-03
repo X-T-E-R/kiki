@@ -1,4 +1,5 @@
 import { ILogService } from '#/_base/log/log';
+import { SESSION_INDEX_KEY, SESSION_INDEX_SCOPE } from '#/app/workspace/workspaceAlias';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IQueryStore, type WriteOp } from '#/persistence/interface/queryStore';
@@ -20,6 +21,7 @@ import {
   mapBounded,
   readSessionSummary,
   reconcileSessionSummary,
+  sessionStateMaxMtime,
   summaryEquals,
 } from './sessionIndexSource';
 
@@ -51,6 +53,7 @@ export interface ReconcileResult {
 export interface AuthoritativeScan {
   readonly summaries: SessionSummary[];
   readonly counts: Map<string, { active: number; archived: number }>;
+  readonly sourceMaxMtimeMs: number;
 }
 
 interface ScanSlot {
@@ -105,6 +108,7 @@ export class SessionIndexProjector {
 
   async project(generation: number, scan: AuthoritativeScan): Promise<ProjectionResult> {
     const { queryStore, log } = this.deps;
+    const { summaries, counts, sourceMaxMtimeMs } = scan;
     const collection = sessionCollection(generation);
     const counters = sessionCountersCollection(generation);
     await queryStore.dropCollection(collection);
@@ -116,7 +120,7 @@ export class SessionIndexProjector {
     });
 
     await this.batchChunks(
-      scan.summaries.map((summary) => ({
+      summaries.map((summary) => ({
         kind: 'put' as const,
         collection,
         key: summary.id,
@@ -124,11 +128,11 @@ export class SessionIndexProjector {
         columns: { [recencyColumn(generation)]: summary.updatedAt },
       })),
     );
-    await this.writeCounters(counters, scan.counts);
-    await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, { seq: generation });
+    await this.writeCounters(counters, counts);
+    await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, { seq: generation, sourceMaxMtimeMs });
     log.info('session index generation published', {
       generation,
-      sessions: scan.summaries.length,
+      sessions: summaries.length,
     });
 
     if (generation > 1) {
@@ -144,7 +148,7 @@ export class SessionIndexProjector {
           });
         });
     }
-    return { generation, sessions: scan.summaries.length };
+    return { generation, sessions: summaries.length };
   }
 
   /** Re-scan the authoritative set and repair the published generation. */
@@ -152,7 +156,7 @@ export class SessionIndexProjector {
     const { queryStore, log } = this.deps;
     const collection = sessionCollection(generation);
     const counters = sessionCountersCollection(generation);
-    const { summaries, counts } = await this.scanAuthoritative(true);
+    const { summaries, counts, sourceMaxMtimeMs } = await this.scanAuthoritative(true);
     const authoritativeIds = new Set(summaries.map((s) => s.id));
 
     const storedKeys = await queryStore.listKeys(collection);
@@ -180,6 +184,13 @@ export class SessionIndexProjector {
 
     await this.batchChunks([...upserts, ...removals]);
     await this.writeCounters(counters, counts);
+    const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+    if (manifest?.seq === generation) {
+      await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, {
+        seq: generation,
+        sourceMaxMtimeMs: Math.max(manifest.sourceMaxMtimeMs ?? 0, sourceMaxMtimeMs),
+      });
+    }
     const result = { sessions: summaries.length, upserted: upserts.length, removed: removals.length };
     if (result.upserted > 0 || result.removed > 0) {
       log.info('session index reconciliation repaired drift', { generation, ...result });
@@ -191,13 +202,17 @@ export class SessionIndexProjector {
     const { storage, docs, appendLog, sessionsScope } = this.deps;
     const summaries: SessionSummary[] = [];
     const counts = new Map<string, { active: number; archived: number }>();
+    let sourceMaxMtimeMs =
+      (await storage.mtime(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY)) ?? 0;
     for (const workspaceId of await listWorkspaceIds(storage, sessionsScope)) {
       const sessionIds = await listSessionIds(storage, sessionsScope, workspaceId);
-      const found = await mapBounded(sessionIds, SCAN_CONCURRENCY, (sessionId) =>
-        recoverUsage
+      const found = await mapBounded(sessionIds, SCAN_CONCURRENCY, async (sessionId) => {
+        const mtime = await sessionStateMaxMtime(storage, sessionsScope, workspaceId, sessionId);
+        if (mtime > sourceMaxMtimeMs) sourceMaxMtimeMs = mtime;
+        return recoverUsage
           ? reconcileSessionSummary(docs, appendLog, sessionsScope, workspaceId, sessionId)
-          : readSessionSummary(docs, sessionsScope, workspaceId, sessionId),
-      );
+          : readSessionSummary(docs, sessionsScope, workspaceId, sessionId);
+      });
       const entry = counts.get(workspaceId) ?? { active: 0, archived: 0 };
       for (const summary of found) {
         summaries.push(summary);
@@ -206,7 +221,7 @@ export class SessionIndexProjector {
       }
       counts.set(workspaceId, entry);
     }
-    return { summaries, counts };
+    return { summaries, counts, sourceMaxMtimeMs };
   }
 
   private async writeCounters(

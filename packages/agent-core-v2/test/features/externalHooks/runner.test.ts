@@ -1,13 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { Readable, Writable } from 'node:stream';
+
+import { describe, expect, it, vi } from 'vitest';
 
 import { buildHookSpawnOptions, runHook } from '#/features/externalHooks/internal/runHook';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
+
+import { nodeCommand } from './runner-stub';
 
 const hostProcess = new HostProcessService();
-
-function nodeCommand(source: string): string {
-  return `node -e ${JSON.stringify(source.replace(/\s*\n\s*/g, ' '))}`;
-}
 
 describe('runHook process runner', () => {
   it('returns allow when the hook exits 0 and captures stdout', async () => {
@@ -19,7 +20,7 @@ describe('runHook process runner', () => {
     );
 
     expect(result.action).toBe('allow');
-    expect(result.stdout?.trim()).toBe('ok');
+    expect(result.stdout?.replace(/\r\n/g, '\n').trim()).toBe('ok');
   });
 
   it('parses stdout JSON message into a hook result message', async () => {
@@ -314,6 +315,41 @@ describe('runHook process runner', () => {
     );
 
     expect(result.stdout?.trim()).toBe('Write');
+  });
+
+  it('forwards the caller command to the process service without rewriting it', async () => {
+    const command = 'node hook.js --flag';
+    const spawn = vi.fn<IHostProcessService['spawn']>(async () => {
+      const stdin = new Writable({
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+      });
+      const stdout = Readable.from(['']);
+      const stderr = Readable.from(['']);
+      return {
+        _serviceBrand: undefined,
+        pid: 1,
+        exitCode: 0,
+        stdin,
+        stdout,
+        stderr,
+        wait: async () => 0,
+        kill: async () => {},
+        dispose: () => {},
+      } satisfies IHostProcess;
+    });
+    const host: IHostProcessService = {
+      _serviceBrand: undefined,
+      spawn,
+    };
+
+    const result = await runHook(host, command, { tool_name: 'Bash' }, { timeout: 5 });
+
+    expect(result.action).toBe('allow');
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0]?.[0]).toBe(command);
+    expect(spawn.mock.calls[0]?.[1]).toEqual([]);
   });
 });
 

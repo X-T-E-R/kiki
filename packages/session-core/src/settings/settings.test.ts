@@ -13,6 +13,7 @@ import {
   isProviderDraftDirty,
   isRestartRequirementAcknowledged,
   markRestartRequired,
+  marketplaceUrlPatch,
   mcpTimeoutsPatch,
   msUnitFor,
   normalizeTags,
@@ -954,6 +955,17 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
     });
     expect(() => mcpTimeoutsPatch('abc', '')).toThrowError();
     expect(() => mcpTimeoutsPatch('0', '')).toThrowError();
+  });
+
+  it('scopes the marketplace URL patch to the plugins replace-domain', () => {
+    expect(marketplaceUrlPatch(' https://example.test/marketplace.json ')).toEqual({
+      plugins: { marketplace_url: 'https://example.test/marketplace.json' },
+      replace_domains: ['plugins'],
+    });
+    expect(marketplaceUrlPatch('   ')).toEqual({
+      plugins: { marketplace_url: undefined },
+      replace_domains: ['plugins'],
+    });
   });
 
   it('scopes the tool policy patch to the tools replace-domain', () => {

@@ -7,6 +7,13 @@ import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 
+export function nodeCommand(source: string): string {
+  const compact = source
+    .replaceAll(/\s*\n\s*/g, ' ')
+    .replaceAll('\\n', '" + String.fromCharCode(10) + "');
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(compact)}`;
+}
+
 export function makeHookRunner(
   hooks: readonly HookDef[],
   options: {

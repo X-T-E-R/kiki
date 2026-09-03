@@ -194,6 +194,7 @@ export function registerSessionsRoutes(
   app: SessionRouteHost,
   core: Scope,
   broadcaster?: SessionEventBroadcaster,
+  onWorkspaceServed?: (workspace: string) => void | Promise<void>,
 ): void {
   const createRoute = defineRoute(
     {
@@ -258,6 +259,7 @@ export function registerSessionsRoutes(
 
       try {
         const touched = await registry.createOrTouch(workDir);
+        await onWorkspaceServed?.(touched.root);
         const handle = await core.accessor.get(ISessionManager).create({
           workspaceId: touched.id,
           workDir,
@@ -458,6 +460,7 @@ export function registerSessionsRoutes(
     },
     async (req, reply) => {
       const { session_id } = req.params;
+      const cursor = await broadcaster?.getCursor(session_id);
       const summary = await core.accessor.get(ISessionIndex).get(session_id);
       if (summary === undefined) {
         reply.send(
@@ -483,6 +486,7 @@ export function registerSessionsRoutes(
             summary,
             cwd,
             resolveSessionFacts(core, session_id, summary.usage),
+            cursor?.seq,
           ),
           req.id,
         ),
@@ -1106,6 +1110,7 @@ export function toWireSession(
   fields: SessionWireFields,
   cwd: string,
   facts: SessionFacts,
+  lastSeq?: number,
 ): Session {
   return {
     id: fields.id,
@@ -1127,7 +1132,7 @@ export function toWireSession(
     usage: facts.usage ?? emptySessionUsage(),
     permission_rules: [],
     message_count: 0,
-    last_seq: 0,
+    last_seq: lastSeq ?? 0,
   };
 }
 

@@ -3,14 +3,15 @@ import { FiberState } from '@moonshot-ai/agent-core-v2/_base/di/fiber';
 import { IFeatureManager } from '@moonshot-ai/agent-core-v2/app/feature/featureManager';
 import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
 import type { KimiHostIdentity } from '@moonshot-ai/kimi-code-oauth';
-import { ulid } from 'ulid';
 
 import { okEnvelope } from '../envelope';
 import type { ExternalDelegationState, MetaFeature } from '../protocol/rest-meta';
 import { type IConnectionRegistry } from '../transport/ws/connectionRegistry';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import type { TranscriptService } from '../services/transcript/transcriptService';
+import type { LeaseRegistry } from '../services/leaseRegistry';
 import { registerAgentProfilesRoute } from './agentProfiles';
+import { registerLeaseRoutes } from './leases';
 import { registerApprovalsRoutes } from './approvals';
 import { registerAuthRoute } from './auth';
 import { registerCapabilitiesRoutes } from './capabilities';
@@ -61,10 +62,8 @@ interface ApiV1RouteHost {
 
 export interface RegisterApiV1RoutesOptions {
   readonly serverVersion: string;
-  /**
-   * Host product identity from `startServer` — the session export route stamps
-   * its manifest from `hostIdentity.version`.
-   */
+  readonly serverId: string;
+  readonly startedAt: string;
   readonly hostIdentity: KimiHostIdentity;
   readonly debugEndpoints?: boolean;
   readonly enableShutdown?: boolean;
@@ -75,12 +74,14 @@ export interface RegisterApiV1RoutesOptions {
   readonly connectionRegistry: IConnectionRegistry;
   readonly broadcaster: SessionEventBroadcaster;
   readonly transcriptService: TranscriptService;
-  /** Catalog URL resolver for the `/plugins/marketplace` route (start.ts
-      applies the option/env override; the default follows the active login
-      region per request). */
-  readonly pluginMarketplaceUrl: () => string;
-  /** True when the catalog URL is the built-in default (no option/env set). */
-  readonly pluginMarketplaceIsDefault: boolean;
+  readonly leaseRegistry: LeaseRegistry;
+  readonly onWorkspaceServed: (workspace: string) => void | Promise<void>;
+  /**
+   * Catalog URL resolver for the `/plugins/marketplace` route. `undefined`
+   * means no marketplace is configured (option, env, and config.toml all
+   * empty) and the route reports `{ configured: false }` without fetching.
+   */
+  readonly pluginMarketplaceUrl: () => string | undefined;
   /**
    * Surface `dangerous_bypass_auth` in the `/meta` payload. Set by `start.ts`
    * from the `disableAuth` server option (the `--dangerous-bypass-auth` CLI
@@ -111,8 +112,8 @@ export async function registerApiV1Routes(
 
       registerMetaRoute(apiV1, {
         serverVersion: opts.serverVersion,
-        serverId: ulid(),
-        startedAt: new Date().toISOString(),
+        serverId: opts.serverId,
+        startedAt: opts.startedAt,
         enableTerminals: opts.enableTerminals !== false,
         dangerousBypassAuth: opts.dangerousBypassAuth === true,
         externalDelegation: opts.externalDelegation,
@@ -133,6 +134,7 @@ export async function registerApiV1Routes(
       });
 
       registerAuthRoute(apiV1 as unknown as Parameters<typeof registerAuthRoute>[0], core);
+      registerLeaseRoutes(apiV1 as unknown as Parameters<typeof registerLeaseRoutes>[0], opts.leaseRegistry);
       registerAgentProfilesRoute(
         apiV1 as unknown as Parameters<typeof registerAgentProfilesRoute>[0],
         core,
@@ -147,6 +149,7 @@ export async function registerApiV1Routes(
         apiV1 as unknown as Parameters<typeof registerSessionsRoutes>[0],
         core,
         opts.broadcaster,
+        opts.onWorkspaceServed,
       );
       registerRuntimeRoutes(apiV1 as unknown as Parameters<typeof registerRuntimeRoutes>[0], core);
       registerSessionExportRoute(
@@ -161,7 +164,6 @@ export async function registerApiV1Routes(
       );
       registerPluginsRoutes(apiV1 as unknown as Parameters<typeof registerPluginsRoutes>[0], core, {
         marketplaceUrl: opts.pluginMarketplaceUrl,
-        marketplaceIsDefault: opts.pluginMarketplaceIsDefault,
       });
       registerMessagesRoutes(
         apiV1 as unknown as Parameters<typeof registerMessagesRoutes>[0],
