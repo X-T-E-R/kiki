@@ -178,6 +178,7 @@ describe('env seat resolver', () => {
 describe('Kiki MCP HTTP daemon mount', () => {
   const running: RunningServer[] = [];
   const homes: string[] = [];
+  const priorEnv: Array<[string, string | undefined]> = [];
 
   afterEach(async () => {
     await Promise.all(close.splice(0).map((dispose) => dispose()));
@@ -187,7 +188,17 @@ describe('Kiki MCP HTTP daemon mount', () => {
     for (const home of homes.splice(0)) {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
+    for (const [name, value] of priorEnv.splice(0)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   });
+
+  function pinEnv(name: string, value: string | undefined): void {
+    priorEnv.push([name, process.env[name]]);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
 
   it('does not expose /mcp on a non-loopback bind', async () => {
     const home = await mkdtemp(join(tmpdir(), 'kiki-mcp-http-lan-'));
@@ -242,17 +253,21 @@ describe('Kiki MCP HTTP daemon mount', () => {
     await bootstrap.close();
     running.pop();
 
+    pinEnv('KIKI_EXTERNAL_PRINCIPAL_ID', 'example-principal');
+    pinEnv('KIKI_EXTERNAL_SESSION_ID', sessionId);
+    pinEnv('KIKI_EXTERNAL_DELEGATION_TOKEN', 'DELEGATION_SECRET');
+    pinEnv('KIKI_EXTERNAL_WORKSPACE_PATH', undefined);
+    pinEnv('KIKI_EXTERNAL_MODEL_ALIAS', undefined);
+    pinEnv('KIKI_EXTERNAL_THINKING_EFFORT', undefined);
+    pinEnv('KIKI_EXTERNAL_PERMISSION_MODE', undefined);
+    pinEnv('KIKI_EXTERNAL_SESSION_TITLE', undefined);
+
     const server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
       homeDir: home,
       logLevel: 'silent',
-      externalDelegation: {
-        principalId: 'example-principal',
-        sessionId,
-        token: 'DELEGATION_SECRET',
-      },
     });
     running.push(server);
     const { client } = await connect(`http://127.0.0.1:${String(server.port)}/mcp`, 'DELEGATION_SECRET');
