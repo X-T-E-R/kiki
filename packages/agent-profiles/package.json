@@ -1,0 +1,31 @@
+{
+  "name": "@kiki/agent-profiles",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Agent profile parsing, discovery, and catalog projection.",
+  "license": "MIT",
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./*": {
+      "types": "./src/*.ts",
+      "default": "./src/*.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  }
+}

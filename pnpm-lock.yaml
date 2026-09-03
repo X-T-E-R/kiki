@@ -744,6 +744,12 @@ importers:
         specifier: ^4.21.0
         version: 4.21.0
 
+  packages/agent-profiles:
+    dependencies:
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
+
   packages/codex-client:
     dependencies:
       '@moonshot-ai/protocol':
