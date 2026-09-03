@@ -46,6 +46,14 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
   - Missing a name in `flake.nix`'s `workspaceNames` will break `pnpmConfigHook` because dependencies for that workspace will not be fetched.
 - The automated "Check flake.nix workspace sync" (`scripts/check-nix-workspace.mjs`) verifies the full workspace in both directions: every package selected by `pnpm-workspace.yaml` must appear in both flake.nix lists, and stale flake entries with no workspace package fail the check. Keep it green on every add/remove, but still update both files by hand in the same change — the check only runs in CI.
 
+## Upstream Synchronization
+
+- Never merge upstream into `apps/*` or `packages/*`; receive selected upstream changes only through isolated cherry-picks or semantic ports.
+- Review upstream at every release tag or every four weeks, whichever comes first. Filter candidates by commit title and touched paths before reading full diffs.
+- Review security/CVE fixes, provider protocol mismatches, and wire or persistence data-corruption fixes as soon as they appear rather than waiting for the regular review.
+- Exclude UI changes, cloud features, secondary-model work, and runtime-to-DI/actor migrations in the first filter unless a separate Kiki decision explicitly reopens that area.
+- Record every accepted, rejected, or deferred upstream commit in `handoffs/2026-08-31-kiki-parallel-campaigns/merge-log.md` using the existing date / source / local HEAD / notes table format.
+
 ## General Coding Rules
 
 - `packages/agent-core-v2`, `packages/kap-server`, and `packages/transcript` are comment-free zones: no line/block comments; the exceptions are JSDoc attached to exported symbols and load-bearing lint-suppression directives (`oxlint-disable` / `eslint-disable`), while other tooling directives (`@ts-expect-error`, …) stay banned. Enforced by `scripts/check-no-comments.mjs`, which runs as part of `pnpm lint`.
