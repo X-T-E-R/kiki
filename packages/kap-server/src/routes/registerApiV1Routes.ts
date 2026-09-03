@@ -76,12 +76,12 @@ export interface RegisterApiV1RoutesOptions {
   readonly transcriptService: TranscriptService;
   readonly leaseRegistry: LeaseRegistry;
   readonly onWorkspaceServed: (workspace: string) => void | Promise<void>;
-  /** Catalog URL resolver for the `/plugins/marketplace` route (start.ts
-      applies the option/env override; the default follows the active login
-      region per request). */
-  readonly pluginMarketplaceUrl: () => string;
-  /** True when the catalog URL is the built-in default (no option/env set). */
-  readonly pluginMarketplaceIsDefault: boolean;
+  /**
+   * Catalog URL resolver for the `/plugins/marketplace` route. `undefined`
+   * means no marketplace is configured (option, env, and config.toml all
+   * empty) and the route reports `{ configured: false }` without fetching.
+   */
+  readonly pluginMarketplaceUrl: () => string | undefined;
   /**
    * Surface `dangerous_bypass_auth` in the `/meta` payload. Set by `start.ts`
    * from the `disableAuth` server option (the `--dangerous-bypass-auth` CLI
@@ -164,7 +164,6 @@ export async function registerApiV1Routes(
       );
       registerPluginsRoutes(apiV1 as unknown as Parameters<typeof registerPluginsRoutes>[0], core, {
         marketplaceUrl: opts.pluginMarketplaceUrl,
-        marketplaceIsDefault: opts.pluginMarketplaceIsDefault,
       });
       registerMessagesRoutes(
         apiV1 as unknown as Parameters<typeof registerMessagesRoutes>[0],

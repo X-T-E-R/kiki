@@ -21,12 +21,12 @@
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
 
-import { useI18n } from '../i18n';
 import {
   isCoarsePointer,
   selectionAnchorRect,
   selectionTextWithin,
-} from '../lib/selectionQuote';
+} from '@kiki/session-core/composer';
+import { useI18n } from '../i18n';
 
 const PILL_HEIGHT = 32;
 const VIEWPORT_MARGIN = 8;

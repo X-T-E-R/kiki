@@ -1,5 +1,6 @@
 import { IdentityConfigSchema } from '@moonshot-ai/agent-core-v2/app/agentIdentity/configSection';
 import { McpSectionSchema } from '@moonshot-ai/agent-core-v2/app/mcpConfig/configSection';
+import { PluginsSectionSchema } from '@moonshot-ai/agent-core-v2/app/plugin/configSection';
 import { ThreadCommunicationConfigSchema } from '@moonshot-ai/agent-core-v2/app/threadCommunication/configSection';
 import { ImageConfigSchema } from '@moonshot-ai/agent-core-v2/agent/media/configSection';
 import { AgentTaskConfigSchema } from '@moonshot-ai/agent-core-v2/agent/task/configSection';
@@ -63,6 +64,10 @@ const mcpConfigRequestSchema = z.object({
   tool_timeout_ms: McpSectionSchema.shape.toolTimeoutMs,
 });
 
+const pluginsConfigRequestSchema = z.object({
+  marketplace_url: PluginsSectionSchema.shape.marketplaceUrl,
+});
+
 const replaceableConfigDomainSchema = z.enum([
   'experimental',
   'thread_communication',
@@ -76,6 +81,7 @@ const replaceableConfigDomainSchema = z.enum([
   'disabled_builtin_profiles',
   'disabled_named_profiles',
   'mcp',
+  'plugins',
   'tools',
 ]);
 
@@ -136,6 +142,7 @@ export const configResponseSchema = z.object({
   disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
   mcp: McpSectionSchema.optional(),
+  plugins: PluginsSectionSchema.optional(),
   tools: ToolsConfigSchema.optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
@@ -183,6 +190,7 @@ export const patchConfigRequestSchema = z.object({
   disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
   mcp: mcpConfigRequestSchema.optional(),
+  plugins: pluginsConfigRequestSchema.optional(),
   tools: ToolsConfigSchema.optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
 }).strict();

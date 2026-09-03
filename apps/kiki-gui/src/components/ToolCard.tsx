@@ -8,10 +8,10 @@ import { memo, useMemo, useState, type ReactNode } from 'react';
 
 import type { ToolInputDisplay } from '@moonshot-ai/protocol';
 
+import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
+import type { ToolBlock } from '@kiki/session-core/session';
+import { extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
-import { extractEditSource, diffStat } from '../lib/diff';
-import { extractToolOutputMedia } from '../lib/media';
-import type { ToolBlock } from '../state/transcript';
 import { DiffCard } from './DiffCard';
 import { FilePathLink, MediaPartList } from './mediaPreview';
 

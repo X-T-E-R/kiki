@@ -4,13 +4,13 @@
 
 import { memo, useState } from 'react';
 
-import { useI18n } from '../i18n';
 import {
   agentChildren,
   MAIN_AGENT_ID,
   type AgentForest,
   type AgentTreeNode,
-} from '../state/agentTree';
+} from '@kiki/session-core/session';
+import { useI18n } from '../i18n';
 
 export const RELATED_AGENT_PREVIEW_LIMIT = 4;
 

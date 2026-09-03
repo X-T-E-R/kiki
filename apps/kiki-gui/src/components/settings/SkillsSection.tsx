@@ -2,9 +2,15 @@ import { useContext, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 
+import { errorText, issueText } from '@kiki/session-core/i18n';
+import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
+import {
+  appendExtraSkillDirs,
+  markRestartRequired,
+  validateExtraSkillDirs,
+} from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { errorText, issueText } from '../../i18n/locale';
 import {
   groupSkills,
   normalizeCapQuery,
@@ -12,12 +18,6 @@ import {
   SKILL_GROUP_ORDER,
   type SkillGroupId,
 } from '../../lib/capabilities';
-import {
-  appendExtraSkillDirs,
-  markRestartRequired,
-  validateExtraSkillDirs,
-} from '../../lib/settings';
-import { sortWorkspacesByRecency } from '../../lib/sorting';
 import { useConnection } from '../../state/connection';
 import { CapabilityGroup } from '../capabilities/CapabilityGroup';
 import { SkillCard } from '../capabilities/rows';

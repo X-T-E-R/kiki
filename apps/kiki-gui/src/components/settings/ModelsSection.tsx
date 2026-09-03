@@ -3,8 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protocol';
 
-import { useI18n } from '../../i18n';
-import { errorText, issueText } from '../../i18n/locale';
+import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
   markRestartRequired,
   requestIdentityLayerDraftFromPolicy,
@@ -15,8 +14,9 @@ import {
   writeSettings,
   type RequestIdentityLayerDraft,
   type ServerFileSettings,
-} from '../../lib/settings';
-import { formatTokens } from '../../lib/time';
+} from '@kiki/session-core/settings';
+import { formatTokens } from '@kiki/session-core/util';
+import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';

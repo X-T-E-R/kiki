@@ -10,13 +10,13 @@ import {
   IConfigService,
   IEventService,
   IMcpOAuthService,
-  IOAuthService,
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
   ISessionActivityView,
   ICapabilityService,
   IPluginService,
+  resolvePluginMarketplaceSource,
   IHomeRuntimeService,
   ISessionManager,
   IThreadCommunicationService,
@@ -35,7 +35,6 @@ import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@moonshot-ai/agent-core-v2/session/externalDelegation/flag';
 import {
   createKimiDefaultHeaders,
-  kimiRegionProfile,
   type KimiHostIdentity,
 } from '@moonshot-ai/kimi-code-oauth';
 import { createAsyncApiDocument } from './protocol/asyncapi';
@@ -130,8 +129,9 @@ export interface ServerStartOptions {
   readonly env?: NodeJS.ProcessEnv;
   /**
    * Plugin marketplace catalog URL for `GET /api/v1/plugins/marketplace`.
-   * Defaults to the `KIMI_CODE_PLUGIN_MARKETPLACE_URL` env var, then the
-   * production catalog.
+   * Takes precedence over `KIMI_CODE_PLUGIN_MARKETPLACE_URL` and
+   * `[plugins] marketplace_url` in config.toml. An empty or omitted value
+   * means the marketplace is unconfigured and is not fetched.
    */
   readonly pluginMarketplaceUrl?: string;
   readonly configPath?: string;
@@ -588,16 +588,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableShutdown,
     enableTerminals,
     guiStore,
-    pluginMarketplaceUrl: (() => {
-      const configured = opts.pluginMarketplaceUrl ?? process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'];
-      if (configured !== undefined) return () => configured;
-      return () =>
-        `${kimiRegionProfile(core.accessor.get(IOAuthService).getRegion()).cdnBase}/plugins/marketplace.json`;
-    })(),
-    pluginMarketplaceIsDefault:
-      opts.pluginMarketplaceUrl === undefined &&
-      (process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] === undefined ||
-        process.env['KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] === '1'),
+    pluginMarketplaceUrl: () =>
+      resolvePluginMarketplaceSource({
+        optionUrl: opts.pluginMarketplaceUrl,
+        envUrl: process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'],
+        configUrl: core.accessor.get(IConfigService).get<{ marketplaceUrl?: string }>('plugins')
+          ?.marketplaceUrl,
+      }),
     onShutdown: () => {
       void close().catch((err: unknown) => logger.error({ err }, 'server close failed'));
     },

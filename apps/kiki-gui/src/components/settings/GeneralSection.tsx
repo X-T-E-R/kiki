@@ -3,11 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PermissionMode } from '@moonshot-ai/protocol';
 
-import { useHost, type SessionsMigrationPlan } from '../../host';
-import { useI18n } from '../../i18n';
-import { errorText, type Locale } from '../../i18n/locale';
-import type { KikiConfigResponse } from '../../lib/client';
-import { clearStoredDrafts } from '../../lib/drafts';
+import { clearStoredDrafts } from '@kiki/session-core/composer';
+import { errorText, type Locale } from '@kiki/session-core/i18n';
 import {
   markRestartRequired,
   readDesktopPrefs,
@@ -17,7 +14,10 @@ import {
   type CompatibilitySettings,
   type SendShortcut,
   type ThemePreference,
-} from '../../lib/settings';
+} from '@kiki/session-core/settings';
+import type { KikiConfigResponse } from '@kiki/session-core/transport';
+import { useHost, type SessionsMigrationPlan } from '../../host';
+import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';

@@ -1,9 +1,9 @@
-import { useI18n } from '../i18n';
 import {
   REQUEST_IDENTITY_CHOICES,
   type RequestIdentityChoice,
   type RequestIdentityLayerDraft,
-} from '../lib/settings';
+} from '@kiki/session-core/settings';
+import { useI18n } from '../i18n';
 import { Hint } from './controls';
 import { INPUT, SECONDARY_BUTTON } from './ui';
 

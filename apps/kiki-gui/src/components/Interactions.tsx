@@ -21,8 +21,8 @@ import { useEffect, useRef, useState } from 'react';
 
 import type { ApprovalDecision, QuestionAnswer, QuestionItem } from '@moonshot-ai/protocol';
 
+import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
-import type { ApprovalBlock, QuestionBlock } from '../state/transcript';
 import { Markdown } from './Markdown';
 
 type ApprovalIntent = 'allow-once' | 'allow-always' | 'reject-once';

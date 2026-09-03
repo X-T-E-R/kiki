@@ -80,45 +80,11 @@ import type {
   Workspace,
 } from '@moonshot-ai/protocol';
 
+import { API_CODES, ApiError } from '@kiki/session-core/transport';
+
 import type { UsageResponseWire } from './usageV2';
 
-export class ApiError extends Error {
-  readonly code: number;
-  readonly requestId: string | undefined;
-  readonly data: unknown;
-
-  constructor(envelope: { code: number; msg: string; data: unknown; request_id?: string }) {
-    super(`${envelope.msg} (code ${envelope.code})`);
-    this.name = 'ApiError';
-    this.code = envelope.code;
-    this.data = envelope.data;
-    this.requestId = envelope.request_id;
-  }
-}
-
-export const API_CODES = {
-  INVALID_RESPONSE: -3,
-  TIMEOUT: -2,
-  SUCCESS: 0,
-  UNAUTHORIZED: 40101,
-  SESSION_NOT_FOUND: 40401,
-  PROMPT_NOT_FOUND: 40402,
-  SKILL_NOT_FOUND: 40415,
-  SESSION_BUSY: 40901,
-  APPROVAL_ALREADY_RESOLVED: 40902,
-  PROMPT_ALREADY_COMPLETED: 40903,
-  TASK_ALREADY_FINISHED: 40904,
-  QUESTION_DISMISSED: 40909,
-  COMPACTION_UNABLE: 40910,
-  SESSION_UNDO_UNAVAILABLE: 40911,
-  SKILL_NOT_ACTIVATABLE: 40912,
-  APPROVAL_EXPIRED: 41001,
-  QUESTION_EXPIRED: 41002,
-  TERMINAL_NOT_FOUND: 40414,
-  MESSAGE_ACTION_UNAVAILABLE: 40936,
-  SESSION_CURSOR_MISMATCH: 40937,
-  SESSION_INDEX_BUILDING: 40939,
-} as const;
+export { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 export function isSessionIndexBuildingError(error: unknown): boolean {
   return error instanceof ApiError && error.code === API_CODES.SESSION_INDEX_BUILDING;
@@ -254,6 +220,7 @@ export interface RuntimeConfigProjection {
   readonly disabled_builtin_profiles?: string[];
   readonly disabled_named_profiles?: string[];
   readonly mcp?: { readonly startupTimeoutMs?: number; readonly toolTimeoutMs?: number };
+  readonly plugins?: { readonly marketplaceUrl?: string };
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
 }
 
@@ -350,6 +317,7 @@ export interface RuntimeConfigPatch {
   readonly disabled_builtin_profiles?: string[];
   readonly disabled_named_profiles?: string[];
   readonly mcp?: { readonly startup_timeout_ms?: number; readonly tool_timeout_ms?: number };
+  readonly plugins?: { readonly marketplace_url?: string };
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
 }
 
@@ -460,6 +428,55 @@ export interface PluginSummary {
 
 export interface ListPluginsResponse {
   readonly plugins: readonly PluginSummary[];
+}
+
+export interface PluginMarketplaceEntry {
+  readonly id: string;
+  readonly tier: 'official' | 'curated' | 'third-party';
+  readonly displayName: string;
+  readonly description?: string;
+  readonly homepage?: string;
+  readonly keywords?: readonly string[];
+  readonly version?: string;
+  readonly source: string;
+  readonly installed?: { readonly version?: string; readonly enabled: boolean };
+  readonly updateAvailable?: boolean;
+}
+
+export interface PluginMarketplaceResponse {
+  readonly configured: boolean;
+  readonly source?: string;
+  readonly entries: readonly PluginMarketplaceEntry[];
+}
+
+export interface PluginMcpServerInfo {
+  readonly name: string;
+  readonly runtimeName: string;
+  readonly enabled: boolean;
+  readonly transport: 'stdio' | 'http' | 'sse';
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly cwd?: string;
+  readonly url?: string;
+  readonly envKeys?: readonly string[];
+  readonly headerKeys?: readonly string[];
+}
+
+export interface PluginDiagnostic {
+  readonly severity: 'error' | 'warn' | 'info';
+  readonly message: string;
+}
+
+export interface PluginInfo extends PluginSummary {
+  readonly root: string;
+  readonly installedAt: string;
+  readonly updatedAt?: string;
+  readonly manifestKind?: 'kimi-plugin-root' | 'kimi-plugin-dir';
+  readonly manifestPath?: string;
+  readonly manifest?: Readonly<Record<string, unknown>>;
+  readonly mcpServers: readonly PluginMcpServerInfo[];
+  readonly shadowedManifestPath?: string;
+  readonly diagnostics: readonly PluginDiagnostic[];
 }
 
 export interface KikiClientOptions {
@@ -743,6 +760,7 @@ export class KikiClient {
       signal?: AbortSignal;
       timeout?: boolean;
       apiVersion?: ApiVersion;
+      allowMissingRoute?: boolean;
     } = {},
   ): Promise<T> {
     const url = new URL(joinUrl(this.baseUrl, path, options.apiVersion));
@@ -784,6 +802,9 @@ export class KikiClient {
               : 'network error',
           data: null,
         });
+      }
+      if (response.status === 404 && options.allowMissingRoute === true) {
+        return undefined as T;
       }
 
       let envelope: Envelope<unknown>;
@@ -827,6 +848,10 @@ export class KikiClient {
 
   meta(): Promise<MetaResponse & { experimental_flags?: Record<string, boolean> }> {
     return this.request<MetaResponse & { experimental_flags?: Record<string, boolean> }>('GET', '/meta');
+  }
+
+  renewLease(body: { readonly clientId: string; readonly kind: 'gui' }): Promise<void> {
+    return this.request<void>('POST', '/leases', { body, allowMissingRoute: true });
   }
 
   listSessions(query: ListSessionsOptions = {}): Promise<PageResponse<Session>> {
@@ -1327,6 +1352,37 @@ export class KikiClient {
 
   listPlugins(): Promise<ListPluginsResponse> {
     return this.request<ListPluginsResponse>('GET', '/plugins');
+  }
+
+  listPluginMarketplace(): Promise<PluginMarketplaceResponse> {
+    return this.request<PluginMarketplaceResponse>('GET', '/plugins/marketplace');
+  }
+
+  getPlugin(pluginId: string): Promise<PluginInfo> {
+    return this.request<PluginInfo>('GET', `/plugins/${encodeURIComponent(pluginId)}`);
+  }
+
+  installPlugin(source: string): Promise<PluginSummary> {
+    return this.request<PluginSummary>('POST', '/plugins', {
+      body: { source },
+      timeout: false,
+    });
+  }
+
+  setPluginEnabled(pluginId: string, enabled: boolean): Promise<{ readonly ok: true }> {
+    return this.request<{ readonly ok: true }>(
+      'POST',
+      `/plugins/${encodeURIComponent(pluginId)}:${enabled ? 'enable' : 'disable'}`,
+      { body: {} },
+    );
+  }
+
+  removePlugin(pluginId: string): Promise<{ readonly ok: true }> {
+    return this.request<{ readonly ok: true }>(
+      'POST',
+      `/plugins/${encodeURIComponent(pluginId)}:remove`,
+      { body: {} },
+    );
   }
 
   /**

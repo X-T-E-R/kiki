@@ -9,8 +9,8 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Virtualizer } from '@tanstack/react-virtual';
 
+import { buildFloorEntries, type Block, type FloorEntry } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
-import { buildFloorEntries, type Block, type FloorEntry } from '../state/transcript';
 
 const REVEAL_IDLE_MS = 1400;
 
