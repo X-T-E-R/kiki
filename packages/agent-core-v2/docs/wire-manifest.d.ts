@@ -106,11 +106,7 @@ interface ConfigUpdatePayload {
   /** ThinkingEffort */
   thinkingLevel?: 'off' | 'on' | (string & {});
   systemPrompt?: string;
-  /** EnvironmentDisclosureSnapshot */
-  environmentDisclosure?: {
-    cwd: string;
-    date: { disclosed: true, value: { localDate: string, timeZone: string } } | { disclosed: false };
-  };
+  environmentDisclosure?: EnvironmentDisclosureSnapshot;
   renderGeneration?: number;
   agentsMdPaths?: string[];
   disallowedTools?: string[];
@@ -523,11 +519,7 @@ interface ProfileBindPayload {
   serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
   requestParams?: Record<string, string | number | boolean>;
   systemPrompt: string;
-  /** EnvironmentDisclosureSnapshot */
-  environmentDisclosure?: {
-    cwd: string;
-    date: { disclosed: true, value: { localDate: string, timeZone: string } } | { disclosed: false };
-  };
+  environmentDisclosure?: EnvironmentDisclosureSnapshot;
   renderGeneration?: number;
   agentsMdPaths?: string[];
   activeToolNames?: string[];
@@ -535,15 +527,8 @@ interface ProfileBindPayload {
   disallowedTools: string[];
   subagents?: string[];
   subagentLeases?: Readonly<Record<string, SubagentLease>>;
-  /** SpawnConstraints */
-  spawnPolicy?: {
-    allowedModels?: string[];
-    denyModels?: string[];
-    allowedEfforts?: string[];
-    disallowedTools?: string[];
-  };
-  /** SubagentLease */
-  appliedLease?: { source?: never } | { source: string };
+  spawnPolicy?: SpawnConstraints;
+  appliedLease?: SubagentLease;
 }
 
 /**
