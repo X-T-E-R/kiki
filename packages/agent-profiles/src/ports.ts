@@ -1,10 +1,11 @@
-import type { HostFs } from './hostFs';
+export type { HostFs } from './hostFs';
 
-export interface AgentProfilePorts {
-  readonly fs: HostFs;
-  isModelAliasResolvable(alias: string): boolean;
-  isExecutorKnown(id: string): boolean;
+export interface ModelAliasResolver {
+  resolveId(alias: string): string | undefined;
 }
 
-export type IsModelAliasResolvable = AgentProfilePorts['isModelAliasResolvable'];
-export type IsExecutorKnown = AgentProfilePorts['isExecutorKnown'];
+export type ExecutorOptions = Readonly<Record<string, string | number | boolean>>;
+
+export interface ExecutorValidator {
+  validateExecutor(id: string, options: ExecutorOptions | undefined): string | undefined;
+}

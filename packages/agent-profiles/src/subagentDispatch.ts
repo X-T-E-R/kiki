@@ -9,8 +9,8 @@ import {
   isDispatchBlocked,
   routePermittedByProfile,
   type CallerLeaseOwner,
-  type ModelAliasResolver,
 } from './applySubagentLease';
+import type { ModelAliasResolver } from './ports';
 import { subagentAllowlistFor } from './profileShared';
 import {
   scopedBinding,

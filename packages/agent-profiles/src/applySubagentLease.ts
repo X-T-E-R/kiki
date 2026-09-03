@@ -4,11 +4,8 @@ import {
   type AgentProfileRouteCatalogEntry,
 } from './agentProfile';
 import { applyModelProfilePromptDelta } from './modelProfileOverlay';
+import type { ModelAliasResolver } from './ports';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
-
-export interface ModelAliasResolver {
-  resolveId(alias: string): string | undefined;
-}
 
 export type AliasIdentity = (alias: string) => string;
 

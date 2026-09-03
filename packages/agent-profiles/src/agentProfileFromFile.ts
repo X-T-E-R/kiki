@@ -6,6 +6,7 @@ import {
 } from './agentProfile';
 import type { AgentProfileContribution } from './agentProfileContribution';
 import type { AgentFileDefinition, AgentFileDiscoveryResult } from './agentFileTypes';
+import type { ExecutorValidator } from './ports';
 import { renderPromptTemplateResult } from './profileShared';
 
 export function agentProfileFromFile(
@@ -64,11 +65,7 @@ function systemPromptTemplate(definition: AgentFileDefinition): string {
   }
 }
 
-export interface ExecutorProfileValidation {
-  readonly validateExecutor: (
-    id: string | undefined,
-    options: Readonly<Record<string, string | number | boolean>> | undefined,
-  ) => string | undefined;
+export interface ExecutorProfileValidation extends ExecutorValidator {
   readonly allowExternal: boolean;
   readonly reason?: string;
 }
@@ -173,5 +170,5 @@ function executorValidationError(
   if (!validation.allowExternal) {
     return validation.reason ?? `External executor "${profile.executor}" is not allowed for this profile source`;
   }
-  return validation.validateExecutor(profile.executor, profile.executorOptions);
+  return validation.validateExecutor(profile.executor!, profile.executorOptions);
 }

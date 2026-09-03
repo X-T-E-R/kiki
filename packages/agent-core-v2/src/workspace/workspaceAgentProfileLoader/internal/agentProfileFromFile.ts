@@ -10,6 +10,7 @@ import type {
   SystemPromptRenderResult,
 } from '@kiki/agent-profiles/agentProfile';
 import type { AgentFileDiscoveryResult } from '@kiki/agent-profiles/agentFileTypes';
+import type { ExecutorValidator } from '@kiki/agent-profiles/ports';
 
 export { agentProfileFromFile };
 
@@ -32,18 +33,24 @@ export function profilesFromDiscovery(
     validation === undefined
       ? undefined
       : {
+          ...executorValidator(validation.registry),
           allowExternal: validation.allowExternal,
           reason: validation.reason,
-          validateExecutor: (id, options) => {
-            try {
-              validation.registry.resolve(id, options);
-              return undefined;
-            } catch (error) {
-              return error instanceof Error ? error.message : String(error);
-            }
-          },
         },
   ) as AgentProfileContribution;
+}
+
+function executorValidator(registry: IAgentExecutorRegistry): ExecutorValidator {
+  return {
+    validateExecutor: (id, options) => {
+      try {
+        registry.resolve(id, options);
+        return undefined;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    },
+  };
 }
 
 export type { AgentProfile };

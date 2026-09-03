@@ -6,12 +6,17 @@ Agent profile parsing, filesystem discovery, layered catalog projection, dispatc
 
 - `SCHEMA_VERSION`: `1`
 - Filesystem port: `HostFs`
-- Availability ports: `isModelAliasResolvable(alias): boolean`, `isExecutorKnown(id): boolean`
+  - `readFile(path: string): Promise<string>`
+  - `readdir(path: string): Promise<readonly HostDirEntry[]>`
+  - `stat(path: string): Promise<HostFileStat>`
+  - `realpath(path: string): Promise<string>`
+- Model port: `ModelAliasResolver.resolveId(alias: string): string | undefined`
+- Executor port: `ExecutorValidator.validateExecutor(id: string, options: ExecutorOptions | undefined): string | undefined`
 - Parsing: `parseAgentFileText`, `parseAgentRouteFileText`, `parseSubagentList`, `parseSpawnConstraints`
 - Discovery: `discoverAgentFiles`, `resolveAgentSourceGraph`, `profilesFromDiscovery`, `loadSystemMdProfile`
 - Catalog: `projectAgentProfileCatalog`, `buildProfileCatalogEntries`, `renderProfileCatalogEntries`, `buildProfileDescriptions`
 
-`HostFs` exposes `readFile`, `readdir`, `stat`, and `realpath`. `realpath` preserves canonical-path deduplication and symbolic-link escape checks during discovery.
+`realpath` supplies canonical paths for deduplication and symbolic-link escape checks. `resolveId` returns the canonical model id or `undefined` when the alias is unresolved. `validateExecutor` returns `undefined` for a valid executor/options pair or a diagnostic string when validation fails.
 
 ## Agent profile frontmatter
 
