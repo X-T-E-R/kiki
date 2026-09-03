@@ -3,13 +3,13 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { errorText } from '../../i18n/locale';
+import { errorText } from '@kiki/session-core/i18n';
 import type {
   PluginInfo,
   PluginMarketplaceEntry,
   PluginSummary,
 } from '../../lib/client';
-import { marketplaceUrlPatch } from '../../lib/settings';
+import { marketplaceUrlPatch } from '@kiki/session-core/settings';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
