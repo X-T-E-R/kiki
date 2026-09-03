@@ -1077,21 +1077,27 @@ export class TranscriptProjector {
       case 'subagent.failed': {
         const childId = payload.subagentId ?? agentId;
         const state = type === 'subagent.failed' ? 'failed' : 'completed';
+        const taskId = `task-${childId}`;
+        const previous = this.ensure('main').snapshot.tasks.find((task) => task.taskId === taskId);
         push(this.commit('main', [
           {
             op: 'task.upsert',
             task: {
-              taskId: `task-${childId}`,
+              ...previous,
+              taskId,
               kind: 'subagent',
               state,
-              detached: false,
-              description: payload.description,
+              detached: previous?.detached ?? false,
+              name: previous?.name,
+              subagentName: previous?.subagentName,
+              description: payload.description ?? previous?.description,
               agentId: childId,
-              outputTail: payload.output ?? payload.resultSummary ?? '',
-              resultSummary: payload.output ?? payload.resultSummary,
+              outputTail: payload.output ?? payload.resultSummary ?? previous?.outputTail ?? '',
+              resultSummary: payload.output ?? payload.resultSummary ?? previous?.resultSummary,
               error: payload.error,
+              startedAt: previous?.startedAt,
               endedAt: at,
-              usage: payload.usage,
+              usage: payload.usage ?? previous?.usage,
             },
           },
         ]));
