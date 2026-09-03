@@ -2,4 +2,4 @@
 "@moonshot-ai/kimi-code": patch
 ---
 
-Fix ACP session creation during initial session index startup.
+Refuse ACP startup unless the session index is ready.
