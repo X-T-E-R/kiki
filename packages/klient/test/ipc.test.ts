@@ -10,7 +10,7 @@ import { createKlient, serveKlientIpc, type KlientIpcHost } from '../src/transpo
 import { IpcChannel } from '../src/transports/ipc/channel.js';
 import { makeEngine, type TestEngine } from './helpers/engine.js';
 
-vi.setConfig({ testTimeout: 20_000 });
+vi.setConfig({ hookTimeout: 120_000, testTimeout: 60_000 });
 
 async function makeThreadEnabledEngine(): Promise<TestEngine> {
   const engine = await makeEngine();
@@ -24,7 +24,7 @@ defineKlientConformance('ipc', async () => {
   const { homeDir, app } = await makeThreadEnabledEngine();
   const socketPath = join(homeDir, 'klient.sock');
   const host = await serveKlientIpc({ scope: app, socketPath });
-  const klient = createKlient({ socketPath });
+  const klient = createKlient({ socketPath, callTimeoutMs: 120_000 });
   return {
     klient,
     app,

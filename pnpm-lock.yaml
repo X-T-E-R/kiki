@@ -648,6 +648,9 @@ importers:
       '@moonshot-ai/kimi-code-oauth':
         specifier: workspace:^
         version: link:../oauth
+      '@moonshot-ai/klient':
+        specifier: workspace:^
+        version: link:../klient
       '@moonshot-ai/minidb':
         specifier: workspace:*
         version: link:../minidb

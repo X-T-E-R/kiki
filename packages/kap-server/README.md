@@ -1,14 +1,22 @@
 # KAP server
 
+## Klient over HTTP
+
+`POST /api/klient/call` accepts `{ procedure: { scope, service, method, ...scopeIds }, params: [...] }` and returns the standard `{ code, msg, data, request_id }` envelope; only declared klient procedures are admitted, with contract input and output validation at the host boundary.
+`GET /api/klient/events` upgrades to WebSocket; clients send `subscribe` / `unsubscribe` frames and receive `subscribed`, `event`, or `error` frames correlated by `id` (streaming procedures use `stream*` frames on the same socket).
+Both endpoints use the normal KAP bearer: HTTP sends `Authorization: Bearer <token>`, while browser WebSockets send the `kimi-code.bearer.<token>` subprotocol.
+
 ## Kiki MCP edge
 
 External delegation is on by default. Start KAP with one admitted
 `KIKI_EXTERNAL_PRINCIPAL_ID`, `KIKI_EXTERNAL_SESSION_ID`, and a dedicated
 `KIKI_EXTERNAL_DELEGATION_TOKEN`. A host may also provision that exact Session
 at startup by passing `KIKI_EXTERNAL_WORKSPACE_PATH`,
-`KIKI_EXTERNAL_MODEL_ALIAS`, and `KIKI_EXTERNAL_THINKING_EFFORT` together;
-an existing Session must retain the same workspace/model binding. Then launch
-`kiki-mcp` with these environment variables:
+`KIKI_EXTERNAL_MODEL_ALIAS`, and `KIKI_EXTERNAL_THINKING_EFFORT` together, plus
+optional `KIKI_EXTERNAL_PERMISSION_MODE` (`manual`, `auto`, or `yolo`); an
+existing Session must retain the same workspace/model binding. If provisioning
+fails, KAP keeps running with the edge disabled and reports the reason through
+`GET /api/v1/meta`. Then launch `kiki-mcp` with these environment variables:
 
 - `KIKI_KAP_ENDPOINT`: KAP origin, such as `http://127.0.0.1:58627`
 - `KIKI_KAP_TOKEN`: KAP bearer token

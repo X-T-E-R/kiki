@@ -32,6 +32,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:mcp-bin-smoke": "node scripts/mcp-bin-smoke.mjs",
     "test:integration": "vitest run .integration.",
     "clean": "rm -rf dist"
   },
@@ -42,6 +43,7 @@
     "@modelcontextprotocol/sdk": "1.29.0",
     "@moonshot-ai/agent-core-v2": "workspace:^",
     "@moonshot-ai/kimi-code-oauth": "workspace:^",
+    "@moonshot-ai/klient": "workspace:^",
     "@moonshot-ai/minidb": "workspace:*",
     "@moonshot-ai/protocol": "workspace:^",
     "@moonshot-ai/transcript": "workspace:^",

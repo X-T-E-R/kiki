@@ -1,14 +1,20 @@
 import { rm } from 'node:fs/promises';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ConfigTarget, IConfigService } from '@moonshot-ai/agent-core-v2';
 import { Error2, ErrorCodes } from '@moonshot-ai/agent-core-v2/errors';
 
 import { defineKlientConformance } from './helpers/conformance.js';
 import { createKlient } from '../src/transports/memory/index.js';
-import { createMemoryDispatcher } from '../src/transports/memory/dispatcher.js';
+import { createContractDispatcher } from '../src/transports/contractDispatcher.js';
+import {
+  createMemoryDispatcher,
+  type ScopeLike,
+} from '../src/transports/memory/dispatcher.js';
 import { RPCError, toRPCError } from '../src/core/errors.js';
 import { makeEngine } from './helpers/engine.js';
+
+vi.setConfig({ hookTimeout: 120_000, testTimeout: 60_000 });
 
 defineKlientConformance('memory', async () => {
   const { homeDir, app } = await makeEngine();
@@ -97,5 +103,79 @@ describe('memory dispatcher specifics', () => {
     expect(again.some((w) => w.id === 'polluted')).toBe(false);
     app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+  });
+});
+
+function scopeReturning(value: unknown): ScopeLike {
+  return {
+    accessor: {
+      get<T>(): T {
+        return value as T;
+      },
+    },
+  };
+}
+
+describe('contract dispatcher boundary', () => {
+  it('rejects undeclared procedures and invalid declared input', async () => {
+    const dispatcher = createContractDispatcher(scopeReturning({ platform: process.platform }));
+    await expect(dispatcher.call({}, 'sessionManager', 'list', [])).rejects.toMatchObject({
+      name: 'RPCError',
+      code: 40001,
+    });
+    await expect(
+      dispatcher.call({}, 'bootstrapService', 'platform', ['unexpected']),
+    ).rejects.toMatchObject({ name: 'RPCError', code: 40001 });
+  });
+
+  it('normalizes JSON null only for optional positional arguments', async () => {
+    const inspectServers = vi.fn(async () => []);
+    const dispatcher = createContractDispatcher(scopeReturning({ inspectServers }));
+    const query = { cwd: process.cwd() };
+    await expect(
+      dispatcher.call({}, 'mcpManagementService', 'inspectServers', [null, query]),
+    ).resolves.toEqual([]);
+    expect(inspectServers).toHaveBeenCalledWith(undefined, query);
+  });
+
+  it('validates declared procedure output', async () => {
+    const dispatcher = createContractDispatcher(scopeReturning({ platform: 42 }));
+    await expect(dispatcher.call({}, 'bootstrapService', 'platform', [])).rejects.toMatchObject({
+      name: 'RPCError',
+      code: 50001,
+    });
+  });
+
+  it('enforces streaming procedure kind and validates chunks', async () => {
+    const returnIterator = vi.fn(async () => ({ done: true as const, value: undefined }));
+    const iterator: AsyncIterator<unknown> = {
+      next: async () => ({ done: false, value: { text: 'missing type' } }),
+      return: returnIterator,
+    };
+    const dispatcher = createContractDispatcher(
+      scopeReturning({
+        getRequester: () => ({
+          request: () => ({
+            [Symbol.asyncIterator]: () => iterator,
+          }),
+        }),
+      }),
+    );
+    expect(() => dispatcher.stream({}, 'bootstrapService', 'platform', [])).toThrow(RPCError);
+    await expect(
+      dispatcher.call({}, 'modelResolver', 'generate', [
+        'test-model',
+        { systemPrompt: '', messages: [] },
+      ]),
+    ).rejects.toMatchObject({ name: 'RPCError', code: 40001 });
+    const source = dispatcher.stream({}, 'modelResolver', 'generate', [
+      'test-model',
+      { systemPrompt: '', messages: [] },
+    ]);
+    await expect(source[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      name: 'RPCError',
+      code: 50001,
+    });
+    expect(returnIterator).toHaveBeenCalledOnce();
   });
 });

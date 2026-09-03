@@ -10,8 +10,12 @@ import { unlink } from 'node:fs/promises';
 
 import { ErrorCode } from '@moonshot-ai/protocol';
 
-import type { EventSourceRef, IDisposable, ScopeRef } from '../../core/channel.js';
+import type { IDisposable } from '../../core/channel.js';
 import { RPCError } from '../../core/errors.js';
+import {
+  eventSourceFromTarget,
+  scopeRefFromTarget,
+} from '../codec.js';
 import { createMemoryDispatcher, type ScopeLike } from '../memory/dispatcher.js';
 import {
   encodeFrame,
@@ -35,24 +39,6 @@ export interface ServeKlientIpcOptions {
 export interface KlientIpcHost {
   readonly socketPath: string;
   close(): Promise<void>;
-}
-
-function scopeRefFromFrame(frame: IpcFrame): ScopeRef {
-  const scope: { workspaceId?: string; sessionId?: string; agentId?: string } = {};
-  if (typeof frame.workspaceId === 'string') scope.workspaceId = frame.workspaceId;
-  if (typeof frame.sessionId === 'string') scope.sessionId = frame.sessionId;
-  if (typeof frame.agentId === 'string') scope.agentId = frame.agentId;
-  return scope;
-}
-
-function eventSourceFromFrame(frame: IpcFrame): EventSourceRef {
-  if (typeof frame.service === 'string' && typeof frame.event === 'string') {
-    return { kind: 'emitter', service: frame.service, event: frame.event };
-  }
-  if (typeof frame.event === 'string' && frame.event.length > 0) {
-    return { kind: 'stream', name: frame.event };
-  }
-  throw new RPCError(REQUEST_INVALID, `unknown event stream: ${String(frame.event)}`);
 }
 
 export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<KlientIpcHost> {
@@ -140,7 +126,7 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
           }
           const args = Array.isArray(frame.arg) ? frame.arg : frame.arg === undefined ? [] : [frame.arg];
           dispatcher
-            .call(scopeRefFromFrame(frame), String(frame.service), String(frame.method), args)
+            .call(scopeRefFromTarget(frame), String(frame.service), String(frame.method), args)
             .then((data) => {
               send({ type: 'result', id, data });
             })
@@ -155,9 +141,9 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
             return;
           }
           try {
-            const source = eventSourceFromFrame(frame);
+            const source = eventSourceFromTarget(frame);
             const sub = dispatcher.listen(
-              scopeRefFromFrame(frame),
+              scopeRefFromTarget(frame),
               source,
               (data) => {
                 send({ type: 'event', id, data });
@@ -187,7 +173,7 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
           const ac = new AbortController();
           activeStreams.set(id, ac);
           const iterable = dispatcher.stream(
-            scopeRefFromFrame(frame),
+            scopeRefFromTarget(frame),
             String(frame.service),
             String(frame.method),
             args,

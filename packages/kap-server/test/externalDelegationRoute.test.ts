@@ -7,13 +7,16 @@ import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  IAgentPermissionModeService,
   ISessionExternalDelegationProvisionStore,
   ISessionManager,
   resumeSessionById,
+  type PermissionMode,
 } from '@moonshot-ai/agent-core-v2';
 
 import { type RunningServer, startServer } from '../src/start';
 import { externalDelegationAuthorityFromEnv } from '../src/mcp/externalDelegationAuthority';
+import { ensureMainAgent } from '../src/transport/mainAgent';
 import { authHeaders } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -27,12 +30,22 @@ describe('external delegation REST facade', () => {
   const priorPrincipal = process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
   const priorSession = process.env['KIKI_EXTERNAL_SESSION_ID'];
   const priorDelegationToken = process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
+  const priorWorkspace = process.env['KIKI_EXTERNAL_WORKSPACE_PATH'];
+  const priorModel = process.env['KIKI_EXTERNAL_MODEL_ALIAS'];
+  const priorThinking = process.env['KIKI_EXTERNAL_THINKING_EFFORT'];
+  const priorPermission = process.env['KIKI_EXTERNAL_PERMISSION_MODE'];
+  const priorTitle = process.env['KIKI_EXTERNAL_SESSION_TITLE'];
 
   beforeEach(async () => {
     process.env['KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP'] = 'true';
     delete process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
     delete process.env['KIKI_EXTERNAL_SESSION_ID'];
     delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
+    delete process.env['KIKI_EXTERNAL_WORKSPACE_PATH'];
+    delete process.env['KIKI_EXTERNAL_MODEL_ALIAS'];
+    delete process.env['KIKI_EXTERNAL_THINKING_EFFORT'];
+    delete process.env['KIKI_EXTERNAL_PERMISSION_MODE'];
+    delete process.env['KIKI_EXTERNAL_SESSION_TITLE'];
     home = await mkdtemp(join(tmpdir(), 'kiki-external-delegation-'));
 
     // Create the operator-selected Sessions before attaching the constrained
@@ -63,7 +76,7 @@ describe('external delegation REST facade', () => {
       },
     });
     base = `http://127.0.0.1:${server.port}`;
-  });
+  }, 30_000);
 
   afterEach(async () => {
     await server?.close();
@@ -72,7 +85,12 @@ describe('external delegation REST facade', () => {
     restoreEnv('KIKI_EXTERNAL_PRINCIPAL_ID', priorPrincipal);
     restoreEnv('KIKI_EXTERNAL_SESSION_ID', priorSession);
     restoreEnv('KIKI_EXTERNAL_DELEGATION_TOKEN', priorDelegationToken);
-  });
+    restoreEnv('KIKI_EXTERNAL_WORKSPACE_PATH', priorWorkspace);
+    restoreEnv('KIKI_EXTERNAL_MODEL_ALIAS', priorModel);
+    restoreEnv('KIKI_EXTERNAL_THINKING_EFFORT', priorThinking);
+    restoreEnv('KIKI_EXTERNAL_PERMISSION_MODE', priorPermission);
+    restoreEnv('KIKI_EXTERNAL_SESSION_TITLE', priorTitle);
+  }, 30_000);
 
   it('admits only the configured credential, principal source, and Session', async () => {
     const call = (sessionId: string, extraHeaders: Record<string, string> = {}) =>
@@ -178,6 +196,10 @@ describe('external delegation Session bootstrap', () => {
       externalDelegation,
     });
     let base = `http://127.0.0.1:${server.port}`;
+    const meta = await getEnvelope<{
+      external_delegation: { state: string; reason?: string; message?: string };
+    }>(server, `${base}/api/v1/meta`);
+    expect(meta.data.external_delegation).toEqual({ state: 'active' });
     const session = await getEnvelope<{ metadata: { cwd: string } }>(
       server,
       `${base}/api/v1/sessions/session_workspace_a`,
@@ -248,7 +270,41 @@ describe('external delegation Session bootstrap', () => {
     expect((await listRoot(server, base, sessionId)).code).toBe(0);
   });
 
-  it('starts without the delegation edge when a persisted Session workspace drifts', async () => {
+  it('reapplies the configured permission mode on startup', async () => {
+    const home = join(root!, 'home-permission-update');
+    const workspace = join(root!, 'workspace-permission-update');
+    await Promise.all([mkdir(home), mkdir(workspace)]);
+    await writeStubConfig(home);
+    const sessionId = 'session_permission_update';
+
+    const initial = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sessionId, workspace, 'stub', 'high', 'auto'),
+    });
+    await initial.close();
+
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sessionId, workspace, 'stub', 'high', 'yolo'),
+    });
+    servers.push(server);
+    const session = await resumeSessionById(server.core.accessor, sessionId);
+    expect(session).toBeDefined();
+    const agent = await ensureMainAgent(session!);
+    expect(agent.accessor.get(IAgentPermissionModeService).mode).toBe('yolo');
+    const listed = await listRoot(server, `http://127.0.0.1:${server.port}`, sessionId);
+    expect(listed.data.dispatchables).toEqual(expect.arrayContaining([{ kind: 'main' }]));
+  });
+
+  it('disables the delegation edge when a persisted Session workspace drifts', async () => {
     const home = join(root!, 'home');
     const workspaceA = join(root!, 'workspace-a');
     const workspaceB = join(root!, 'workspace-b');
@@ -283,15 +339,33 @@ describe('external delegation Session bootstrap', () => {
     const base = `http://127.0.0.1:${server.port}`;
 
     expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+    const meta = await getEnvelope<{
+      external_delegation: { state: string; reason?: string; message?: string };
+    }>(server, `${base}/api/v1/meta`);
+    expect(meta.data.external_delegation).toMatchObject({
+      state: 'disabled',
+      reason: 'workspace_drift',
+      message: expect.stringMatching(/workspace binding does not match/i),
+    });
     const edge = await listRoot(server, base, 'session_workspace_a');
-    expect(edge.code).not.toBe(0);
-    const warning = logs
-      .map((line) => JSON.parse(line) as { level: number; msg: string; err?: string })
+    expect(edge).toMatchObject({
+      code: 40002,
+      msg: expect.stringContaining('workspace_drift'),
+    });
+
+    const failure = logs
+      .map((line) => JSON.parse(line) as {
+        level: number;
+        msg: string;
+        reason?: string;
+        err?: { message?: string };
+      })
       .find((record) => record.msg ===
-        'external delegation Session bootstrap failed; starting without the external delegation edge');
-    expect(warning).toMatchObject({
+        'external delegation Session bootstrap failed; disabling the edge and continuing server startup');
+    expect(failure).toMatchObject({
       level: 40,
-      err: expect.stringMatching(/workspace binding does not match/i),
+      reason: 'workspace_drift',
+      err: { message: expect.stringMatching(/workspace binding does not match/i) },
     });
   });
 
@@ -475,7 +549,7 @@ describe('external delegation Session bootstrap', () => {
     })).toMatchObject({ sessionOwnership: 'dedicated' });
   });
 
-  it('fails closed on partial environment authority', () => {
+  it('fails closed on invalid environment authority', () => {
     expect(externalDelegationAuthorityFromEnv({})).toBeUndefined();
     expect(() =>
       externalDelegationAuthorityFromEnv({ KIKI_EXTERNAL_SESSION_ID: 'session_partial' }),
@@ -487,6 +561,23 @@ describe('external delegation Session bootstrap', () => {
         KIKI_EXTERNAL_DELEGATION_TOKEN: 'token',
       }),
     ).toThrow(/Session id is invalid/i);
+
+    const configured = {
+      KIKI_EXTERNAL_PRINCIPAL_ID: 'principal',
+      KIKI_EXTERNAL_SESSION_ID: 'session_configured',
+      KIKI_EXTERNAL_DELEGATION_TOKEN: 'token',
+      KIKI_EXTERNAL_WORKSPACE_PATH: '/workspace',
+      KIKI_EXTERNAL_MODEL_ALIAS: 'stub',
+      KIKI_EXTERNAL_THINKING_EFFORT: 'high',
+    };
+    expect(externalDelegationAuthorityFromEnv({
+      ...configured,
+      KIKI_EXTERNAL_PERMISSION_MODE: 'yolo',
+    })?.sessionBootstrap?.permissionMode).toBe('yolo');
+    expect(() => externalDelegationAuthorityFromEnv({
+      ...configured,
+      KIKI_EXTERNAL_PERMISSION_MODE: 'elevated',
+    })).toThrow(/permission mode is invalid/i);
   });
 });
 
@@ -495,6 +586,7 @@ function authority(
   workspacePath: string,
   modelAlias = 'stub',
   thinkingEffort = 'high',
+  permissionMode?: PermissionMode,
 ) {
   return {
     principalId: `principal-${sessionId}`,
@@ -504,6 +596,7 @@ function authority(
       workspacePath,
       modelAlias,
       thinkingEffort,
+      permissionMode,
       title: `Codex ${sessionId}`,
     },
   };

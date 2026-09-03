@@ -25,6 +25,10 @@ type Handler = (
     readonly params: unknown;
     readonly body?: unknown;
     readonly headers: Record<string, string | string[] | undefined>;
+    readonly log: {
+      info(bindings: Record<string, unknown>, message: string): void;
+      warn(bindings: Record<string, unknown>, message: string): void;
+    };
   },
   reply: { send(payload: unknown): unknown },
 ) => Promise<void>;
@@ -33,6 +37,7 @@ const authorityConfig = {
   principalId: 'example-principal',
   sessionId: 'session-operator',
   token: 'DELEGATION_SECRET',
+  state: { state: 'active' } as const,
 };
 
 const dispatchView: ExternalDispatchView = {
@@ -53,12 +58,20 @@ const dispatchView: ExternalDispatchView = {
 
 describe('external delegation route projection', () => {
   let handlers: Map<string, Handler>;
+  let logger = {
+    info: vi.fn<(bindings: Record<string, unknown>, message: string) => void>(),
+    warn: vi.fn<(bindings: Record<string, unknown>, message: string) => void>(),
+  };
   let service: {
     [K in keyof ExternalDelegationService]: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
     handlers = new Map();
+    logger = {
+      info: vi.fn<(bindings: Record<string, unknown>, message: string) => void>(),
+      warn: vi.fn<(bindings: Record<string, unknown>, message: string) => void>(),
+    };
     service = {
       list: vi.fn(),
       dispatch: vi.fn(),
@@ -104,6 +117,34 @@ describe('external delegation route projection', () => {
       '/sessions/:session_id/external-delegation/transcript',
       '/sessions/:session_id/external-delegation/wait',
     ]);
+  });
+
+  it('returns an explicit disabled-edge response', async () => {
+    handlers.clear();
+    registerV2ExternalDelegationRoutes(
+      {
+        post: (path, _options, handler) => {
+          handlers.set(path, handler);
+        },
+      },
+      {} as never,
+      {
+        ...authorityConfig,
+        state: {
+          state: 'disabled',
+          reason: 'workspace_drift',
+          message: 'workspace binding changed',
+        },
+      },
+    );
+
+    const response = await invoke('list', {});
+
+    expect(response).toMatchObject({
+      code: 40002,
+      msg: expect.stringContaining('workspace_drift'),
+    });
+    expect(resumeSessionById).not.toHaveBeenCalled();
   });
 
   it('returns the domain replay view for repeated dispatch_key requests', async () => {
@@ -233,7 +274,30 @@ describe('external delegation route projection', () => {
     expect(service.transcript).toHaveBeenCalledWith(expect.objectContaining({ detail: 'items' }));
   });
 
-  it('preserves the interaction.not_owned failure classification', async () => {
+  it('logs unclassified failures before returning the redacted response', async () => {
+    service.list.mockRejectedValue(new Error('provider returned private failure text'));
+
+    const response = await invoke('list', {});
+
+    expect(response).toMatchObject({
+      code: expect.any(Number),
+      msg: 'External delegation request failed.',
+    });
+    expect(response.code).not.toBe(0);
+    expect(JSON.stringify(response)).not.toContain('private failure text');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request_id: 'request-list',
+        action: 'list',
+        error_message: 'provider returned private failure text',
+        error_stack: expect.stringContaining('provider returned private failure text'),
+        failure_code: undefined,
+      }),
+      'external delegation request failed',
+    );
+  });
+
+  it('preserves and logs the interaction.not_owned failure classification', async () => {
     service.respond.mockRejectedValue(new Error2(
       ErrorCodes.REQUEST_INVALID,
       'Interaction is not owned by this delegation.',
@@ -251,6 +315,14 @@ describe('external delegation route projection', () => {
       details: { failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE },
     });
     expect(response.code).not.toBe(0);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request_id: 'request-respond',
+        action: 'respond',
+        failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE,
+      }),
+      'external delegation request failed',
+    );
   });
 
   it('projects targeted timeout and wait-any without treating timeout as an error', async () => {
@@ -362,7 +434,12 @@ describe('external delegation route projection', () => {
     expect(service.result).toHaveBeenCalledWith(expect.objectContaining({ limit: 100_000 }));
   });
 
-  async function invoke(action: string, body: unknown): Promise<{ code: number; data?: any }> {
+  async function invoke(action: string, body: unknown): Promise<{
+    code: number;
+    msg?: string;
+    data?: any;
+    details?: { failure_code?: string };
+  }> {
     const handler = handlers.get(`/sessions/:session_id/external-delegation/${action}`);
     expect(handler).toBeDefined();
     let payload: unknown;
@@ -372,9 +449,15 @@ describe('external delegation route projection', () => {
         params: { session_id: 'session-operator' },
         body,
         headers: { 'x-kiki-delegation-token': 'DELEGATION_SECRET' },
+        log: logger,
       },
       { send: (value) => { payload = value; } },
     );
-    return payload as { code: number; data?: any };
+    return payload as {
+      code: number;
+      msg?: string;
+      data?: any;
+      details?: { failure_code?: string };
+    };
   }
 });
