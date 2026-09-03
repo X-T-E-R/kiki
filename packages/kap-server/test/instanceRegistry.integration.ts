@@ -34,6 +34,7 @@ interface DiskInstance {
   port: number;
   started_at: number;
   heartbeat_at: number;
+  workspaces?: string[];
   host_version?: string;
 }
 
@@ -46,6 +47,7 @@ function writeInstance(serverId: string, fields: Partial<DiskInstance> & { pid: 
     port: fields.port ?? 58627,
     started_at: fields.started_at ?? 1000,
     heartbeat_at: fields.heartbeat_at ?? 1000,
+    ...(fields.workspaces !== undefined ? { workspaces: fields.workspaces } : {}),
     ...(fields.host_version !== undefined ? { host_version: fields.host_version } : {}),
   };
   writeFileSync(join(instancesDir, `${serverId}.json`), JSON.stringify(disk));
@@ -82,6 +84,7 @@ describe('createInstanceRegistry — register / release', () => {
       port: 58627,
       started_at: 1000,
       heartbeat_at: 2000,
+      workspaces: [],
     });
 
     await reg.release();
@@ -191,6 +194,14 @@ describe('createInstanceRegistry — update', () => {
     const after = readInstance(reg.serverId);
     expect(after.port).toBe(58627);
     expect(after.heartbeat_at).toBe(3000);
+    await reg.release();
+  });
+
+  it('records served workspaces without duplicates', async () => {
+    const registry = createInstanceRegistry({ instancesDir, now: () => 1000 });
+    const reg = await registry.register({ ...baseInfo, workspaces: ['C:\\repo-a'] });
+    await reg.update({ workspaces: ['C:\\repo-b', 'C:\\repo-a'] });
+    expect(readInstance(reg.serverId).workspaces).toEqual(['C:\\repo-a', 'C:\\repo-b']);
     await reg.release();
   });
 });

@@ -14,6 +14,7 @@ import {
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
+  ISessionActivityView,
   ICapabilityService,
   IPluginService,
   IHomeRuntimeService,
@@ -91,6 +92,7 @@ import {
 import { createCredentialValidator } from './services/auth/credentials';
 import { resolvePasswordHash } from './services/auth/password';
 import { createTokenStore } from './services/auth/tokenStore';
+import { LeaseRegistry } from './services/leaseRegistry';
 import {
   ensureExternalDelegationSession,
   externalDelegationAuthorityFromEnv,
@@ -166,6 +168,8 @@ export interface ServerStartOptions {
   readonly rpcToken?: string;
   /** Operator-owned authority for the experimental external-delegation edge. */
   readonly externalDelegation?: ExternalDelegationAuthorityConfig;
+  readonly idleExitMs?: number;
+  readonly leaseTtlMs?: number;
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
   /**
@@ -205,8 +209,10 @@ export interface RunningServer {
   readonly core: Scope;
   readonly connectionRegistry: IConnectionRegistry;
   readonly authTokenService: IAuthTokenService;
+  readonly serverId: string;
   readonly host: string;
   readonly port: number;
+  readonly closed: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -218,6 +224,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKimiHome(opts.homeDir);
   const serverVersion = opts.serverVersion ?? getServerVersion();
+  const startedAt = Date.now();
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
   const externalDelegation = opts.externalDelegation === undefined
     ? externalDelegationAuthorityFromEnv(process.env)
@@ -232,7 +239,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     pid: process.pid,
     host,
     port,
-    startedAt: Date.now(),
+    startedAt,
     serverVersion,
   });
   const exposureClass = classify(host, { bindClass: opts.bindClass });
@@ -361,8 +368,15 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
 
   const shutdownController = new AbortController();
+  const leaseRegistry = new LeaseRegistry(opts.leaseTtlMs);
+  let idleTimer: NodeJS.Timeout | undefined;
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
   const doClose = async (): Promise<void> => {
     shutdownController.abort();
+    if (idleTimer !== undefined) clearInterval(idleTimer);
     const closeErrors: unknown[] = [];
     let appClosing: Promise<void>;
     try {
@@ -437,7 +451,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   };
   let closeFlight: Promise<void> | undefined;
   const close = (): Promise<void> => {
-    closeFlight ??= doClose();
+    if (closeFlight === undefined) {
+      closeFlight = doClose();
+      void closeFlight.then(resolveClosed, resolveClosed);
+    }
     return closeFlight;
   };
 
@@ -489,6 +506,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     externalDelegation === undefined ? { state: 'not_configured' } : { state: 'active' };
   try {
     await ensureExternalDelegationSession(core, externalDelegation);
+    if (externalDelegation?.sessionBootstrap !== undefined) {
+      await registration.update({ workspaces: [externalDelegation.sessionBootstrap.workspacePath] });
+    }
   } catch (error) {
     const reason = error instanceof ExternalDelegationBootstrapError
       ? error.reason
@@ -546,6 +566,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   await registerApiV1Routes(app, core, {
     serverVersion,
+    serverId: registration.serverId,
+    startedAt: new Date(startedAt).toISOString(),
     hostIdentity: opts.hostIdentity,
     debugEndpoints,
     enableShutdown,
@@ -568,6 +590,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     connectionRegistry,
     broadcaster,
     transcriptService,
+    leaseRegistry,
+    onWorkspaceServed: (workspace) => registration.update({ workspaces: [workspace] }),
     dangerousBypassAuth: opts.disableAuth === true,
     externalDelegation: externalDelegationState,
     webTitle: opts.webTitle,
@@ -716,6 +740,27 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   postListenWarmup = runPostListenWarmup();
 
   await registration.update({ port: boundPort });
+  await postListenWarmup;
+
+  if (opts.idleExitMs !== undefined) {
+    const idleExitMs = opts.idleExitMs;
+    let idleSince = Date.now();
+    const intervalMs = Math.min(1_000, Math.max(10, Math.floor(idleExitMs / 4)));
+    idleTimer = setInterval(() => {
+      const busy = core.accessor
+        .get(ISessionManager)
+        .list()
+        .some((session) => session.accessor.get(ISessionActivityView).state().busy);
+      if (leaseRegistry.activeCount() > 0 || busy) {
+        idleSince = Date.now();
+        return;
+      }
+      if (Date.now() - idleSince >= idleExitMs) {
+        void close().catch((error) => logger.error({ err: error }, 'idle server close failed'));
+      }
+    }, intervalMs);
+    idleTimer.unref();
+  }
 
   void modelCatalogRefreshScheduler.start().catch((error) => {
     logger.warn(
@@ -724,7 +769,17 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     );
   });
 
-  return { app, core, connectionRegistry, authTokenService, host, port: boundPort, close };
+  return {
+    app,
+    core,
+    connectionRegistry,
+    authTokenService,
+    serverId: registration.serverId,
+    host,
+    port: boundPort,
+    closed,
+    close,
+  };
 }
 
 /**
