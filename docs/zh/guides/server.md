@@ -1,6 +1,6 @@
 # 本地服务与 API
 
-Kimi Code CLI 内置一个本地服务：运行 `kimi web` 会在前台启动一个进程，同时挂载浏览器里的 web UI、REST API（`/api/v1`）和 WebSocket 事件流（`/api/v1/ws`）。web UI 用于在浏览器里直接使用 Kimi Code；REST 与 WebSocket API 面向脚本和第三方工具，可以用代码创建会话、提交提示词、实时跟进执行过程——它们与 TUI、web UI 读写同一份会话数据。
+Kimi Code CLI 内置一个本地服务：运行 `kimi web` 会在前台启动一个进程，同时挂载浏览器里的 Kiki GUI、REST API（`/api/v1`）和 WebSocket 事件流（`/api/v1/ws`）。Kiki GUI 用于在浏览器里直接使用 Kimi Code；REST 与 WebSocket API 面向脚本和第三方工具，可以用代码创建会话、提交提示词、实时跟进执行过程——它们与 TUI、Kiki GUI 读写同一份会话数据。
 
 > 开始前请确认 Kimi Code CLI 已安装并处于可用状态——完成 `/login` 登录（TUI 内或 `kimi login`），或已在 `config.toml` 配置供应商。服务与 CLI 共享同一份登录态与配置，无需为服务单独准备凭证。
 
@@ -33,7 +33,7 @@ Stop:    Ctrl+C
 按客户端类型选择携带方式：
 
 - **REST**：请求头 `Authorization: Bearer <token>`。
-- **web UI**：启动横幅里的地址自带 `#token=` 片段，浏览器打开后自动完成登录；该片段不会发送到服务端。
+- **Kiki GUI**：启动横幅里的地址自带 `#token=` 片段，浏览器打开后自动完成登录；该片段不会发送到服务端。
 - **WebSocket**：能自定义请求头的客户端用 `Authorization: Bearer`；浏览器等不能自定义头的客户端改用子协议（WebSocket 握手时声明的协议名）`kimi-code.bearer.<token>`。
 
 token 泄露时运行 `kimi web rotate-token` 轮换：新 token 立即写入 `server.token`，旧 token 即刻失效，正在运行的实例无需重启。
