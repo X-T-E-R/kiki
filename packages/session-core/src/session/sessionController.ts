@@ -161,6 +161,7 @@ export class SessionController {
   private readonly emptyAgentState: SessionViewState;
   private publishedForest: AgentForest | undefined;
   private transcriptGrades: TranscriptGradeSpec = DEFAULT_TRANSCRIPT_GRADES;
+  private focusedAgentId: string | undefined;
   private readonly catchupByAgent = new Map<string, Promise<void>>();
   private readonly catchupReplay = new Map<
     string,
@@ -292,7 +293,7 @@ export class SessionController {
       const snapshot = await this.client.snapshot(this.sessionId, { transcript: true });
       if (this.closed) return;
       this.setState(applyTranscriptShell(this.sessionId, snapshot, this.state));
-      this.transcriptGrades = DEFAULT_TRANSCRIPT_GRADES;
+      this.transcriptGrades = transcriptGradesForFocus(this.focusedAgentId);
       this.socket.subscribe(
         this.sessionId,
         { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
@@ -439,6 +440,7 @@ export class SessionController {
   }
 
   setFocusedAgent(agentId: string | undefined): void {
+    this.focusedAgentId = agentId;
     this.transcriptGrades = transcriptGradesForFocus(agentId);
     this.socket.setTranscriptGrades(this.sessionId, this.transcriptGrades);
   }

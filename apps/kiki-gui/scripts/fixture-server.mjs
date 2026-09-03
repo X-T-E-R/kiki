@@ -65,6 +65,7 @@ import {
   gradeFor,
   redactSnapshotForGrade,
   seedMessages,
+  seedSnapshotEntities,
   transcriptEnvelope,
 } from './fixture-transcript.mjs';
 
@@ -199,6 +200,7 @@ class FixtureSession {
         hasMore: this.hasMore,
       });
     }
+    seedSnapshotEntities(this.transcript, scenarioData);
     this.goal = scenarioData.goal ?? null;
     this.lastPromptSubmission = null;
     this.lastSkillActivation = null; // {name, args, attachments} — walker assertions
@@ -767,8 +769,9 @@ class FixtureServer {
       case 'task.terminated': {
         const task = session.tasks.find((t) => t.id === payload.info.taskId);
         if (task !== undefined) {
-          task.status = payload.info.status === 'completed' ? 'completed' : 'failed';
+          task.status = payload.info.status === 'killed' ? 'cancelled' : payload.info.status;
           task.completed_at = now();
+          task.stop_reason = payload.info.stopReason;
         }
         break;
       }

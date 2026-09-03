@@ -23,6 +23,8 @@ import {
   type ISessionStateService,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
+import { projectAgentTranscriptView } from '@kiki/session-core/session/transcript/project';
+import { createViewState } from '@kiki/session-core/session/transcript/types';
 import {
   AgentTranscript,
   TranscriptFactReducer,
@@ -59,6 +61,21 @@ function turnOps(turnId: string, items: ReturnType<AgentTranscript['getItems']>)
   );
   if (turn === undefined) throw new Error(`turn ${turnId} not found`);
   return turn;
+}
+
+function normalizedBlocks(
+  snapshot: AgentTranscriptSnapshot,
+): ReadonlyArray<Record<string, unknown>> {
+  const blocks = projectAgentTranscriptView(
+    createViewState('session_test'),
+    'main',
+    snapshot,
+  ).blocks;
+  return JSON.parse(
+    JSON.stringify(blocks, (key, value) =>
+      key === 'createdAt' || key === 'startedAt' || key === 'endedAt' ? undefined : value,
+    ),
+  ) as ReadonlyArray<Record<string, unknown>>;
 }
 
 describe('bindSessionTranscript', () => {
@@ -232,6 +249,531 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
+  it('projects a user-origin steer as a live user frame on the next step', () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    const emit = (record: Record<string, unknown>): void => {
+      main.bus.emit(record as unknown as Event2<any>);
+    };
+
+    emit({
+      type: 'turn.prompt',
+      turnId: 0,
+      promptId: 'prompt-1',
+      input: [{ type: 'text', text: 'start' }],
+      origin: { kind: 'user' },
+      time: 1_000,
+    });
+    emit({
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+      time: 2_000,
+    });
+    emit({
+      type: 'context.append_loop_event',
+      event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+      time: 3_000,
+    });
+    emit({
+      type: 'turn.steer',
+      turnId: 0,
+      promptId: 'steer-1',
+      input: [{ type: 'text', text: 'steer this' }],
+      origin: { kind: 'user' },
+      time: 4_000,
+    });
+    emit({
+      type: 'context.append_message',
+      message: {
+        id: 'steer-1',
+        role: 'user',
+        content: [{ type: 'text', text: 'steer this' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      time: 5_000,
+    });
+    emit({
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+      time: 6_000,
+    });
+
+    expect(store.getAgent('main')?.getTurn('t0')?.steps[1]?.frames).toContainEqual(
+      expect.objectContaining({
+        kind: 'text',
+        frameId: 'steer-1',
+        role: 'user',
+        text: 'steer this',
+        origin: { kind: 'user' },
+      }),
+    );
+    binding.dispose();
+  });
+
+  it('keeps live and cold block projection equivalent after undo', () => {
+    const records = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'first' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 1_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-1',
+          uuid: 'part-1',
+          part: { type: 'text', text: 'first answer' },
+        },
+        time: 1_200,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 1_300,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 },
+      {
+        type: 'turn.prompt',
+        turnId: 1,
+        promptId: 'prompt-2',
+        input: [{ type: 'text', text: 'second' }],
+        origin: { kind: 'user' },
+        time: 3_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 1, step: 1, uuid: 'step-2' },
+        time: 3_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 1,
+          stepUuid: 'step-2',
+          uuid: 'part-2',
+          part: { type: 'text', text: 'second answer' },
+        },
+        time: 3_200,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 1, step: 1, uuid: 'step-2' },
+        time: 3_300,
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 4_000 },
+      { type: 'context.undo', count: 1, time: 5_000 },
+    ];
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+    });
+    for (const record of records) coldReducer.apply(coldAdapter.add(record));
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    for (const record of records) main.bus.emit(record as unknown as Event2<any>);
+
+    const live = store.getAgent('main')!;
+    const liveBlocks = normalizedBlocks(live.snapshot());
+    const coldBlocks = normalizedBlocks(cold.snapshot());
+    expect(liveBlocks).toEqual(coldBlocks);
+    expect(liveBlocks).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({ kind: 'user', turnId: 't1' }),
+        expect.objectContaining({ kind: 'assistant', turnId: 't1' }),
+      ]),
+    );
+    expect(liveBlocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'user', turnId: 't0', text: 'first' }),
+        expect.objectContaining({ kind: 'assistant', turnId: 't0', text: 'first answer' }),
+      ]),
+    );
+    binding.dispose();
+  });
+
+  it('keeps live and cold task notification blocks equivalent without a user bubble', () => {
+    const records = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'Run the fixture suite in the background.' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-1',
+          uuid: 'part-1',
+          part: { type: 'text', text: 'Started the suite as a background task.' },
+        },
+        time: 2_500,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_000,
+      },
+      {
+        type: 'task.notified',
+        notificationType: 'task.completed',
+        title: 'Background process completed',
+        body: 'pnpm test — 42 passed',
+        severity: 'info',
+        sourceKind: 'background_task',
+        sourceId: 'task-1',
+        time: 4_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'notification-message',
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: '<notification id="task:task-1:completed" category="task" type="task.completed" source_kind="background_task" source_id="task-1">\nTitle: Background process completed\npnpm test — 42 passed\n</notification>',
+            },
+          ],
+          toolCalls: [],
+          origin: {
+            kind: 'task',
+            taskId: 'task-1',
+            status: 'completed',
+            notificationId: 'task:task-1:completed',
+          },
+        },
+        time: 4_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 5_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-2',
+          uuid: 'part-2',
+          part: { type: 'text', text: 'Suite is green — 42 passed.' },
+        },
+        time: 5_500,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 6_000,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 7_000 },
+    ];
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+    });
+    for (const record of records) coldReducer.apply(coldAdapter.add(record));
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    for (const record of records) main.bus.emit(record as unknown as Event2<any>);
+
+    const live = store.getAgent('main')!;
+    const liveBlocks = normalizedBlocks(live.snapshot());
+    const coldBlocks = normalizedBlocks(cold.snapshot());
+    expect(liveBlocks).toEqual(coldBlocks);
+    expect(liveBlocks.filter((block) => block['kind'] === 'user')).toEqual([
+      expect.objectContaining({
+        turnId: 't0',
+        text: 'Run the fixture suite in the background.',
+      }),
+    ]);
+    expect(liveBlocks.filter((block) => block['kind'] === 'system')).toEqual([
+      expect.objectContaining({
+        turnId: 't0',
+        variant: 'task',
+        text: 'Background process completed\npnpm test — 42 passed',
+      }),
+    ]);
+    expect(live.getTurn('t1')).toBeUndefined();
+    binding.dispose();
+  });
+
+  it('keeps foreground subagent terminals, interactions, and ended phase block-equivalent', () => {
+    const records = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-foreground',
+        input: [{ type: 'text', text: 'Inspect the session.' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.call',
+          turnId: 0,
+          stepUuid: 'step-1',
+          uuid: 'part-agent-run',
+          toolCallId: 'call-agent-run',
+          name: 'AgentRun',
+          args: { profile: 'explore', prompt: 'Inspect the session.' },
+        },
+        time: 2_100,
+      },
+      {
+        type: 'subagent.spawned',
+        subagentId: 'agent-1',
+        subagentName: 'explore',
+        name: 'session_inspector',
+        parentToolCallId: 'call-agent-run',
+        description: 'Inspect the session.',
+        runInBackground: false,
+        taskId: 'task-foreground',
+        time: 2_200,
+      },
+      { type: 'subagent.started', subagentId: 'agent-1', time: 2_300 },
+      {
+        type: 'interaction.request',
+        id: 'approval-1',
+        kind: 'approval',
+        toolCallId: 'call-agent-run',
+        request: { toolCallId: 'call-agent-run', action: 'Inspect' },
+        origin: { agentId: 'main', turnId: 0 },
+        time: 2_400,
+      },
+      {
+        type: 'interaction.resolved',
+        id: 'approval-1',
+        response: { decision: 'approved', scope: 'session' },
+        time: 2_500,
+      },
+      {
+        type: 'subagent.failed',
+        subagentId: 'agent-1',
+        error: 'terminated',
+        time: 3_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.result',
+          turnId: 0,
+          stepUuid: 'step-1',
+          toolCallId: 'call-agent-run',
+          result: { output: 'terminated', isError: false },
+        },
+        time: 3_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_200,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', durationMs: 2_300, time: 3_300 },
+    ];
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+      tool: (toolCallId) => {
+        for (const item of cold.getItems()) {
+          if (item.kind !== 'turn') continue;
+          for (const step of item.steps) {
+            const frame = step.frames.find(
+              (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+            );
+            if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
+          }
+        }
+        return undefined;
+      },
+      task: (taskId) => cold.getTask(taskId),
+    });
+    for (const record of records) coldReducer.apply(coldAdapter.add(record));
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    for (const record of records) main.bus.emit(record as unknown as Event2<any>);
+
+    const live = store.getAgent('main')!;
+    const liveBlocks = normalizedBlocks(live.snapshot());
+    expect(liveBlocks).toEqual(normalizedBlocks(cold.snapshot()));
+    expect(liveBlocks.filter((block) => block['kind'] === 'subagent')).toEqual([
+      expect.objectContaining({
+        subagentId: 'agent-1',
+        status: 'cancelled',
+        name: 'session_inspector',
+      }),
+    ]);
+    expect(liveBlocks.filter((block) => block['kind'] === 'approval')).toHaveLength(1);
+    expect(live.getTask('task-foreground')).toMatchObject({
+      state: 'killed',
+      error: undefined,
+      stateReason: 'terminated',
+    });
+    expect(live.getMeta()).toMatchObject({
+      activity: 'idle',
+      agent: {
+        phase: {
+          kind: 'ended',
+          turnId: 0,
+          reason: 'completed',
+          durationMs: 2_300,
+          at: 3_300,
+        },
+      },
+    });
+    expect(cold.getMeta()).toEqual(live.getMeta());
+    binding.dispose();
+  });
+
+  it('projects an interrupted live turn as a stopped assistant block', () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+
+    main.bus.emit(
+      ev({
+        type: 'turn.started',
+        time: 1_000,
+        turnId: 1,
+        prompt: 'Abort me mid-stream.',
+        origin: { kind: 'user' },
+      }) as unknown as Event2<any>,
+    );
+    main.bus.emit(
+      ev({ type: 'turn.step.started', time: 1_100, turnId: 1, step: 1, stepId: 'step-1' }) as unknown as Event2<any>,
+    );
+    main.bus.emit(
+      ev({
+        type: 'assistant.delta',
+        time: 1_200,
+        turnId: 1,
+        step: 1,
+        stepId: 'step-1',
+        delta: 'This half-finished sentence keeps streaming',
+      }) as unknown as Event2<any>,
+    );
+    main.bus.emit(
+      ev({
+        type: 'turn.step.interrupted',
+        time: 1_300,
+        turnId: 1,
+        step: 1,
+        stepId: 'step-1',
+        reason: 'user_cancelled',
+      }) as unknown as Event2<any>,
+    );
+    main.bus.emit(
+      ev({
+        type: 'turn.ended',
+        time: 1_400,
+        turnId: 1,
+        reason: 'cancelled',
+        interruptReason: 'user_cancelled',
+      }) as unknown as Event2<any>,
+    );
+
+    const blocks = normalizedBlocks(store.getAgent('main')!.snapshot());
+    expect(blocks.filter((block) => block['kind'] === 'assistant')).toEqual([
+      expect.objectContaining({
+        turnId: 't1',
+        text: 'This half-finished sentence keeps streaming',
+        stopped: true,
+        streaming: false,
+      }),
+    ]);
+    binding.dispose();
+  });
+
+  it('assigns stable question and option ids in live transcript entities', () => {
+    const adapter = new AgentTranscriptLiveAdapter('main');
+    const operations = adapter.mapInteractionRequested({
+      id: 'question-1',
+      kind: 'question',
+      payload: {
+        questions: [
+          {
+            question: 'Choose?',
+            options: [{ label: 'Alpha' }, { label: 'Beta' }],
+          },
+        ],
+      },
+      origin: { agentId: 'main', turnId: 0 },
+      createdAt: 1_000,
+    });
+
+    expect(operations[0]).toMatchObject({
+      op: 'interaction.upsert',
+      interaction: {
+        interactionId: 'question-1',
+        request: {
+          question_id: 'question-1',
+          questions: [
+            {
+              id: 'q_0',
+              options: [{ id: 'opt_0_0' }, { id: 'opt_0_1' }],
+            },
+          ],
+        },
+      },
+    });
+  });
+
   it('registers pre-bind pendings without frames and replays an early resolve at seed time', () => {
     const interactions = new SessionInteractionService(new TestSessionStateService());
     interactions.enqueue({
@@ -367,10 +909,29 @@ describe('bindSessionTranscript', () => {
     );
     main.bus.emit(
       ev({
+        type: 'task.started',
+        time: 1_900,
+        info: {
+          taskId: 'task-9',
+          kind: 'agent',
+          status: 'running',
+          agentId: 'agent-1',
+          profile: 'explore',
+          collaborationTaskName: 'inspect_task',
+          description: 'Inspect',
+          detached: true,
+          startedAt: 1_900,
+          endedAt: null,
+        },
+      }),
+    );
+    main.bus.emit(
+      ev({
         type: 'subagent.spawned',
         time: 2_000,
         subagentId: 'agent-1',
         subagentName: 'explore',
+        name: 'inspect_task',
         parentToolCallId: 'call-agent',
         description: 'Inspect',
         runInBackground: true,
@@ -398,6 +959,25 @@ describe('bindSessionTranscript', () => {
         resultSummary: 'done',
       }),
     );
+    main.bus.emit(
+      ev({
+        type: 'task.terminated',
+        time: 5_100,
+        info: {
+          taskId: 'task-9',
+          kind: 'agent',
+          status: 'completed',
+          agentId: 'agent-1',
+          profile: 'explore',
+          collaborationTaskName: 'inspect_task',
+          description: 'Inspect',
+          detached: true,
+          startedAt: 1_900,
+          endedAt: 5_100,
+        },
+        outputTail: 'done',
+      }),
+    );
 
     const turn = store.getAgent('main')?.getTurn('t0');
     const notificationFrames = turn?.steps
@@ -410,9 +990,13 @@ describe('bindSessionTranscript', () => {
     expect(tool).toMatchObject({ agentRefs: [{ agentId: 'agent-1', role: 'child' }] });
     expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
       state: 'completed',
+      name: 'inspect_task',
+      subagentName: 'explore',
+      description: 'Inspect',
+      outputTail: 'done',
       resultSummary: 'done',
       startedAt: new Date(2_000).toISOString(),
-      endedAt: new Date(5_000).toISOString(),
+      endedAt: new Date(5_100).toISOString(),
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
     binding.dispose();
@@ -537,7 +1121,7 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
-  it('seeds pending interactions per agent, not before that agent is backfilled', () => {
+  it('seeds child interactions on both the owner and main transcript after owner backfill', () => {
     const interactions = new SessionInteractionService(new TestSessionStateService());
     interactions.enqueue({ id: 'q-main', kind: 'question', payload: { toolCallId: 'call_main' }, origin: { agentId: 'main', turnId: 0 } });
     interactions.enqueue({ id: 'q-sub', kind: 'question', payload: { toolCallId: 'call_sub' }, origin: { agentId: 'sub-1', turnId: 0 } });
@@ -553,6 +1137,12 @@ describe('bindSessionTranscript', () => {
 
     binding.seedPendingInteractions('sub-1');
     expect([...byAgent.keys()].toSorted()).toEqual(['main', 'sub-1']);
+    expect(store.getAgent('main')?.getInteraction('q-sub')?.state).toBe('pending');
+    expect(store.getAgent('sub-1')?.getInteraction('q-sub')?.state).toBe('pending');
+
+    interactions.respond('q-sub', { answers: {} });
+    expect(store.getAgent('main')?.getInteraction('q-sub')?.state).toBe('answered');
+    expect(store.getAgent('sub-1')?.getInteraction('q-sub')?.state).toBe('answered');
     binding.dispose();
   });
 
@@ -571,7 +1161,7 @@ describe('bindSessionTranscript', () => {
     expect(byAgent.size).toBe(0);
 
     binding.seedPendingInteractions('sub-1');
-    expect([...byAgent.keys()]).toEqual(['sub-1']);
+    expect([...byAgent.keys()].toSorted()).toEqual(['main', 'sub-1']);
     binding.dispose();
   });
 
@@ -586,7 +1176,7 @@ describe('bindSessionTranscript', () => {
 
     agents.add('sub-1');
     interactions.enqueue({ id: 'q1', kind: 'question', payload: { toolCallId: 'call_q1' }, origin: { agentId: 'sub-1', turnId: 0 } });
-    expect([...byAgent.keys()]).toEqual(['sub-1']);
+    expect([...byAgent.keys()].toSorted()).toEqual(['main', 'sub-1']);
     binding.dispose();
   });
 
@@ -602,6 +1192,7 @@ describe('bindSessionTranscript', () => {
 
     binding.seedPendingInteractions('sub-1');
     expect(byAgent.get('sub-1')?.map((op) => op.op)).toEqual(['interaction.upsert']);
+    expect(byAgent.get('main')?.map((op) => op.op)).toEqual(['interaction.upsert']);
 
     const sub = agents.add('sub-1');
     sub.bus.emit(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));

@@ -59,10 +59,17 @@ export default {
     return [
       turnStart(2, text),
       workChanged(true),
+      { frame: { type: 'turn.step.started', payload: { turnId: 2, step: 1 } } },
       // First-token wait long enough to surface the status line clock (≥15s).
       { delay: 16_500 },
       { frame: { type: 'assistant.delta', offset: 0, payload: { turnId: 2, delta: 'The slow answer, finally.' } } },
       { delay: 250 },
+      {
+        frame: {
+          type: 'turn.step.completed',
+          payload: { turnId: 2, step: 1, timing: { llmFirstTokenLatencyMs: 16_500 } },
+        },
+      },
       { frame: { type: 'turn.ended', payload: { turnId: 2, reason: 'completed', durationMs: 17_200 } } },
       { frame: { type: 'prompt.completed', payload: { promptId: '$PROMPT', finishedAt: new Date().toISOString(), reason: 'completed' } } },
       workChanged(false),

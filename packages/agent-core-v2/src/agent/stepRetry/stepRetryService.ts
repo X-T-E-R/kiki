@@ -1,4 +1,6 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
+import { z } from 'zod';
+
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -13,7 +15,7 @@ import {
 import { isRetryableGenerateError } from '#/kosong/contract/errors';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
-import { Event2 } from '#/app/event/event2';
+import { Event2, registerEvent2Class } from '#/app/event/event2';
 import { unwrapErrorCause } from '#/errors';
 import {
   IAgentLoopService,
@@ -39,11 +41,27 @@ export interface TurnStepRetryingPayload {
   readonly statusCode?: number;
 }
 
+const turnStepRetryingSchema = z.object({
+  turnId: z.number(),
+  step: z.number(),
+  stepId: z.string().optional(),
+  failedAttempt: z.number(),
+  nextAttempt: z.number(),
+  maxAttempts: z.number(),
+  delayMs: z.number(),
+  errorName: z.string(),
+  errorMessage: z.string(),
+  statusCode: z.number().optional(),
+});
+
 export class TurnStepRetrying extends Event2<TurnStepRetryingPayload> {
   static override readonly type = 'turn.step.retrying';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = turnStepRetryingSchema;
 }
 export interface TurnStepRetrying extends TurnStepRetryingPayload {}
+registerEvent2Class(TurnStepRetrying);
 
 export const stepRetryLastFailedDriverIdKey = defineState<string | undefined>(
   'stepRetry.lastFailedDriverId',

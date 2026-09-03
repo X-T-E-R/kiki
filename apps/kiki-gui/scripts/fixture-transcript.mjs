@@ -62,6 +62,65 @@ export function emptySnapshot() {
   };
 }
 
+export function seedSnapshotEntities(projector, snapshot = {}) {
+  const main = projector.ensure('main');
+  for (const task of snapshot.tasks ?? []) {
+    const state = task.status === 'cancelled' ? 'killed' : task.status;
+    upsertList(main.snapshot.tasks, 'taskId', task.id, {
+      taskId: task.id,
+      kind:
+        task.kind === 'bash'
+          ? 'shell'
+          : task.kind === 'subagent'
+            ? 'subagent'
+            : task.kind === 'tool'
+              ? 'tool'
+              : 'other',
+      state,
+      detached: task.run_in_background ?? true,
+      description: task.description,
+      agentId: task.agent_id,
+      outputTail: task.output_preview ?? '',
+      startedAt: task.started_at ?? task.created_at,
+      endedAt: task.completed_at,
+      stateReason: task.stop_reason,
+    });
+  }
+  for (const approval of snapshot.pending_approvals ?? []) {
+    upsertList(main.snapshot.interactions, 'interactionId', approval.approval_id, {
+      interactionId: approval.approval_id,
+      interactionKind: 'approval',
+      toolCallId: approval.tool_call_id,
+      origin: approval.agent_id === undefined ? undefined : { agentId: approval.agent_id },
+      state: 'pending',
+      request: {
+        ...approval,
+        turnId: approval.turn_id,
+        toolCallId: approval.tool_call_id,
+        toolName: approval.tool_name,
+        display: approval.tool_input_display,
+        createdAt: approval.created_at,
+        expiresAt: approval.expires_at,
+      },
+    });
+  }
+  for (const question of snapshot.pending_questions ?? []) {
+    upsertList(main.snapshot.interactions, 'interactionId', question.question_id, {
+      interactionId: question.question_id,
+      interactionKind: 'question',
+      toolCallId: question.tool_call_id,
+      origin: question.agent_id === undefined ? undefined : { agentId: question.agent_id },
+      state: 'pending',
+      request: {
+        ...question,
+        turnId: question.turn_id,
+        toolCallId: question.tool_call_id,
+        createdAt: question.created_at,
+      },
+    });
+  }
+}
+
 function clone(value) {
   return structuredClone(value);
 }
@@ -570,6 +629,7 @@ export class TranscriptProjector {
       case 'turn.step.completed': {
         const turnId = turnIdOf(payload);
         const stepId = stepIdOf(turnId, payload.step ?? agent.live.stepOrdinal ?? 1);
+        const existingStep = findStep(findTurn(agent.snapshot, turnId), stepId);
         projected = {
           agentId,
           ops: [
@@ -582,10 +642,11 @@ export class TranscriptProjector {
                 turnId,
                 ordinal: payload.step ?? 1,
                 state: 'completed',
+                startedAt: existingStep?.startedAt,
                 endedAt: at,
-                usage: payload.usage,
-                timing: payload.timing,
-                finishReason: payload.finishReason,
+                usage: payload.usage ?? existingStep?.usage,
+                timing: payload.timing ?? existingStep?.timing,
+                finishReason: payload.finishReason ?? existingStep?.finishReason,
               },
             },
           ],
@@ -597,44 +658,61 @@ export class TranscriptProjector {
         const existing = findTurn(agent.snapshot, turnId);
         const state =
           payload.reason === 'cancelled' ? 'cancelled' : payload.reason === 'failed' ? 'failed' : 'completed';
-        projected = {
-          agentId,
-          ops: [
-            {
-              op: 'turn.upsert',
-              turn: {
-                kind: 'turn',
-                turnId,
-                ordinal: existing?.ordinal ?? (Number.parseInt(String(payload.turnId ?? 1), 10) || 1),
-                state,
-                origin: existing?.origin ?? originOf(payload, agent.live.promptId, agent.live.userMessageId),
-                message: existing?.message,
-                prompt: existing?.prompt,
-                attachmentIds: existing?.attachmentIds,
-                startedAt: existing?.startedAt,
-                endedAt: at,
-                durationMs: payload.durationMs,
-                usage: payload.usage,
-                error: payload.error?.message ?? payload.error,
-              },
+        const ops = [];
+        for (const step of existing?.steps ?? []) {
+          for (const frame of step.frames) {
+            if (frame.kind !== 'tool' || frame.state !== 'running') continue;
+            ops.push({
+              op: 'frame.upsert',
+              turnId,
+              stepId: step.stepId,
+              frame: { ...frame, state: 'interrupted', endedAt: at },
+            });
+          }
+          if (step.state === 'running') {
+            ops.push({
+              op: 'step.upsert',
+              turnId,
+              step: { ...step, state: 'interrupted', endedAt: at },
+            });
+          }
+        }
+        ops.push(
+          {
+            op: 'turn.upsert',
+            turn: {
+              kind: 'turn',
+              turnId,
+              ordinal: existing?.ordinal ?? (Number.parseInt(String(payload.turnId ?? 1), 10) || 1),
+              state,
+              origin: existing?.origin ?? originOf(payload, agent.live.promptId, agent.live.userMessageId),
+              message: existing?.message,
+              prompt: existing?.prompt,
+              attachmentIds: existing?.attachmentIds,
+              startedAt: existing?.startedAt,
+              endedAt: at,
+              durationMs: payload.durationMs,
+              usage: payload.usage,
+              error: payload.error?.message ?? payload.error,
             },
-            {
-              op: 'meta.merge',
-              meta: {
-                activity: 'idle',
-                agent: {
-                  phase: {
-                    kind: 'ended',
-                    turnId: Number.parseInt(String(payload.turnId ?? 1), 10) || 1,
-                    reason: payload.reason ?? 'completed',
-                    durationMs: payload.durationMs,
-                    at: 0,
-                  },
+          },
+          {
+            op: 'meta.merge',
+            meta: {
+              activity: 'idle',
+              agent: {
+                phase: {
+                  kind: 'ended',
+                  turnId: Number.parseInt(String(payload.turnId ?? 1), 10) || 1,
+                  reason: payload.reason ?? 'completed',
+                  durationMs: payload.durationMs,
+                  at: 0,
                 },
               },
             },
-          ],
-        };
+          },
+        );
+        projected = { agentId, ops };
         break;
       }
       case 'assistant.delta':
@@ -677,11 +755,13 @@ export class TranscriptProjector {
       }
       case 'tool.call.delta': {
         const toolCallId = payload.toolCallId ?? payload.tool_call_id ?? 'burst-call';
-        const turnId = agent.live.turnId ?? turnIdOf(payload);
-        const stepId = agent.live.stepId ?? stepIdOf(turnId, 1);
+        const ensured = ensureLiveTurn(agent, payload, agent.live.promptId, at);
+        const turnId = ensured.turnId;
+        const stepId = ensured.stepId;
         const frameId = `tool-${toolCallId}`;
-        const existing = findFrame(findStep(findTurn(agent.snapshot, turnId), stepId), frameId);
-        const ops = [];
+        const staged = applyOps(clone(agent.snapshot), ensured.ops);
+        const existing = findFrame(findStep(findTurn(staged, turnId), stepId), frameId);
+        const ops = [...ensured.ops];
         if (existing === undefined) {
           ops.push({
             op: 'frame.upsert',
@@ -828,12 +908,15 @@ export class TranscriptProjector {
                 interactionId: payload.approval_id,
                 interactionKind: 'approval',
                 toolCallId: payload.tool_call_id,
+                origin: { agentId },
                 state: 'pending',
                 request: {
                   turnId: payload.turn_id,
                   toolName: payload.tool_name,
                   action: payload.action,
                   display: payload.tool_input_display,
+                  createdAt: payload.created_at,
+                  expiresAt: payload.expires_at,
                 },
               },
             },
@@ -869,8 +952,13 @@ export class TranscriptProjector {
                 interactionId: payload.question_id,
                 interactionKind: 'question',
                 toolCallId: payload.tool_call_id,
+                origin: { agentId },
                 state: 'pending',
-                request: { turnId: payload.turn_id, questions: payload.questions },
+                request: {
+                  turnId: payload.turn_id,
+                  questions: payload.questions,
+                  createdAt: payload.created_at,
+                },
               },
             },
           ],
@@ -900,6 +988,7 @@ export class TranscriptProjector {
         const spawnTurn = parent.live.turnId ?? 't1';
         const spawnStep = parent.live.stepId ?? stepIdOf(spawnTurn, 1);
         const toolCallId = payload.parentToolCallId ?? `call-${payload.subagentId}`;
+        const taskId = payload.taskId ?? `task-${payload.subagentId}`;
         const parentOps = [];
         if (findTurn(parent.snapshot, spawnTurn) === undefined) {
           parentOps.push({
@@ -940,10 +1029,12 @@ export class TranscriptProjector {
           {
             op: 'task.upsert',
             task: {
-              taskId: `task-${payload.subagentId}`,
+              taskId,
               kind: 'subagent',
               state: 'running',
               detached: payload.runInBackground === true,
+              name: payload.name,
+              subagentName: payload.subagentName,
               description: payload.description ?? payload.subagentName,
               agentId: payload.subagentId,
               outputTail: '',
@@ -952,7 +1043,7 @@ export class TranscriptProjector {
           },
           {
             op: 'taskref.upsert',
-            item: { kind: 'taskref', refId: `ref-${payload.subagentId}`, taskId: `task-${payload.subagentId}`, at },
+            item: { kind: 'taskref', refId: `ref-${taskId}`, taskId, at },
           },
         );
         push(this.commit('main', parentOps));
@@ -986,22 +1077,38 @@ export class TranscriptProjector {
       case 'subagent.completed':
       case 'subagent.failed': {
         const childId = payload.subagentId ?? agentId;
-        const state = type === 'subagent.failed' ? 'failed' : 'completed';
+        const state =
+          type === 'subagent.completed'
+            ? 'completed'
+            : payload.error === 'terminated'
+              ? 'killed'
+              : 'failed';
+        const main = this.ensure('main');
+        const taskId =
+          payload.taskId ??
+          main.snapshot.tasks.find((task) => task.agentId === childId && task.state === 'running')?.taskId ??
+          `task-${childId}`;
+        const previous = main.snapshot.tasks.find((task) => task.taskId === taskId);
         push(this.commit('main', [
           {
             op: 'task.upsert',
             task: {
-              taskId: `task-${childId}`,
+              ...previous,
+              taskId,
               kind: 'subagent',
               state,
-              detached: false,
-              description: payload.description,
+              detached: previous?.detached ?? false,
+              name: previous?.name,
+              subagentName: previous?.subagentName,
+              description: payload.description ?? previous?.description,
               agentId: childId,
-              outputTail: payload.output ?? payload.resultSummary ?? '',
-              resultSummary: payload.output ?? payload.resultSummary,
-              error: payload.error,
+              outputTail: payload.output ?? payload.resultSummary ?? previous?.outputTail ?? '',
+              resultSummary: payload.output ?? payload.resultSummary ?? previous?.resultSummary,
+              error: state === 'failed' ? payload.error : undefined,
+              stateReason: payload.reason ?? payload.error ?? previous?.stateReason,
+              startedAt: previous?.startedAt,
               endedAt: at,
-              usage: payload.usage,
+              usage: payload.usage ?? previous?.usage,
             },
           },
         ]));
@@ -1015,7 +1122,7 @@ export class TranscriptProjector {
                   phase: {
                     kind: 'ended',
                     turnId: 1,
-                    reason: state === 'failed' ? 'failed' : 'completed',
+                    reason: state === 'failed' ? 'failed' : state === 'killed' ? 'cancelled' : 'completed',
                     at: 0,
                   },
                 },
@@ -1083,6 +1190,10 @@ export class TranscriptProjector {
 
     if (projected !== undefined && projected.ops.length > 0) {
       push(this.commit(projected.agentId, projected.ops));
+      if (projected.agentId !== 'main') {
+        const interactions = projected.ops.filter((op) => op.op === 'interaction.upsert');
+        if (interactions.length > 0) push(this.commit('main', interactions));
+      }
     }
     return batches;
   }

@@ -1048,6 +1048,8 @@ describe('AgentTranscriptLiveAdapter', () => {
           status: 'running',
           detached: true,
           agentId: 'agent-1',
+          profile: 'explore',
+          collaborationTaskName: 'inspect_files',
           startedAt: 1_700_000_000_000,
           endedAt: null,
         },
@@ -1064,6 +1066,8 @@ describe('AgentTranscriptLiveAdapter', () => {
           status: 'completed',
           detached: true,
           agentId: 'agent-1',
+          profile: 'explore',
+          collaborationTaskName: 'inspect_files',
           startedAt: 1_700_000_000_000,
           endedAt: 1_700_000_001_000,
         },
@@ -1074,6 +1078,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       kind: 'subagent',
       state: 'completed',
       agentId: 'agent-1',
+      name: 'inspect_files',
+      subagentName: 'explore',
       description: 'Inspect files',
       detached: true,
       resultSummary: 'done',
@@ -1834,6 +1840,21 @@ describe('AgentTranscriptLiveAdapter', () => {
       error: 'boom',
       startedAt: '2023-11-14T22:13:21.000Z',
       endedAt: '2023-11-14T22:13:24.000Z',
+    });
+
+    feed(
+      ev({
+        type: 'subagent.failed',
+        time: 1_700_000_005_000,
+        subagentId: 'agent-3',
+        error: 'terminated',
+      }),
+    );
+    expect(tx.getTask('agent-3')).toMatchObject({
+      state: 'killed',
+      error: undefined,
+      stateReason: 'terminated',
+      endedAt: '2023-11-14T22:13:25.000Z',
     });
 
     feed(

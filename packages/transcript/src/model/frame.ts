@@ -9,6 +9,16 @@ export type FrameRef = {
   readonly part?: TranscriptPartIdentity;
 };
 
+export interface TranscriptSkillActivation {
+  readonly skillName: string;
+  readonly skillArgs?: string;
+}
+
+export interface TranscriptUserOrigin {
+  readonly kind: 'user';
+  readonly skillActivations?: readonly TranscriptSkillActivation[];
+}
+
 /** Assistant / user visible text. L1 always holds the full text so far. */
 export interface TextFrame {
   readonly kind: 'text';

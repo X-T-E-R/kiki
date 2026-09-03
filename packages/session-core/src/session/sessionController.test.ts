@@ -292,6 +292,32 @@ describe('assertSessionWritable', () => {
 
 
 describe('SessionController pipeline', () => {
+  it('preserves an agent focus set before the initial snapshot finishes', async () => {
+    const client = {
+      snapshot: vi.fn(async () => snapshot()),
+    };
+    const socket = {
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+      setTranscriptGrades: vi.fn(),
+    };
+    const controller = new SessionController(
+      client as unknown as KikiClient,
+      socket as unknown as KikiSocket,
+      'session_test',
+    );
+
+    controller.setFocusedAgent('child-1');
+    await controller.open();
+
+    expect(socket.subscribe).toHaveBeenCalledWith(
+      'session_test',
+      expect.any(Object),
+      { '*': 'turn', main: 'delta', 'child-1': 'delta' },
+    );
+    controller.close();
+  });
+
   it('keeps an immediately sent prompt at the tail of a freshly opened session', async () => {
     const { controller, client } = await openController();
     client.submitPrompt.mockResolvedValue({

@@ -579,6 +579,7 @@ describe('TranscriptWireAdapter', () => {
         }
         return undefined;
       },
+      task: (taskId) => transcript.getTask(taskId),
     });
     for (const record of all) reducer.apply(adapter.add(record));
     reducer.apply(adapter.finish());
@@ -604,6 +605,62 @@ describe('TranscriptWireAdapter', () => {
       output: '/repo',
       startedAt: new Date(4_000).toISOString(),
       endedAt: new Date(5_000).toISOString(),
+    });
+  });
+
+  it('preserves projected agent references when a durable tool result replaces the frame', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => transcript.getTurn(turnId),
+      tool: (toolCallId) => {
+        for (const item of transcript.getItems()) {
+          if (item.kind !== 'turn') continue;
+          for (const step of item.steps) {
+            const frame = step.frames.find(
+              (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+            );
+            if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
+          }
+        }
+        return undefined;
+      },
+    });
+    for (const record of records.slice(0, 4)) reducer.apply(adapter.add(record));
+    const turn = transcript.getTurn('t0')!;
+    const step = turn.steps[0]!;
+    const frame = step.frames.find((candidate) => candidate.kind === 'tool');
+    if (frame?.kind !== 'tool') throw new Error('tool frame not found');
+    reducer.apply([
+      {
+        factId: 'transient:subagent-ref',
+        durability: 'transient',
+        operations: [
+          {
+            op: 'frame.upsert',
+            turnId: turn.turnId,
+            stepId: step.stepId,
+            frame: { ...frame, agentRefs: [{ agentId: 'agent-1', role: 'child' }] },
+          },
+        ],
+      },
+    ]);
+    reducer.apply(
+      adapter.add({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.result',
+          toolCallId: 'call-1',
+          result: { output: '/repo', isError: false },
+        },
+        time: 5_000,
+      }),
+    );
+
+    expect(transcript.getTurn('t0')?.steps[0]?.frames.find((candidate) => candidate.kind === 'tool')).toMatchObject({
+      state: 'done',
+      output: '/repo',
+      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
     });
   });
 
@@ -952,7 +1009,11 @@ describe('TranscriptWireAdapter', () => {
         type: 'interaction.request',
         id: 'question-1',
         kind: 'question',
-        request: { questions: [] },
+        request: {
+          questions: [
+            { question: 'Choose?', options: [{ label: 'Alpha' }, { label: 'Beta' }] },
+          ],
+        },
       },
       { type: 'interaction.resolved', id: 'question-1', response: null },
       {
@@ -969,12 +1030,112 @@ describe('TranscriptWireAdapter', () => {
         state: 'approved',
         anchor: { kind: 'tool_call', toolCallId: 'call-1' },
       }),
-      expect.objectContaining({ interactionId: 'question-1', state: 'dismissed', response: null }),
+      expect.objectContaining({
+        interactionId: 'question-1',
+        state: 'dismissed',
+        response: null,
+        request: {
+          question_id: 'question-1',
+          questions: [
+            expect.objectContaining({
+              id: 'q_0',
+              options: [
+                expect.objectContaining({ id: 'opt_0_0' }),
+                expect.objectContaining({ id: 'opt_0_1' }),
+              ],
+            }),
+          ],
+        },
+      }),
       expect.objectContaining({
         interactionId: 'pending-1',
         state: 'cancelled',
         anchor: { kind: 'tool_call', toolCallId: 'call-2' },
       }),
+    ]);
+  });
+
+  it('restores durable step interruption reasons and ignores retry progress', () => {
+    const records: TranscriptWireRecord[] = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'turn.step.retrying',
+        turnId: 0,
+        step: 1,
+        stepId: 'step-1',
+        failedAttempt: 1,
+        nextAttempt: 2,
+        maxAttempts: 3,
+        delayMs: 100,
+        errorName: 'Error',
+        errorMessage: 'retry',
+        time: 3_000,
+      },
+      {
+        type: 'turn.step.interrupted',
+        turnId: 0,
+        step: 1,
+        stepId: 'step-1',
+        reason: 'error',
+        message: 'failed permanently',
+        time: 4_000,
+      },
+    ];
+    const withoutRetry = replay(records.filter((record) => record.type !== 'turn.step.retrying'));
+    const withRetry = replay(records);
+
+    expect(withRetry.snapshot()).toEqual(withoutRetry.snapshot());
+    expect(withRetry.getTurn('t0')?.steps[0]).toMatchObject({
+      stepId: 'step-1',
+      state: 'interrupted',
+      endReason: 'error',
+      endMessage: 'failed permanently',
+      endedAt: new Date(4_000).toISOString(),
+    });
+  });
+
+  it('creates a missing interrupted step from a durable record', () => {
+    const store = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'turn.step.interrupted',
+        turnId: 0,
+        step: 1,
+        reason: 'user_cancelled',
+        time: 2_000,
+      },
+    ]);
+
+    expect(store.getTurn('t0')?.steps).toEqual([
+      {
+        kind: 'step',
+        stepId: 't0.1',
+        turnId: 't0',
+        ordinal: 1,
+        state: 'interrupted',
+        frames: [],
+        endedAt: new Date(2_000).toISOString(),
+        endReason: 'user_cancelled',
+      },
     ]);
   });
 
@@ -1069,6 +1230,106 @@ describe('TranscriptWireAdapter', () => {
       { frameId: 'steer-1', kind: 'text', role: 'user', text: 'steer this' },
       { frameId: 'part-b', kind: 'text', role: 'assistant', text: 'after steer' },
     ]);
+  });
+
+  it('preserves sanitized user provenance on a steered frame', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'turn.steer',
+        turnId: 0,
+        promptId: 'steer-1',
+        input: [{ type: 'text', text: 'follow the skill' }],
+        origin: {
+          kind: 'user',
+          skillActivations: [
+            {
+              activationId: 'activation-1',
+              skillName: 'review',
+              skillArgs: 'focused',
+              path: 'C:/private/skill.md',
+            },
+          ],
+        },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_000,
+      },
+    ]);
+
+    const frame = transcript.getTurn('t0')?.steps[0]?.frames[0];
+    expect(frame).toMatchObject({
+      kind: 'text',
+      role: 'user',
+      origin: {
+        kind: 'user',
+        skillActivations: [{ skillName: 'review', skillArgs: 'focused' }],
+      },
+    });
+    expect(JSON.stringify(frame)).not.toContain('C:/private/skill.md');
+    expect(JSON.stringify(frame)).not.toContain('activation-1');
+  });
+
+  it('does not let a marker-origin message consume a user steer credit', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'turn.steer',
+        turnId: 0,
+        input: [{ type: 'text', text: 'same content' }],
+        origin: { kind: 'user' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'same content' }],
+          toolCalls: [],
+          origin: { kind: 'skill_activation', trigger: 'auto', skillName: 'review' },
+        },
+        time: 3_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'same content' }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+        time: 4_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 5_000,
+      },
+    ]);
+
+    expect(transcript.getItems().filter((item) => item.kind === 'turn')).toHaveLength(1);
+    expect(transcript.getTurn('t0')?.steps[0]?.frames[0]).toMatchObject({
+      kind: 'text',
+      role: 'user',
+      text: 'same content',
+    });
   });
 
   it('drops a steer frame when no later step begins and still suppresses the paired append_message', () => {
@@ -1338,6 +1599,17 @@ describe('TranscriptWireAdapter', () => {
       startedAt: new Date(3_000).toISOString(),
       endedAt: new Date(4_000).toISOString(),
     });
+    expect(ended.getMeta()).toMatchObject({
+      activity: 'idle',
+      agent: {
+        phase: {
+          kind: 'ended',
+          turnId: 0,
+          reason: 'completed',
+          at: 4_000,
+        },
+      },
+    });
 
     const unfinished = replay([
       {
@@ -1412,6 +1684,105 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it.each(['interrupted', 'error'] as const)(
+    'keeps durable step.end finishReason=%s aligned with the live interrupted state',
+    (finishReason) => {
+      const transcript = replay([
+        { type: 'turn.prompt', turnId: 0, input: [], origin: { kind: 'user' }, time: 1_000 },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+          time: 2_000,
+        },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1', finishReason },
+          time: 3_000,
+        },
+        {
+          type: 'turn.ended',
+          turnId: 0,
+          reason: finishReason === 'error' ? 'failed' : 'cancelled',
+          time: 4_000,
+        },
+      ]);
+      expect(transcript.getTurn('t0')?.steps[0]).toMatchObject({
+        state: 'interrupted',
+        finishReason,
+        endReason: finishReason,
+      });
+    },
+  );
+
+  it('deduplicates a projected task notification from its legacy context message', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'Run the fixture suite in the background.' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_000,
+      },
+      {
+        type: 'task.notified',
+        notificationType: 'task.completed',
+        title: 'Background process completed',
+        body: 'pnpm test — 42 passed',
+        severity: 'info',
+        sourceKind: 'background_task',
+        sourceId: 'task-1',
+        time: 4_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'notification-message',
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: '<notification id="task:task-1:completed" category="task" type="task.completed" source_kind="background_task" source_id="task-1">\nTitle: Background process completed\npnpm test — 42 passed\n</notification>',
+            },
+          ],
+          toolCalls: [],
+          origin: {
+            kind: 'task',
+            taskId: 'task-1',
+            status: 'completed',
+            notificationId: 'task:task-1:completed',
+          },
+        },
+        time: 4_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 5_000,
+      },
+    ]);
+
+    expect(transcript.getTurn('t1')).toBeUndefined();
+    expect(transcript.getTurn('t0')?.steps[1]?.frames).toEqual([
+      expect.objectContaining({
+        frameId: 'task-notified:task-1',
+        role: 'user',
+        taskId: 'task-1',
+        text: 'Background process completed\npnpm test — 42 passed',
+      }),
+    ]);
+  });
+
   it('projects forward-compatible task notifications and subagent lifecycle records', () => {
     const transcript = replay([
       {
@@ -1481,6 +1852,23 @@ describe('TranscriptWireAdapter', () => {
         time: 5_000,
       },
       {
+        type: 'task.terminated',
+        info: {
+          taskId: 'agent-task',
+          kind: 'agent',
+          status: 'completed',
+          agentId: 'child-1',
+          profile: 'explore',
+          collaborationTaskName: 'smoke_explore',
+          description: 'scan files',
+          detached: true,
+          startedAt: 4_000,
+          endedAt: 5_000,
+        },
+        outputTail: 'scanned 12 files',
+        time: 5_000,
+      },
+      {
         type: 'subagent.spawned',
         subagentId: 'child-1',
         subagentName: 'explore',
@@ -1544,6 +1932,7 @@ describe('TranscriptWireAdapter', () => {
       description: 'scan files',
       agentId: 'child-1',
       resultSummary: 'scanned 12 files',
+      outputTail: 'scanned 12 files',
       stateReason: 'approval',
       usage: { inputOther: 10, output: 5, inputCacheRead: 3, inputCacheCreation: 2 },
       startedAt: new Date(4_100).toISOString(),
@@ -1561,6 +1950,32 @@ describe('TranscriptWireAdapter', () => {
       endedAt: new Date(5_200).toISOString(),
     });
     expect(transcript.getTurn('t1')?.origin).toMatchObject({ kind: 'task', taskId: 'shell-2' });
+  });
+
+  it('projects a terminated AgentRun as killed instead of failed', () => {
+    const transcript = replay([
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-terminated',
+        subagentName: 'explore',
+        parentToolCallId: 'agent-call',
+        runInBackground: false,
+        time: 1_000,
+      },
+      { type: 'subagent.started', subagentId: 'child-terminated', time: 1_100 },
+      {
+        type: 'subagent.failed',
+        subagentId: 'child-terminated',
+        error: 'terminated',
+        time: 1_200,
+      },
+    ]);
+    expect(transcript.getTask('child-terminated')).toMatchObject({
+      state: 'killed',
+      error: undefined,
+      stateReason: 'terminated',
+      endedAt: new Date(1_200).toISOString(),
+    });
   });
 
   it('resets terminal fields when one agent starts a second run without a task id', () => {
