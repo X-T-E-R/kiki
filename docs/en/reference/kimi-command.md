@@ -371,6 +371,41 @@ kimi provider catalog list anthropic          # Browse available models first
 kimi provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
 ```
 
+## `kiki` daemon commands
+
+The `kiki` command manages the shared local daemon used by external callers such as Cursor, Claude Code, and Codex to call Kiki (inbound). It does not configure the external executors or harnesses that Kiki uses to run subagents (outbound).
+
+Start the daemon in the foreground, or attach to an existing healthy instance and start one when needed:
+
+```sh
+kiki serve
+kiki serve --ensure --workspace . --json
+kiki serve --stop
+```
+
+A daemon uses one bearer token from `<home>/server.token`. `--idle-exit` defaults to `30m`; active client leases and running dispatches keep the daemon alive. Client leases are renewed through `POST /api/v1/leases`.
+
+Create and manage an external-caller seat. A seat fixes the workspace, principal, permission mode, model, and thinking effort before the external caller connects:
+
+```sh
+kiki seat create --workspace . --principal cursor --mode auto --json
+kiki seat list --json
+kiki seat revoke <seatId>
+```
+
+Install the stdio MCP configuration for a supported client:
+
+```sh
+kiki seat install --client cursor --workspace .
+kiki seat install --client claude --workspace .
+kiki seat install --client codex --workspace .
+kiki seat install --client generic --workspace .
+```
+
+Cursor writes `~/.cursor/mcp.json`; Claude Code writes the workspace `.mcp.json`; Codex prints a `config.toml` snippet; `generic` prints JSON. An existing `kiki` entry is backed up before replacement.
+
+For an MCP client that launches commands, configure `kiki mcp --workspace <dir>`. The command ensures the daemon is running, creates or reuses the workspace seat, and runs the MCP stdio edge. Run `kiki doctor` to check daemon reachability, token-file permissions, seats, and each seat's permission mode.
+
 ## Next steps
 
 - [Slash Commands](./slash-commands.md) — Quick reference for control commands in the interactive TUI
