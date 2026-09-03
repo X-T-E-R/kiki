@@ -58,6 +58,7 @@ import {
   type ComposerModelSource,
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
+import { isVscodeWebview, vscodeHost } from '../host/vscode';
 import { useI18n } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
@@ -84,6 +85,12 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 
 const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
+let vscodeConversationSequence = 0;
+
+function nextVscodeConversationKey(): string {
+  vscodeConversationSequence += 1;
+  return `vscode-conversation-${vscodeConversationSequence}`;
+}
 
 export { resolveSelectedEffort };
 
@@ -285,6 +292,27 @@ export function Composer({
   autoFocus?: boolean;
 }) {
   const host = useHost();
+  const vscodeRuntime = isVscodeWebview();
+  const vscodeConversationRef = useRef<
+    { key: string; sessionId: string | undefined } | undefined
+  >(undefined);
+  if (vscodeRuntime) {
+    const conversation = vscodeConversationRef.current;
+    if (conversation === undefined) {
+      vscodeConversationRef.current = {
+        key: sessionId ?? nextVscodeConversationKey(),
+        sessionId,
+      };
+    } else if (conversation.sessionId === undefined && sessionId !== undefined) {
+      conversation.sessionId = sessionId;
+    } else if (conversation.sessionId !== sessionId) {
+      vscodeConversationRef.current = {
+        key: sessionId ?? nextVscodeConversationKey(),
+        sessionId,
+      };
+    }
+  }
+  const vscodeConversationId = vscodeConversationRef.current?.key;
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
@@ -329,6 +357,8 @@ export function Composer({
   const [menu, setMenu] = useState<ComposerMenu | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const turnInFlightRef = useRef(false);
+  const [turnInFlight, setTurnInFlight] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   // A slash-looking draft that resolved to nothing: send is held until the
   // user confirms plain-text shipping (typo guard) or edits the draft.
@@ -511,7 +541,11 @@ export function Composer({
   );
 
   const canSend =
-    (text.trim() !== '' || attachments.length > 0) && !disabled && !sendDisabled && !pendingAttachments;
+    (text.trim() !== '' || attachments.length > 0) &&
+    !disabled &&
+    !sendDisabled &&
+    !pendingAttachments &&
+    !turnInFlight;
 
   // The chips band (quote/annotations/attachments/errors/typo guard) only
   // exists with content; it gates the wrapper's top padding above the input.
@@ -836,8 +870,7 @@ export function Composer({
         return;
       }
       if (classified.item.kind === 'skill' && onActivateSkill !== undefined) {
-        recordSubmission();
-        onActivateSkill(classified.item.name, classified.args, attachments);
+        activateSkill(classified.item.name, classified.args);
         return;
       }
       if (classified.item.kind === 'action' && classified.item.action !== undefined) {
@@ -846,8 +879,47 @@ export function Composer({
         return;
       }
     }
-    recordSubmission();
-    onSend(text.trim(), attachments);
+    void sendPrompt(text.trim());
+  };
+
+  const runAgentTurn = (turn: () => Promise<void>) => {
+    if (turnInFlightRef.current) return;
+    turnInFlightRef.current = true;
+    setTurnInFlight(true);
+    void turn()
+      .catch((error: unknown) => {
+        setAttachmentError(errorText(locale, error));
+      })
+      .finally(() => {
+        turnInFlightRef.current = false;
+        setTurnInFlight(false);
+      });
+  };
+
+  const sendPrompt = (content: string) => {
+    if (!vscodeRuntime) {
+      recordSubmission();
+      onSend(content, attachments);
+      return;
+    }
+    runAgentTurn(async () => {
+      const prepared = await vscodeHost.preparePrompt(content, vscodeConversationId, true);
+      recordSubmission();
+      onSend(prepared, attachments);
+    });
+  };
+
+  const activateSkill = (name: string, args: string) => {
+    if (!vscodeRuntime) {
+      recordSubmission();
+      onActivateSkill?.(name, args, attachments);
+      return;
+    }
+    runAgentTurn(async () => {
+      await vscodeHost.preparePrompt('', vscodeConversationId, false);
+      recordSubmission();
+      onActivateSkill?.(name, args, attachments);
+    });
   };
 
   /** "Send anyway" from the typo guard: plain prompt, no command resolution. */
@@ -855,8 +927,7 @@ export function Composer({
     if (!canSend) return;
     setSlashConfirm(null);
     setMenu(null);
-    recordSubmission();
-    onSend(text.trim(), attachments);
+    void sendPrompt(text.trim());
   };
 
   /** Recompute the trigger-driven menu after any text/caret change. */

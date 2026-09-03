@@ -3,7 +3,13 @@
  * permission-denied contexts. Rejects when both channels fail.
  */
 
+import { isVscodeWebview, vscodeHost } from '../host/vscode';
+
 export async function copyTextToClipboard(text: string): Promise<void> {
+  if (isVscodeWebview()) {
+    await vscodeHost.writeClipboard(text);
+    return;
+  }
   try {
     await navigator.clipboard.writeText(text);
     return;

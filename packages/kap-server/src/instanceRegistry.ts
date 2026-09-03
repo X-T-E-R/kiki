@@ -19,6 +19,7 @@ export interface ServerInstanceInfo {
   readonly port: number;
   readonly startedAt: number;
   readonly heartbeatAt: number;
+  readonly workspaces: readonly string[];
   readonly serverVersion?: string;
 }
 
@@ -29,24 +30,21 @@ interface ServerInstanceDisk {
   port: number;
   started_at: number;
   heartbeat_at: number;
+  workspaces?: string[];
   host_version?: string;
 }
 
 export interface InstanceRegistration {
   readonly serverId: string;
-  /** Rewrite this instance's file with a fresh heartbeat and, optionally, a new port. */
-  update(patch: { port?: number }): Promise<void>;
-  /** Remove the instance file and stop heartbeating. Idempotent, best-effort on shutdown. */
+  update(patch: { port?: number; workspaces?: readonly string[] }): Promise<void>;
   release(): Promise<void>;
 }
 
 export interface IInstanceRegistry {
-  /**
-   * Register this process. Sweeps stale (dead-pid) entries as a side effect,
-   * writes the instance file, and starts the heartbeat timer.
-   */
   register(
-    info: Omit<ServerInstanceInfo, 'serverId' | 'heartbeatAt'>,
+    info: Omit<ServerInstanceInfo, 'serverId' | 'heartbeatAt' | 'workspaces'> & {
+      readonly workspaces?: readonly string[];
+    },
   ): Promise<InstanceRegistration>;
   /** List live instances; dead-pid entries are filtered and lazily removed. */
   listLive(): Promise<readonly ServerInstanceInfo[]>;
@@ -85,6 +83,7 @@ function encode(info: ServerInstanceInfo): string {
     port: info.port,
     started_at: info.startedAt,
     heartbeat_at: info.heartbeatAt,
+    workspaces: [...info.workspaces],
     ...(info.serverVersion !== undefined ? { host_version: info.serverVersion } : {}),
   };
   return JSON.stringify(disk);
@@ -99,7 +98,8 @@ function decode(raw: string): ServerInstanceInfo | undefined {
       typeof parsed.host === 'string' &&
       typeof parsed.port === 'number' &&
       typeof parsed.started_at === 'number' &&
-      typeof parsed.heartbeat_at === 'number'
+      typeof parsed.heartbeat_at === 'number' &&
+      (parsed.workspaces === undefined || parsed.workspaces.every((value) => typeof value === 'string'))
     ) {
       return {
         serverId: parsed.server_id,
@@ -108,6 +108,7 @@ function decode(raw: string): ServerInstanceInfo | undefined {
         port: parsed.port,
         startedAt: parsed.started_at,
         heartbeatAt: parsed.heartbeat_at,
+        workspaces: parsed.workspaces ?? [],
         ...(parsed.host_version !== undefined ? { serverVersion: parsed.host_version } : {}),
       };
     }
@@ -211,7 +212,11 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
       await mkdir(instancesDir, { recursive: true });
       await sweepStale(instancesDir);
 
-      const state: { port: number; released: boolean } = { port: info.port, released: false };
+      const state = {
+        port: info.port,
+        released: false,
+        workspaces: new Set(info.workspaces ?? []),
+      };
 
       let inflightWrites = 0;
       let onWritesDrained: (() => void) | null = null;
@@ -227,6 +232,7 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
             port: state.port,
             startedAt: info.startedAt,
             heartbeatAt: now(),
+            workspaces: [...state.workspaces],
             ...(info.serverVersion !== undefined ? { serverVersion: info.serverVersion } : {}),
           };
           await writeFileAtomic(filePath, encode(full));
@@ -249,6 +255,7 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
         async update(patch) {
           if (state.released) return;
           if (patch.port !== undefined) state.port = patch.port;
+          for (const workspace of patch.workspaces ?? []) state.workspaces.add(workspace);
           await write();
         },
         async release() {

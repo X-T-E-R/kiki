@@ -22,6 +22,7 @@ webview-ui/components.json
 # Scripts
 scripts/**
 test/**
+docs/node-sdk-migration.md
 runtime/**
 artifacts/**
 

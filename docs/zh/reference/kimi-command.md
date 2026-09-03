@@ -345,6 +345,9 @@ kimi provider catalog list anthropic          # 先看可选的模型
 kimi provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
 ```
 
+## Kiki daemon 集成
+
+共享 daemon、外部调用方席位与 MCP 配置流程请使用 [`kiki` 命令](./kiki-command.md)。
 ## 下一步
 
 - [斜杠命令](./slash-commands.md) — 交互式 TUI 内的控制命令速查

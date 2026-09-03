@@ -61,13 +61,28 @@ describe('SessionExternalDelegationProvisionStore', () => {
     await expect(store.read()).resolves.toEqual({ version: 1, ownership: 'attached' });
   });
 
+  it('round-trips a seat provision', async () => {
+    await store.write({
+      version: 2,
+      ownership: 'dedicated',
+      principalId: 'cursor',
+      delegationToken: 'secret',
+    });
+    await expect(store.read()).resolves.toEqual({
+      version: 2,
+      ownership: 'dedicated',
+      principalId: 'cursor',
+      delegationToken: 'secret',
+    });
+  });
+
   it('returns undefined when nothing was written', async () => {
     await expect(store.read()).resolves.toBeUndefined();
   });
 
   it('fails closed on an unknown version', async () => {
     await documents.set('external-delegation-provisions/ws-1', 'session_ext_1', {
-      version: 2,
+      version: 3,
       ownership: 'dedicated',
     });
     await expect(store.read()).resolves.toBeUndefined();
@@ -85,6 +100,35 @@ describe('SessionExternalDelegationProvisionStore', () => {
       version: 1,
       ownership: 'owner',
     });
+    await expect(store.read()).resolves.toBeUndefined();
+  });
+
+  it('fails closed on invalid seat ownership', async () => {
+    await documents.set('external-delegation-provisions/ws-1', 'session_ext_1', {
+      version: 2,
+      ownership: 'attached',
+      principalId: 'cursor',
+      delegationToken: 'secret',
+    });
+    await expect(store.read()).resolves.toBeUndefined();
+  });
+
+  it('fails closed when seat credentials are missing', async () => {
+    await documents.set('external-delegation-provisions/ws-1', 'session_ext_1', {
+      version: 2,
+      ownership: 'dedicated',
+    });
+    await expect(store.read()).resolves.toBeUndefined();
+  });
+
+  it('revokes a provision', async () => {
+    await store.write({
+      version: 2,
+      ownership: 'dedicated',
+      principalId: 'cursor',
+      delegationToken: 'secret',
+    });
+    await store.revoke();
     await expect(store.read()).resolves.toBeUndefined();
   });
 
