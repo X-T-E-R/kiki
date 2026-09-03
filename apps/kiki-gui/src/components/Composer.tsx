@@ -1514,6 +1514,7 @@ export function Composer({
               used={contextUsage.used}
               limit={contextUsage.limit}
               usage={sessionUsage}
+              sessionId={sessionId}
               onCompact={onCompactContext}
             />
           ) : null}

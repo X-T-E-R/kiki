@@ -80,6 +80,8 @@ import type {
   Workspace,
 } from '@moonshot-ai/protocol';
 
+import type { UsageResponseWire } from './usageV2';
+
 export class ApiError extends Error {
   readonly code: number;
   readonly requestId: string | undefined;
@@ -843,6 +845,17 @@ export class KikiClient {
 
   createSession(body: SessionCreate): Promise<Session> {
     return this.request<Session>('POST', '/sessions', { body });
+  }
+
+  /**
+   * `GET /api/v2/usage` — the V2 cross-session usage aggregation. All filter
+   * axes travel in the query (see lib/usageV2.buildUsageApiQuery); a page
+   * token must be paired with the exact filter set that produced it.
+   */
+  getUsage(
+    query: Record<string, string | number | boolean | undefined>,
+  ): Promise<UsageResponseWire> {
+    return this.request<UsageResponseWire>('GET', '/usage', { query, apiVersion: 'v2' });
   }
 
   getSession(sessionId: string): Promise<Session> {

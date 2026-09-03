@@ -1349,8 +1349,12 @@ const TranscriptRow = memo(
     onCancelQueued,
     onOpenAgent,
   }: TranscriptRowProps) {
+    // data-turn-id makes a turn addressable from outside the transcript (the
+    // /usage drilldown's ?turn= locator scrolls to it); absent on turn-less
+    // nodes, so the attribute simply doesn't render there.
+    const rowTurnId = displayNodeTurnId(node);
     return (
-      <div data-block-id={nodeKey(node)}>
+      <div data-block-id={nodeKey(node)} data-turn-id={rowTurnId}>
         {executionBadge !== undefined ? <TurnExecutionBadge execution={executionBadge} /> : null}
         {node.kind === 'tool-group' ? (
           <ToolGroupRow group={node} onOpenAgent={onOpenAgent} />
