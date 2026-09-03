@@ -1,21 +1,25 @@
 import {
   IAppendLogStore,
   IFileSystemStorageService,
+  IRetainedUsageService,
   ISessionIndex,
+  type RetainedUsageListQuery,
+  type RetainedUsageListResult,
   type Scope,
   type SessionSummary,
   type WireRecord,
 } from '@moonshot-ai/agent-core-v2';
 import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
+import type { UsageQuery } from '@moonshot-ai/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
-import type { UsageQuery } from '../src/protocol/rest-usage';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 
 interface Fixture {
   readonly service: UsageAggregationService;
   readonly reads: Map<string, number>;
+  readonly retainedQueries: readonly RetainedUsageListQuery[];
 }
 
 function summary(id: string, workspaceId: string): SessionSummary {
@@ -48,8 +52,14 @@ function fixture(
   records: Readonly<Record<string, readonly WireRecord[]>>,
   now: () => number,
   limits: ConstructorParameters<typeof UsageAggregationService>[2] = {},
+  retainedResult: RetainedUsageListResult = {
+    items: [],
+    complete: true,
+    scannedRecords: 0,
+  },
 ): Fixture {
   const reads = new Map<string, number>();
+  const retainedQueries: RetainedUsageListQuery[] = [];
   const index: ISessionIndex = {
     _serviceBrand: undefined,
     prepare: async () => ({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }),
@@ -79,6 +89,14 @@ function fixture(
       })();
     },
   } as unknown as IAppendLogStore;
+  const retainedUsage: IRetainedUsageService = {
+    _serviceBrand: undefined,
+    retainDeletedSession: async () => { throw new Error('retain is not used'); },
+    listDeletedSessions: async (query) => {
+      retainedQueries.push(query);
+      return retainedResult;
+    },
+  };
   const pricing: IModelPricingService = {
     _serviceBrand: undefined,
     resolve: () => undefined,
@@ -92,12 +110,17 @@ function fixture(
         if (identifier === ISessionIndex) return index;
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IAppendLogStore) return appendLog;
+        if (identifier === IRetainedUsageService) return retainedUsage;
         if (identifier === IModelPricingService) return pricing;
         throw new Error('unexpected service');
       },
     },
   } as unknown as Scope;
-  return { service: new UsageAggregationService(core, now, limits), reads };
+  return {
+    service: new UsageAggregationService(core, now, limits),
+    reads,
+    retainedQueries,
+  };
 }
 
 function scope(workspaceId: string, sessionId: string): string {
