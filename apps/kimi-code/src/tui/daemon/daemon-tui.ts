@@ -259,9 +259,7 @@ export class DaemonTUI {
     if (this.state.editor.inputMode === 'bash') {
       this.state.editor.setInputMode('prompt');
       const controller = await this.ensureSession();
-      await this.client.klient.session(controller.sessionId).agent('main').runShellCommand({
-        command: raw,
-      });
+      await this.client.runShellCommand(controller.sessionId, raw);
       return;
     }
     if (text.startsWith('/')) {
@@ -315,7 +313,7 @@ export class DaemonTUI {
       }
       case 'agents': {
         const controller = await this.ensureSession();
-        const agents = await this.client.klient.session(controller.sessionId).agents();
+        const agents = await this.client.listAgents(controller.sessionId);
         this.showStatus(Object.keys(agents).join('  '));
         return;
       }

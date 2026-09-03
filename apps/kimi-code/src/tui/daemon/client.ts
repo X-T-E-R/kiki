@@ -111,6 +111,14 @@ export class DaemonClient implements SessionTransport {
     return this.klient.session(sessionId).agent('main').runCommand({ name, args });
   }
 
+  runShellCommand(sessionId: string, command: string) {
+    return this.klient.session(sessionId).agent('main').runShellCommand({ command });
+  }
+
+  listAgents(sessionId: string) {
+    return this.klient.session(sessionId).agents();
+  }
+
   snapshot(sessionId: string, options?: { readonly transcript?: boolean }): Promise<SessionSnapshotResponse> {
     return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/snapshot`, undefined, {
       mode: options?.transcript === true ? 'transcript' : undefined,

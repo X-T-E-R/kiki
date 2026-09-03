@@ -9,6 +9,7 @@ function fakeKlient() {
     setModel: vi.fn(),
     setPermission: vi.fn(),
     runCommand: vi.fn(),
+    runShellCommand: vi.fn(),
   };
   const interactions = {
     list: vi.fn(),
@@ -16,7 +17,7 @@ function fakeKlient() {
     acquireConsumer: vi.fn(),
     releaseConsumer: vi.fn(),
   };
-  const session = vi.fn(() => ({ agent: vi.fn(() => agent), interactions }));
+  const session = vi.fn(() => ({ agent: vi.fn(() => agent), interactions, agents: vi.fn() }));
   const klient = {
     global: { sessions, kosong: { listModels: vi.fn() } },
     session,
@@ -39,11 +40,13 @@ describe('DaemonClient', () => {
     await client.setModel('session-1', 'kimi-k2');
     await client.setPermission('session-1', 'auto');
     await client.runCommand('session-1', 'status');
+    await client.runShellCommand('session-1', 'pwd');
 
     expect(fake.sessions.create).toHaveBeenCalledWith({ workDir: 'C:\\repo' });
     expect(fake.agent.setModel).toHaveBeenCalledWith('kimi-k2');
     expect(fake.agent.setPermission).toHaveBeenCalledWith('auto');
     expect(fake.agent.runCommand).toHaveBeenCalledWith({ name: 'status', args: undefined });
+    expect(fake.agent.runShellCommand).toHaveBeenCalledWith({ command: 'pwd' });
   });
 
   it('lists daemon sessions through authenticated kap-server REST', async () => {
