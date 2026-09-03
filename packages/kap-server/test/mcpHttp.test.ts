@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -5,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerKikiMcpHttp } from '../src/mcp/http';
 import { createEnvSeatResolver, type SeatResolver } from '../src/mcp/seatResolver';
+import { type RunningServer, startServer } from '../src/start';
+import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 const close: Array<() => Promise<void>> = [];
 
@@ -137,6 +143,51 @@ describe('env seat resolver', () => {
     });
     expect(resolver.resolve('other')).toBeNull();
     expect(resolver.resolve('DELEGATION_SECRE')).toBeNull();
+  });
+});
+
+describe('Kiki MCP HTTP daemon mount', () => {
+  const running: RunningServer[] = [];
+  const homes: string[] = [];
+
+  afterEach(async () => {
+    for (const server of running.splice(0)) {
+      await server.close();
+    }
+    for (const home of homes.splice(0)) {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('does not expose /mcp on a non-loopback bind', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-mcp-http-lan-'));
+    homes.push(home);
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '0.0.0.0',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      insecureNoTls: true,
+      bindClass: 'lan',
+      externalDelegation: {
+        principalId: 'example-principal',
+        sessionId: 'session_operator',
+        token: 'DELEGATION_SECRET',
+      },
+    });
+    running.push(server);
+
+    const response = await fetch(`http://127.0.0.1:${String(server.port)}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer DELEGATION_SECRET',
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+    });
+    expect(response.status).toBe(404);
   });
 });
 

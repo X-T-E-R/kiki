@@ -582,7 +582,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
 
   let kapEndpoint = loopbackOrigin(host, port);
-  if (externalDelegation !== undefined && externalDelegationState.state === 'active') {
+  if (
+    exposureClass === 'loopback' &&
+    externalDelegation !== undefined &&
+    externalDelegationState.state === 'active'
+  ) {
     const envSeat = {
       sessionId: externalDelegation.sessionId,
       delegationToken: externalDelegation.token,
