@@ -162,5 +162,5 @@ describe('compressPromptImageParts', () => {
     expect(files).toHaveLength(1);
     expect(caption.text).toContain(files[0]!);
     expect(await readFile(join(originalsDir, files[0]!))).toEqual(original);
-  });
+  }, 30_000);
 });

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -44,7 +44,10 @@ describe('GitService', () => {
     git(repo, 'config', 'commit.gpgsign', 'false');
     disposables = new DisposableStore();
     const process = new HostProcessService();
-    const runtime = { process } as unknown as Runtime;
+    const runtime = {
+      process,
+      environment: { pathClass: platform() === 'win32' ? 'win32' : 'posix' },
+    } as unknown as Runtime;
     ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.define(IHostProcessService, HostProcessService);

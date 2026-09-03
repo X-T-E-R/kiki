@@ -29,6 +29,7 @@ export interface AppendLogTruncation {
 
 export interface AppendLogReadOptions {
   readonly onTruncate?: (truncation: AppendLogTruncation) => void;
+  readonly signal?: AbortSignal;
 }
 
 export interface IAppendLogStore {

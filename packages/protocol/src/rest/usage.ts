@@ -18,6 +18,9 @@ export const usageQuerySchema = z
     granularity: usageGranularitySchema.optional(),
     range: usageRangePresetSchema.optional(),
     dimension: usageDimensionSchema.optional(),
+    model: repeatedStringSchema,
+    provider: repeatedStringSchema,
+    'agent.id': repeatedStringSchema,
     'workspace.id': repeatedStringSchema,
     include_archived: z.enum(['true', 'false']).optional(),
     start_at: z.coerce.number().int().nonnegative().optional(),
@@ -114,6 +117,9 @@ export const usageResponseSchema = z.object({
       defaulted_to_all_history: z.boolean(),
     }),
     dimension: usageDimensionSchema,
+    models: z.array(z.string()),
+    providers: z.array(z.string()),
+    agent_ids: z.array(z.string()),
     workspace_ids: z.array(z.string()),
     include_archived: z.boolean(),
     timezone_offset_minutes: z.number().int(),
@@ -127,6 +133,7 @@ export const usageResponseSchema = z.object({
     next_page_token: z.string().nullable(),
   }),
   reliability: z.object({
+    complete: z.boolean(),
     coverage: z.object({
       earliest_at: z.number().int().nonnegative().nullable(),
       latest_at: z.number().int().nonnegative().nullable(),
