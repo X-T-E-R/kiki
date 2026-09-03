@@ -31,6 +31,8 @@ import {
   type Scope,
   type ScopeSeed,
 } from '@moonshot-ai/agent-core-v2';
+import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
+import { EXTERNAL_DELEGATION_FLAG_ID } from '@moonshot-ai/agent-core-v2/session/externalDelegation/flag';
 import {
   createKimiDefaultHeaders,
   kimiRegionProfile,
@@ -99,6 +101,7 @@ import {
   ExternalDelegationBootstrapError,
   type ExternalDelegationAuthorityConfig,
 } from './mcp/externalDelegationAuthority';
+import { ExternalDelegationSeatManager } from './mcp/externalDelegationSeats';
 
 import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
 import {
@@ -502,24 +505,36 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     .catch(() => {
     });
 
-  let externalDelegationState: ExternalDelegationState =
-    externalDelegation === undefined ? { state: 'not_configured' } : { state: 'active' };
-  try {
-    await ensureExternalDelegationSession(core, externalDelegation);
-    if (externalDelegation?.sessionBootstrap !== undefined) {
-      await registration.update({ workspaces: [externalDelegation.sessionBootstrap.workspacePath] });
+  await configService.ready;
+  const externalDelegationEnabled = core.accessor
+    .get(IFlagService)
+    .enabled(EXTERNAL_DELEGATION_FLAG_ID);
+  let externalDelegationState: ExternalDelegationState = externalDelegationEnabled
+    ? { state: 'active' }
+    : { state: 'disabled', reason: 'feature_disabled' };
+  if (externalDelegationEnabled) {
+    try {
+      await ensureExternalDelegationSession(core, externalDelegation);
+      if (externalDelegation?.sessionBootstrap !== undefined) {
+        await registration.update({ workspaces: [externalDelegation.sessionBootstrap.workspacePath] });
+      }
+    } catch (error) {
+      const reason = error instanceof ExternalDelegationBootstrapError
+        ? error.reason
+        : 'bootstrap_failed';
+      const message = error instanceof Error ? error.message : String(error);
+      externalDelegationState = { state: 'disabled', reason, message };
+      logger.warn(
+        { err: error, reason },
+        'external delegation Session bootstrap failed; disabling the edge and continuing server startup',
+      );
     }
-  } catch (error) {
-    const reason = error instanceof ExternalDelegationBootstrapError
-      ? error.reason
-      : 'bootstrap_failed';
-    const message = error instanceof Error ? error.message : String(error);
-    externalDelegationState = { state: 'disabled', reason, message };
-    logger.warn(
-      { err: error, reason },
-      'external delegation Session bootstrap failed; disabling the edge and continuing server startup',
-    );
   }
+  const seatManager = new ExternalDelegationSeatManager(
+    core,
+    homeDir,
+    (workspace) => registration.update({ workspaces: [workspace] }),
+  );
 
   async function registerOpenApi(): Promise<void> {
     const { default: swagger } = await import('@fastify/swagger');
@@ -598,9 +613,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
 
   await registerApiV2Routes(app, core, {
-    externalDelegation: externalDelegation === undefined
-      ? undefined
-      : { ...externalDelegation, state: externalDelegationState },
+    externalDelegation,
+    externalDelegationState,
+    seatManager,
   });
 
   const wssKlient = registerKlientHttp(app, core);

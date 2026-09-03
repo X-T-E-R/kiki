@@ -47,12 +47,24 @@ interface ExternalDelegationRouteHost {
   ): unknown;
 }
 
-interface ExternalDelegationRouteConfig {
+interface StaticExternalDelegationRouteConfig {
   readonly principalId: string;
   readonly sessionId: string;
   readonly token: string;
   readonly state: ExternalDelegationState;
 }
+
+export interface ExternalDelegationAuthoritySource {
+  readonly state: ExternalDelegationState;
+  resolve(
+    sessionId: string,
+    presentedToken: string,
+  ): Promise<{ readonly principalId: string; readonly sessionId: string } | undefined>;
+}
+
+type ExternalDelegationRouteConfig =
+  | StaticExternalDelegationRouteConfig
+  | ExternalDelegationAuthoritySource;
 
 const paramsSchema = z.object({ session_id: z.string().min(1) });
 const emptySchema = z.object({}).strict();
@@ -255,19 +267,18 @@ function command<T extends z.ZodTypeAny>(
       }
       const presentedToken = singleHeader(req.headers['x-kiki-delegation-token']);
       if (presentedToken !== undefined) req.headers['x-kiki-delegation-token'] = '[redacted]';
-      if (!dedicatedTokenMatches(presentedToken, authorityConfig.token)) {
+      const resolvedAuthority = presentedToken === undefined
+        ? undefined
+        : await resolveAuthority(authorityConfig, session_id, presentedToken);
+      if (resolvedAuthority === undefined) {
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'External delegation authority is not admitted.', req.id));
-        return;
-      }
-      if (session_id !== authorityConfig.sessionId) {
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'External delegation Session is not admitted.', req.id));
         return;
       }
       const session = await resolveSession(core, session_id);
       await ensureMainAgent(session);
       const data = await execute(
         session.accessor.get(ISessionExternalDelegationService),
-        authorityFor(authorityConfig.principalId),
+        authorityFor(resolvedAuthority.principalId),
         body,
       );
       reply.send(okEnvelope(data, req.id));
@@ -311,6 +322,18 @@ function sha256(value: string): string {
 
 function singleHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+async function resolveAuthority(
+  config: ExternalDelegationRouteConfig,
+  sessionId: string,
+  presentedToken: string,
+): Promise<{ readonly principalId: string; readonly sessionId: string } | undefined> {
+  if ('resolve' in config) return config.resolve(sessionId, presentedToken);
+  if (sessionId !== config.sessionId || !dedicatedTokenMatches(presentedToken, config.token)) {
+    return undefined;
+  }
+  return { principalId: config.principalId, sessionId: config.sessionId };
 }
 
 function dedicatedTokenMatches(candidate: string | undefined, expected: string): boolean {

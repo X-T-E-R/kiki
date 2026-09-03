@@ -1,6 +1,7 @@
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   IAgentLifecycleService,
+  IAgentPermissionModeService,
   IAgentProfileService,
   ISessionExternalDelegationProvisionStore,
   ISessionIndex,
@@ -200,6 +201,85 @@ export async function ensureExternalDelegationSession(
   if (ownership === 'dedicated') {
     await writeExternalDelegationSessionOwnership(core, authority.sessionId, 'dedicated');
   }
+}
+
+export async function ensureExternalDelegationSeatSession(
+  core: Scope,
+  input: {
+    readonly sessionId: string;
+    readonly workspacePath: string;
+    readonly modelAlias?: string;
+    readonly thinkingEffort?: string;
+    readonly permissionMode: PermissionMode;
+    readonly title?: string;
+  },
+): Promise<{
+  readonly workspacePath: string;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
+  readonly permissionMode: PermissionMode;
+}> {
+  if (!isAbsolute(input.workspacePath)) {
+    throw new Error('External delegation workspace path must be absolute.');
+  }
+  const workspacePath = await canonicalPath(input.workspacePath);
+  const registry = core.accessor.get(IWorkspaceService);
+  const existing = await readExternalDelegationSession(
+    core.accessor.get(ISessionIndex),
+    input.sessionId,
+  );
+  let session;
+  if (existing === undefined) {
+    const workspace = await registry.createOrTouch(workspacePath);
+    session = await core.accessor.get(ISessionManager).create({
+      workspaceId: workspace.id,
+      sessionId: input.sessionId,
+      workDir: workspacePath,
+      mainAgentBinding:
+        input.modelAlias === undefined && input.thinkingEffort === undefined
+          ? undefined
+          : {
+              profile: DEFAULT_AGENT_PROFILE_NAME,
+              model: input.modelAlias,
+              thinking: input.thinkingEffort,
+              strictThinking: input.thinkingEffort !== undefined,
+            },
+    });
+  } else {
+    const persistedWorkspace = existing.cwd ?? (await registry.get(existing.workspaceId))?.root;
+    if (
+      persistedWorkspace === undefined ||
+      pathKey(await canonicalPath(persistedWorkspace)) !== pathKey(workspacePath)
+    ) {
+      throw new ExternalDelegationBootstrapError(
+        'workspace_drift',
+        'External delegation Session workspace binding does not match.',
+      );
+    }
+    session = await resumeSessionById(core.accessor, input.sessionId);
+    if (session === undefined) throw new Error('External delegation Session is unavailable.');
+  }
+  if (input.title !== undefined) await session.accessor.get(ISessionMetadata).setTitle(input.title);
+  const agent = await ensureMainAgent(session);
+  const profile = agent.accessor.get(IAgentProfileService);
+  if (input.modelAlias !== undefined && profile.data().modelAlias !== input.modelAlias) {
+    await profile.setModel(input.modelAlias);
+  }
+  if (input.thinkingEffort !== undefined && profile.data().thinkingLevel !== input.thinkingEffort) {
+    profile.setThinking(input.thinkingEffort);
+  }
+  agent.accessor.get(IAgentLifecycleService).broadcastPermissionMode(input.permissionMode);
+  await session.accessor.get(ISessionExternalDelegationProvisionStore).write({
+    version: 1,
+    ownership: 'dedicated',
+  });
+  const data = profile.data();
+  return {
+    workspacePath,
+    modelAlias: data.modelAlias,
+    thinkingEffort: data.modelAlias === undefined ? undefined : data.thinkingLevel,
+    permissionMode: agent.accessor.get(IAgentPermissionModeService).mode,
+  };
 }
 
 async function readExternalDelegationSession(
