@@ -6,11 +6,6 @@ const vscode = require("vscode");
 
 const EXTENSION_ID = "moonshot-ai.kimi-code";
 const EXPECTED_COMMANDS = [
-  "kimi.clearAllState",
-  "kimi.focusInput",
-  "kimi.insertMention",
-  "kimi.logout",
-  "kimi.newConversation",
   "kimi.openInSideBar",
   "kimi.openInTab",
   "kimi.resetKimi",

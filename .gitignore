@@ -26,6 +26,7 @@ plugins/cdn/
 !apps/vscode/.vscode/
 !apps/vscode/.vscode/*.json
 apps/vscode/artifacts/
+apps/vscode/media/gui/
 
 Dockerfile
 docker-compose.yml

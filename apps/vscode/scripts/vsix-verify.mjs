@@ -26,12 +26,7 @@ import {
   vsixFileName,
 } from './vsix-targets.mjs';
 
-const REQUIRED_WEBVIEW_FILES = [
-  'dist/webview.js',
-  'dist/kimi-banner-dark.svg',
-  'dist/kimi-banner-light.svg',
-  'dist/kimi-logo.png',
-];
+const REQUIRED_WEBVIEW_FILES = ['media/gui/index.html'];
 const FORBIDDEN_PATH_SEGMENTS = new Set([
   '.kimi',
   '.kimi-code',

@@ -7,13 +7,8 @@
     "declaration": false,
     "noEmit": true,
     "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
-    "paths": {
-      "@/*": ["./src/*"],
-      "shared/*": ["./shared/*"],
-      "@moonshot-ai/kimi-code-sdk": ["../../packages/node-sdk/src/index.ts"]
-    }
+    "esModuleInterop": true
   },
-  "include": ["src/**/*", "shared/**/*", "test/**/*"],
-  "exclude": ["dist", "node_modules", "webview-ui", "test/settings-store.test.ts", "test/app-init.test.ts"]
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["dist", "node_modules"]
 }
