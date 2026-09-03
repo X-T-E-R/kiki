@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, normalize, basename, dirname } from 'pathe';
 
@@ -60,6 +60,7 @@ import {
 import { AgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminderService';
 import { extractBashTargetDirs } from '#/agent/agentsMdReminder/bashTargets';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
+import { symlinkDir } from '../../_base/utils/symlink';
 import { stubToolExecutorEvents, type ToolExecutorEventStubs } from '../toolExecutor/stubs';
 import { stubLoopWithHooks } from '../loop/stubs';
 import { registerLogServices } from '../../_base/log/stubs';
@@ -831,7 +832,7 @@ describe('agentsMdReminder probing boundaries', () => {
     const h = createHarness();
     const target = await mkdtemp(join(tmpdir(), 'kimi-reminder-target-'));
     const targetAgentsMd = await writeAgentsMd(target, 'target instructions');
-    await symlink(target, join(workDir, 'link'));
+    await symlinkDir(target, join(workDir, 'link'));
 
     try {
       const result = await fire(h, didCtx('Read', { path: join(workDir, 'link', 'index.ts') }));

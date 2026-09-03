@@ -4,6 +4,8 @@ import { join, normalize } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { windowsSymlinksUnavailable } from '../../_base/utils/symlink';
+
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import {
@@ -81,7 +83,7 @@ describe('loadAgentsMd user-level discovery', () => {
 });
 
 describe('loadAgentsMd symlinked files', () => {
-  it('follows symlinks when loading user-level and project-level AGENTS.md', async () => {
+  it.skipIf(windowsSymlinksUnavailable)('follows symlinks when loading user-level and project-level AGENTS.md', async () => {
     const targetDir = await mkdtemp(join(tmpdir(), 'kimi-agents-target-'));
     extraDirs.push(targetDir);
     const brandTarget = join(targetDir, 'brand-AGENTS.md');
@@ -101,7 +103,7 @@ describe('loadAgentsMd symlinked files', () => {
 });
 
 describe('loadAgentsMd unreadable paths', () => {
-  it('warns when an instruction file exists but is a dangling symlink', async () => {
+  it.skipIf(windowsSymlinksUnavailable)('warns when an instruction file exists but is a dangling symlink', async () => {
     const brandHome = await mkdtemp(join(tmpdir(), 'kimi-agents-brand-'));
     extraDirs.push(brandHome);
     await symlink(join(workDir, 'missing-target.md'), join(workDir, 'AGENTS.md'));

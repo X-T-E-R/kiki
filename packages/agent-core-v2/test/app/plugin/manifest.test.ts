@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { parseManifest, PLUGIN_SYSTEM_PROMPT_MAX_BYTES } from '#/app/plugin/manifest';
 
+import { windowsSymlinksUnavailable } from '../../_base/utils/symlink';
+
 describe('plugin manifest parser', () => {
   let dir: string;
 
@@ -270,7 +272,9 @@ describe('plugin manifest parser', () => {
     expect(absoluteResult.diagnostics.map((d) => d.message)).toEqual([
       `"systemPromptPath" path must start with "./" (got "${absolute}")`,
     ]);
+  });
 
+  it.skipIf(windowsSymlinksUnavailable)('rejects a systemPromptPath that escapes through a symlink', async () => {
     const outsideDir = await mkdtemp(join(tmpdir(), 'plugin-outside-'));
     await writeFile(join(outsideDir, 'secret.md'), 'outside content', 'utf8');
     await symlink(join(outsideDir, 'secret.md'), join(dir, 'linked.md'));

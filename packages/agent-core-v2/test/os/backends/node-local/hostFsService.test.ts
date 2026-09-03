@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
+import { symlinkDir, windowsSymlinksUnavailable } from '../../../_base/utils/symlink';
+
 let dir: string;
 let fs: HostFileSystem;
 
@@ -19,7 +21,7 @@ afterEach(async () => {
 });
 
 describe('HostFileSystem stat / lstat', () => {
-  it('stat follows a symlink to a regular file while lstat stats the link', async () => {
+  it.skipIf(windowsSymlinksUnavailable)('stat follows a symlink to a regular file while lstat stats the link', async () => {
     const target = join(dir, 'target.txt');
     await writeFile(target, 'hello', 'utf-8');
     const link = join(dir, 'link.txt');
@@ -38,15 +40,15 @@ describe('HostFileSystem stat / lstat', () => {
     const target = join(dir, 'subdir');
     await mkdir(target);
     const link = join(dir, 'dirlink');
-    await symlink(target, link);
+    await symlinkDir(target, link);
 
     expect((await fs.stat(link)).isDirectory).toBe(true);
     expect((await fs.lstat(link)).isDirectory).toBe(false);
   });
 
-  it('stat rejects a dangling symlink while lstat still stats the link', async () => {
+  it.skipIf(windowsSymlinksUnavailable)('stat rejects a dangling symlink while lstat still stats the link', async () => {
     const link = join(dir, 'dangling');
-    await symlink(join(dir, 'missing'), link);
+    await symlinkDir(join(dir, 'missing'), link);
 
     await expect(fs.stat(link)).rejects.toThrow();
     expect((await fs.lstat(link)).isSymbolicLink).toBe(true);
