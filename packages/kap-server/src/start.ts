@@ -36,6 +36,7 @@ import {
   type KimiHostIdentity,
 } from '@moonshot-ai/kimi-code-oauth';
 import { createAsyncApiDocument } from './protocol/asyncapi';
+import type { ExternalDelegationState } from './protocol/rest-meta';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { installErrorHandler } from './error-handler';
@@ -93,6 +94,7 @@ import { createTokenStore } from './services/auth/tokenStore';
 import {
   ensureExternalDelegationSession,
   externalDelegationAuthorityFromEnv,
+  ExternalDelegationBootstrapError,
   type ExternalDelegationAuthorityConfig,
 } from './mcp/externalDelegationAuthority';
 
@@ -216,6 +218,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKimiHome(opts.homeDir);
   const serverVersion = opts.serverVersion ?? getServerVersion();
+  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
+  const externalDelegation = opts.externalDelegation === undefined
+    ? externalDelegationAuthorityFromEnv(process.env)
+    : {
+        ...opts.externalDelegation,
+        sessionOwnership: opts.externalDelegation.sessionOwnership ?? 'dedicated',
+      };
   const registry = createInstanceRegistry({
     instancesDir: opts.instancesDir ?? join(homeDir, 'server', 'instances'),
   });
@@ -236,21 +245,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const enableShutdown = exposureClass === 'loopback' || opts.allowRemoteShutdown === true;
   const enableTerminals = exposureClass === 'loopback';
   const debugEndpoints = exposureClass === 'loopback' && opts.debugEndpoints === true;
-  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
-  let externalDelegation: ExternalDelegationAuthorityConfig | undefined;
-  try {
-    externalDelegation = opts.externalDelegation === undefined
-      ? externalDelegationAuthorityFromEnv(process.env)
-      : {
-          ...opts.externalDelegation,
-          sessionOwnership: opts.externalDelegation.sessionOwnership ?? 'dedicated',
-        };
-  } catch (error) {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'external delegation configuration is invalid; starting without the external delegation edge',
-    );
-  }
   const authFailureLimiter =
     exposureClass === 'loopback' ? undefined : createAuthFailureLimiter({ logger });
 
@@ -332,16 +326,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
     core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
   };
-
-  try {
-    await ensureExternalDelegationSession(core, externalDelegation);
-  } catch (error) {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'external delegation Session bootstrap failed; starting without the external delegation edge',
-    );
-    externalDelegation = undefined;
-  }
 
   const app = Fastify({
     loggerInstance: logger,
@@ -501,6 +485,22 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     .catch(() => {
     });
 
+  let externalDelegationState: ExternalDelegationState =
+    externalDelegation === undefined ? { state: 'not_configured' } : { state: 'active' };
+  try {
+    await ensureExternalDelegationSession(core, externalDelegation);
+  } catch (error) {
+    const reason = error instanceof ExternalDelegationBootstrapError
+      ? error.reason
+      : 'bootstrap_failed';
+    const message = error instanceof Error ? error.message : String(error);
+    externalDelegationState = { state: 'disabled', reason, message };
+    logger.warn(
+      { err: error, reason },
+      'external delegation Session bootstrap failed; disabling the edge and continuing server startup',
+    );
+  }
+
   async function registerOpenApi(): Promise<void> {
     const { default: swagger } = await import('@fastify/swagger');
     await app.register(swagger, {
@@ -569,11 +569,14 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     broadcaster,
     transcriptService,
     dangerousBypassAuth: opts.disableAuth === true,
+    externalDelegation: externalDelegationState,
     webTitle: opts.webTitle,
   });
 
   await registerApiV2Routes(app, core, {
-    externalDelegation,
+    externalDelegation: externalDelegation === undefined
+      ? undefined
+      : { ...externalDelegation, state: externalDelegationState },
   });
 
   const wssKlient = registerKlientHttp(app, core);

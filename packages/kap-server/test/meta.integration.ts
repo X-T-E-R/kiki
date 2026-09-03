@@ -15,11 +15,27 @@ interface MetaBody {
   data: { experimental_flags?: Record<string, boolean> };
 }
 
+const EXTERNAL_DELEGATION_ENV_NAMES = [
+  'KIKI_EXTERNAL_PRINCIPAL_ID',
+  'KIKI_EXTERNAL_SESSION_ID',
+  'KIKI_EXTERNAL_DELEGATION_TOKEN',
+  'KIKI_EXTERNAL_WORKSPACE_PATH',
+  'KIKI_EXTERNAL_MODEL_ALIAS',
+  'KIKI_EXTERNAL_THINKING_EFFORT',
+  'KIKI_EXTERNAL_PERMISSION_MODE',
+  'KIKI_EXTERNAL_SESSION_TITLE',
+] as const;
+
+function stubExternalDelegationEnv(): void {
+  for (const name of EXTERNAL_DELEGATION_ENV_NAMES) vi.stubEnv(name, undefined);
+}
+
 describe('/api/v1/meta experimental_flags', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
 
   beforeEach(() => {
+    stubExternalDelegationEnv();
     vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
     vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TOOL_SELECT', undefined);
   });
@@ -108,11 +124,50 @@ describe('/api/v1/meta experimental_flags', () => {
   });
 });
 
+describe('/api/v1/meta external_delegation', () => {
+  let server: RunningServer | undefined;
+  let home: string | undefined;
+
+  beforeEach(stubExternalDelegationEnv);
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    if (server !== undefined) {
+      await server.close();
+      server = undefined;
+    }
+    if (home !== undefined) {
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      home = undefined;
+    }
+  });
+
+  it('reports not_configured when no external authority is configured', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-meta-delegation-'));
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+    const response = await authedFetch(server, base, '/api/v1/meta');
+    expect(await response.json()).toMatchObject({
+      code: 0,
+      data: { external_delegation: { state: 'not_configured' } },
+    });
+  });
+});
+
 describe('/api/v1/meta web_title', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
 
+  beforeEach(stubExternalDelegationEnv);
+
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -164,7 +219,10 @@ describe('/api/v1/meta features', () => {
     meta: Record<string, unknown>;
   }
 
+  beforeEach(stubExternalDelegationEnv);
+
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (server !== undefined) {
       await server.close();
       server = undefined;

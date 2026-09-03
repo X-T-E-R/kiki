@@ -25,6 +25,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../../protocol/envelope';
 import { ErrorCode } from '../../protocol/error-codes';
+import type { ExternalDelegationState } from '../../protocol/rest-meta';
 import { ensureMainAgent } from '../../transport/mainAgent';
 
 interface RouteRequest {
@@ -32,6 +33,10 @@ interface RouteRequest {
   readonly params: unknown;
   readonly body?: unknown;
   readonly headers: Record<string, string | string[] | undefined>;
+  readonly log: {
+    info(bindings: Record<string, unknown>, message: string): void;
+    warn(bindings: Record<string, unknown>, message: string): void;
+  };
 }
 
 interface ExternalDelegationRouteHost {
@@ -40,6 +45,13 @@ interface ExternalDelegationRouteHost {
     options: { schema?: Record<string, unknown> },
     handler: (req: RouteRequest, reply: { send(payload: unknown): unknown }) => Promise<void>,
   ): unknown;
+}
+
+interface ExternalDelegationRouteConfig {
+  readonly principalId: string;
+  readonly sessionId: string;
+  readonly token: string;
+  readonly state: ExternalDelegationState;
 }
 
 const paramsSchema = z.object({ session_id: z.string().min(1) });
@@ -118,7 +130,7 @@ const transcriptPageSchema = pageSchema.extend({ detail: z.enum(['text', 'items'
 export function registerV2ExternalDelegationRoutes(
   app: ExternalDelegationRouteHost,
   core: Scope,
-  authorityConfig: { readonly principalId: string; readonly sessionId: string; readonly token: string },
+  authorityConfig: ExternalDelegationRouteConfig,
 ): void {
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/list', emptySchema, async (service, authority) => service.list(authority));
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/dispatch', dispatchSchema, async (service, authority, body) =>
@@ -216,7 +228,7 @@ function normalizeApprovalResponse(response: z.infer<typeof approvalResponseSche
 function command<T extends z.ZodTypeAny>(
   app: ExternalDelegationRouteHost,
   core: Scope,
-  authorityConfig: { readonly principalId: string; readonly sessionId: string; readonly token: string },
+  authorityConfig: ExternalDelegationRouteConfig,
   path: string,
   schema: T,
   execute: (
@@ -226,6 +238,14 @@ function command<T extends z.ZodTypeAny>(
   ) => Promise<unknown>,
 ): void {
   app.post(path, {}, async (req, reply) => {
+    if (authorityConfig.state.state === 'disabled') {
+      reply.send(errEnvelope(
+        ErrorCode.REQUEST_MALFORMED,
+        `External delegation is disabled: ${authorityConfig.state.reason}.`,
+        req.id,
+      ));
+      return;
+    }
     try {
       const { session_id } = paramsSchema.parse(req.params);
       const body = schema.parse(req.body ?? {});
@@ -252,6 +272,19 @@ function command<T extends z.ZodTypeAny>(
       );
       reply.send(okEnvelope(data, req.id));
     } catch (error) {
+      const failureCode = failureCodeForLog(error);
+      const log = {
+        request_id: req.id,
+        action: path.slice(path.lastIndexOf('/') + 1),
+        error_message: error instanceof Error ? error.message : String(error),
+        error_stack: error instanceof Error ? error.stack : undefined,
+        failure_code: failureCode,
+      };
+      if (failureCode === undefined) {
+        req.log.warn(log, 'external delegation request failed');
+      } else {
+        req.log.info(log, 'external delegation request failed');
+      }
       const redacted = redactedMessage(error);
       reply.send({ ...errEnvelope(ErrorCode.VALIDATION_FAILED, redacted.message, req.id), details: redacted.details });
     }
@@ -285,6 +318,13 @@ function dedicatedTokenMatches(candidate: string | undefined, expected: string):
   const a = Buffer.from(candidate);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function failureCodeForLog(error: unknown): string | undefined {
+  if (!isError2(error)) return undefined;
+  const failureCode = error.details?.['failure_code'];
+  if (typeof failureCode === 'string') return failureCode;
+  return classifyExternalFailureCode(error.code);
 }
 
 interface RedactedFailure {
