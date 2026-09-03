@@ -27,5 +27,12 @@
   },
   "dependencies": {
     "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/picomatch": "^4.0.3",
+    "js-yaml": "^4.1.1",
+    "pathe": "^2.0.3",
+    "picomatch": "^4.0.4"
   }
 }
