@@ -2,15 +2,15 @@ export interface HostFileStat {
   readonly isFile: boolean;
   readonly isDirectory: boolean;
   readonly isSymbolicLink?: boolean;
-  readonly size?: number;
+  readonly size: number;
   readonly mtimeMs?: number;
   readonly ino?: number;
 }
 
 export interface HostDirEntry {
   readonly name: string;
-  readonly isFile?: boolean;
-  readonly isDirectory?: boolean;
+  readonly isFile: boolean;
+  readonly isDirectory: boolean;
   readonly isSymbolicLink?: boolean;
 }
 
