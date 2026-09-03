@@ -7,6 +7,7 @@ import {
   gradeFor,
   redactSnapshotForGrade,
   seedMessages,
+  seedSnapshotEntities,
 } from './fixture-transcript.mjs';
 
 test('projects a basic stream of session_event frames into reset/ops', () => {
@@ -239,8 +240,10 @@ test('names spawned subagents from the tool input subagentType', () => {
       description: 'Map the protocol surface',
     },
   });
-  const tool = projector.snapshot('main').items[0].steps[0].frames.find((frame) => frame.kind === 'tool');
+  const snapshot = projector.snapshot('main');
+  const tool = snapshot.items[0].steps[0].frames.find((frame) => frame.kind === 'tool');
   assert.equal(tool.input.subagentType, 'Researcher');
+  assert.equal(snapshot.tasks[0].subagentName, 'Researcher');
 });
 
 test('prompt.steered completes parked promptIds and does not rewrite the running extras.promptId', () => {
@@ -275,4 +278,112 @@ test('prompt.steered completes parked promptIds and does not rewrite the running
   assert.equal(parked?.userMessageId, 'um-b');
   assert.equal(running?.status, 'running');
   assert.equal(running?.steeredAt, undefined);
+});
+
+test('seeds legacy snapshot tasks and approvals into the canonical main transcript', () => {
+  const projector = new TranscriptProjector('session_fixture_seed');
+  seedSnapshotEntities(projector, {
+    tasks: [
+      {
+        id: 'task-1',
+        kind: 'bash',
+        status: 'running',
+        description: 'fixture build (vite)',
+        created_at: '2026-01-01T00:00:00.000Z',
+        started_at: '2026-01-01T00:00:01.000Z',
+        output_preview: 'building',
+      },
+    ],
+    pending_approvals: [
+      {
+        approval_id: 'approval-1',
+        turn_id: 1,
+        tool_call_id: 'call-1',
+        tool_name: 'Bash',
+        action: 'Run pnpm test',
+        tool_input_display: { kind: 'command', command: 'pnpm test' },
+        created_at: '2026-01-01T00:00:02.000Z',
+        expires_at: '2026-01-01T01:00:02.000Z',
+      },
+    ],
+    pending_questions: [
+      {
+        question_id: 'question-1',
+        turn_id: 1,
+        tool_call_id: 'call-2',
+        questions: [{ id: 'q-1', question: 'Continue?', options: [] }],
+        created_at: '2026-01-01T00:00:03.000Z',
+      },
+    ],
+  });
+  const snapshot = projector.snapshot('main');
+  assert.deepEqual(snapshot.tasks[0], {
+    taskId: 'task-1',
+    kind: 'shell',
+    state: 'running',
+    detached: true,
+    description: 'fixture build (vite)',
+    agentId: undefined,
+    outputTail: 'building',
+    startedAt: '2026-01-01T00:00:01.000Z',
+    endedAt: undefined,
+    stateReason: undefined,
+  });
+  assert.equal(snapshot.interactions[0].interactionId, 'approval-1');
+  assert.equal(snapshot.interactions[0].state, 'pending');
+  assert.equal(snapshot.interactions[1].interactionId, 'question-1');
+  assert.equal(snapshot.interactions[1].state, 'pending');
+});
+
+test('synthesizes hidden child turn structure for isolated tool deltas and closes it at turn end', () => {
+  const projector = new TranscriptProjector('session_fixture_burst');
+  projector.ingestFrame({
+    type: 'tool.call.delta',
+    agentId: 'agent-hidden',
+    payload: { turnId: 900, toolCallId: 'burst-call', name: 'Write', argumentsPart: 'x' },
+  });
+  let turn = projector.snapshot('agent-hidden').items[0];
+  assert.equal(turn.turnId, 't900');
+  assert.equal(turn.steps[0].frames[0].state, 'running');
+  projector.ingestFrame({
+    type: 'turn.ended',
+    agentId: 'agent-hidden',
+    payload: { turnId: 900, reason: 'completed' },
+  });
+  turn = projector.snapshot('agent-hidden').items[0];
+  assert.equal(turn.state, 'completed');
+  assert.equal(turn.steps[0].state, 'interrupted');
+  assert.equal(turn.steps[0].frames[0].state, 'interrupted');
+});
+
+test('mirrors child interactions onto the main transcript with the origin agent', () => {
+  const projector = new TranscriptProjector('session_fixture_approval');
+  projector.ingestFrame({
+    type: 'event.approval.requested',
+    agentId: 'agent-worker',
+    payload: {
+      approval_id: 'approval-child',
+      turn_id: 2,
+      tool_call_id: 'call-child',
+      tool_name: 'Bash',
+      action: 'Run cleanup',
+      created_at: '2026-01-01T00:00:00.000Z',
+      expires_at: '2026-01-01T01:00:00.000Z',
+    },
+  });
+  assert.deepEqual(projector.snapshot('main').interactions[0].origin, {
+    agentId: 'agent-worker',
+  });
+  assert.equal(projector.snapshot('agent-worker').interactions[0].state, 'pending');
+  projector.ingestFrame({
+    type: 'event.approval.resolved',
+    agentId: 'agent-worker',
+    payload: {
+      approval_id: 'approval-child',
+      tool_call_id: 'call-child',
+      decision: 'approved',
+    },
+  });
+  assert.equal(projector.snapshot('main').interactions[0].state, 'approved');
+  assert.equal(projector.snapshot('agent-worker').interactions[0].state, 'approved');
 });
