@@ -167,13 +167,13 @@ describe('server-v2 /api/v1 plugins', () => {
       { source },
     );
     expect(installed.body.code).toBe(0);
-    expect(installed.body.data).toMatchObject({ id: 'demo-plugin', version: '1.0.0', enabled: true });
+    expect(installed.body.data).toMatchObject({ id: 'demo-plugin', version: '1.0.0', enabled: false });
 
     const list = await call<{ plugins: { id: string; enabled: boolean }[] }>(
       'GET',
       '/api/v1/plugins',
     );
-    expect(list.body.data.plugins.map((p) => [p.id, p.enabled])).toEqual([['demo-plugin', true]]);
+    expect(list.body.data.plugins.map((p) => [p.id, p.enabled])).toEqual([['demo-plugin', false]]);
 
     const disabled = await call<{ ok: true }>('POST', '/api/v1/plugins/demo-plugin:disable');
     expect(disabled.body.code).toBe(0);
@@ -247,6 +247,8 @@ describe('server-v2 /api/v1 plugins', () => {
 
   it('serves the marketplace catalog merged with live install state', async () => {
     const before = await call<{
+      configured: boolean;
+      source?: string;
       entries: {
         id: string;
         tier: string;
@@ -261,6 +263,8 @@ describe('server-v2 /api/v1 plugins', () => {
       }[];
     }>('GET', '/api/v1/plugins/marketplace');
     expect(before.body.code).toBe(0);
+    expect(before.body.data.configured).toBe(true);
+    expect(before.body.data.source).toBe(CATALOG_URL);
     expect(before.body.data.entries.map((e) => [e.id, e.tier])).toEqual([
       ['demo-plugin', 'official'],
       ['third-party-plugin', 'third-party'],
@@ -302,7 +306,7 @@ describe('server-v2 /api/v1 plugins', () => {
       }[];
     }>('GET', '/api/v1/plugins/marketplace');
     const demo = after.body.data.entries.find((e) => e.id === 'demo-plugin');
-    expect(demo?.installed).toEqual({ version: '1.0.0', enabled: true });
+    expect(demo?.installed).toEqual({ version: '1.0.0', enabled: false });
     expect(demo?.updateAvailable).toBe(true);
 
     const ghSource = await makePluginDir('gh-plugin', '1.5.0');
@@ -353,10 +357,9 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(body.msg).toContain('invalid catalog');
   });
 
-  it('treats the dev marketplace server as the default catalog', async () => {
+  it('uses the env marketplace URL without injecting capability markers', async () => {
     await server?.close();
     vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_URL', CATALOG_URL);
-    vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER', '1');
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -366,42 +369,16 @@ describe('server-v2 /api/v1 plugins', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const { body } = await call<{ entries: { id: string; capabilityId?: string }[] }>(
-      'GET',
-      '/api/v1/plugins/marketplace',
-    );
+    const { body } = await call<{
+      configured: boolean;
+      source?: string;
+      entries: { id: string; capabilityId?: string }[];
+    }>('GET', '/api/v1/plugins/marketplace');
     expect(body.code).toBe(0);
-    expect(body.data.entries.find((e) => e.id === 'kimi-webbridge')?.capabilityId).toBe(
-      'kimi-webbridge',
-    );
-
-    const cuSupported = process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64');
-    const after0 = await call<{
-      entries: { id: string; capabilityId?: string; installed?: { version?: string } }[];
-    }>('GET', '/api/v1/plugins/marketplace');
-    if (!cuSupported) {
-      expect(after0.body.data.entries.find((e) => e.id === 'kimi-cu')).toBeUndefined();
-      return;
-    }
-
-    const winSource = await makePluginDir('kimi-cu-win', '0.5.4');
-    await call('POST', '/api/v1/plugins', { source: winSource });
-    const after = await call<{
-      entries: { id: string; capabilityId?: string; installed?: { version?: string } }[];
-    }>('GET', '/api/v1/plugins/marketplace');
-    const cu = after.body.data.entries.find((e) => e.id === 'kimi-cu');
-    expect(cu?.capabilityId).toBe('kimi-cu');
-    expect(cu?.installed?.version).toBe('0.5.4');
-
-    const staleSource = await makePluginDir('kimi-cu', '0.1.0');
-    await call('POST', '/api/v1/plugins', { source: staleSource });
-    const both = await call<{
-      entries: { id: string; installed?: { version?: string } }[];
-    }>('GET', '/api/v1/plugins/marketplace');
-    const expected = process.platform === 'win32' && process.arch === 'x64' ? '0.5.4' : '0.1.0';
-    expect(both.body.data.entries.find((e) => e.id === 'kimi-cu')?.installed?.version).toBe(
-      expected,
-    );
+    expect(body.data.configured).toBe(true);
+    expect(body.data.source).toBe(CATALOG_URL);
+    expect(body.data.entries.find((e) => e.id === 'kimi-webbridge')?.capabilityId).toBeUndefined();
+    expect(body.data.entries.find((e) => e.id === 'kimi-cu')?.capabilityId).toBeUndefined();
   });
 
   it('maps an unreachable marketplace to 50001', async () => {
@@ -444,11 +421,13 @@ describe('server-v2 /api/v1 plugins', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const { body } = await call<{ entries: { id: string; source: string }[] }>(
-      'GET',
-      '/api/v1/plugins/marketplace',
-    );
+    const { body } = await call<{
+      configured: boolean;
+      source?: string;
+      entries: { id: string; source: string }[];
+    }>('GET', '/api/v1/plugins/marketplace');
     expect(body.code).toBe(0);
+    expect(body.data.configured).toBe(true);
     expect(body.data.entries).toEqual([
       {
         id: 'local-plugin',
@@ -463,23 +442,18 @@ describe('server-v2 /api/v1 plugins', () => {
         source: fileUrlPluginPath,
       },
     ]);
+    expect(body.data.source).toBe(join(catalogDir, 'marketplace.json'));
   });
 
-  it('falls back to the source-checkout catalog when the remote is unreachable', async () => {
+  it('reports an unconfigured marketplace without fetching a remote catalog', async () => {
     await server?.close();
     const realFetch = globalThis.fetch;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string | URL, init?: RequestInit) => {
-        if (typeof url === 'string' && url.includes('/releases/latest')) {
-          return new Response(null, { status: 404 });
-        }
-        if (url === 'https://code.kimi.com/kimi-code/plugins/marketplace.json') {
-          throw new Error('offline');
-        }
-        return realFetch(url as never, init);
-      }),
-    );
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes('/api/v1/')) return realFetch(url as never, init);
+      throw new Error(`unexpected fetch: ${href}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
     vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_URL', undefined as unknown as string);
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -490,41 +464,55 @@ describe('server-v2 /api/v1 plugins', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const { body } = await call<{
-      entries: {
-        id: string;
-        source: string;
-        tier?: string;
-        displayName?: string;
-        capabilityId?: string;
-      }[];
-    }>('GET', '/api/v1/plugins/marketplace');
+    const { body } = await call<{ configured: boolean; source?: string; entries: unknown[] }>(
+      'GET',
+      '/api/v1/plugins/marketplace',
+    );
     expect(body.code).toBe(0);
-    const datasource = body.data.entries.find((e) => e.id === 'kimi-datasource');
-    expect(datasource?.source.startsWith('http')).toBe(false);
-    expect(datasource?.source.endsWith(join('plugins', 'official', 'kimi-datasource'))).toBe(true);
-    const webbridge = body.data.entries.find((e) => e.id === 'kimi-webbridge');
-    expect(webbridge?.capabilityId).toBe('kimi-webbridge');
-    const cuSupported = process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64');
-    const cu = body.data.entries.find((e) => e.id === 'kimi-cu');
-    if (!cuSupported) {
-      expect(cu).toBeUndefined();
-      return;
-    }
-    expect(cu?.tier).toBe('official');
-    expect(cu?.capabilityId).toBe('kimi-cu');
-    expect(cu?.source).toBe('capability:kimi-cu');
-    expect(cu?.displayName).toBe('Kimi Computer Use');
+    expect(body.data).toEqual({ configured: false, entries: [] });
+    expect(fetchMock.mock.calls.every(([url]) => String(url).includes('/api/v1/'))).toBe(true);
+  });
 
-    const cuSource = await makePluginDir('kimi-cu', '0.5.8');
-    await call('POST', '/api/v1/plugins', { source: cuSource });
-    const after = await call<{
-      entries: { id: string; installed?: { version?: string; enabled: boolean } }[];
-    }>('GET', '/api/v1/plugins/marketplace');
-    expect(after.body.data.entries.find((e) => e.id === 'kimi-cu')?.installed).toEqual({
-      version: '0.5.8',
-      enabled: true,
+  it('reads [plugins] marketplace_url from config.toml', async () => {
+    await server?.close();
+    await writeFile(join(home!, 'config.toml'), `[plugins]\nmarketplace_url = "${CATALOG_URL}"\n`);
+    vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_URL', undefined as unknown as string);
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home!,
+      logLevel: 'silent',
     });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const { body } = await call<{ configured: boolean; source?: string; entries: { id: string }[] }>(
+      'GET',
+      '/api/v1/plugins/marketplace',
+    );
+    expect(body.code).toBe(0);
+    expect(body.data.configured).toBe(true);
+    expect(body.data.source).toBe(CATALOG_URL);
+    expect(body.data.entries.map((e) => e.id)).toContain('demo-plugin');
+  });
+
+  it('returns plugin info including MCP servers and diagnostics', async () => {
+    const source = await makePluginDir('demo-plugin', '1.0.0');
+    await call('POST', '/api/v1/plugins', { source });
+    const info = await call<{
+      id: string;
+      mcpServers: unknown[];
+      diagnostics: unknown[];
+      root: string;
+      manifest?: { name: string };
+    }>('GET', '/api/v1/plugins/demo-plugin');
+    expect(info.body.code).toBe(0);
+    expect(info.body.data.id).toBe('demo-plugin');
+    expect(info.body.data.mcpServers).toEqual([]);
+    expect(Array.isArray(info.body.data.diagnostics)).toBe(true);
+    expect(info.body.data.manifest?.name).toBe('demo-plugin');
+    const missing = await call('GET', '/api/v1/plugins/nope');
+    expect(missing.body.code).toBe(40419);
   });
 
   it('expands ~ in local catalog paths like the CLI loader', async () => {
