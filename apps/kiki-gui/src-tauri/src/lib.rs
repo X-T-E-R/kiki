@@ -1,5 +1,5 @@
 /**
- * Kiki desktop shell: one user-facing window, an owned Kiki SEA backend,
+ * Kiki desktop shell: one user-facing window, an attach-or-spawn Kiki backend,
  * a system tray icon, close-to-tray, and approval notifications.
  *
  * The bounded shutdown and process-tree fallback follow LiveAgent's managed
@@ -42,6 +42,11 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 use tauri_plugin_updater::UpdaterExt;
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED},
+    System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -63,19 +68,39 @@ const STDERR_TAIL_LINES: usize = 100;
 /// Frontend event carrying a waiting phase or structured recovery failure.
 const BACKEND_STAGE_EVENT: &str = "kiki://desktop-backend-stage";
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopConnection {
     url: String,
     token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 struct InstanceRecord {
+    #[serde(default, alias = "serverId")]
+    server_id: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
     pid: u32,
-    host: String,
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(alias = "startedAt")]
+    started_at: u64,
+    #[serde(default, alias = "heartbeatAt")]
+    heartbeat_at: u64,
+    #[serde(default)]
+    workspaces: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InstanceCandidate {
+    pid: u32,
     port: u16,
     started_at: u64,
+    heartbeat_at: u64,
+    workspaces: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -380,6 +405,7 @@ fn begin_runtime_recovery_transition<T>(
 #[derive(Default)]
 struct BackendState {
     backend: Option<OwnedBackend>,
+    attached: Option<DesktopConnection>,
     recovery: RuntimeRecoveryState,
     /// Bumped every time a fresh connection is published; host-root grants
     /// authorize only under the generation they were issued in.
@@ -404,7 +430,9 @@ struct BackendManager {
 
 impl BackendManager {
     fn has_backend(&self) -> bool {
-        self.inner.lock().is_ok_and(|state| state.backend.is_some())
+        self.inner
+            .lock()
+            .is_ok_and(|state| state.backend.is_some() || state.attached.is_some())
     }
 
     fn connection(&self, app: &AppHandle) -> Result<DesktopConnection, DesktopStartupFailure> {
@@ -429,9 +457,33 @@ impl BackendManager {
         app: &AppHandle,
         recovery_generation: Option<u64>,
     ) -> Result<DesktopConnection, DesktopStartupFailure> {
-        // Locked phase — spawn decision and slot writes only. The readiness
-        // wait below runs outside the lock so a slow cold start cannot block
-        // restart or a concurrent reconnect for up to STARTUP_TIMEOUT.
+        let runtime = resolve_runtime_paths(&read_desktop_prefs_file())?;
+        let current_workspace = env::current_dir().ok();
+
+        let cached = self
+            .inner
+            .lock()
+            .map_err(|_| {
+                DesktopStartupFailure::plain("Kiki backend lifecycle lock was poisoned".to_string())
+            })?
+            .attached
+            .clone();
+        if let Some(connection) = cached {
+            let port = connection_port(&connection)?;
+            if authenticated_server_version(port, &connection.token).is_ok() {
+                return Ok(connection);
+            }
+            self.clear_attached(&connection);
+        }
+
+        if let Some(connection) =
+            discover_running_backend(&runtime.kiki_home, current_workspace.as_deref())?
+        {
+            if let Some(connection) = self.publish_attached(connection) {
+                return Ok(connection);
+            }
+        }
+
         let pending = {
             let mut state = self.inner.lock().map_err(|_| {
                 DesktopStartupFailure::plain("Kiki backend lifecycle lock was poisoned".to_string())
@@ -441,6 +493,9 @@ impl BackendManager {
                 return Err(DesktopStartupFailure::plain(
                     "Kiki backend runtime recovery was cancelled".to_string(),
                 ));
+            }
+            if let Some(connection) = state.attached.as_ref() {
+                return Ok(connection.clone());
             }
             let slot = &mut state.backend;
 
@@ -464,11 +519,7 @@ impl BackendManager {
                     home: backend.home.clone(),
                 },
                 None => {
-                    // Capture the epoch before spawn. A reused PID can make an
-                    // old registry record look live, so PID alone is not
-                    // sufficient to identify the child we just created.
                     let launched_at_ms = unix_epoch_millis()?;
-                    let runtime = resolve_runtime_paths(&read_desktop_prefs_file())?;
                     let home = runtime.kiki_home.clone();
                     let command = app
                         .shell()
@@ -478,9 +529,6 @@ impl BackendManager {
                                 "Cannot resolve the packaged Kiki backend: {error}"
                             ))
                         })?
-                        // `warn` keeps the default silent behavior off so
-                        // startup failures reach stderr (the token-bearing
-                        // ready line stays on stdout, which is never logged).
                         .args(["web", "--no-open", "--port", "0", "--log-level", "warn"])
                         .env("KIMI_CODE_HOME", &runtime.kiki_home)
                         .env("KIKI_DESKTOP_BUNDLED", "1")
@@ -520,7 +568,6 @@ impl BackendManager {
             }
         };
 
-        // Unlocked phase — wait for readiness or early exit.
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         loop {
             if let Some(record) =
@@ -546,7 +593,9 @@ impl BackendManager {
                                 ),
                             ));
                         }
-                        if let Some(connection) = self.publish_connection(&pending, &connection) {
+                        if let Some(connection) =
+                            self.publish_owned_connection(&pending, &connection)
+                        {
                             return Ok(connection);
                         }
                     }
@@ -573,8 +622,33 @@ impl BackendManager {
         }
     }
 
-    /// Publish this launch's connection or return the value a peer published.
-    fn publish_connection(
+    fn clear_attached(&self, connection: &DesktopConnection) {
+        if let Ok(mut state) = self.inner.lock() {
+            if state.attached.as_ref() == Some(connection) {
+                state.attached = None;
+            }
+        }
+    }
+
+    fn publish_attached(&self, connection: DesktopConnection) -> Option<DesktopConnection> {
+        let Ok(mut state) = self.inner.lock() else {
+            return None;
+        };
+        if let Some(connection) = state.attached.as_ref() {
+            return Some(connection.clone());
+        }
+        if state.backend.is_some() {
+            return None;
+        }
+        state.attached = Some(connection.clone());
+        state.generation += 1;
+        if let Ok(mut grants) = self.host_grants.lock() {
+            grants.clear();
+        }
+        Some(connection)
+    }
+
+    fn publish_owned_connection(
         &self,
         pending: &PendingBackend,
         connection: &DesktopConnection,
@@ -597,8 +671,6 @@ impl BackendManager {
         backend.connection = Some(connection.clone());
         backend.ready_at = Some(Instant::now());
         state.generation += 1;
-        // A fresh connection generation invalidates every grant issued under
-        // the previous backend (restart, recovery, or reconnect).
         if let Ok(mut grants) = self.host_grants.lock() {
             grants.clear();
         }
@@ -742,6 +814,7 @@ impl BackendManager {
     fn shutdown(&self) {
         let backend = self.inner.lock().ok().and_then(|mut state| {
             state.recovery.reset();
+            state.attached = None;
             state.backend.take()
         });
         let Some(backend) = backend else {
@@ -2374,55 +2447,170 @@ fn unix_epoch_millis() -> Result<u64, String> {
     u64::try_from(millis).map_err(|_| "Current time does not fit in milliseconds".to_string())
 }
 
+fn read_instance_records(home: &Path) -> Result<Vec<InstanceRecord>, String> {
+    let directories = [
+        home.join("server").join("instances"),
+        home.join("instances"),
+    ];
+    let mut records = Vec::new();
+    for instances in directories {
+        let entries = match fs::read_dir(&instances) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Cannot read Kiki's server registry at {}: {error}",
+                    instances.display()
+                ))
+            }
+        };
+        for entry in entries.flatten() {
+            if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<InstanceRecord>(&raw) else {
+                continue;
+            };
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
 fn find_instance_for_pid(
     home: &Path,
     pid: u32,
     launched_at_ms: u64,
-) -> Result<Option<InstanceRecord>, String> {
-    let instances = home.join("server").join("instances");
-    let entries = match fs::read_dir(&instances) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(format!(
-                "Cannot read Kiki's server registry at {}: {error}",
-                instances.display()
-            ))
-        }
-    };
+) -> Result<Option<InstanceCandidate>, String> {
+    Ok(select_instance_for_pid(
+        read_instance_records(home)?,
+        pid,
+        launched_at_ms,
+    ))
+}
 
-    let mut records = Vec::new();
-    for entry in entries.flatten() {
-        if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
+fn discover_running_backend(
+    home: &Path,
+    current_workspace: Option<&Path>,
+) -> Result<Option<DesktopConnection>, String> {
+    let Some(token) = read_token(home)? else {
+        return Ok(None);
+    };
+    for candidate in
+        rank_instance_candidates(read_instance_records(home)?, current_workspace, pid_alive)
+    {
+        if authenticated_server_version(candidate.port, &token).is_ok() {
+            return Ok(Some(DesktopConnection {
+                url: format!("http://127.0.0.1:{}", candidate.port),
+                token,
+            }));
         }
-        let Ok(raw) = fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let Ok(record) = serde_json::from_str::<InstanceRecord>(&raw) else {
-            continue;
-        };
-        records.push(record);
     }
-    Ok(select_instance_for_pid(records, pid, launched_at_ms))
+    Ok(None)
 }
 
 fn select_instance_for_pid(
     records: impl IntoIterator<Item = InstanceRecord>,
     pid: u32,
     launched_at_ms: u64,
-) -> Option<InstanceRecord> {
+) -> Option<InstanceCandidate> {
     records
         .into_iter()
-        .filter(|record| usable_instance(record, pid, launched_at_ms))
+        .filter_map(instance_candidate)
+        .filter(|record| record.pid == pid && record.started_at >= launched_at_ms)
         .max_by_key(|record| record.started_at)
 }
 
-fn usable_instance(record: &InstanceRecord, pid: u32, launched_at_ms: u64) -> bool {
-    record.pid == pid
-        && record.started_at >= launched_at_ms
-        && is_loopback_host(&record.host)
-        && record.port > 0
+fn rank_instance_candidates(
+    records: impl IntoIterator<Item = InstanceRecord>,
+    current_workspace: Option<&Path>,
+    is_alive: impl Fn(u32) -> bool,
+) -> Vec<InstanceCandidate> {
+    let mut candidates: Vec<_> = records
+        .into_iter()
+        .filter_map(instance_candidate)
+        .filter(|candidate| is_alive(candidate.pid))
+        .collect();
+    candidates.sort_by(|left, right| {
+        workspace_matches(right, current_workspace)
+            .cmp(&workspace_matches(left, current_workspace))
+            .then_with(|| right.heartbeat_at.cmp(&left.heartbeat_at))
+            .then_with(|| right.started_at.cmp(&left.started_at))
+    });
+    candidates
+}
+
+fn instance_candidate(record: InstanceRecord) -> Option<InstanceCandidate> {
+    let port = if let Some(url) = record.url.as_deref() {
+        let url = Url::parse(url).ok()?;
+        if url.scheme() != "http" || !url.host_str().is_some_and(is_loopback_host) {
+            return None;
+        }
+        url.port()?
+    } else {
+        let host = record.host.as_deref()?;
+        if !is_loopback_host(host) {
+            return None;
+        }
+        record.port?
+    };
+    if port == 0 {
+        return None;
+    }
+    Some(InstanceCandidate {
+        pid: record.pid,
+        port,
+        started_at: record.started_at,
+        heartbeat_at: record.heartbeat_at.max(record.started_at),
+        workspaces: record.workspaces,
+    })
+}
+
+fn workspace_matches(candidate: &InstanceCandidate, current_workspace: Option<&Path>) -> bool {
+    let Some(current_workspace) = current_workspace.and_then(Path::to_str) else {
+        return false;
+    };
+    let current_workspace = normalized_workspace(current_workspace);
+    candidate.workspaces.iter().any(|workspace| {
+        let workspace = normalized_workspace(workspace);
+        current_workspace == workspace || current_workspace.starts_with(&format!("{workspace}/"))
+    })
+}
+
+fn normalized_workspace(path: &str) -> String {
+    let normalized = path.replace('\\', "/").trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
+    }
+    unsafe {
+        CloseHandle(handle);
+    }
+    true
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -3560,42 +3748,107 @@ mod tests {
     }
 
     #[test]
-    fn instance_record_requires_exact_pid_loopback_and_bound_port() {
-        let valid: InstanceRecord =
-            serde_json::from_str(r#"{"pid":42,"host":"127.0.0.1","port":43123,"started_at":200}"#)
-                .unwrap();
-        assert_eq!(valid.pid, 42);
-        assert!(usable_instance(&valid, 42, 150));
-        assert!(!usable_instance(&valid, 7, 150));
-        assert!(!usable_instance(&valid, 42, 201));
+    fn instance_record_parses_both_registry_shapes_and_rejects_non_loopback_urls() {
+        let snake: InstanceRecord = serde_json::from_str(
+            r#"{"server_id":"snake","pid":42,"host":"127.0.0.1","port":43123,"started_at":200,"heartbeat_at":250,"workspaces":["C:/workspace"]}"#,
+        )
+        .unwrap();
+        let camel: InstanceRecord = serde_json::from_str(
+            r#"{"serverId":"camel","url":"http://localhost:43124","pid":43,"startedAt":201,"heartbeatAt":251,"version":"0.40.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(instance_candidate(snake).unwrap().port, 43123);
+        assert_eq!(instance_candidate(camel).unwrap().port, 43124);
 
-        let wildcard: InstanceRecord =
-            serde_json::from_str(r#"{"pid":42,"host":"0.0.0.0","port":43123,"started_at":200}"#)
+        let remote: InstanceRecord =
+            serde_json::from_str(r#"{"pid":44,"url":"http://example.test:43125","startedAt":202}"#)
                 .unwrap();
-        assert!(!usable_instance(&wildcard, 42, 150));
-
-        let unbound: InstanceRecord =
-            serde_json::from_str(r#"{"pid":42,"host":"127.0.0.1","port":0,"started_at":200}"#)
-                .unwrap();
-        assert!(!usable_instance(&unbound, 42, 150));
+        assert!(instance_candidate(remote).is_none());
     }
 
     #[test]
-    fn instance_selection_rejects_stale_pid_reuse_and_picks_newest_launch() {
-        let record = |port, started_at| InstanceRecord {
-            pid: 42,
-            host: "127.0.0.1".to_string(),
-            port,
-            started_at,
+    fn instance_selection_prefers_workspace_then_heartbeat_and_filters_liveness() {
+        let record = |pid, port, started_at, heartbeat_at, workspace: &str| {
+            serde_json::from_value::<InstanceRecord>(serde_json::json!({
+                "pid": pid,
+                "host": "127.0.0.1",
+                "port": port,
+                "started_at": started_at,
+                "heartbeat_at": heartbeat_at,
+                "workspaces": [workspace],
+            }))
+            .unwrap()
         };
         let selected = select_instance_for_pid(
-            [record(41000, 100), record(43000, 220), record(42000, 200)],
+            [
+                record(42, 41000, 100, 100, "C:/other"),
+                record(42, 43000, 220, 220, "C:/other"),
+                record(42, 42000, 200, 200, "C:/other"),
+            ],
             42,
             150,
         )
         .expect("a post-launch record should be selected");
         assert_eq!(selected.port, 43000);
-        assert!(select_instance_for_pid([record(41000, 100)], 42, 150).is_none());
+
+        let ranked = rank_instance_candidates(
+            [
+                record(41, 41001, 100, 500, "C:/other"),
+                record(42, 41002, 100, 200, "C:/workspace"),
+                record(43, 41003, 100, 300, "C:/workspace"),
+            ],
+            Some(Path::new("C:/workspace/worktree")),
+            |pid| pid != 43,
+        );
+        assert_eq!(
+            ranked.iter().map(|item| item.port).collect::<Vec<_>>(),
+            vec![41002, 41001]
+        );
+    }
+
+    #[test]
+    fn desktop_connection_token_comes_from_the_home_token_file() {
+        let home = env::temp_dir().join(format!(
+            "kiki-token-test-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("server.token"), "shared-home-token\n").unwrap();
+        assert_eq!(
+            read_token(&home).unwrap().as_deref(),
+            Some("shared-home-token")
+        );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a live daemon configured by the caller"]
+    fn live_daemon_attach_contract() {
+        let home = env::var_os("KIKI_GUI_ATTACH_TEST_HOME")
+            .map(PathBuf::from)
+            .expect("KIKI_GUI_ATTACH_TEST_HOME is required");
+        let expected_url =
+            env::var("KIKI_GUI_ATTACH_TEST_URL").expect("KIKI_GUI_ATTACH_TEST_URL is required");
+        let connection = discover_running_backend(&home, env::current_dir().ok().as_deref())
+            .unwrap()
+            .expect("the live daemon should be discoverable");
+        assert_eq!(connection.url, expected_url);
+        assert_eq!(connection.token, read_token(&home).unwrap().unwrap());
+    }
+
+    #[test]
+    fn shutdown_releases_an_attached_daemon_without_owning_its_process() {
+        let manager = BackendManager::default();
+        manager.inner.lock().unwrap().attached = Some(DesktopConnection {
+            url: "http://127.0.0.1:43123".to_string(),
+            token: "shared-home-token".to_string(),
+        });
+        assert!(manager.has_backend());
+        manager.shutdown();
+        let state = manager.inner.lock().unwrap();
+        assert!(state.attached.is_none());
+        assert!(state.backend.is_none());
     }
 
     #[test]
