@@ -1339,6 +1339,12 @@ async function scenarioSettings() {
   await page.waitForSelector(`text=${S.pluginsCatalogNotes}`, { timeout: 10_000 });
   await page.waitForTimeout(300);
   await shot('settings-plugins-marketplace-catalog');
+  await page.locator('[data-plugin-details-toggle="fixture-plugin"]').click();
+  await page.locator('[data-marketplace-row="catalog-update"]').scrollIntoViewIfNeeded();
+  await page.waitForSelector('[data-marketplace-action="fixture-plugin"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-marketplace-action="catalog-update"]', { timeout: 10_000 });
+  await page.waitForTimeout(200);
+  await shot('settings-plugins-marketplace-states');
   await page.locator('[data-plugin-uninstall="fixture-plugin"]').click();
   await page.waitForSelector('[role="alertdialog"]', { timeout: 10_000 });
   await page.waitForTimeout(200);
