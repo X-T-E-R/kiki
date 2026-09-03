@@ -322,6 +322,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v2/usage",
+    ],
+    [
+      "GET",
       "/asyncapi.json",
     ],
     [
@@ -335,6 +339,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PATCH",
       "/api/v1/workspaces/{workspace_id}",
+    ],
+    [
+      "POST",
+      "/api/klient/call",
     ],
     [
       "POST",
