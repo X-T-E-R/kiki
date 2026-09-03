@@ -1,7 +1,9 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
+import { z } from 'zod';
+
 import type { PromptOrigin } from '#/agent/contextMemory/types';
 import { parseDaemonFileUrl } from '#/agent/media/mediaRef';
-import { Event2 } from '#/app/event/event2';
+import { Event2, registerEvent2Class } from '#/app/event/event2';
 import type { FinishReason } from '#/kosong/contract/provider';
 import type { ContentPart, TextPart } from '#/kosong/contract/message';
 import type { TokenUsage } from '#/kosong/contract/usage';
@@ -120,11 +122,22 @@ export interface TurnStepInterruptedPayload {
   readonly message?: string;
 }
 
+const turnStepInterruptedSchema = z.object({
+  turnId: z.number(),
+  step: z.number(),
+  stepId: z.string().optional(),
+  reason: z.string(),
+  message: z.string().optional(),
+});
+
 export class TurnStepInterrupted extends Event2<TurnStepInterruptedPayload> {
   static override readonly type = 'turn.step.interrupted';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = turnStepInterruptedSchema;
 }
 export interface TurnStepInterrupted extends TurnStepInterruptedPayload {}
+registerEvent2Class(TurnStepInterrupted);
 
 export interface AssistantDeltaPayload {
   readonly turnId: number;

@@ -998,6 +998,90 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('restores durable step interruption reasons and ignores retry progress', () => {
+    const records: TranscriptWireRecord[] = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'turn.step.retrying',
+        turnId: 0,
+        step: 1,
+        stepId: 'step-1',
+        failedAttempt: 1,
+        nextAttempt: 2,
+        maxAttempts: 3,
+        delayMs: 100,
+        errorName: 'Error',
+        errorMessage: 'retry',
+        time: 3_000,
+      },
+      {
+        type: 'turn.step.interrupted',
+        turnId: 0,
+        step: 1,
+        stepId: 'step-1',
+        reason: 'error',
+        message: 'failed permanently',
+        time: 4_000,
+      },
+    ];
+    const withoutRetry = replay(records.filter((record) => record.type !== 'turn.step.retrying'));
+    const withRetry = replay(records);
+
+    expect(withRetry.snapshot()).toEqual(withoutRetry.snapshot());
+    expect(withRetry.getTurn('t0')?.steps[0]).toMatchObject({
+      stepId: 'step-1',
+      state: 'interrupted',
+      endReason: 'error',
+      endMessage: 'failed permanently',
+      endedAt: new Date(4_000).toISOString(),
+    });
+  });
+
+  it('creates a missing interrupted step from a durable record', () => {
+    const store = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'turn.step.interrupted',
+        turnId: 0,
+        step: 1,
+        reason: 'user_cancelled',
+        time: 2_000,
+      },
+    ]);
+
+    expect(store.getTurn('t0')?.steps).toEqual([
+      {
+        kind: 'step',
+        stepId: 't0.1',
+        turnId: 't0',
+        ordinal: 1,
+        state: 'interrupted',
+        frames: [],
+        endedAt: new Date(2_000).toISOString(),
+        endReason: 'user_cancelled',
+      },
+    ]);
+  });
+
   it('pairs turn.steer with the following append_message and anchors the frame on the next step', () => {
     const coldRecords: TranscriptWireRecord[] = [
       {

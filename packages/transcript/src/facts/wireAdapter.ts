@@ -501,6 +501,36 @@ export class TranscriptWireAdapter {
       this.#interactions.set(interactionId, interaction);
       return [{ op: 'interaction.upsert', interaction }];
     }
+    if (record.type === 'turn.step.interrupted') {
+      const turnId = turnIdOf(record['turnId'], this.#currentTurnId);
+      const stepOrdinal = numberOf(record['step']);
+      const reason = stringOf(record['reason']);
+      if (turnId === undefined || stepOrdinal === undefined || reason === undefined) return [];
+      const recordStepId = stringOf(record['stepId']);
+      const existing =
+        (recordStepId === undefined ? undefined : this.#stepHeaders.get(recordStepId)) ??
+        [...this.#stepHeaders.values()].find(
+          (step) => step.turnId === turnId && step.ordinal === stepOrdinal,
+        );
+      const stepId = recordStepId ?? existing?.stepId ?? `${turnId}.${stepOrdinal}`;
+      const step: StepHeader = {
+        kind: 'step',
+        stepId,
+        turnId,
+        ordinal: stepOrdinal,
+        state: 'interrupted',
+        startedAt: existing?.startedAt,
+        endedAt: isoOf(record.time),
+        usage: existing?.usage,
+        finishReason: existing?.finishReason,
+        timing: existing?.timing,
+        endReason: reason,
+        endMessage: stringOf(record['message']),
+      };
+      this.#stepHeaders.set(stepId, step);
+      return [this.ensureTurn(turnId), { op: 'step.upsert', turnId, step }];
+    }
+    if (record.type === 'turn.step.retrying') return [];
     if (
       record.type === 'turn.cancel' &&
       record['target'] === 'active' &&

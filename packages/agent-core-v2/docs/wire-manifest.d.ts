@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (65 record types)
+// Index (67 record types)
 //   config.update                      profile                                                               src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory, turn                                                   src/agent/contextMemory/contextEvents.ts
 //   context.append_message             contextMemory, goalForkNotice, plan, task.notificationDelivery, todo  src/agent/contextMemory/contextEvents.ts
@@ -89,6 +89,8 @@
 //   turn.ended                         turn                                                                  src/agent/loop/turnOps.ts
 //   turn.prompt                        turn                                                                  src/agent/loop/turnOps.ts
 //   turn.steer                         turn                                                                  src/agent/loop/turnOps.ts
+//   turn.step.interrupted              (none)                                                                src/agent/loop/turnEvents.ts
+//   turn.step.retrying                 (none)                                                                src/agent/stepRetry/stepRetryService.ts
 //   usage.record                       usage                                                                 src/agent/usage/usageOps.ts
 
 /**
@@ -946,6 +948,37 @@ interface TurnSteerPayload {
 }
 
 /**
+ * states: (none)
+ * owner: src/agent/loop/turnEvents.ts
+ */
+interface TurnStepInterruptedPayload {
+  _name: 'turn.step.interrupted';
+  turnId: number;
+  step: number;
+  stepId?: string;
+  reason: string;
+  message?: string;
+}
+
+/**
+ * states: (none)
+ * owner: src/agent/stepRetry/stepRetryService.ts
+ */
+interface TurnStepRetryingPayload {
+  _name: 'turn.step.retrying';
+  turnId: number;
+  step: number;
+  stepId?: string;
+  failedAttempt: number;
+  nextAttempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  errorName: string;
+  errorMessage: string;
+  statusCode?: number;
+}
+
+/**
  * states: usage
  * owner: src/agent/usage/usageOps.ts
  */
@@ -1036,5 +1069,7 @@ interface WirePayloadMap {
   "turn.ended": TurnEndedPayload;
   "turn.prompt": TurnPromptPayload;
   "turn.steer": TurnSteerPayload;
+  "turn.step.interrupted": TurnStepInterruptedPayload;
+  "turn.step.retrying": TurnStepRetryingPayload;
   "usage.record": UsageRecordPayload;
 }
