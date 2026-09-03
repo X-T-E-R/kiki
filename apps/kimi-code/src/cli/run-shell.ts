@@ -2,18 +2,14 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  createKimiHarness,
-  flushDiagnosticLogsSync,
-  log,
-  type KimiHarnessOptions,
-} from '@moonshot-ai/kimi-code-sdk';
+import { flushDiagnosticLogsSync, log } from '@moonshot-ai/kimi-code-sdk';
 
 import { CLI_UI_MODE } from '#/constant/app';
 import type { TuiConfig } from '#/tui/config';
 import { loadTuiConfig, TuiConfigParseError } from '#/tui/config';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
-import { KimiTUI } from '#/tui/index';
+import { DaemonTUI } from '#/tui/daemon/daemon-tui';
+import { discoverDaemon, ensureDaemon, resolveDaemonHome } from '#/tui/daemon/discovery';
 import { startupTrace } from '#/utils/startup-trace';
 import { currentTheme, getColorPalette } from '#/tui/theme';
 import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
@@ -22,7 +18,6 @@ import { resolveCommandPath } from '#/utils/process/resolve-command';
 
 import type { CLIOptions } from './options';
 import { resolveAgentProfileSelection } from './agent-selection';
-import { createKimiCodeHostIdentity } from './version';
 
 export async function runShell(opts: CLIOptions, version: string): Promise<void> {
   let tuiConfig: TuiConfig;
@@ -40,12 +35,6 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   currentTheme.setPalette(palette);
 
   const workDir = process.cwd();
-  const harnessOptions: KimiHarnessOptions = {
-    identity: createKimiCodeHostIdentity(version),
-    skillDirs: opts.skillsDirs,
-  };
-  const harness = createKimiHarness(harnessOptions);
-  startupTrace('harness:created');
   log.info('kimi-code starting', {
     version,
     uiMode: CLI_UI_MODE,
@@ -54,13 +43,22 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     workDir,
   });
 
-  await harness.ensureConfigFile();
-  await harness.getConfig();
-  startupTrace('config:loaded');
-  // Resolve --agent/--agent-file once for the startup session; validateOptions
-  // has already rejected them alongside --session/--continue.
+  const homeDir = resolveDaemonHome();
+  const discovered = await discoverDaemon(homeDir, workDir);
+  const commandPath = discovered === null ? resolveCommandPath('kimi', workDir) : undefined;
+  if (discovered === null && commandPath === undefined) {
+    throw new Error('Cannot resolve the kimi executable required to start the daemon.');
+  }
+  const connection =
+    discovered ??
+    (await ensureDaemon({
+      homeDir,
+      workspacePath: workDir,
+      commandPath: commandPath!,
+    }));
+  startupTrace('daemon:connected');
   const agentProfile = await resolveAgentProfileSelection(opts, workDir);
-  const tui = new KimiTUI(harness, {
+  const tui = new DaemonTUI(connection, {
     cliOptions: opts,
     agentProfile,
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
@@ -68,9 +66,6 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     version,
     workDir,
     startupNotice: configWarning,
-    // Constant since the v1 engine was removed. The TUI still branches on it in
-    // ~20 places; those branches are dead and get deleted with the flag itself.
-    engineV2: true,
   });
 
   let savedStty: string | undefined;
@@ -177,7 +172,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     startupTrace('tui.start:end');
   } catch (error) {
     removeCrashHandlers();
-    await harness.close();
+    await tui.close();
     throw error;
   }
 }

@@ -3,6 +3,7 @@ import { createKlient } from '@moonshot-ai/klient/http';
 import type {
   ApprovalResolveRequest,
   ApprovalResolveResult,
+  PageResponse,
   PromptAbortResponse,
   PromptReplaceRequest,
   PromptReplaceResult,
@@ -41,6 +42,15 @@ export interface DaemonClientOptions extends DaemonConnection {
   readonly klient?: Klient;
 }
 
+export interface DaemonSessionSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly lastPrompt: string | undefined;
+  readonly cwd: string;
+  readonly updatedAt: number;
+  readonly custom: Readonly<Record<string, unknown>>;
+}
+
 export class DaemonClient implements SessionTransport {
   readonly klient: Klient;
   private readonly url: string;
@@ -60,8 +70,21 @@ export class DaemonClient implements SessionTransport {
       });
   }
 
-  listSessions(limit = 100) {
-    return this.klient.global.sessions.list({ limit });
+  async listSessions(limit = 100): Promise<PageResponse<DaemonSessionSummary>> {
+    const page = await this.request<PageResponse<Session>>('GET', '/sessions', undefined, {
+      page_size: limit,
+    });
+    return {
+      items: page.items.map((session) => ({
+        id: session.id,
+        title: session.title,
+        lastPrompt: session.last_prompt,
+        cwd: session.metadata.cwd,
+        updatedAt: Date.parse(session.updated_at),
+        custom: session.metadata,
+      })),
+      has_more: page.has_more,
+    };
   }
 
   async createSession(input: {
@@ -86,22 +109,6 @@ export class DaemonClient implements SessionTransport {
 
   runCommand(sessionId: string, name: string, args?: string) {
     return this.klient.session(sessionId).agent('main').runCommand({ name, args });
-  }
-
-  listInteractions(sessionId: string) {
-    return this.klient.session(sessionId).interactions.list();
-  }
-
-  respondInteraction(sessionId: string, interactionId: string, response: unknown) {
-    return this.klient.session(sessionId).interactions.respond(interactionId, response);
-  }
-
-  acquireInteractionConsumer(sessionId: string, consumerId: string) {
-    return this.klient.session(sessionId).interactions.acquireConsumer(consumerId);
-  }
-
-  releaseInteractionConsumer(sessionId: string, consumerId: string) {
-    return this.klient.session(sessionId).interactions.releaseConsumer(consumerId);
   }
 
   snapshot(sessionId: string, options?: { readonly transcript?: boolean }): Promise<SessionSnapshotResponse> {

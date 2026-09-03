@@ -164,7 +164,12 @@ export class DaemonSocket implements SessionSocket {
   }
 
   private handleMessage(raw: string, generation: number): void {
-    const message = JSON.parse(raw) as WireMessage;
+    let message: WireMessage;
+    try {
+      message = JSON.parse(raw) as WireMessage;
+    } catch {
+      return;
+    }
     switch (message.type) {
       case 'server_hello':
         this.reconnectAttempt = 0;
@@ -197,9 +202,9 @@ export class DaemonSocket implements SessionSocket {
       case 'transcript.ops': {
         const parsed =
           message.type === 'transcript.reset'
-            ? transcriptResetEventSchema.parse(message.payload)
-            : transcriptOpsEventSchema.parse(message.payload);
-        this.events.onTranscript(parsed, generation);
+            ? transcriptResetEventSchema.safeParse(message.payload)
+            : transcriptOpsEventSchema.safeParse(message.payload);
+        if (parsed.success) this.events.onTranscript(parsed.data, generation);
         return;
       }
       case 'resync_required':

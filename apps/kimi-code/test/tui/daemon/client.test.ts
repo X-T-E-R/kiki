@@ -26,9 +26,8 @@ function fakeKlient() {
 }
 
 describe('DaemonClient', () => {
-  it('uses klient http facades for lifecycle, commands, and interactions', async () => {
+  it('uses klient http facades for creation and agent commands', async () => {
     const fake = fakeKlient();
-    fake.sessions.list.mockResolvedValue({ items: [], next: undefined });
     fake.sessions.create.mockResolvedValue({ id: 'session-1' });
     const client = new DaemonClient({
       url: 'http://127.0.0.1:57580',
@@ -36,24 +35,60 @@ describe('DaemonClient', () => {
       klient: fake.klient as never,
     });
 
-    await client.listSessions(25);
     await client.createSession({ workDir: 'C:\\repo' });
     await client.setModel('session-1', 'kimi-k2');
     await client.setPermission('session-1', 'auto');
     await client.runCommand('session-1', 'status');
-    await client.acquireInteractionConsumer('session-1', 'tui-1');
-    await client.listInteractions('session-1');
-    await client.respondInteraction('session-1', 'interaction-1', { decision: 'approved' });
 
-    expect(fake.sessions.list).toHaveBeenCalledWith({ limit: 25 });
     expect(fake.sessions.create).toHaveBeenCalledWith({ workDir: 'C:\\repo' });
     expect(fake.agent.setModel).toHaveBeenCalledWith('kimi-k2');
     expect(fake.agent.setPermission).toHaveBeenCalledWith('auto');
     expect(fake.agent.runCommand).toHaveBeenCalledWith({ name: 'status', args: undefined });
-    expect(fake.interactions.acquireConsumer).toHaveBeenCalledWith('tui-1');
-    expect(fake.interactions.respond).toHaveBeenCalledWith('interaction-1', {
-      decision: 'approved',
+  });
+
+  it('lists daemon sessions through authenticated kap-server REST', async () => {
+    const fake = fakeKlient();
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
+      json: async () => ({
+        code: 0,
+        msg: 'ok',
+        data: {
+          items: [
+            {
+              id: 'session-1',
+              title: 'Example',
+              last_prompt: 'Hello',
+              metadata: { cwd: 'C:\\repo' },
+              updated_at: '2026-01-02T00:00:00.000Z',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    }) as Response);
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580',
+      token: 'secret',
+      fetch: fetch as typeof globalThis.fetch,
+      klient: fake.klient as never,
     });
+
+    await expect(client.listSessions(25)).resolves.toEqual({
+      items: [
+        {
+          id: 'session-1',
+          title: 'Example',
+          lastPrompt: 'Hello',
+          cwd: 'C:\\repo',
+          updatedAt: Date.parse('2026-01-02T00:00:00.000Z'),
+          custom: { cwd: 'C:\\repo' },
+        },
+      ],
+      has_more: false,
+    });
+    expect(String(fetch.mock.calls[0]?.[0])).toBe(
+      'http://127.0.0.1:57580/api/v1/sessions?page_size=25',
+    );
   });
 
   it('loads transcript snapshots through authenticated kap-server REST', async () => {
