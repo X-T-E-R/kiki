@@ -21,6 +21,7 @@ export {
   HEARTBEAT_INTERVAL_MS,
 } from './instanceRegistry';
 export { createKikiMcpServer, kikiMcpConfigFromEnv } from './mcp/server';
+export { runKikiMcpStdio } from './mcp/stdioServer';
 export type { KikiMcpConfig, KikiMcpServerOptions } from './mcp/server';
 export type {
   IInstanceRegistry,

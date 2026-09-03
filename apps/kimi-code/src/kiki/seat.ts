@@ -78,17 +78,24 @@ export async function createSeat(input: {
 }): Promise<SeatConnection> {
   const workspace = resolve(input.workspace);
   const connection = await ensureServer({ homeDir: getDataDir(), workspace });
+  return createSeatOnConnection(connection, { ...input, workspace });
+}
+
+export function createSeatOnConnection(
+  connection: ServerConnection,
+  input: {
+    readonly workspace: string;
+    readonly principal: string;
+    readonly mode?: SeatMode;
+    readonly model?: string;
+    readonly thinking?: string;
+  },
+): Promise<SeatConnection> {
   return daemonRequest<SeatConnection>(
     connection,
     'POST',
     '/api/v2/external-delegation/seats',
-    {
-      workspace,
-      principal: input.principal,
-      mode: input.mode,
-      model: input.model,
-      thinking: input.thinking,
-    },
+    input,
   );
 }
 
