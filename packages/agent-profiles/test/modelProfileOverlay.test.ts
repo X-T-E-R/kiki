@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentModelProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type { AgentModelProfile } from '#/agentProfile';
 import {
   applyMatchedModelProfilePrompt,
   applyModelProfilePromptDelta,
   declaresModelProfilePrompt,
   resolveModelProfileEntry,
-} from '#/app/agentProfileCatalog/modelProfileOverlay';
+} from '#/modelProfileOverlay';
 
 const ENTRIES: readonly AgentModelProfile[] = [
   {

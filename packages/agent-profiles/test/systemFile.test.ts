@@ -8,16 +8,14 @@ import {
   DEFAULT_AGENT_PROFILE_NAME,
   normalizeAgentProfile,
   type AgentProfile,
-} from '#/app/agentProfileCatalog/agentProfileCatalog';
+} from '#/agentProfile';
+import type { HostFs } from '#/hostFs';
 import {
   SYSTEM_MD_FILENAME,
   loadSystemMdProfile,
-} from '#/workspace/workspaceAgentProfileLoader/internal/systemFile';
-import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
-import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
-import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
+} from '#/systemFile';
 
-const hostFs = new HostFileSystem();
+import { HostFsError, nodeHostFs as hostFs, OsFsErrors } from './nodeHostFs';
 
 const BUILTIN_DEFAULT: AgentProfile = normalizeAgentProfile({
   name: DEFAULT_AGENT_PROFILE_NAME,
@@ -36,7 +34,7 @@ describe('loadSystemMdProfile', () => {
   let home: string;
 
   function loadProfile(
-    fs: IHostFileSystem,
+    fs: HostFs,
     builtinDefault: AgentProfile,
     warn: (message: string) => void,
   ) {
@@ -67,10 +65,10 @@ describe('loadSystemMdProfile', () => {
     const unreadableFs = {
       realpath: async (p: string) => p,
       stat: async () => ({ isFile: true }),
-      readText: async () => {
+      readFile: async () => {
         throw new Error('disk gone');
       },
-    } as unknown as IHostFileSystem;
+    } as unknown as HostFs;
     const { warnings, warn } = collectWarnings();
 
     expect(await loadProfile(unreadableFs, BUILTIN_DEFAULT, warn)).toBeUndefined();
@@ -86,7 +84,7 @@ describe('loadSystemMdProfile', () => {
           'realpath failed: permission denied',
         );
       },
-    } as unknown as IHostFileSystem;
+    } as unknown as HostFs;
     const { warnings, warn } = collectWarnings();
 
     expect(await loadProfile(unreadableFs, BUILTIN_DEFAULT, warn)).toBeUndefined();
@@ -191,7 +189,7 @@ describe('loadSystemMdProfile', () => {
     expect(profile?.description).toBe('upgraded default');
     expect(profile?.tools).toEqual(['Read']);
     expect(profile?.disallowedTools).toEqual(['Write']);
-    expect(profile?.promptPrefix).toBeUndefined();
+    expect(Object.hasOwn(profile ?? {}, 'promptPrefix')).toBe(false);
     expect(profile?.summaryPolicy).toBeUndefined();
     expect(profile?.systemPrompt({})).toBe('UPGRADED BUILTIN PROMPT');
     expect(warnings.some((message) => message.includes('name "other"'))).toBe(true);
