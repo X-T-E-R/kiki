@@ -709,6 +709,7 @@ export class KikiClient {
       signal?: AbortSignal;
       timeout?: boolean;
       apiVersion?: ApiVersion;
+      allowMissingRoute?: boolean;
     } = {},
   ): Promise<T> {
     const url = new URL(joinUrl(this.baseUrl, path, options.apiVersion));
@@ -750,6 +751,9 @@ export class KikiClient {
               : 'network error',
           data: null,
         });
+      }
+      if (response.status === 404 && options.allowMissingRoute === true) {
+        return undefined as T;
       }
 
       let envelope: Envelope<unknown>;
@@ -793,6 +797,10 @@ export class KikiClient {
 
   meta(): Promise<MetaResponse & { experimental_flags?: Record<string, boolean> }> {
     return this.request<MetaResponse & { experimental_flags?: Record<string, boolean> }>('GET', '/meta');
+  }
+
+  renewLease(body: { readonly clientId: string; readonly kind: 'gui' }): Promise<void> {
+    return this.request<void>('POST', '/leases', { body, allowMissingRoute: true });
   }
 
   listSessions(query: ListSessionsOptions = {}): Promise<PageResponse<Session>> {
