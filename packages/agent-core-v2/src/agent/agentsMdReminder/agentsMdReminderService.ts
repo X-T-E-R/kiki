@@ -6,9 +6,16 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { IBashParserService } from '#/app/bashParser/bashParser';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IEventBus } from '#/app/event/eventBus';
 import type { AgentsMdReminderShownEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import {
+  ContextApplyCompaction,
+  ContextClear,
+} from '#/agent/contextMemory/contextEvents';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { ContextUndone } from '#/agent/undo/undoService';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { normalizeUserPath } from '#/tool/path-access';
 import {
@@ -55,8 +62,16 @@ export class AgentAgentsMdReminderService
 {
   declare readonly _serviceBrand: undefined;
 
+  private readonly remindQueue = new Set<string>();
+  private readonly reminded = new Set<string>();
+  private readonly readRecently = new Set<string>();
+  private readonly claimed = new Set<string>();
+  private readonly telemetryFired = new Set<string>();
+
   constructor(
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
+    @IAgentLoopService loop: IAgentLoopService,
+    @IEventBus eventBus: IEventBus,
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
     @IAgentStateService private readonly states: IAgentStateService,
     @ISessionContext private readonly sessionContext: ISessionContext,
@@ -81,6 +96,15 @@ export class AgentAgentsMdReminderService
         await next();
       }),
     );
+    this._register(
+      loop.hooks.onWillBeginStep.register('agentsMdReminder', async (_ctx, next) => {
+        await this.flushReminderQueue();
+        await next();
+      }),
+    );
+    this._register(eventBus.subscribe(ContextApplyCompaction, () => this.reminded.clear()));
+    this._register(eventBus.subscribe(ContextClear, () => this.reminded.clear()));
+    this._register(eventBus.subscribe(ContextUndone, () => this.reminded.clear()));
     const handler = async (ctx: ToolDidExecuteContext, next: () => Promise<void>): Promise<void> => {
       await this.probeAndRemind(ctx);
       await next();
@@ -96,10 +120,36 @@ export class AgentAgentsMdReminderService
     this.states.set(agentsMdReminderSeededKey, true);
   }
 
-  private readonly claimed = new Set<string>();
-
   private get known(): Set<string> {
     return this.states.get(agentsMdReminderKnownKey);
+  }
+
+  private async flushReminderQueue(): Promise<void> {
+    const readRecently = new Set(this.readRecently);
+    this.readRecently.clear();
+    const queued = [...this.remindQueue].filter(
+      (path) => !this.known.has(path) && !this.reminded.has(path) && !readRecently.has(path),
+    );
+    this.remindQueue.clear();
+    if (queued.length === 0) return;
+    const lease = this.runtime.acquire(['fs']);
+    const paths: string[] = [];
+    try {
+      for (const path of queued) {
+        try {
+          const stat = await lease.runtime.fs!.stat(path);
+          if (stat.isFile && stat.size > 0) paths.push(path);
+        } catch {}
+      }
+    } finally {
+      lease.dispose();
+    }
+    if (paths.length === 0) return;
+    this.reminders.appendSystemReminder(reminderText(paths), {
+      kind: 'injection',
+      variant: 'agents_md',
+    });
+    for (const path of paths) this.reminded.add(path);
   }
 
   private get agentCwd(): string {
@@ -131,37 +181,39 @@ export class AgentAgentsMdReminderService
       const selfKnownSet = new Set(selfKnown);
       for (const dir of dirs) {
         for (const path of await this.probeDir(dir)) {
-          if (this.known.has(path) || this.claimed.has(path) || selfKnownSet.has(path)) continue;
+          if (
+            this.known.has(path) ||
+            this.reminded.has(path) ||
+            this.remindQueue.has(path) ||
+            this.claimed.has(path) ||
+            selfKnownSet.has(path)
+          ) {
+            continue;
+          }
           this.claimed.add(path);
           discovered.push(path);
         }
       }
-      if (discovered.length === 0) {
-        this.publishKnown(selfKnown);
-        return;
+      for (const path of selfKnown) {
+        this.remindQueue.delete(path);
+        this.readRecently.add(path);
       }
-      const properties: AgentsMdReminderShownEvent = {
-        turn_id: ctx.turnId,
-        tool_name: ctx.toolCall.name,
-        reminded_count: discovered.length,
-        trace_id: ctx.trace?.traceId,
-      };
-      this.telemetry.track2('agents_md_reminder_shown', properties);
-      this.reminders.appendSystemReminder(reminderText(discovered), {
-        kind: 'injection',
-        variant: 'agents_md',
-      });
-      this.publishKnown([...selfKnown, ...discovered]);
+      if (discovered.length === 0) return;
+      const untracked = discovered.filter((path) => !this.telemetryFired.has(path));
+      if (untracked.length > 0) {
+        const properties: AgentsMdReminderShownEvent = {
+          turn_id: ctx.turnId,
+          tool_name: ctx.toolCall.name,
+          reminded_count: untracked.length,
+          trace_id: ctx.trace?.traceId,
+        };
+        this.telemetry.track2('agents_md_reminder_shown', properties);
+        for (const path of untracked) this.telemetryFired.add(path);
+      }
+      for (const path of discovered) this.remindQueue.add(path);
     } catch {} finally {
       for (const path of discovered) this.claimed.delete(path);
     }
-  }
-
-  private publishKnown(paths: readonly string[]): void {
-    if (paths.length === 0) return;
-    const merged = new Set(this.known);
-    for (const path of paths) merged.add(path);
-    this.states.set(agentsMdReminderKnownKey, merged);
   }
 
   private targetDirs(ctx: ToolDidExecuteContext): { dirs: string[]; selfKnown: string[] } {
@@ -312,9 +364,9 @@ function stringArg(args: unknown, key: string): string | undefined {
 
 function reminderText(paths: readonly string[]): string {
   return (
-    'The path(s) touched by a recent tool call are covered by AGENTS.md instruction file(s) that were not part of the injected instructions:\n' +
+    'The following AGENTS.md file(s) apply to paths accessed by your recent tool call, but were not included in your system prompt:\n' +
     paths.map((path) => `- ${path}`).join('\n') +
-    '\nRead them before making changes in those directories. Each file is suggested at most once per agent.'
+    '\nRead them before making changes in those directories.'
   );
 }
 
