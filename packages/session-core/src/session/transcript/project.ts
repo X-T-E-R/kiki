@@ -1834,6 +1834,9 @@ export function agentTranscriptToBlocks(
       projectedTurnPrompt = promptBlocks.some((block) => block.kind === 'user');
       blocks.push(...promptBlocks);
     }
+    const lastAssistantFrameId = item.steps
+      .flatMap((step) => step.frames)
+      .findLast((frame) => frame.kind === 'text' && frame.role === 'assistant')?.frameId;
     for (const step of item.steps) {
       let lastTextFrameId: string | undefined;
       let lastThinkingFrameId: string | undefined;
@@ -1892,6 +1895,8 @@ export function agentTranscriptToBlocks(
                 id: `agent-frame-${frame.frameId}`,
                 text: frame.text,
                 streaming: isLiveStreamingFrame(item, step, frame, lastTextFrameId, phase),
+                stopped:
+                  'state' in item && item.state === 'cancelled' && frame.frameId === lastAssistantFrameId,
                 createdAt: step.endedAt ?? item.endedAt,
                 turnId: item.turnId,
                 messageId,

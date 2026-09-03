@@ -1616,6 +1616,75 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('deduplicates a projected task notification from its legacy context message', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'Run the fixture suite in the background.' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_000,
+      },
+      {
+        type: 'task.notified',
+        notificationType: 'task.completed',
+        title: 'Background process completed',
+        body: 'pnpm test — 42 passed',
+        severity: 'info',
+        sourceKind: 'background_task',
+        sourceId: 'task-1',
+        time: 4_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'notification-message',
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: '<notification id="task:task-1:completed" category="task" type="task.completed" source_kind="background_task" source_id="task-1">\nTitle: Background process completed\npnpm test — 42 passed\n</notification>',
+            },
+          ],
+          toolCalls: [],
+          origin: {
+            kind: 'task',
+            taskId: 'task-1',
+            status: 'completed',
+            notificationId: 'task:task-1:completed',
+          },
+        },
+        time: 4_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 5_000,
+      },
+    ]);
+
+    expect(transcript.getTurn('t1')).toBeUndefined();
+    expect(transcript.getTurn('t0')?.steps[1]?.frames).toEqual([
+      expect.objectContaining({
+        frameId: 'task-notified:task-1',
+        role: 'user',
+        taskId: 'task-1',
+        text: 'Background process completed\npnpm test — 42 passed',
+      }),
+    ]);
+  });
+
   it('projects forward-compatible task notifications and subagent lifecycle records', () => {
     const transcript = replay([
       {

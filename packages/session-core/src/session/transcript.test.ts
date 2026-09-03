@@ -136,6 +136,26 @@ describe('classifyTranscriptText', () => {
       }),
     ).toMatchObject({ lane: 'you', text: 'Inspect the renderer' });
   });
+
+  it('keeps task notification envelopes off the user lane', () => {
+    const notification =
+      '<notification id="task:task-2:completed" category="task" type="task.completed" source_kind="background_task" source_id="task-2">\n' +
+      'Title: Background agent completed\nreview finished\n</notification>';
+    expect(
+      classifyTranscriptText({ text: notification, role: 'user', origin: { kind: 'user' } }),
+    ).toMatchObject({
+      lane: 'system',
+      systemVariant: 'task',
+      text: 'Title: Background agent completed\nreview finished',
+    });
+    expect(
+      classifyTranscriptText({
+        text: '<notification category="product">ordinary user text</notification>',
+        role: 'user',
+        origin: { kind: 'user' },
+      }).lane,
+    ).toBe('you');
+  });
 });
 
 describe('message-closure anchors', () => {
@@ -3212,6 +3232,60 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       variant: 'task',
       text: 'nightly finished',
     });
+  });
+
+  it('marks only the final assistant frame of a cancelled turn as stopped', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't-cancelled',
+            ordinal: 1,
+            state: 'cancelled',
+            origin: { kind: 'user' },
+            prompt: 'Abort me mid-stream.',
+            startedAt: FIXED_AT,
+            endedAt: FIXED_AT_1,
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't-cancelled.1',
+                turnId: 't-cancelled',
+                ordinal: 1,
+                state: 'interrupted',
+                frames: [
+                  { kind: 'text', frameId: 'text-1', role: 'assistant', text: 'first' },
+                ],
+              },
+              {
+                kind: 'step',
+                stepId: 't-cancelled.2',
+                turnId: 't-cancelled',
+                ordinal: 2,
+                state: 'interrupted',
+                frames: [
+                  {
+                    kind: 'text',
+                    frameId: 'text-2',
+                    role: 'assistant',
+                    text: 'half-finished sentence',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const assistant = projected.blocks.filter(
+      (block): block is AssistantBlock => block.kind === 'assistant',
+    );
+    expect(assistant).toHaveLength(2);
+    expect(assistant[0]?.stopped).toBe(false);
+    expect(assistant[1]?.stopped).toBe(true);
   });
 });
 

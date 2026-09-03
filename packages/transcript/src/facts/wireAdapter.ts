@@ -61,6 +61,7 @@ export class TranscriptWireAdapter {
   readonly #steeredMessageIds = new Set<string>();
   readonly #pendingSteers = new Map<string, PendingSteer[]>();
   readonly #pendingTaskNotifications = new Map<string, TranscriptWireRecord[]>();
+  readonly #projectedTaskNotificationIds = new Set<string>();
   readonly #unpairedSteerCredits = new Map<string, Map<string, number>>();
   readonly #executions = new Map<string, TranscriptTurnExecution>();
   #goal: GoalMeta | undefined;
@@ -329,6 +330,8 @@ export class TranscriptWireAdapter {
       ) {
         return [];
       }
+      const notificationId = taskNotificationIdOfRecord(record);
+      if (notificationId !== undefined) this.#projectedTaskNotificationIds.add(notificationId);
       const stepRef = this.#steps.get(turnId);
       const step = stepRef === undefined ? undefined : this.#stepHeaders.get(stepRef.stepId);
       if (step?.state === 'running') {
@@ -772,6 +775,13 @@ export class TranscriptWireAdapter {
     if (role === 'user') {
       if (messageId === this.#currentPromptId) return [];
       const origin = objectOf(message['origin']);
+      const notificationId = taskNotificationIdOfMessage(message);
+      if (
+        notificationId !== undefined &&
+        this.#projectedTaskNotificationIds.delete(notificationId)
+      ) {
+        return [];
+      }
       if (this.consumeSteeredUserMessage(messageId, origin)) return [];
       if (stringOf(origin?.['kind']) === 'injection') return this.legacyInjectedMessage(message, ordinal);
       const turnOrdinal = this.#legacyTurnOrdinal++;
@@ -1435,6 +1445,33 @@ function projectWireQuestionRequest(
       };
     }),
   };
+}
+
+function taskNotificationId(sourceId: string, type: string): string | undefined {
+  const status = type.startsWith('task.') ? type.slice('task.'.length) : type;
+  return status === '' ? undefined : `task:${sourceId}:${status}`;
+}
+
+function taskNotificationIdOfRecord(record: TranscriptWireRecord): string | undefined {
+  const sourceId = stringOf(record['sourceId']);
+  const type = stringOf(record['notificationType']);
+  return sourceId === undefined || type === undefined ? undefined : taskNotificationId(sourceId, type);
+}
+
+function taskNotificationIdOfMessage(
+  message: Readonly<Record<string, unknown>>,
+): string | undefined {
+  const origin = objectOf(message['origin']);
+  const kind = stringOf(origin?.['kind']);
+  if (kind === 'task' || kind === 'background_task') {
+    const explicit = stringOf(origin?.['notificationId']);
+    if (explicit !== undefined) return explicit;
+    const taskId = stringOf(origin?.['taskId']);
+    const status = stringOf(origin?.['status']);
+    if (taskId !== undefined && status !== undefined) return taskNotificationId(taskId, status);
+  }
+  const text = arrayOf(message['content']).map(textOfPart).join('');
+  return /<notification\b[^>]*\bid=["'](task:[^"']+)["']/i.exec(text)?.[1];
 }
 
 function legacyOriginKind(origin: unknown): string {
