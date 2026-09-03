@@ -46,7 +46,7 @@ describe('HostFileSystem stat / lstat', () => {
     expect((await fs.lstat(link)).isDirectory).toBe(false);
   });
 
-  it.skipIf(windowsSymlinksUnavailable)('stat rejects a dangling symlink while lstat still stats the link', async () => {
+  it('stat rejects a dangling symlink while lstat still stats the link', async () => {
     const link = join(dir, 'dangling');
     await symlinkDir(join(dir, 'missing'), link);
 
