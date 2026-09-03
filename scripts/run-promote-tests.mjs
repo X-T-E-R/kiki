@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 const commands = [
   ['exec', 'vitest', 'run', '--project=!kap-server'],
   ['-C', 'packages/kap-server', 'run', 'test:fast'],
+  ['-C', 'packages/kap-server', 'run', 'test:mcp-bin-smoke'],
   ['-C', 'packages/pi-tui', 'test'],
 ];
 

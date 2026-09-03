@@ -458,12 +458,13 @@ describe('SessionEventBroadcaster', () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  it('projects queued and replaced prompt variants into the AsyncAPI session event schema', () => {
+  it('projects supported event variants into the AsyncAPI session event schema', () => {
     const document = createAsyncApiDocument();
     const messages = (document['components'] as { messages: Record<string, unknown> }).messages;
     const sessionEvent = JSON.stringify(messages['session_event']);
     expect(sessionEvent).toContain('prompt.queued');
     expect(sessionEvent).toContain('prompt.replaced');
+    expect(sessionEvent).not.toContain('event.di.unit_changed');
   });
 
   it('preserves a real Event2 time in payload and derives the envelope timestamp from it', async () => {
