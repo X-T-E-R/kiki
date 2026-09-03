@@ -83,6 +83,7 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 
 const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
+let vscodeConversationSequence = 0;
 
 /** The effort visible in the select is also the value submitted on send. */
 export function resolveSelectedEffort(
@@ -294,7 +295,13 @@ export function Composer({
   autoFocus?: boolean;
 }) {
   const host = useHost();
-  const vscodeConversationId = useRef(sessionId ?? crypto.randomUUID()).current;
+  const vscodeRuntime = isVscodeWebview();
+  const vscodeConversationKeyRef = useRef<string | undefined>(undefined);
+  if (vscodeRuntime && vscodeConversationKeyRef.current === undefined) {
+    vscodeConversationSequence += 1;
+    vscodeConversationKeyRef.current = `vscode-conversation-${vscodeConversationSequence}`;
+  }
+  const vscodeConversationId = sessionId ?? vscodeConversationKeyRef.current;
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useNavigate();

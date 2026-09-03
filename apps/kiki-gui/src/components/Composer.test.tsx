@@ -11,9 +11,11 @@ import type { NamedAgentProfile } from '../lib/client';
 import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '../lib/drafts';
 import { Composer } from './Composer';
 
-const { selectFilesNative, desktopRuntime } = vi.hoisted(() => ({
+const { selectFilesNative, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   selectFilesNative: vi.fn(),
   desktopRuntime: { value: false },
+  vscodeRuntime: { value: false },
+  preparePrompt: vi.fn(async (content: string) => content),
 }));
 const listModels = vi.fn();
 const listSessionSkills = vi.fn();
@@ -38,6 +40,10 @@ vi.mock('../host', () => ({
       ? { kind: 'tauri', pickFiles: selectFilesNative }
       : { kind: 'browser' },
 }));
+vi.mock('../host/vscode', () => ({
+  isVscodeWebview: () => vscodeRuntime.value,
+  vscodeHost: { preparePrompt },
+}));
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -57,6 +63,8 @@ beforeEach(() => {
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
   selectFilesNative.mockReset();
   desktopRuntime.value = false;
+  vscodeRuntime.value = false;
+  preparePrompt.mockReset().mockImplementation(async (content: string) => content);
   listNamedAgentProfiles.mockReset().mockResolvedValue({
     items: [
       {
@@ -180,6 +188,16 @@ async function openPlanPanel(container: HTMLDivElement): Promise<HTMLButtonEleme
   await click(trigger);
   return trigger;
 }
+
+describe('Composer host compatibility', () => {
+  it('renders a new-session composer without Web Crypto randomUUID', async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal('crypto', { ...originalCrypto, randomUUID: undefined });
+
+    await expect(renderComposer({ sessionId: undefined })).resolves.toBeDefined();
+    vi.stubGlobal('crypto', originalCrypto);
+  });
+});
 
 describe('Composer agent profile picker', () => {
   it('renders the bound profile without a main suffix and lists only main profiles', async () => {
