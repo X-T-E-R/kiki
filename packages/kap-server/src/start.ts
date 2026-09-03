@@ -97,6 +97,8 @@ import {
   ExternalDelegationBootstrapError,
   type ExternalDelegationAuthorityConfig,
 } from './mcp/externalDelegationAuthority';
+import { registerKikiMcpHttp } from './mcp/http';
+import { createEnvSeatResolver } from './mcp/seatResolver';
 
 import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
 import {
@@ -579,6 +581,25 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       : { ...externalDelegation, state: externalDelegationState },
   });
 
+  let kapEndpoint = loopbackOrigin(host, port);
+  if (externalDelegation !== undefined && externalDelegationState.state === 'active') {
+    const envSeat = {
+      sessionId: externalDelegation.sessionId,
+      delegationToken: externalDelegation.token,
+      workspacePath: externalDelegation.sessionBootstrap?.workspacePath ?? '',
+    };
+    registerKikiMcpHttp(app, {
+      seatResolver: createEnvSeatResolver(envSeat),
+      resolveConfig: (seat) => ({
+        endpoint: kapEndpoint,
+        token: authTokenService.getToken(),
+        delegationToken: seat.delegationToken,
+        sessionId: seat.sessionId,
+        workspacePath: seat.workspacePath,
+      }),
+    });
+  }
+
   const wssKlient = registerKlientHttp(app, core);
   const wssV1 = registerWsV1(core, {
     validateCredential,
@@ -712,6 +733,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+  kapEndpoint = loopbackOrigin(host, boundPort);
 
   postListenWarmup = runPostListenWarmup();
 
@@ -725,6 +747,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
 
   return { app, core, connectionRegistry, authTokenService, host, port: boundPort, close };
+}
+
+function loopbackOrigin(boundHost: string, boundPort: number): string {
+  const hostname = boundHost === '0.0.0.0' || boundHost === '::' ? '127.0.0.1' : boundHost;
+  const hostPart = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname;
+  return `http://${hostPart}:${String(boundPort)}`;
 }
 
 /**

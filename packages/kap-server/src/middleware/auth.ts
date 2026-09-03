@@ -45,6 +45,9 @@ function defaultIsBypassed(req: FastifyRequest): boolean {
   if (req.method === 'GET' && path === '/api/v1/healthz') {
     return true;
   }
+  if (path === '/mcp') {
+    return true;
+  }
   const isApi = path.startsWith('/api/');
   const isMeta = path === '/openapi.json' || path === '/asyncapi.json';
   return !isApi && !isMeta;
