@@ -27,7 +27,7 @@ interface SeatCreateOptions {
   readonly json?: boolean;
 }
 
-export function registerSeatCommand(program: Command): void {
+export function registerSeatCommand(program: Command): Command {
   const seat = program.command('seat');
   seat
     .command('create')
@@ -67,6 +67,7 @@ export function registerSeatCommand(program: Command): void {
       );
       process.stdout.write(`${JSON.stringify(revoked, null, options.json === true ? 0 : 2)}\n`);
     });
+  return seat;
 }
 
 export async function createSeat(input: {
