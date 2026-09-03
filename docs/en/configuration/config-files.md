@@ -517,6 +517,23 @@ decision = "ask"
 pattern = "Bash"
 ```
 
+### Dangerous Bash commands
+
+`permission.dangerous_bash` is a three-state opt-in for the tree-sitter Bash analyzer that flags destructive commands such as `rm -rf`, `shutdown`, `dd` to a block device, and nested wrappers like `sudo` / `bash -c`. When the guard is on, a command that would otherwise be auto-approved is upgraded to `ask` and uses the existing approval flow. Deny rules are unchanged. Unanalyzable commands are not upgraded.
+
+| Value | Effect |
+| --- | --- |
+| `default` (unset) | On in `manual` and `auto`; off in `yolo` |
+| `on` | Always upgrade dangerous Bash to `ask`, including `yolo` |
+| `off` | Never intervene |
+
+YOLO stays hands-off by default so an explicit Never Ask / yolo session is not rewritten. Set `on` only when you want the analyzer even in that mode.
+
+```toml
+[permission]
+dangerous_bash = "default"
+```
+
 ::: tip
 MCP server declarations are configured in `~/.kimi-code/mcp.json` or the project-local `.kimi-code/mcp.json`, not in `config.toml`. The interactive configuration entry point is `/mcp-config`; see [Model Context Protocol](../customization/mcp.md).
 :::

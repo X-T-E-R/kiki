@@ -3,6 +3,7 @@ import { Service } from '#/_base/di/service';
 import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import { AutoModeApprovePermissionPolicyService } from '#/agent/permissionPolicy/policies/auto-mode-approve';
 import { AutoModeAskUserQuestionDenyPermissionPolicyService } from '#/agent/permissionPolicy/policies/auto-mode-ask-user-question-deny';
+import { DangerousBashPermissionPolicyService } from '#/agent/permissionPolicy/policies/dangerous-bash';
 import { DefaultToolApprovePermissionPolicyService } from '#/agent/permissionPolicy/policies/default-tool-approve';
 import { FallbackAskPermissionPolicyService } from '#/agent/permissionPolicy/policies/fallback-ask';
 import { GitControlPathAccessAskPermissionPolicyService } from '#/agent/permissionPolicy/policies/git-control-path-access-ask';
@@ -32,6 +33,7 @@ export class AgentPermissionPolicyService
   private readonly adjudicationPolicies: readonly PermissionPolicy[];
   private readonly allowlistPolicies: readonly PermissionPolicy[];
   private readonly fallbackPolicy: PermissionPolicy;
+  private readonly dangerousBashPolicy: DangerousBashPermissionPolicyService;
 
   constructor(
     @IInstantiationService private readonly instantiation: IInstantiationService,
@@ -55,21 +57,33 @@ export class AgentPermissionPolicyService
       this.instantiation.createInstance(GitCwdWriteApprovePermissionPolicyService),
     ];
     this.fallbackPolicy = this.instantiation.createInstance(FallbackAskPermissionPolicyService);
+    this.dangerousBashPolicy = this.instantiation.createInstance(
+      DangerousBashPermissionPolicyService,
+    );
   }
 
   async evaluate(
     context: ResolvedToolExecutionHookContext,
   ): Promise<PermissionPolicyEvaluation | undefined> {
     const adjudication = await evaluatePolicies(this.adjudicationPolicies, context);
-    if (adjudication !== undefined) return adjudication;
+    if (adjudication !== undefined) {
+      return this.dangerousBashPolicy.upgradeApprove(adjudication, context);
+    }
 
     const allowlist = await evaluatePolicies(this.allowlistPolicies, context);
-    if (allowlist !== undefined) return allowlist;
+    if (allowlist !== undefined) {
+      return this.dangerousBashPolicy.upgradeApprove(allowlist, context);
+    }
 
     for (const id of this.allowlistContributions.items) {
       const policy = this.instantiation.invokeFunction((accessor) => accessor.get(id));
       const result = await policy.evaluate(context);
-      if (result !== undefined) return { policyName: policy.name, result };
+      if (result !== undefined) {
+        return this.dangerousBashPolicy.upgradeApprove(
+          { policyName: policy.name, result },
+          context,
+        );
+      }
     }
 
     return evaluatePolicies([this.fallbackPolicy], context);

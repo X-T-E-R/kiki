@@ -948,8 +948,8 @@ function stripRequestIdentityBodyParams(
 
 function isKimiProviderFamily(providerType: string | undefined): boolean {
   return (
-    providerType === 'kimi' ||
-    (providerType !== undefined && getProviderDefinition(providerType)?.id === 'kimi')
+    providerType !== undefined &&
+    getProviderDefinition(providerType)?.requestIdentityDeviceHeaders === true
   );
 }
 

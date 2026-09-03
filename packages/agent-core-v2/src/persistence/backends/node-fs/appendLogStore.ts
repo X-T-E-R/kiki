@@ -50,12 +50,14 @@ export class AppendLogStore implements IAppendLogStore {
   }
 
   async *read<R>(scope: string, key: string, options?: AppendLogReadOptions): AsyncIterable<R> {
-    await this.flushLog(scope, key);
+    await waitForSignal(this.flushLog(scope, key), options?.signal);
     const onTruncate = options?.onTruncate;
     const textDecoder = new TextDecoder();
     let pending = '';
     let lineNumber = 0;
-    for await (const chunk of this.storage.readStream(scope, key)) {
+    for await (const chunk of this.storage.readStream(scope, key, undefined, {
+      signal: options?.signal,
+    })) {
       pending += textDecoder.decode(chunk, { stream: true });
       let newlineIndex = pending.indexOf('\n');
       while (newlineIndex !== -1) {
@@ -285,6 +287,25 @@ function encodeBatch(records: readonly unknown[]): Uint8Array {
   if (records.length === 0) return new Uint8Array(0);
   const content = records.map((record) => JSON.stringify(record) + '\n').join('');
   return textEncoder.encode(content);
+}
+
+function waitForSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error);
+      },
+    );
+  });
 }
 
 registerScopedService(
