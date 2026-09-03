@@ -325,7 +325,9 @@ export class TranscriptWireAdapter {
           beforeTurn: this.taskRefBeforeTurn(),
         });
       }
-      operations.push({ op: 'task.upsert', task });
+      if (task.kind !== 'subagent' || task.state !== 'running') {
+        operations.push({ op: 'task.upsert', task });
+      }
       return operations;
     }
     if (record.type === 'task.notified') {

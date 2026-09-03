@@ -855,7 +855,7 @@ describe('bindSessionTranscript', () => {
       description: 'Inspect',
       outputTail: 'done',
       resultSummary: 'done',
-      startedAt: new Date(1_900).toISOString(),
+      startedAt: new Date(2_000).toISOString(),
       endedAt: new Date(5_100).toISOString(),
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();

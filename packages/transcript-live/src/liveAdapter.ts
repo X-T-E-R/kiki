@@ -1223,7 +1223,7 @@ export class AgentTranscriptLiveAdapter {
         description: event.description ?? previous?.description,
         agentId: event.subagentId,
         outputTail: previous?.outputTail ?? '',
-        startedAt: previous?.startedAt ?? startedAt,
+        startedAt: event.taskId === undefined ? startedAt : previous?.startedAt ?? startedAt,
       };
       this.tasks.set(taskKey, task);
       ops.push({ op: 'task.upsert', task });
