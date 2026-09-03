@@ -2,7 +2,11 @@ import type { ApprovalRequest, ApprovalResponse, ToolInputDisplay } from '@moons
 
 import type { ApprovalPanelResponse } from '#/tui/components/dialogs/approval-panel';
 import { goalStartOptions } from '#/tui/components/dialogs/goal-start-permission-prompt';
-import type { ApprovalPanelChoice, ApprovalPanelData, DisplayBlock } from '#/tui/reverse-rpc/types';
+import type {
+  ApprovalPanelChoice,
+  ApprovalPanelData,
+  DisplayBlock,
+} from '#/tui/components/dialogs/interaction-types';
 
 const DEFAULT_APPROVAL_CHOICES: ApprovalPanelChoice[] = [
   { label: 'Approve once', response: 'approved' },

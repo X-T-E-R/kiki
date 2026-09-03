@@ -11,7 +11,6 @@ import {
   endScreenTakeover,
   type ScreenTakeover,
 } from '../utils/screen-takeover';
-import type { SessionEventHandler } from './session-event-handler';
 import type { SubagentActivityRecord } from './subagent-activity-store';
 
 export interface TasksBrowserHost {
@@ -23,7 +22,13 @@ export interface TasksBrowserHost {
     readonly editor: CustomEditor;
   };
   readonly backgroundTasks: ReadonlyMap<string, BackgroundTaskInfo>;
-  readonly sessionEventHandler: SessionEventHandler;
+  readonly sessionEventHandler: {
+    readonly subAgentEventHandler: {
+      readonly activityStore: {
+        get(agentId: string): SubagentActivityRecord | undefined;
+      };
+    };
+  };
   readonly session: Session | undefined;
   showError(msg: string): void;
   setTasksBrowser(value: TasksBrowserState | undefined): void;

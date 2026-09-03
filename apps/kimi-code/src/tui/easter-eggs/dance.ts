@@ -12,7 +12,6 @@
 import chalk from 'chalk';
 import { truncateToWidth, visibleWidth } from '@moonshot-ai/pi-tui';
 
-import type { SlashCommandHost } from '../commands/dispatch';
 import type { ParsedSlashInput } from '../commands/types';
 import { currentTheme } from '../theme';
 
@@ -225,7 +224,10 @@ export class RainbowDance implements RainbowDanceController {
  *
  * Returns true when it claimed the input.
  */
-export function tryHandleDanceCommand(host: SlashCommandHost, parsed: ParsedSlashInput): boolean {
+export function tryHandleDanceCommand(
+  host: { showStatus(message: string): void },
+  parsed: ParsedSlashInput,
+): boolean {
   if (parsed.name !== 'dance') return false;
   if (currentDanceController === undefined) return false;
 

@@ -22,12 +22,12 @@ import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialo
 import { SessionPickerComponent, type SessionRow } from '#/tui/components/dialogs/session-picker';
 import type { TuiConfig } from '#/tui/config';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
-import { adaptApprovalRequest } from '#/tui/reverse-rpc/approval/adapter';
 import type {
   ApprovalPanelData,
   QuestionPanelData,
   QuestionPanelResponse,
-} from '#/tui/reverse-rpc/types';
+} from '#/tui/components/dialogs/interaction-types';
+import { adaptApprovalRequest } from '#/tui/daemon/approval-adapter';
 import { currentTheme } from '#/tui/theme';
 import { createTUIState, type TUIState } from '#/tui/tui-state';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
