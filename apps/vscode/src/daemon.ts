@@ -70,7 +70,7 @@ export function rankDaemonInstances(
   instances: readonly DaemonInstance[],
   workspacePath?: string,
 ): readonly DaemonInstance[] {
-  return [...instances].sort((left, right) => {
+  return instances.toSorted((left, right) => {
     const leftMatches = workspacePath !== undefined && left.workspaces?.includes(workspacePath) ? 1 : 0;
     const rightMatches = workspacePath !== undefined && right.workspaces?.includes(workspacePath) ? 1 : 0;
     return rightMatches - leftMatches || right.startedAt - left.startedAt;
@@ -135,12 +135,22 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     stdio: "ignore",
     windowsHide: true,
   });
+  let spawnError: Error | undefined;
+  child.once("error", (error) => {
+    spawnError = error;
+  });
   child.unref();
 
-  const sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const sleep =
+    options.sleep ??
+    ((milliseconds) =>
+      new Promise((resolve) => {
+        setTimeout(resolve, milliseconds);
+      }));
   const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
+    if (spawnError !== undefined) throw spawnError;
     const connection = await discoverDaemon(homeDir, options.workspacePath, options.fetch);
     if (connection !== null) return connection;
     if (child.exitCode !== null) {

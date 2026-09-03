@@ -11,7 +11,7 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly connection: DaemonConnection,
+    connection: DaemonConnection,
   ) {
     this.bridge = new VscodeHostBridge(connection);
   }
@@ -52,6 +52,7 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
     this.webviews.add(webview);
     webview.onDidReceiveMessage(async (message: unknown) => {
       const response = await this.bridge.handle(message);
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin
       if (response !== null) await webview.postMessage(response);
     });
     await this.loadHtml(webview);
@@ -63,7 +64,6 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
   }
 
   private renderHtml(source: string, webview: vscode.Webview): string {
-    const nonce = crypto.randomUUID().replaceAll("-", "");
     const csp = [
       "default-src 'none'",
       `style-src ${webview.cspSource} 'unsafe-inline'`,
@@ -72,14 +72,12 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
       `media-src ${webview.cspSource} data: blob: http://127.0.0.1:* http://localhost:*`,
       `connect-src ${webview.cspSource} http://127.0.0.1:* http://localhost:* http://[::1]:* ws://127.0.0.1:* ws://localhost:* ws://[::1]:*`,
       `worker-src ${webview.cspSource} blob:`,
-      `script-src ${webview.cspSource} 'nonce-${nonce}'`,
+      `script-src ${webview.cspSource}`,
     ].join("; ");
-    const connection = JSON.stringify(this.connection).replaceAll("<", "\\u003c");
-    const bootstrap = `<script nonce="${nonce}">const c=${connection};const u=new URL(location.href);u.searchParams.set("server",c.url);u.searchParams.set("token",c.token);history.replaceState(null,"",u.pathname+u.search+u.hash);</script>`;
-    const head = `<meta http-equiv="Content-Security-Policy" content="${csp}">${bootstrap}`;
+    const head = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
     return source
       .replace("<head>", `<head>${head}`)
-      .replace(/\b(src|href)="(?![a-z]+:|data:|#)([^"?]+)([^"]*)"/gi, (_match, attribute, path, suffix) => {
+      .replaceAll(/\b(src|href)="(?![a-z]+:|data:|#)([^"?]+)([^"]*)"/gi, (_match, attribute, path, suffix) => {
         const segments = String(path).replace(/^\.\//, "").replace(/^\//, "").split("/");
         const uri = webview.asWebviewUri(vscode.Uri.joinPath(this.guiRoot, ...segments));
         return `${attribute}="${uri.toString()}${suffix}"`;

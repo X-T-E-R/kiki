@@ -45,6 +45,7 @@ export function requestVscodeHost<T>(method: string, params: unknown = {}): Prom
       resolve: (value) => resolve(value as T),
       reject,
     });
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin
     vscode.postMessage({ channel: 'kiki.vscode-host.request', id, method, params });
   });
 }

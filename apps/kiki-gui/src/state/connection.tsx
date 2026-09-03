@@ -31,6 +31,7 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import { ConnectScreen } from '../components/ConnectScreen';
 import { useHost } from '../host';
+import { isVscodeWebview } from '../host/vscode';
 import { translate, type I18nKey, type I18nParams } from '../i18n/locale';
 import { useI18n } from '../i18n';
 import { ApiError, KikiClient } from '../lib/client';
@@ -150,10 +151,11 @@ const ConnectionContext = createContext<ConnectionValue | null>(null);
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const host = useHost();
   const desktopRuntime = host.kind === 'tauri';
+  const vscodeRuntime = isVscodeWebview();
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [selection, setSelection] = useState<ConnectionSelection | null>(() =>
-    desktopRuntime
+    desktopRuntime || vscodeRuntime
       ? null
       : selectInitialConnection({
           deepLink: readDeepLinkConfig(),
@@ -175,6 +177,33 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const controllersRef = useRef(new LiveControllerRegistry());
   const liveSocketRef = useRef<KikiSocket | null>(null);
   const connectionEpochRef = useRef(0);
+
+  useEffect(() => {
+    if (!vscodeRuntime) return;
+    let cancelled = false;
+    void host.connection.discover().then(
+      (connection) => {
+        if (cancelled) return;
+        if (connection === null) return;
+        connectionEpochRef.current += 1;
+        setSelection({
+          config: connection.config,
+          persist: connection.persist,
+          source: 'local-detection',
+        });
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        setConnectError({
+          kind: 'raw',
+          text: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [host, vscodeRuntime]);
 
   // The desktop shell owns its backend. Resolve that connection before
   // considering browser handoffs or persisted remote connections, and keep

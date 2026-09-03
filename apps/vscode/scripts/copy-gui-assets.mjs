@@ -8,4 +8,3 @@ const target = resolve(extensionRoot, 'media', 'gui');
 
 await rm(target, { recursive: true, force: true });
 await cp(source, target, { recursive: true });
-console.log(`[copy-gui-assets] copied ${source} to ${target}`);
