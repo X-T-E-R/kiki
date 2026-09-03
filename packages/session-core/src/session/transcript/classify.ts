@@ -113,7 +113,7 @@ const BASH_INPUT_RE = /<bash-input>([\s\S]*?)<\/bash-input>/i;
 const BASH_STDOUT_RE = /<bash-stdout>([\s\S]*?)<\/bash-stdout>/i;
 const BASH_STDERR_RE = /<bash-stderr>([\s\S]*?)<\/bash-stderr>/i;
 const CRON_FIRE_RE = /<cron-fire\b[\s\S]*?<\/cron-fire>/i;
-const TASK_NOTIFICATION_RE = /<notification\b[^>]*>([\s\S]*?)<\/notification>/i;
+const TASK_NOTIFICATION_RE = /<notification\b([^>]*)>([\s\S]*?)<\/notification>/i;
 
 function unescapeXml(text: string): string {
   return text
@@ -126,7 +126,16 @@ function unescapeXml(text: string): string {
 function splitTaskNotification(text: string): string | undefined {
   const match = TASK_NOTIFICATION_RE.exec(text);
   if (match === null) return undefined;
-  const inner = (match[1] ?? '').trim();
+  const attributes = match[1] ?? '';
+  if (
+    !/\bcategory\s*=\s*["']task["']/i.test(attributes) &&
+    !/\btype\s*=\s*["']task\./i.test(attributes) &&
+    !/\btask_id\s*=/i.test(attributes) &&
+    !/\bsource_kind\s*=\s*["'](?:background_task|task)["']/i.test(attributes)
+  ) {
+    return undefined;
+  }
+  const inner = (match[2] ?? '').trim();
   const rest = `${text.slice(0, match.index)}${text.slice(match.index + match[0].length)}`.trim();
   if (inner === '') return rest === '' ? undefined : rest;
   return rest === '' ? inner : `${rest}\n\n${inner}`;
@@ -182,6 +191,16 @@ export function classifyTranscriptText(input: {
   const origin = unwrapOrigin(input.origin);
   const split = splitSystemReminders(input.text);
   const kind = origin?.kind;
+  const notification = splitTaskNotification(split.text);
+  if (notification !== undefined) {
+    return {
+      lane: 'system',
+      origin,
+      text: notification,
+      reminders: split.reminders,
+      systemVariant: 'task',
+    };
+  }
 
   if (
     kind === 'user' ||
@@ -258,16 +277,6 @@ export function classifyTranscriptText(input: {
       text: split.text,
       reminders: split.reminders,
       systemVariant: 'cron_job',
-    };
-  }
-  const notification = splitTaskNotification(split.text);
-  if (notification !== undefined) {
-    return {
-      lane: 'system',
-      origin,
-      text: notification,
-      reminders: split.reminders,
-      systemVariant: 'task',
     };
   }
   if (split.text === '' && split.reminders.length > 0) {

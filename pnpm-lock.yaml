@@ -751,6 +751,10 @@ importers:
       '@moonshot-ai/transcript':
         specifier: workspace:^
         version: link:../transcript
+    devDependencies:
+      '@kiki/session-core':
+        specifier: workspace:^
+        version: link:../session-core
 
   packages/tree-sitter-bash:
     devDependencies:

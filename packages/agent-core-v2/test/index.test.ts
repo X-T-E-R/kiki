@@ -29,6 +29,8 @@ import { InMemoryStorageService } from '#/persistence/backends/memory/inMemorySt
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { TokenCountingMeasured } from '#/agent/tokenCounting/tokenCountingOps';
+import { TurnStepInterrupted } from '#/agent/loop/turnEvents';
+import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { todoKey, ToolsUpdateStore } from '#/session/todo/todoOps';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -99,9 +101,14 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'runtime.set_binding',
   'turn.ended',
   'prompt.accepted',
+  'prompt.completed',
+  'prompt.aborted',
+  'prompt.steered',
   'token_counting.measured',
   'token_counting.truncated',
   'token_counting.rebased',
+  'turn.step.interrupted',
+  'turn.step.retrying',
   'executor.turn.metadata',
   'executor.session.updated',
   'executor.plan.update',
@@ -169,6 +176,81 @@ describe('v1 wire vocabulary', () => {
         time: expect.any(Number),
       },
     ]);
+  });
+
+  it('persists and restores step retry and interruption records', async () => {
+    await dispatcher.restore();
+    await dispatcher.dispatch(
+      new TurnStepRetrying({
+        turnId: 1,
+        step: 2,
+        stepId: 'step-2',
+        failedAttempt: 1,
+        nextAttempt: 2,
+        maxAttempts: 3,
+        delayMs: 500,
+        errorName: 'APIStatusError',
+        errorMessage: 'Overloaded',
+        statusCode: 429,
+      }),
+    );
+    await dispatcher.dispatch(
+      new TurnStepInterrupted({
+        turnId: 1,
+        step: 2,
+        stepId: 'step-2',
+        reason: 'error',
+        message: 'boom',
+      }),
+    );
+    const records = await readRecords();
+    expect(records).toEqual([
+      {
+        type: 'metadata',
+        protocol_version: WIRE_PROTOCOL_VERSION,
+        created_at: expect.any(Number),
+      },
+      {
+        type: 'turn.step.retrying',
+        turnId: 1,
+        step: 2,
+        stepId: 'step-2',
+        failedAttempt: 1,
+        nextAttempt: 2,
+        maxAttempts: 3,
+        delayMs: 500,
+        errorName: 'APIStatusError',
+        errorMessage: 'Overloaded',
+        statusCode: 429,
+        time: expect.any(Number),
+      },
+      {
+        type: 'turn.step.interrupted',
+        turnId: 1,
+        step: 2,
+        stepId: 'step-2',
+        reason: 'error',
+        message: 'boom',
+        time: expect.any(Number),
+      },
+    ]);
+
+    const store = new DisposableStore();
+    disposables.add(store);
+    const ix2 = store.add(new TestInstantiationService());
+    ix2.stub(IFileSystemStorageService, new InMemoryStorageService());
+    ix2.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const log2 = ix2.get(IAppendLogStore);
+    registerTestAgentWire(ix2, SCOPE, { log: log2 });
+    const fresh = registerTestEventDispatcher(ix2);
+
+    await restoreTestEventDispatcher(fresh, log2, SCOPE, records);
+
+    const replayed: WireRecord[] = [];
+    for await (const record of log2.read<WireRecord>(SCOPE, AGENT_WIRE_RECORD_KEY)) {
+      replayed.push(record);
+    }
+    expect(replayed).toEqual(records);
   });
 
   it('round-trips the todo list through the persisted tools.update_store record', async () => {

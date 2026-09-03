@@ -151,9 +151,9 @@ describe('SubagentRosterTracker', () => {
     });
   });
 
-  it('follows the subagent phase transitions', () => {
+  it('follows foreground subagent phase transitions even when spawn carries a task id', () => {
     const t = new SubagentRosterTracker();
-    t.apply(SID, spawn('agent-1'));
+    t.apply(SID, spawn('agent-1', { taskId: 'task-foreground' }));
     t.apply(SID, ev({ type: 'subagent.started', subagentId: 'agent-1' }));
     expect(t.get(SID)[0]).toMatchObject({ subagent_phase: 'working' });
     expect(t.get(SID)[0]?.started_at).toBeDefined();
@@ -192,6 +192,17 @@ describe('SubagentRosterTracker', () => {
       subagent_phase: 'failed',
       status: 'failed',
       output_preview: 'boom',
+    });
+  });
+
+  it('marks a terminated foreground AgentRun as cancelled instead of failed', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawn('agent-1', { taskId: 'task-foreground' }));
+    t.apply(SID, ev({ type: 'subagent.failed', subagentId: 'agent-1', error: 'terminated' }));
+    expect(t.get(SID)[0]).toMatchObject({
+      subagent_phase: undefined,
+      status: 'cancelled',
+      output_preview: 'terminated',
     });
   });
 

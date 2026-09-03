@@ -15,11 +15,13 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import {
   AgentPromptService,
   PromptAborted,
+  PromptCompleted,
   PromptQueued,
   PromptReplaced,
   PromptStarted,
   PromptSteered,
   PromptSubmitted,
+  promptResolutionKey,
 } from '#/agent/prompt/promptService';
 import {
   IAgentProfileService,
@@ -41,6 +43,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionHistoryMutationService } from '#/session/historyMutation/historyMutation';
 import { SessionHistoryMutationService } from '#/session/historyMutation/historyMutationService';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { EventDispatcherService } from '#/state/eventDispatcherService';
 import { IWireService } from '#/wire/wire';
@@ -207,6 +210,8 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     context,
     fullCompaction,
     eventBus: ix.get(IEventBus),
+    dispatcher: ix.get(IEventDispatcher),
+    states: ix.get(IAgentStateService),
     intake,
   };
 }
@@ -218,6 +223,35 @@ describe('AgentPromptService', () => {
     expect(handle.id).toBe('prompt-1');
     expect(handle.userMessageId).toBe('prompt-1');
     expect((await handle.launched)?.id).toBe(0);
+  });
+
+  it('persists prompt resolution identities in replayable state', async () => {
+    const { dispatcher, states } = harness();
+    await dispatcher.dispatch(
+      new PromptCompleted({
+        promptId: 'completed',
+        finishedAt: '2026-01-01T00:00:00.000Z',
+        reason: 'completed',
+      }),
+    );
+    await dispatcher.dispatch(
+      new PromptAborted({ promptId: 'aborted', abortedAt: '2026-01-01T00:00:01.000Z' }),
+    );
+    await dispatcher.dispatch(
+      new PromptSteered({
+        activePromptId: 'active',
+        promptIds: ['steered-1', 'steered-2'],
+        content: [],
+        steeredAt: '2026-01-01T00:00:02.000Z',
+      }),
+    );
+
+    expect([...states.get(promptResolutionKey).keys()]).toEqual([
+      'completed',
+      'aborted',
+      'steered-1',
+      'steered-2',
+    ]);
   });
 
   it('keeps later prompts in FIFO order while active', async () => {

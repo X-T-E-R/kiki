@@ -1,4 +1,6 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
+import { z } from 'zod';
+
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -63,9 +65,17 @@ export interface PromptCompletedPayload {
   readonly reason: 'completed' | 'failed' | 'blocked';
 }
 
+const promptCompletedSchema = z.object({
+  promptId: z.string().min(1),
+  finishedAt: z.string(),
+  reason: z.union([z.literal('completed'), z.literal('failed'), z.literal('blocked')]),
+});
+
 export class PromptCompleted extends Event2<PromptCompletedPayload> {
   static override readonly type = 'prompt.completed';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = promptCompletedSchema;
 }
 export interface PromptCompleted extends PromptCompletedPayload {}
 
@@ -74,9 +84,16 @@ export interface PromptAbortedPayload {
   readonly abortedAt: string;
 }
 
+const promptAbortedSchema = z.object({
+  promptId: z.string().min(1),
+  abortedAt: z.string(),
+});
+
 export class PromptAborted extends Event2<PromptAbortedPayload> {
   static override readonly type = 'prompt.aborted';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = promptAbortedSchema;
 }
 export interface PromptAborted extends PromptAbortedPayload {}
 
@@ -87,11 +104,36 @@ export interface PromptSteeredPayload {
   readonly steeredAt: string;
 }
 
+const promptSteeredSchema = z.object({
+  activePromptId: z.string(),
+  promptIds: z.array(z.string()),
+  content: z.custom<ContentPart[]>(),
+  steeredAt: z.string(),
+});
+
 export class PromptSteered extends Event2<PromptSteeredPayload> {
   static override readonly type = 'prompt.steered';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = promptSteeredSchema;
 }
 export interface PromptSteered extends PromptSteeredPayload {}
+
+export const promptResolutionKey = defineState('promptResolution', (): Map<string, true> => new Map())
+  .replayable({ schema: z.map(z.string(), z.literal(true)) })
+  .on(PromptCompleted, (state, event) => {
+    if (state.has(event.promptId)) return state;
+    state.set(event.promptId, true);
+  })
+  .on(PromptAborted, (state, event) => {
+    if (state.has(event.promptId)) return state;
+    state.set(event.promptId, true);
+  })
+  .on(PromptSteered, (state, event) => {
+    for (const promptId of event.promptIds) {
+      if (!state.has(promptId)) state.set(promptId, true);
+    }
+  });
 
 export interface PromptQueuedPayload {
   readonly promptId: string;
@@ -232,6 +274,7 @@ export class AgentPromptService implements IAgentPromptService {
   ) {
     this.states.contributeState(promptLaunchingKey);
     this.states.contributeState(promptAdmissionKey);
+    this.states.contributeState(promptResolutionKey);
     toolExecutor.hooks.onDidExecuteTool.register('prompt-service-delivery', async (ctx, next) => {
       await this.deliverToolResult(ctx);
       await next();

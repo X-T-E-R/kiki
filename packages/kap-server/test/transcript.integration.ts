@@ -740,7 +740,7 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
     );
   });
 
-  it('routes a subagent question to the subagent transcript, not main', async () => {
+  it('mirrors a subagent question to the owner and main transcripts', async () => {
     const id = await createSession();
     await ensureMainAgent(id);
     const session = getLiveSessionById(server!.core.accessor, id);
@@ -774,22 +774,34 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
       { agentId: 'sub-1' },
     );
 
-    const subBody = await getJson<TranscriptContract>(`/api/v1/sessions/${id}/transcript?agent_id=sub-1`);
-    expect(subBody.body.data.pending_interactions).toEqual(['call_q']);
-    expect(subBody.body.data.interactions).toContainEqual(
-      expect.objectContaining({
-        interactionId: 'call_q',
-        interactionKind: 'question',
-        toolCallId: 'call_q',
-        state: 'pending',
-      }),
-    );
-
-    const mainBody = await getJson<TranscriptContract>(`/api/v1/sessions/${id}/transcript?agent_id=main`);
-    expect(mainBody.body.data.pending_interactions).toEqual([]);
+    for (const agentId of ['sub-1', 'main']) {
+      const body = await getJson<TranscriptContract>(
+        `/api/v1/sessions/${id}/transcript?agent_id=${agentId}`,
+      );
+      expect(body.body.data.pending_interactions).toEqual(['call_q']);
+      expect(body.body.data.interactions).toContainEqual(
+        expect.objectContaining({
+          interactionId: 'call_q',
+          interactionKind: 'question',
+          toolCallId: 'call_q',
+          state: 'pending',
+          origin: expect.objectContaining({ agentId: 'sub-1' }),
+        }),
+      );
+    }
 
     questions.dismiss('call_q');
     await pending;
+
+    for (const agentId of ['sub-1', 'main']) {
+      const body = await getJson<TranscriptContract>(
+        `/api/v1/sessions/${id}/transcript?agent_id=${agentId}`,
+      );
+      expect(body.body.data.pending_interactions).toEqual([]);
+      expect(body.body.data.interactions).toContainEqual(
+        expect.objectContaining({ interactionId: 'call_q', state: 'dismissed' }),
+      );
+    }
   });
 
   it('rejects path-hostile agent ids with 40001', async () => {

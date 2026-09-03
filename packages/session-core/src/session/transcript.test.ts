@@ -127,6 +127,34 @@ describe('classifyTranscriptText', () => {
         origin: { kind: 'system_trigger', name: 'goal_continuation' },
       }),
     ).toMatchObject({ lane: 'system', systemVariant: 'system_trigger' });
+    expect(
+      classifyTranscriptText({
+        text: 'Inspect the renderer',
+        role: 'user',
+        origin: { kind: 'system_trigger', name: 'subagent' },
+        subagentPromptAsUser: true,
+      }),
+    ).toMatchObject({ lane: 'you', text: 'Inspect the renderer' });
+  });
+
+  it('keeps task notification envelopes off the user lane', () => {
+    const notification =
+      '<notification id="task:task-2:completed" category="task" type="task.completed" source_kind="background_task" source_id="task-2">\n' +
+      'Title: Background agent completed\nreview finished\n</notification>';
+    expect(
+      classifyTranscriptText({ text: notification, role: 'user', origin: { kind: 'user' } }),
+    ).toMatchObject({
+      lane: 'system',
+      systemVariant: 'task',
+      text: 'Title: Background agent completed\nreview finished',
+    });
+    expect(
+      classifyTranscriptText({
+        text: '<notification category="product">ordinary user text</notification>',
+        role: 'user',
+        origin: { kind: 'user' },
+      }).lane,
+    ).toBe('you');
   });
 });
 
@@ -1102,6 +1130,39 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
   });
 
+  it('keeps identical prompt text separate when the prompt identities differ', () => {
+    const turn = (ordinal: number, messageId: string) => ({
+      kind: 'turn' as const,
+      turnId: `t${ordinal}`,
+      ordinal,
+      state: 'completed' as const,
+      origin: { kind: 'user' as const },
+      prompt: 'same prompt',
+      message: {
+        messageId,
+        role: 'user' as const,
+        revision: 0,
+        provenance: { source: 'engine' as const },
+      },
+      startedAt: FIXED_AT,
+      steps: [],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      items: [turn(0, 'prompt-1'), turn(1, 'prompt-2')],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    });
+
+    expect(projected.blocks.filter((block) => block.kind === 'user')).toMatchObject([
+      { id: 'user-prompt-1', userMessageId: 'prompt-1', text: 'same prompt' },
+      { id: 'user-prompt-2', userMessageId: 'prompt-2', text: 'same prompt' },
+    ]);
+  });
+
   it('keeps a user frame as the only body when the legacy turn prompt is missing', () => {
     const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
       items: [
@@ -2037,6 +2098,88 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       );
       expect(projected.blocks.indexOf(events[1]!)).toBeLessThan(t2Index);
       expect(projected.blocks.indexOf(events[2]!)).toBeGreaterThan(t2Index);
+    });
+
+    it('uses the latest task state when a foreground task-id run has no taskref', () => {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'taskref',
+              refId: 'ref-background-run',
+              taskId: 'task-background-run',
+              at: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              kind: 'turn',
+              turnId: 't2',
+              ordinal: 2,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'run it in the foreground',
+              startedAt: '2026-01-01T00:00:10.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't2.1',
+                  turnId: 't2',
+                  ordinal: 1,
+                  state: 'completed',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-foreground-run',
+                      toolCallId: 'call-foreground-run',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { resume: 'worker', prompt: 'finish' },
+                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
+                      startedAt: '2026-01-01T00:00:11.000Z',
+                      endedAt: '2026-01-01T00:00:12.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-background-run',
+              kind: 'subagent',
+              state: 'running',
+              detached: true,
+              name: 'worker',
+              agentId: 'agent-1',
+              description: 'first run',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              taskId: 'task-foreground-run',
+              kind: 'subagent',
+              state: 'completed',
+              detached: false,
+              name: 'worker',
+              agentId: 'agent-1',
+              description: 'finish',
+              outputTail: 'done',
+              resultSummary: 'Foreground run completed.',
+              startedAt: '2026-01-01T00:00:11.000Z',
+              endedAt: '2026-01-01T00:00:20.000Z',
+            },
+          ],
+        }),
+      );
+
+      expect(projected.blocks.find((block) => block.id === 'subagent-agent-1')).toMatchObject({
+        kind: 'subagent',
+        status: 'completed',
+        summary: 'Foreground run completed.',
+        startedAt: '2026-01-01T00:00:11.000Z',
+        endedAt: '2026-01-01T00:00:20.000Z',
+      });
     });
 
     it('addresses resume/send refs by the projected stable name, never tool input labels', () => {
@@ -3171,6 +3314,60 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       variant: 'task',
       text: 'nightly finished',
     });
+  });
+
+  it('marks only the final assistant frame of a cancelled turn as stopped', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't-cancelled',
+            ordinal: 1,
+            state: 'cancelled',
+            origin: { kind: 'user' },
+            prompt: 'Abort me mid-stream.',
+            startedAt: FIXED_AT,
+            endedAt: FIXED_AT_1,
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't-cancelled.1',
+                turnId: 't-cancelled',
+                ordinal: 1,
+                state: 'interrupted',
+                frames: [
+                  { kind: 'text', frameId: 'text-1', role: 'assistant', text: 'first' },
+                ],
+              },
+              {
+                kind: 'step',
+                stepId: 't-cancelled.2',
+                turnId: 't-cancelled',
+                ordinal: 2,
+                state: 'interrupted',
+                frames: [
+                  {
+                    kind: 'text',
+                    frameId: 'text-2',
+                    role: 'assistant',
+                    text: 'half-finished sentence',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const assistant = projected.blocks.filter(
+      (block): block is AssistantBlock => block.kind === 'assistant',
+    );
+    expect(assistant).toHaveLength(2);
+    expect(assistant[0]?.stopped).toBe(false);
+    expect(assistant[1]?.stopped).toBe(true);
   });
 });
 

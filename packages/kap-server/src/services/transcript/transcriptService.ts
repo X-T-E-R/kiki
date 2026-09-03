@@ -502,6 +502,7 @@ export class TranscriptService {
         }
         return undefined;
       },
+      task: (taskId) => transcript.getTask(taskId),
     });
     for (const record of records) reducer.apply(adapter.add(record));
     const preservedTurns: TranscriptTurn[] = [];

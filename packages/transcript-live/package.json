@@ -26,5 +26,8 @@
     "@moonshot-ai/agent-core-v2": "workspace:^",
     "@moonshot-ai/protocol": "workspace:^",
     "@moonshot-ai/transcript": "workspace:^"
+  },
+  "devDependencies": {
+    "@kiki/session-core": "workspace:^"
   }
 }
