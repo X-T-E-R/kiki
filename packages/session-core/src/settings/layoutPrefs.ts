@@ -157,4 +157,3 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
   }
   return publish(next);
 }
-
