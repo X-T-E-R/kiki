@@ -96,6 +96,12 @@ import {
   ExternalDelegationBootstrapError,
   type ExternalDelegationAuthorityConfig,
 } from './mcp/externalDelegationAuthority';
+import { registerKikiMcpHttp } from './mcp/http';
+import {
+  createCompositeSeatResolver,
+  createEnvSeatResolver,
+  type SeatResolver,
+} from './mcp/seatResolver';
 
 import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
 import {
@@ -166,6 +172,7 @@ export interface ServerStartOptions {
   readonly rpcToken?: string;
   /** Operator-owned authority for the experimental external-delegation edge. */
   readonly externalDelegation?: ExternalDelegationAuthorityConfig;
+  readonly mcpSeatResolver?: SeatResolver;
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
   /**
@@ -576,6 +583,30 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       : { ...externalDelegation, state: externalDelegationState },
   });
 
+  let kapEndpoint = loopbackOrigin(host, port);
+  const envSeatResolver =
+    externalDelegation !== undefined && externalDelegationState.state === 'active'
+      ? createEnvSeatResolver({
+          sessionId: externalDelegation.sessionId,
+          delegationToken: externalDelegation.token,
+        })
+      : undefined;
+  if (
+    exposureClass === 'loopback' &&
+    (opts.mcpSeatResolver !== undefined || envSeatResolver !== undefined)
+  ) {
+    registerKikiMcpHttp(app, {
+      seatResolver: createCompositeSeatResolver(opts.mcpSeatResolver, envSeatResolver),
+      resolveConfig: async (seat) => ({
+        endpoint: kapEndpoint,
+        token: authTokenService.getToken(),
+        delegationToken: seat.delegationToken,
+        sessionId: seat.sessionId,
+        workspacePath: await resolveSeatWorkspacePath(core, seat.sessionId, externalDelegation),
+      }),
+    });
+  }
+
   const wssKlient = registerKlientHttp(app, core);
   const wssV1 = registerWsV1(core, {
     validateCredential,
@@ -709,6 +740,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+  kapEndpoint = loopbackOrigin(host, boundPort);
 
   postListenWarmup = runPostListenWarmup();
 
@@ -722,6 +754,24 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
 
   return { app, core, connectionRegistry, authTokenService, host, port: boundPort, close };
+}
+
+function loopbackOrigin(boundHost: string, boundPort: number): string {
+  const hostname = boundHost === '0.0.0.0' || boundHost === '::' ? '127.0.0.1' : boundHost;
+  const hostPart = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname;
+  return `http://${hostPart}:${String(boundPort)}`;
+}
+
+async function resolveSeatWorkspacePath(
+  core: Scope,
+  sessionId: string,
+  authority: ExternalDelegationAuthorityConfig | undefined,
+): Promise<string | undefined> {
+  if (authority?.sessionId === sessionId && authority.sessionBootstrap !== undefined) {
+    return authority.sessionBootstrap.workspacePath;
+  }
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  return summary?.cwd;
 }
 
 /**
