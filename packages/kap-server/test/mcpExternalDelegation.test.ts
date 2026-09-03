@@ -1,13 +1,20 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import {
-  IConfigService,
-  renderProfileCatalogEntries,
-  type DispatchProfileCatalogEntry,
-} from '@moonshot-ai/agent-core-v2';
+import { EXTERNAL_INTERACTION_NOT_OWNED_CODE as CORE_INTERACTION_NOT_OWNED_CODE, IConfigService } from '@moonshot-ai/agent-core-v2';
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createKikiMcpServer, kikiMcpConfigFromEnv } from '../src/mcp/server';
+import {
+  createKikiMcpServer,
+  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
+  kikiMcpConfigFromEnv,
+} from '../src/mcp/server';
+import {
+  renderProfileCatalogEntries,
+  type DispatchProfileCatalogEntry,
+} from '../src/mcp/profileCatalog';
 import { registerApiV2Routes } from '../src/routes/registerApiV2Routes';
 import { descriptorFromMeta } from '../src/services/transcript/coreBinding';
 
@@ -146,6 +153,24 @@ describe('Kiki external delegation MCP server', () => {
       workspacePath: '/example/workspace',
     });
     expect(() => kikiMcpConfigFromEnv({ ...env, KIKI_WORKSPACE_PATH: 'relative' })).toThrow();
+  });
+
+  it('keeps the interaction-not-owned failure code aligned with the engine', () => {
+    expect(EXTERNAL_INTERACTION_NOT_OWNED_CODE).toBe(CORE_INTERACTION_NOT_OWNED_CODE);
+  });
+
+  it('prints invalid-config from the built bin without MCP environment', () => {
+    const bin = fileURLToPath(new URL('../dist/mcp/stdio.mjs', import.meta.url));
+    if (!existsSync(bin)) return;
+    const result = spawnSync(process.execPath, [bin], {
+      env: {},
+      encoding: 'utf8',
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Kiki MCP configuration is invalid.');
   });
 
   it('pages result text on a UTF-8 byte boundary without leaking operator configuration', async () => {
