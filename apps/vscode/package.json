@@ -51,35 +51,10 @@
     "configuration": {
       "title": "Kimi Code",
       "properties": {
-        "kimi.yoloMode": {
-          "type": "boolean",
-          "default": false,
-          "description": "Auto-approve regular tool calls; the agent may still ask questions"
-        },
         "kimi.autosave": {
           "type": "boolean",
           "default": true,
           "description": "Automatically save files before Kimi reads or writes them"
-        },
-        "kimi.enableNewConversationShortcut": {
-          "type": "boolean",
-          "default": false,
-          "description": "Use Cmd/Ctrl+N to start a new conversation when Kimi is focused"
-        },
-        "kimi.useCtrlEnterToSend": {
-          "type": "boolean",
-          "default": false,
-          "description": "Use Ctrl/Cmd+Enter to send prompts instead of Enter"
-        },
-        "kimi.showThinkingContent": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show thinking/reasoning content in the chat UI"
-        },
-        "kimi.showThinkingExpanded": {
-          "type": "boolean",
-          "default": false,
-          "description": "Auto-expand thinking/reasoning sections when shown (requires 'Show Thinking Content' to be enabled)"
         },
         "kimi.editorContext": {
           "type": "string",

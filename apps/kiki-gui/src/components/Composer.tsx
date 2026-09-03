@@ -27,6 +27,7 @@ import { useNavigate } from 'react-router-dom';
 import type { FsSearchHit, PermissionMode, PromptPlanGate, SessionUsage } from '@moonshot-ai/protocol';
 
 import { useHost } from '../host';
+import { isVscodeWebview, vscodeHost } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey } from '../i18n/locale';
 import type { NamedAgentProfile } from '../lib/client';
@@ -854,8 +855,19 @@ export function Composer({
         return;
       }
     }
-    recordSubmission();
-    onSend(text.trim(), attachments);
+    void sendPrompt(text.trim());
+  };
+
+  const sendPrompt = async (content: string) => {
+    try {
+      const prepared = isVscodeWebview()
+        ? await vscodeHost.preparePrompt(content, sessionId)
+        : content;
+      recordSubmission();
+      onSend(prepared, attachments);
+    } catch (error) {
+      setAttachmentError(errorText(locale, error));
+    }
   };
 
   /** "Send anyway" from the typo guard: plain prompt, no command resolution. */
@@ -863,8 +875,7 @@ export function Composer({
     if (!canSend) return;
     setSlashConfirm(null);
     setMenu(null);
-    recordSubmission();
-    onSend(text.trim(), attachments);
+    void sendPrompt(text.trim());
   };
 
   /** Recompute the trigger-driven menu after any text/caret change. */

@@ -3,6 +3,7 @@ import { basename, extname } from "node:path";
 import * as vscode from "vscode";
 
 import type { DaemonConnection } from "./daemon";
+import type { VscodeIntegrationSettings } from "./settings";
 
 interface HostRequest {
   readonly channel: "kiki.vscode-host.request";
@@ -20,7 +21,16 @@ interface HostResponse {
 }
 
 export class VscodeHostBridge {
-  constructor(private readonly connection: DaemonConnection) {}
+  private readonly injectedEditorContext = new Map<string, string>();
+
+  constructor(
+    private readonly connection: DaemonConnection,
+    private settings: VscodeIntegrationSettings,
+  ) {}
+
+  updateSettings(settings: VscodeIntegrationSettings): void {
+    this.settings = settings;
+  }
 
   async handle(message: unknown): Promise<HostResponse | null> {
     const request = parseHostRequest(message);
@@ -46,6 +56,8 @@ export class VscodeHostBridge {
     switch (request.method) {
       case "connection.discover":
         return { config: this.connection, persist: false };
+      case "editor.preparePrompt":
+        return this.preparePrompt(request.params);
       case "window.notify":
         await vscode.window.showInformationMessage(readString(request.params, "title"), {
           detail: readOptionalString(request.params, "body"),
@@ -143,6 +155,30 @@ export class VscodeHostBridge {
     const position = new vscode.Position(Math.max(0, line - 1), Math.max(0, (readOptionalNumber(params, "column") ?? 1) - 1));
     editor.selection = new vscode.Selection(position, position);
     editor.revealRange(new vscode.Range(position, position));
+  }
+
+  private async preparePrompt(params: Record<string, unknown>): Promise<string> {
+    const content = readString(params, "content");
+    if (this.settings.autosave) await vscode.workspace.saveAll(false);
+    if (this.settings.editorContext === "never") return content;
+
+    const editor = vscode.window.activeTextEditor;
+    const workspace = editor === undefined ? undefined : vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    if (editor === undefined || workspace === undefined) return content;
+    const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false).replaceAll("\\", "/");
+    const conversationId = readOptionalString(params, "conversationId") ?? "new-conversation";
+    const lastPath = this.injectedEditorContext.get(conversationId);
+    if (this.settings.editorContext === "onConversationStart" && lastPath !== undefined) return content;
+    if (this.settings.editorContext === "onFileChange" && lastPath === relativePath) return content;
+
+    this.injectedEditorContext.set(conversationId, relativePath);
+    const selection = editor.selection;
+    const selectionInfo = selection.isEmpty
+      ? ""
+      : ` (L${selection.start.line + 1}-${selection.end.line + 1} selected)`;
+    const unsavedInfo = editor.document.isDirty ? ", unsaved" : "";
+    const context = `<system>Editor context (use only if relevant to user's query): ${relativePath}:${selection.active.line + 1}${selectionInfo}${unsavedInfo}.</system>`;
+    return `${content}\n${context}`;
   }
 }
 

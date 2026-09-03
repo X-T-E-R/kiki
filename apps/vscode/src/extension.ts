@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 
 import { ensureDaemon } from "./daemon";
 import { KimiWebviewProvider } from "./KimiWebviewProvider";
+import { readIntegrationSettings } from "./settings";
 
 let outputChannel: vscode.OutputChannel | undefined;
 let provider: KimiWebviewProvider | undefined;
@@ -15,10 +16,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const connection = await ensureDaemon({ workspacePath });
   log(`Attached to Kimi daemon at ${connection.url}`);
 
-  provider = new KimiWebviewProvider(context.extensionUri, connection);
+  provider = new KimiWebviewProvider(context.extensionUri, connection, readIntegrationSettings());
   context.subscriptions.push(
     provider,
     outputChannel,
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("kimi.autosave") || event.affectsConfiguration("kimi.editorContext")) {
+        provider?.updateSettings(readIntegrationSettings());
+      }
+    }),
     vscode.window.registerWebviewViewProvider("kimi.webview", provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),

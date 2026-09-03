@@ -65,10 +65,11 @@ describe("GUI webview carrier", () => {
       webview,
       onDidDispose: vi.fn(),
     };
-    const provider = new KimiWebviewProvider(new host.Uri(root) as never, {
-      url: "http://127.0.0.1:8123",
-      token: "secret-token",
-    });
+    const provider = new KimiWebviewProvider(
+      new host.Uri(root) as never,
+      { url: "http://127.0.0.1:8123", token: "secret-token" },
+      { autosave: true, editorContext: "never" },
+    );
 
     await provider.resolveWebviewView(view as never);
 
@@ -93,6 +94,12 @@ describe("GUI webview carrier", () => {
         config: { url: "http://127.0.0.1:8123", token: "secret-token" },
         persist: false,
       },
+    });
+
+    provider.updateSettings({ autosave: false, editorContext: "onFileChange" });
+    expect(webview.postMessage).toHaveBeenCalledWith({
+      channel: "kiki.vscode-host.settingsChanged",
+      settings: { autosave: false, editorContext: "onFileChange" },
     });
   });
 });

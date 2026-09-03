@@ -38,6 +38,13 @@ const host = vi.hoisted(() => {
     createTerminal: vi.fn(() => ({ show: vi.fn() })),
     readFile: vi.fn(),
     writeFile: vi.fn(async () => undefined),
+    saveAll: vi.fn(async () => true),
+    activeTextEditor: undefined as
+      | {
+          document: { uri: Uri; isDirty: boolean };
+          selection: Selection & { isEmpty: boolean; start: Position; end: Position };
+        }
+      | undefined,
     clipboardWrite: vi.fn(async () => undefined),
     openExternal: vi.fn(async () => true),
   };
@@ -52,9 +59,15 @@ vi.mock("vscode", () => ({
   workspace: {
     fs: { readFile: host.readFile, writeFile: host.writeFile },
     openTextDocument: host.openTextDocument,
+    saveAll: host.saveAll,
+    getWorkspaceFolder: () => ({ uri: new host.Uri("C:/repo") }),
+    asRelativePath: () => "src/file.ts",
   },
   window: {
     state: { focused: true },
+    get activeTextEditor() {
+      return host.activeTextEditor;
+    },
     showInformationMessage: host.showInformationMessage,
     showOpenDialog: host.showOpenDialog,
     showSaveDialog: host.showSaveDialog,
@@ -67,7 +80,10 @@ vi.mock("vscode", () => ({
   },
 }));
 
-const bridge = new VscodeHostBridge({ url: "http://127.0.0.1:8123", token: "token" });
+const bridge = new VscodeHostBridge(
+  { url: "http://127.0.0.1:8123", token: "token" },
+  { autosave: true, editorContext: "never" },
+);
 
 function request(method: string, params: Record<string, unknown> = {}) {
   return { channel: "kiki.vscode-host.request", id: "request-1", method, params };
@@ -89,6 +105,33 @@ describe("VS Code host bridge protocol", () => {
         persist: false,
       },
     });
+  });
+
+  it("applies autosave and editor context settings before prompts", async () => {
+    const position = new host.Position(6, 2);
+    host.activeTextEditor = {
+      document: { uri: new host.Uri("C:/repo/src/file.ts"), isDirty: false },
+      selection: Object.assign(new host.Selection(position, position), {
+        isEmpty: true,
+        start: position,
+        end: position,
+      }),
+    };
+    bridge.updateSettings({ autosave: true, editorContext: "onFileChange" });
+
+    const first = await bridge.handle(
+      request("editor.preparePrompt", { content: "Question", conversationId: "session-1" }),
+    );
+    const second = await bridge.handle(
+      request("editor.preparePrompt", { content: "Again", conversationId: "session-1" }),
+    );
+
+    expect(host.saveAll).toHaveBeenCalledTimes(2);
+    expect(first?.result).toBe(
+      "Question\n<system>Editor context (use only if relevant to user's query): src/file.ts:7.</system>",
+    );
+    expect(second?.result).toBe("Again");
+    host.activeTextEditor = undefined;
   });
 
   it("opens a file at a one-based line and column", async () => {

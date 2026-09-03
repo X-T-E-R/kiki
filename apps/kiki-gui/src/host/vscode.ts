@@ -51,6 +51,7 @@ export function requestVscodeHost<T>(method: string, params: unknown = {}): Prom
 }
 
 export interface VscodeHostAdapter extends BrowserHostAdapter {
+  preparePrompt(content: string, conversationId?: string): Promise<string>;
   openFile(path: string, line?: number, column?: number): Promise<void>;
   showDiff(originalPath: string, modifiedPath: string, title?: string): Promise<void>;
   openTerminal(cwd?: string): Promise<void>;
@@ -63,6 +64,8 @@ export const vscodeHost: VscodeHostAdapter = {
   connection: {
     discover: () => requestVscodeHost<LocalConnection>('connection.discover'),
   },
+  preparePrompt: (content, conversationId) =>
+    requestVscodeHost<string>('editor.preparePrompt', { content, conversationId }),
   notify: (options: HostNotification) => requestVscodeHost<void>('window.notify', options),
   isWindowVisibleAndFocused: () => requestVscodeHost<boolean>('window.focused'),
   async saveBlob(blob, filename) {

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import * as vscode from "vscode";
 
 import type { DaemonConnection } from "./daemon";
+import type { VscodeIntegrationSettings } from "./settings";
 import { VscodeHostBridge } from "./vscode-host-bridge";
 
 export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -12,8 +13,17 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
   constructor(
     private readonly extensionUri: vscode.Uri,
     connection: DaemonConnection,
+    settings: VscodeIntegrationSettings,
   ) {
-    this.bridge = new VscodeHostBridge(connection);
+    this.bridge = new VscodeHostBridge(connection, settings);
+  }
+
+  updateSettings(settings: VscodeIntegrationSettings): void {
+    this.bridge.updateSettings(settings);
+    for (const webview of this.webviews) {
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin
+      void webview.postMessage({ channel: "kiki.vscode-host.settingsChanged", settings });
+    }
   }
 
   dispose(): void {
