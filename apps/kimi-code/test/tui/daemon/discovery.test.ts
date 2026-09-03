@@ -74,7 +74,9 @@ describe('daemon discovery', () => {
     const home = await daemonHome();
     await writeFile(join(home, 'server', 'instances', 'a.json'), instance({ port: 1, heartbeat_at: 30 }));
     await writeFile(join(home, 'server', 'instances', 'b.json'), instance({ port: 2, heartbeat_at: 20 }));
-    const fetch = vi.fn(async (url: string | URL) => ({ ok: String(url).includes(':2/') }) as Response);
+    const fetch = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => ({
+      ok: String(url).includes(':2/'),
+    }) as Response);
 
     await expect(discoverDaemon(home, undefined, fetch as typeof globalThis.fetch)).resolves.toEqual({
       url: 'http://127.0.0.1:2',

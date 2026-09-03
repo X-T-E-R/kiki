@@ -112,6 +112,10 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
+    "@kiki/session-core": "workspace:^",
+    "@moonshot-ai/klient": "workspace:^",
+    "@moonshot-ai/protocol": "workspace:^",
+    "@moonshot-ai/transcript": "workspace:^",
     "ws": "^8.18.0"
   }
 }
