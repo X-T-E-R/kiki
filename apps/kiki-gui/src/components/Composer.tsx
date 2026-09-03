@@ -896,22 +896,27 @@ export function Composer({
       });
   };
 
-  const prepareAgentTurn = (content: string, includeEditorContext: boolean) =>
-    vscodeRuntime
-      ? vscodeHost.preparePrompt(content, vscodeConversationId, includeEditorContext)
-      : Promise.resolve(content);
-
   const sendPrompt = (content: string) => {
+    if (!vscodeRuntime) {
+      recordSubmission();
+      onSend(content, attachments);
+      return;
+    }
     runAgentTurn(async () => {
-      const prepared = await prepareAgentTurn(content, true);
+      const prepared = await vscodeHost.preparePrompt(content, vscodeConversationId, true);
       recordSubmission();
       onSend(prepared, attachments);
     });
   };
 
   const activateSkill = (name: string, args: string) => {
+    if (!vscodeRuntime) {
+      recordSubmission();
+      onActivateSkill?.(name, args, attachments);
+      return;
+    }
     runAgentTurn(async () => {
-      await prepareAgentTurn('', false);
+      await vscodeHost.preparePrompt('', vscodeConversationId, false);
       recordSubmission();
       onActivateSkill?.(name, args, attachments);
     });

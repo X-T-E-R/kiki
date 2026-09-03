@@ -213,6 +213,20 @@ describe('Composer host compatibility', () => {
     vi.stubGlobal('crypto', originalCrypto);
   });
 
+  it('submits browser prompts synchronously without VS Code preflight state', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'browser prompt', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(onSend).toHaveBeenCalledWith('browser prompt', []);
+    expect(preparePrompt).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
+  });
+
   it('preserves a new-session key for creation and rotates between resident sessions', async () => {
     vscodeRuntime.value = true;
     const onSend = vi.fn();
@@ -843,6 +857,27 @@ describe('Composer slash skill catalog', () => {
     expect(preparePrompt).toHaveBeenCalledWith('', expect.any(String), false);
     expect(onActivateSkill).toHaveBeenCalledWith('review', '--fix', []);
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('activates Tauri skills synchronously without VS Code preflight state', async () => {
+    desktopRuntime.value = true;
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onActivateSkill = vi.fn();
+    const { container } = await renderComposer({
+      value: '/review --fix',
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill,
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(onActivateSkill).toHaveBeenCalledWith('review', '--fix', []);
+    expect(preparePrompt).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
   });
 
   it('sends a slash skill as prompt text when onActivateSkill is omitted', async () => {
