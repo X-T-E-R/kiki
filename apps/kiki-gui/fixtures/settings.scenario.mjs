@@ -165,6 +165,50 @@ export default {
       originalSource: 'C:/fixture/plugins/fixture-plugin',
     },
   ],
+  pluginInfos: {
+    'fixture-plugin': {
+      id: 'fixture-plugin',
+      displayName: 'fixture-plugin',
+      version: '2.0.0',
+      enabled: true,
+      state: 'ok',
+      skillCount: 1,
+      mcpServerCount: 1,
+      enabledMcpServerCount: 1,
+      hookCount: 0,
+      commandCount: 2,
+      hasErrors: false,
+      source: 'local-path',
+      originalSource: 'C:/fixture/plugins/fixture-plugin',
+      root: 'C:/fixture/plugins/fixture-plugin',
+      installedAt: '2026-01-01T00:00:00.000Z',
+      manifest: {
+        name: 'fixture-plugin',
+        version: '2.0.0',
+        description: 'Fixture plugin used by the settings leaf.',
+      },
+      mcpServers: [
+        {
+          name: 'fixture-plugin-mcp',
+          runtimeName: 'fixture-plugin:fixture-plugin-mcp',
+          enabled: true,
+          transport: 'http',
+          url: 'https://mcp.fixture.example',
+        },
+      ],
+      diagnostics: [],
+    },
+  },
+  pluginMarketplace: [
+    {
+      id: 'catalog-notes',
+      tier: 'curated',
+      displayName: 'Catalog Notes',
+      description: 'A sample catalog entry from the configured marketplace.',
+      version: '1.2.0',
+      source: 'https://example.test/catalog-notes.zip',
+    },
+  ],
   // /api/v2/mcp/servers — one writable user-level entry and one read-only
   // plugin entry, so the manager's editable/read-only split is exercised.
   mcpManagedServers: [

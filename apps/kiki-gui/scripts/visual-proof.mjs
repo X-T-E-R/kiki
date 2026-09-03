@@ -184,6 +184,12 @@ const STRINGS = {
     terminalKillConfirm: 'sure?',
     terminalExited: 'Process exited (code 0)',
     capPlugin: 'Plugin skills',
+    pluginsAdd: 'Add a plugin',
+    pluginsMarketplaceTab: 'Marketplace',
+    pluginsUnconfigured: 'No marketplace is configured',
+    pluginsManifest: 'Manifest',
+    pluginsMcpOn: 'On',
+    pluginsInstall: 'Install',
     capBuiltin: 'Built-in skills',
     capFilterAria: 'Filter capabilities',
     capEmptyFilter: 'No capabilities match',
@@ -330,6 +336,12 @@ const STRINGS = {
     terminalKillConfirm: '确认？',
     terminalExited: '进程已退出（代码 0）',
     capPlugin: '插件技能',
+    pluginsAdd: '添加插件',
+    pluginsMarketplaceTab: '市场',
+    pluginsUnconfigured: '尚未配置市场',
+    pluginsManifest: '清单',
+    pluginsMcpOn: '开',
+    pluginsInstall: '安装',
     capBuiltin: '内置技能',
     capFilterAria: '过滤能力',
     capEmptyFilter: '没有匹配',
@@ -1297,13 +1309,21 @@ async function scenarioSettings() {
   await page.waitForTimeout(400);
   await shot('settings-mcp');
 
-  // Plugins leaf (batch-3 reviewer ruling): installed plugins with enabled /
-  // error state and contribution summaries; the marketplace stays batch 5.
+  // Plugins leaf (batch 5): installed list plus the add card. Default fixture
+  // has no marketplace URL, so the Marketplace tab is a how-to, not an error.
   await page.locator('nav [data-settings-nav-leaf="plugins"]').click();
   await page.waitForSelector('#st-card-plugins', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-plugins-add', { timeout: 10_000 });
   await page.waitForSelector('text=fixture-plugin', { timeout: 10_000 });
-  await page.waitForTimeout(400);
+  await page.locator('[data-plugin-details-toggle="fixture-plugin"]').click();
+  await page.waitForSelector('[data-plugin-details="fixture-plugin"]', { timeout: 10_000 });
+  await page.waitForSelector('text=fixture-plugin-mcp', { timeout: 10_000 });
+  await page.waitForTimeout(300);
   await shot('settings-plugins');
+  await page.locator(`[data-plugin-add-tab-button="marketplace"]`).click();
+  await page.waitForSelector(`text=${S.pluginsUnconfigured}`, { timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('settings-plugins-marketplace');
 
   // Automation leaf: tool policy plus the raw hooks editor.
   await page.locator('nav [data-settings-nav-leaf="automation"]').click();
