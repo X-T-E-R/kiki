@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { resolveWebviewConnection } from "../src/webview-connection";
+
 const host = vi.hoisted(() => {
   class Uri {
     constructor(private readonly value: string) {}
@@ -17,8 +19,6 @@ vi.mock("vscode", () => ({
   Uri: host.Uri,
   env: { asExternalUri: vi.fn() },
 }));
-
-import { resolveWebviewConnection } from "../src/webview-connection";
 
 describe("remote Webview connection", () => {
   it("uses the external REST origin and derives its WebSocket origin", async () => {
