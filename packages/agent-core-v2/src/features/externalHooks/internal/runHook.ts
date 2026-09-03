@@ -54,7 +54,7 @@ export async function runHook(
 ): Promise<HookResult> {
   let proc: IHostProcess;
   try {
-    proc = await hostProcess.spawn(command, [], {
+    proc = await hostProcess.spawn(quoteHookCommand(command), [], {
       shell: true,
       cwd: options.cwd,
       env: options.env,
@@ -124,6 +124,13 @@ export async function runHook(
     proc.stdin.on('error', () => {});
     proc.stdin.end(JSON.stringify(input));
   });
+}
+
+function quoteHookCommand(command: string): string {
+  if (process.platform !== 'win32') return command;
+  const match = /^(node(?:\.exe)?)(\s|$)/i.exec(command);
+  if (match === null || match[1] === undefined) return command;
+  return `"${process.execPath}"${command.slice(match[1].length)}`;
 }
 
 function timeoutSeconds(timeout: number): number {
