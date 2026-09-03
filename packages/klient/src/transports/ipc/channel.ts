@@ -18,6 +18,7 @@ import type {
 } from '../../core/channel.js';
 import { RPCError } from '../../core/errors.js';
 import { trimTrailingUndefined } from '../args.js';
+import { scopeKindOf } from '../codec.js';
 import {
   encodeFrame,
   NdjsonDecoder,
@@ -49,13 +50,6 @@ interface PendingStream {
   push(chunk: unknown): void;
   end(): void;
   error(err: Error): void;
-}
-
-function scopeKindOf(scope: ScopeRef): 'core' | 'workspace' | 'session' | 'agent' {
-  if (scope.agentId !== undefined) return 'agent';
-  if (scope.sessionId !== undefined) return 'session';
-  if (scope.workspaceId !== undefined) return 'workspace';
-  return 'core';
 }
 
 export class IpcChannel implements KlientChannel {

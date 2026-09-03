@@ -15,11 +15,13 @@ export interface IDisposable {
 /** Optional per-call knobs a transport may honor. */
 export interface CallOptions {
   /**
-   * Per-call deadline (ms). A transport with a default call timeout (ipc)
+   * Per-call deadline (ms). A transport with a default call timeout (ipc/http)
    * takes it as an override — long-poll calls pass a deadline covering the
    * engine-side wait; transports without a timeout (memory) ignore it.
    */
   readonly timeoutMs?: number;
+  /** Abort an in-flight call when the transport can propagate cancellation. */
+  readonly signal?: AbortSignal;
 }
 
 /** Scope coordinates of a call/subscription. Empty object = core (app) scope. */

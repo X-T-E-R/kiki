@@ -38,6 +38,7 @@ import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/cata
 import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
 
 import type { McpServerConfig } from '../../contract/mcp.js';
+import { decodeBase64, encodeBase64 } from '../base64.js';
 import type { CallOptions } from '../channel.js';
 import type {
   GlobalMcpServerConfig,
@@ -648,7 +649,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     files: {
       save: ({ data, filename, name, mimeType, expiresInSec }) =>
         call('fileService', 'save', [
-          Buffer.from(data).toString('base64'),
+          encodeBase64(data),
           filename,
           { name, mimeType, expiresInSec },
         ]) as Promise<FileMeta>,
@@ -657,7 +658,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
           meta: FileMeta;
           data: string;
         };
-        return { meta: wire.meta, data: Buffer.from(wire.data, 'base64') };
+        return { meta: wire.meta, data: decodeBase64(wire.data) };
       },
       delete: (fileId) => call('fileService', 'delete', [fileId]) as Promise<void>,
     },
