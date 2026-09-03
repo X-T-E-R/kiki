@@ -34,10 +34,10 @@ import {
   buildSkillActivation,
   type ComposerAttachment,
 } from '../lib/attachments';
+import { useHost } from '../host';
 import { composerDefaultsForProfile } from '../lib/agentSettings';
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { readComposerState, readDraft, subscribeDraftAppends, writeComposerState, writeDraft } from '../lib/drafts';
-import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
 import {
   addAnnotation,
   buildAnnotationsPrefix,
@@ -1046,6 +1046,7 @@ export function SessionView({
   /** Polled session records owned by App (page-1 polling there). */
   sessions: readonly Session[];
 }) {
+  const host = useHost();
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
   const { client, socket, meta, wsStatus } = useConnection();
@@ -1063,6 +1064,30 @@ export function SessionView({
   // Throttle for the ambiguous y/n hint (epoch ms of the last toast).
   const lastAmbiguityToastRef = useRef(0);
   const createHandoff = parseSessionCreateHandoff(location.state);
+  // Turn locator: /s/{id}?turn=N (the /usage drilldown's per-turn action)
+  // smooth-scrolls the transcript to that turn's first block, retrying briefly
+  // while the view mounts and publishes its rows (same pattern as the
+  // subagent jump-back locator). Turns outside the loaded transcript window
+  // degrade to landing on the session.
+  const turnLocator = new URLSearchParams(location.search).get('turn');
+  useEffect(() => {
+    if (turnLocator === null) return;
+    let cancelled = false;
+    const scrollToTurn = (attemptsLeft: number): void => {
+      if (cancelled) return;
+      const target = document.querySelector(`[data-turn-id="${CSS.escape(turnLocator)}"]`);
+      if (target !== null) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+      if (attemptsLeft > 0) window.setTimeout(() => { scrollToTurn(attemptsLeft - 1); }, 150);
+    };
+    const timer = window.setTimeout(() => { scrollToTurn(12); }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [turnLocator, sessionId]);
   const initialPromptRef = useRef(createHandoff.initialPrompt);
   const initialSkillRef = useRef(createHandoff.initialSkill);
   const initialOptionsRef = useRef(createHandoff);
@@ -1806,10 +1831,11 @@ export function SessionView({
   const actionContext: SessionActionContext = useMemo(
     () => ({
       client,
+      host,
       refreshSessions: () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
       navigate,
     }),
-    [client, queryClient, navigate],
+    [client, host, queryClient, navigate],
   );
 
   // Same bare-title patch the sidebar's rename dialog sends: omitting
@@ -2119,15 +2145,15 @@ export function SessionView({
     }
     if (lastNotifiedInteractionRef.current === 'approval') return;
     lastNotifiedInteractionRef.current = 'approval';
-    if (!readDesktopPrefs().notifications) return;
-    void isMainWindowVisibleAndFocused().then((visibleAndFocused) => {
+    if (!readDesktopPrefs().notifications || host.isWindowVisibleAndFocused === undefined) return;
+    void host.isWindowVisibleAndFocused().then((visibleAndFocused) => {
       if (visibleAndFocused) return;
-      void showDesktopNotification({
+      void host.notify?.({
         title: 'Kiki',
         body: t('sv.notificationBody'),
       });
     });
-  }, [state.pendingInteraction, t]);
+  }, [host, state.pendingInteraction, t]);
 
   const composerDisabled =
     controller === null ||

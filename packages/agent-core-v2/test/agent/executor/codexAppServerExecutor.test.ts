@@ -18,8 +18,10 @@ import {
 import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentUsageService } from '#/agent/usage/usage';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import type { Event2 } from '#/app/event/event2';
+import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { ISessionQuestionService } from '#/session/question/question';
@@ -139,8 +141,20 @@ function createHarness(options: HarnessOptions = {}) {
     _serviceBrand: undefined,
     flush: async () => {},
   } as unknown as IWireService;
+  const usageRecords: Parameters<IAgentUsageService['record']>[] = [];
+  const usage = {
+    _serviceBrand: undefined,
+    record: (...args: Parameters<IAgentUsageService['record']>) => { usageRecords.push(args); },
+    status: () => ({}),
+    onDidRecord: () => ({ dispose: () => {} }),
+  } as IAgentUsageService;
+  const modelCatalog = {
+    get: () => ({ providerName: 'openai' }) as Model,
+  } as unknown as IModelCatalog;
   const services = new Map<unknown, unknown>([
     [IAgentStateService, states],
+    [IModelCatalog, modelCatalog],
+    [IAgentUsageService, usage],
     [IEventDispatcher, dispatcher],
     [IAgentContextMemoryService, memory],
     [ISessionInteractionService, interaction],
@@ -266,6 +280,7 @@ function createHarness(options: HarnessOptions = {}) {
     serverResults,
     interaction,
     questionRequest,
+    usageRecords,
   };
 }
 
@@ -294,6 +309,16 @@ describe('Codex app-server external executor', () => {
       profileDelivery: 'native',
       losses: ['codex_no_step_boundaries'],
     });
+    expect(harness.usageRecords).toEqual([[
+      'gpt-test',
+      { inputOther: 3, inputCacheRead: 1, inputCacheCreation: 0, output: 2 },
+      { type: 'turn', turnId: 2, step: 1 },
+      {
+        provider: 'openai',
+        modelAlias: 'gpt-test',
+        executorId: 'codex-app-server',
+      },
+    ]]);
     await harness.session.shutdown();
   });
 

@@ -1,6 +1,7 @@
 import type { Event } from '#/_base/event';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { ProfileData } from '#/agent/profile/profile';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
@@ -24,6 +25,8 @@ export interface DispatchLaunchInput {
   readonly name?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly permissionMode?: PermissionMode;
+  readonly permissionModeCeiling?: PermissionMode;
   readonly resolvedBinding?: DispatchResolvedBinding;
   readonly strictThinking?: boolean;
   readonly strictThinkingFromProfile?: boolean;
@@ -44,6 +47,7 @@ export type DispatchIdlePolicy = 'execution' | 'quiescent';
 
 export interface DispatchRunOptions {
   readonly signal: AbortSignal;
+  readonly requesterAgentId?: string;
   readonly onReady?: () => void;
   readonly lineage?: string;
   readonly idlePolicy?: DispatchIdlePolicy;
@@ -68,15 +72,21 @@ export interface DispatchRun {
   readonly lineage?: string;
 }
 
+export interface DispatchDelegatedRunEvent {
+  readonly requesterAgentId: string;
+  readonly agentId: string;
+}
+
 export interface DispatchWaitSource<T> {
   readonly onDidChange: Event<void>;
   read(): readonly T[];
   key(item: T): string;
   terminal(item: T): boolean;
+  blockedKey?(): string | undefined;
 }
 
 export interface DispatchWaitResult<T> {
-  readonly waitStatus: 'completed' | 'timed_out' | 'no_items';
+  readonly waitStatus: 'completed' | 'timed_out' | 'no_items' | 'blocked';
   readonly waitedMs: number;
   readonly item?: T;
   readonly completedDuringWait: readonly T[];
@@ -84,6 +94,7 @@ export interface DispatchWaitResult<T> {
 
 export interface ISessionDispatchService {
   readonly _serviceBrand: undefined;
+  readonly onDidDelegateRun: Event<DispatchDelegatedRunEvent>;
   launch(input: DispatchLaunchInput): Promise<DispatchRun>;
   resolveOwnedChild(delegator: DelegatorRef, ref: string): Promise<DispatchChild>;
   runOnExisting(
@@ -92,6 +103,7 @@ export interface ISessionDispatchService {
     options: DispatchRunOptions,
   ): Promise<DispatchRun>;
   recordRun(agentId: string, runId: string): Promise<void>;
+  recordDelegatedRun(requesterAgentId: string, agentId: string): void;
   wait<T>(
     source: DispatchWaitSource<T>,
     options: { readonly key?: string; readonly timeoutMs: number; readonly signal?: AbortSignal },

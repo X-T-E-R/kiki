@@ -3,8 +3,8 @@
  * settings entry, and the session list (polled every 5s).
  *
  * Entry distribution follows the desktop convention: the wordmark row carries
- * the browse-only destinations (capabilities, usage) and the footer keeps just
- * the settings entry plus a connection status dot that deep-links to
+ * the browse-only usage destination and the footer keeps just the settings
+ * entry plus a connection status dot that deep-links to
  * settings → connection. Disconnect lives in that settings section.
  *
  * The search box queries `POST /search` (global full-text index); results
@@ -22,11 +22,10 @@ import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { Session, Workspace } from '@moonshot-ai/protocol';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { isDesktopRuntime } from '../lib/desktop';
-import { openHostPath, revealHostPath } from '../lib/hostFileOps';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
 import { runToastAction } from '../lib/toasts';
@@ -62,8 +61,8 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { PendingBadge } from './PendingBadge';
 import { Wordmark } from './Wordmark';
 
-/** Wordmark-row icon buttons (capabilities / usage): glyph-only, ink-faint at
- * rest so the header stays quiet next to the wordmark. */
+/** Wordmark-row icon buttons (usage): glyph-only, ink-faint at rest so the
+ * header stays quiet next to the wordmark. */
 const HEADER_ICON_BUTTON =
   'flex h-6 w-6 items-center justify-center rounded-md text-[12.5px] leading-none text-ink-faint transition-colors hover:bg-paper hover:text-ink';
 
@@ -203,6 +202,7 @@ export function Sidebar({
   onNewSession: () => void;
   className?: string;
 }) {
+  const host = useHost();
   const navigate = useGuardedNavigate();
   const { client, meta, wsStatus } = useConnection();
   const { t, locale, time } = useI18n();
@@ -252,8 +252,8 @@ export function Sidebar({
   );
 
   const actionContext: SessionActionContext = useMemo(
-    () => ({ client, refreshSessions, navigate }),
-    [client, refreshSessions, navigate],
+    () => ({ client, host, refreshSessions, navigate }),
+    [client, host, refreshSessions, navigate],
   );
 
   // Debounced global search; react-query cancels superseded requests.
@@ -413,16 +413,6 @@ export function Sidebar({
       <div className="flex items-center justify-between px-4 pt-4 pb-3">
         <Wordmark />
         <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            data-nav-capabilities
-            onClick={() => void navigate('/capabilities')}
-            aria-label={t('cap.navAria')}
-            title={t('cap.nav')}
-            className={HEADER_ICON_BUTTON}
-          >
-            <span aria-hidden>✦</span>
-          </button>
           <button
             type="button"
             data-nav-usage
@@ -1215,6 +1205,7 @@ function SessionMenu({
   onArchive: () => void;
   onRestore: () => void;
 }) {
+  const host = useHost();
   const { t } = useI18n();
   const archived = session.archived === true;
   const menuRef = useRef<HTMLDivElement>(null);
@@ -1260,7 +1251,7 @@ function SessionMenu({
   // editor actions ride the desktop opener commands, so the browser build
   // degrades to the two copy entries only.
   const cwd = session.metadata.cwd;
-  const desktop = isDesktopRuntime();
+  const desktop = host.revealPath !== undefined && host.openPath !== undefined;
   const runAndClose = (label: string, action: () => Promise<void>) => {
     onClose();
     runToastAction(label, action);
@@ -1329,7 +1320,7 @@ function SessionMenu({
                 role="menuitem"
                 data-menu-item="open-folder"
                 className={itemClass}
-                onClick={() => { runAndClose(t('menu.openFolder'), () => revealHostPath(cwd)); }}
+                onClick={() => { runAndClose(t('menu.openFolder'), () => host.revealPath!(cwd)); }}
               >
                 {t('menu.openFolder')}
               </button>
@@ -1338,7 +1329,7 @@ function SessionMenu({
                 role="menuitem"
                 data-menu-item="open-default-app"
                 className={itemClass}
-                onClick={() => { runAndClose(t('menu.openDefaultApp'), () => openHostPath(cwd)); }}
+                onClick={() => { runAndClose(t('menu.openDefaultApp'), () => host.openPath!(cwd)); }}
               >
                 {t('menu.openDefaultApp')}
               </button>

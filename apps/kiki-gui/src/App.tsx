@@ -34,7 +34,7 @@ import {
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { DirtyGuardContext, shouldGuardNavigation } from './components/dirtyGuard';
 import { NewSessionPage } from './components/NewSessionPage';
-import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
+import { CapabilitiesShim } from './components/CapabilitiesShim';
 import { ConversationShell } from './components/ConversationShell';
 import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
@@ -45,13 +45,7 @@ import { Sidebar } from './components/Sidebar';
 import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
-import {
-  checkNativeDesktopUpdate,
-  isDesktopRuntime,
-  onTrayNewSession,
-  readNativeDesktopPrefs,
-  writeNativeDesktopPrefs,
-} from './lib/desktop';
+import { useHost } from './host';
 import {
   arrangePinnedFirst,
   dedupeSessions,
@@ -98,11 +92,12 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 export function App() {
+  const host = useHost();
   const { client, socket, wsStatus } = useConnection();
   const { t, locale } = useI18n();
   const rawNavigate = useNavigate();
   const location = useLocation();
-  const desktop = isDesktopRuntime();
+  const desktop = host.kind === 'tauri';
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [workspaceFilter, setWorkspaceFilter] = useState<string | undefined>(undefined);
@@ -143,17 +138,17 @@ export function App() {
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.
   useEffect(() => {
-    if (!isDesktopRuntime()) return;
-    void readNativeDesktopPrefs().then((prefs) => {
+    if (host.kind !== 'tauri') return;
+    void host.readDesktopPrefs().then((prefs) => {
       if (prefs !== null) writeDesktopPrefs(prefs);
     });
-    return onTrayNewSession(() => void navigate('/new'));
-  }, [navigate]);
+    return host.onTrayNewSession(() => void navigate('/new'));
+  }, [host, navigate]);
 
   useEffect(() => {
-    if (!isDesktopRuntime()) return;
+    if (host.kind !== 'tauri') return;
     const timer = window.setTimeout(() => {
-      void checkNativeDesktopUpdate()
+      void host.checkDesktopUpdate()
         .then((update) => {
           if (update !== null) {
             pushToast({ tone: 'info', text: t('st.about.updateAvailable', { version: update.version }) });
@@ -162,19 +157,18 @@ export function App() {
         .catch(() => {});
     }, 1_500);
     return () => { window.clearTimeout(timer); };
-  }, [t]);
+  }, [host, t]);
 
   // Keep the native side (tray menu labels) on the active UI locale.
   useEffect(() => {
-    void writeNativeDesktopPrefs({ locale });
-  }, [locale]);
+    void host.writeDesktopPrefs?.({ locale });
+  }, [host, locale]);
 
   const sessionMatch = useMatch('/s/:id/*');
   const activeSessionId = sessionMatch?.params.id;
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
-  const isCapabilitiesRoute = useMatch('/capabilities') !== null;
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions', showArchived, workspaceFilter],
@@ -270,17 +264,14 @@ export function App() {
             ? { kind: 'settings' }
             : isUsageRoute
               ? { kind: 'usage' }
-              : isCapabilitiesRoute
-                ? { kind: 'capabilities' }
-                : { kind: 'other' };
+              : { kind: 'other' };
     document.title = resolveWindowTitle(route, sessions, {
       untitled: t('sidebar.untitled'),
       newSession: t('new.title'),
       settings: t('st.title'),
       usage: t('usage.title'),
-      capabilities: t('cap.title'),
     });
-  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isCapabilitiesRoute, sessions, t]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, sessions, t]);
 
   // ⌘N / Ctrl+N navigates to the /new draft page from any route; ⌘K / Ctrl+K
   // toggles the quick switcher; Ctrl+Tab jumps to the most recent other
@@ -372,7 +363,7 @@ export function App() {
   // Close mobile sidebar on route change.
   useEffect(() => {
     setSidebarOpen(false);
-  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isCapabilitiesRoute]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute]);
 
   // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
   // events, so the key must be handled globally while it is open).
@@ -457,7 +448,7 @@ export function App() {
           />
           <Route
             path="/capabilities"
-            element={<CapabilitiesPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+            element={<CapabilitiesShim />}
           />
           {/* More specific than the `/s/:id/*` splat, so the tasks browser wins
               over SessionRouteView while the sidebar keeps the session active. */}

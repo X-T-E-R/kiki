@@ -1,5 +1,7 @@
 /**
- * Capabilities page (/capabilities) data shaping — pure, unit-tested.
+ * Capabilities data shaping — pure, unit-tested. Shared by the settings
+ * skills catalog card and MCP status card (the old /capabilities page's
+ * pipeline, re-homed into settings in the batch-3 split).
  *
  * Groups the workspace skill catalog by source and filters both skills and
  * MCP servers client-side. The wire `source` field is looser than the

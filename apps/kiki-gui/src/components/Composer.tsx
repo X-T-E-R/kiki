@@ -26,6 +26,7 @@ import { useNavigate } from 'react-router-dom';
 
 import type { FsSearchHit, PermissionMode, PromptPlanGate, SessionUsage } from '@moonshot-ai/protocol';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey } from '../i18n/locale';
 import type { NamedAgentProfile } from '../lib/client';
@@ -48,7 +49,6 @@ import {
   type SlashActionId,
   type SlashItem,
 } from '../lib/slashCommands';
-import { isDesktopRuntime, selectFilesNative } from '../lib/desktop';
 import { pushInputHistory, readInputHistory } from '../lib/drafts';
 import { registerOverlay } from '../lib/uiBusy';
 import type { SelectionAnnotation } from '../lib/selectionQuote';
@@ -292,6 +292,7 @@ export function Composer({
   /** Marks the textarea as the dialog's initial-focus target (`data-autofocus`). */
   autoFocus?: boolean;
 }) {
+  const host = useHost();
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
@@ -797,11 +798,11 @@ export function Composer({
    */
   const fileInputRef = useRef<HTMLInputElement>(null);
   const openAttachPicker = () => {
-    if (!isDesktopRuntime()) {
+    if (host.pickFiles === undefined) {
       fileInputRef.current?.click();
       return;
     }
-    void selectFilesNative()
+    void host.pickFiles()
       .then((files) => {
         if (files !== null && files.length > 0) addFiles(files);
       })
@@ -1513,6 +1514,7 @@ export function Composer({
               used={contextUsage.used}
               limit={contextUsage.limit}
               usage={sessionUsage}
+              sessionId={sessionId}
               onCompact={onCompactContext}
             />
           ) : null}

@@ -60,7 +60,6 @@ export function QuickSwitcher({
 
   const untitled = t('sidebar.untitled');
   const usageActionTitle = t('switcher.action.usage');
-  const capabilitiesActionTitle = t('switcher.action.capabilities');
   const settingsActionTitle = t('switcher.action.settings');
   // The settings index is the same one the settings page searches, so a name
   // that works there works here — and lands on the card, not the section.
@@ -75,7 +74,7 @@ export function QuickSwitcher({
         cardId: entry.cardId,
         sectionLabel: entry.sectionLabel,
         title: entry.title,
-        route: settingsCardRoute(entry.section, entry.cardId),
+        route: settingsCardRoute(entry.section, entry.cardId, entry.tab),
       })),
     [settingsIndex, input],
   );
@@ -88,7 +87,6 @@ export function QuickSwitcher({
         untitled,
         actions: [
           { actionId: 'usage', title: usageActionTitle, route: '/usage' },
-          { actionId: 'capabilities', title: capabilitiesActionTitle, route: '/capabilities' },
           { actionId: 'settings', title: settingsActionTitle, route: '/settings' },
         ],
         settings: settingsMatches,
@@ -100,7 +98,6 @@ export function QuickSwitcher({
       searchQuery.data,
       untitled,
       usageActionTitle,
-      capabilitiesActionTitle,
       settingsActionTitle,
       settingsMatches,
     ],

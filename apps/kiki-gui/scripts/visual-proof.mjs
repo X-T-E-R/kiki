@@ -75,11 +75,15 @@ const STRINGS = {
     kikiAsks: 'kiki asks',
     submit: 'Submit',
     settings: 'Settings',
-    models: 'Models',
-    providersAuth: 'Providers & auth',
+    tabProviders: 'Connections',
     capabilities: 'Capabilities',
     configuredProviders: 'Configured providers',
     tools: 'Tools',
+    skills: 'Skills',
+    mcp: 'MCP',
+    automation: 'Tools & hooks',
+    shimCapabilities: 'The capabilities panel was split into dedicated settings pages',
+    shimPlugins: 'Plugins',
     newSessionDefaults: 'New-session defaults',
     appearanceTitle: 'Appearance',
     searchQuery: 'theme',
@@ -139,7 +143,15 @@ const STRINGS = {
     compactContext: 'Compact context',
     compactOlderContext: 'Compact older context',
     contextDetails: 'Context details',
-    sessionUsage: 'Session usage',
+    sessionUsage: 'Session cumulative',
+    usageAllHistory: 'All history · no time filter applied',
+    usageEstimatedCost: 'Estimated cost',
+    usagePartial: 'partially unknown',
+    usageReliability: 'Data reliability',
+    usageDeletedExcluded: 'Deleted sessions are not included',
+    usageFiveHourRhythm: '5h rhythm',
+    usageDrilldown: 'Sessions in this bucket',
+    usageSubagentPattern: /subagent/,
     pasteAsPlainText: 'Paste as plain text',
     contextMenuSelectAll: 'Select all',
     bannerPattern: /Connection lost|Disconnected from the server/,
@@ -176,7 +188,6 @@ const STRINGS = {
     capFilterAria: 'Filter capabilities',
     capEmptyFilter: 'No capabilities match',
     capNoWorkspace: 'No workspace is registered',
-    capLoadFailed: 'Could not load capabilities',
     capRestartRequested: 'Restart requested.',
     turnWorking: 'Working',
     stopped: 'Stopped',
@@ -210,11 +221,15 @@ const STRINGS = {
     kikiAsks: 'kiki 提问',
     submit: '提交',
     settings: '设置',
-    models: '模型',
-    providersAuth: '提供商与认证',
+    tabProviders: '连接服务',
     capabilities: '能力',
     configuredProviders: '已配置的提供商',
     tools: '工具',
+    skills: '技能',
+    mcp: 'MCP',
+    automation: '工具与 Hooks',
+    shimCapabilities: '能力面板已拆分为独立的设置页面',
+    shimPlugins: '插件',
     newSessionDefaults: '新会话默认值',
     appearanceTitle: '外观',
     searchQuery: '主题',
@@ -274,7 +289,15 @@ const STRINGS = {
     compactContext: '压缩上下文',
     compactOlderContext: '压缩较早上下文',
     contextDetails: '上下文详情',
-    sessionUsage: '会话用量',
+    sessionUsage: '本会话累计',
+    usageAllHistory: '全部历史 · 未套用时间过滤',
+    usageEstimatedCost: '估算成本',
+    usagePartial: '部分未知',
+    usageReliability: '数据可信度',
+    usageDeletedExcluded: '不含已删除会话',
+    usageFiveHourRhythm: '5h 节奏',
+    usageDrilldown: '该时间桶内的会话',
+    usageSubagentPattern: /子代理/,
     pasteAsPlainText: '粘贴为纯文本',
     contextMenuSelectAll: '全选',
     bannerPattern: /正在重连|已与服务器断开连接/,
@@ -311,7 +334,6 @@ const STRINGS = {
     capFilterAria: '过滤能力',
     capEmptyFilter: '没有匹配',
     capNoWorkspace: '没有已注册的工作区',
-    capLoadFailed: '能力加载失败',
     capRestartRequested: '已请求重启。',
     turnWorking: '正在工作',
     stopped: '已停止',
@@ -1167,14 +1189,16 @@ async function scenarioSettings() {
   await page.waitForTimeout(500);
   await shot('settings-general');
 
-  await page.click(`text=${S.models}`);
+  // Batch 2 merged Models + Providers into one "Models & providers" entry
+  // with three tabs; the nav leaf opens the default (Available models) tab.
+  await page.locator('nav [data-settings-nav-leaf="ai"]').click();
   await page.waitForSelector('text=Kiki Pro', { timeout: 10_000 });
   // The second fixture provider proves the per-provider grouping renders.
   await page.waitForSelector('text=Alt Claude X', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-models');
 
-  await page.click(`text=${S.providersAuth}`);
+  await page.locator('[data-ai-tab="providers"]').click();
   await page.waitForSelector(`text=${S.configuredProviders}`, { timeout: 10_000 });
   // The pending device-code flow is seeded by the scenario — proof for the
   // OAuth card (code, countdown, polling indicator).
@@ -1182,8 +1206,9 @@ async function scenarioSettings() {
   await page.waitForTimeout(400);
   await shot('settings-providers');
 
-  // Reload-proof: land on the providers route directly so a dev-server page
-  // reload during the walk cannot strand the assertions on the wrong tab.
+  // Reload-proof + legacy-route proof: the pre-merge /settings/providers
+  // bookmark redirects to /settings/ai?tab=providers and lands on the same
+  // card, so a dev-server reload cannot strand the assertions on the wrong tab.
   await page.goto(`${WEB_URL}/settings/providers?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
@@ -1245,26 +1270,60 @@ async function scenarioSettings() {
   await page.waitForTimeout(300);
   await shot('settings-providers-wizard');
 
-  // Scope to the settings section nav: the app sidebar also has a top-level
-  // "Capabilities" entry, and a bare text= click hits that one first.
-  await page.locator('nav').getByText(S.capabilities, { exact: true }).click();
+  // Batch 3 split the capabilities leaf into skills / mcp / automation under
+  // "Capabilities & extensions". Nav leaf ids are stable, so click them
+  // directly (the app sidebar no longer carries a capabilities entry).
+  await page.locator('nav [data-settings-nav-leaf="skills"]').click();
   // The unsaved wizard draft arms the dirty guard: confirm the discard so the
   // navigation proceeds (the dialog itself is proof the guard fired).
   await page.waitForSelector(`text=${S.dirtyDiscard}`, { timeout: 5000 });
   await shot('settings-dirty-guard');
   await page.click(`text=${S.dirtyDiscard}`);
-  // Capabilities hierarchy: skills + MCP groups start open, the runtime and
-  // advanced tails start folded.
-  await page.waitForSelector('[data-settings-group="skills"] > button[aria-expanded="true"]', { timeout: 10_000 });
-  await page.waitForSelector('[data-settings-group="mcp"] > button[aria-expanded="true"]', { timeout: 10_000 });
-  await page.waitForSelector('[data-settings-group="advanced"] > button[aria-expanded="false"]', { timeout: 10_000 });
-  await page.waitForSelector('text=fixture-mcp', { timeout: 10_000 });
-  await shot('settings-capabilities');
-  // Fold the runtime group open to reach the tools policy card.
-  await page.locator('[data-settings-group="runtime"] > button').click();
-  await page.waitForSelector(`text=${S.tools}`, { timeout: 10_000 });
+  // Skills leaf: server-side defaults card plus the workspace skill catalog
+  // (the old /capabilities browser, re-homed).
+  await page.waitForSelector('#st-card-caps', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-skill-catalog', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
-  await shot('settings-capabilities-runtime');
+  await shot('settings-skills');
+
+  // MCP leaf: per-workspace config entries, live status rows, and the
+  // server-wide timeouts that moved out of runtime (redesign §8.3).
+  await page.locator('nav [data-settings-nav-leaf="mcp"]').click();
+  await page.waitForSelector('#st-card-mcp', { timeout: 10_000 });
+  await page.waitForSelector('text=fixture-mcp', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-mcp-status', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-mcp-timeouts', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('settings-mcp');
+
+  // Plugins leaf (batch-3 reviewer ruling): installed plugins with enabled /
+  // error state and contribution summaries; the marketplace stays batch 5.
+  await page.locator('nav [data-settings-nav-leaf="plugins"]').click();
+  await page.waitForSelector('#st-card-plugins', { timeout: 10_000 });
+  await page.waitForSelector('text=fixture-plugin', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('settings-plugins');
+
+  // Automation leaf: tool policy plus the raw hooks editor.
+  await page.locator('nav [data-settings-nav-leaf="automation"]').click();
+  await page.waitForSelector('#st-card-tools', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.tools}`, { timeout: 10_000 });
+  await page.waitForSelector('#st-card-hooks', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('settings-automation');
+
+  // Legacy redirect proof (redesign §10.2 rule 3): the retired capabilities
+  // section still resolves — a precise card hash follows the card across the
+  // split, landing on the MCP leaf instead of skills.
+  await page.goto(`${WEB_URL}/settings/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}#st-card-mcp`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector('#st-card-mcp', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-mcp-timeouts', { timeout: 10_000 });
+  if (!page.url().includes('/settings/mcp')) {
+    throw new Error(`legacy capabilities#st-card-mcp must canonicalize to the mcp leaf, got ${page.url()}`);
+  }
 }
 
 /**
@@ -1459,8 +1518,10 @@ async function scenarioWorkspaces() {
 }
 
 async function scenarioSettingsAgents() {
-  // Named-agent management: the section splits into a main-agent card
-  // (`main: true`, here the built-in `agent`) and a subagent-profiles card.
+  // Batch 3 split this walk across two leaves (redesign §10.3): the
+  // main-agent card stays on /settings/agents while the subagent profiles,
+  // delegation governance and the subagent timeout moved to
+  // /settings/subagents. Phase A covers the main card; phase B the sub card.
   // The merged view (the fixture workspaces share one `reviewer` profile)
   // plus both disable channels — named profiles write
   // disabled_named_profiles, built-ins write disabled_builtin_profiles, and
@@ -1471,8 +1532,42 @@ async function scenarioSettingsAgents() {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('#st-card-main-agents', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-subagent-profiles', { timeout: 10_000 });
   await page.waitForSelector('#st-card-main-agents [data-agent-profile="agent"]', { timeout: 10_000 });
+  if ((await page.locator('#st-card-subagent-profiles').count()) !== 0) {
+    throw new Error('subagent profiles must live on the subagents leaf after the batch-3 split');
+  }
+  // The builtin main profile falls back to the most recent workspace for its
+  // new-session deep link.
+  const mainHref = await page.locator('[data-agent-profile="agent"] [data-new-session-href]').first().getAttribute('data-new-session-href');
+  if (mainHref !== '/new?workspace=wd_fixture_000000000000&agent=agent') {
+    throw new Error(`main-agent new-session href mismatch: ${mainHref}`);
+  }
+  await page.waitForTimeout(300);
+  await shot('settings-agents-main');
+
+  // Disabled split semantics on the MAIN profile: turning a main agent off
+  // only stops subagent calls — the new-session button stays, and the row
+  // explains why it is still usable.
+  const mainRow = page.locator('[data-agent-profile="agent"]');
+  await mainRow.locator('[role="switch"]').click();
+  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
+  if (await mainRow.locator('[data-new-session-href]').isDisabled()) {
+    throw new Error('disabled main profile must keep its new-session button');
+  }
+  await mainRow.getByText(S.disabledMainHint, { exact: false }).waitFor({ timeout: 5000 });
+  await mainRow.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await shot('settings-agents-main-disabled');
+  // Re-enable the main profile so the reload assertions below stay canonical.
+  await mainRow.locator('[role="switch"]').click();
+  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
+
+  // Phase B: subagent profiles on their own leaf, next to the governance
+  // card and the relocated subagent timeout.
+  await page.locator('nav [data-settings-nav-leaf="subagents"]').click();
+  await page.waitForSelector('#st-card-subagent-profiles', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-subagents', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-subagent-timeout', { timeout: 10_000 });
   await page.waitForSelector('#st-card-subagent-profiles [data-agent-profile="reviewer"]', { timeout: 10_000 });
   const reviewerRows = await page.locator('[data-agent-profile="reviewer"]').count();
   if (reviewerRows !== 1) {
@@ -1531,17 +1626,10 @@ async function scenarioSettingsAgents() {
   await page.locator('[data-agent-profile="reviewer"] [data-technical-details] summary').click();
   // Three workspace ids collapse into two chips + an overflow pill.
   await page.waitForSelector('[data-agent-profile="reviewer"] >> text=+1', { timeout: 5000 });
-  // Every row carries a new-session deep link: the file-backed reviewer pins
-  // its own workspace; the builtin main profile falls back to the most
-  // recent workspace.
-  const hrefOf = (name) => page.locator(`[data-agent-profile="${name}"] [data-new-session-href]`).first().getAttribute('data-new-session-href');
-  const reviewerHref = await hrefOf('reviewer');
+  // The file-backed reviewer pins its own workspace on the new-session link.
+  const reviewerHref = await page.locator('[data-agent-profile="reviewer"] [data-new-session-href]').first().getAttribute('data-new-session-href');
   if (reviewerHref !== '/new?workspace=wd_fixture_000000000000&agent=reviewer') {
     throw new Error(`reviewer new-session href mismatch: ${reviewerHref}`);
-  }
-  const mainHref = await hrefOf('agent');
-  if (mainHref !== '/new?workspace=wd_fixture_000000000000&agent=agent') {
-    throw new Error(`main-agent new-session href mismatch: ${mainHref}`);
   }
   // Read-only projection fields render in the technical-details disclosure
   // (frontend fixture row), including the structured lease's nested
@@ -1588,32 +1676,15 @@ async function scenarioSettingsAgents() {
   if (await userScout.locator('[data-new-session-href]').isDisabled()) {
     throw new Error('the file profile must regain its new-session button once the built-in is disabled');
   }
-  // Let the switch's color transition settle before the shot.
-  await page.waitForTimeout(300);
-  await shot('settings-agents-disabled');
-
-  // Disabled split semantics: a disabled SUBAGENT profile loses its
-  // new-session button, while a disabled MAIN profile keeps it — turning a
-  // main agent off only stops subagent calls; main sessions still run it.
+  // A disabled SUBAGENT profile loses its new-session button (the mirror of
+  // the main-profile rule proven on the agents leaf above).
   const reviewerNewSession = page.locator('[data-agent-profile="reviewer"] [data-new-session-href]');
   if (!(await reviewerNewSession.isDisabled())) {
     throw new Error('disabled subagent profile must lose its new-session button');
   }
-  const mainRow = page.locator('[data-agent-profile="agent"]');
-  await mainRow.locator('[role="switch"]').click();
-  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
-  const mainNewSession = mainRow.locator('[data-new-session-href]');
-  if (await mainNewSession.isDisabled()) {
-    throw new Error('disabled main profile must keep its new-session button');
-  }
-  // …and the row explains why it is still usable.
-  await mainRow.getByText(S.disabledMainHint, { exact: false }).waitFor({ timeout: 5000 });
-  await mainRow.scrollIntoViewIfNeeded();
-  await page.waitForTimeout(200);
-  await shot('settings-agents-main-disabled');
-  // Re-enable the main profile so the reload assertions below stay canonical.
-  await mainRow.locator('[role="switch"]').click();
-  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
+  // Let the switch's color transition settle before the shot.
+  await page.waitForTimeout(300);
+  await shot('settings-agents-disabled');
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 10_000 });
@@ -1623,6 +1694,7 @@ async function scenarioSettingsAgents() {
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
   await shot('settings-agents-disabled-reloaded');
 }
+
 /** Grouping, sorting, scope and archived visibility all live behind the
  * sidebar's ⋮ view menu now, so every view change opens it first. */
 async function pickViewOption(selector) {
@@ -2868,6 +2940,93 @@ async function scenarioSearch() {
 }
 
 /**
+ * /usage V2 dashboard (§15.3): the no-query all-history default with the
+ * explicit chip and the cost/tokens KPIs, the three-axis filter bar driving
+ * the URL, the 5h rhythm granularity with a bucket drilldown into
+ * session/turn ids, the agent dimension's parent/child breakdown tree, the
+ * always-visible data-reliability card, and the 390px mobile layout.
+ */
+async function scenarioUsageDashboard() {
+  const usageUrl = (query) =>
+    `${WEB_URL}/usage${query === '' ? '' : `?${query}&`}${query === '' ? '?' : ''}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+
+  // 1. No-query visit: all history, said out loud; the unknown-price note and
+  //    the partially-unknown cost chip come from the seeded `mystery-9` model.
+  await page.goto(usageUrl(''), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`text=${S.usageEstimatedCost}`, { timeout: 15_000 });
+  await page.waitForSelector(`text=${S.usageAllHistory}`, { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.usagePartial}`, { timeout: 10_000 });
+  await page.waitForSelector('text=mystery-9', { timeout: 10_000 });
+  await page.waitForSelector('[data-usage-trend]', { timeout: 10_000 });
+  await page.waitForTimeout(500);
+  await shot('usage-all-history');
+
+  // 2. Three axes + the fixed reliability card (scrolled into view).
+  await page.locator('[data-axis="range"] [data-axis-value="last_7_days"]').click();
+  await page.locator('[data-axis="dimension"] [data-axis-value="agent"]').click();
+  await page.waitForSelector('[data-usage-reliability]', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.usageDeletedExcluded}`, { timeout: 10_000 });
+  await page.waitForTimeout(500);
+  await page.locator('[data-usage-reliability]').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  await shot('usage-filters-reliability');
+
+  // 3. Agent breakdown tab: parent/child tree expands to the researcher rows.
+  //    The tab switch must land in the URL so the view is shareable.
+  await page.locator('[data-usage-tab="breakdown"]').click();
+  await page.waitForSelector('[data-usage-agent-tree]', { timeout: 10_000 });
+  if (!page.url().includes('view=breakdown')) {
+    throw new Error(`breakdown tab missing from the URL: ${page.url()}`);
+  }
+  await page.locator('[data-usage-agent-tree] button', { hasText: S.usageSubagentPattern }).first().click();
+  await page.waitForSelector('text=researcher', { timeout: 5000 });
+  await page.waitForTimeout(300);
+  await shot('usage-breakdown-agents');
+
+  // 4. 5h rhythm tab: switch granularity, then the tab itself renders the
+  //    per-window session/turn drilldown (not just the trend chart).
+  await page.locator('[data-axis="granularity"] [data-axis-value="five_hour"]').click();
+  await page.waitForTimeout(700);
+  await page.locator('[data-usage-tab="fiveHour"]').click();
+  await page.waitForSelector('[data-usage-fivehour]', { timeout: 10_000 });
+  if (!page.url().includes('view=five_hour') || !page.url().includes('granularity=five_hour')) {
+    throw new Error(`5h view missing from the URL: ${page.url()}`);
+  }
+  const fiveHour = page.locator('[data-usage-fivehour]');
+  const fiveHourText = await fiveHour.innerText();
+  if (!fiveHourText.includes('session_fixture_usage_zeta')) {
+    throw new Error(`5h tab missing seeded session: ${fiveHourText}`);
+  }
+  const turnChips = await fiveHour.locator('[data-usage-turn]').count();
+  console.log(`[check] 5h windows=${await fiveHour.locator('[data-usage-fivehour-window]').count()} turnChips=${turnChips}`);
+  if (turnChips === 0) throw new Error('5h tab renders no turn locators');
+  await shot('usage-fivehour-drilldown');
+
+  // 5. Mobile: narrow viewport must not overflow; the strip and filter bar wrap.
+  await resizeViewport(390);
+  await page.goto(usageUrl('granularity=day'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  if (overflow > 1) throw new Error(`390px layout overflows by ${overflow}px`);
+  // The main pane clips horizontal overflow (overflow-y auto), so also assert
+  // every axis group stays inside the viewport instead of bleeding off-edge.
+  const bleeders = await page.evaluate(() => {
+    const names = [];
+    for (const el of document.querySelectorAll('[data-axis]')) {
+      const rect = el.getBoundingClientRect();
+      if (rect.right > window.innerWidth + 1 || rect.left < -1) names.push(el.dataset.axis);
+    }
+    return names;
+  });
+  if (bleeders.length > 0) throw new Error(`390px axis groups bleed off-edge: ${bleeders.join(',')}`);
+  await shot('usage-mobile-390');
+  await resizeViewport(1440);
+}
+
+/**
  * Session footer context ring: open the composer's ring detail card (amber at
  * ~57%), assert its lifetime session-usage rows, verify clicking the card
  * (not the ring) triggers compaction; then open the textarea's custom
@@ -3016,23 +3175,29 @@ async function scenarioI18n() {
 // ---------------------------------------------------------------------------
 
 /**
- * /capabilities page walk: grouped skill catalog + MCP rows, a restart
- * round-trip, the collapsed builtin group, the no-match filter state, then
- * route-intercepted no-workspace and load-failure states.
+ * /capabilities retired in the batch-3 settings split (redesign §10.2 rule
+ * 3): the shim redirects a bare visit to /settings/skills with a split
+ * signpost, the relocated catalog still groups/filters/expands, and the MCP
+ * restart round-trip now lives on the MCP settings leaf.
  */
 async function scenarioCapabilities() {
   const url = `${WEB_URL}/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const skillsUrl = `${WEB_URL}/settings/skills?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
   await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-capabilities-shim-note]', { timeout: 10_000 });
+  const redirected = page.url();
+  if (!redirected.includes('/settings/skills') || !redirected.includes('from=capabilities')) {
+    throw new Error(`capabilities shim must land on /settings/skills?from=capabilities, got ${redirected}`);
+  }
+  await page.waitForSelector(`text=${S.shimCapabilities}`, { timeout: 5000 });
+  // Scoped to the note: the leaf name alone also appears in the nav rail.
+  await page.waitForSelector(`[data-capabilities-shim-note] >> text=${S.shimPlugins}`, { timeout: 5000 });
+  await page.waitForSelector('#st-card-skill-catalog', { timeout: 10_000 });
   await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
-  await page.waitForSelector('text=fixture-web', { timeout: 10_000 });
+  // Plugin skill rows (MCP servers live on the MCP leaf after the split).
+  await page.waitForSelector('text=web-research', { timeout: 10_000 });
   await page.waitForTimeout(400);
-  await shot('capabilities-default');
-
-  // MCP restart round-trip (scoped to the server row — "Restart" is generic).
-  const mcpGroup = page.locator('[data-capability-group="mcp"]');
-  await mcpGroup.locator('div.rounded-lg', { hasText: 'fixture-fs' }).locator('button').click();
-  await page.waitForSelector(`text=${S.capRestartRequested}`, { timeout: 5000 });
-  await shot('capabilities-mcp-restart');
+  await shot('capabilities-shim-skills');
 
   // The builtin group starts collapsed; expand it for the density check.
   await page.locator('[data-capability-group="builtin"] > button').click();
@@ -3045,36 +3210,45 @@ async function scenarioCapabilities() {
   await page.waitForSelector(`text=${S.capEmptyFilter}`, { timeout: 5000 });
   await shot('capabilities-filter-empty');
 
-  // Mobile width: hamburger header, single-column cards.
+  // MCP restart round-trip (scoped to the status card row — "Restart" is
+  // generic). The flow moved from /capabilities to the MCP settings leaf.
+  await page.goto(`${WEB_URL}/settings/mcp?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector('#st-card-mcp-status', { timeout: 10_000 });
+  await page.locator('#st-card-mcp-status div.rounded-lg', { hasText: 'fixture-fs' }).locator('button').click();
+  await page.waitForSelector(`text=${S.capRestartRequested}`, { timeout: 5000 });
+  await shot('capabilities-mcp-restart');
+
+  // Mobile width: hamburger header, single-column cards on the skills leaf.
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.goto(skillsUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('capabilities-mobile');
   await page.setViewportSize({ width: 1440, height: 900 });
 
-  // No workspace registered → quiet hint; the MCP group still renders.
+  // No workspace registered → quiet hint inside the relocated catalog.
   await page.route('**/api/v1/workspaces', (route) =>
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({ code: 0, msg: 'success', data: { items: [] }, request_id: 'req_fixture' }),
     }),
   );
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.goto(skillsUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(`text=${S.capNoWorkspace}`, { timeout: 10_000 });
-  await page.waitForSelector('text=fixture-web', { timeout: 10_000 });
   await shot('capabilities-no-workspace');
   await page.unroute('**/api/v1/workspaces');
 
-  // Workspace listing failure → error card with retry.
+  // Workspace listing failure → inline error on the skills leaf.
   await page.route('**/api/v1/workspaces', (route) =>
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({ code: 50001, msg: 'fixture boom', data: null, request_id: 'req_fixture' }),
     }),
   );
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(`text=${S.capLoadFailed}`, { timeout: 10_000 });
+  await page.goto(skillsUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('text=fixture boom', { timeout: 10_000 });
   await shot('capabilities-load-failed');
   await page.unroute('**/api/v1/workspaces');
 }
@@ -3124,6 +3298,7 @@ const SCENARIOS = [
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
   ['context-ring', scenarioContextRing],
+  ['usage-dashboard', scenarioUsageDashboard],
   ['terminal', scenarioTerminal],
   ['capabilities', scenarioCapabilities],
   ['i18n', scenarioI18n],

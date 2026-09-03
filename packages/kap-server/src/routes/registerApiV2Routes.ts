@@ -6,6 +6,7 @@ import { EXTERNAL_DELEGATION_FLAG_ID } from '@moonshot-ai/agent-core-v2/session/
 import { registerV2McpRoutes } from './v2/mcp';
 import { registerV2SessionsRoutes } from './v2/sessions';
 import { registerV2ExternalDelegationRoutes } from './v2/externalDelegation';
+import { registerV2UsageRoutes } from './v2/usage';
 
 interface ApiV2AppHost {
   register(
@@ -34,6 +35,7 @@ export async function registerApiV2Routes(
     async (apiV2) => {
       registerV2SessionsRoutes(apiV2 as Parameters<typeof registerV2SessionsRoutes>[0], core);
       registerV2McpRoutes(apiV2 as Parameters<typeof registerV2McpRoutes>[0], core);
+      registerV2UsageRoutes(apiV2 as Parameters<typeof registerV2UsageRoutes>[0], core);
       if (externalDelegationEnabled && externalDelegation !== undefined) {
         registerV2ExternalDelegationRoutes(
           apiV2 as Parameters<typeof registerV2ExternalDelegationRoutes>[0],

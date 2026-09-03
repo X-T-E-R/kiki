@@ -80,6 +80,8 @@ import type {
   Workspace,
 } from '@moonshot-ai/protocol';
 
+import type { UsageResponseWire } from './usageV2';
+
 export class ApiError extends Error {
   readonly code: number;
   readonly requestId: string | undefined;
@@ -435,6 +437,31 @@ export interface McpServerTestResult {
   readonly output: string;
 }
 
+/**
+ * Installed-plugin summary from `GET /api/v1/plugins` (mirrors the
+ * kap-server `pluginSummarySchema`): identity + enabled/error state + the
+ * contribution counts the settings Plugins leaf renders.
+ */
+export interface PluginSummary {
+  readonly id: string;
+  readonly displayName: string;
+  readonly version?: string;
+  readonly enabled: boolean;
+  readonly state: 'ok' | 'error';
+  readonly skillCount: number;
+  readonly mcpServerCount: number;
+  readonly enabledMcpServerCount: number;
+  readonly hookCount: number;
+  readonly commandCount: number;
+  readonly hasErrors: boolean;
+  readonly source: 'local-path' | 'zip-url' | 'github';
+  readonly originalSource?: string;
+}
+
+export interface ListPluginsResponse {
+  readonly plugins: readonly PluginSummary[];
+}
+
 export interface KikiClientOptions {
   /** Absolute base (`http://host:port`) or '' for same-origin (dev proxy). */
   readonly baseUrl: string;
@@ -547,6 +574,7 @@ export interface AgentTranscriptTask {
   readonly kind: 'shell' | 'subagent' | 'tool' | 'other';
   readonly state: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
   readonly detached: boolean;
+  readonly name?: string;
   readonly description?: string;
   readonly agentId?: string;
   readonly outputTail: string;
@@ -817,6 +845,17 @@ export class KikiClient {
 
   createSession(body: SessionCreate): Promise<Session> {
     return this.request<Session>('POST', '/sessions', { body });
+  }
+
+  /**
+   * `GET /api/v2/usage` — the V2 cross-session usage aggregation. All filter
+   * axes travel in the query (see lib/usageV2.buildUsageApiQuery); a page
+   * token must be paired with the exact filter set that produced it.
+   */
+  getUsage(
+    query: Record<string, string | number | boolean | undefined>,
+  ): Promise<UsageResponseWire> {
+    return this.request<UsageResponseWire>('GET', '/usage', { query, apiVersion: 'v2' });
   }
 
   getSession(sessionId: string): Promise<Session> {
@@ -1283,6 +1322,10 @@ export class KikiClient {
 
   listMcpServers(): Promise<ListMcpServersResponse> {
     return this.request<ListMcpServersResponse>('GET', '/mcp/servers');
+  }
+
+  listPlugins(): Promise<ListPluginsResponse> {
+    return this.request<ListPluginsResponse>('GET', '/plugins');
   }
 
   /**

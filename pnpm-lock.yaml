@@ -783,6 +783,9 @@ importers:
       '@fastify/swagger':
         specifier: ^9.7.0
         version: 9.7.0
+      '@kiki/transcript-live':
+        specifier: workspace:^
+        version: link:../transcript-live
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.3.6)
@@ -979,6 +982,18 @@ importers:
       zod:
         specifier: 'catalog:'
         version: 4.3.6
+
+  packages/transcript-live:
+    dependencies:
+      '@moonshot-ai/agent-core-v2':
+        specifier: workspace:^
+        version: link:../agent-core-v2
+      '@moonshot-ai/protocol':
+        specifier: workspace:^
+        version: link:../protocol
+      '@moonshot-ai/transcript':
+        specifier: workspace:^
+        version: link:../transcript
 
   packages/tree-sitter-bash:
     devDependencies:

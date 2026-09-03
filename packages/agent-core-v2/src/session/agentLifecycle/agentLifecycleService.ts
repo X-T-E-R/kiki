@@ -305,13 +305,21 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     let priorAgentMeta: AgentMeta | undefined;
     const agentScope = this.ctx.scope(`agents/${agentId}`);
     const agentHomedir = join(this.bootstrap.homeDir, agentScope);
+    const parentAgentId =
+      agentId === 'main'
+        ? undefined
+        : opts.delegator?.kind === 'external'
+          ? undefined
+          : opts.delegator?.kind === 'agent'
+            ? opts.delegator.agentId
+            : 'main';
     const handle = createScopedChildHandle(
       this.instantiation,
       LifecycleScope.Agent,
       agentId,
       {
         seeds: [
-          [IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope })],
+          [IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope, parentAgentId })],
           [ITelemetryService, this.telemetry.withContext({ agent_id: agentId })],
           [IAgentRuntimeBindingSeed, {
             _serviceBrand: undefined,
@@ -338,14 +346,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       await this.sessionMetadata.registerAgent(agentId, {
         homedir: agentHomedir,
         type: resolveDelegationPosition(agentId, opts.delegator),
-        parentAgentId:
-          agentId === 'main'
-            ? undefined
-            : opts.delegator?.kind === 'external'
-              ? undefined
-              : opts.delegator?.kind === 'agent'
-                ? opts.delegator.agentId
-                : 'main',
+        parentAgentId,
         delegator: opts.delegator,
         forkedFrom: opts.forkedFrom,
         labels: opts.labels,

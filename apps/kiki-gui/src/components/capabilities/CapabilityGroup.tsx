@@ -1,5 +1,5 @@
 /**
- * Collapsible capability group — the /capabilities page's section primitive.
+ * Collapsible capability group — the skill catalog's section primitive.
  * Header = name + count pill + chevron; the body folds with the shared
  * `.expand-collapse` grid-rows transition (0fr ↔ 1fr, inner overflow hidden).
  * Structure follows the donor plugin group card; all chrome is kiki tokens.
