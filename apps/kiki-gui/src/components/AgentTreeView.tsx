@@ -5,14 +5,14 @@
 
 import { memo, useEffect, useMemo, useState } from 'react';
 
-import { useI18n } from '../i18n';
-import type { I18nKey } from '../i18n/locale';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   agentChildren,
   type AgentForest,
   type AgentStatus,
   type AgentTreeNode,
-} from '../state/agentTree';
+} from '@kiki/session-core/session';
+import { useI18n } from '../i18n';
 
 const STATUS_I18N: Record<AgentStatus, I18nKey> = {
   unknown: 'subagent.status.unknown',

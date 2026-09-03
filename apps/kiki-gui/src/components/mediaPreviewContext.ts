@@ -6,7 +6,7 @@
 
 import { createContext, useContext } from 'react';
 
-import type { MediaRef } from '../lib/media';
+import type { MediaRef } from '@kiki/session-core/composer/media';
 
 export interface MediaPreviewApi {
   /** Session owning canonical or staged media IDs. */

@@ -15,24 +15,29 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useQuery } from '@tanstack/react-query';
 import type { AuthSummary, PermissionMode, SessionCreate, Workspace } from '@moonshot-ai/protocol';
 
-import { resolveSelectedEffort, DEFAULT_AGENT_PROFILE } from './Composer';
-import { useHost } from '../host';
-import { composerDefaultsForProfile } from '../lib/agentSettings';
-import { useGuardedNavigate } from './dirtyGuard';
-import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
-import { useI18n } from '../i18n';
-import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
-import { readDraft, writeDraft } from '../lib/drafts';
-import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '../lib/sorting';
 import {
+  buildPromptContent,
+  readDraft,
+  writeDraft,
+  type ComposerAttachment,
+} from '@kiki/session-core/composer';
+import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '@kiki/session-core/sessions';
+import {
+  composerDefaultsForProfile,
   readSettings,
   resolveEffectiveModel,
   resolveModelSource,
+  resolveSelectedEffort,
   resolveSessionModelOverride,
   settingsServerSnapshot,
   settingsSnapshot,
   subscribeSettings,
-} from '../lib/settings';
+} from '@kiki/session-core/settings';
+import { DEFAULT_AGENT_PROFILE } from './Composer';
+import { useHost } from '../host';
+import { useGuardedNavigate } from './dirtyGuard';
+import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
+import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 
 const DRAFT_KEY = 'new';

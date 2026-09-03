@@ -10,8 +10,9 @@ import { Link, useLocation } from 'react-router-dom';
 
 import type { McpServer, SkillDescriptor } from '@moonshot-ai/protocol';
 
+import { errorText } from '@kiki/session-core/i18n';
+
 import { useI18n } from '../../i18n';
-import { errorText } from '../../i18n/locale';
 import { skillGroupId } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, type Feedback } from '../controls';

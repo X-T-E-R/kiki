@@ -6,8 +6,7 @@
  * tints use kiki's success/danger palette at low alpha on paper.
  */
 
-import type { DiffHunk, DiffLine } from '../lib/diff';
-import { hunkGapLines } from '../lib/diff';
+import { hunkGapLines, type DiffHunk, type DiffLine } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 
 function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number }) {

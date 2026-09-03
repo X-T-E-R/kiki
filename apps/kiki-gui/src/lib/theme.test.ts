@@ -2,8 +2,8 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { writeSettings } from '@kiki/session-core/settings';
 import { browserHost } from '../host/browser';
-import { writeSettings } from './settings';
 import { applyTheme, onThemeChange, resolveTheme, startThemeSync } from './theme';
 
 type MediaListener = (event: MediaQueryListEvent) => void;

@@ -9,8 +9,9 @@
  * an OS switch flips the app without a reload.
  */
 
+import { readSettings, subscribeSettings, type ThemePreference } from '@kiki/session-core/settings';
+
 import type { HostAdapter } from '../host/host';
-import { readSettings, subscribeSettings, type ThemePreference } from './settings';
 
 export type ResolvedTheme = 'light' | 'dark';
 

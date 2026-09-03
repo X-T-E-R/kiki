@@ -17,8 +17,8 @@ import { useQueries } from '@tanstack/react-query';
 
 import type { Session } from '@moonshot-ai/protocol';
 
+import { buildActivityModel, formatElapsedClock, type ActivityEntry } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
-import { buildActivityModel, formatElapsedClock, type ActivityEntry } from '../lib/activity';
 import { useConnection, useOptionalControllerRegistry } from '../state/connection';
 import { useGuardedNavigate } from './dirtyGuard';
 

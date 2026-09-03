@@ -20,11 +20,9 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal as XTerm } from '@xterm/xterm';
 
+import { clampTerminalPanelHeight } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
-import {
-  clampTerminalPanelHeight,
-} from '../lib/terminalPrefs';
 import { runToastAction } from '../lib/toasts';
 import { onThemeChange } from '../lib/theme';
 import type { WsStatus } from '../lib/ws';

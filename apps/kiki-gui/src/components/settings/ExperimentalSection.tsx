@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { errorText } from '@kiki/session-core/i18n';
+import { experimentalFlagRows } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
-import { errorText } from '../../i18n/locale';
-import { experimentalFlagRows } from '../../lib/agentSettings';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';

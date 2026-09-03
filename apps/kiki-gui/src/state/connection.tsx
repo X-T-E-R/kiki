@@ -31,11 +31,12 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import { ConnectScreen } from '../components/ConnectScreen';
 import { useHost } from '../host';
-import { translate, type I18nKey, type I18nParams } from '../i18n/locale';
+import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
+import type { SessionController } from '@kiki/session-core/session';
+import type { SessionEventFrame } from '@kiki/session-core/wire';
 import { useI18n } from '../i18n';
 import { ApiError, KikiClient } from '../lib/client';
 import { KikiSocket, type WsStatus } from '../lib/ws';
-import type { SessionEventFrame } from '../lib/types';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -51,7 +52,6 @@ import {
   type DesktopBootStatus,
   type DesktopFailureInfo,
 } from './desktopConnection';
-import type { SessionController } from './sessionController';
 
 export type { ConnectionConfig } from './connectionConfig';
 

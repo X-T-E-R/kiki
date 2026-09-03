@@ -80,45 +80,11 @@ import type {
   Workspace,
 } from '@moonshot-ai/protocol';
 
+import { API_CODES, ApiError } from '@kiki/session-core/transport';
+
 import type { UsageResponseWire } from './usageV2';
 
-export class ApiError extends Error {
-  readonly code: number;
-  readonly requestId: string | undefined;
-  readonly data: unknown;
-
-  constructor(envelope: { code: number; msg: string; data: unknown; request_id?: string }) {
-    super(`${envelope.msg} (code ${envelope.code})`);
-    this.name = 'ApiError';
-    this.code = envelope.code;
-    this.data = envelope.data;
-    this.requestId = envelope.request_id;
-  }
-}
-
-export const API_CODES = {
-  INVALID_RESPONSE: -3,
-  TIMEOUT: -2,
-  SUCCESS: 0,
-  UNAUTHORIZED: 40101,
-  SESSION_NOT_FOUND: 40401,
-  PROMPT_NOT_FOUND: 40402,
-  SKILL_NOT_FOUND: 40415,
-  SESSION_BUSY: 40901,
-  APPROVAL_ALREADY_RESOLVED: 40902,
-  PROMPT_ALREADY_COMPLETED: 40903,
-  TASK_ALREADY_FINISHED: 40904,
-  QUESTION_DISMISSED: 40909,
-  COMPACTION_UNABLE: 40910,
-  SESSION_UNDO_UNAVAILABLE: 40911,
-  SKILL_NOT_ACTIVATABLE: 40912,
-  APPROVAL_EXPIRED: 41001,
-  QUESTION_EXPIRED: 41002,
-  TERMINAL_NOT_FOUND: 40414,
-  MESSAGE_ACTION_UNAVAILABLE: 40936,
-  SESSION_CURSOR_MISMATCH: 40937,
-  SESSION_INDEX_BUILDING: 40939,
-} as const;
+export { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 export function isSessionIndexBuildingError(error: unknown): boolean {
   return error instanceof ApiError && error.code === API_CODES.SESSION_INDEX_BUILDING;

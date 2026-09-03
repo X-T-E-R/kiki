@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
-import { errorText } from '../../i18n/locale';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { OAuthDeviceCard } from '../OAuthDeviceCard';

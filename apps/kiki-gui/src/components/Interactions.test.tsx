@@ -16,8 +16,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
+import type { ApprovalBlock } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
-import type { ApprovalBlock } from '../state/transcript';
 import { ApprovalCard, externalPermissionFromDisplay } from './Interactions';
 
 const roots: Root[] = [];

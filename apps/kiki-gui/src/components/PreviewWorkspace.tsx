@@ -11,12 +11,11 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
+import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
+import { basenameOf, formatBytes, previewKindOf } from '@kiki/session-core/composer/media';
 import { useHost, type HostAdapter } from '../host';
 import { useI18n } from '../i18n';
-import { mentionToken } from '../lib/attachments';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { appendToDraft } from '../lib/drafts';
-import { basenameOf, formatBytes, previewKindOf } from '../lib/media';
 import type { KikiClient } from '../lib/client';
 import { runToastAction } from '../lib/toasts';
 import { useOptionalConnection } from '../state/connection';

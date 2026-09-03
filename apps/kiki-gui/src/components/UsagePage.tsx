@@ -29,9 +29,10 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import type { Session, Workspace } from '@moonshot-ai/protocol';
 
+import type { I18nKey } from '@kiki/session-core/i18n';
+import { readLastSessionId } from '@kiki/session-core/settings';
+import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
-import type { I18nKey } from '../i18n/locale';
-import { formatCostUsd, formatGrouped } from '../lib/usage';
 import {
   aggregateDimensionGroups,
   browserTimezoneOffsetMinutes,
@@ -59,7 +60,6 @@ import {
   type UsageResponseWire,
   type UsageTrendBucketWire,
 } from '../lib/usageV2';
-import { readLastSessionId } from '../lib/settings';
 import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
 

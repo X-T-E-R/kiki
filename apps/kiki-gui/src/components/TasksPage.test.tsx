@@ -8,11 +8,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { Task } from '@moonshot-ai/protocol';
 
+import { createViewState } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { RightRail } from './RightRail';
 import { TasksPage } from './TasksPage';
-import { createViewState } from '../state/transcript';
 
 const listTasks = vi.fn();
 const getTask = vi.fn();
