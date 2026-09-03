@@ -682,6 +682,31 @@ describe('nb_search config section', () => {
     ).rejects.toThrow('Invalid nb_search configuration');
     disposables.dispose();
   });
+
+  it('accepts descriptor options and atomically rejects inline secret options', async () => {
+    const { config, disposables } = createConfig();
+    await config.ready;
+    await config.set(NB_SEARCH_SECTION, {
+      provider_instances: {
+        'openai-compatible.default': { options: { model: 'example-model' } },
+      },
+    });
+
+    await expect(
+      config.set(NB_SEARCH_SECTION, {
+        provider_instances: {
+          'openai-compatible.default': { options: { api_key: 'secret-value' } },
+        },
+      }),
+    ).rejects.toThrow('Invalid nb_search configuration');
+    expect(config.inspect<NbSearchConfig>(NB_SEARCH_SECTION).userValue).toEqual({
+      provider_instances: {
+        'openai-compatible.default': { options: { model: 'example-model' } },
+      },
+    });
+    expect(JSON.stringify(config.get(NB_SEARCH_SECTION))).not.toContain('secret-value');
+    disposables.dispose();
+  });
 });
 
 describe('skill config sections', () => {

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { requestIdentityPolicySchema } from '../modelCatalog';
+import { nbSearchConfigPatchSchema } from './nbSearch';
 
 export const providerConfigResponseSchema = z.object({
   type: z.string(),
@@ -49,7 +50,7 @@ export const configResponseSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
-  services: z.unknown().optional(),
+  nb_search: nbSearchConfigPatchSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
@@ -80,7 +81,8 @@ export const patchConfigRequestSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
-  services: z.unknown().optional(),
+  services: z.never().optional(),
+  nb_search: nbSearchConfigPatchSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),

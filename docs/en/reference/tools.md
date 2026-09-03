@@ -53,7 +53,7 @@ Foreground mode blocks the current turn until the command completes or times out
 | `WebSearch` | Auto-allow | Web search |
 | `FetchURL` | Auto-allow | Fetch the content of a specified URL |
 
-**`WebSearch`** accepts `query` (search terms) and uses the default lane configured in `[nb_search.defaults]`. Without `search_lane`, the tool fails closed with an unavailable error.
+**`WebSearch`** accepts `query` (search terms) and uses the default lane configured in `[nb_search.defaults]`. Results lanes return ranked links; typed lanes return their schema, source lane, sources, and bounded structured data. Without `search_lane`, the tool fails closed with an unavailable error.
 
 **`FetchURL`** accepts a single `url` parameter and returns the page content through the nb-search default fetch chain. For HTML pages, the runtime extracts the body text rather than returning the full HTML; plain text or Markdown pages are passed through directly.
 

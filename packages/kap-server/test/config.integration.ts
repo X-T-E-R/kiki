@@ -130,6 +130,22 @@ describe('server-v2 /api/v1/config', () => {
     const body = (await response.json()) as Envelope<null>;
     expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
     expect(await readFile(configPath, 'utf-8')).toBe(before);
+
+    const optionResponse = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        nb_search: {
+          provider_instances: {
+            'openai-compatible.default': { options: { token: 'secret-value' } },
+          },
+        },
+      }),
+    });
+    const optionBody = (await optionResponse.json()) as Envelope<null>;
+    expect(optionBody.code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(await readFile(configPath, 'utf-8')).toBe(before);
+    expect(JSON.stringify(await getConfig())).not.toContain('secret-value');
     expect(before).not.toContain('secret-value');
   });
 

@@ -91,4 +91,31 @@ search_lane = "exa.search"
     expect(JSON.stringify(capabilities)).not.toContain('secret-value');
     expect(JSON.stringify(status)).not.toContain('secret-value');
   });
+
+  it('reports a typed default lane as ready through capabilities and test status', async () => {
+    await boot(`
+[nb_search.defaults]
+search_lane = "context7.docs"
+`);
+
+    const capabilities = await get<{
+      search: {
+        default_lane?: string;
+        lanes: Array<{ id: string; output: { channel: string; schema_id: string } }>;
+      };
+    }>('/nb-search/capabilities');
+    const status = await get<{
+      search: { configured: boolean; available: boolean; selection?: string; issues: string[] };
+    }>('/nb-search/test');
+
+    expect(capabilities.data.search.lanes.find((lane) => lane.id === 'context7.docs')).toMatchObject({
+      output: { channel: 'typed', schema_id: 'nb-search.docs-context@1' },
+    });
+    expect(status.data.search).toEqual({
+      configured: true,
+      available: true,
+      selection: 'context7.docs',
+      issues: [],
+    });
+  });
 });

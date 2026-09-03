@@ -325,6 +325,25 @@ describe('KimiHarness config API', () => {
     await expect(readFile(configPath, 'utf-8')).resolves.toBe(before);
   });
 
+  it('rejects inline nb_search secret options without changing the config file', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(configPath, COMPLETE_TOML, 'utf-8');
+    const before = await readFile(configPath, 'utf-8');
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+
+    await expect(harness.setConfig({
+      nbSearch: {
+        provider_instances: {
+          'openai-compatible.default': { options: { api_key: 'secret-value' } },
+        },
+      },
+    })).rejects.toMatchObject({ code: 'config.invalid' } satisfies Partial<KimiError>);
+
+    await expect(readFile(configPath, 'utf-8')).resolves.toBe(before);
+    expect(await readFile(configPath, 'utf-8')).not.toContain('secret-value');
+  });
+
   it('uses default config when the config file is absent', async () => {
     const homeDir = await makeTempDir();
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });

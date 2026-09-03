@@ -577,7 +577,7 @@ export function GeneralSection() {
             <dl className="grid gap-1 text-[11px] text-ink-soft">
               <div><dt className="inline font-medium text-ink">{t('st.compat.configImportSource')}: </dt><dd className="inline break-all font-mono">{kimiHomePaths?.sourceConfigPath ?? ''}</dd></div>
               <div><dt className="inline font-medium text-ink">{t('st.compat.configImportTarget')}: </dt><dd className="inline break-all font-mono">{kimiHomePaths?.configPath ?? ''}</dd></div>
-              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportCategories')}: </dt><dd className="inline font-mono">providers, models, services, default_model, default_provider, thinking</dd></div>
+              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportCategories')}: </dt><dd className="inline font-mono">providers, models, default_model, default_provider, thinking</dd></div>
             </dl>
             <button
               type="button"

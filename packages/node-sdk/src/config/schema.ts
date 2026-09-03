@@ -1,6 +1,11 @@
 import { parsePattern } from '@moonshot-ai/agent-core-v2';
 import { HOOK_EVENT_TYPES } from '@moonshot-ai/agent-core-v2/features/externalHooks/internal/types';
-import { parseConfigPatch, type CanonicalConfigPatch } from '@nb-corp/nb-search';
+import {
+  builtInProviderRegistrations,
+  parseConfigPatch,
+  type CanonicalConfigPatch,
+} from '@nb-corp/nb-search';
+import { findUnknownNbSearchProviderOptions } from '@moonshot-ai/protocol';
 
 import { ErrorCodes, KimiError } from '../errors';
 import { z } from 'zod';
@@ -251,10 +256,24 @@ export const HookDefSchema = z
 
 export type HookDefConfig = z.infer<typeof HookDefSchema>;
 
+const nbSearchProviderOptionDescriptors = builtInProviderRegistrations().map(
+  (registration) => registration.descriptor,
+);
+
 export const NbSearchConfigSchema = z.custom<CanonicalConfigPatch>(
   (value) => {
     try {
-      parseConfigPatch(value, 'Kiki nb_search configuration');
+      const config = parseConfigPatch(value, 'Kiki nb_search configuration');
+      const unknownOptions = findUnknownNbSearchProviderOptions(
+        config,
+        nbSearchProviderOptionDescriptors,
+      );
+      if (unknownOptions.length > 0) {
+        const issue = unknownOptions[0]!;
+        throw new Error(
+          `provider_instances.${issue.provider_instance_id}.options.${issue.option_key} is not supported`,
+        );
+      }
       return true;
     } catch {
       return false;
