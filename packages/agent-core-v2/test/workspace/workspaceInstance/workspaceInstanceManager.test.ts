@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import type { Workspace, IWorkspaceService } from '#/app/workspace/workspace';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import type { Runtime } from '#/runtime/runtime';
@@ -135,18 +136,78 @@ function manager(
     update: async () => undefined,
     delete: async () => {},
   };
-  const args: unknown[] = [
-    {},
-    { scope: () => 'sessions' },
+  const fixture = {
+    instantiation: {},
+    bootstrap: { scope: () => 'sessions' },
     workspaces,
-    { ready },
-    ...Array.from({ length: 25 }, () => undefined),
-    new TestRuntimeUnitHostFactory(),
+    environment: { ready },
+    appState: undefined,
+    config: undefined,
+    cronStore: undefined,
+    event: undefined,
+    flags: undefined,
+    git: { current: undefined },
+    identity: undefined,
+    index: undefined,
+    indexMirror: undefined,
+    retainedUsage: {
+      _serviceBrand: undefined,
+      retainDeletedSession: async () => { throw new Error('retained usage is not used'); },
+      listDeletedSessions: async () => ({ items: [], complete: true, scannedRecords: 0 }),
+    } satisfies IRetainedUsageService,
+    log: undefined,
+    modelCatalog: undefined,
+    models: undefined,
+    oauth: undefined,
+    configStore: undefined,
+    plugins: undefined,
+    modelProviders: undefined,
+    sessionManager: { current: undefined },
+    agentProfiles: { entries: () => [] },
+    agentExecutors: undefined,
+    builtinAgentProfiles: undefined,
+    builtinSkills: undefined,
+    telemetry: undefined,
+    appendLogStore: undefined,
+    docs: undefined,
+    storage: undefined,
+    unitHostFactory: new TestRuntimeUnitHostFactory(),
     idleTtlMs,
-  ];
-  args[20] = { current: undefined };
-  args[21] = { entries: () => [] };
-  const value = Reflect.construct(WorkspaceInstanceManager, args) as WorkspaceInstanceManager;
+  };
+  const value = Reflect.construct(WorkspaceInstanceManager, [
+    fixture.instantiation,
+    fixture.bootstrap,
+    fixture.workspaces,
+    fixture.environment,
+    fixture.appState,
+    fixture.config,
+    fixture.cronStore,
+    fixture.event,
+    fixture.flags,
+    fixture.git,
+    fixture.identity,
+    fixture.index,
+    fixture.indexMirror,
+    fixture.retainedUsage,
+    fixture.log,
+    fixture.modelCatalog,
+    fixture.models,
+    fixture.oauth,
+    fixture.configStore,
+    fixture.plugins,
+    fixture.modelProviders,
+    fixture.sessionManager,
+    fixture.agentProfiles,
+    fixture.agentExecutors,
+    fixture.builtinAgentProfiles,
+    fixture.builtinSkills,
+    fixture.telemetry,
+    fixture.appendLogStore,
+    fixture.docs,
+    fixture.storage,
+    fixture.unitHostFactory,
+    fixture.idleTtlMs,
+  ]) as WorkspaceInstanceManager;
   const providers = (value as unknown as { providers: Map<string, RuntimeProviderFactory> }).providers;
   providers.clear();
   providers.set('local', provider('local', 'local', events));

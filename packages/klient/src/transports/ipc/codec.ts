@@ -7,25 +7,13 @@
 
 import { createHash } from 'node:crypto';
 
-/** One NDJSON message. `type` discriminates; other fields depend on it. */
-export interface IpcFrame {
-  readonly type: string;
-  readonly id?: string;
-  readonly scope?: string;
-  readonly service?: string;
-  readonly method?: string;
-  readonly arg?: unknown;
-  readonly workspaceId?: string;
-  readonly sessionId?: string;
-  readonly agentId?: string;
-  readonly event?: string;
-  readonly token?: string;
-  readonly code?: number;
-  readonly msg?: string;
-  readonly details?: unknown;
-  readonly reason?: string;
-  readonly data?: unknown;
-}
+import {
+  decodeJsonFrame,
+  encodeJsonFrame,
+  type KlientFrame,
+} from '../codec.js';
+
+export type IpcFrame = KlientFrame;
 
 export function normalizeIpcSocketPath(socketPath: string): string {
   if (process.platform !== 'win32' || socketPath.startsWith('\\\\.\\pipe\\')) return socketPath;
@@ -34,7 +22,7 @@ export function normalizeIpcSocketPath(socketPath: string): string {
 }
 
 export function encodeFrame(frame: IpcFrame): string {
-  return `${JSON.stringify(frame)}\n`;
+  return `${encodeJsonFrame(frame)}\n`;
 }
 
 /** Incremental NDJSON decoder; malformed lines are dropped. */
@@ -48,11 +36,8 @@ export class NdjsonDecoder {
     const frames: IpcFrame[] = [];
     for (const line of lines) {
       if (line.length === 0) continue;
-      try {
-        frames.push(JSON.parse(line) as IpcFrame);
-      } catch {
-        // drop malformed frames
-      }
+      const frame = decodeJsonFrame(line);
+      if (frame !== undefined) frames.push(frame);
     }
     return frames;
   }

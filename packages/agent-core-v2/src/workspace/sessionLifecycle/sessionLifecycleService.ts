@@ -29,6 +29,7 @@ import {
   PARENT_SESSION_ID_KEY,
   type SessionUsageSummary,
 } from '#/app/sessionIndex/sessionIndex';
+import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
 import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSystem';
@@ -193,6 +194,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IConfigService private readonly config: IConfigService,
     @ISessionIndex private readonly index: ISessionIndex,
     @ISessionIndexMirror private readonly indexMirror: ISessionIndexMirror,
+    @IRetainedUsageService private readonly retainedUsage: IRetainedUsageService,
     @IAppendLogStore private readonly appendLogStore: IAppendLogStore,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
@@ -547,6 +549,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (handle !== undefined) {
       await this.close(sessionId);
     }
+    await this.retainedUsage.retainDeletedSession((await this.index.get(sessionId))!);
     await this.hostFs.remove(sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sessionId));
     await this.index.remove(sessionId);
     this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });

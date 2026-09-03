@@ -3,6 +3,7 @@ import { IConfigService } from '@moonshot-ai/agent-core-v2';
 import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@moonshot-ai/agent-core-v2/session/externalDelegation/flag';
 
+import type { ExternalDelegationState } from '../protocol/rest-meta';
 import { registerV2McpRoutes } from './v2/mcp';
 import { registerV2SessionsRoutes } from './v2/sessions';
 import { registerV2ExternalDelegationRoutes } from './v2/externalDelegation';
@@ -20,6 +21,7 @@ export interface RegisterApiV2RoutesOptions {
     readonly principalId: string;
     readonly sessionId: string;
     readonly token: string;
+    readonly state: ExternalDelegationState;
   };
 }
 
@@ -56,5 +58,5 @@ function normalizeExternalDelegationAuthority(
   const sessionId = input.sessionId.trim();
   const token = input.token.trim();
   if (principalId.length === 0 || sessionId.length === 0 || token.length === 0) return undefined;
-  return { principalId, sessionId, token };
+  return { principalId, sessionId, token, state: input.state };
 }

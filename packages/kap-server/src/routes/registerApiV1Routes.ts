@@ -6,7 +6,7 @@ import type { KimiHostIdentity } from '@moonshot-ai/kimi-code-oauth';
 import { ulid } from 'ulid';
 
 import { okEnvelope } from '../envelope';
-import type { MetaFeature } from '../protocol/rest-meta';
+import type { ExternalDelegationState, MetaFeature } from '../protocol/rest-meta';
 import { type IConnectionRegistry } from '../transport/ws/connectionRegistry';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import type { TranscriptService } from '../services/transcript/transcriptService';
@@ -87,6 +87,7 @@ export interface RegisterApiV1RoutesOptions {
    * flag).
    */
   readonly dangerousBypassAuth?: boolean;
+  readonly externalDelegation: ExternalDelegationState;
   /**
    * Custom browser tab title for this instance, surfaced as `web_title` in the
    * `/meta` payload. Set by `start.ts` from the `webTitle` server option (the
@@ -114,6 +115,7 @@ export async function registerApiV1Routes(
         startedAt: new Date().toISOString(),
         enableTerminals: opts.enableTerminals !== false,
         dangerousBypassAuth: opts.dangerousBypassAuth === true,
+        externalDelegation: opts.externalDelegation,
         webTitle: opts.webTitle,
         getExperimentalFlags: async () => {
           await core.accessor.get(IConfigService).ready;
