@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
+import type { PluginMarketplaceEntry, PluginMarketplaceResponse } from '../../lib/client';
 import { PluginsSection } from './PluginsSection';
 
 const PLUGIN = {
@@ -25,7 +26,10 @@ const PLUGIN = {
 };
 
 const listPlugins = vi.fn(async () => ({ plugins: [PLUGIN] }));
-const listPluginMarketplace = vi.fn(async () => ({ configured: false, entries: [] }));
+const listPluginMarketplace = vi.fn(async (): Promise<PluginMarketplaceResponse> => ({
+  configured: false,
+  entries: [],
+}));
 const getPlugin = vi.fn(async () => ({
   ...PLUGIN,
   root: '/tmp/notes',
@@ -147,7 +151,8 @@ describe('PluginsSection', () => {
     });
     await flush();
     expect(listPluginMarketplace).toHaveBeenCalled();
-    expect(container.textContent).toContain('No marketplace is configured');
+    expect(container.querySelector('[data-marketplace-empty]')).not.toBeNull();
+    expect(container.textContent).toContain('Save a catalog URL to show its plugins here.');
   });
 
   it('loads MCP server status from the plugin info route', async () => {
@@ -172,7 +177,7 @@ describe('PluginsSection', () => {
           tier: 'curated',
           displayName: 'Fresh Notes',
           source: 'https://example.test/fresh.zip',
-        },
+        } satisfies PluginMarketplaceEntry,
       ],
     });
     const container = await renderLeaf();
@@ -182,7 +187,7 @@ describe('PluginsSection', () => {
     await flush();
     const action = container.querySelector('[data-marketplace-action="fresh"]') as HTMLButtonElement;
     expect(action).not.toBeNull();
-    expect(action.dataset.marketplaceKind).toBe('install');
+    expect(action.dataset['marketplaceKind']).toBe('install');
     expect(action.disabled).toBe(false);
     expect(action.textContent).toBe('Install');
     await act(async () => {
@@ -202,7 +207,7 @@ describe('PluginsSection', () => {
           displayName: 'Notes',
           source: 'https://example.test/notes.zip',
           installed: { version: '1.0.0', enabled: true },
-        },
+        } satisfies PluginMarketplaceEntry,
       ],
     });
     const container = await renderLeaf();
@@ -211,7 +216,7 @@ describe('PluginsSection', () => {
     });
     await flush();
     const action = container.querySelector('[data-marketplace-action="notes"]') as HTMLButtonElement;
-    expect(action.dataset.marketplaceKind).toBe('installed');
+    expect(action.dataset['marketplaceKind']).toBe('installed');
     expect(action.disabled).toBe(true);
     expect(action.textContent).toBe('Installed');
     await act(async () => {
@@ -233,7 +238,7 @@ describe('PluginsSection', () => {
           source: 'https://example.test/notes-2.zip',
           installed: { version: '1.0.0', enabled: true },
           updateAvailable: true,
-        },
+        } satisfies PluginMarketplaceEntry,
       ],
     });
     const container = await renderLeaf();
@@ -242,7 +247,7 @@ describe('PluginsSection', () => {
     });
     await flush();
     const action = container.querySelector('[data-marketplace-action="notes"]') as HTMLButtonElement;
-    expect(action.dataset.marketplaceKind).toBe('update');
+    expect(action.dataset['marketplaceKind']).toBe('update');
     expect(action.disabled).toBe(false);
     expect(action.textContent).toBe('Update');
     await act(async () => {
@@ -260,8 +265,8 @@ describe('PluginsSection', () => {
     await flush();
     const dialog = container.querySelector('[role="alertdialog"]');
     expect(dialog).not.toBeNull();
-    expect(dialog?.textContent).toContain('1 skills');
-    expect(dialog?.textContent).toContain('1 MCP servers');
+    expect(dialog?.textContent).toContain('1 skill');
+    expect(dialog?.textContent).toContain('1 MCP server');
     expect(dialog?.textContent).not.toContain('notes-mcp');
     await act(async () => {
       [...dialog!.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!.click();
@@ -278,21 +283,29 @@ describe('PluginsSection', () => {
     });
     await flush();
     const informed = container.querySelector('[role="alertdialog"]');
-    expect(informed?.textContent).toContain('1 skills');
+    expect(informed?.textContent).toContain('1 skill');
     expect(informed?.textContent).toContain('notes-mcp');
   });
 
   it('saves and clears the marketplace catalog URL', async () => {
     const source = 'https://example.test/marketplace.json';
-    patchConfig.mockImplementation(async (body: { plugins?: { marketplace_url?: string } }) => ({
-      plugins: { marketplaceUrl: body.plugins?.marketplace_url },
-    }));
+    patchConfig.mockImplementation(async (body: unknown) => {
+      const patch = body as { plugins?: { marketplace_url?: string } };
+      return { plugins: { marketplaceUrl: patch.plugins?.marketplace_url } };
+    });
     listPluginMarketplace
       .mockResolvedValueOnce({ configured: false, entries: [] })
       .mockResolvedValueOnce({
         configured: true,
         source,
-        entries: [{ id: 'fresh', tier: 'curated', displayName: 'Fresh', source: 'https://example.test/fresh.zip' }],
+        entries: [
+          {
+            id: 'fresh',
+            tier: 'curated',
+            displayName: 'Fresh',
+            source: 'https://example.test/fresh.zip',
+          } satisfies PluginMarketplaceEntry,
+        ],
       })
       .mockResolvedValueOnce({ configured: false, entries: [] });
     const container = await renderLeaf();
@@ -315,7 +328,7 @@ describe('PluginsSection', () => {
       plugins: { marketplace_url: undefined },
       replace_domains: ['plugins'],
     });
-    expect(container.textContent).toContain('No marketplace is configured');
+    expect(container.querySelector('[data-marketplace-empty]')).not.toBeNull();
   });
 
   it('installs from a local path and reports success', async () => {
@@ -370,5 +383,17 @@ describe('PluginsSection', () => {
     await click(labeledButton(container, 'Save catalog URL'));
     await flush();
     expect(container.textContent).toContain('save failed');
+  });
+
+  it('retries a failed installed-plugin list', async () => {
+    listPlugins
+      .mockRejectedValueOnce(new Error('list failed'))
+      .mockResolvedValueOnce({ plugins: [PLUGIN] });
+    const container = await renderLeaf();
+    expect(container.textContent).toContain('list failed');
+    expect(container.querySelector('[data-plugin-row="notes"]')).toBeNull();
+    await click(container.querySelector('[data-plugins-retry]')!);
+    await flush();
+    expect(container.querySelector('[data-plugin-row="notes"]')).not.toBeNull();
   });
 });

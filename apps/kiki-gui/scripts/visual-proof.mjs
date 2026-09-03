@@ -186,10 +186,14 @@ const STRINGS = {
     capPlugin: 'Plugin skills',
     pluginsAdd: 'Add a plugin',
     pluginsMarketplaceTab: 'Marketplace',
-    pluginsUnconfigured: 'No marketplace is configured',
+    pluginsUnconfigured: 'Save a catalog URL to show its plugins here.',
+    pluginsSaveCatalog: 'Save catalog URL',
+    pluginsCatalogNotes: 'Catalog Notes',
+    pluginsUninstall: 'Uninstall',
     pluginsManifest: 'Manifest',
     pluginsMcpOn: 'On',
     pluginsInstall: 'Install',
+    cancel: 'Cancel',
     capBuiltin: 'Built-in skills',
     capFilterAria: 'Filter capabilities',
     capEmptyFilter: 'No capabilities match',
@@ -338,10 +342,14 @@ const STRINGS = {
     capPlugin: '插件技能',
     pluginsAdd: '添加插件',
     pluginsMarketplaceTab: '市场',
-    pluginsUnconfigured: '尚未配置市场',
+    pluginsUnconfigured: '保存 URL 后目录将在此出现。',
+    pluginsSaveCatalog: '保存目录 URL',
+    pluginsCatalogNotes: 'Catalog Notes',
+    pluginsUninstall: '卸载',
     pluginsManifest: '清单',
     pluginsMcpOn: '开',
     pluginsInstall: '安装',
+    cancel: '取消',
     capBuiltin: '内置技能',
     capFilterAria: '过滤能力',
     capEmptyFilter: '没有匹配',
@@ -1321,9 +1329,21 @@ async function scenarioSettings() {
   await page.waitForTimeout(300);
   await shot('settings-plugins');
   await page.locator(`[data-plugin-add-tab-button="marketplace"]`).click();
+  await page.waitForSelector('[data-marketplace-empty]', { timeout: 10_000 });
   await page.waitForSelector(`text=${S.pluginsUnconfigured}`, { timeout: 10_000 });
   await page.waitForTimeout(300);
   await shot('settings-plugins-marketplace');
+  await page.locator('[data-plugin-add-tab="marketplace"] input').fill('https://example.test/marketplace.json');
+  await page.getByRole('button', { name: S.pluginsSaveCatalog }).click();
+  await page.waitForSelector('[data-marketplace-row="catalog-notes"]', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.pluginsCatalogNotes}`, { timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('settings-plugins-marketplace-catalog');
+  await page.locator('[data-plugin-uninstall="fixture-plugin"]').click();
+  await page.waitForSelector('[role="alertdialog"]', { timeout: 10_000 });
+  await page.waitForTimeout(200);
+  await shot('settings-plugins-uninstall');
+  await page.locator('[role="alertdialog"]').getByRole('button', { name: S.cancel, exact: true }).click();
 
   // Automation leaf: tool policy plus the raw hooks editor.
   await page.locator('nav [data-settings-nav-leaf="automation"]').click();

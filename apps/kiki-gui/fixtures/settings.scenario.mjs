@@ -208,6 +208,25 @@ export default {
       version: '1.2.0',
       source: 'https://example.test/catalog-notes.zip',
     },
+    {
+      id: 'fixture-plugin',
+      tier: 'official',
+      displayName: 'fixture-plugin',
+      description: 'Already installed; the action stays disabled Installed.',
+      version: '2.0.0',
+      source: 'https://example.test/fixture-plugin.zip',
+      installed: { version: '2.0.0', enabled: true },
+    },
+    {
+      id: 'catalog-update',
+      tier: 'third-party',
+      displayName: 'Catalog Update',
+      description: 'Installed with a newer catalog version.',
+      version: '3.1.0',
+      source: 'https://example.test/catalog-update.zip',
+      installed: { version: '3.0.0', enabled: true },
+      updateAvailable: true,
+    },
   ],
   // /api/v2/mcp/servers — one writable user-level entry and one read-only
   // plugin entry, so the manager's editable/read-only split is exercised.

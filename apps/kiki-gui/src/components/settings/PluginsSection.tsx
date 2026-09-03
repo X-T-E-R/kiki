@@ -31,23 +31,46 @@ const ADD_TAB_KEYS = {
 function contributionSummary(
   plugin: PluginSummary,
   t: ReturnType<typeof useI18n>['t'],
+  tp: ReturnType<typeof useI18n>['tp'],
 ): string {
   const parts: string[] = [];
-  if (plugin.skillCount > 0) parts.push(t('st.plugins.contrib.skills', { count: plugin.skillCount }));
-  if (plugin.mcpServerCount > 0) parts.push(t('st.plugins.contrib.mcp', { count: plugin.mcpServerCount }));
-  if (plugin.hookCount > 0) parts.push(t('st.plugins.contrib.hooks', { count: plugin.hookCount }));
-  if (plugin.commandCount > 0) parts.push(t('st.plugins.contrib.commands', { count: plugin.commandCount }));
+  if (plugin.skillCount > 0) parts.push(tp('st.plugins.contrib.skills', plugin.skillCount));
+  if (plugin.mcpServerCount > 0) parts.push(tp('st.plugins.contrib.mcp', plugin.mcpServerCount));
+  if (plugin.hookCount > 0) parts.push(tp('st.plugins.contrib.hooks', plugin.hookCount));
+  if (plugin.commandCount > 0) parts.push(tp('st.plugins.contrib.commands', plugin.commandCount));
   return parts.length === 0 ? t('st.plugins.contrib.none') : parts.join(' · ');
 }
 
 function uninstallConsequences(
   plugin: PluginSummary,
   t: ReturnType<typeof useI18n>['t'],
+  tp: ReturnType<typeof useI18n>['tp'],
   queryClient: QueryClient,
 ): readonly string[] {
   const info = queryClient.getQueryData<PluginInfo>(['plugin', plugin.id]);
   const mcpNames = info?.mcpServers.map((server) => server.name) ?? [];
-  return [contributionSummary(plugin, t), ...mcpNames];
+  return [contributionSummary(plugin, t, tp), ...mcpNames];
+}
+
+function BusyHint({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="anim-enter flex items-center gap-2 text-[11px] leading-relaxed text-ink-faint">
+      <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+      {children}
+    </p>
+  );
+}
+
+function QueryRetry({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="space-y-2">
+      <InlineError error={error} />
+      <button type="button" className={SECONDARY_BUTTON} data-plugins-retry onClick={onRetry}>
+        {t('common.retry')}
+      </button>
+    </div>
+  );
 }
 
 function PluginDetails({ pluginId }: { pluginId: string }) {
@@ -60,8 +83,8 @@ function PluginDetails({ pluginId }: { pluginId: string }) {
   });
   const info = infoQuery.data;
 
-  if (infoQuery.isPending) return <Hint>{t('st.plugins.manifestLoading')}</Hint>;
-  if (infoQuery.isError) return <InlineError error={infoQuery.error} />;
+  if (infoQuery.isPending) return <BusyHint>{t('st.plugins.manifestLoading')}</BusyHint>;
+  if (infoQuery.isError) return <QueryRetry error={infoQuery.error} onRetry={() => { void infoQuery.refetch(); }} />;
   if (info === undefined) return null;
 
   return (
@@ -140,7 +163,7 @@ function PluginRow({
   onToggle: (plugin: PluginSummary, enabled: boolean) => void;
   onUninstall: (plugin: PluginSummary) => void;
 }) {
-  const { t } = useI18n();
+  const { t, tp } = useI18n();
   const [open, setOpen] = useState(false);
   const broken = plugin.state === 'error' || plugin.hasErrors;
   const busy = busyId === plugin.id;
@@ -152,16 +175,13 @@ function PluginRow({
         {plugin.version !== undefined ? (
           <span className="shrink-0 font-mono text-[10px] text-ink-faint">v{plugin.version}</span>
         ) : null}
-        <span className={BADGE_CLASS}>
-          {plugin.enabled ? t('st.plugins.enabled') : t('st.plugins.disabled')}
-        </span>
         {broken ? (
           <span className="shrink-0 rounded-full border border-danger/40 bg-danger/10 px-1.5 py-px text-[9px] font-medium tracking-wide text-danger uppercase">
             {t('st.plugins.error')}
           </span>
         ) : null}
       </div>
-      <p className="mt-0.5 text-[11px] leading-snug text-ink-soft">{contributionSummary(plugin, t)}</p>
+      <p className="mt-0.5 text-[11px] leading-snug text-ink-soft">{contributionSummary(plugin, t, tp)}</p>
       {plugin.originalSource !== undefined ? (
         <p className="mt-0.5 truncate font-mono text-[10px] text-ink-faint" title={plugin.originalSource}>
           {plugin.originalSource}
@@ -199,7 +219,7 @@ function PluginRow({
 
 function InstalledPluginsCard() {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<PluginSummary | null>(null);
@@ -250,9 +270,9 @@ function InstalledPluginsCard() {
       <div className="space-y-2">
         <Hint>{t('st.plugins.hint')}</Hint>
         {pluginsQuery.isPending ? (
-          <Hint>{t('st.plugins.loading')}</Hint>
+          <BusyHint>{t('st.plugins.loading')}</BusyHint>
         ) : pluginsQuery.isError ? (
-          <InlineError error={pluginsQuery.error} />
+          <QueryRetry error={pluginsQuery.error} onRetry={() => { void pluginsQuery.refetch(); }} />
         ) : plugins.length === 0 ? (
           <Hint>{t('st.plugins.empty')}</Hint>
         ) : (
@@ -274,7 +294,7 @@ function InstalledPluginsCard() {
           overlayId="confirm-plugin-uninstall"
           title={t('st.plugins.uninstallTitle', { name: removing.displayName })}
           body={t('st.plugins.uninstallBody')}
-          consequences={uninstallConsequences(removing, t, queryClient)}
+          consequences={uninstallConsequences(removing, t, tp, queryClient)}
           confirmLabel={t('st.plugins.uninstall')}
           tone="danger"
           onCancel={() => { setRemoving(null); }}
@@ -406,11 +426,16 @@ function MarketplaceTab() {
         {saved ? <span className="text-[11px] font-medium text-success">{t('st.savedTick')}</span> : null}
       </div>
       {marketplaceQuery.isPending ? (
-        <Hint>{t('st.plugins.marketplaceLoading')}</Hint>
+        <BusyHint>{t('st.plugins.marketplaceLoading')}</BusyHint>
       ) : marketplaceQuery.isError ? (
-        <InlineError error={marketplaceQuery.error} />
+        <QueryRetry error={marketplaceQuery.error} onRetry={() => { void marketplaceQuery.refetch(); }} />
       ) : !configured ? (
-        <Hint>{t('st.plugins.sourceUnconfigured')}</Hint>
+        <div
+          className="rounded-lg border border-dashed border-hairline bg-panel px-3 py-4 text-center"
+          data-marketplace-empty
+        >
+          <p className="text-[12px] text-ink-soft">{t('st.plugins.sourceCatalogHint')}</p>
+        </div>
       ) : (
         <div className="space-y-2">
           {catalog.source !== undefined ? (
@@ -433,9 +458,6 @@ function MarketplaceTab() {
                     <span className="shrink-0 font-mono text-[10px] text-ink-faint">v{entry.version}</span>
                   ) : null}
                   <span className={BADGE_CLASS}>{entry.tier}</span>
-                  {entry.installed !== undefined ? (
-                    <span className={BADGE_CLASS}>{t('st.plugins.alreadyInstalled')}</span>
-                  ) : null}
                   {entry.updateAvailable === true ? (
                     <span className="shrink-0 rounded-full border border-accent/40 bg-accent/10 px-1.5 py-px text-[9px] font-medium tracking-wide text-accent uppercase">
                       {t('st.plugins.updateAvailable')}
