@@ -294,6 +294,18 @@ describe('bindSessionTranscript', () => {
         description: 'Inspect',
         detached: false,
         startedAt: 1_700_000_000_000,
+        collaborationTaskName: 'coder',
+        profile: 'coder',
+      },
+      {
+        taskId: 'task-10',
+        kind: 'agent',
+        agentId: 'agent-2',
+        status: 'running',
+        description: 'Inspect anonymously',
+        detached: false,
+        startedAt: 1_700_000_001_000,
+        profile: 'coder',
       },
     ];
     agents.add('main', { tasks });
@@ -307,8 +319,15 @@ describe('bindSessionTranscript', () => {
       kind: 'subagent',
       state: 'running',
       detached: false,
+      name: 'coder',
+      subagentName: 'coder',
       description: 'Inspect',
       agentId: 'agent-1',
+    });
+    expect(store.getAgent('main')?.getTask('task-10')).toMatchObject({
+      name: undefined,
+      subagentName: 'coder',
+      agentId: 'agent-2',
     });
 
     binding.seedRunningTasks('main');

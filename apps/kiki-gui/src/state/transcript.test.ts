@@ -1578,7 +1578,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               kind: 'subagent',
               state: 'completed',
               detached: false,
-              name: 'Researcher',
+              subagentName: 'Researcher',
               agentId: 'agent-1',
               description: 'map the surface',
               outputTail: '',
@@ -1657,7 +1657,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
                       toolCallId: 'call-send-1',
                       name: 'AgentSend',
                       state: 'done',
-                      input: { target: 'Researcher', message: 'also check the wire envelope' },
+                      input: { target: 'agent-1', message: 'also check the wire envelope' },
                       startedAt: '2026-01-01T00:00:03.000Z',
                     },
                     {
@@ -1689,7 +1689,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               kind: 'subagent',
               state: 'running',
               detached: false,
-              name: 'Researcher',
+              subagentName: 'Researcher',
               agentId: 'agent-1',
               description: 'map the surface',
               outputTail: '',
@@ -1990,6 +1990,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               state: 'completed',
               detached: false,
               name: 'Researcher',
+              subagentName: 'Researcher',
               agentId: 'agent-1',
               description: 'map the surface',
               outputTail: '',
@@ -2002,6 +2003,8 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               kind: 'subagent',
               state: 'completed',
               detached: false,
+              name: 'Researcher',
+              subagentName: 'Researcher',
               agentId: 'agent-1',
               description: 'one more pass',
               outputTail: '',
@@ -2107,6 +2110,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               state: 'running',
               detached: false,
               name: 'alpha',
+              subagentName: 'coder',
               agentId: 'agent-1',
               outputTail: '',
               startedAt: '2026-01-01T00:00:01.000Z',
@@ -2117,6 +2121,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               state: 'running',
               detached: false,
               name: 'beta',
+              subagentName: 'coder',
               agentId: 'agent-2',
               outputTail: '',
               startedAt: '2026-01-01T00:00:02.000Z',
@@ -2136,6 +2141,102 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       );
       expect(resumed).toMatchObject({ subagentId: 'agent-2', at: '2026-01-01T00:00:05.000Z' });
       expect(sent).toMatchObject({ subagentId: 'agent-1', at: '2026-01-01T00:00:06.000Z' });
+    });
+
+    it('does not address an anonymous child through its profile fallback', () => {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'taskref',
+              refId: 'ref-named',
+              taskId: 'task-named',
+              at: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              kind: 'taskref',
+              refId: 'ref-anonymous',
+              taskId: 'task-anonymous',
+              at: '2026-01-01T00:00:02.000Z',
+            },
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              origin: { kind: 'user' },
+              startedAt: '2026-01-01T00:00:03.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'completed',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-send-coder',
+                      toolCallId: 'call-send-coder',
+                      name: 'AgentSend',
+                      state: 'done',
+                      input: { target: 'coder', message: 'ping' },
+                      startedAt: '2026-01-01T00:00:04.000Z',
+                    },
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-resume-coder',
+                      toolCallId: 'call-resume-coder',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { resume: 'coder', prompt: 'continue' },
+                      startedAt: '2026-01-01T00:00:05.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-named',
+              kind: 'subagent',
+              state: 'running',
+              detached: false,
+              name: 'coder',
+              subagentName: 'coder',
+              agentId: 'agent-named',
+              outputTail: '',
+            },
+            {
+              taskId: 'task-anonymous',
+              kind: 'subagent',
+              state: 'running',
+              detached: false,
+              subagentName: 'coder',
+              agentId: 'agent-anonymous',
+              outputTail: '',
+            },
+          ],
+        }),
+      );
+
+      const names = projected.blocks
+        .filter((block) => block.kind === 'subagent')
+        .map((block) => (block.kind === 'subagent' ? block.name : ''));
+      expect(names).toEqual(['coder', 'coder']);
+      expect(
+        projected.blocks.find(
+          (block) => block.kind === 'subagent-event' && block.id.includes('send-coder'),
+        ),
+      ).toMatchObject({ subagentId: 'agent-named', event: 'sent' });
+      expect(
+        projected.blocks.find(
+          (block) => block.kind === 'subagent-event' && block.id.includes('resume-coder'),
+        ),
+      ).toMatchObject({ subagentId: 'agent-named', event: 'resumed' });
     });
 
     it('emits no card or lifecycle events for a roster task whose run never entered the page', () => {
@@ -2343,6 +2444,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
               state: 'running',
               detached: false,
               name: 'alpha',
+              subagentName: 'coder',
               agentId: 'agent-1',
               outputTail: '',
               startedAt: '2026-01-01T00:00:01.000Z',

@@ -401,7 +401,54 @@ describe('AgentTranscriptLiveAdapter', () => {
     const turn = turnOps('t0', tx.getItems());
     const tool = turn.steps[0]?.frames.find((frame) => frame.kind === 'tool');
     expect(tool?.kind === 'tool' && tool.agentRefs).toEqual([{ agentId: 'agent-1', role: 'child' }]);
-    expect(tx.getTask('agent-1')).toMatchObject({ name: 'smoke_explore' });
+    expect(tx.getTask('agent-1')).toMatchObject({
+      name: 'smoke_explore',
+      subagentName: 'explore',
+    });
+  });
+
+  it('keeps anonymous subagent profile names display-only', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+
+    tx.apply(
+      liveAdapter.map(
+        ev({
+          type: 'subagent.spawned',
+          time: 1_700_000_000_000,
+          subagentId: 'agent-named',
+          subagentName: 'coder',
+          name: 'coder',
+          parentToolCallId: 'call-named',
+          runInBackground: false,
+          taskId: 'task-named',
+        }),
+      ),
+    );
+    tx.apply(
+      liveAdapter.map(
+        ev({
+          type: 'subagent.spawned',
+          time: 1_700_000_001_000,
+          subagentId: 'agent-anonymous',
+          subagentName: 'coder',
+          parentToolCallId: 'call-anonymous',
+          runInBackground: false,
+          taskId: 'task-anonymous',
+        }),
+      ),
+    );
+
+    expect(tx.getTask('task-named')).toMatchObject({
+      name: 'coder',
+      subagentName: 'coder',
+      agentId: 'agent-named',
+    });
+    expect(tx.getTask('task-anonymous')).toMatchObject({
+      name: undefined,
+      subagentName: 'coder',
+      agentId: 'agent-anonymous',
+    });
   });
 
   it('gives live markers their own namespace so they never collide with backfilled markers', () => {
@@ -1115,7 +1162,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       kind: 'subagent',
       state: 'running',
       detached: false,
-      name: 'worker',
+      name: undefined,
+      subagentName: 'worker',
       description: 'Second run',
       agentId: 'agent-1',
       outputTail: '',
