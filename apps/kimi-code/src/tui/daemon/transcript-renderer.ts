@@ -12,6 +12,7 @@ import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
 interface MountedBlock {
   readonly kind: Block['kind'];
   readonly component: Component;
+  block: Block;
 }
 
 export class DaemonTranscriptRenderer {
@@ -48,12 +49,21 @@ export class DaemonTranscriptRenderer {
 
   private updateOrCreate(block: Block): MountedBlock {
     const mounted = this.mounted.get(block.id);
-    if (mounted !== undefined && mounted.kind === block.kind) {
+    if (
+      mounted !== undefined &&
+      mounted.kind === block.kind &&
+      !requiresReplacement(mounted.block, block)
+    ) {
       updateMountedBlock(mounted.component, block);
+      mounted.block = block;
       return mounted;
     }
     if (mounted !== undefined) disposeComponent(mounted.component);
-    const next = { kind: block.kind, component: createBlockComponent(block, this.ui, this.workDir) };
+    const next = {
+      kind: block.kind,
+      component: createBlockComponent(block, this.ui, this.workDir),
+      block,
+    };
     this.mounted.set(block.id, next);
     return next;
   }
@@ -106,6 +116,17 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
         0,
       );
   }
+}
+
+function requiresReplacement(previous: Block, next: Block): boolean {
+  if (previous === next) return false;
+  return (
+    next.kind === 'subagent' ||
+    next.kind === 'subagent-event' ||
+    next.kind === 'approval' ||
+    next.kind === 'question' ||
+    next.kind === 'shell'
+  );
 }
 
 function updateMountedBlock(component: Component, block: Block): void {
