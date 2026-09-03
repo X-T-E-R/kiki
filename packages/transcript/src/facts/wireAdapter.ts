@@ -466,7 +466,7 @@ export class TranscriptWireAdapter {
       ) {
         return [];
       }
-      const request = record['request'];
+      const request = projectWireQuestionRequest(interactionId, interactionKind, record['request']);
       const requestToolCallId = stringOf(objectOf(request)?.['toolCallId']);
       const toolCallId = stringOf(record['toolCallId']) ?? requestToolCallId;
       const recordOrigin = objectOf(record['origin']);
@@ -1379,6 +1379,32 @@ function hashText(value: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
+}
+
+function projectWireQuestionRequest(
+  interactionId: string,
+  interactionKind: 'approval' | 'question',
+  request: unknown,
+): unknown {
+  if (interactionKind !== 'question') return request;
+  const payload = objectOf(request);
+  const questions = arrayOf(payload?.['questions']);
+  if (questions.length === 0) return request;
+  return {
+    ...payload,
+    question_id: interactionId,
+    questions: questions.map((value, questionIndex) => {
+      const question = objectOf(value);
+      return {
+        ...question,
+        id: `q_${questionIndex}`,
+        options: arrayOf(question?.['options']).map((optionValue, optionIndex) => ({
+          ...objectOf(optionValue),
+          id: `opt_${questionIndex}_${optionIndex}`,
+        })),
+      };
+    }),
+  };
 }
 
 function legacyOriginKind(origin: unknown): string {

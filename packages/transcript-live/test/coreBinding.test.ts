@@ -408,6 +408,40 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
+  it('assigns stable question and option ids in live transcript entities', () => {
+    const adapter = new AgentTranscriptLiveAdapter('main');
+    const operations = adapter.mapInteractionRequested({
+      id: 'question-1',
+      kind: 'question',
+      payload: {
+        questions: [
+          {
+            question: 'Choose?',
+            options: [{ label: 'Alpha' }, { label: 'Beta' }],
+          },
+        ],
+      },
+      origin: { agentId: 'main', turnId: 0 },
+      createdAt: 1_000,
+    });
+
+    expect(operations[0]).toMatchObject({
+      op: 'interaction.upsert',
+      interaction: {
+        interactionId: 'question-1',
+        request: {
+          question_id: 'question-1',
+          questions: [
+            {
+              id: 'q_0',
+              options: [{ id: 'opt_0_0' }, { id: 'opt_0_1' }],
+            },
+          ],
+        },
+      },
+    });
+  });
+
   it('registers pre-bind pendings without frames and replays an early resolve at seed time', () => {
     const interactions = new SessionInteractionService(new TestSessionStateService());
     interactions.enqueue({

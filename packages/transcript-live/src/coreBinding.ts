@@ -305,6 +305,7 @@ export function bindSessionTranscript(
       kind: interaction.kind,
       payload: interaction.payload,
       origin: interaction.origin,
+      createdAt: interaction.createdAt,
     };
     applyOps(agentId, liveAdapterFor(agentId).mapInteractionRequested(request));
   };

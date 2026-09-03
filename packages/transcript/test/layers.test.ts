@@ -952,7 +952,11 @@ describe('TranscriptWireAdapter', () => {
         type: 'interaction.request',
         id: 'question-1',
         kind: 'question',
-        request: { questions: [] },
+        request: {
+          questions: [
+            { question: 'Choose?', options: [{ label: 'Alpha' }, { label: 'Beta' }] },
+          ],
+        },
       },
       { type: 'interaction.resolved', id: 'question-1', response: null },
       {
@@ -969,7 +973,23 @@ describe('TranscriptWireAdapter', () => {
         state: 'approved',
         anchor: { kind: 'tool_call', toolCallId: 'call-1' },
       }),
-      expect.objectContaining({ interactionId: 'question-1', state: 'dismissed', response: null }),
+      expect.objectContaining({
+        interactionId: 'question-1',
+        state: 'dismissed',
+        response: null,
+        request: {
+          question_id: 'question-1',
+          questions: [
+            expect.objectContaining({
+              id: 'q_0',
+              options: [
+                expect.objectContaining({ id: 'opt_0_0' }),
+                expect.objectContaining({ id: 'opt_0_1' }),
+              ],
+            }),
+          ],
+        },
+      }),
       expect.objectContaining({
         interactionId: 'pending-1',
         state: 'cancelled',

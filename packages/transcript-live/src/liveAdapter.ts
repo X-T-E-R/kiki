@@ -88,9 +88,9 @@ import { projectPromptContentParts } from './promptProjection';
 export interface LiveAdapterInteraction {
   readonly id: string;
   readonly kind: 'approval' | 'question';
-  /** In-process `ApprovalRequest` / `QuestionRequest`, passed through as-is. */
   readonly payload: unknown;
   readonly origin: { readonly agentId?: string; readonly turnId?: number };
+  readonly createdAt?: number;
 }
 
 type PlanRevisionEvent = { readonly type: 'plan.revision' } & PlanRevision;
@@ -1588,6 +1588,7 @@ export class AgentTranscriptLiveAdapter {
    * floating in consumers.
    */
   mapInteractionRequested(interaction: LiveAdapterInteraction): TranscriptOperation[] {
+    const request = projectQuestionRequest(interaction);
     const payload = interaction.payload as { toolCallId?: unknown };
     const toolCallId = typeof payload.toolCallId === 'string' ? payload.toolCallId : undefined;
     const entity: TranscriptInteraction = {
@@ -1597,7 +1598,7 @@ export class AgentTranscriptLiveAdapter {
       origin: interaction.origin,
       anchor: toolCallId === undefined ? undefined : { kind: 'tool_call', toolCallId },
       state: 'pending',
-      request: interaction.payload,
+      request,
     };
     this.interactions.set(interaction.id, entity);
     return [{ op: 'interaction.upsert', interaction: entity }];
@@ -1627,6 +1628,50 @@ export class AgentTranscriptLiveAdapter {
     }
     return ops;
   }
+}
+
+function projectQuestionRequest(interaction: LiveAdapterInteraction): unknown {
+  if (interaction.kind !== 'question') return interaction.payload;
+  type Question = {
+    readonly question?: unknown;
+    readonly header?: unknown;
+    readonly body?: unknown;
+    readonly options?: readonly { readonly label?: unknown; readonly description?: unknown }[];
+    readonly multiSelect?: unknown;
+    readonly otherLabel?: unknown;
+    readonly otherDescription?: unknown;
+  };
+  const payload = interaction.payload as {
+    readonly questions?: readonly Question[];
+    readonly turnId?: unknown;
+    readonly toolCallId?: unknown;
+  };
+  if (!Array.isArray(payload.questions)) return interaction.payload;
+  return {
+    ...payload,
+    question_id: interaction.id,
+    turn_id: typeof payload.turnId === 'number' ? payload.turnId : undefined,
+    tool_call_id: typeof payload.toolCallId === 'string' ? payload.toolCallId : undefined,
+    questions: (payload.questions as readonly Question[]).map((question, questionIndex) => ({
+      id: `q_${questionIndex}`,
+      question: question.question,
+      header: question.header,
+      body: question.body,
+      options: (question.options ?? []).map((option, optionIndex) => ({
+        id: `opt_${questionIndex}_${optionIndex}`,
+        label: option.label,
+        description: option.description,
+      })),
+      multi_select: question.multiSelect,
+      allow_other: true,
+      other_label: question.otherLabel,
+      other_description: question.otherDescription,
+    })),
+    created_at:
+      interaction.createdAt === undefined
+        ? undefined
+        : new Date(interaction.createdAt).toISOString(),
+  };
 }
 
 function nowIso(): string {
