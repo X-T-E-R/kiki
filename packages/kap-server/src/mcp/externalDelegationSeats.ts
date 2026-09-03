@@ -40,6 +40,12 @@ export type ExternalDelegationSeat = ExternalDelegationSeatView & {
   readonly delegationToken: string;
 };
 
+export interface ExternalDelegationMcpSeat {
+  readonly sessionId: string;
+  readonly delegationToken: string;
+  readonly workspacePath: string;
+}
+
 export class ExternalDelegationSeatManager {
   private readonly filePath: string;
   private mutation = Promise.resolve();
@@ -153,6 +159,25 @@ export class ExternalDelegationSeatManager {
       return undefined;
     }
     return { principalId: provision.principalId, sessionId: seat.sessionId };
+  }
+
+  async resolveBearer(bearer: string): Promise<ExternalDelegationMcpSeat | undefined> {
+    const document = await this.read();
+    for (const seat of document.seats) {
+      const provision = await this.readSeatProvision(seat.sessionId);
+      if (
+        provision !== undefined &&
+        provision.principalId === seat.principal &&
+        tokenMatches(bearer, provision.delegationToken)
+      ) {
+        return {
+          sessionId: seat.sessionId,
+          delegationToken: provision.delegationToken,
+          workspacePath: seat.workspace,
+        };
+      }
+    }
+    return undefined;
   }
 
   private async read(): Promise<{ version: 2; seats: ExternalDelegationSeatRecord[] }> {

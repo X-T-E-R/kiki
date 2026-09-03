@@ -95,7 +95,13 @@ describe('ExternalDelegationSeatManager', () => {
       principalId: 'cursor',
       sessionId: first.sessionId,
     });
+    expect(await manager.resolveBearer(first.delegationToken)).toEqual({
+      sessionId: first.sessionId,
+      delegationToken: first.delegationToken,
+      workspacePath: workspace,
+    });
     expect(await manager.resolve(first.sessionId, `${first.delegationToken}x`)).toBeUndefined();
+    expect(await manager.resolveBearer(`${first.delegationToken}x`)).toBeUndefined();
     expect(onWorkspaceServed).toHaveBeenCalledTimes(2);
 
     const restored = new ExternalDelegationSeatManager({} as never, homeDir, vi.fn());
