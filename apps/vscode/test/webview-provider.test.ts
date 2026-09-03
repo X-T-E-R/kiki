@@ -44,7 +44,7 @@ describe("GUI webview carrier", () => {
     await mkdir(join(root, "media", "gui", "assets"), { recursive: true });
     await writeFile(
       join(root, "media", "gui", "index.html"),
-      '<!doctype html><html><head></head><body><div id="root"></div><script type="module" src="./assets/app.js"></script><link rel="stylesheet" href="./assets/app.css"></body></html>',
+      '<!doctype html><html><head><script>document.documentElement.dataset.theme="dark"</script></head><body><div id="root"></div><script type="module" src="./assets/app.js"></script><link rel="stylesheet" href="./assets/app.css"></body></html>',
     );
 
     let receiveMessage: ((message: unknown) => Promise<void>) | undefined;
@@ -83,6 +83,9 @@ describe("GUI webview carrier", () => {
       'connect-src vscode-webview://test https://remote-tunnel.example.test wss://remote-tunnel.example.test',
     );
     expect(webview.html).not.toContain('secret-token');
+    const nonce = /script-src[^;]*'nonce-([^']+)'/.exec(webview.html)?.[1];
+    expect(nonce).toBeDefined();
+    expect(webview.html.match(new RegExp(`<script nonce="${nonce}"`, 'g'))).toHaveLength(2);
     expect(webview.html).toContain(`src="vscode-resource:${root.replaceAll("\\", "/")}/media/gui/assets/app.js"`);
     expect(webview.html).toContain(`href="vscode-resource:${root.replaceAll("\\", "/")}/media/gui/assets/app.css"`);
 

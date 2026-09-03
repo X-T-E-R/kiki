@@ -74,6 +74,7 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
   }
 
   private renderHtml(source: string, webview: vscode.Webview): string {
+    const nonce = crypto.randomUUID().replaceAll("-", "");
     const csp = [
       "default-src 'none'",
       `style-src ${webview.cspSource} 'unsafe-inline'`,
@@ -82,11 +83,12 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
       `media-src ${webview.cspSource} data: blob: ${this.connection.restOrigin}`,
       `connect-src ${webview.cspSource} ${this.connection.restOrigin} ${this.connection.socketOrigin}`,
       `worker-src ${webview.cspSource} blob:`,
-      `script-src ${webview.cspSource}`,
+      `script-src ${webview.cspSource} 'nonce-${nonce}'`,
     ].join("; ");
     const head = `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
     return source
       .replace("<head>", `<head>${head}`)
+      .replaceAll(/<script(?![^>]*\bnonce=)/gi, `<script nonce="${nonce}"`)
       .replaceAll(/\b(src|href)="(?![a-z]+:|data:|#)([^"?]+)([^"]*)"/gi, (_match, attribute, path, suffix) => {
         const segments = String(path).replace(/^\.\//, "").replace(/^\//, "").split("/");
         const uri = webview.asWebviewUri(vscode.Uri.joinPath(this.guiRoot, ...segments));
