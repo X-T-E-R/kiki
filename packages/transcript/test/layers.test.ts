@@ -1071,6 +1071,54 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('preserves sanitized user provenance on a steered frame', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'turn.steer',
+        turnId: 0,
+        promptId: 'steer-1',
+        input: [{ type: 'text', text: 'follow the skill' }],
+        origin: {
+          kind: 'user',
+          skillActivations: [
+            {
+              activationId: 'activation-1',
+              skillName: 'review',
+              skillArgs: 'focused',
+              path: 'C:/private/skill.md',
+            },
+          ],
+        },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_000,
+      },
+    ]);
+
+    const frame = transcript.getTurn('t0')?.steps[0]?.frames[0];
+    expect(frame).toMatchObject({
+      kind: 'text',
+      role: 'user',
+      origin: {
+        kind: 'user',
+        skillActivations: [{ skillName: 'review', skillArgs: 'focused' }],
+      },
+    });
+    expect(JSON.stringify(frame)).not.toContain('C:/private/skill.md');
+    expect(JSON.stringify(frame)).not.toContain('activation-1');
+  });
+
   it('drops a steer frame when no later step begins and still suppresses the paired append_message', () => {
     const transcript = replay([
       {

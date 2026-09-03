@@ -1,4 +1,5 @@
 import type { TranscriptFact } from './reducer';
+import { projectTranscriptUserOrigin } from '../contract/origin';
 import type { AttachmentSource } from '../model/attachment';
 import type { ToolCallFrame } from '../model/frame';
 import { projectInteractionEndState, type TranscriptInteraction } from '../model/interaction';
@@ -676,7 +677,7 @@ export class TranscriptWireAdapter {
           },
           role: 'user',
           text: steer.text,
-          origin: steer.origin,
+          origin: projectTranscriptUserOrigin(steer.origin) ?? steer.origin,
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         },
       });
