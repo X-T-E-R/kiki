@@ -1512,19 +1512,17 @@ async function scenarioSettingsInvalid() {
 }
 
 async function scenarioSettingsBrowserEditable() {
-  // BK1 single-writer convergence: the browser build now edits server settings
-  // through the kap-server config API — there is no desktop-only gate anymore.
-  // The proof asserts the fieldset leaves its loading-disabled state (server
-  // echo landed) instead of the retired desktop-config-disabled-hint.
   await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('[data-testid="desktop-config-fields"]', { timeout: 10_000 });
-  await page.waitForFunction(
-    () => document.querySelector('[data-testid="desktop-config-fields"]')?.disabled === false,
-    { timeout: 10_000 },
-  );
-  await page.locator('[data-testid="desktop-config-fields"]').scrollIntoViewIfNeeded();
+  const mainAgents = page.locator('#st-card-main-agents');
+  await mainAgents.waitFor({ state: 'visible', timeout: 10_000 });
+  const enabledSwitch = mainAgents.locator('[data-agent-profile="agent"] [role="switch"]');
+  await enabledSwitch.waitFor({ state: 'visible', timeout: 10_000 });
+  if (await enabledSwitch.isDisabled()) {
+    throw new Error('browser agent settings remained disabled after the server response');
+  }
+  await mainAgents.scrollIntoViewIfNeeded();
   await page.waitForTimeout(300);
   await shot('settings-browser-editable');
 }

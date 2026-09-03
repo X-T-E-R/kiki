@@ -1,4 +1,5 @@
 import type { TranscriptFact } from './reducer';
+import { projectTranscriptUserOrigin } from '../contract/origin';
 import type { AttachmentSource } from '../model/attachment';
 import type { ToolCallFrame } from '../model/frame';
 import { projectInteractionEndState, type TranscriptInteraction } from '../model/interaction';
@@ -19,6 +20,7 @@ export interface TranscriptWireAdapterLookups {
   readonly tool?: (toolCallId: string) =>
     | { readonly turnId: string; readonly stepId: string; readonly frame: ToolCallFrame }
     | undefined;
+  readonly task?: (taskId: string) => TranscriptTask | undefined;
 }
 
 export function taskNotificationFrameId(sourceId: string): string {
@@ -59,7 +61,9 @@ export class TranscriptWireAdapter {
   readonly #turnOwnedItemIds = new Map<string, string[]>();
   readonly #steeredMessageIds = new Set<string>();
   readonly #pendingSteers = new Map<string, PendingSteer[]>();
-  readonly #unpairedSteerCredits = new Map<string, number>();
+  readonly #pendingTaskNotifications = new Map<string, TranscriptWireRecord[]>();
+  readonly #projectedTaskNotificationIds = new Set<string>();
+  readonly #unpairedSteerCredits = new Map<string, Map<string, number>>();
   readonly #executions = new Map<string, TranscriptTurnExecution>();
   #goal: GoalMeta | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
@@ -273,19 +277,36 @@ export class TranscriptWireAdapter {
       const info = objectOf(record['info']);
       const taskId = stringOf(info?.['taskId']);
       if (taskId === undefined) return [];
-      const previous = this.#tasks.get(taskId);
+      const cached = this.#tasks.get(taskId);
+      const projected = this.lookups?.task?.(taskId);
+      const previous =
+        cached === undefined
+          ? projected
+          : projected === undefined
+            ? cached
+            : { ...cached, ...projected };
       const agentId = stringOf(info?.['agentId']) ?? previous?.agentId;
       const state = taskStateOf(info?.['status']) ?? previous?.state ?? 'running';
+      const stopReason = stringOf(info?.['stopReason']);
       const task: TranscriptTask = {
         taskId,
         kind: taskKindOf(info?.['kind']),
         state,
         detached: booleanOf(info?.['detached']) ?? previous?.detached ?? true,
+        name: stringOf(info?.['collaborationTaskName']) ?? previous?.name,
+        subagentName: stringOf(info?.['profile']) ?? previous?.subagentName,
         description: stringOf(info?.['description']) ?? previous?.description,
         agentId,
         outputTail: stringOf(record['outputTail']) ?? previous?.outputTail ?? '',
         startedAt: previous?.startedAt ?? isoOf(numberOf(info?.['startedAt'])),
         endedAt: isoOf(numberOf(info?.['endedAt'])) ?? previous?.endedAt,
+        resultSummary: previous?.resultSummary,
+        usage: previous?.usage,
+        error:
+          state === 'failed' || state === 'timed_out' || state === 'lost'
+            ? (stopReason ?? previous?.error)
+            : undefined,
+        stateReason: stopReason ?? previous?.stateReason,
       };
       this.#tasks.set(taskId, task);
       if (task.kind === 'subagent' && agentId !== undefined) {
@@ -311,39 +332,33 @@ export class TranscriptWireAdapter {
     }
     if (record.type === 'task.notified') {
       const turnId = this.#currentTurnId;
-      const turn = turnId === undefined ? undefined : this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);
-      const stepRef = turnId === undefined ? undefined : this.#steps.get(turnId);
-      const step = stepRef === undefined ? undefined : this.#stepHeaders.get(stepRef.stepId);
+      const turn =
+        turnId === undefined ? undefined : this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);
       const sourceId = stringOf(record['sourceId']);
       const title = stringOf(record['title']);
       const body = stringOf(record['body']);
       if (
         turnId === undefined ||
         turn === undefined ||
-        step === undefined ||
         turn.state !== 'running' ||
-        step.state !== 'running' ||
         sourceId === undefined ||
         title === undefined ||
-        body === undefined
+        body === undefined ||
+        (turn.origin.kind === 'task' && turn.origin.taskId === sourceId)
       ) {
         return [];
       }
-      return [
-        {
-          op: 'frame.upsert',
-          turnId,
-          stepId: step.stepId,
-          frame: {
-            kind: 'text',
-            frameId: taskNotificationFrameId(sourceId),
-            role: 'user',
-            text: `${title}\n${body}`.trim(),
-            taskId: sourceId,
-            origin: { kind: 'task', taskId: sourceId },
-          },
-        },
-      ];
+      const notificationId = taskNotificationIdOfRecord(record);
+      if (notificationId !== undefined) this.#projectedTaskNotificationIds.add(notificationId);
+      const stepRef = this.#steps.get(turnId);
+      const step = stepRef === undefined ? undefined : this.#stepHeaders.get(stepRef.stepId);
+      if (step?.state === 'running') {
+        return [this.taskNotificationOp(record, turnId, step.stepId)];
+      }
+      const pending = this.#pendingTaskNotifications.get(turnId);
+      if (pending === undefined) this.#pendingTaskNotifications.set(turnId, [record]);
+      else pending.push(record);
+      return [];
     }
     if (record.type === 'subagent.spawned') {
       const subagentId = stringOf(record['subagentId']);
@@ -438,15 +453,19 @@ export class TranscriptWireAdapter {
         return [{ op: 'task.upsert', task }];
       }
       const terminal = record.type === 'subagent.completed' || record.type === 'subagent.failed';
+      const error = stringOf(record['error']);
+      const state =
+        record.type === 'subagent.completed'
+          ? 'completed'
+          : record.type === 'subagent.failed'
+            ? error === 'terminated'
+              ? 'killed'
+              : 'failed'
+            : 'running';
       const task: TranscriptTask = {
         taskId,
         kind: 'subagent',
-        state:
-          record.type === 'subagent.completed'
-            ? 'completed'
-            : record.type === 'subagent.failed'
-              ? 'failed'
-              : 'running',
+        state,
         detached: previous?.detached ?? true,
         name: previous?.name,
         subagentName: previous?.subagentName,
@@ -457,8 +476,8 @@ export class TranscriptWireAdapter {
         endedAt: terminal ? isoOf(record.time) : previous?.endedAt,
         resultSummary: stringOf(record['resultSummary']) ?? previous?.resultSummary,
         usage: usageOf(record['usage']) ?? previous?.usage,
-        error: stringOf(record['error']) ?? previous?.error,
-        stateReason: stringOf(record['reason']) ?? previous?.stateReason,
+        error: state === 'failed' ? (error ?? previous?.error) : undefined,
+        stateReason: stringOf(record['reason']) ?? error ?? previous?.stateReason,
       };
       this.#tasks.set(taskId, task);
       return [{ op: 'task.upsert', task }];
@@ -472,7 +491,7 @@ export class TranscriptWireAdapter {
       ) {
         return [];
       }
-      const request = record['request'];
+      const request = projectWireQuestionRequest(interactionId, interactionKind, record['request']);
       const requestToolCallId = stringOf(objectOf(request)?.['toolCallId']);
       const toolCallId = stringOf(record['toolCallId']) ?? requestToolCallId;
       const recordOrigin = objectOf(record['origin']);
@@ -507,6 +526,36 @@ export class TranscriptWireAdapter {
       this.#interactions.set(interactionId, interaction);
       return [{ op: 'interaction.upsert', interaction }];
     }
+    if (record.type === 'turn.step.interrupted') {
+      const turnId = turnIdOf(record['turnId'], this.#currentTurnId);
+      const stepOrdinal = numberOf(record['step']);
+      const reason = stringOf(record['reason']);
+      if (turnId === undefined || stepOrdinal === undefined || reason === undefined) return [];
+      const recordStepId = stringOf(record['stepId']);
+      const existing =
+        (recordStepId === undefined ? undefined : this.#stepHeaders.get(recordStepId)) ??
+        [...this.#stepHeaders.values()].find(
+          (step) => step.turnId === turnId && step.ordinal === stepOrdinal,
+        );
+      const stepId = recordStepId ?? existing?.stepId ?? `${turnId}.${stepOrdinal}`;
+      const step: StepHeader = {
+        kind: 'step',
+        stepId,
+        turnId,
+        ordinal: stepOrdinal,
+        state: 'interrupted',
+        startedAt: existing?.startedAt,
+        endedAt: isoOf(record.time),
+        usage: existing?.usage,
+        finishReason: existing?.finishReason,
+        timing: existing?.timing,
+        endReason: reason,
+        endMessage: stringOf(record['message']),
+      };
+      this.#stepHeaders.set(stepId, step);
+      return [this.ensureTurn(turnId), { op: 'step.upsert', turnId, step }];
+    }
+    if (record.type === 'turn.step.retrying') return [];
     if (
       record.type === 'turn.cancel' &&
       record['target'] === 'active' &&
@@ -515,6 +564,34 @@ export class TranscriptWireAdapter {
       return [this.marker(record, ordinal, 'interruption')];
     }
     return [];
+  }
+
+  private taskNotificationOp(
+    record: TranscriptWireRecord,
+    turnId: string,
+    stepId: string,
+  ): TranscriptOperation {
+    const sourceId = stringOf(record['sourceId'])!;
+    return {
+      op: 'frame.upsert',
+      turnId,
+      stepId,
+      frame: {
+        kind: 'text',
+        frameId: taskNotificationFrameId(sourceId),
+        role: 'user',
+        text: `${stringOf(record['title'])!}\n${stringOf(record['body'])!}`.trim(),
+        taskId: sourceId,
+        origin: { kind: 'task', taskId: sourceId },
+      },
+    };
+  }
+
+  private takePendingTaskNotifications(turnId: string, stepId: string): TranscriptOperation[] {
+    const pending = this.#pendingTaskNotifications.get(turnId);
+    if (pending === undefined) return [];
+    this.#pendingTaskNotifications.delete(turnId);
+    return pending.map((record) => this.taskNotificationOp(record, turnId, stepId));
   }
 
   private marker(
@@ -635,7 +712,13 @@ export class TranscriptWireAdapter {
     if (pending === undefined) this.#pendingSteers.set(turnId, [steer]);
     else pending.push(steer);
     if (explicitPromptId === undefined) {
-      this.#unpairedSteerCredits.set(turnId, (this.#unpairedSteerCredits.get(turnId) ?? 0) + 1);
+      let credits = this.#unpairedSteerCredits.get(turnId);
+      if (credits === undefined) {
+        credits = new Map();
+        this.#unpairedSteerCredits.set(turnId, credits);
+      }
+      const originKind = legacyOriginKind(record['origin']);
+      credits.set(originKind, (credits.get(originKind) ?? 0) + 1);
     }
     return [];
   }
@@ -676,7 +759,7 @@ export class TranscriptWireAdapter {
           },
           role: 'user',
           text: steer.text,
-          origin: steer.origin,
+          origin: projectTranscriptUserOrigin(steer.origin) ?? steer.origin,
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         },
       });
@@ -696,9 +779,11 @@ export class TranscriptWireAdapter {
       return true;
     }
     if (turnId === undefined || !isVisibleLegacyTurnOrigin(this.agentId, origin)) return false;
-    const credits = this.#unpairedSteerCredits.get(turnId) ?? 0;
-    if (credits === 0) return false;
-    this.#unpairedSteerCredits.set(turnId, credits - 1);
+    const credits = this.#unpairedSteerCredits.get(turnId);
+    const originKind = legacyOriginKind(origin);
+    const count = credits?.get(originKind) ?? 0;
+    if (count === 0) return false;
+    credits!.set(originKind, count - 1);
     this.#steeredMessageIds.add(messageId);
     return true;
   }
@@ -712,6 +797,13 @@ export class TranscriptWireAdapter {
     if (role === 'user') {
       if (messageId === this.#currentPromptId) return [];
       const origin = objectOf(message['origin']);
+      const notificationId = taskNotificationIdOfMessage(message);
+      if (
+        notificationId !== undefined &&
+        this.#projectedTaskNotificationIds.delete(notificationId)
+      ) {
+        return [];
+      }
       if (this.consumeSteeredUserMessage(messageId, origin)) return [];
       if (stringOf(origin?.['kind']) === 'injection') return this.legacyInjectedMessage(message, ordinal);
       const turnOrdinal = this.#legacyTurnOrdinal++;
@@ -951,6 +1043,7 @@ export class TranscriptWireAdapter {
         this.ensureTurn(turnId),
         { op: 'step.upsert', turnId, step },
         ...this.takePendingSteers(turnId, stepId),
+        ...this.takePendingTaskNotifications(turnId, stepId),
       ];
     }
     if (type === 'step.end') return this.stepEnd(event, time);
@@ -975,19 +1068,22 @@ export class TranscriptWireAdapter {
       this.#stepUsages.set(turnId, usages);
     }
     const previousStep = this.#stepHeaders.get(stepId);
+    const finishReason =
+      stringOf(event['finishReason']) ??
+      stringOf(event['rawFinishReason']) ??
+      stringOf(event['providerFinishReason']);
+    const interrupted = finishReason === 'interrupted' || finishReason === 'error';
     const step: StepHeader = {
       kind: 'step',
       stepId,
       turnId,
       ordinal,
-      state: 'completed',
+      state: interrupted ? 'interrupted' : 'completed',
       startedAt: previousStep?.startedAt,
       endedAt: isoOf(time),
       usage,
-      finishReason:
-        stringOf(event['finishReason']) ??
-        stringOf(event['rawFinishReason']) ??
-        stringOf(event['providerFinishReason']),
+      finishReason,
+      endReason: interrupted ? finishReason : undefined,
       timing: {
         llmFirstTokenLatencyMs: numberOf(event['llmFirstTokenLatencyMs']),
         llmStreamDurationMs: numberOf(event['llmStreamDurationMs']),
@@ -1002,7 +1098,13 @@ export class TranscriptWireAdapter {
     if (!this.#canonicalTurns.has(turnId)) {
       const previous = this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);
       if (previous !== undefined) {
-        const turn: TurnHeader = { ...previous, state: 'completed', endedAt: isoOf(time) };
+        const state =
+          finishReason === 'error'
+            ? 'failed'
+            : finishReason === 'interrupted'
+              ? 'cancelled'
+              : 'completed';
+        const turn: TurnHeader = { ...previous, state, endedAt: isoOf(time) };
         this.#turnHeaders.set(turnId, turn);
         operations.push({ op: 'turn.upsert', turn });
       }
@@ -1102,13 +1204,16 @@ export class TranscriptWireAdapter {
   ): TranscriptOperation[] {
     const toolCallId = stringOf(event['toolCallId']);
     if (toolCallId === undefined) return [];
-    const hit = this.#tools.get(toolCallId) ?? this.lookups?.tool?.(toolCallId);
+    const cached = this.#tools.get(toolCallId);
+    const projected = this.lookups?.tool?.(toolCallId);
+    const hit = cached ?? projected;
     if (hit === undefined) return [];
     const result = objectOf(event['result']);
     const output = result?.['output'];
     const isError = result?.['isError'] === true;
     const frame: ToolCallFrame = {
       ...hit.frame,
+      ...projected?.frame,
       state: isError ? 'error' : 'done',
       output,
       error: isError && typeof output === 'string' ? output : undefined,
@@ -1122,6 +1227,7 @@ export class TranscriptWireAdapter {
     const n = numberOf(record['turnId']);
     if (n === undefined) return [];
     const turnId = `t${n}`;
+    this.#pendingTaskNotifications.delete(turnId);
     const previous = this.#turnHeaders.get(turnId) ?? this.lookups?.turn?.(turnId);
     if (previous === undefined && !this.#turns.includes(turnId)) return [];
     const endedAt = isoOf(record.time);
@@ -1151,11 +1257,17 @@ export class TranscriptWireAdapter {
             outputTokens: stepUsages.reduce((sum, current) => sum + current.output, 0),
             cachedTokens: stepUsages.reduce((sum, current) => sum + current.inputCacheRead, 0),
           };
+    const rawReason = record['reason'];
+    const reason: 'completed' | 'cancelled' | 'failed' | 'blocked' =
+      rawReason === 'cancelled' || rawReason === 'failed' || rawReason === 'blocked'
+        ? rawReason
+        : 'completed';
+    const durationMs = numberOf(record['durationMs']);
     const turn: TurnHeader = {
       kind: 'turn',
       turnId,
       ordinal: n,
-      state: turnState(record['reason']),
+      state: turnState(reason),
       origin: previous?.origin ?? { kind: 'other' },
       message: previous?.message,
       prompt: previous?.prompt,
@@ -1164,11 +1276,28 @@ export class TranscriptWireAdapter {
       endedAt,
       usage,
       execution: this.#executions.get(turnId) ?? previous?.execution,
-      durationMs: numberOf(record['durationMs']),
+      durationMs,
       error: stringOf(objectOf(record['error'])?.['message']),
     };
     this.#turnHeaders.set(turnId, turn);
-    operations.push({ op: 'turn.upsert', turn });
+    operations.push(
+      { op: 'turn.upsert', turn },
+      {
+        op: 'meta.merge',
+        meta: {
+          activity: 'idle',
+          agent: {
+            phase: {
+              kind: 'ended',
+              turnId: n,
+              reason,
+              durationMs,
+              at: numberOf(record.time) ?? 0,
+            },
+          },
+        },
+      },
+    );
     if (record['reason'] === 'cancelled' && record['interruptReason'] === 'user_cancelled') {
       operations.push({
         op: 'marker.upsert',
@@ -1247,6 +1376,7 @@ export class TranscriptWireAdapter {
       this.#steps.delete(turnId);
       this.#stepUsages.delete(turnId);
       this.#pendingSteers.delete(turnId);
+      this.#pendingTaskNotifications.delete(turnId);
       this.#unpairedSteerCredits.delete(turnId);
       for (const [stepId, step] of this.#stepHeaders) {
         if (step.turnId === turnId) this.#stepHeaders.delete(stepId);
@@ -1346,6 +1476,63 @@ function hashText(value: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
+}
+
+function projectWireQuestionRequest(
+  interactionId: string,
+  interactionKind: 'approval' | 'question',
+  request: unknown,
+): unknown {
+  if (interactionKind !== 'question') return request;
+  const payload = objectOf(request);
+  const questions = arrayOf(payload?.['questions']);
+  if (questions.length === 0) return request;
+  return {
+    ...payload,
+    question_id: interactionId,
+    questions: questions.map((value, questionIndex) => {
+      const question = objectOf(value);
+      return {
+        ...question,
+        id: `q_${questionIndex}`,
+        options: arrayOf(question?.['options']).map((optionValue, optionIndex) => ({
+          ...objectOf(optionValue),
+          id: `opt_${questionIndex}_${optionIndex}`,
+        })),
+      };
+    }),
+  };
+}
+
+function taskNotificationId(sourceId: string, type: string): string | undefined {
+  const status = type.startsWith('task.') ? type.slice('task.'.length) : type;
+  return status === '' ? undefined : `task:${sourceId}:${status}`;
+}
+
+function taskNotificationIdOfRecord(record: TranscriptWireRecord): string | undefined {
+  const sourceId = stringOf(record['sourceId']);
+  const type = stringOf(record['notificationType']);
+  return sourceId === undefined || type === undefined ? undefined : taskNotificationId(sourceId, type);
+}
+
+function taskNotificationIdOfMessage(
+  message: Readonly<Record<string, unknown>>,
+): string | undefined {
+  const origin = objectOf(message['origin']);
+  const kind = stringOf(origin?.['kind']);
+  if (kind === 'task' || kind === 'background_task') {
+    const explicit = stringOf(origin?.['notificationId']);
+    if (explicit !== undefined) return explicit;
+    const taskId = stringOf(origin?.['taskId']);
+    const status = stringOf(origin?.['status']);
+    if (taskId !== undefined && status !== undefined) return taskNotificationId(taskId, status);
+  }
+  const text = arrayOf(message['content']).map(textOfPart).join('');
+  return /<notification\b[^>]*\bid=["'](task:[^"']+)["']/i.exec(text)?.[1];
+}
+
+function legacyOriginKind(origin: unknown): string {
+  return stringOf(objectOf(origin)?.['kind']) ?? 'user';
 }
 
 function isVisibleLegacyTurnOrigin(

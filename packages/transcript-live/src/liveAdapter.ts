@@ -88,9 +88,9 @@ import { projectPromptContentParts } from './promptProjection';
 export interface LiveAdapterInteraction {
   readonly id: string;
   readonly kind: 'approval' | 'question';
-  /** In-process `ApprovalRequest` / `QuestionRequest`, passed through as-is. */
   readonly payload: unknown;
   readonly origin: { readonly agentId?: string; readonly turnId?: number };
+  readonly createdAt?: number;
 }
 
 type PlanRevisionEvent = { readonly type: 'plan.revision' } & PlanRevision;
@@ -103,6 +103,7 @@ type PromptAbortedEvent = { readonly type: 'prompt.aborted' } & PromptAborted;
 type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
 type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued;
 type PromptReplacedEvent = { readonly type: 'prompt.replaced' } & PromptReplaced;
+type TaskNotifiedEvent = { readonly type: 'task.notified' } & TaskNotified;
 
 export type LiveAdapterBusEvent =
   | PlanRevisionEvent
@@ -120,7 +121,7 @@ export type LiveAdapterBusEvent =
   | ({ readonly type: 'tool.result' } & ToolResultEvent)
   | ({ readonly type: 'task.started' } & TaskStarted)
   | ({ readonly type: 'task.terminated' } & TaskTerminatedNotice)
-  | ({ readonly type: 'task.notified' } & TaskNotified)
+  | TaskNotifiedEvent
   | ({ readonly type: 'shell.started' } & ShellStarted)
   | ({ readonly type: 'shell.output' } & ShellOutput)
   | ({ readonly type: 'shell.completed' } & ShellCompleted)
@@ -255,6 +256,7 @@ export class AgentTranscriptLiveAdapter {
   private readonly interactions = new Map<string, TranscriptInteraction>();
   /** promptId → the prompt queue entity as last emitted (`prompt.upsert` replaces). */
   private readonly prompts = new Map<string, TranscriptPrompt>();
+  private readonly pendingTaskNotifications: TaskNotifiedEvent[] = [];
   /** turnId → step usages reported so far; folded into the turn header at `turn.ended`. */
   private readonly stepUsageByTurn = new Map<string, StepUsage[]>();
   private markerSeq = 0;
@@ -426,17 +428,19 @@ export class AgentTranscriptLiveAdapter {
     interruptReason?: string;
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
+    this.pendingTaskNotifications.length = 0;
     this.flushOpenFrames(ops);
     const turnId = `t${event.turnId}`;
     const endedAt = event.time === undefined ? nowIso() : epochMsToIso(event.time);
     const closedFrames = new Set<string>();
     const closeFrame = (hit: ToolFrameRecord): void => {
-      const key = `${hit.stepId}\0${hit.frame.frameId}`;
-      if (hit.frame.state !== 'running' || closedFrames.has(key)) return;
+      const current = this.lookups?.toolFrame?.(hit.frame.toolCallId) ?? hit;
+      const key = `${current.stepId}\0${current.frame.frameId}`;
+      if (current.frame.state !== 'running' || closedFrames.has(key)) return;
       closedFrames.add(key);
-      const frame: ToolCallFrame = { ...hit.frame, state: 'interrupted', endedAt };
-      this.toolFrames.set(frame.toolCallId, { ...hit, frame });
-      ops.push({ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame });
+      const frame: ToolCallFrame = { ...current.frame, state: 'interrupted', endedAt };
+      this.toolFrames.set(frame.toolCallId, { ...current, frame });
+      ops.push({ op: 'frame.upsert', turnId: current.turnId, stepId: current.stepId, frame });
     };
     const closedSteps = new Set<string>();
     const details = this.lookups?.turnDetails?.(turnId);
@@ -540,7 +544,11 @@ export class AgentTranscriptLiveAdapter {
     this.frameOrdinal = 0;
     this.openText = undefined;
     this.openThinking = undefined;
-    return [{ op: 'step.upsert', turnId, step: this.currentStep }];
+    const operations: TranscriptOperation[] = [{ op: 'step.upsert', turnId, step: this.currentStep }];
+    for (const notification of this.pendingTaskNotifications.splice(0)) {
+      operations.push(this.taskNotificationOp(notification, turnId, stepId));
+    }
+    return operations;
   }
 
   private onStepCompleted(event: {
@@ -978,22 +986,28 @@ export class AgentTranscriptLiveAdapter {
    * notification opens a fresh turn with `origin.kind === 'task'` instead
    * (the `turn.started` path owns that case).
    */
-  private onTaskNotified(event: {
-    notificationType: string;
-    title: string;
-    body: string;
-    severity: string;
-    sourceKind: string;
-    sourceId: string;
-  }): TranscriptOperation[] {
-    const step = this.currentStep;
+  private onTaskNotified(event: TaskNotifiedEvent): TranscriptOperation[] {
     const turn = this.currentTurn;
-    const midTurn =
-      step !== undefined &&
-      turn !== undefined &&
-      step.state === 'running' &&
-      turn.state === 'running';
-    if (!midTurn) return [];
+    if (
+      turn === undefined ||
+      turn.state !== 'running' ||
+      (turn.origin.kind === 'task' && turn.origin.taskId === event.sourceId)
+    ) {
+      return [];
+    }
+    const step = this.currentStep;
+    if (step?.state === 'running') {
+      return [this.taskNotificationOp(event, turn.turnId, step.stepId)];
+    }
+    this.pendingTaskNotifications.push(event);
+    return [];
+  }
+
+  private taskNotificationOp(
+    event: TaskNotifiedEvent,
+    turnId: string,
+    stepId: string,
+  ): TranscriptOperation {
     const frame: TextFrame = {
       kind: 'text',
       frameId: taskNotificationFrameId(event.sourceId),
@@ -1002,7 +1016,7 @@ export class AgentTranscriptLiveAdapter {
       taskId: event.sourceId,
       origin: { kind: 'task', taskId: event.sourceId },
     };
-    return [{ op: 'frame.upsert', turnId: turn.turnId, stepId: step.stepId, frame }];
+    return { op: 'frame.upsert', turnId, stepId, frame };
   }
 
   private onTaskLifecycle(event: {
@@ -1014,6 +1028,9 @@ export class AgentTranscriptLiveAdapter {
       status: TranscriptTask['state'];
       detached?: boolean;
       agentId?: string;
+      profile?: string;
+      collaborationTaskName?: string;
+      stopReason?: string;
       startedAt: number;
       endedAt: number | null;
     };
@@ -1024,6 +1041,8 @@ export class AgentTranscriptLiveAdapter {
       kind: mapTaskKind(info.kind),
       state: info.status,
       detached: info.detached ?? prev?.detached ?? true,
+      name: info.collaborationTaskName ?? prev?.name,
+      subagentName: info.profile ?? prev?.subagentName,
       description: info.description,
       agentId: info.agentId ?? prev?.agentId,
       outputTail: prev?.outputTail ?? '',
@@ -1031,8 +1050,11 @@ export class AgentTranscriptLiveAdapter {
       endedAt: info.endedAt === null ? prev?.endedAt : epochMsToIso(info.endedAt),
       resultSummary: prev?.resultSummary,
       usage: prev?.usage,
-      error: prev?.error,
-      stateReason: prev?.stateReason,
+      error:
+        info.status === 'failed' || info.status === 'timed_out' || info.status === 'lost'
+          ? (info.stopReason ?? prev?.error)
+          : undefined,
+      stateReason: info.stopReason ?? prev?.stateReason,
     }));
     const ops: TranscriptOperation[] = [{ op: 'task.upsert', task }];
     if (event.type === 'task.started') {
@@ -1202,7 +1224,7 @@ export class AgentTranscriptLiveAdapter {
         description: event.description ?? previous?.description,
         agentId: event.subagentId,
         outputTail: previous?.outputTail ?? '',
-        startedAt,
+        startedAt: event.taskId === undefined ? startedAt : previous?.startedAt ?? startedAt,
       };
       this.tasks.set(taskKey, task);
       ops.push({ op: 'task.upsert', task });
@@ -1263,15 +1285,18 @@ export class AgentTranscriptLiveAdapter {
       return [{ op: 'task.upsert', task }];
     }
     const terminal = event.type === 'subagent.completed' || event.type === 'subagent.failed';
+    const state =
+      event.type === 'subagent.completed'
+        ? 'completed'
+        : event.type === 'subagent.failed'
+          ? event.error === 'terminated'
+            ? 'killed'
+            : 'failed'
+          : 'running';
     const task = this.upsertTask(taskKey, (prev) => ({
       taskId: taskKey,
       kind: 'subagent',
-      state:
-        event.type === 'subagent.completed'
-          ? 'completed'
-          : event.type === 'subagent.failed'
-            ? 'failed'
-            : 'running',
+      state,
       detached: prev?.detached ?? true,
       name: prev?.name,
       subagentName: prev?.subagentName,
@@ -1282,8 +1307,8 @@ export class AgentTranscriptLiveAdapter {
       endedAt: terminal ? at : prev?.endedAt,
       resultSummary: event.resultSummary ?? prev?.resultSummary,
       usage: event.usage ?? prev?.usage,
-      error: event.error ?? prev?.error,
-      stateReason: event.reason ?? prev?.stateReason,
+      error: state === 'failed' ? (event.error ?? prev?.error) : undefined,
+      stateReason: event.reason ?? event.error ?? prev?.stateReason,
     }));
     return [{ op: 'task.upsert', task }];
   }
@@ -1575,6 +1600,7 @@ export class AgentTranscriptLiveAdapter {
    * floating in consumers.
    */
   mapInteractionRequested(interaction: LiveAdapterInteraction): TranscriptOperation[] {
+    const request = projectQuestionRequest(interaction);
     const payload = interaction.payload as { toolCallId?: unknown };
     const toolCallId = typeof payload.toolCallId === 'string' ? payload.toolCallId : undefined;
     const entity: TranscriptInteraction = {
@@ -1584,7 +1610,7 @@ export class AgentTranscriptLiveAdapter {
       origin: interaction.origin,
       anchor: toolCallId === undefined ? undefined : { kind: 'tool_call', toolCallId },
       state: 'pending',
-      request: interaction.payload,
+      request,
     };
     this.interactions.set(interaction.id, entity);
     return [{ op: 'interaction.upsert', interaction: entity }];
@@ -1614,6 +1640,50 @@ export class AgentTranscriptLiveAdapter {
     }
     return ops;
   }
+}
+
+function projectQuestionRequest(interaction: LiveAdapterInteraction): unknown {
+  if (interaction.kind !== 'question') return interaction.payload;
+  type Question = {
+    readonly question?: unknown;
+    readonly header?: unknown;
+    readonly body?: unknown;
+    readonly options?: readonly { readonly label?: unknown; readonly description?: unknown }[];
+    readonly multiSelect?: unknown;
+    readonly otherLabel?: unknown;
+    readonly otherDescription?: unknown;
+  };
+  const payload = interaction.payload as {
+    readonly questions?: readonly Question[];
+    readonly turnId?: unknown;
+    readonly toolCallId?: unknown;
+  };
+  if (!Array.isArray(payload.questions)) return interaction.payload;
+  return {
+    ...payload,
+    question_id: interaction.id,
+    turn_id: typeof payload.turnId === 'number' ? payload.turnId : undefined,
+    tool_call_id: typeof payload.toolCallId === 'string' ? payload.toolCallId : undefined,
+    questions: (payload.questions as readonly Question[]).map((question, questionIndex) => ({
+      id: `q_${questionIndex}`,
+      question: question.question,
+      header: question.header,
+      body: question.body,
+      options: (question.options ?? []).map((option, optionIndex) => ({
+        id: `opt_${questionIndex}_${optionIndex}`,
+        label: option.label,
+        description: option.description,
+      })),
+      multi_select: question.multiSelect,
+      allow_other: true,
+      other_label: question.otherLabel,
+      other_description: question.otherDescription,
+    })),
+    created_at:
+      interaction.createdAt === undefined
+        ? undefined
+        : new Date(interaction.createdAt).toISOString(),
+  };
 }
 
 function nowIso(): string {

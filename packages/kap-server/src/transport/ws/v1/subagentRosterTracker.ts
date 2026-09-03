@@ -268,8 +268,8 @@ export class SubagentRosterTracker {
         this.finishLifecycle(
           sessionId,
           event.subagentId,
-          'failed',
-          'failed',
+          event.error === 'terminated' ? 'cancelled' : 'failed',
+          event.error === 'terminated' ? undefined : 'failed',
           event.error,
           event.time,
         );
@@ -536,14 +536,19 @@ export class SubagentRosterTracker {
   private finishLifecycle(
     sessionId: string,
     agentId: string,
-    status: 'completed' | 'failed',
-    phase: 'completed' | 'failed',
+    status: 'completed' | 'failed' | 'cancelled',
+    phase: 'completed' | 'failed' | undefined,
     output: string,
     time: number | undefined,
   ): void {
     const entry = this.bySession.get(sessionId)?.get(agentId);
     if (!entry || isTerminalStatus(entry.status)) return;
-    if (this.taskIdsBySession.get(sessionId)?.has(agentId) === true) return;
+    if (
+      entry.run_in_background === true &&
+      this.taskIdsBySession.get(sessionId)?.has(agentId) === true
+    ) {
+      return;
+    }
     const eventAt = finiteTime(time);
     const existingStartedAt = parsedTime(entry.started_at);
     if (

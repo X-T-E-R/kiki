@@ -917,20 +917,17 @@ function subagentBlocksFromSnapshot(
             model: existing?.model,
             thinkingEffort: existing?.thinkingEffort,
             status:
-              existing?.status ??
-              (task === undefined
-                ? frame.state === 'running'
-                  ? 'running'
-                  : 'unknown'
-                : mapTaskState(task.state)),
+              task === undefined
+                ? (existing?.status ?? (frame.state === 'running' ? 'running' : 'unknown'))
+                : mapTaskState(task.state),
             summary:
-              existing?.summary ??
               task?.resultSummary ??
-              (task?.outputTail === '' ? undefined : task?.outputTail),
-            error: existing?.error ?? task?.error,
-            usage: existing?.usage ?? task?.usage,
-            startedAt: existing?.startedAt ?? task?.startedAt ?? frame.startedAt,
-            endedAt: existing?.endedAt ?? task?.endedAt,
+              (task?.outputTail === '' ? undefined : task?.outputTail) ??
+              existing?.summary,
+            error: task?.error ?? existing?.error,
+            usage: task?.usage ?? existing?.usage,
+            startedAt: task?.startedAt ?? existing?.startedAt ?? frame.startedAt,
+            endedAt: task?.endedAt ?? existing?.endedAt,
             toolCallCount: existing?.toolCallCount ?? 0,
             transcript: [],
           });
@@ -1834,6 +1831,9 @@ export function agentTranscriptToBlocks(
       projectedTurnPrompt = promptBlocks.some((block) => block.kind === 'user');
       blocks.push(...promptBlocks);
     }
+    const lastAssistantFrameId = item.steps
+      .flatMap((step) => step.frames)
+      .findLast((frame) => frame.kind === 'text' && frame.role === 'assistant')?.frameId;
     for (const step of item.steps) {
       let lastTextFrameId: string | undefined;
       let lastThinkingFrameId: string | undefined;
@@ -1892,6 +1892,8 @@ export function agentTranscriptToBlocks(
                 id: `agent-frame-${frame.frameId}`,
                 text: frame.text,
                 streaming: isLiveStreamingFrame(item, step, frame, lastTextFrameId, phase),
+                stopped:
+                  'state' in item && item.state === 'cancelled' && frame.frameId === lastAssistantFrameId,
                 createdAt: step.endedAt ?? item.endedAt,
                 turnId: item.turnId,
                 messageId,
