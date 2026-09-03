@@ -80,7 +80,6 @@
         ./apps/kimi-code
         ./apps/kiki-gui
         ./apps/vscode
-        ./apps/kimi-inspect
         ./docs
       ];
 
@@ -103,7 +102,6 @@
         "@moonshot-ai/kimi-code"
         "@kiki/gui"
         "kimi-code"
-        "@moonshot-ai/kimi-inspect"
         "kimi-code-docs"
       ];
     in

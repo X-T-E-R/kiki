@@ -307,8 +307,6 @@ export class WsConnectionV1 implements BroadcastTarget {
     const cursors = payload['cursors'] as Record<string, SessionCursor> | undefined;
     const agentFilter = parseAgentFilter(payload['agent_filter']);
 
-    if (payload['client_id'] === 'kimi-inspect') this.broadcaster.addDiEventTarget(this);
-
     const accepted: string[] = [];
     const resyncRequired: string[] = [];
     const serverCursors: Record<string, { seq: number; epoch?: string }> = {};

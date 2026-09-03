@@ -120,9 +120,8 @@ function describeMethods(
 }
 
 /**
- * Describe EVERY registered scoped Service — served by
- * `GET /api/v1/debug/channels` so dev tooling (kimi-inspect) can load the
- * full protocol surface 1:1.
+ * Describe EVERY registered scoped Service served by
+ * `GET /api/v1/debug/channels`.
  */
 export function describeAllChannels(): readonly ChannelDescriptor[] {
   const byName = new Map<string, ScopedEntry>();

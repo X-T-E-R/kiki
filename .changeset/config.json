@@ -6,7 +6,7 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@moonshot-ai/kimi-inspect"],
+  "ignore": [],
   "snapshot": {
     "useCalculatedVersion": true,
     "prereleaseTemplate": "{tag}-{commit}"
