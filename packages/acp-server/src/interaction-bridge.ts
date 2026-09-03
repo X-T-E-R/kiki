@@ -85,7 +85,16 @@ export class AcpInteractionBridge {
     this.subscription.dispose();
     this.inFlight.clear();
     await this.consumerReady.then(
-      () => this.session.interactions.releaseConsumer(this.consumerId),
+      async () => {
+        try {
+          await this.session.interactions.releaseConsumer(this.consumerId);
+        } catch (error) {
+          log.warn('acp: interaction consumer release failed', {
+            sessionId: this.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
       () => undefined,
     );
   }
