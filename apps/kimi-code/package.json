@@ -27,7 +27,6 @@
   },
   "files": [
     "dist",
-    "dist-web",
     "native",
     "scripts/postinstall.mjs",
     "scripts/postinstall",
