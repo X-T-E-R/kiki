@@ -149,6 +149,7 @@ export class RetainedUsageService implements IRetainedUsageService {
           meta: RetainedUsageLedgerMeta | undefined;
           readonly records: RetainedUsageRecord[];
           readonly included: boolean;
+          observedRecordCount: number;
           valid: boolean;
         }
       | undefined;
@@ -195,6 +196,7 @@ export class RetainedUsageService implements IRetainedUsageService {
           continue;
         }
         if (kind.data.kind === 'session') {
+          if (current !== undefined) ledgerTruncated = true;
           const start = retainedUsageLedgerStartSchema.safeParse(raw);
           if (!start.success) {
             current = undefined;
@@ -208,12 +210,18 @@ export class RetainedUsageService implements IRetainedUsageService {
               return result('record_budget');
             }
           }
-          current = { start: start.data, meta: undefined, records: [], included, valid: true };
+          current = {
+            start: start.data,
+            meta: undefined,
+            records: [],
+            included,
+            observedRecordCount: 0,
+            valid: true,
+          };
           continue;
         }
         if (current === undefined) continue;
         if (kind.data.kind === 'meta') {
-          if (!current.included) continue;
           const meta = retainedUsageLedgerMetaSchema.safeParse(raw);
           if (!meta.success) {
             current.valid = false;
@@ -223,15 +231,17 @@ export class RetainedUsageService implements IRetainedUsageService {
           continue;
         }
         if (kind.data.kind === 'record') {
-          if (!current.included) continue;
-          if (scannedRecords >= query.recordLimit) return result('record_budget');
-          scannedRecords += 1;
+          if (current.included) {
+            if (scannedRecords >= query.recordLimit) return result('record_budget');
+            scannedRecords += 1;
+          }
+          current.observedRecordCount += 1;
           const record = retainedUsageLedgerRecordSchema.safeParse(raw);
           if (!record.success) {
             current.valid = false;
             continue;
           }
-          current.records.push(record.data.record);
+          if (current.included) current.records.push(record.data.record);
           continue;
         }
         if (kind.data.kind !== 'commit') {
@@ -243,12 +253,13 @@ export class RetainedUsageService implements IRetainedUsageService {
           current.valid = false;
           continue;
         }
-        if (
-          current.included &&
+        const transactionComplete =
           current.valid &&
           current.meta !== undefined &&
-          current.records.length === current.start.recordCount
-        ) {
+          current.observedRecordCount === current.start.recordCount;
+        if (!transactionComplete) {
+          ledgerTruncated = true;
+        } else if (current.included) {
           const header = retainedDeletedSessionUsageHeaderSchema.parse(current.start);
           const meta = retainedDeletedSessionUsageMetaSchema.parse(current.meta);
           records.set(`${header.workspaceId}\0${header.id}`, {

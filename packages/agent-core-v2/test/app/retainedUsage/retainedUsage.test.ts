@@ -142,6 +142,14 @@ describe('RetainedUsageService', () => {
     };
   }
 
+  async function writeLedger(entries: readonly unknown[]): Promise<void> {
+    await fsp.mkdir(join(homeDir, 'store'), { recursive: true });
+    await fsp.writeFile(
+      join(homeDir, 'store/deleted-sessions-v2.jsonl'),
+      `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+    );
+  }
+
   it('retains deleted session aggregates and attributed records across restart', async () => {
     const first = build();
     const sessionScope = 'sessions/workspace-1/session-1';
@@ -500,6 +508,95 @@ describe('RetainedUsageService', () => {
     expect(result.items).toHaveLength(1);
     expect(result.complete).toBe(false);
     expect(result.incompleteReason).toBeUndefined();
+  });
+
+  it.each([
+    ['fewer than declared', 2],
+    ['more than declared', 0],
+  ] as const)(
+    'marks a committed snapshot with %s records incomplete',
+    async (_kind, recordCount) => {
+      await writeLedger([
+        {
+          kind: 'session',
+          version: RETAINED_USAGE_VERSION,
+          id: summary.id,
+          workspaceId: summary.workspaceId,
+          recordCount,
+        },
+        {
+          kind: 'meta',
+          cwd: summary.cwd,
+          title: summary.title,
+          createdAt: summary.createdAt,
+          updatedAt: summary.updatedAt,
+          archived: summary.archived,
+          usage: summary.usage,
+          deleted: true,
+          deletedAt: 300,
+          complete: true,
+        },
+        {
+          kind: 'record',
+          record: { time: 150, model: 'model-a', usage, agentId: 'main' },
+        },
+        { kind: 'commit' },
+      ]);
+      const { service } = build();
+
+      await expect(service.listDeletedSessions(listQuery())).resolves.toEqual({
+        items: [],
+        complete: false,
+        incompleteReason: undefined,
+        scannedRecords: 2,
+      });
+    },
+  );
+
+  it('marks an uncommitted transaction before a valid transaction incomplete', async () => {
+    const meta = {
+      kind: 'meta',
+      cwd: summary.cwd,
+      title: summary.title,
+      createdAt: summary.createdAt,
+      updatedAt: summary.updatedAt,
+      archived: summary.archived,
+      usage: summary.usage,
+      deleted: true,
+      deletedAt: 300,
+      complete: true,
+    };
+    await writeLedger([
+      {
+        kind: 'session',
+        version: RETAINED_USAGE_VERSION,
+        id: 'incomplete-session',
+        workspaceId: summary.workspaceId,
+        recordCount: 1,
+      },
+      meta,
+      {
+        kind: 'record',
+        record: { time: 150, model: 'model-a', usage, agentId: 'main' },
+      },
+      {
+        kind: 'session',
+        version: RETAINED_USAGE_VERSION,
+        id: 'valid-session',
+        workspaceId: summary.workspaceId,
+        recordCount: 0,
+      },
+      meta,
+      { kind: 'commit' },
+    ]);
+    const { service } = build();
+
+    await expect(service.listDeletedSessions(listQuery())).resolves.toEqual({
+      items: [expect.objectContaining({ id: 'valid-session' })],
+      complete: false,
+      incompleteReason: undefined,
+      scannedRecords: 3,
+    });
   });
 
   it('retains usage from the main agent and a forked subagent', async () => {
