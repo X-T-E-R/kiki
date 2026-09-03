@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (33 sections · 2 overlay(s))
+# Index (33 sections · 1 overlay(s))
 #   agentExecutors           src/app/agentExecutor/configSection.ts
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
@@ -29,12 +29,12 @@
 #   mergeAllAvailableSkills  src/app/skillCatalog/configSection.ts
 #   modelCatalog             src/app/kosongConfig/configSection.ts
 #   models                   src/app/kosongConfig/configSection.ts
+#   nbSearch                 src/app/nbSearch/configSection.ts
 #   permission               src/agent/permissionRules/configSection.ts
 #   plan                     src/features/plan/configSection.ts
 #   plugins                  src/app/plugin/configSection.ts
 #   providers                src/app/kosongConfig/configSection.ts
 #   requestIdentity          src/app/kosongConfig/configSection.ts
-#   services                 src/app/auth/configSection.ts
 #   subagent                 src/session/subagent/configSection.ts
 #   task                     src/agent/task/configSection.ts
 #   thinking                 src/app/kosongConfig/configSection.ts
@@ -42,7 +42,6 @@
 #   tokenCounting            src/agent/tokenCounting/configSection.ts
 #   tools                    src/agent/toolPolicy/configSection.ts
 #   workspaceInstance        src/workspace/workspaceInstance/configSection.ts
-#   (overlay) servicesCredentialEnvOverlay  src/app/auth/configSection.ts
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
 
 # ##########################################################################
@@ -373,6 +372,16 @@ merge_all_available_skills = true
       # responses_metadata: "codex" | "none"
 
 # ##########################################################################
+# nbSearch (config.toml: nb_search)
+#   owner: src/app/nbSearch/configSection.ts
+#   scope: core
+#   hooks: custom merge · custom fromToml · custom toToml
+# ##########################################################################
+
+[nb_search]
+# (schema uses transforms; see the owner file)
+
+# ##########################################################################
 # permission
 #   owner: src/agent/permissionRules/configSection.ts
 #   scope: core
@@ -489,38 +498,6 @@ enter_approval_timeout_ms = 60000
     # responses: "prompt_cache_key" | "none"
     # messages: "metadata_user_id" | "none"
   # responses_metadata: "codex" | "none"
-
-# ##########################################################################
-# services
-#   owner: src/app/auth/configSection.ts
-#   scope: core
-#   hooks: custom fromToml · custom toToml · stripEnv
-#   env:
-#     moonshot_search.base_url <- KIMI_WEB_SEARCH_BASE_URL (custom parse)
-#     moonshot_search.api_key <- KIMI_WEB_SEARCH_API_KEY (custom parse)
-#     moonshot_fetch.base_url <- KIMI_WEB_FETCH_BASE_URL (custom parse)
-#     moonshot_fetch.api_key <- KIMI_WEB_FETCH_API_KEY (custom parse)
-# ##########################################################################
-
-[services]
-
-# [services.moonshot_search]
-  # base_url: string
-  # api_key: string
-  # oauth: object
-    # storage: "file" | "keyring"
-    # key: string
-    # oauth_host: string
-  # custom_headers: record<string, string>
-
-# [services.moonshot_fetch]
-  # base_url: string
-  # api_key: string
-  # oauth: object
-    # storage: "file" | "keyring"
-    # key: string
-    # oauth_host: string
-  # custom_headers: record<string, string>
 
 # ##########################################################################
 # subagent

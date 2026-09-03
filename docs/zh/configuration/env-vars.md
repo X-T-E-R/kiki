@@ -134,10 +134,14 @@ kimi
 | `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` | 单步失败后的最大总尝试次数（含首次尝试）；优先级高于 `config.toml` 的 `[loop_control] max_attempts_per_step`（默认 `10`）。旧的 `KIMI_LOOP_MAX_RETRIES_PER_STEP` 已废弃，但在本变量未设置时仍生效并给出警告 | 非负整数；非法值被忽略 |
 | `KIMI_CODE_INFINITE_RETRY` | 让所有失败的 LLM 请求无限重试（包括轮次内步骤和 compaction 等后台操作）而不是终止任务；重试等待按指数退避（32 秒封顶）并尊重服务端 `Retry-After` 头，等待期间中断仍立即生效。适用于端点可能短暂故障的长时间无人值守评测 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIMI_TOKEN_COUNTING_STRATEGY` | 对外上报的上下文 token 计数（上下文大小显示）；优先级高于 `config.toml` 的 `[token_counting] strategy`（默认 `measured+estimated`） | `measured+estimated`、`measured`、`estimated`（不区分大小写）；非法值被忽略 |
-| `KIMI_WEB_SEARCH_BASE_URL` | 网页搜索（`WebSearch`）服务的 API URL；优先级高于 `config.toml` 的 `[services.moonshot_search] base_url`，未写配置段时也可启用服务。文件中持久化的凭据和自定义 header 不会发送到环境变量指定的端点 | 非空字符串；空白值被忽略 |
-| `KIMI_WEB_SEARCH_API_KEY` | 网页搜索（`WebSearch`）服务的 API 密钥；设置后同时替换配置中的 API 密钥和 OAuth 凭据 | 非空字符串；空白值被忽略 |
-| `KIMI_WEB_FETCH_BASE_URL` | 网页抓取（`FetchURL`）服务的 API URL；优先级高于 `[services.moonshot_fetch] base_url`。文件中持久化的凭据和自定义 header 不会发送到环境变量指定的端点。环境变量和配置都没有指定端点时，已登录用户会先尝试 Kimi OAuth 托管抓取服务，再回退到本地直接请求 | 非空字符串；空白值被忽略 |
-| `KIMI_WEB_FETCH_API_KEY` | 网页抓取（`FetchURL`）服务的 API 密钥；设置后同时替换配置中的 API 密钥和 OAuth 凭据 | 非空字符串；空白值被忽略 |
+| `NB_SEARCH_CONFIG` | nb-search canonical JSON 配置路径；Kiki 的 `[nb_search]` patch 在它之后应用 | 文件路径 |
+| `NB_SEARCH_HOME` | nb-search 运行时数据目录 | 目录路径 |
+| `NB_SEARCH_JOBS_ROOT` | nb-search 持久化任务目录 | 目录路径 |
+| `NB_SEARCH_LOG_LEVEL` | nb-search 运行时日志级别 | `error`、`warn`、`info` 或 `debug` |
+| `NB_SEARCH_RETENTION_HOURS` | 持久化 search 和 fetch 任务结果的保留时间 | 正整数 |
+| `NB_SEARCH_EXA_API_KEY` | 内置 `exa.default` provider 实例使用的凭据 | 非空字符串 |
+| `NB_SEARCH_TAVILY_API_KEY` | 内置 `tavily.default` provider 实例使用的凭据 | 非空字符串 |
+| `NB_SEARCH_JINA_API_KEY` | 内置 `jina-reader.default` fetch provider 实例使用的可选凭据 | 非空字符串 |
 | `KIMI_CODE_EXPERIMENTAL_FLAG` | 在当前进程启用所有已注册的实验功能；单个功能的 `KIMI_CODE_EXPERIMENTAL_<NAME>` 变量或 `config.toml` 的 `[experimental]` 节中的显式配置优先于它 | `1`、`true`、`yes`、`on` |
 | `KIMI_SHELL_PATH` | Windows 上覆盖 Git Bash 路径（自动探测失败时使用） | 绝对路径 |
 | `KIMI_MODEL_MAX_COMPLETION_TOKENS` | 单步 LLM 请求的 `max_completion_tokens` 硬上限，仅对 `kimi` 供应商生效 | 正整数；`0` 或负数禁用 clamp |

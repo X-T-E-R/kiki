@@ -89,11 +89,10 @@ export type {
   KimiConfigPatch,
   LoopControl,
   ModelAlias,
-  MoonshotServiceConfig,
+  NbSearchConfig,
   OAuthRef,
   ProviderConfig,
   ProviderType,
-  ServicesConfig,
   ThinkingConfig,
 } from '#/config';
 

@@ -76,7 +76,6 @@ import {
 
 const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
 const DEFAULT_DEVICE_EXPIRES_IN_SEC = 15 * 60;
-const SERVICES_SECTION = 'services';
 
 interface FlowState {
   readonly flowId: string;
@@ -386,15 +385,12 @@ export class OAuthService extends Disposable implements IOAuthService {
     const providers =
       this.config.inspect<Record<string, ProviderConfig>>(PROVIDERS_SECTION).userValue ?? {};
     const models = this.config.inspect<Record<string, ModelRecord>>(MODELS_SECTION).userValue ?? {};
-    const services =
-      this.config.inspect<ManagedKimiConfigShape['services']>(SERVICES_SECTION).userValue;
     const defaultModel = this.config.inspect<string>(DEFAULT_MODEL_SECTION).userValue;
     const thinking =
       this.config.inspect<ManagedKimiConfigShape['thinking']>(THINKING_SECTION).userValue;
     return {
       providers: { ...providers } as ManagedKimiConfigShape['providers'],
       models: { ...models } as ManagedKimiConfigShape['models'],
-      services: services === undefined ? undefined : { ...services },
       defaultModel,
       thinking: thinking === undefined ? undefined : { ...thinking },
     };
@@ -542,8 +538,7 @@ export class OAuthService extends Disposable implements IOAuthService {
     if (
       !cleanup.removedProvider &&
       cleanup.removedModels.length === 0 &&
-      !cleanup.defaultModelCleared &&
-      cleanup.removedServices.length === 0
+      !cleanup.defaultModelCleared
     ) {
       return;
     }
@@ -555,9 +550,6 @@ export class OAuthService extends Disposable implements IOAuthService {
     }
     if (cleanup.removedModels.length > 0) {
       await this.config.replace(MODELS_SECTION, next.models ?? {});
-    }
-    if (cleanup.removedServices.length > 0) {
-      await this.config.replace(SERVICES_SECTION, next.services);
     }
     if (cleanup.defaultModelCleared) {
       await this.config.replace(DEFAULT_MODEL_SECTION, undefined);

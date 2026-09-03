@@ -33,7 +33,7 @@ const KIMI_CONFIG_DOMAINS = [
   'defaultPlanMode',
   'permission',
   'hooks',
-  'services',
+  'nbSearch',
   'mergeAllAvailableSkills',
   'extraSkillDirs',
   'loopControl',

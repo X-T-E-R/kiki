@@ -93,14 +93,7 @@ import {
   SUBAGENT_TIMEOUT_ENV,
   type SubagentConfig,
 } from '#/session/subagent/configSection';
-import {
-  SERVICES_SECTION,
-  WEB_FETCH_API_KEY_ENV,
-  WEB_FETCH_BASE_URL_ENV,
-  WEB_SEARCH_API_KEY_ENV,
-  WEB_SEARCH_BASE_URL_ENV,
-  type ServicesConfig,
-} from '#/app/auth/configSection';
+import { NB_SEARCH_SECTION, type NbSearchConfig } from '#/app/nbSearch/configSection';
 import '#/app/mcpConfig/configSection';
 import {
   MCP_SECTION,
@@ -615,15 +608,12 @@ describe('ConfigService env overlay (live)', () => {
   });
 });
 
-describe('services config section env bindings', () => {
-  function createConfig(env: Record<string, string>): {
-    config: IConfigService;
-    disposables: DisposableStore;
-  } {
+describe('nb_search config section', () => {
+  function createConfig(): { config: IConfigService; disposables: DisposableStore } {
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
     ix.stub(ILogService, stubLog());
-    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', env));
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg'));
     ix.stub(IFileSystemStorageService, new InMemoryStorageService());
     ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
     ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
@@ -631,138 +621,64 @@ describe('services config section env bindings', () => {
     return { config: ix.get(IConfigService), disposables };
   }
 
-  it('resolves moonshot_search / moonshot_fetch fields from KIMI_WEB_* env vars', async () => {
-    const { config, disposables } = createConfig({
-      [WEB_SEARCH_BASE_URL_ENV]: 'https://search-env.example/search',
-      [WEB_SEARCH_API_KEY_ENV]: 'env-search-key',
-      [WEB_FETCH_BASE_URL_ENV]: 'https://fetch-env.example/fetch',
-      [WEB_FETCH_API_KEY_ENV]: 'env-fetch-key',
-    });
+  it('round-trips canonical provider, credential, lane, default, and execution settings', async () => {
+    const { config, disposables } = createConfig();
     await config.ready;
+    const value = {
+      provider_instances: {
+        'exa.team': {
+          provider_id: 'exa',
+          enabled: true,
+          credential_slot_id: 'exa.team',
+          options: {},
+        },
+      },
+      credential_slots: { 'exa.team': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' } },
+      lanes: {
+        'team.search': {
+          provider_instance_id: 'exa.team',
+          operation_id: 'search',
+          latency: 'fast',
+          cost: 'cheap',
+        },
+      },
+      defaults: { search_lane: 'team.search' },
+      execution: { search_timeout_ms: 15_000, fetch_timeout_ms: 20_000 },
+    };
 
-    expect(config.get<ServicesConfig>(SERVICES_SECTION)).toEqual({
-      moonshotSearch: { baseUrl: 'https://search-env.example/search', apiKey: 'env-search-key' },
-      moonshotFetch: { baseUrl: 'https://fetch-env.example/fetch', apiKey: 'env-fetch-key' },
-    });
+    await config.set(NB_SEARCH_SECTION, value);
 
+    expect(config.get<NbSearchConfig>(NB_SEARCH_SECTION)).toEqual(value);
+    expect(config.inspect<NbSearchConfig>(NB_SEARCH_SECTION).userValue).toEqual(value);
     disposables.dispose();
   });
 
-  it('does not inherit persisted credentials when env selects a service endpoint', async () => {
-    const env: Record<string, string> = {};
-    const { config, disposables } = createConfig(env);
+  it('applies canonical null deletion without persisting secret values', async () => {
+    const { config, disposables } = createConfig();
     await config.ready;
-    await config.set(SERVICES_SECTION, {
-      moonshotSearch: {
-        baseUrl: 'https://file.example/search',
-        apiKey: 'file-search-key',
-        oauth: { storage: 'file', key: 'oauth/search' },
-        customHeaders: { Authorization: 'Bearer configured-search-secret' },
-      },
-      moonshotFetch: {
-        baseUrl: 'https://file.example/fetch',
-        apiKey: 'file-fetch-key',
-        oauth: { storage: 'file', key: 'oauth/fetch' },
-        customHeaders: { Authorization: 'Bearer configured-fetch-secret' },
-      },
+    await config.set(NB_SEARCH_SECTION, {
+      credential_slots: { team: { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' } },
+      defaults: { search_lane: 'exa.search' },
     });
-    Object.assign(env, {
-      [WEB_SEARCH_BASE_URL_ENV]: 'https://search-env.example/search',
-      [WEB_SEARCH_API_KEY_ENV]: 'env-search-key',
-      [WEB_FETCH_BASE_URL_ENV]: 'https://fetch-env.example/fetch',
-      [WEB_FETCH_API_KEY_ENV]: 'env-fetch-key',
-    });
+    await config.set(NB_SEARCH_SECTION, { defaults: { search_lane: null } });
 
-    expect(config.get<ServicesConfig>(SERVICES_SECTION)).toEqual({
-      moonshotSearch: {
-        baseUrl: 'https://search-env.example/search',
-        apiKey: 'env-search-key',
-      },
-      moonshotFetch: {
-        baseUrl: 'https://fetch-env.example/fetch',
-        apiKey: 'env-fetch-key',
-      },
+    expect(config.get<NbSearchConfig>(NB_SEARCH_SECTION)).toEqual({
+      credential_slots: { team: { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' } },
+      defaults: {},
     });
-
+    expect(JSON.stringify(config.get(NB_SEARCH_SECTION))).not.toContain('secret-value');
     disposables.dispose();
   });
 
-  it('uses an env API key instead of persisted OAuth for a configured endpoint', async () => {
-    const env: Record<string, string> = {};
-    const { config, disposables } = createConfig(env);
+  it('rejects credential values in the config domain', async () => {
+    const { config, disposables } = createConfig();
     await config.ready;
-    await config.set(SERVICES_SECTION, {
-      moonshotSearch: {
-        baseUrl: 'https://file.example/search',
-        oauth: { storage: 'file', key: 'oauth/search' },
-        customHeaders: { 'X-Service': 'search' },
-      },
-    });
-    env[WEB_SEARCH_API_KEY_ENV] = 'env-search-key';
 
-    expect(config.get<ServicesConfig>(SERVICES_SECTION)?.moonshotSearch).toEqual({
-      baseUrl: 'https://file.example/search',
-      apiKey: 'env-search-key',
-      customHeaders: { 'X-Service': 'search' },
-    });
-
-    disposables.dispose();
-  });
-
-  it('ignores blank env values instead of masking the file value', async () => {
-    const { config, disposables } = createConfig({ [WEB_SEARCH_BASE_URL_ENV]: '   ' });
-    await config.ready;
-    await config.set(SERVICES_SECTION, {
-      moonshotSearch: { baseUrl: 'https://file.example/search' },
-    });
-
-    expect(config.get<ServicesConfig>(SERVICES_SECTION)?.moonshotSearch).toEqual({
-      baseUrl: 'https://file.example/search',
-    });
-
-    disposables.dispose();
-  });
-
-  it('strips env-derived fields before persisting a round-tripped effective value', async () => {
-    const { config, disposables } = createConfig({
-      [WEB_FETCH_BASE_URL_ENV]: 'https://fetch-env.example/fetch',
-      [WEB_FETCH_API_KEY_ENV]: 'env-fetch-key',
-    });
-    await config.ready;
-    await config.set(SERVICES_SECTION, {
-      moonshotSearch: { baseUrl: 'https://file.example/search' },
-    });
-
-    const effective = config.get<ServicesConfig>(SERVICES_SECTION);
-    expect(effective?.moonshotFetch).toEqual({
-      baseUrl: 'https://fetch-env.example/fetch',
-      apiKey: 'env-fetch-key',
-    });
-
-    await config.replace(SERVICES_SECTION, effective);
-    expect(config.inspect<ServicesConfig>(SERVICES_SECTION).userValue).toEqual({
-      moonshotSearch: { baseUrl: 'https://file.example/search' },
-    });
-
-    disposables.dispose();
-  });
-
-  it('clears the section on replace(undefined) even with env vars set', async () => {
-    const { config, disposables } = createConfig({
-      [WEB_SEARCH_BASE_URL_ENV]: 'https://search-env.example/search',
-    });
-    await config.ready;
-    await config.set(SERVICES_SECTION, {
-      moonshotSearch: { baseUrl: 'https://file.example/search' },
-    });
-
-    await config.replace(SERVICES_SECTION, undefined);
-
-    expect(config.inspect<ServicesConfig>(SERVICES_SECTION).userValue).toBeUndefined();
-    expect(config.get<ServicesConfig>(SERVICES_SECTION)?.moonshotSearch?.baseUrl).toBe(
-      'https://search-env.example/search',
-    );
-
+    await expect(
+      config.set(NB_SEARCH_SECTION, {
+        credential_slots: { team: { provider_id: 'exa', env: 'TEAM_EXA_API_KEY', value: 'secret-value' } },
+      }),
+    ).rejects.toThrow('Invalid nb_search configuration');
     disposables.dispose();
   });
 });

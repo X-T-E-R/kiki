@@ -76,7 +76,6 @@ export interface ManagedKimiCodeCleanupResult {
   readonly removedProvider: boolean;
   readonly removedModels: readonly string[];
   readonly defaultModelCleared: boolean;
-  readonly removedServices: readonly string[];
 }
 
 export interface ManagedKimiOAuthRef {
@@ -164,18 +163,6 @@ export interface ManagedKimiModelAlias {
   readonly [key: string]: unknown;
 }
 
-export interface ManagedKimiServiceConfig {
-  baseUrl?: string | undefined;
-  apiKey?: string | undefined;
-  oauth?: ManagedKimiOAuthRef | undefined;
-}
-
-export interface ManagedKimiServicesConfig {
-  moonshotSearch?: ManagedKimiServiceConfig | undefined;
-  moonshotFetch?: ManagedKimiServiceConfig | undefined;
-  readonly [key: string]: unknown;
-}
-
 export interface ManagedKimiThinkingShape {
   enabled?: boolean | undefined;
   effort?: string | undefined;
@@ -187,7 +174,6 @@ export interface ManagedKimiConfigShape {
   models?: Record<string, ManagedKimiModelAlias | Record<string, unknown>> | undefined;
   defaultModel?: string | undefined;
   thinking?: ManagedKimiThinkingShape | undefined;
-  services?: ManagedKimiServicesConfig | undefined;
   [key: string]: unknown;
 }
 
@@ -624,18 +610,6 @@ export function applyManagedKimiCodeConfig(
   config.models = existingModels;
   config.defaultModel = selectedDefault.modelKey;
   config.thinking = { ...config.thinking, enabled: selectedDefault.thinking };
-  config.services = {
-    moonshotSearch: {
-      baseUrl: `${baseUrl}/search`,
-      apiKey: '',
-      oauth,
-    },
-    moonshotFetch: {
-      baseUrl: `${baseUrl}/fetch`,
-      apiKey: '',
-      oauth,
-    },
-  };
 
   return {
     defaultModel: selectedDefault.modelKey,
@@ -648,8 +622,8 @@ export function applyManagedKimiCodeConfig(
  * pointing at the managed Kimi Code endpoint (a hand-configured provider using
  * a distributed API key instead of OAuth). Unlike `applyManagedKimiCodeConfig`
  * this touches ONLY `config.models`: the provider record (type / baseUrl /
- * apiKey and any hand-written extras), `services`, `defaultModel`, and
- * `thinking` are all left untouched — the provider is user-owned, only its
+ * apiKey and any hand-written extras), `defaultModel`, and `thinking` are all
+ * left untouched — the provider is user-owned, only its
  * model catalog is upstream-owned.
  *
  * `aliasPrefix` scopes which aliases count as refresh-generated:
@@ -709,14 +683,6 @@ export function applyManagedKimiCodeLogoutConfig(config: ManagedKimiConfigShape)
 
   if (config['defaultProvider'] === KIMI_CODE_PROVIDER_NAME) {
     config['defaultProvider'] = undefined;
-  }
-
-  if (config.services !== undefined) {
-    delete config.services.moonshotSearch;
-    delete config.services.moonshotFetch;
-    if (Object.keys(config.services).length === 0) {
-      config.services = undefined;
-    }
   }
 }
 
@@ -803,25 +769,11 @@ export function clearManagedKimiCodeConfig(
     defaultModelCleared = true;
   }
 
-  const removedServices: string[] = [];
-  if (config.services?.moonshotSearch !== undefined) {
-    delete config.services.moonshotSearch;
-    removedServices.push('moonshotSearch');
-  }
-  if (config.services?.moonshotFetch !== undefined) {
-    delete config.services.moonshotFetch;
-    removedServices.push('moonshotFetch');
-  }
-  if (config.services !== undefined && Object.keys(config.services).length === 0) {
-    config.services = undefined;
-  }
-
   return {
     providerName: KIMI_CODE_PROVIDER_NAME,
     removedProvider,
     removedModels,
     defaultModelCleared,
-    removedServices,
   };
 }
 

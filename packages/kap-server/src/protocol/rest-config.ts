@@ -1,5 +1,6 @@
 import { IdentityConfigSchema } from '@moonshot-ai/agent-core-v2/app/agentIdentity/configSection';
 import { McpSectionSchema } from '@moonshot-ai/agent-core-v2/app/mcpConfig/configSection';
+import { NbSearchConfigSchema } from '@moonshot-ai/agent-core-v2/app/nbSearch/configSection';
 import { PluginsSectionSchema } from '@moonshot-ai/agent-core-v2/app/plugin/configSection';
 import { ThreadCommunicationConfigSchema } from '@moonshot-ai/agent-core-v2/app/threadCommunication/configSection';
 import { ImageConfigSchema } from '@moonshot-ai/agent-core-v2/agent/media/configSection';
@@ -20,6 +21,7 @@ import { RequestIdentityPolicyWireSchema } from '@moonshot-ai/agent-core-v2/koso
 import { z } from 'zod';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
+const nbSearchConfigSchema = NbSearchConfigSchema as unknown as z.ZodType<Record<string, unknown>>;
 const planConfigRequestSchema = z
   .object({
     gate: PlanConfigSchema.shape.gate.optional(),
@@ -81,6 +83,7 @@ const replaceableConfigDomainSchema = z.enum([
   'disabled_builtin_profiles',
   'disabled_named_profiles',
   'mcp',
+  'nb_search',
   'plugins',
   'tools',
 ]);
@@ -120,7 +123,7 @@ export const configResponseSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
-  services: z.unknown().optional(),
+  nb_search: nbSearchConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
@@ -161,7 +164,7 @@ export const patchConfigRequestSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
-  services: z.unknown().optional(),
+  nb_search: nbSearchConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),

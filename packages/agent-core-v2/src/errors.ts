@@ -31,7 +31,6 @@ import { StateErrors } from '#/state/errors';
 import { StorageErrors } from '#/persistence/interface/storage';
 import { TerminalErrors } from '#/os/interface/terminalErrors';
 import { UsageErrors } from '#/agent/usage/errors';
-import { WebErrors } from '#/app/web/errors';
 import { WireErrors } from '#/wire/errors';
 import { WorkspaceErrors } from '#/app/workspace/errors';
 import { AgentProfileRouteErrors } from '#/app/agentProfileCatalog/errors';
@@ -71,7 +70,6 @@ export { SkillErrors } from '#/app/skillCatalog/errors';
 export { StorageErrors } from '#/persistence/interface/storage';
 export { TerminalErrors } from '#/os/interface/terminalErrors';
 export { UsageErrors } from '#/agent/usage/errors';
-export { WebErrors } from '#/app/web/errors';
 export { WireErrors } from '#/wire/errors';
 export { WorkspaceErrors } from '#/app/workspace/errors';
 export { AgentProfileRouteErrors } from '#/app/agentProfileCatalog/errors';
@@ -111,7 +109,6 @@ export const ErrorCodes = {
   ...StorageErrors.codes,
   ...TerminalErrors.codes,
   ...UsageErrors.codes,
-  ...WebErrors.codes,
   ...WireErrors.codes,
   ...WorkspaceErrors.codes,
   ...AgentProfileRouteErrors.codes,

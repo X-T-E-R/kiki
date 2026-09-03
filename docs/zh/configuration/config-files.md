@@ -67,13 +67,12 @@ reserved_context_size = 50000
 max_running_tasks = 4
 keep_alive_on_exit = false
 
-[services.moonshot_search]
-base_url = "https://api.kimi.com/coding/v1/search"
-api_key = ""
+[nb_search.credential_slots."exa.default"]
+provider_id = "exa"
+env = "NB_SEARCH_EXA_API_KEY"
 
-[services.moonshot_fetch]
-base_url = "https://api.kimi.com/coding/v1/fetch"
-api_key = ""
+[nb_search.defaults]
+search_lane = "exa.search"
 
 [[permission.rules]]
 decision = "allow"
@@ -460,27 +459,42 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | `micro_compaction` | `boolean` | `false` | 清理较旧的大型工具结果内容，同时保留最近对话 |
 -->
 
-## `services`
+## `nb_search`
 
-`services` 配置网页搜索（`moonshot_search`）和网页抓取（`moonshot_fetch`）两项内置服务。只识别这两个固定 key，其他 key 会被忽略。两项字段相同：
+`nb_search` 配置内置 `WebSearch` 和 `FetchURL` 工具使用的 nb-search 运行时。字段名与合并行为遵循 `@nb-corp/nb-search` 的 canonical 配置 contract。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `base_url` | `string` | 否 | 服务 API URL |
-| `api_key` | `string` | 否 | API 密钥 |
-| `oauth` | `table` | 否 | OAuth 凭据引用，结构同 `providers.*.oauth` |
-| `custom_headers` | `table<string, string>` | 否 | 请求时附加的自定义 HTTP 头 |
+| `provider_instances` | `table` | 否 | 命名 provider 实例，包含 `provider_id`、`enabled`、可选的 `credential_slot_id` / `base_url`，以及 provider 专属 `options` |
+| `credential_slots` | `table` | 否 | 命名凭据槽，只包含 `provider_id` 和 `env` 中的环境变量名 |
+| `lanes` | `table` | 否 | 命名 operation lane，包含 `provider_instance_id`、`operation_id`、`latency`、`cost` 和可选 `evidence_groups` |
+| `defaults.search_lane` | `string` | 否 | `WebSearch` 使用的默认 lane；未配置时网页搜索 fail-closed |
+| `defaults.fetch_chain` | `array<table>` | 否 | 按输入类型和 representation 配置 fetch pipeline chain；URL 的 SDK 默认值为 `direct.fetch`，随后尝试 `jina.reader` |
+| `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 
-`base_url` 和 `api_key` 也可由环境变量提供，环境变量优先于配置文件：`KIMI_WEB_SEARCH_BASE_URL` / `KIMI_WEB_SEARCH_API_KEY` 对应 `moonshot_search`，`KIMI_WEB_FETCH_BASE_URL` / `KIMI_WEB_FETCH_API_KEY` 对应 `moonshot_fetch`。`KIMI_WEB_SEARCH_BASE_URL` 和 `KIMI_WEB_FETCH_BASE_URL` 定义的是独立服务端点，因此文件中持久化的 API 密钥、OAuth 引用和自定义 header 都不会发送给它；该端点需要鉴权时，请同时设置对应的环境变量 API 密钥。只设置环境变量 API 密钥时，配置中的端点和自定义 header 保持不变，但两种配置凭据都会被替换。不写配置段、只通过环境变量设置 base URL 和 API 密钥，也可以启用对应服务。
+凭据值不会写入 `config.toml`。请在凭据槽的 `env` 字段中填写环境变量名，再把实际 secret 设置到进程环境中。
 
 ```toml
-[services.moonshot_search]
-base_url = "https://api.moonshot.cn/v1/search"
-api_key = "sk-xxx"
+[nb_search.credential_slots."exa.default"]
+provider_id = "exa"
+env = "NB_SEARCH_EXA_API_KEY"
 
-[services.moonshot_fetch]
-base_url = "https://api.moonshot.cn/v1/fetch"
-api_key = "sk-xxx"
+[nb_search.defaults]
+search_lane = "exa.search"
+
+[nb_search.execution]
+max_provider_calls = 16
+max_concurrency = 4
+retry_count = 1
+search_timeout_ms = 30000
+fetch_timeout_ms = 60000
+max_inline_bytes = 65536
+
+[nb_search.execution.fetch]
+max_source_bytes = 2097152
+max_response_bytes = 2097152
+max_content_chars = 200000
+max_redirects = 5
 ```
 
 ## `permission`

@@ -1,5 +1,6 @@
 import { parsePattern } from '@moonshot-ai/agent-core-v2';
 import { HOOK_EVENT_TYPES } from '@moonshot-ai/agent-core-v2/features/externalHooks/internal/types';
+import { parseConfigPatch, type CanonicalConfigPatch } from '@nb-corp/nb-search';
 
 import { ErrorCodes, KimiError } from '../errors';
 import { z } from 'zod';
@@ -250,21 +251,19 @@ export const HookDefSchema = z
 
 export type HookDefConfig = z.infer<typeof HookDefSchema>;
 
-export const MoonshotServiceConfigSchema = z.object({
-  baseUrl: z.string().optional(),
-  apiKey: z.string().optional(),
-  oauth: OAuthRefSchema.optional(),
-  customHeaders: StringRecordSchema.optional(),
-});
+export const NbSearchConfigSchema = z.custom<CanonicalConfigPatch>(
+  (value) => {
+    try {
+      parseConfigPatch(value, 'Kiki nb_search configuration');
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { error: 'Invalid nb_search configuration.' },
+).transform((value) => parseConfigPatch(value, 'Kiki nb_search configuration'));
 
-export type MoonshotServiceConfig = z.infer<typeof MoonshotServiceConfigSchema>;
-
-export const ServicesConfigSchema = z.object({
-  moonshotSearch: MoonshotServiceConfigSchema.optional(),
-  moonshotFetch: MoonshotServiceConfigSchema.optional(),
-});
-
-export type ServicesConfig = z.infer<typeof ServicesConfigSchema>;
+export type NbSearchConfig = CanonicalConfigPatch;
 
 const McpServerCommonFields = {
   enabled: z.boolean().optional(),
@@ -351,7 +350,7 @@ export const KimiConfigSchema = z.object({
   defaultPlanMode: z.boolean().optional(),
   permission: PermissionConfigSchema.optional(),
   hooks: z.array(HookDefSchema).optional(),
-  services: ServicesConfigSchema.optional(),
+  nbSearch: NbSearchConfigSchema.optional(),
   mergeAllAvailableSkills: z.boolean().optional(),
   extraSkillDirs: z.array(z.string()).optional(),
   extraAgentDirs: z.array(z.string()).optional(),
@@ -380,11 +379,6 @@ const McpConfigPatchSchema = McpConfigSchema.partial();
 const ImageConfigPatchSchema = ImageConfigSchema.partial();
 const ModelCatalogConfigPatchSchema = ModelCatalogConfigSchema.partial();
 const ExperimentalConfigPatchSchema = ExperimentalConfigSchema;
-const MoonshotServiceConfigPatchSchema = MoonshotServiceConfigSchema.partial();
-const ServicesConfigPatchSchema = z.object({
-  moonshotSearch: MoonshotServiceConfigPatchSchema.optional(),
-  moonshotFetch: MoonshotServiceConfigPatchSchema.optional(),
-});
 
 export const KimiConfigPatchSchema = z
   .object({
@@ -399,7 +393,7 @@ export const KimiConfigPatchSchema = z
     defaultPlanMode: z.boolean().optional(),
     permission: PermissionConfigPatchSchema.optional(),
     hooks: z.array(HookDefSchema).optional(),
-    services: ServicesConfigPatchSchema.optional(),
+    nbSearch: NbSearchConfigSchema.optional(),
     mergeAllAvailableSkills: z.boolean().optional(),
     extraSkillDirs: z.array(z.string()).optional(),
     extraAgentDirs: z.array(z.string()).optional(),
