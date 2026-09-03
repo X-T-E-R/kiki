@@ -212,6 +212,7 @@ function spawnDetachedServer(options: {
     'KIKI_EXTERNAL_MODEL_ALIAS',
     'KIKI_EXTERNAL_THINKING_EFFORT',
     'KIKI_EXTERNAL_PERMISSION_MODE',
+    'KIKI_EXTERNAL_PERMISSION_CEILING',
     'KIKI_EXTERNAL_SESSION_TITLE',
   ]) delete env[name];
   const child = spawn(process.execPath, args, {
@@ -239,7 +240,13 @@ async function withEnsureLock<T>(homeDir: string, work: () => Promise<T>): Promi
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const info = await stat(lockPath);
+      let info;
+      try {
+        info = await stat(lockPath);
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw statError;
+      }
       if (Date.now() - info.mtimeMs >= ENSURE_LOCK_STALE_MS) {
         await unlink(lockPath).catch(() => {});
       } else {
