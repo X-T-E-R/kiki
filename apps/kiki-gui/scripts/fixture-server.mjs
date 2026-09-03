@@ -386,6 +386,7 @@ class FixtureServer {
     this.workspaces = []; // mutable registered workspaces (PATCH/DELETE editable)
     this.agentProfiles = []; // expanded named-agent rows; GET /agents merges them
     this.mcpManaged = []; // mutable /api/v2/mcp/servers catalog
+    this.plugins = []; // mutable /api/v1/plugins catalog
     this.oauthOverride = null; // mutable oauth flow state (POST/DELETE /oauth/login)
     this.wsInbound = [];
     this.wsOutbound = [];
@@ -416,6 +417,7 @@ class FixtureServer {
       { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
     ]);
     this.mcpManaged = structuredClone(data.mcpManagedServers ?? []);
+    this.plugins = structuredClone(data.plugins ?? []);
     this.usageV2 = data.usageV2 ?? null;
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
@@ -1041,6 +1043,12 @@ class FixtureServer {
       if (patch.request_identity === null) delete patch.request_identity;
       this.config = { ...this.config, ...patch };
       if (body?.request_identity === null) delete this.config.request_identity;
+      if (patch.plugins !== undefined) {
+        const url = patch.plugins.marketplace_url ?? patch.plugins.marketplaceUrl;
+        this.config.plugins = typeof url === 'string' && url.trim() !== ''
+          ? { marketplaceUrl: url.trim() }
+          : {};
+      }
       return this.envelope(res, this.config);
     }
     if (path === '/config') {
@@ -1190,9 +1198,70 @@ class FixtureServer {
         servers: this.scenario?.data.mcpServers ?? [],
       });
     }
+    if (path === '/plugins/marketplace') {
+      const source = this.config.plugins?.marketplaceUrl;
+      if (typeof source !== 'string' || source.trim() === '') {
+        return this.envelope(res, { configured: false, entries: [] });
+      }
+      return this.envelope(res, {
+        configured: true,
+        source,
+        entries: this.scenario?.data.pluginMarketplace ?? [],
+      });
+    }
+    if (path === '/plugins' && method === 'POST' && body !== undefined) {
+      const source = String(body.source ?? '').trim();
+      if (source === 'https://example.test/broken.zip') {
+        return this.envelope(res, null, 40001, 'Plugin marketplace zip returned HTTP 404');
+      }
+      const id = source.includes('catalog-notes') ? 'catalog-notes' : 'installed-from-source';
+      const plugin = {
+        id,
+        displayName: id,
+        version: '1.0.0',
+        enabled: false,
+        state: 'ok',
+        skillCount: 0,
+        mcpServerCount: 0,
+        enabledMcpServerCount: 0,
+        hookCount: 0,
+        commandCount: 0,
+        hasErrors: false,
+        source: source.startsWith('http') ? 'zip-url' : 'local-path',
+        originalSource: source,
+      };
+      this.plugins = this.plugins.filter((entry) => entry.id !== id);
+      this.plugins.push(plugin);
+      return this.envelope(res, plugin);
+    }
+    const pluginActionMatch = /^\/plugins\/([^/]+):(enable|disable|remove)$/.exec(path);
+    if (pluginActionMatch !== null && method === 'POST') {
+      const pluginId = decodeURIComponent(pluginActionMatch[1]);
+      const action = pluginActionMatch[2];
+      const index = this.plugins.findIndex((entry) => entry.id === pluginId);
+      if (index < 0) return this.envelope(res, null, 40419, 'plugin.not_found');
+      if (action === 'remove') this.plugins.splice(index, 1);
+      else this.plugins[index].enabled = action === 'enable';
+      return this.envelope(res, { ok: true });
+    }
+    const pluginInfoMatch = /^\/plugins\/([^/]+)$/.exec(path);
+    if (pluginInfoMatch !== null && method === 'GET') {
+      const pluginId = decodeURIComponent(pluginInfoMatch[1]);
+      const plugin = this.plugins.find((entry) => entry.id === pluginId)
+        ?? this.scenario?.data.pluginInfos?.[pluginId];
+      if (plugin === undefined) return this.envelope(res, null, 40419, 'plugin.not_found');
+      const info = this.scenario?.data.pluginInfos?.[pluginId];
+      return this.envelope(res, info ?? {
+        ...plugin,
+        root: plugin.originalSource ?? `C:/fixture/plugins/${plugin.id}`,
+        installedAt: '2026-01-01T00:00:00.000Z',
+        mcpServers: [],
+        diagnostics: [],
+      });
+    }
     if (path === '/plugins') {
       return this.envelope(res, {
-        plugins: this.scenario?.data.plugins ?? [],
+        plugins: this.plugins,
       });
     }
     const mcpRestartMatch = /^\/mcp\/servers\/([^/]+):restart$/.exec(path);

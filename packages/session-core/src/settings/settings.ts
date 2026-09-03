@@ -637,6 +637,18 @@ export function mcpTimeoutsPatch(startupTimeoutMs: string, toolTimeoutMs: string
   };
 }
 
+/**
+ * Narrow plugins-domain patch for the marketplace source field. An empty
+ * draft clears the saved URL so the server stops fetching a remote catalog.
+ */
+export function marketplaceUrlPatch(url: string): KikiConfigPatch {
+  const trimmed = url.trim();
+  return {
+    plugins: { marketplace_url: trimmed.length === 0 ? undefined : trimmed },
+    replace_domains: ['plugins'],
+  };
+}
+
 export type TokenCountingStrategy = 'measured+estimated' | 'measured' | 'estimated';
 export type PrintBackgroundMode = 'exit' | 'drain' | 'steer';
 
@@ -1348,6 +1360,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'mcp', cardId: 'st-card-mcp-status', titleKey: 'st.mcp.statusTitle', keywordKeys: ['st.mcp.restart', 'st.mcp.toolsCount'], synonyms: ['mcp 状态', 'mcp status'] },
   { section: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
   { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理'] },
+  { section: 'plugins', cardId: 'st-card-plugins-add', titleKey: 'st.plugins.addTitle', keywordKeys: ['st.plugins.addHint', 'st.plugins.tab.marketplace'], synonyms: ['marketplace', '插件市场', '安装插件'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
 ];
