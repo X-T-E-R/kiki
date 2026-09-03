@@ -10,6 +10,7 @@ import { loadTuiConfig, TuiConfigParseError } from '#/tui/config';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { DaemonTUI } from '#/tui/daemon/daemon-tui';
 import { discoverDaemon, ensureDaemon, resolveDaemonHome } from '#/tui/daemon/discovery';
+import { runWorkspaceTrustGate } from '#/tui/daemon/workspace-trust';
 import { startupTrace } from '#/utils/startup-trace';
 import { currentTheme, getColorPalette } from '#/tui/theme';
 import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
@@ -44,6 +45,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   });
 
   const homeDir = resolveDaemonHome();
+  if (!(await runWorkspaceTrustGate({ homeDir, workDir }))) return;
   const discovered = await discoverDaemon(homeDir, workDir);
   const commandPath = discovered === null ? resolveCommandPath('kimi', workDir) : undefined;
   if (discovered === null && commandPath === undefined) {
@@ -69,9 +71,8 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   });
 
   let savedStty: string | undefined;
-  // stty runs before tui.start() reaches the workspace trust gate, so it must
-  // never be resolved by name through PATH: a `.` or empty PATH segment would
-  // let an untrusted checkout plant an `stty` executable and run it pre-trust.
+  // Resolve stty by absolute PATH entry so a workspace-local executable cannot
+  // take over terminal setup.
   // resolveCommandPath returns an absolute path and refuses hits inside the
   // cwd; when it cannot resolve stty, skip the save/restore entirely — it is
   // best-effort terminal hygiene, not required for startup.
