@@ -7,12 +7,12 @@ const requireFromScript = createRequire(import.meta.url);
 const tsdownCliPath = requireFromScript.resolve('tsdown/run');
 const checkBundlePath = resolve(import.meta.dirname, 'check-bundle.mjs');
 const buildVisAssetPath = resolve(import.meta.dirname, '..', 'build-vis-asset.mjs');
+const copyWebAssetsPath = resolve(import.meta.dirname, '..', 'copy-web-assets.mjs');
+const pnpmCommand = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
 export async function runBundleStep() {
-  // Generate the embedded `kimi vis` web asset before bundling. The native
-  // tsdown run here never goes through the npm `prebuild` lifecycle, so the
-  // generated module must be produced explicitly first or the bundle would
-  // miss it (npm builds get it via the `prebuild` script).
+  await run(pnpmCommand, ['-C', '../kiki-gui', 'build']);
+  await run(process.execPath, [copyWebAssetsPath]);
   await run(process.execPath, [buildVisAssetPath]);
   await run(process.execPath, [tsdownCliPath, '--config', 'tsdown.native.config.ts']);
   // Bundle the off-main-thread workers (the minidb text-build worker and

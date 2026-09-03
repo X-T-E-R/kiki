@@ -45,7 +45,7 @@ import {
   type ServerCliOptions,
 } from './shared';
 
-const WEB_ASSETS_DIR = 'dist-web';
+const WEB_ASSETS_DIR = 'dist/web';
 
 /**
  * Minimal surface `runServerInProcess` needs from the server. kap-server's
@@ -428,8 +428,8 @@ export function desktopInheritanceSourceFromEnv(
 /**
  * Resolve the web assets directory passed to kap-server. In dev mode
  * (`KIMI_CODE_DEV_SERVER=1`, set by the repo's `dev:server` / `dev:kap-server*`
- * scripts) a missing `dist-web` build is tolerated: the server starts API-only
- * and the web UI is expected to come from a Vite dev server (the web UI source lives in the code-app repo).
+ * scripts) a missing GUI build is tolerated: the server starts API-only
+ * and the web UI is expected to come from the GUI Vite dev server.
  * Outside dev mode the directory is always returned and kap-server keeps
  * failing fast when the assets are missing.
  */

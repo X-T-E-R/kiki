@@ -50,8 +50,8 @@
     "provenance": true
   },
   "scripts": {
-    "build": "tsdown && tsdown --config tsdown.dist-worker.config.ts && node scripts/copy-native-assets.mjs && node scripts/check-web-assets.mjs",
-    "prebuild": "node scripts/build-vis-asset.mjs",
+    "build": "tsdown && tsdown --config tsdown.dist-worker.config.ts && node scripts/copy-native-assets.mjs && node scripts/copy-web-assets.mjs",
+    "prebuild": "pnpm -C ../kiki-gui build && node scripts/build-vis-asset.mjs",
     "catalog:update": "node scripts/update-catalog.mjs --out dist/built-in-catalog.json",
     "smoke": "node scripts/smoke.mjs",
     "build:native:js": "node scripts/native/01-bundle.mjs",
