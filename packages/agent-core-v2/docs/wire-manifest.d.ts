@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (62 record types)
+// Index (65 record types)
 //   config.update                      profile                                                               src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory, turn                                                   src/agent/contextMemory/contextEvents.ts
 //   context.append_message             contextMemory, goalForkNotice, plan, task.notificationDelivery, todo  src/agent/contextMemory/contextEvents.ts
@@ -57,7 +57,10 @@
 //   plan.revision                      plan                                                                  src/features/plan/planOps.ts
 //   plugin.session_start               pluginSessionStartSnapshot                                            src/agent/plugin/agentPluginOps.ts
 //   profile.bind                       profile, profile.activeTools                                          src/agent/profile/profileOps.ts
+//   prompt.aborted                     promptResolution                                                      src/agent/prompt/promptService.ts
 //   prompt.accepted                    promptAdmission                                                       src/agent/prompt/promptOps.ts
+//   prompt.completed                   promptResolution                                                      src/agent/prompt/promptService.ts
+//   prompt.steered                     promptResolution                                                      src/agent/prompt/promptService.ts
 //   runtime.set_binding                runtimeBinding                                                        src/agent/runtimeBinding/runtimeBindingOps.ts
 //   staleGuard.cleared                 staleGuard                                                            src/features/staleGuard/staleGuardOps.ts
 //   staleGuard.recorded                staleGuard                                                            src/features/staleGuard/staleGuardOps.ts
@@ -542,12 +545,45 @@ interface ProfileBindPayload {
 }
 
 /**
+ * states: promptResolution
+ * owner: src/agent/prompt/promptService.ts
+ */
+interface PromptAbortedPayload {
+  _name: 'prompt.aborted';
+  promptId: string;
+  abortedAt: string;
+}
+
+/**
  * states: promptAdmission
  * owner: src/agent/prompt/promptOps.ts
  */
 interface PromptAcceptedPayload {
   _name: 'prompt.accepted';
   promptId: string;
+}
+
+/**
+ * states: promptResolution
+ * owner: src/agent/prompt/promptService.ts
+ */
+interface PromptCompletedPayload {
+  _name: 'prompt.completed';
+  promptId: string;
+  finishedAt: string;
+  reason: 'completed' | 'failed' | 'blocked';
+}
+
+/**
+ * states: promptResolution
+ * owner: src/agent/prompt/promptService.ts
+ */
+interface PromptSteeredPayload {
+  _name: 'prompt.steered';
+  activePromptId: string;
+  promptIds: string[];
+  content: ContentPart[];
+  steeredAt: string;
 }
 
 /**
@@ -968,7 +1004,10 @@ interface WirePayloadMap {
   "plan.revision": PlanRevisionPayload;
   "plugin.session_start": PluginSessionStartPayload;
   "profile.bind": ProfileBindPayload;
+  "prompt.aborted": PromptAbortedPayload;
   "prompt.accepted": PromptAcceptedPayload;
+  "prompt.completed": PromptCompletedPayload;
+  "prompt.steered": PromptSteeredPayload;
   "runtime.set_binding": RuntimeSetBindingPayload;
   "staleGuard.cleared": StaleGuardClearedPayload;
   "staleGuard.recorded": StaleGuardRecordedPayload;
