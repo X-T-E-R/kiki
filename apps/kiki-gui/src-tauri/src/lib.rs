@@ -402,6 +402,32 @@ fn begin_runtime_recovery_transition<T>(
     Some((backend, recovery_generation))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackendOwnership {
+    None,
+    External,
+    Owned,
+}
+
+#[derive(Clone, Copy)]
+enum OwnedBackendOperation {
+    Restart,
+    ConfigImport,
+    CompatibilityMigration,
+    SessionsMigration,
+}
+
+impl OwnedBackendOperation {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::ConfigImport => "configuration import",
+            Self::CompatibilityMigration => "compatibility migration",
+            Self::SessionsMigration => "sessions migration",
+        }
+    }
+}
+
 #[derive(Default)]
 struct BackendState {
     backend: Option<OwnedBackend>,
@@ -410,6 +436,18 @@ struct BackendState {
     /// Bumped every time a fresh connection is published; host-root grants
     /// authorize only under the generation they were issued in.
     generation: u64,
+}
+
+impl BackendState {
+    fn ownership(&self) -> BackendOwnership {
+        if self.attached.is_some() {
+            BackendOwnership::External
+        } else if self.backend.is_some() {
+            BackendOwnership::Owned
+        } else {
+            BackendOwnership::None
+        }
+    }
 }
 
 /// A user-granted file-access boundary for one canonical workspace root,
@@ -429,10 +467,22 @@ struct BackendManager {
 }
 
 impl BackendManager {
-    fn has_backend(&self) -> bool {
+    fn ownership(&self) -> Result<BackendOwnership, String> {
         self.inner
             .lock()
-            .is_ok_and(|state| state.backend.is_some() || state.attached.is_some())
+            .map(|state| state.ownership())
+            .map_err(|_| "Kiki backend lifecycle lock was poisoned".to_string())
+    }
+
+    fn owned_backend_for(&self, operation: OwnedBackendOperation) -> Result<bool, String> {
+        match self.ownership()? {
+            BackendOwnership::Owned => Ok(true),
+            BackendOwnership::None => Ok(false),
+            BackendOwnership::External => Err(format!(
+                "The connected Kiki daemon is externally managed; {} is unsupported from this desktop window",
+                operation.label()
+            )),
+        }
     }
 
     fn connection(&self, app: &AppHandle) -> Result<DesktopConnection, DesktopStartupFailure> {
@@ -841,7 +891,12 @@ impl BackendManager {
     }
 
     fn restart(&self, app: &AppHandle) -> Result<DesktopConnection, DesktopStartupFailure> {
-        self.shutdown();
+        let owned = self
+            .owned_backend_for(OwnedBackendOperation::Restart)
+            .map_err(DesktopStartupFailure::plain)?;
+        if owned {
+            self.shutdown();
+        }
         self.connection(app)
     }
 }
@@ -1655,7 +1710,11 @@ async fn import_kimi_config(
         let plan = current_config_import_plan()?;
         let has_changes = plan.has_changes();
         let initial = KimiConfigImportResult::from(plan.result());
-        let restart = manager.has_backend();
+        let restart = if has_changes {
+            manager.owned_backend_for(OwnedBackendOperation::ConfigImport)?
+        } else {
+            false
+        };
         run_kimi_config_import_lifecycle(
             has_changes,
             initial,
@@ -1718,9 +1777,14 @@ async fn migrate_compatibility_category(
     let app = app.clone();
     let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let restart = manager.has_backend();
+        let needs_restart = preflight_category(category)?;
+        let restart = if needs_restart {
+            manager.owned_backend_for(OwnedBackendOperation::CompatibilityMigration)?
+        } else {
+            false
+        };
         run_copy_migration_lifecycle(
-            || preflight_category(category),
+            || Ok(needs_restart),
             || {
                 if restart {
                     manager.shutdown();
@@ -1790,7 +1854,7 @@ async fn execute_sessions_migration(
         if initial.status != "ready" {
             return Ok(initial);
         }
-        let restart = manager.has_backend();
+        let restart = manager.owned_backend_for(OwnedBackendOperation::SessionsMigration)?;
         if restart {
             manager.shutdown();
         }
@@ -3844,11 +3908,62 @@ mod tests {
             url: "http://127.0.0.1:43123".to_string(),
             token: "shared-home-token".to_string(),
         });
-        assert!(manager.has_backend());
+        assert_eq!(manager.ownership().unwrap(), BackendOwnership::External);
         manager.shutdown();
         let state = manager.inner.lock().unwrap();
-        assert!(state.attached.is_none());
-        assert!(state.backend.is_none());
+        assert_eq!(state.ownership(), BackendOwnership::None);
+    }
+
+    #[test]
+    fn external_daemon_rejects_restart_without_releasing_the_connection() {
+        let manager = BackendManager::default();
+        manager.inner.lock().unwrap().attached = Some(DesktopConnection {
+            url: "http://127.0.0.1:43123".to_string(),
+            token: "shared-home-token".to_string(),
+        });
+        let error = manager
+            .owned_backend_for(OwnedBackendOperation::Restart)
+            .unwrap_err();
+        assert!(error.contains("externally managed"));
+        assert!(error.contains("restart"));
+        assert_eq!(manager.ownership().unwrap(), BackendOwnership::External);
+    }
+
+    #[test]
+    fn external_daemon_rejects_config_and_compatibility_mutations() {
+        let manager = BackendManager::default();
+        manager.inner.lock().unwrap().attached = Some(DesktopConnection {
+            url: "http://127.0.0.1:43123".to_string(),
+            token: "shared-home-token".to_string(),
+        });
+        for operation in [
+            OwnedBackendOperation::ConfigImport,
+            OwnedBackendOperation::CompatibilityMigration,
+        ] {
+            let error = manager.owned_backend_for(operation).unwrap_err();
+            assert!(error.contains("externally managed"));
+            assert!(error.contains(operation.label()));
+        }
+        assert_eq!(manager.ownership().unwrap(), BackendOwnership::External);
+    }
+
+    #[test]
+    fn external_daemon_rejects_sessions_migration_before_rename() {
+        let manager = BackendManager::default();
+        manager.inner.lock().unwrap().attached = Some(DesktopConnection {
+            url: "http://127.0.0.1:43123".to_string(),
+            token: "shared-home-token".to_string(),
+        });
+        let mut renamed = false;
+        let result = manager
+            .owned_backend_for(OwnedBackendOperation::SessionsMigration)
+            .and_then(|_| {
+                renamed = true;
+                Ok(())
+            });
+        assert!(result.unwrap_err().contains("sessions migration"));
+        assert!(!renamed);
+        assert_eq!(manager.ownership().unwrap(), BackendOwnership::External);
     }
 
     #[test]
