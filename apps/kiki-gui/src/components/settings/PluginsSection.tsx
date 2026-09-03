@@ -278,6 +278,47 @@ function InstalledPluginsCard() {
   );
 }
 
+function marketplaceActionKind(
+  entry: PluginMarketplaceEntry,
+): 'install' | 'installed' | 'update' {
+  if (entry.installed === undefined) return 'install';
+  return entry.updateAvailable === true ? 'update' : 'installed';
+}
+
+function MarketplaceAction({
+  entry,
+  installingId,
+  onInstall,
+}: {
+  entry: PluginMarketplaceEntry;
+  installingId: string | null;
+  onInstall: (entry: PluginMarketplaceEntry) => void;
+}) {
+  const { t } = useI18n();
+  const kind = marketplaceActionKind(entry);
+  const installing = installingId === entry.id;
+  const label = installing
+    ? t('st.plugins.installing')
+    : kind === 'update'
+      ? t('st.plugins.updateAvailable')
+      : kind === 'installed'
+        ? t('st.plugins.alreadyInstalled')
+        : t('st.plugins.installFromMarket');
+  const idle = kind === 'installed';
+  return (
+    <button
+      type="button"
+      className={`${PRIMARY_BUTTON} mt-2`}
+      data-marketplace-action={entry.id}
+      data-marketplace-kind={kind}
+      disabled={idle || installingId !== null}
+      onClick={() => { onInstall(entry); }}
+    >
+      {label}
+    </button>
+  );
+}
+
 function MarketplaceTab() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -396,14 +437,11 @@ function MarketplaceTab() {
                 <p className="mt-0.5 truncate font-mono text-[10px] text-ink-faint" title={entry.source}>
                   {entry.source}
                 </p>
-                <button
-                  type="button"
-                  className={`${PRIMARY_BUTTON} mt-2`}
-                  disabled={installingId !== null}
-                  onClick={() => { void installEntry(entry); }}
-                >
-                  {installingId === entry.id ? t('st.plugins.installing') : t('st.plugins.installFromMarket')}
-                </button>
+                <MarketplaceAction
+                  entry={entry}
+                  installingId={installingId}
+                  onInstall={installEntry}
+                />
               </div>
             ))
           )}

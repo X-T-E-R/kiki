@@ -78,6 +78,11 @@ afterEach(() => {
   listPlugins.mockClear();
   listPluginMarketplace.mockClear();
   getPlugin.mockClear();
+  getConfig.mockClear();
+  patchConfig.mockClear();
+  setPluginEnabled.mockClear();
+  removePlugin.mockClear();
+  installPlugin.mockClear();
 });
 
 afterAll(() => {
@@ -135,5 +140,95 @@ describe('PluginsSection', () => {
     await flush();
     expect(getPlugin).toHaveBeenCalledWith('notes');
     expect(container.querySelector('[data-plugin-mcp="notes-mcp"]')).not.toBeNull();
+  });
+
+  it('offers Install for a catalog entry that is not installed', async () => {
+    listPluginMarketplace.mockResolvedValueOnce({
+      configured: true,
+      source: 'https://example.test/marketplace.json',
+      entries: [
+        {
+          id: 'fresh',
+          tier: 'curated',
+          displayName: 'Fresh Notes',
+          source: 'https://example.test/fresh.zip',
+        },
+      ],
+    });
+    const container = await renderLeaf();
+    await act(async () => {
+      (container.querySelector('[data-plugin-add-tab-button="marketplace"]') as HTMLButtonElement).click();
+    });
+    await flush();
+    const action = container.querySelector('[data-marketplace-action="fresh"]') as HTMLButtonElement;
+    expect(action).not.toBeNull();
+    expect(action.dataset.marketplaceKind).toBe('install');
+    expect(action.disabled).toBe(false);
+    expect(action.textContent).toBe('Install');
+    await act(async () => {
+      action.click();
+    });
+    await flush();
+    expect(installPlugin).toHaveBeenCalledWith('https://example.test/fresh.zip');
+  });
+
+  it('disables Installed for a catalog entry with no update', async () => {
+    listPluginMarketplace.mockResolvedValueOnce({
+      configured: true,
+      entries: [
+        {
+          id: 'notes',
+          tier: 'curated',
+          displayName: 'Notes',
+          source: 'https://example.test/notes.zip',
+          installed: { version: '1.0.0', enabled: true },
+        },
+      ],
+    });
+    const container = await renderLeaf();
+    await act(async () => {
+      (container.querySelector('[data-plugin-add-tab-button="marketplace"]') as HTMLButtonElement).click();
+    });
+    await flush();
+    const action = container.querySelector('[data-marketplace-action="notes"]') as HTMLButtonElement;
+    expect(action.dataset.marketplaceKind).toBe('installed');
+    expect(action.disabled).toBe(true);
+    expect(action.textContent).toBe('Installed');
+    await act(async () => {
+      action.click();
+    });
+    await flush();
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it('offers Update for an installed catalog entry with a newer version', async () => {
+    listPluginMarketplace.mockResolvedValueOnce({
+      configured: true,
+      entries: [
+        {
+          id: 'notes',
+          tier: 'curated',
+          displayName: 'Notes',
+          version: '2.0.0',
+          source: 'https://example.test/notes-2.zip',
+          installed: { version: '1.0.0', enabled: true },
+          updateAvailable: true,
+        },
+      ],
+    });
+    const container = await renderLeaf();
+    await act(async () => {
+      (container.querySelector('[data-plugin-add-tab-button="marketplace"]') as HTMLButtonElement).click();
+    });
+    await flush();
+    const action = container.querySelector('[data-marketplace-action="notes"]') as HTMLButtonElement;
+    expect(action.dataset.marketplaceKind).toBe('update');
+    expect(action.disabled).toBe(false);
+    expect(action.textContent).toBe('Update');
+    await act(async () => {
+      action.click();
+    });
+    await flush();
+    expect(installPlugin).toHaveBeenCalledWith('https://example.test/notes-2.zip');
   });
 });
