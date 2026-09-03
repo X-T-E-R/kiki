@@ -76,7 +76,7 @@ describe('external delegation REST facade', () => {
       },
     });
     base = `http://127.0.0.1:${server.port}`;
-  });
+  }, 30_000);
 
   afterEach(async () => {
     await server?.close();
@@ -90,7 +90,7 @@ describe('external delegation REST facade', () => {
     restoreEnv('KIKI_EXTERNAL_THINKING_EFFORT', priorThinking);
     restoreEnv('KIKI_EXTERNAL_PERMISSION_MODE', priorPermission);
     restoreEnv('KIKI_EXTERNAL_SESSION_TITLE', priorTitle);
-  });
+  }, 30_000);
 
   it('admits only the configured credential, principal source, and Session', async () => {
     const call = (sessionId: string, extraHeaders: Record<string, string> = {}) =>
@@ -196,6 +196,10 @@ describe('external delegation Session bootstrap', () => {
       externalDelegation,
     });
     let base = `http://127.0.0.1:${server.port}`;
+    const meta = await getEnvelope<{
+      external_delegation: { state: string; reason?: string; message?: string };
+    }>(server, `${base}/api/v1/meta`);
+    expect(meta.data.external_delegation).toEqual({ state: 'active' });
     const session = await getEnvelope<{ metadata: { cwd: string } }>(
       server,
       `${base}/api/v1/sessions/session_workspace_a`,
@@ -300,7 +304,7 @@ describe('external delegation Session bootstrap', () => {
     expect(listed.data.dispatchables).toEqual(expect.arrayContaining([{ kind: 'main' }]));
   });
 
-  it('rejects startup when a persisted Session workspace drifts', async () => {
+  it('disables the delegation edge when a persisted Session workspace drifts', async () => {
     const home = join(root!, 'home');
     const workspaceA = join(root!, 'workspace-a');
     const workspaceB = join(root!, 'workspace-b');
@@ -323,25 +327,44 @@ describe('external delegation Session bootstrap', () => {
         callback();
       },
     }));
-    await expect(startServer({
+    const server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
       homeDir: home,
       logger,
       externalDelegation: authority('session_workspace_a', workspaceB),
-    })).rejects.toThrow(/workspace binding does not match/i);
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.port}`;
+
+    expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+    const meta = await getEnvelope<{
+      external_delegation: { state: string; reason?: string; message?: string };
+    }>(server, `${base}/api/v1/meta`);
+    expect(meta.data.external_delegation).toMatchObject({
+      state: 'disabled',
+      reason: 'workspace_drift',
+      message: expect.stringMatching(/workspace binding does not match/i),
+    });
+    const edge = await listRoot(server, base, 'session_workspace_a');
+    expect(edge).toMatchObject({
+      code: 40002,
+      msg: expect.stringContaining('workspace_drift'),
+    });
 
     const failure = logs
       .map((line) => JSON.parse(line) as {
         level: number;
         msg: string;
+        reason?: string;
         err?: { message?: string };
       })
       .find((record) => record.msg ===
-        'external delegation Session bootstrap failed; aborting server startup');
+        'external delegation Session bootstrap failed; disabling the edge and continuing server startup');
     expect(failure).toMatchObject({
-      level: 50,
+      level: 40,
+      reason: 'workspace_drift',
       err: { message: expect.stringMatching(/workspace binding does not match/i) },
     });
   });

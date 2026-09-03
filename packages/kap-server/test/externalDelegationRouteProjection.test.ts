@@ -37,6 +37,7 @@ const authorityConfig = {
   principalId: 'example-principal',
   sessionId: 'session-operator',
   token: 'DELEGATION_SECRET',
+  state: { state: 'active' } as const,
 };
 
 const dispatchView: ExternalDispatchView = {
@@ -116,6 +117,34 @@ describe('external delegation route projection', () => {
       '/sessions/:session_id/external-delegation/transcript',
       '/sessions/:session_id/external-delegation/wait',
     ]);
+  });
+
+  it('returns an explicit disabled-edge response', async () => {
+    handlers.clear();
+    registerV2ExternalDelegationRoutes(
+      {
+        post: (path, _options, handler) => {
+          handlers.set(path, handler);
+        },
+      },
+      {} as never,
+      {
+        ...authorityConfig,
+        state: {
+          state: 'disabled',
+          reason: 'workspace_drift',
+          message: 'workspace binding changed',
+        },
+      },
+    );
+
+    const response = await invoke('list', {});
+
+    expect(response).toMatchObject({
+      code: 40002,
+      msg: expect.stringContaining('workspace_drift'),
+    });
+    expect(resumeSessionById).not.toHaveBeenCalled();
   });
 
   it('returns the domain replay view for repeated dispatch_key requests', async () => {

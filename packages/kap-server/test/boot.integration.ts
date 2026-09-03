@@ -338,6 +338,68 @@ describe('server-v2 boot', () => {
     expect(get).toHaveBeenCalledWith('session_index_ready');
   });
 
+  it('disables external delegation when session index preparation fails', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-index-failure-'));
+    const workspace = join(home, 'workspace');
+    await mkdir(workspace);
+    const prepare = vi.fn(async () => {
+      throw new Error('injected index failure');
+    });
+    const index = stubSessionIndex(prepare);
+    const get = vi.fn(index.get);
+
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [[ISessionIndex, { ...index, get }]],
+      externalDelegation: {
+        principalId: 'example-principal',
+        sessionId: 'session_index_unavailable',
+        token: 'DELEGATION_SECRET',
+        sessionBootstrap: {
+          workspacePath: workspace,
+          modelAlias: 'stub',
+          thinkingEffort: 'high',
+        },
+      },
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+
+    expect(prepare).toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    const metaResponse = await authedFetch(server, base, '/api/v1/meta');
+    expect(await metaResponse.json()).toMatchObject({
+      code: 0,
+      data: {
+        external_delegation: {
+          state: 'disabled',
+          reason: 'session_index_unavailable',
+          message: expect.stringContaining('injected index failure'),
+        },
+      },
+    });
+    const edgeResponse = await authedFetch(
+      server,
+      base,
+      '/api/v2/sessions/session_index_unavailable/external-delegation/list',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-kiki-delegation-token': 'DELEGATION_SECRET',
+        },
+        body: '{}',
+      },
+    );
+    expect(await edgeResponse.json()).toMatchObject({
+      code: 40002,
+      msg: expect.stringContaining('session_index_unavailable'),
+    });
+  });
+
   it('keeps the listener available when background session-index prepare fails', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-background-prepare-failure-'));
     const prepareFailure = deferred<SessionIndexStatus>();
@@ -618,9 +680,9 @@ describe('server-v2 boot — external delegation startup', () => {
     expect(await listLiveServerInstances(home)).toEqual([]);
   });
 
-  it('rejects startup when the Session bootstrap fails', async () => {
+  it('keeps the server available and exposes disabled delegation when bootstrap fails', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-bootstrap-'));
-    await expect(startServer({
+    server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -636,8 +698,49 @@ describe('server-v2 boot — external delegation startup', () => {
           thinkingEffort: 'high',
         },
       },
-    })).rejects.toThrow(/workspace path must be absolute/i);
-    expect(await listLiveServerInstances(home)).toEqual([]);
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+
+    expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+    const metaResponse = await authedFetch(server, base, '/api/v1/meta');
+    const meta = await metaResponse.json() as {
+      code: number;
+      data: {
+        external_delegation: {
+          state: string;
+          reason?: string;
+          message?: string;
+        };
+      };
+    };
+    expect(meta).toMatchObject({
+      code: 0,
+      data: {
+        external_delegation: {
+          state: 'disabled',
+          reason: 'bootstrap_failed',
+          message: expect.stringMatching(/workspace path must be absolute/i),
+        },
+      },
+    });
+
+    const edgeResponse = await authedFetch(
+      server,
+      base,
+      '/api/v2/sessions/session-operator/external-delegation/list',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-kiki-delegation-token': 'DELEGATION_SECRET',
+        },
+        body: '{}',
+      },
+    );
+    expect(await edgeResponse.json()).toMatchObject({
+      code: 40002,
+      msg: expect.stringContaining('bootstrap_failed'),
+    });
   });
 });
 

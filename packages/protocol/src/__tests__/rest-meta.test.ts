@@ -18,6 +18,7 @@ describe('metaResponseSchema', () => {
     started_at: '2026-06-04T10:30:00.000Z',
     open_in_apps: ['finder', 'vscode'] as const,
     dangerous_bypass_auth: false,
+    external_delegation: { state: 'active' as const },
   };
 
   it('round-trips a well-formed payload', () => {
@@ -27,6 +28,33 @@ describe('metaResponseSchema', () => {
     expect(parsed.server_id).toBe('01HXYZABCDEFGHJKMNPQRSTVWX');
     expect(parsed.started_at).toBe('2026-06-04T10:30:00.000Z');
     expect(parsed.dangerous_bypass_auth).toBe(false);
+    expect(parsed.external_delegation).toEqual({ state: 'active' });
+  });
+
+  it('accepts explicit disabled external delegation status', () => {
+    const parsed = metaResponseSchema.parse({
+      ...sample,
+      external_delegation: {
+        state: 'disabled',
+        reason: 'workspace_drift',
+        message: 'workspace binding changed',
+      },
+    });
+    expect(parsed.external_delegation).toEqual({
+      state: 'disabled',
+      reason: 'workspace_drift',
+      message: 'workspace binding changed',
+    });
+  });
+
+  it('rejects unknown external delegation disable reasons', () => {
+    expect(metaResponseSchema.safeParse({
+      ...sample,
+      external_delegation: {
+        state: 'disabled',
+        reason: 'unknown_failure',
+      },
+    }).success).toBe(false);
   });
 
   it('accepts an omitted terminal capability but rejects terminal = false', () => {

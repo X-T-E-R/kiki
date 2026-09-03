@@ -40,6 +40,16 @@ export interface ExternalDelegationAuthorityConfig {
   readonly sessionBootstrap?: ExternalDelegationSessionBootstrap;
 }
 
+export class ExternalDelegationBootstrapError extends Error {
+  constructor(
+    readonly reason: 'session_index_unavailable' | 'workspace_drift',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ExternalDelegationBootstrapError';
+  }
+}
+
 const BASE_ENV = [
   'KIKI_EXTERNAL_PRINCIPAL_ID',
   'KIKI_EXTERNAL_SESSION_ID',
@@ -123,11 +133,7 @@ export async function ensureExternalDelegationSession(
   const expectedWorkspace = await canonicalPath(bootstrap.workspacePath);
   const registry = core.accessor.get(IWorkspaceService);
   const index = core.accessor.get(ISessionIndex);
-  const indexStatus = await index.prepare();
-  if (indexStatus.source === 'read-model' && indexStatus.state !== 'ready') {
-    throw new Error('External delegation Session index is not ready.');
-  }
-  const existing = await index.get(authority.sessionId);
+  const existing = await readExternalDelegationSession(index, authority.sessionId);
   if (existing === undefined) {
     const workspace = await registry.createOrTouch(expectedWorkspace);
     const session = await core.accessor.get(ISessionManager).create({
@@ -151,7 +157,10 @@ export async function ensureExternalDelegationSession(
       persistedWorkspace === undefined ||
       pathKey(await canonicalPath(persistedWorkspace)) !== pathKey(expectedWorkspace)
     ) {
-      throw new Error('External delegation Session workspace binding does not match.');
+      throw new ExternalDelegationBootstrapError(
+        'workspace_drift',
+        'External delegation Session workspace binding does not match.',
+      );
     }
   }
 
@@ -190,6 +199,29 @@ export async function ensureExternalDelegationSession(
   }
   if (ownership === 'dedicated') {
     await writeExternalDelegationSessionOwnership(core, authority.sessionId, 'dedicated');
+  }
+}
+
+async function readExternalDelegationSession(
+  index: ISessionIndex,
+  sessionId: string,
+): ReturnType<ISessionIndex['get']> {
+  try {
+    const status = await index.prepare();
+    if (status.source === 'read-model' && status.state !== 'ready') {
+      throw new ExternalDelegationBootstrapError(
+        'session_index_unavailable',
+        'External delegation Session index is not ready.',
+      );
+    }
+    return await index.get(sessionId);
+  } catch (error) {
+    if (error instanceof ExternalDelegationBootstrapError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ExternalDelegationBootstrapError(
+      'session_index_unavailable',
+      `External delegation Session index is unavailable: ${message}`,
+    );
   }
 }
 

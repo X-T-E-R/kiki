@@ -36,6 +36,7 @@ import {
   type KimiHostIdentity,
 } from '@moonshot-ai/kimi-code-oauth';
 import { createAsyncApiDocument } from './protocol/asyncapi';
+import type { ExternalDelegationState } from './protocol/rest-meta';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { installErrorHandler } from './error-handler';
@@ -94,6 +95,7 @@ import { createTokenStore } from './services/auth/tokenStore';
 import {
   ensureExternalDelegationSession,
   externalDelegationAuthorityFromEnv,
+  ExternalDelegationBootstrapError,
   type ExternalDelegationAuthorityConfig,
 } from './mcp/externalDelegationAuthority';
 
@@ -512,16 +514,20 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     .catch(() => {
     });
 
+  let externalDelegationState: ExternalDelegationState =
+    externalDelegation === undefined ? { state: 'not_configured' } : { state: 'active' };
   try {
     await ensureExternalDelegationSession(core, externalDelegation);
   } catch (error) {
-    logger.error({ err: error }, 'external delegation Session bootstrap failed; aborting server startup');
-    try {
-      await close();
-    } catch (closeError) {
-      logger.warn({ err: closeError }, 'server cleanup after external delegation failure failed');
-    }
-    throw error;
+    const reason = error instanceof ExternalDelegationBootstrapError
+      ? error.reason
+      : 'bootstrap_failed';
+    const message = error instanceof Error ? error.message : String(error);
+    externalDelegationState = { state: 'disabled', reason, message };
+    logger.warn(
+      { err: error, reason },
+      'external delegation Session bootstrap failed; disabling the edge and continuing server startup',
+    );
   }
 
   async function registerOpenApi(): Promise<void> {
@@ -592,11 +598,14 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     broadcaster,
     transcriptService,
     dangerousBypassAuth: opts.disableAuth === true,
+    externalDelegation: externalDelegationState,
     webTitle: opts.webTitle,
   });
 
   await registerApiV2Routes(app, core, {
-    externalDelegation,
+    externalDelegation: externalDelegation === undefined
+      ? undefined
+      : { ...externalDelegation, state: externalDelegationState },
   });
 
   const wssV1 = registerWsV1(core, {

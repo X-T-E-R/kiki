@@ -27,6 +27,24 @@ export const metaCapabilitiesSchema = z.object({
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;
 
+const externalDelegationDisabledReasonSchema = z.enum([
+  'session_index_unavailable',
+  'workspace_drift',
+  'bootstrap_failed',
+]);
+
+export const externalDelegationStateSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('active') }),
+  z.object({
+    state: z.literal('disabled'),
+    reason: externalDelegationDisabledReasonSchema,
+    message: z.string().min(1).optional(),
+  }),
+  z.object({ state: z.literal('not_configured') }),
+]);
+
+export type ExternalDelegationState = z.infer<typeof externalDelegationStateSchema>;
+
 export const metaResponseSchema = z.object({
   server_version: z.string().min(1),
   capabilities: metaCapabilitiesSchema,
@@ -40,6 +58,7 @@ export const metaResponseSchema = z.object({
    * credential. Defaults to false on hardened boots.
    */
   dangerous_bypass_auth: z.boolean(),
+  external_delegation: externalDelegationStateSchema.optional(),
   /**
    * Backend engine generation serving this API. `'v2'` is the DI × Scope
    * engine (`@moonshot-ai/kap-server` / `agent-core-v2`); older servers omit
