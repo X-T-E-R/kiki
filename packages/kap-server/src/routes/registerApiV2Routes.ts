@@ -61,10 +61,12 @@ export async function registerApiV2Routes(
               if (seat !== undefined) return seat;
               if (
                 externalDelegation === undefined ||
-                sessionId !== externalDelegation.sessionId ||
                 !tokenMatches(presentedToken, externalDelegation.token)
               ) {
                 return undefined;
+              }
+              if (sessionId !== externalDelegation.sessionId) {
+                return { error: 'session_not_admitted' };
               }
               return {
                 principalId: externalDelegation.principalId,

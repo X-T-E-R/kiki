@@ -54,12 +54,16 @@ interface StaticExternalDelegationRouteConfig {
   readonly state: ExternalDelegationState;
 }
 
+export type ExternalDelegationAuthorityResolution =
+  | { readonly principalId: string; readonly sessionId: string }
+  | { readonly error: 'session_not_admitted' };
+
 export interface ExternalDelegationAuthoritySource {
   readonly state: ExternalDelegationState;
   resolve(
     sessionId: string,
     presentedToken: string,
-  ): Promise<{ readonly principalId: string; readonly sessionId: string } | undefined>;
+  ): Promise<ExternalDelegationAuthorityResolution | undefined>;
 }
 
 type ExternalDelegationRouteConfig =
@@ -267,11 +271,31 @@ function command<T extends z.ZodTypeAny>(
       }
       const presentedToken = singleHeader(req.headers['x-kiki-delegation-token']);
       if (presentedToken !== undefined) req.headers['x-kiki-delegation-token'] = '[redacted]';
-      const resolvedAuthority = presentedToken === undefined
-        ? undefined
-        : await resolveAuthority(authorityConfig, session_id, presentedToken);
+      let resolvedAuthority: ExternalDelegationAuthorityResolution | undefined;
+      if ('resolve' in authorityConfig) {
+        resolvedAuthority = presentedToken === undefined
+          ? undefined
+          : await authorityConfig.resolve(session_id, presentedToken);
+      } else {
+        if (!dedicatedTokenMatches(presentedToken, authorityConfig.token)) {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'External delegation authority is not admitted.', req.id));
+          return;
+        }
+        if (session_id !== authorityConfig.sessionId) {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'External delegation Session is not admitted.', req.id));
+          return;
+        }
+        resolvedAuthority = {
+          principalId: authorityConfig.principalId,
+          sessionId: authorityConfig.sessionId,
+        };
+      }
       if (resolvedAuthority === undefined) {
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'External delegation authority is not admitted.', req.id));
+        return;
+      }
+      if ('error' in resolvedAuthority) {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'External delegation Session is not admitted.', req.id));
         return;
       }
       const session = await resolveSession(core, session_id);
@@ -322,18 +346,6 @@ function sha256(value: string): string {
 
 function singleHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
-}
-
-async function resolveAuthority(
-  config: ExternalDelegationRouteConfig,
-  sessionId: string,
-  presentedToken: string,
-): Promise<{ readonly principalId: string; readonly sessionId: string } | undefined> {
-  if ('resolve' in config) return config.resolve(sessionId, presentedToken);
-  if (sessionId !== config.sessionId || !dedicatedTokenMatches(presentedToken, config.token)) {
-    return undefined;
-  }
-  return { principalId: config.principalId, sessionId: config.sessionId };
 }
 
 function dedicatedTokenMatches(candidate: string | undefined, expected: string): boolean {
