@@ -1,5 +1,6 @@
 import type { Message } from '#/kosong/contract/message';
 import type { ProfileModelContext } from '#/agent/profile/profile';
+import { DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE } from '#/agent/loop/configSection';
 import type { CompactionSource } from './types';
 import { estimateTokensForMessage } from '#/kosong/contract/tokens';
 
@@ -44,23 +45,34 @@ export class RuntimeCompactionStrategy implements CompactionStrategy {
   ) { }
 
   shouldCompact(usedSize: number): boolean {
-    return this.delegate().shouldCompact(usedSize);
+    const model = this.context();
+    return usedSize >= this.automaticThreshold(model, this.config(model).triggerRatio);
   }
 
   shouldBlock(usedSize: number): boolean {
-    return this.delegate().shouldBlock(usedSize);
+    const model = this.context();
+    return usedSize >= this.automaticThreshold(model, this.config(model).blockRatio);
   }
 
   computeCompactCount(messages: readonly Message[], source: CompactionSource): number {
-    return this.windowDelegate().computeCompactCount(messages, source);
+    const model = this.context();
+    const maxSize =
+      source === 'auto' ? this.compactionWindowSize(model) : this.modelWindowSize(model);
+    return this.windowDelegate(maxSize).computeCompactCount(messages, source);
   }
 
   reduceCompactOnOverflow(messages: readonly Message[]): number {
-    return this.windowDelegate().reduceCompactOnOverflow(messages);
+    const model = this.context();
+    return this.windowDelegate(this.modelWindowSize(model)).reduceCompactOnOverflow(messages);
   }
 
   get checkAfterStep(): boolean {
-    return this.config().triggerRatio !== this.config().blockRatio;
+    const model = this.context();
+    const config = this.config(model);
+    return (
+      this.automaticThreshold(model, config.triggerRatio) !==
+      this.automaticThreshold(model, config.blockRatio)
+    );
   }
 
   get maxCompactionPerTurn(): number {
@@ -71,30 +83,47 @@ export class RuntimeCompactionStrategy implements CompactionStrategy {
     return DEFAULT_COMPACTION_CONFIG.maxOverflowCompactionAttempts;
   }
 
-  private delegate(): DefaultCompactionStrategy {
-    const model = this.context();
+  private windowDelegate(maxSize: number): DefaultCompactionStrategy {
     return new DefaultCompactionStrategy(
-      () => model.modelCapabilities.max_input_tokens ?? model.modelCapabilities.max_context_tokens,
-      this.config(model),
-      this.estimateMessage,
-    );
-  }
-
-  private windowDelegate(): DefaultCompactionStrategy {
-    return new DefaultCompactionStrategy(
-      () => this.context().modelCapabilities.max_input_tokens ?? this.context().modelCapabilities.max_context_tokens,
+      () => maxSize,
       DEFAULT_COMPACTION_CONFIG,
       this.estimateMessage,
     );
   }
 
-  private config(model: ProfileModelContext = this.context()): CompactionConfig {
+  private modelWindowSize(model: ProfileModelContext): number {
+    return model.modelCapabilities.max_input_tokens ?? model.modelCapabilities.max_context_tokens;
+  }
+
+  private compactionWindowSize(model: ProfileModelContext): number {
+    const maxSize = this.modelWindowSize(model);
+    const softContextSize =
+      model.compactionSoftContextSize ?? DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE;
+    return softContextSize > 0 ? Math.min(maxSize, softContextSize) : maxSize;
+  }
+
+  private automaticThreshold(model: ProfileModelContext, ratio: number): number {
+    const maxSize = this.modelWindowSize(model);
+    if (maxSize <= 0) return Infinity;
+    let threshold = maxSize * ratio;
+    const reservedSize = model.reservedContextSize ?? DEFAULT_COMPACTION_CONFIG.reservedContextSize;
+    if (reservedSize > 0 && reservedSize < maxSize) {
+      threshold = Math.min(threshold, maxSize - reservedSize);
+    }
+    const softContextSize =
+      model.compactionSoftContextSize ?? DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE;
+    if (softContextSize > 0) {
+      threshold = Math.min(threshold, softContextSize);
+    }
+    return threshold;
+  }
+
+  private config(model: ProfileModelContext): CompactionConfig {
     const triggerRatio = model.compactionTriggerRatio ?? DEFAULT_COMPACTION_CONFIG.triggerRatio;
-    const blockRatio = Math.max(triggerRatio, DEFAULT_COMPACTION_CONFIG.blockRatio);
     return {
       ...DEFAULT_COMPACTION_CONFIG,
       triggerRatio,
-      blockRatio,
+      blockRatio: Math.max(triggerRatio, DEFAULT_COMPACTION_CONFIG.blockRatio),
       reservedContextSize:
         model.reservedContextSize ?? DEFAULT_COMPACTION_CONFIG.reservedContextSize,
     };

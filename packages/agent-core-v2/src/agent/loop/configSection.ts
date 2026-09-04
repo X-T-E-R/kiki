@@ -8,8 +8,11 @@ export const LOOP_CONTROL_SECTION = 'loopControl';
 
 export const LOOP_MAX_STEPS_PER_TURN_ENV = 'KIMI_LOOP_MAX_STEPS_PER_TURN';
 export const LOOP_MAX_ATTEMPTS_PER_STEP_ENV = 'KIMI_LOOP_MAX_ATTEMPTS_PER_STEP';
+export const LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV =
+  'KIMI_LOOP_COMPACTION_SOFT_CONTEXT_SIZE';
 /** Deprecated former name of {@link LOOP_MAX_ATTEMPTS_PER_STEP_ENV}. */
 export const LOOP_MAX_RETRIES_PER_STEP_ENV = 'KIMI_LOOP_MAX_RETRIES_PER_STEP';
+export const DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE = 256_000;
 
 export const LoopControlSchema = z.object({
   maxStepsPerTurn: z.number().int().min(0).optional(),
@@ -17,6 +20,7 @@ export const LoopControlSchema = z.object({
   maxRalphIterations: z.number().int().min(-1).optional(),
   reservedContextSize: z.number().int().min(0).optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.99).optional(),
+  compactionSoftContextSize: z.number().int().min(0).optional(),
 });
 
 export type LoopControl = z.infer<typeof LoopControlSchema>;
@@ -35,6 +39,10 @@ export const loopControlEnvBindings: EnvBindings<LoopControl> = envBindings(Loop
     deprecatedEnv: LOOP_MAX_RETRIES_PER_STEP_ENV,
     parse: parseNonNegativeInt,
   },
+  compactionSoftContextSize: {
+    env: LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV,
+    parse: parseNonNegativeInt,
+  },
 });
 
 export const stripLoopControlEnv = stripEnvBoundFields(loopControlEnvBindings);
@@ -45,6 +53,7 @@ export const loopControlToToml = (value: unknown, rawSnake: unknown): unknown =>
 };
 
 registerConfigSection(LOOP_CONTROL_SECTION, LoopControlSchema, {
+  defaultValue: { compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE },
   toToml: loopControlToToml,
   env: loopControlEnvBindings,
   stripEnv: stripLoopControlEnv,

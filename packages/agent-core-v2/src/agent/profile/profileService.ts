@@ -1184,6 +1184,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       thinkingLevel: this.resolveThinkingState(model).effective,
       reservedContextSize: loopControl?.reservedContextSize,
       compactionTriggerRatio: loopControl?.compactionTriggerRatio,
+      compactionSoftContextSize: loopControl?.compactionSoftContextSize,
     };
   }
 

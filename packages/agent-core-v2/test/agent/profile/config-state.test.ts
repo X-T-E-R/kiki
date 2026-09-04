@@ -88,6 +88,38 @@ describe('ConfigState model capabilities', () => {
     });
   });
 
+  it('resolves explicit loop compaction controls into the model context', () => {
+    kimiConfig = {
+      providers: {
+        kimi: {
+          type: 'kimi',
+          apiKey: 'test-key',
+          baseUrl: 'https://api.example.test/v1',
+        },
+      },
+      models: {
+        'kimi-code/kimi-for-coding': {
+          provider: 'kimi',
+          model: 'kimi-for-coding',
+          maxContextSize: 700_000,
+        },
+      },
+      loopControl: {
+        reservedContextSize: 40_000,
+        compactionTriggerRatio: 0.75,
+        compactionSoftContextSize: 512_000,
+      },
+    };
+
+    profile.update({ modelAlias: 'kimi-code/kimi-for-coding' });
+
+    expect(profile.resolveModelContext()).toMatchObject({
+      reservedContextSize: 40_000,
+      compactionTriggerRatio: 0.75,
+      compactionSoftContextSize: 512_000,
+    });
+  });
+
   it('republishes the model status slice on demand', () => {
     kimiConfig = {
       providers: {

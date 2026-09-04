@@ -61,6 +61,7 @@ max_retries_per_step = 3
 max_ralph_iterations = 0
 reserved_context_size = 50000
 compaction_trigger_ratio = 0.85
+compaction_soft_context_size = 256000
 
 [background]
 max_running_tasks = 4
@@ -216,6 +217,7 @@ search_lane = "exa.search"
       maxRalphIterations: 0,
       reservedContextSize: 50000,
       compactionTriggerRatio: 0.85,
+      compactionSoftContextSize: 256000,
     });
     expect(config.background).toEqual({
       maxRunningTasks: 4,
@@ -247,6 +249,7 @@ search_lane = "exa.search"
       loopControl: {
         ...config.loopControl,
         maxStepsPerTurn: 42,
+        compactionSoftContextSize: 512_000,
       },
     });
 
@@ -256,13 +259,17 @@ search_lane = "exa.search"
     expect(text).toContain('extra_skill_dirs = [ "~/team-skills", ".agents/team-skills" ]');
     expect(text).not.toContain('default_yolo');
     expect(text).toContain('max_steps_per_turn = 42');
+    expect(text).toContain('compaction_soft_context_size = 512000');
     expect(text).toContain('display_name = "Kimi for Coding"');
     expect(text).toContain('GOOGLE_CLOUD_PROJECT = "project-1"');
     expect(text).toContain('claim_stale_after_ms = 15000');
     expect(text).toContain('theme = "dark"');
 
     const reloaded = readConfigFile(configPath);
-    expect(reloaded.loopControl?.maxStepsPerTurn).toBe(42);
+    expect(reloaded.loopControl).toMatchObject({
+      maxStepsPerTurn: 42,
+      compactionSoftContextSize: 512_000,
+    });
     expect(reloaded.raw?.['theme']).toBe('dark');
   });
 
@@ -444,7 +451,7 @@ describe('KimiHarness config API', () => {
       defaultPlanMode: false,
       mergeAllAvailableSkills: true,
       extraSkillDirs: [],
-      loopControl: {},
+      loopControl: { compactionSoftContextSize: 256_000 },
       background: {},
       subagent: { timeoutMs: 7_200_000 },
       mcp: {},

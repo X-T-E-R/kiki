@@ -657,7 +657,7 @@ describe('FullCompaction', () => {
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'manual',
-        tokens_before: 17_576,
+        tokens_before: 17_776,
         retry_count: 1,
         trace_id: 'trace-compact-1',
       }),
@@ -1124,7 +1124,7 @@ describe('FullCompaction', () => {
       properties: expect.objectContaining({
         agent_id: 'main',
         source: 'manual',
-        tokens_before: 17_576,
+        tokens_before: 17_776,
         duration_ms: expect.any(Number),
         round: 1,
         retry_count: 0,
@@ -1349,7 +1349,7 @@ describe('FullCompaction', () => {
       event: 'compaction_failed',
       properties: expect.objectContaining({
         source: 'manual',
-        tokens_before: 17_576,
+        tokens_before: 17_776,
         duration_ms: expect.any(Number),
         retry_count: 4,
         error_type: 'APIConnectionError',
@@ -2079,6 +2079,36 @@ describe('FullCompaction', () => {
     } finally {
       registration.dispose();
     }
+  });
+
+  it('triggers auto compaction when pending tokens cross the default soft context cap', async () => {
+    const ctx = testAgent({
+      initialConfig: {
+        providers: {},
+        loopControl: { reservedContextSize: 0 },
+      },
+    });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: {
+        ...CATALOGUED_MODEL_CAPABILITIES,
+        max_context_tokens: 700_000,
+      },
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 255_000);
+
+    ctx.mockNextResponse({ type: 'text', text: 'Soft-cap compacted summary.' });
+    ctx.mockNextResponse({ type: 'text', text: 'I can answer after soft-cap compaction.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'x'.repeat(8_000) }] });
+    await ctx.untilTurnEnd();
+
+    expect(ctx.llmCalls).toHaveLength(2);
+    const [compactionCall, answerCall] = ctx.llmCalls;
+    expect(messageText(compactionCall?.history.at(-1))).toContain('first-person handoff note');
+    expect(
+      answerCall?.history.map(messageText).some((text) => text.includes('Soft-cap compacted summary.')),
+    ).toBe(true);
+    await ctx.expectResumeMatches();
   });
 
   it('triggers auto compaction when pending tokens cross the reserved threshold', async () => {

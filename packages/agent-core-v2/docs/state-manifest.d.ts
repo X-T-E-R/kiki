@@ -1376,6 +1376,7 @@ export interface AgentStateSnapshot {
       readonly thinkingLevel: /* ThinkingEffort — packages/agent-core-v2/src/kosong/contract/provider.ts */ 'off' | 'on' | (string & {});
       readonly reservedContextSize: number | undefined;
       readonly compactionTriggerRatio: number | undefined;
+      readonly compactionSoftContextSize: number | undefined;
     };
     readonly params: /* ModelRequestParams — packages/agent-core-v2/src/kosong/model/modelRequester.ts */ {
       readonly cacheKey?: string;

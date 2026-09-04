@@ -58,6 +58,8 @@ import {
 } from '#/agent/tokenCounting/configSection';
 import '#/agent/loop/configSection';
 import {
+  DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
+  LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV,
   LOOP_CONTROL_SECTION,
   LOOP_MAX_ATTEMPTS_PER_STEP_ENV,
   LOOP_MAX_RETRIES_PER_STEP_ENV,
@@ -889,18 +891,32 @@ describe('tokenCounting config section', () => {
 });
 
 describe('loopControl config section', () => {
-  it('registers the loopControl section with a non-negative-int schema', () => {
+  it('registers the loopControl section with a non-negative-int schema and soft-cap default', () => {
     const registry = new ConfigRegistry();
 
     const section = registry.getSection(LOOP_CONTROL_SECTION);
     expect(section).toBeDefined();
+    expect(registry.defaultValue(LOOP_CONTROL_SECTION)).toEqual({
+      compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
+    });
 
     expect(registry.validate(LOOP_CONTROL_SECTION, {})).toEqual({});
     expect(
-      registry.validate(LOOP_CONTROL_SECTION, { maxStepsPerTurn: 100, maxAttemptsPerStep: 3 }),
-    ).toEqual({ maxStepsPerTurn: 100, maxAttemptsPerStep: 3 });
+      registry.validate(LOOP_CONTROL_SECTION, {
+        maxStepsPerTurn: 100,
+        maxAttemptsPerStep: 3,
+        compactionSoftContextSize: 512_000,
+      }),
+    ).toEqual({
+      maxStepsPerTurn: 100,
+      maxAttemptsPerStep: 3,
+      compactionSoftContextSize: 512_000,
+    });
     expect(() => registry.validate(LOOP_CONTROL_SECTION, { maxStepsPerTurn: -1 })).toThrow();
     expect(() => registry.validate(LOOP_CONTROL_SECTION, { maxAttemptsPerStep: 1.5 })).toThrow();
+    expect(() =>
+      registry.validate(LOOP_CONTROL_SECTION, { compactionSoftContextSize: -1 }),
+    ).toThrow();
   });
 
   it('re-applies loopControl env bindings on every get() and ignores invalid env', async () => {
@@ -916,21 +932,32 @@ describe('loopControl config section', () => {
     const config = ix.get(IConfigService);
     await config.ready;
 
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({});
+    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({
+      compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
+    });
 
     env[LOOP_MAX_STEPS_PER_TURN_ENV] = 'abc';
     env[LOOP_MAX_ATTEMPTS_PER_STEP_ENV] = '-1';
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({});
+    env[LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV] = '-1';
+    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({
+      compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
+    });
 
     env[LOOP_MAX_STEPS_PER_TURN_ENV] = '100';
     env[LOOP_MAX_ATTEMPTS_PER_STEP_ENV] = '3';
+    env[LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV] = '512000';
     expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({
       maxStepsPerTurn: 100,
       maxAttemptsPerStep: 3,
+      compactionSoftContextSize: 512_000,
     });
 
     env[LOOP_MAX_STEPS_PER_TURN_ENV] = '50';
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION).maxStepsPerTurn).toBe(50);
+    env[LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV] = '0';
+    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({
+      maxStepsPerTurn: 50,
+      compactionSoftContextSize: 0,
+    });
 
     disposables.dispose();
   });
@@ -939,6 +966,7 @@ describe('loopControl config section', () => {
     const env: Record<string, string> = {
       [LOOP_MAX_STEPS_PER_TURN_ENV]: '7',
       [LOOP_MAX_ATTEMPTS_PER_STEP_ENV]: '2',
+      [LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV]: '512000',
     };
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
@@ -961,12 +989,14 @@ describe('loopControl config section', () => {
       maxStepsPerTurn: 7,
       maxAttemptsPerStep: 2,
       reservedContextSize: 5000,
+      compactionSoftContextSize: 512_000,
     });
 
     expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({
       maxStepsPerTurn: 7,
       maxAttemptsPerStep: 2,
       reservedContextSize: 5000,
+      compactionSoftContextSize: 512_000,
     });
     expect(config.inspect<LoopControl>(LOOP_CONTROL_SECTION).userValue).toEqual({
       maxStepsPerTurn: 100,
@@ -976,6 +1006,7 @@ describe('loopControl config section', () => {
     expect(onDisk).toContain('max_steps_per_turn = 100');
     expect(onDisk).toContain('reserved_context_size = 5000');
     expect(onDisk).not.toContain('max_attempts_per_step');
+    expect(onDisk).not.toContain('compaction_soft_context_size');
 
     disposables.dispose();
   });
@@ -1221,14 +1252,14 @@ describe('config deprecations', () => {
     const env: Record<string, string> = { [LOOP_MAX_RETRIES_PER_STEP_ENV]: '4' };
     const { config, disposables } = await createConfig(env);
 
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({ maxAttemptsPerStep: 4 });
+    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({ maxAttemptsPerStep: 4 });
     expect(config.diagnostics()).toContainEqual({
       domain: LOOP_CONTROL_SECTION,
       severity: 'warning',
       message: `Environment variable ${LOOP_MAX_RETRIES_PER_STEP_ENV} is deprecated; use ${LOOP_MAX_ATTEMPTS_PER_STEP_ENV} instead.`,
     });
     env[LOOP_MAX_ATTEMPTS_PER_STEP_ENV] = '2';
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({ maxAttemptsPerStep: 2 });
+    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({ maxAttemptsPerStep: 2 });
 
     disposables.dispose();
   });
@@ -1237,7 +1268,7 @@ describe('config deprecations', () => {
     const env: Record<string, string> = { [LOOP_MAX_ATTEMPTS_PER_STEP_ENV]: '4' };
     const { config, disposables } = await createConfig(env);
 
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({ maxAttemptsPerStep: 4 });
+    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({ maxAttemptsPerStep: 4 });
     expect(config.diagnostics()).toEqual([]);
 
     disposables.dispose();
@@ -1257,7 +1288,7 @@ describe('config deprecations', () => {
     await config.reload();
 
     expect(config.diagnostics()).toContainEqual(warning);
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({ maxAttemptsPerStep: 4 });
+    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({ maxAttemptsPerStep: 4 });
 
     disposables.dispose();
   });
