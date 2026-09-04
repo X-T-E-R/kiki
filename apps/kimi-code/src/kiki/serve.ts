@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { open, mkdir, readFile, realpath, stat, unlink } from 'node:fs/promises';
+import { open, mkdir, realpath, stat, unlink } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -8,11 +8,13 @@ import {
   listLiveServerInstances,
   readServerToken,
   startServer,
+  type RunningServer,
   type ServerInstanceInfo,
 } from '@moonshot-ai/kap-server';
 import type { Command } from 'commander';
 
 import { createKimiCodeHostIdentity, getVersion } from '../cli/version';
+import { requireServerWebAssetsDir } from '../native/web-assets';
 import { resolveKikiHome } from './home';
 
 export interface ServerConnection {
@@ -143,21 +145,33 @@ async function probeInstance(
   }
 }
 
-async function runServeForeground(options: {
+interface ServeStartOptions {
   readonly homeDir: string;
   readonly port?: number;
   readonly idleExitMs: number;
-  readonly json?: boolean;
-}): Promise<void> {
+}
+
+export function startServeServer(
+  options: ServeStartOptions,
+  webAssetsDir = requireServerWebAssetsDir(),
+  startServerImpl: typeof startServer = startServer,
+): Promise<RunningServer> {
   const version = getVersion();
-  const running = await startServer({
+  return startServerImpl({
     host: '127.0.0.1',
     port: options.port,
     homeDir: options.homeDir,
     idleExitMs: options.idleExitMs,
     serverVersion: version,
     hostIdentity: createKimiCodeHostIdentity(version),
+    webAssetsDir,
   });
+}
+
+async function runServeForeground(
+  options: ServeStartOptions & { readonly json?: boolean },
+): Promise<void> {
+  const running = await startServeServer(options);
   const token = await readServerToken(options.homeDir);
   const connection = {
     url: `http://127.0.0.1:${running.port}`,

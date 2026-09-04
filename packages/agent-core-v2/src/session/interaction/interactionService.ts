@@ -11,6 +11,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import {
   type Interaction,
+  type InteractionCancellation,
   type InteractionConsumerCoverage,
   type InteractionKind,
   type InteractionOrigin,
@@ -86,7 +87,7 @@ export class SessionInteractionService extends Service implements ISessionIntera
       if (entry.interaction.origin?.turnId !== turnId) continue;
       this.pending.delete(id);
       this.rememberResolved(id);
-      const response = { cancelled: true, reason: 'turn_ended' };
+      const response: InteractionCancellation = { cancelled: true, reason: 'turn_ended' };
       entry.resolve(response);
       this.recordResolved(id, response, entry.interaction.origin);
       this._onDidResolve.fire({ id, response });

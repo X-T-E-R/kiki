@@ -29,11 +29,32 @@ describe('web asset cache policy', () => {
     await rm(assetsDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it.each(['/', '/sessions/active'])('serves the GUI index for %s', async (url) => {
+    const response = await app.inject({ method: 'GET', url });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/html');
+    expect(response.body).toBe('<main>Kimi</main>');
+  });
+
   it('caches content-hashed assets as immutable', async () => {
     const response = await app.inject({ method: 'GET', url: '/assets/index-Dy7xs5tu.js' });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+  });
+
+  it('rejects a missing GUI build with the asset path in the diagnostic', async () => {
+    const missingDir = await mkdtemp(join(tmpdir(), 'kimi-web-assets-missing-'));
+    const missingApp = Fastify();
+    try {
+      await expect(registerWebAssetRoutes(missingApp, missingDir)).rejects.toThrow(
+        `Kimi web assets were not found at ${missingDir}`,
+      );
+    } finally {
+      await missingApp.close();
+      await rm(missingDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 
   it.each([

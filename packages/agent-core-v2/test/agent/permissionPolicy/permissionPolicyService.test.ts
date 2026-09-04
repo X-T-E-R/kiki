@@ -342,6 +342,22 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
+  it('approves a safe substitution heredoc when dangerous_bash is on in yolo', async () => {
+    mode = 'yolo';
+    dangerousBash = 'on';
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: {
+        command: 'gh --body "$(cat <<\'EOF\'\nit\'s $(broken ` text\nEOF\n)"',
+        timeout: 60,
+      },
+    })).resolves.toMatchObject({
+      policyName: 'yolo-mode-approve',
+      result: { kind: 'approve' },
+    });
+  });
+
   it('keeps deny rules above dangerous bash ask', async () => {
     mode = 'auto';
     rules.push({

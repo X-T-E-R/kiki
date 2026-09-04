@@ -266,6 +266,7 @@ export function scanBalancedStatements(
   let nesting = 0;
   /** Paren depths at which each open case_statement started. */
   const caseDepths: number[] = [];
+  const pendingHeredocs: Array<{ delimiter: string; stripTabs: boolean }> = [];
   let j = i;
   /** What preceded the current position: 'start' | 'sep' | 'keyword' | 'word'. */
   let previous: 'start' | 'sep' | 'keyword' | 'word' = 'start';
@@ -299,7 +300,16 @@ export function scanBalancedStatements(
       j++;
       continue;
     }
-    if (ch === '\n' || ch === ';' || ch === '&' || ch === '|') {
+    if (ch === '\n') {
+      j++;
+      if (pendingHeredocs.length > 0) {
+        j = skipHeredocBodies(source, budget, j, end, pendingHeredocs);
+        pendingHeredocs.length = 0;
+      }
+      previous = 'sep';
+      continue;
+    }
+    if (ch === ';' || ch === '&' || ch === '|') {
       previous = 'sep';
       j++;
       continue;
@@ -309,7 +319,58 @@ export function scanBalancedStatements(
       j++;
       continue;
     }
+    if (ch === '#') {
+      let p = j - 1;
+      while (p - 1 >= i && source[p] === '\n' && source[p - 1] === '\\') p -= 2;
+      const prev = p >= i ? source[p] : undefined;
+      if (
+        prev === undefined ||
+        isBlank(prev) ||
+        prev === '\n' ||
+        prev === ';' ||
+        prev === '&' ||
+        prev === '|' ||
+        prev === '('
+      ) {
+        while (j < end && source[j] !== '\n') j++;
+        continue;
+      }
+    }
+    if (ch === '$' && (source[j + 1] === '{' || source[j + 1] === '[')) {
+      const open = source[j + 1]!;
+      j = scanBalanced(source, budget, j + 1, end, open, open === '{' ? '}' : ']', depth + 1).end;
+      previous = 'word';
+      continue;
+    }
+    if (ch === '[' && source[j + 1] === '[' && previous !== 'word') {
+      j = scanBalanced(source, budget, j, end, '[', ']', depth + 1).end;
+      previous = 'word';
+      continue;
+    }
+    if (ch === '[' && j > i && isWordChar(source[j - 1])) {
+      j = scanBalanced(source, budget, j, end, '[', ']', depth + 1).end;
+      previous = 'word';
+      continue;
+    }
+    if (ch === '<') {
+      const heredoc = scanHeredocDelimiter(source, budget, j, end, depth);
+      if (heredoc === null) {
+        j++;
+      } else {
+        pendingHeredocs.push(heredoc);
+        j = heredoc.end;
+      }
+      previous = 'word';
+      continue;
+    }
     if (ch === '(') {
+      if (source[j + 1] === '(') {
+        const arithmetic = scanBalanced(source, budget, j, end, '(', ')', depth + 1);
+        if (j === i) return arithmetic;
+        j = arithmetic.end;
+        previous = 'word';
+        continue;
+      }
       nesting++;
       previous = 'sep';
       j++;
@@ -349,6 +410,131 @@ export function scanBalancedStatements(
     j++;
   }
   return { end, balanced: false };
+}
+
+function scanHeredocDelimiter(
+  source: string,
+  budget: ParseBudget,
+  i: number,
+  end: number,
+  depth: number,
+): { delimiter: string; stripTabs: boolean; end: number } | null {
+  if (source[i + 1] !== '<') return null;
+  let j = i + 2;
+  if (source[j] === '<') return null;
+  let stripTabs = false;
+  if (source[j] === '-') {
+    stripTabs = true;
+    j++;
+  }
+  while (j < end && isBlank(source[j])) j++;
+  let raw = '';
+  let sinceTick = 0;
+  while (j < end) {
+    if (++sinceTick >= SCAN_TICK_INTERVAL) {
+      budget.progress();
+      sinceTick = 0;
+    }
+    const ch = source[j]!;
+    if (isBlank(ch) || ch === '\n') break;
+    if (ch === '&' || ch === '|' || ch === ';' || ch === '(' || ch === ')' || ch === '<' || ch === '>') break;
+    if (ch === '$' && (source[j + 1] === '(' || source[j + 1] === '{' || source[j + 1] === '[')) {
+      const open = source[j + 1]!;
+      const region =
+        open === '('
+          ? scanBalancedStatements(source, budget, j + 1, end, depth + 1)
+          : scanBalanced(source, budget, j + 1, end, open, open === '{' ? '}' : ']', depth + 1);
+      if (!region.balanced) return null;
+      raw += source.slice(j, region.end);
+      j = region.end;
+      continue;
+    }
+    if (ch === '`') {
+      const regionEnd = skipBacktick(source, budget, j, end);
+      if (source[regionEnd - 1] !== '`') return null;
+      raw += source.slice(j, regionEnd);
+      j = regionEnd;
+      continue;
+    }
+    if (ch === '\\') {
+      if (j + 1 >= end || source[j + 1] === '\n') return null;
+      raw += ch + source[j + 1];
+      j += 2;
+      continue;
+    }
+    if (ch === "'") {
+      const regionEnd = skipSingleQuoted(source, budget, j, end);
+      if (source[regionEnd - 1] !== "'") return null;
+      raw += source.slice(j, regionEnd);
+      j = regionEnd;
+      continue;
+    }
+    if (ch === '"') {
+      const regionEnd = skipDoubleQuoted(source, budget, j, end, depth + 1);
+      if (source[regionEnd - 1] !== '"') return null;
+      raw += source.slice(j, regionEnd);
+      j = regionEnd;
+      continue;
+    }
+    raw += ch;
+    j++;
+  }
+  let delimiter = '';
+  for (let k = 0; k < raw.length; k++) {
+    const ch = raw[k]!;
+    if (ch === '\\' && k + 1 < raw.length) {
+      delimiter += raw[k + 1];
+      k++;
+    } else if (ch !== '"' && ch !== "'") {
+      delimiter += ch;
+    }
+  }
+  if (delimiter.length === 0) return null;
+  return { delimiter, stripTabs, end: j };
+}
+
+function skipHeredocBodies(
+  source: string,
+  budget: ParseBudget,
+  i: number,
+  end: number,
+  specs: readonly { delimiter: string; stripTabs: boolean }[],
+): number {
+  let j = i;
+  for (const spec of specs) {
+    let lineStart = j;
+    let closed = false;
+    while (lineStart < end) {
+      budget.progress();
+      let marker = lineStart;
+      if (spec.stripTabs) {
+        while (marker < end && source[marker] === '\t') marker++;
+      }
+      if (source.startsWith(spec.delimiter, marker)) {
+        const after = marker + spec.delimiter.length;
+        if (after >= end) {
+          j = end;
+          closed = true;
+          break;
+        }
+        if (source[after] === '\n') {
+          j = after + 1;
+          closed = true;
+          break;
+        }
+        if (source[after] === ')') {
+          j = after;
+          closed = true;
+          break;
+        }
+      }
+      const newline = source.indexOf('\n', lineStart);
+      if (newline === -1 || newline >= end) break;
+      lineStart = newline + 1;
+    }
+    if (!closed) return end;
+  }
+  return j;
 }
 
 /** Skip a $-construct starting at `i` (which points at the `$`). Handles

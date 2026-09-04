@@ -507,6 +507,20 @@ describe('agentsMdReminder Bash coverage', () => {
     expect(reminderText(h)).toContain(subAgentsMd);
   });
 
+  it('reminds after a substitution heredoc containing unbalanced body characters', async () => {
+    const h = createHarness();
+    const subAgentsMd = await writeAgentsMd(join(workDir, 'packages', 'kap-server'));
+
+    await fire(
+      h,
+      didCtx('Bash', {
+        command: 'echo "$(cat <<\'EOF\'\nit\'s $(broken ` text\nEOF\n)" && ls packages/kap-server',
+      }),
+    );
+
+    expect(reminderText(h)).toContain(subAgentsMd);
+  });
+
   it('retries short commands without a wall-clock limit after a parser timeout', async () => {
     const realParser = new BashParserService();
     const timeouts: (number | undefined)[] = [];
@@ -523,7 +537,7 @@ describe('agentsMdReminder Bash coverage', () => {
 
     await fire(h, didCtx('Bash', { command: 'cd packages && ls kap-server' }));
 
-    expect(timeouts).toEqual([20, Number.POSITIVE_INFINITY]);
+    expect(timeouts).toEqual([500, Number.POSITIVE_INFINITY]);
     expect(reminderText(h)).toContain(subAgentsMd);
   });
 

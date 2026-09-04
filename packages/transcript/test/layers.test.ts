@@ -1783,6 +1783,77 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('deduplicates an inline question answer from its task notification summary', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'Ask in the background.' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+      },
+      {
+        type: 'task.notified',
+        notificationType: 'task.completed',
+        title: 'Background question answered',
+        body: 'The user answered "Which database?".',
+        severity: 'info',
+        sourceKind: 'background_task',
+        sourceId: 'question-1',
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'notification-message',
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: [
+                '<notification id="task:question-1:completed" category="task" type="task.completed" source_kind="background_task" source_id="question-1">',
+                'Title: Background question answered',
+                'Severity: info',
+                'The user answered "Which database?".',
+                '<answer>',
+                '{"answers":{"Which database?":"Postgres"}}',
+                '</answer>',
+                '</notification>',
+              ].join('\n'),
+            },
+          ],
+          toolCalls: [],
+          origin: {
+            kind: 'task',
+            taskId: 'question-1',
+            status: 'completed',
+            notificationId: 'task:question-1:completed',
+          },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+      },
+    ]);
+
+    expect(transcript.getTurn('t1')).toBeUndefined();
+    expect(transcript.getTurn('t0')?.steps[1]?.frames).toEqual([
+      expect.objectContaining({
+        frameId: 'task-notified:question-1',
+        taskId: 'question-1',
+        text: 'Background question answered\nThe user answered "Which database?".',
+      }),
+    ]);
+  });
+
   it('projects forward-compatible task notifications and subagent lifecycle records', () => {
     const transcript = replay([
       {
