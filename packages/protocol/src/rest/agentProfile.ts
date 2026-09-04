@@ -95,6 +95,7 @@ const booleanQueryParam = z.preprocess(
 
 export const listNamedAgentProfilesQuerySchema = z.object({
   expand: booleanQueryParam,
+  workspace_id: z.string().min(1).optional(),
 });
 export type ListNamedAgentProfilesQuery = z.infer<
   typeof listNamedAgentProfilesQuerySchema

@@ -130,7 +130,7 @@ export function useNewSessionDraft({
   const [modelOverride, setModelOverride] = useState(() =>
     resolveSessionModelOverride(undefined),
   );
-  const [agentProfile, setAgentProfileState] = useState(initialProfile ?? DEFAULT_AGENT_PROFILE);
+  const [agentProfile, setAgentProfileState] = useState(DEFAULT_AGENT_PROFILE);
   // The selected effort is the wire value. When the model catalog supplies a
   // visible default, sending without touching the select still submits it.
   const [effortOverride, setEffortOverride] = useState<string | undefined>(undefined);
@@ -163,8 +163,9 @@ export function useNewSessionDraft({
     staleTime: 60_000,
   });
   const agentProfilesQuery = useQuery({
-    queryKey: ['agentProfiles'],
-    queryFn: () => client.listNamedAgentProfiles(),
+    queryKey: ['agentProfiles', effectiveWorkspace?.id ?? 'global'],
+    queryFn: () => client.listNamedAgentProfiles(effectiveWorkspace?.id),
+    enabled: workspacesQuery.data !== undefined,
     staleTime: 60_000,
     retry: false,
   });
@@ -207,7 +208,10 @@ export function useNewSessionDraft({
     const items = agentProfilesQuery.data?.items;
     if (items === undefined) return;
     appliedInitialProfileDefaults.current = true;
-    const defaults = composerDefaultsForProfile(items, initialProfile);
+    const profile = items.find((item) => item.name === initialProfile && item.main);
+    if (profile === undefined) return;
+    const defaults = composerDefaultsForProfile(items, profile.name);
+    setAgentProfileState(profile.name);
     setModelOverride(defaults.model);
     setEffortOverride(defaults.thinking);
   }, [agentProfilesQuery.data, initialProfile]);

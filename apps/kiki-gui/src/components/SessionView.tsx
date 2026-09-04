@@ -763,6 +763,10 @@ export function sessionHasStartedConversation(blocks: readonly Block[]): boolean
   return blocks.some((block) => block.kind === 'user');
 }
 
+export function sessionAgentProfileWorkspaceId(session: Session | undefined): string | undefined {
+  return session?.workspace_id;
+}
+
 export function resolveProfileSwitchSubmission(input: {
   pendingProfile: string | undefined;
   boundProfile: string;
@@ -1463,9 +1467,11 @@ export function SessionView({
     queryFn: () => client.listModels(),
     staleTime: 60_000,
   });
+  const profileWorkspaceId = sessionAgentProfileWorkspaceId(state.session);
   const agentProfilesQuery = useQuery({
-    queryKey: ['agentProfiles'],
-    queryFn: () => client.listNamedAgentProfiles(),
+    queryKey: ['agentProfiles', profileWorkspaceId ?? 'global'],
+    queryFn: () => client.listNamedAgentProfiles(profileWorkspaceId),
+    enabled: profileWorkspaceId !== undefined,
     staleTime: 60_000,
     retry: false,
   });
@@ -2249,6 +2255,7 @@ export function SessionView({
             }
             sessionUsage={usage}
             sessionId={sessionId}
+            workspaceId={profileWorkspaceId}
             fsSearch={handleFsSearch}
             attachments={attachments}
             onChangeAttachments={updateAttachments}
@@ -2302,6 +2309,7 @@ export function SessionView({
     contextUsed,
     contextLimit,
     sessionId,
+    profileWorkspaceId,
     handleFsSearch,
     attachments,
     updateAttachments,

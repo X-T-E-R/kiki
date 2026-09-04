@@ -239,8 +239,8 @@ export function Composer({
   /** Session scope for the skills catalog + session-scoped shortcuts. */
   sessionId?: string;
   /**
-   * Registered workspace id for the /new draft's skill catalog
-   * (`GET /workspaces/{id}/skills`). Ignored when `sessionId` is set.
+   * Registered workspace id for the scoped agent-profile catalog and the /new
+   * draft's skill catalog. Session skills still use `sessionId` when present.
    */
   workspaceId?: string;
   /**
@@ -427,8 +427,9 @@ export function Composer({
   // A server that predates the /agents route errors the query and the control
   // simply never renders — session creation/rebind then leave profile unset.
   const agentProfilesQuery = useQuery({
-    queryKey: ['agentProfiles'],
-    queryFn: () => client.listNamedAgentProfiles(),
+    queryKey: ['agentProfiles', workspaceId ?? 'global'],
+    queryFn: () => client.listNamedAgentProfiles(workspaceId),
+    enabled: sessionId === undefined || workspaceId !== undefined,
     staleTime: 60_000,
     retry: false,
   });
