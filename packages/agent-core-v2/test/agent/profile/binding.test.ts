@@ -13,6 +13,7 @@ import { TOOLS_SECTION } from '#/agent/toolPolicy/configSection';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   normalizeAgentProfile,
+  type AgentProfile,
   type ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { BuiltinAgentProfileLoaderService } from '#/app/agentProfileCatalog/builtinAgentProfileLoaderService';
@@ -20,6 +21,7 @@ import { registerAgentProfile } from '#/app/agentProfileCatalog/contribution';
 import {
   IAgentExecutorRegistry,
   type AgentExecutorDescriptor,
+  type AgentExecutorProvider,
 } from '#/app/agentExecutor/agentExecutor';
 import { descriptorRevisionFromConfig } from '#/app/agentExecutor/agentExecutorRegistryService';
 import type { ToolCall } from '#/kosong/contract/message';
@@ -184,15 +186,29 @@ function routedCatalog(
   };
 }
 
+const DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR: AgentExecutorDescriptor = {
+  id: 'grok-acp',
+  protocol: 'acp-v1',
+  command: 'grok',
+  args: ['agent', 'stdio'],
+  revision: 'test-revision',
+};
+
 function externalExecutorRegistry(
-  descriptor: AgentExecutorDescriptor = {
-    id: 'grok-acp',
-    protocol: 'acp-v1',
-    command: 'grok',
-    args: ['agent', 'stdio'],
-    revision: 'test-revision',
-  },
+  descriptor: AgentExecutorDescriptor = DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR,
+  validateBinding?: NonNullable<AgentExecutorProvider['validateBinding']>,
 ): IAgentExecutorRegistry {
+  const provider: AgentExecutorProvider | undefined = validateBinding === undefined
+    ? undefined
+    : {
+        id: 'test-provider',
+        protocol: descriptor.protocol,
+        validateOptions: (value) => value as Readonly<Record<string, string | number | boolean>>,
+        validateBinding,
+        create: () => {
+          throw new Error('not used');
+        },
+      };
   return {
     _serviceBrand: undefined,
     get: (id) => id === 'native'
@@ -211,11 +227,30 @@ function externalExecutorRegistry(
       return {
         descriptor,
         options: options as Readonly<Record<string, string | number | boolean>>,
+        provider,
       };
     },
+    validateBinding: (_id, _options, binding) => provider?.validateBinding?.(binding) ?? binding,
     resolveExecutable: async function (id, options) { return this.resolve(id, options); },
     discover: async () => [],
-    provider: () => undefined,
+    provider: (protocol) => provider?.protocol === protocol ? provider : undefined,
+  };
+}
+
+function singleProfileCatalog(profile: AgentProfile): ISessionAgentProfileCatalog {
+  return {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+    get: (name) => name === profile.name ? profile : undefined,
+    getDefault: () => profile,
+    list: () => [profile],
+    listRoutes: () => [],
+    routeDiagnostics: () => [],
+    resolveSelection: () => ({ profile, baseProfile: profile, route: undefined }),
+    inspect: () => undefined,
+    load: async () => {},
+    reload: async () => {},
   };
 }
 
@@ -304,6 +339,126 @@ describe('AgentProfileService.bind', () => {
     expect(profileRecords).toHaveLength(1);
     expect(JSON.stringify(profileRecords)).not.toContain(secret);
     expect(() => svc.resolveModelContext()).toThrow(/unsupported for external executor/);
+  });
+
+  it.each([
+    ['grok-acp', 'acp-v1', 'grok-4.6'],
+    ['cursor-acp', 'acp-v1', 'cursor-fast'],
+    ['codex-app-server', 'codex-app-server', 'gpt-5.6-codex'],
+  ])('preserves %s model aliases and xhigh effort outside the native model catalog', async (
+    executorId,
+    protocol,
+    modelAlias,
+  ) => {
+    const external = normalizeAgentProfile({
+      name: `${executorId}-worker`,
+      executor: executorId,
+      modelAlias,
+      thinkingEffort: 'xhigh',
+      systemPrompt: () => 'external worker',
+    });
+    const persistence = new InMemoryWireRecordPersistence();
+    ctx = createTestAgent(
+      { persistence },
+      appService(IAgentExecutorRegistry, externalExecutorRegistry({
+        id: executorId,
+        protocol,
+        command: executorId,
+        args: [],
+        revision: 'test-revision',
+      })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    await ctx.get(IModelService).replaceAll({
+      [`native-provider/${modelAlias}`]: {
+        provider: 'test-provider',
+        model: modelAlias,
+        maxContextSize: 1_000_000,
+      },
+    });
+    const svc = ctx.get(IAgentProfileService);
+
+    await svc.bind({ profile: external.name, delegationPosition: 'sub' });
+    await ctx.get(IWireService).flush();
+
+    expect(svc.data()).toMatchObject({
+      executorId,
+      executorProtocol: protocol,
+      modelAlias,
+      thinkingLevel: 'xhigh',
+    });
+    expect(persistence.records.find((record) => record.type === 'profile.bind')).toMatchObject({
+      modelAlias,
+      thinkingEffort: 'xhigh',
+    });
+    await expect(svc.setModel(`${modelAlias}-next`)).resolves.toEqual({
+      model: `${modelAlias}-next`,
+    });
+    svc.setThinking('xhigh');
+    expect(svc.data()).toMatchObject({
+      modelAlias: `${modelAlias}-next`,
+      thinkingLevel: 'xhigh',
+    });
+  });
+
+  it('adopts only an executor validator explicit binding normalization', async () => {
+    const external = normalizeAgentProfile({
+      name: 'validated-worker',
+      executor: 'validated-executor',
+      modelAlias: 'profile-model',
+      thinkingEffort: 'high',
+      systemPrompt: () => 'external worker',
+    });
+    ctx = createTestAgent(
+      appService(IAgentExecutorRegistry, externalExecutorRegistry({
+        id: 'validated-executor',
+        protocol: 'acp-v1',
+        command: 'validated',
+        args: [],
+        revision: 'test-revision',
+      }, () => ({ modelAlias: 'executor-model', thinkingEffort: 'xhigh' }))),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+
+    await ctx.get(IAgentProfileService).bind({
+      profile: external.name,
+      delegationPosition: 'sub',
+    });
+
+    expect(ctx.get(IAgentProfileService).data()).toMatchObject({
+      modelAlias: 'executor-model',
+      thinkingLevel: 'xhigh',
+    });
+  });
+
+  it('surfaces executor binding validation failures without clamping effort', async () => {
+    const external = normalizeAgentProfile({
+      name: 'strict-worker',
+      executor: 'strict-executor',
+      modelAlias: 'strict-model',
+      thinkingEffort: 'unsupported',
+      systemPrompt: () => 'external worker',
+    });
+    ctx = createTestAgent(
+      appService(IAgentExecutorRegistry, externalExecutorRegistry({
+        id: 'strict-executor',
+        protocol: 'acp-v1',
+        command: 'strict',
+        args: [],
+        revision: 'test-revision',
+      }, (binding) => {
+        throw new Error(`thinking_effort ${binding.thinkingEffort} is unsupported`);
+      })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+
+    await expect(ctx.get(IAgentProfileService).bind({
+      profile: external.name,
+      delegationPosition: 'sub',
+    })).rejects.toThrow(/thinking_effort unsupported is unsupported/);
   });
 
   it('fails an external profile closed when no model is pinned or dispatched', async () => {

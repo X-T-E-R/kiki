@@ -1,7 +1,4 @@
-import type {
-  AgentProfile,
-  AgentRecommendedModel,
-} from './agentProfile';
+import type { AgentProfile } from './agentProfile';
 import {
   isToolActive as evaluateToolActive,
   literalToolNames,
@@ -43,7 +40,7 @@ export function buildProfileCatalogEntries(
     modelAlias: profile.modelAlias,
     thinkingEffort: profile.thinkingEffort,
     allowedModels: profile.allowedModels,
-    alternativeModels: availableAlternativeModels(profile.modelProfiles, isModelAliasAvailable),
+    alternativeModels: availableAlternativeModels(profile, isModelAliasAvailable),
     tools: showTools
       ? projectedTools(profile, tools, isToolActive, unavailableTools)
       : undefined,
@@ -112,12 +109,13 @@ export function buildProfileDescriptions(
 }
 
 function availableAlternativeModels(
-  entries: readonly AgentRecommendedModel[] | undefined,
+  profile: AgentProfile,
   isModelAliasAvailable: (alias: string) => boolean,
 ): DispatchProfileCatalogEntry['alternativeModels'] {
-  if (entries === undefined) return [];
-  return entries.flatMap((entry) =>
-    isModelAliasAvailable(entry.alias)
+  if (profile.modelProfiles === undefined) return [];
+  const external = profile.executor !== undefined && profile.executor !== 'native';
+  return profile.modelProfiles.flatMap((entry) =>
+    external || isModelAliasAvailable(entry.alias)
       ? [{
           alias: entry.alias,
           when: collapseWhitespace(entry.when),

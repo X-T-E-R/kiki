@@ -1,3 +1,5 @@
+import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
+
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
@@ -149,6 +151,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       const existing = this.handles.get(opts.agentId);
       if (existing !== undefined) {
         const persisted = existing.accessor.get(IAgentProfileService).data();
+        const resolver = modelAliasResolverForExecutor(persisted.executorId, this.models);
         if (opts.binding !== undefined && opts.binding.route !== persisted.routeId) {
           throw new Error2(
             ErrorCodes.ROUTE_SWITCH_FORBIDDEN,
@@ -158,7 +161,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         if (
           persisted.lockedModelAlias !== undefined &&
           opts.binding?.model !== undefined &&
-          this.resolveModelId(opts.binding.model) !== persisted.lockedModelAlias
+          (resolver.resolveId(opts.binding.model) ?? opts.binding.model) !==
+            persisted.lockedModelAlias
         ) {
           throw new Error2(
             ErrorCodes.ROUTE_BINDING_CONFLICT,
@@ -206,12 +210,16 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
             route: binding.resolvedRoute,
           };
     const route = selection.route!;
+    const native = (selection.profile.executor ?? 'native') === 'native';
+    const resolver = modelAliasResolverForExecutor(selection.profile.executor, this.models);
     const canonicalRouteModelAlias =
-      route.lockedModelAlias === undefined ? undefined : this.resolveModelId(route.lockedModelAlias);
+      route.lockedModelAlias === undefined
+        ? undefined
+        : resolver.resolveId(route.lockedModelAlias) ?? route.lockedModelAlias;
     if (
       route.lockedModelAlias !== undefined &&
       binding.model !== undefined &&
-      this.resolveModelId(binding.model) !== canonicalRouteModelAlias
+      (resolver.resolveId(binding.model) ?? binding.model) !== canonicalRouteModelAlias
     ) {
       throw new Error2(
         ErrorCodes.ROUTE_BINDING_CONFLICT,
@@ -228,6 +236,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         `Agent profile route "${route.id}" locks thinking_effort to "${route.lockedThinkingEffort}"`,
       );
     }
+    if (!native) return;
     const requestedAlias = resolveMainModelCandidate({
       inputModel: binding.model,
       routeLockedAlias: route.lockedModelAlias,

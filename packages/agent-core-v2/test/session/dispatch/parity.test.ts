@@ -449,6 +449,8 @@ interface TaskRecord {
 interface LaneOptions {
   readonly profile?: AgentProfile;
   readonly mainModel?: string;
+  readonly resolveModelAlias?: (id: string) => string | undefined;
+  readonly modelCatalogGet?: (id: string) => Model;
 }
 
 interface ParityLane {
@@ -904,9 +906,9 @@ function createLane(
   });
   ix.stub(IBootstrapService, { getEnv: () => 'yolo' });
   ix.stub(IConfigService, { get: <T>() => undefined as T });
-  ix.stub(IModelService, { resolveId: (id: string) => id });
+  ix.stub(IModelService, { resolveId: options.resolveModelAlias ?? ((id: string) => id) });
   ix.stub(IModelCatalog, {
-    get: (id: string) => ({ id }) as Model,
+    get: options.modelCatalogGet ?? ((id: string) => ({ id }) as Model),
     getRequester: (id: string) => ({
       model: { id } as Model,
       request: async function* () {},
@@ -1517,6 +1519,68 @@ describe('AgentRun and dispatch parity golden', () => {
       profileName: 'coder',
       message: 'reject',
     })).rejects.toThrow(/No model is bound/);
+  });
+
+  it('preserves external bindings across AgentRun, delegation dispatch, and named reuse', async () => {
+    const externalProfile = normalizeAgentProfile({
+      ...parityProfile,
+      executor: 'grok-acp',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      allowedModels: ['grok-4.6'],
+      allowedEfforts: ['xhigh'],
+    });
+    const options: LaneOptions = {
+      profile: externalProfile,
+      resolveModelAlias: (id) => id === 'grok-4.6' ? 'axon-message/grok-4.6' : id,
+      modelCatalogGet: (id) => {
+        throw new Error(`native model catalog must not resolve ${id}`);
+      },
+    };
+    const internal = createLane(disposables, 'internal', options);
+    const external = createLane(disposables, 'external', options);
+
+    const internalResult = await internal.runInternal({
+      prompt: 'agent run',
+      description: 'External AgentRun',
+      profile: 'coder',
+      name: 'external_agent_run',
+      background: true,
+    });
+    const first = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'external_named',
+      profileName: 'coder',
+      message: 'delegation run',
+    });
+    await completeExternal(external, first.dispatchId, 0);
+    const resumed = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'external_named',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      message: 'reuse',
+    });
+
+    expect(internalResult.isError).not.toBe(true);
+    expect(internal.metadataAgents['agent_child_1']).toMatchObject({
+      model: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      executor: 'grok-acp',
+    });
+    expect(external.metadataAgents['agent_child_1']).toMatchObject({
+      model: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      executor: 'grok-acp',
+    });
+    expect(resumed).toMatchObject({
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+    });
+    expect(external.lifecycleCreate).toHaveBeenCalledTimes(1);
+    expect(external.subagentRun).toHaveBeenCalledTimes(2);
   });
 
   it('P11 reports the available profile catalog when a profile is unknown', async () => {

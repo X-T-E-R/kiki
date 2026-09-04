@@ -10,12 +10,12 @@ import {
   routePermittedByProfile,
   type CallerLeaseOwner,
 } from './applySubagentLease';
-import type { ModelAliasResolver } from './ports';
-import { subagentAllowlistFor } from './profileShared';
 import {
-  scopedBinding,
-  type AgentProfileCatalogSnapshot,
-} from './scopedAgentProfile';
+  modelAliasResolverForExecutor,
+  type ModelAliasResolver,
+} from './ports';
+import { subagentAllowlistFor } from './profileShared';
+import type { AgentProfileCatalogSnapshot } from './scopedAgentProfile';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
 
 export interface SubagentDispatchCaller {
@@ -104,7 +104,8 @@ export function listAvailableSubagentTargets(
   models: ModelAliasResolver,
 ): AvailableSubagentTargets {
   const defaults = input.snapshot?.defaultProfile ?? catalog.getDefault();
-  const resolveId = aliasIdentity(models);
+  const resolveIdFor = (profile: AgentProfile) =>
+    aliasIdentity(modelAliasResolverForExecutor(profile.executor, models));
   const scopedBindings = [...(
     caller.profileDefinitionId === undefined
       ? []
@@ -118,7 +119,7 @@ export function listAvailableSubagentTargets(
       binding.alias,
       caller,
       defaults,
-      resolveId,
+      resolveIdFor(binding.profile),
     ).profile;
     if (
       profile.main === true ||
@@ -132,7 +133,13 @@ export function listAvailableSubagentTargets(
   const publicProfiles = input.profiles
     .filter((profile) => profile.main !== true && !scopedNames.has(profile.name))
     .map((profile) =>
-      appliedDispatchProfile(profile, profile.name, caller, defaults, resolveId).profile,
+      appliedDispatchProfile(
+        profile,
+        profile.name,
+        caller,
+        defaults,
+        resolveIdFor(profile),
+      ).profile,
     )
     .filter(
       (profile) =>
@@ -142,14 +149,15 @@ export function listAvailableSubagentTargets(
     if (!subagentDispatchAllowed(catalog, caller, route.profile)) return false;
     const base = input.snapshot?.publicProfiles.get(route.profile) ?? catalog.get(route.profile);
     if (base === undefined) return false;
+    const resolver = modelAliasResolverForExecutor(base.executor, models);
     const effective = appliedDispatchProfile(
       base,
       route.profile,
       caller,
       defaults,
-      resolveId,
+      aliasIdentity(resolver),
     ).profile;
-    return routePermittedByProfile(route, effective, models);
+    return routePermittedByProfile(route, effective, resolver);
   });
   return { profiles: [...publicProfiles, ...scopedProfiles], routes };
 }

@@ -80,15 +80,17 @@ export function profilesFromDiscovery(
   const skipped = [...result.skipped];
   const sourceDefinitions = new Map<string, AgentProfile>();
   for (const [definitionId, definition] of result.sourceDefinitions) {
-    const profile = agentProfileFromFile(definition, basePrompt, builtinPrompt);
-    const error = executorValidationError(profile, validation);
-    if (error === undefined) {
-      sourceDefinitions.set(definitionId, profile);
+    const validated = validateExecutorProfile(
+      agentProfileFromFile(definition, basePrompt, builtinPrompt),
+      validation,
+    );
+    if (validated.error === undefined) {
+      sourceDefinitions.set(definitionId, validated.profile);
     } else {
       diagnostics.push({
         code: 'agent_executor.invalid_profile',
         severity: 'error',
-        message: error,
+        message: validated.error,
         path: definition.path,
       });
     }
@@ -138,14 +140,16 @@ export function profilesFromDiscovery(
   );
   const profiles: AgentProfile[] = [];
   for (const definition of result.agents) {
-    const profile = agentProfileFromFile(definition, basePrompt, builtinPrompt);
-    const error = executorValidationError(profile, validation);
-    if (error === undefined) {
-      profiles.push(profile);
+    const validated = validateExecutorProfile(
+      agentProfileFromFile(definition, basePrompt, builtinPrompt),
+      validation,
+    );
+    if (validated.error === undefined) {
+      profiles.push(validated.profile);
     } else {
       skipped.push({
         path: definition.path,
-        reason: error,
+        reason: validated.error,
         code: 'agent_executor.invalid_profile',
       });
     }
@@ -162,13 +166,31 @@ export function profilesFromDiscovery(
   };
 }
 
-function executorValidationError(
+function validateExecutorProfile(
   profile: AgentProfile,
   validation: ExecutorProfileValidation | undefined,
-): string | undefined {
-  if (validation === undefined || profile.executor === 'native') return undefined;
+): { readonly profile: AgentProfile; readonly error?: string } {
+  if (validation === undefined || profile.executor === 'native') return { profile };
   if (!validation.allowExternal) {
-    return validation.reason ?? `External executor "${profile.executor}" is not allowed for this profile source`;
+    return {
+      profile,
+      error:
+        validation.reason ??
+        `External executor "${profile.executor}" is not allowed for this profile source`,
+    };
   }
-  return validation.validateExecutor(profile.executor!, profile.executorOptions);
+  const result = validation.validateExecutor(profile.executor!, profile.executorOptions, {
+    modelAlias: profile.modelAlias,
+    thinkingEffort: profile.thinkingEffort,
+  });
+  if (typeof result === 'string') return { profile, error: result };
+  if (result?.diagnostic !== undefined) return { profile, error: result.diagnostic };
+  if (result?.binding === undefined) return { profile };
+  return {
+    profile: normalizeAgentProfile({
+      ...profile,
+      modelAlias: result.binding.modelAlias ?? profile.modelAlias,
+      thinkingEffort: result.binding.thinkingEffort ?? profile.thinkingEffort,
+    }),
+  };
 }

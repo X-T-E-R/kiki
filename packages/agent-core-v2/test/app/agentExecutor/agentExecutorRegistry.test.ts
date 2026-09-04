@@ -162,6 +162,41 @@ describe('AgentExecutorRegistryService', () => {
     );
   });
 
+  it('uses only provider-declared external binding normalization', () => {
+    provider = registerAgentExecutorProvider({
+      id: 'fake-acp',
+      protocol: 'acp-v1',
+      validateOptions: () => ({}),
+      validateBinding: (binding) => ({
+        modelAlias: `${binding.modelAlias}-canonical`,
+        thinkingEffort: binding.thinkingEffort,
+      }),
+      create: () => {
+        throw new Error('not used');
+      },
+    });
+    services.set(IConfigService, configWith({
+      'fake-acp': {
+        protocol: 'acp-v1',
+        command: 'fake',
+        args: [],
+      },
+    }));
+    services.set(
+      IAgentExecutorRegistry,
+      new SyncDescriptor(AgentExecutorRegistryService),
+    );
+
+    expect(services.get(IAgentExecutorRegistry).validateBinding(
+      'fake-acp',
+      {},
+      { modelAlias: 'external-model', thinkingEffort: 'xhigh' },
+    )).toEqual({
+      modelAlias: 'external-model-canonical',
+      thinkingEffort: 'xhigh',
+    });
+  });
+
   it('parses trusted snake-case descriptors and rejects unknown descriptor keys', () => {
     const parsed = AgentExecutorsConfigSchema.parse(
       agentExecutorsFromToml({

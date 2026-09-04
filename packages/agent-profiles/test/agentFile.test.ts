@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { AgentFileParseError, parseAgentFileText } from '#/agentFile';
-import type { AgentFileDefinition } from '#/agentFileTypes';
-import { agentProfileFromFile } from '#/agentProfileFromFile';
+import type { AgentFileDefinition, AgentFileDiscoveryResult } from '#/agentFileTypes';
+import { agentProfileFromFile, profilesFromDiscovery } from '#/agentProfileFromFile';
 import type { SystemPromptRenderResult } from '#/agentProfile';
 
 const FULL_FILE = `---
@@ -774,6 +774,44 @@ describe('agentProfileFromFile', () => {
       cwd: '',
       date: { disclosed: false },
     },
+  });
+
+  it('projects explicit executor binding normalization from the validation port', () => {
+    const definition = {
+      ...base,
+      executor: 'grok-acp',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+    };
+    const discovery: AgentFileDiscoveryResult = {
+      agents: [definition],
+      routes: [],
+      skipped: [],
+      scannedRoots: ['/tmp/agents'],
+      scopedBindings: new Map(),
+      sourceDefinitions: new Map([[definition.definitionId, definition]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+
+    const contribution = profilesFromDiscovery(discovery, basePrompt, undefined, {
+      allowExternal: true,
+      validateExecutor: (_id, _options, binding) => ({
+        binding: {
+          modelAlias: `${binding?.modelAlias}-validated`,
+          thinkingEffort: binding?.thinkingEffort,
+        },
+      }),
+    });
+
+    expect(contribution.profiles[0]).toMatchObject({
+      modelAlias: 'grok-4.6-validated',
+      thinkingEffort: 'xhigh',
+    });
+    expect(contribution.sourceDefinitions?.get(definition.definitionId)).toMatchObject({
+      modelAlias: 'grok-4.6-validated',
+      thinkingEffort: 'xhigh',
+    });
   });
 
   it('returns a plain body verbatim and injects no unreferenced context', () => {

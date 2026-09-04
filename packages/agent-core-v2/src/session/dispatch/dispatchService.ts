@@ -1,3 +1,5 @@
+import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
+
 import { Emitter } from '#/_base/event';
 import { abortable } from '#/_base/utils/abort';
 import { setClampedTimeout } from '#/_base/utils/timer';
@@ -166,8 +168,6 @@ export class SessionDispatchService implements ISessionDispatchService {
         name,
         selection.route?.id ?? profile.name,
         profile,
-        undefined,
-        { modelAlias: binding.model, thinkingEffort: binding.thinking },
       );
       const prompt = await applyProfilePromptPrefix(profile, input.message, {
         cwd: input.workDir,
@@ -359,15 +359,19 @@ export class SessionDispatchService implements ISessionDispatchService {
   ): DispatchResolvedBinding {
     const selection = target.selection;
     const profile = target.effectiveProfile;
+    const native = (profile.executor ?? 'native') === 'native';
+    const resolver = modelAliasResolverForExecutor(profile.executor, this.models);
     if (input.resolvedBinding !== undefined) {
-      const model = this.models.resolveId(input.resolvedBinding.model) ?? input.resolvedBinding.model;
+      const model = resolver.resolveId(input.resolvedBinding.model) ?? input.resolvedBinding.model;
       assertProfileRouteBinding(
         selection.route,
         { modelAlias: model, thinkingEffort: input.resolvedBinding.thinking },
-        this.models,
+        resolver,
       );
-      assertProfileRouteModelAvailable(selection.route, this.modelCatalog, this.models);
-      this.modelCatalog.get(model);
+      if (native) {
+        assertProfileRouteModelAvailable(selection.route, this.modelCatalog, resolver);
+        this.modelCatalog.get(model);
+      }
       return { model, thinking: input.resolvedBinding.thinking };
     }
     const filled = fillLeasePins(
@@ -378,29 +382,27 @@ export class SessionDispatchService implements ISessionDispatchService {
     assertProfileRouteBinding(
       selection.route,
       { modelAlias: filled.modelAlias, thinkingEffort: filled.thinkingEffort },
-      this.models,
+      resolver,
     );
-    assertProfileRouteModelAvailable(selection.route, this.modelCatalog, this.models);
+    if (native) assertProfileRouteModelAvailable(selection.route, this.modelCatalog, resolver);
     const roleConstraints = roleConstraintsFromProfile(
       profile,
       spawnConstraintOrigin(target.lease, target.spawnPolicy),
     );
-    const binding = canonicalizeSubagentBinding(
-      resolveSubagentBinding(
-        this.config,
-        filled,
-        {
-          modelAlias: selection.route?.lockedModelAlias ?? profile.modelAlias,
-          thinkingEffort:
-            selection.route?.lockedThinkingEffort ?? profile.thinkingEffort,
-        },
-        this.models,
-        roleConstraints,
-        { profileName: profile.name, routeId: selection.route?.id },
-      ),
-      this.models,
+    const resolved = resolveSubagentBinding(
+      this.config,
+      filled,
+      {
+        modelAlias: selection.route?.lockedModelAlias ?? profile.modelAlias,
+        thinkingEffort:
+          selection.route?.lockedThinkingEffort ?? profile.thinkingEffort,
+      },
+      native ? this.models : undefined,
+      roleConstraints,
+      { profileName: profile.name, routeId: selection.route?.id },
     );
-    this.modelCatalog.get(binding.model);
+    const binding = native ? canonicalizeSubagentBinding(resolved, this.models) : resolved;
+    if (native) this.modelCatalog.get(binding.model);
     return binding;
   }
 
@@ -410,7 +412,6 @@ export class SessionDispatchService implements ISessionDispatchService {
     profileName: string,
     effectiveProfile?: DispatchChild['effectiveProfile'],
     meta?: AgentMeta,
-    binding?: { readonly modelAlias: string; readonly thinkingEffort?: string },
   ): DispatchChild {
     const data = agent.accessor.get(IAgentProfileService).data();
     return {
@@ -418,8 +419,8 @@ export class SessionDispatchService implements ISessionDispatchService {
       agentId: agent.id,
       name,
       profileName,
-      modelAlias: binding?.modelAlias ?? data.modelAlias,
-      thinkingEffort: binding?.thinkingEffort ?? data.thinkingLevel,
+      modelAlias: data.modelAlias,
+      thinkingEffort: data.thinkingLevel,
       effectiveProfile,
       meta,
     };

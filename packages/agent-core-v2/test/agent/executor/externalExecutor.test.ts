@@ -61,6 +61,8 @@ interface FakeHarnessOptions {
   readonly completionUsage?: AcpTurnResult['response']['usage'];
   readonly executorId?: string;
   readonly providerName?: string;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -335,8 +337,8 @@ function createHarness(options: FakeHarnessOptions = {}) {
       revision: 'r1',
     },
     binding: {
-      modelAlias: 'model-a',
-      thinkingLevel: 'high',
+      modelAlias: options.modelAlias ?? 'model-a',
+      thinkingLevel: options.thinkingEffort ?? 'high',
       systemPrompt: 'Frozen profile',
       executorId: options.executorId ?? 'example-acp',
       executorProtocol: 'acp-v1',
@@ -659,6 +661,43 @@ describe('ACP external executor', () => {
       { configId: 'thought-id', value: 'high' },
       { configId: 'auto_approve', value: false },
     ]);
+  });
+
+  it('passes xhigh through when the ACP executor advertises it', async () => {
+    const sessionConfigOptions = configOptions().map((option) =>
+      option.id === 'thought-id' && option.type === 'select'
+        ? {
+            ...option,
+            options: [...option.options, { value: 'xhigh', name: 'Extra high' }],
+          }
+        : option,
+    ) as AcpSessionConfigOption[];
+    const harness = createHarness({
+      thinkingEffort: 'xhigh',
+      sessionConfigOptions,
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.selections).toContainEqual({ configId: 'thought-id', value: 'xhigh' });
+  });
+
+  it('reports an unsupported ACP effort before starting the turn', async () => {
+    const harness = createHarness({
+      thinkingEffort: 'xhigh',
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    await expect(harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    )).rejects.toThrow(/thought level "xhigh" is unavailable/);
+    expect(harness.starts).toHaveLength(0);
   });
 
   it.each([

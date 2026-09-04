@@ -42,10 +42,9 @@ export function profilesFromDiscovery(
 
 function executorValidator(registry: IAgentExecutorRegistry): ExecutorValidator {
   return {
-    validateExecutor: (id, options) => {
+    validateExecutor: (id, options, binding = {}) => {
       try {
-        registry.resolve(id, options);
-        return undefined;
+        return { binding: registry.validateBinding(id, options, binding) };
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
       }

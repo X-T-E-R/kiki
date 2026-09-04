@@ -4,6 +4,8 @@ import {
   type ServicesAccessor,
 } from '#/_base/di/instantiation';
 import type { IDisposable } from '#/_base/di/lifecycle';
+import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
+
 import type { Hooks } from '#/hooks';
 import type { ProfileBindingSnapshot } from '#/agent/profile/profile';
 import type {
@@ -119,6 +121,7 @@ export interface AgentExecutorProvider {
   readonly id: string;
   readonly protocol: AgentExecutorProtocol;
   validateOptions(value: unknown): AgentExecutorOptions;
+  validateBinding?(binding: ExecutorBinding): ExecutorBinding;
   create(context: AgentExecutorContext): AgentExecutorSession;
 }
 
@@ -133,6 +136,7 @@ export interface IAgentExecutorRegistry {
 
   get(id: string): AgentExecutorDescriptor | undefined;
   resolve(id?: string, options?: unknown): ResolvedAgentExecutor;
+  validateBinding(id: string, options: unknown, binding: ExecutorBinding): ExecutorBinding;
   resolveExecutable(id?: string, options?: unknown): Promise<ResolvedAgentExecutor>;
   discover(id: string): Promise<readonly AgentExecutorSourceProbe[]>;
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined;

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { normalize } from 'pathe';
+import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -102,6 +103,10 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       options: provider.validateOptions(normalized),
       provider,
     };
+  }
+
+  validateBinding(id: string, options: unknown, binding: ExecutorBinding): ExecutorBinding {
+    return this.resolve(id, options).provider?.validateBinding?.(binding) ?? binding;
   }
 
   async resolveExecutable(

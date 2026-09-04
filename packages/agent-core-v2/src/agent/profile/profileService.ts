@@ -665,24 +665,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       routeLockedAlias: routeModelAlias,
       profileModelAlias: profile.modelAlias,
     });
-    const alias = requested.alias;
-    if (alias === undefined || alias === '') {
+    const requestedAlias = requested.alias;
+    if (requestedAlias === undefined || requestedAlias === '') {
       throw new ProfileError(
         ProfileErrors.codes.MODEL_NOT_CONFIGURED,
         `model is required to bind external executor profile "${selection.baseProfile.name}"`,
       );
     }
-    await this.sessionToolPolicy.ready;
-    const context = await this.buildSystemPromptContext(profile);
-    this.assertRouteBindable(selection.route?.id);
-    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias);
     const matchedModelProfile = resolveModelProfileEntry(
       profile.modelProfiles,
-      alias,
+      requestedAlias,
       (id) => id,
     );
     const currentProfileName = this.profileName;
-    const thinkingLevel = (resolveMainThinkingCandidate({
+    const requestedThinking = resolveMainThinkingCandidate({
       inputThinking: input.thinking,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       modelProfileThinking: matchedModelProfile?.thinkingEffort,
@@ -691,7 +687,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         currentProfileName === selection.baseProfile.name
           ? this.thinkingLevel
           : undefined,
-    }) ?? 'off') as ThinkingEffort;
+    }) ?? 'off';
+    const validated = executor.provider?.validateBinding?.({
+      modelAlias: requestedAlias,
+      thinkingEffort: requestedThinking,
+    });
+    const alias = validated?.modelAlias ?? requestedAlias;
+    const thinkingLevel = (validated?.thinkingEffort ?? requestedThinking) as ThinkingEffort;
+    await this.sessionToolPolicy.ready;
+    const context = await this.buildSystemPromptContext(profile);
+    this.assertRouteBindable(selection.route?.id);
+    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias);
     assertBoundModelAllowed(
       this.config,
       alias,
@@ -710,8 +716,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profileName: selection.baseProfile.name,
       profileDefinitionId: selection.baseProfile.definitionId,
       routeId: selection.route?.id,
-      lockedModelAlias: routeModelAlias,
-      lockedThinkingEffort: selection.route?.lockedThinkingEffort,
+      lockedModelAlias: routeModelAlias === undefined ? undefined : alias,
+      lockedThinkingEffort:
+        selection.route?.lockedThinkingEffort === undefined ? undefined : thinkingLevel,
       executorId: executor.descriptor.id,
       executorProtocol: executor.descriptor.protocol,
       executorOptions: { ...executor.options },
@@ -742,6 +749,42 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async setModel(alias: string): Promise<ProfileSetModelResult> {
+    if (this.profileState.executorId !== undefined && this.profileState.executorId !== 'native') {
+      const validated = this.executors.validateBinding(
+        this.profileState.executorId,
+        this.profileState.executorOptions,
+        { modelAlias: alias, thinkingEffort: this.thinkingLevel },
+      );
+      const externalAlias = validated.modelAlias ?? alias;
+      if (
+        this.profileState.lockedModelAlias !== undefined &&
+        externalAlias !== this.profileState.lockedModelAlias
+      ) {
+        this.emitDeviationWarning(
+          routeModelOverrideMessage(
+            this.routeId,
+            this.profileState.lockedModelAlias,
+            externalAlias,
+          ),
+        );
+      }
+      if (this.modelAlias !== externalAlias) {
+        this.update({ modelAlias: externalAlias });
+        this.telemetry.track2('model_switch', { model: externalAlias });
+      }
+      if (this.activeProfile !== undefined) {
+        for (const message of humanProfileDeviations({
+          model: externalAlias,
+          thinking: this.thinkingLevel,
+          constraints: roleConstraintsFromProfile(this.activeProfile),
+          profileName: this.activeProfile.name,
+          checkThinking: false,
+        })) {
+          this.emitDeviationWarning(message);
+        }
+      }
+      return { model: externalAlias };
+    }
     const canonicalAlias = this.resolveModelId(alias);
     if (
       this.profileState.lockedModelAlias !== undefined &&
@@ -791,29 +834,40 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   setThinking(level: string): void {
+    const external =
+      this.profileState.executorId !== undefined && this.profileState.executorId !== 'native';
+    let effort: string;
+    if (external) {
+      const validated = this.executors.validateBinding(
+        this.profileState.executorId!,
+        this.profileState.executorOptions,
+        { modelAlias: this.modelAlias, thinkingEffort: level },
+      );
+      effort = validated.thinkingEffort ?? level;
+    } else {
+      this.assertThinkingEffortSupported(level, this.tryResolveRawModel(), this.modelAlias ?? '');
+      effort = normalizeRequestedThinkingEffort(level) ?? level;
+    }
     if (
       this.profileState.lockedThinkingEffort !== undefined &&
-      level !== this.profileState.lockedThinkingEffort
+      effort !== this.profileState.lockedThinkingEffort
     ) {
       this.emitDeviationWarning(
         routeThinkingOverrideMessage(
           this.routeId,
           this.profileState.lockedThinkingEffort,
-          level,
+          effort,
         ),
       );
     }
     const previousEffort = this.thinkingLevel;
-    this.assertThinkingEffortSupported(level, this.tryResolveRawModel(), this.modelAlias ?? '');
-    const normalized = normalizeRequestedThinkingEffort(level);
-    this.update({ thinkingLevel: normalized ?? level });
-    const effort = this.thinkingLevel;
+    this.update({ thinkingLevel: effort });
     if (this.activeProfile !== undefined && this.modelAlias !== undefined) {
       for (const message of humanProfileDeviations({
         model: this.modelAlias,
         thinking: effort,
         constraints: roleConstraintsFromProfile(this.activeProfile),
-        models: this.models,
+        models: external ? undefined : this.models,
         profileName: this.activeProfile.name,
         checkModel: false,
       })) {
