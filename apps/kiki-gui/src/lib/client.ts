@@ -1129,8 +1129,10 @@ export class KikiClient {
     return nbSearchTestStatusSchema.parse(await this.request<unknown>('GET', '/nb-search/test', { signal }));
   }
 
-  listNamedAgentProfiles(): Promise<ListNamedAgentProfilesResponse> {
-    return this.request<ListNamedAgentProfilesResponse>('GET', '/agents');
+  listNamedAgentProfiles(workspaceId?: string): Promise<ListNamedAgentProfilesResponse> {
+    return this.request<ListNamedAgentProfilesResponse>('GET', '/agents', {
+      query: { workspace_id: workspaceId },
+    });
   }
 
   updateNamedAgentProfile(

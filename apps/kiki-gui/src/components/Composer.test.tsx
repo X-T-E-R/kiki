@@ -125,6 +125,7 @@ async function renderComposer(
                 defaultModel={undefined}
                 serverDefaultModel="fixture/kiki-pro"
                 modelSource="server-default"
+                agentProfileCatalogMode={{ mode: 'global' }}
                 permissionMode="manual"
                 planMode={false}
                 swarmMode={false}
@@ -358,6 +359,110 @@ describe('Composer agent profile picker', () => {
     expect(options).toHaveLength(1);
     expect(options[0]).toContain('agent');
     expect(options.some((text) => text.includes('reviewer'))).toBe(false);
+  });
+
+  it('loads workspace main profiles without exposing workspace subagents', async () => {
+    listNamedAgentProfiles.mockImplementation(async (workspaceId?: string) => ({
+      items: workspaceId === 'wd_alpha'
+        ? [
+            { name: 'alpha-main', source: 'workspace', main: true, disabled: false, routes: [] },
+            { name: 'alpha-helper', source: 'workspace', main: false, disabled: false, routes: [] },
+          ] satisfies NamedAgentProfile[]
+        : [],
+    }));
+    const { container } = await renderComposer({
+      workspaceId: 'wd_alpha',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_alpha' },
+      agentProfile: 'alpha-main',
+      onChangeAgentProfile: () => {},
+    });
+    const trigger = await waitForTrigger(container);
+    expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_alpha');
+    await click(trigger);
+    const options = [...container.querySelectorAll('[role="option"]')].map(
+      (row) => row.textContent ?? '',
+    );
+    expect(options.some((text) => text.includes('alpha-main'))).toBe(true);
+    expect(options.some((text) => text.includes('alpha-helper'))).toBe(false);
+  });
+
+  it('does not reuse a stale profile catalog when the workspace changes', async () => {
+    const workspaceB = deferred<{ items: NamedAgentProfile[] }>();
+    listNamedAgentProfiles.mockImplementation((workspaceId?: string) => {
+      if (workspaceId === 'wd_alpha') {
+        return Promise.resolve({
+          items: [
+            { name: 'alpha-main', source: 'workspace', main: true, disabled: false, routes: [] },
+          ] satisfies NamedAgentProfile[],
+        });
+      }
+      if (workspaceId === 'wd_beta') return workspaceB.promise;
+      return Promise.resolve({ items: [] });
+    });
+    const rendered = await renderComposer({
+      workspaceId: 'wd_alpha',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_alpha' },
+      agentProfile: 'alpha-main',
+      onChangeAgentProfile: () => {},
+    });
+    expect((await waitForTrigger(rendered.container)).textContent).toContain('alpha-main');
+
+    await rendered.rerender({
+      workspaceId: 'wd_beta',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_beta' },
+      agentProfile: 'beta-main',
+      onChangeAgentProfile: () => {},
+    });
+    await settle();
+    expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_beta');
+    expect(rendered.container.querySelector('#composer-agent-profile-select')).toBeNull();
+
+    workspaceB.resolve({
+      items: [
+        { name: 'beta-main', source: 'workspace', main: true, disabled: false, routes: [] },
+      ],
+    });
+    const trigger = await waitForTrigger(rendered.container);
+    expect(trigger.textContent).toContain('beta-main');
+    await click(trigger);
+    const options = [...rendered.container.querySelectorAll('[role="option"]')].map(
+      (row) => row.textContent ?? '',
+    );
+    expect(options.some((text) => text.includes('beta-main'))).toBe(true);
+    expect(options.some((text) => text.includes('alpha-main'))).toBe(false);
+  });
+
+  it('selects a bound workspace profile when its catalog arrives later', async () => {
+    const catalog = deferred<{ items: NamedAgentProfile[] }>();
+    listNamedAgentProfiles.mockReturnValue(catalog.promise);
+    const rendered = await renderComposer({
+      sessionId: 'session-1',
+      agentProfileCatalogMode: { mode: 'disabled' },
+      agentProfile: 'workspace-main',
+      onChangeAgentProfile: () => {},
+    });
+    await settle();
+    expect(listNamedAgentProfiles).not.toHaveBeenCalled();
+    expect(rendered.container.querySelector('#composer-agent-profile-select')).toBeNull();
+
+    await rendered.rerender({
+      workspaceId: 'wd_session',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_session' },
+      sessionId: 'session-1',
+      agentProfile: 'workspace-main',
+      onChangeAgentProfile: () => {},
+    });
+    catalog.resolve({
+      items: [
+        { name: 'workspace-main', source: 'workspace', main: true, disabled: false, routes: [] },
+      ],
+    });
+    const trigger = await waitForTrigger(rendered.container);
+    expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_session');
+    expect(trigger.textContent).toContain('workspace-main');
+    expect(trigger.textContent).not.toContain('agent');
+    await click(trigger);
+    expect(rendered.container.querySelector('[role="option"]')?.getAttribute('aria-selected')).toBe('true');
   });
 
   it('accents the pill while a switch is pending', async () => {
@@ -937,6 +1042,7 @@ function StatefulHarness({
       defaultModel={undefined}
       serverDefaultModel="fixture/kiki-pro"
       modelSource="server-default"
+      agentProfileCatalogMode={{ mode: 'global' }}
       permissionMode="manual"
       planMode={false}
       swarmMode={false}

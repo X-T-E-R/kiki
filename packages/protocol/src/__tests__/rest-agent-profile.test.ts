@@ -8,7 +8,12 @@ import {
 
 describe('named agent profile REST protocol', () => {
   it('parses merged workspace applicability and the expanded-list query flag', () => {
-    expect(listNamedAgentProfilesQuerySchema.parse({ expand: '1' })).toEqual({ expand: true });
+    expect(listNamedAgentProfilesQuerySchema.parse({
+      expand: '1',
+      workspace_id: 'wd_a',
+    })).toEqual({ expand: true, workspace_id: 'wd_a' });
+    expect(listNamedAgentProfilesQuerySchema.parse({})).toEqual({});
+    expect(() => listNamedAgentProfilesQuerySchema.parse({ workspace_id: '' })).toThrow();
     expect(namedAgentProfileSchema.parse({
       name: 'reviewer',
       source: 'user',

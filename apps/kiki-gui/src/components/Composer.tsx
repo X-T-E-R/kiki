@@ -60,6 +60,11 @@ import {
 import { useHost } from '../host';
 import { isVscodeWebview, vscodeHost } from '../host/vscode';
 import { useI18n } from '../i18n';
+import {
+  agentProfileCatalogQueryKey,
+  loadAgentProfileCatalog,
+  type AgentProfileCatalogMode,
+} from '../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
@@ -158,6 +163,7 @@ export function Composer({
   busyPlaceholder,
   sessionId,
   workspaceId,
+  agentProfileCatalogMode,
   fsSearch,
   mentionScopeKey,
   attachments,
@@ -238,11 +244,10 @@ export function Composer({
   busyPlaceholder?: string;
   /** Session scope for the skills catalog + session-scoped shortcuts. */
   sessionId?: string;
-  /**
-   * Registered workspace id for the /new draft's skill catalog
-   * (`GET /workspaces/{id}/skills`). Ignored when `sessionId` is set.
-   */
+  /** Registered workspace id for the /new draft's skill catalog. */
   workspaceId?: string;
+  /** Named agent profile catalog visibility and workspace scope. */
+  agentProfileCatalogMode: AgentProfileCatalogMode;
   /**
    * File-picker feed for `@` mentions (session `fs:search` on /s, workspace
    * `fs:search` on /new). Omit to disable the picker.
@@ -423,12 +428,12 @@ export function Composer({
     [models, defaultModel, serverDefaultModel, modelSource, t],
   );
 
-  // Named agent profiles for the profile picker (same catalog Settings uses).
   // A server that predates the /agents route errors the query and the control
   // simply never renders — session creation/rebind then leave profile unset.
   const agentProfilesQuery = useQuery({
-    queryKey: ['agentProfiles'],
-    queryFn: () => client.listNamedAgentProfiles(),
+    queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
+    queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
+    enabled: agentProfileCatalogMode.mode !== 'disabled',
     staleTime: 60_000,
     retry: false,
   });

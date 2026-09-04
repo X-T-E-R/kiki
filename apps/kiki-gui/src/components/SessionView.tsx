@@ -91,6 +91,11 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
+import {
+  agentProfileCatalogQueryKey,
+  loadAgentProfileCatalog,
+  type AgentProfileCatalogMode,
+} from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
@@ -761,6 +766,10 @@ export function resolvePlanGate(
  */
 export function sessionHasStartedConversation(blocks: readonly Block[]): boolean {
   return blocks.some((block) => block.kind === 'user');
+}
+
+export function sessionAgentProfileWorkspaceId(session: Session | undefined): string | undefined {
+  return session?.workspace_id;
 }
 
 export function resolveProfileSwitchSubmission(input: {
@@ -1463,9 +1472,17 @@ export function SessionView({
     queryFn: () => client.listModels(),
     staleTime: 60_000,
   });
+  const profileWorkspaceId = sessionAgentProfileWorkspaceId(state.session);
+  const agentProfileCatalogMode = useMemo<AgentProfileCatalogMode>(
+    () => profileWorkspaceId === undefined
+      ? { mode: 'disabled' }
+      : { mode: 'workspace', workspaceId: profileWorkspaceId },
+    [profileWorkspaceId],
+  );
   const agentProfilesQuery = useQuery({
-    queryKey: ['agentProfiles'],
-    queryFn: () => client.listNamedAgentProfiles(),
+    queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
+    queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
+    enabled: agentProfileCatalogMode.mode === 'workspace',
     staleTime: 60_000,
     retry: false,
   });
@@ -2249,6 +2266,8 @@ export function SessionView({
             }
             sessionUsage={usage}
             sessionId={sessionId}
+            workspaceId={profileWorkspaceId}
+            agentProfileCatalogMode={agentProfileCatalogMode}
             fsSearch={handleFsSearch}
             attachments={attachments}
             onChangeAttachments={updateAttachments}
@@ -2302,6 +2321,8 @@ export function SessionView({
     contextUsed,
     contextLimit,
     sessionId,
+    profileWorkspaceId,
+    agentProfileCatalogMode,
     handleFsSearch,
     attachments,
     updateAttachments,

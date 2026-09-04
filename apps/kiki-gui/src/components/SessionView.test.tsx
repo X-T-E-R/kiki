@@ -56,6 +56,7 @@ import {
   replaceQueuedPrompt,
   resolveSessionCreateSubmission,
   resolveSessionSeatPhase,
+  sessionAgentProfileWorkspaceId,
   SessionRouteView,
   shouldClearModeOverride,
   shouldCloseSessionChromeOnEscape,
@@ -283,6 +284,15 @@ describe('SessionView route ownership', () => {
     expect(sessionA.key).toBe('session-a');
     expect(sessionB.key).toBe('session-b');
     expect(sessionB.key).not.toBe(sessionA.key);
+  });
+});
+
+describe('SessionView agent profile scope', () => {
+  it('derives the composer catalog scope from the current session workspace', () => {
+    expect(sessionAgentProfileWorkspaceId({ workspace_id: 'wd_session' } as Session)).toBe(
+      'wd_session',
+    );
+    expect(sessionAgentProfileWorkspaceId(undefined)).toBeUndefined();
   });
 });
 

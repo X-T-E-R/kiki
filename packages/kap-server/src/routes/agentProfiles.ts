@@ -51,7 +51,7 @@ interface AgentProfilesRouteHost {
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
     handler: (
-      req: { id: string; query: { expand?: boolean } },
+      req: { id: string; query: { expand?: boolean; workspace_id?: string } },
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
@@ -74,6 +74,9 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       path: '/agents',
       querystring: listNamedAgentProfilesQuerySchema,
       success: { data: listNamedAgentProfilesResponseSchema },
+      errors: {
+        [ErrorCode.WORKSPACE_NOT_FOUND]: {},
+      },
       description: 'List loaded named agent profiles and route model pins',
       tags: ['agents'],
     },
@@ -88,16 +91,51 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       const disabledNamed = new Set(
         config.get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? [],
       );
-      const catalogs = await sessionAgentProfileCatalogs(core);
-      const items = projectNamedAgentProfiles(
-        registry.entries(),
-        disabledBuiltins,
-        disabledNamed,
-        req.query.expand === true,
-        catalogs,
-        executors,
-      );
-      reply.send(okEnvelope({ items }, req.id));
+      const workspaceId = req.query.workspace_id;
+      if (workspaceId === undefined) {
+        const items = projectNamedAgentProfiles(
+          registry.entries(),
+          disabledBuiltins,
+          disabledNamed,
+          req.query.expand === true,
+          await sessionAgentProfileCatalogs(core),
+          executors,
+        );
+        reply.send(okEnvelope({ items }, req.id));
+        return;
+      }
+
+      const workspace = await core.accessor.get(IWorkspaceService).get(workspaceId);
+      if (workspace === undefined) {
+        reply.send(
+          errEnvelope(
+            ErrorCode.WORKSPACE_NOT_FOUND,
+            `workspace ${workspaceId} does not exist`,
+            req.id,
+          ),
+        );
+        return;
+      }
+
+      const lease = await core.accessor
+        .get(IWorkspaceInstanceManager)
+        .acquire({ workspaceId: workspace.id });
+      try {
+        await lease.instance.program.ready;
+        const items = projectNamedAgentProfiles(
+          registry.entries().filter((entry) =>
+            entry.workspaceKey === undefined || entry.workspaceKey === workspace.id
+          ),
+          disabledBuiltins,
+          disabledNamed,
+          req.query.expand === true,
+          await sessionAgentProfileCatalogs(core, workspace.id),
+          executors,
+        );
+        reply.send(okEnvelope({ items }, req.id));
+      } finally {
+        lease.dispose();
+      }
     },
   );
   app.get(
@@ -205,14 +243,16 @@ interface SessionAgentProfileCatalogProjection {
 
 async function sessionAgentProfileCatalogs(
   core: Scope,
+  workspaceId?: string,
 ): Promise<ReadonlyMap<string, SessionAgentProfileCatalogProjection>> {
   const catalogs = new Map<string, SessionAgentProfileCatalogProjection>();
   await Promise.all(core.accessor.get(ISessionManager).list().map(async (session) => {
-    const workspaceId = session.accessor.get(ISessionContext).workspaceId;
+    const sessionWorkspaceId = session.accessor.get(ISessionContext).workspaceId;
+    if (workspaceId !== undefined && sessionWorkspaceId !== workspaceId) return;
     const catalog = session.accessor.get(ISessionAgentProfileCatalog);
     await catalog.ready;
-    if (!catalogs.has(workspaceId)) {
-      catalogs.set(workspaceId, { catalog, snapshot: catalog.snapshot?.() });
+    if (!catalogs.has(sessionWorkspaceId)) {
+      catalogs.set(sessionWorkspaceId, { catalog, snapshot: catalog.snapshot?.() });
     }
   }));
   return catalogs;

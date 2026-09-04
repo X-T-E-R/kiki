@@ -114,6 +114,7 @@ beforeEach(() => {
   klient.global.mcp.update.mockResolvedValue([]);
   klient.global.mcp.remove.mockResolvedValue([]);
   klient.global.mcp.test.mockResolvedValue({ success: true, output: '' });
+  client.listNamedAgentProfiles.mockClear();
 });
 
 afterEach(() => {
@@ -338,11 +339,13 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-subagent-timeout')).not.toBeNull();
   });
 
-  it('keeps only the main-agent card on the agents leaf', async () => {
+  it('keeps only the main-agent card on the agents leaf and uses the global catalog', async () => {
     const container = await renderSettings('/settings/agents');
+    await flush();
     expect(container.querySelector('#st-card-main-agents')).not.toBeNull();
     expect(container.querySelector('#st-card-subagent-profiles')).toBeNull();
     expect(container.querySelector('#st-card-sidecar')).toBeNull();
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith();
   });
 
   it('redirects bare /settings/capabilities to the skills leaf', async () => {

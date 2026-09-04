@@ -6,9 +6,10 @@ import {
   AgentProfileSourceDiagnosticCodes,
   IAgentProfileRegistry,
   ISessionManager,
+  IWorkspaceInstanceManager,
   normalizeAgentProfile,
 } from '@moonshot-ai/agent-core-v2';
-import { listNamedAgentProfilesResponseSchema } from '@moonshot-ai/protocol';
+import { ErrorCode, listNamedAgentProfilesResponseSchema } from '@moonshot-ai/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type RunningServer, startServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
@@ -297,6 +298,97 @@ describe('GET /api/v1/agents', () => {
       }),
     });
     expect(((await mixedResponse.json()) as Envelope<null>).code).toBe(40001);
+  });
+
+  it('loads and isolates workspace profiles for scoped requests without live sessions', async () => {
+    const workspaceA = join(home as string, 'workspace-a');
+    const workspaceB = join(home as string, 'workspace-b');
+    const agentsA = join(workspaceA, '.kimi-code', 'agents');
+    const agentsB = join(workspaceB, '.kimi-code', 'agents');
+    await mkdir(agentsA, { recursive: true });
+    await mkdir(agentsB, { recursive: true });
+    await writeFile(
+      join(agentsA, 'workspace-choice.md'),
+      '---\nname: workspace-choice\ndescription: Workspace A choice\nmain: true\n---\n\nUse workspace A.\n',
+      'utf-8',
+    );
+    await writeFile(
+      join(agentsB, 'workspace-choice.md'),
+      '---\nname: workspace-choice\ndescription: Workspace B helper\nmain: false\n---\n\nUse workspace B.\n',
+      'utf-8',
+    );
+
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const runningServer = server;
+    const registerWorkspace = async (root: string): Promise<string> => {
+      const response = await authedFetch(runningServer, base, '/api/v1/workspaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ root }),
+      });
+      const body = (await response.json()) as Envelope<{ id: string }>;
+      expect(body.code).toBe(0);
+      return body.data.id;
+    };
+    const workspaceAId = await registerWorkspace(workspaceA);
+    const workspaceBId = await registerWorkspace(workspaceB);
+    expect(server.core.accessor.get(ISessionManager).list()).toHaveLength(0);
+
+    const listScoped = async (workspaceId: string) => {
+      const response = await authedFetch(
+        runningServer,
+        base,
+        `/api/v1/agents?workspace_id=${encodeURIComponent(workspaceId)}`,
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Envelope<unknown>;
+      expect(body.code).toBe(0);
+      return listNamedAgentProfilesResponseSchema.parse(body.data);
+    };
+
+    const scopedA = await listScoped(workspaceAId);
+    expect(scopedA.items.find((profile) =>
+      profile.name === 'workspace-choice' && profile.source === 'workspace'
+    )).toMatchObject({
+      description: 'Workspace A choice',
+      workspace_id: workspaceAId,
+      main: true,
+    });
+    expect(scopedA.items.some((profile) => profile.description === 'Workspace B helper')).toBe(false);
+
+    const scopedB = await listScoped(workspaceBId);
+    expect(scopedB.items.find((profile) =>
+      profile.name === 'workspace-choice' && profile.source === 'workspace'
+    )).toMatchObject({
+      description: 'Workspace B helper',
+      workspace_id: workspaceBId,
+      main: false,
+    });
+    expect(scopedB.items.some((profile) => profile.description === 'Workspace A choice')).toBe(false);
+
+    const scopedAAgain = await listScoped(workspaceAId);
+    expect(scopedAAgain.items.find((profile) =>
+      profile.name === 'workspace-choice' && profile.source === 'workspace'
+    )?.main).toBe(true);
+    expect(server.core.accessor.get(ISessionManager).list()).toHaveLength(0);
+    const instances = server.core.accessor.get(IWorkspaceInstanceManager);
+    expect(instances.referenceCount(workspaceAId)).toBe(0);
+    expect(instances.referenceCount(workspaceBId)).toBe(0);
+
+    const missingResponse = await authedFetch(
+      runningServer,
+      base,
+      '/api/v1/agents?workspace_id=wd_missing',
+    );
+    const missing = (await missingResponse.json()) as Envelope<null>;
+    expect(missing.code).toBe(ErrorCode.WORKSPACE_NOT_FOUND);
   });
 
   it('projects scoped source leases without exposing private definitions or absolute paths', async () => {
