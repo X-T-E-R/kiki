@@ -8,6 +8,7 @@
  * defaults. Bound at Session scope.
  */
 
+import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 import { ulid } from 'ulid';
 
 import { Disposable } from '#/_base/di/lifecycle';
@@ -656,10 +657,11 @@ export class SessionExternalDelegationService
         throw invalid('A named child cannot change profile.');
       }
       const target = await this.existingNamedTarget(doc, taskName);
-      if (modelAlias !== undefined && modelAlias !== target.modelAlias) {
+      const normalized = this.validateTargetBinding(target, { modelAlias, thinkingEffort });
+      if (normalized.modelAlias !== target.modelAlias) {
         throw invalid('A named child cannot change model_alias.');
       }
-      if (thinkingEffort !== undefined && thinkingEffort !== target.thinkingEffort) {
+      if (normalized.thinkingEffort !== target.thinkingEffort) {
         throw invalid('A named child cannot change thinking_effort.');
       }
       return this.startExistingDispatch(
@@ -678,10 +680,11 @@ export class SessionExternalDelegationService
       if (profileName !== recovered.profileName) {
         throw invalid('A named child cannot change profile.');
       }
-      if (modelAlias !== undefined && modelAlias !== recovered.modelAlias) {
+      const normalized = this.validateTargetBinding(recovered, { modelAlias, thinkingEffort });
+      if (normalized.modelAlias !== recovered.modelAlias) {
         throw invalid('A named child cannot change model_alias.');
       }
-      if (thinkingEffort !== undefined && thinkingEffort !== recovered.thinkingEffort) {
+      if (normalized.thinkingEffort !== recovered.thinkingEffort) {
         throw invalid('A named child cannot change thinking_effort.');
       }
       return this.startExistingDispatch(
@@ -775,6 +778,15 @@ export class SessionExternalDelegationService
       this.models,
     );
     return available.profiles.map((profile) => profile.name);
+  }
+
+  private validateTargetBinding(
+    target: DispatchTarget,
+    binding: ExecutorBinding,
+  ): ExecutorBinding {
+    const result = target.agent.accessor.get(IAgentProfileService).validateBinding(binding);
+    if (!result.ok) throw invalid(result.diagnostic);
+    return result.binding;
   }
 
   private modelAliasAvailable(alias: string): boolean {

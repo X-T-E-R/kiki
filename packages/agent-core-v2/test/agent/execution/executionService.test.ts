@@ -12,10 +12,12 @@ import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import type { IAgentStateService } from '#/agent/state/agentState';
 import type {
+  AgentExecutorContext,
   AgentExecutorProvider,
   AgentExecutorSession,
   IAgentExecutorRegistry,
 } from '#/app/agentExecutor/agentExecutor';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { createHooks } from '#/hooks';
 
 const IMarker = createDecorator<string>('executionTestMarker');
@@ -79,6 +81,7 @@ describe('AgentExecutionService', () => {
       id: 'fake-provider',
       protocol: 'acp-v1',
       validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }),
       create: (context) => {
         expect(context.agent.id).toBe('agent-test');
         expect(context.agent.accessor.get(IMarker)).toBe('marker');
@@ -94,7 +97,7 @@ describe('AgentExecutionService', () => {
         options: {},
         provider,
       }),
-      validateBinding: (_id, _options, binding) => binding,
+      validateBinding: (_id, _options, binding) => ({ ok: true, binding }),
       resolveExecutable: async function () { return this.resolve(); },
       discover: async () => [],
       provider: () => provider,
@@ -136,6 +139,101 @@ describe('AgentExecutionService', () => {
   });
 
   it.each([
+    ['grok-acp', 'acp-v1'],
+    ['cursor-acp', 'acp-v1'],
+    ['codex-app-server', 'codex-app-server'],
+  ] as const)(
+    'recreates an idle %s session when model or effort binding changes',
+    async (executorId, protocol) => {
+    const ix = new TestInstantiationService();
+    let binding: ProfileData = {
+      modelAlias: 'model-a',
+      modelCapabilities: UNKNOWN_CAPABILITY,
+      profileName: 'external',
+      executorId,
+      executorProtocol: protocol,
+      executorDescriptorRevision: 'r1',
+      thinkingLevel: 'high',
+      systemPrompt: '',
+    };
+    const profileService = {
+      _serviceBrand: undefined,
+      data: () => binding,
+    } as IAgentProfileService;
+    const contexts: AgentExecutorContext[] = [];
+    const shutdowns: ReturnType<typeof vi.fn>[] = [];
+    const provider: AgentExecutorProvider = {
+      id: `${executorId}-provider`,
+      protocol,
+      validateOptions: () => ({}),
+      validateBinding: (value) => ({ ok: true, binding: value }),
+      create: (context) => {
+        contexts.push(context);
+        const shutdown = vi.fn(async () => {});
+        shutdowns.push(shutdown);
+        return {
+          run: async () => ({
+            agentId: 'agent-test',
+            turn: {
+              id: contexts.length,
+              signal: new AbortController().signal,
+              ready: Promise.resolve(),
+              result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }),
+              cancel: () => false,
+            },
+            completion: Promise.resolve({ summary: 'done' }),
+          }),
+          status: () => ({ state: 'idle' }),
+          cancel: () => false,
+          settled: async () => {},
+          shutdown,
+          hooks: createHooks(['onWillRun']),
+        };
+      },
+    };
+    const registry: IAgentExecutorRegistry = {
+      _serviceBrand: undefined,
+      get: () => ({ id: executorId, protocol, args: [], revision: 'r1' }),
+      resolve: () => ({
+        descriptor: { id: executorId, protocol, args: [], revision: 'r1' },
+        options: {},
+        provider,
+      }),
+      validateBinding: (_id, _options, value) => ({ ok: true, binding: value }),
+      resolveExecutable: async function () { return this.resolve(); },
+      discover: async () => [],
+      provider: () => provider,
+    };
+    const service = new AgentExecutionService(ix, scope(), profileService, registry, states());
+
+    const first = await service.run(
+      { kind: 'prompt', prompt: 'first' },
+      { signal: new AbortController().signal },
+    );
+    await first.completion;
+    await service.settled();
+    binding = { ...binding, modelAlias: 'model-b', thinkingLevel: 'xhigh' };
+    const second = await service.run(
+      { kind: 'prompt', prompt: 'second' },
+      { signal: new AbortController().signal },
+    );
+    await second.completion;
+    await service.settled();
+
+    expect(contexts.map((context) => ({
+      modelAlias: context.binding.modelAlias,
+      thinkingLevel: context.binding.thinkingLevel,
+    }))).toEqual([
+      { modelAlias: 'model-a', thinkingLevel: 'high' },
+      { modelAlias: 'model-b', thinkingLevel: 'xhigh' },
+    ]);
+    expect(shutdowns[0]).toHaveBeenCalledTimes(1);
+    expect(shutdowns[1]).not.toHaveBeenCalled();
+    service.dispose();
+    ix.dispose();
+  });
+
+  it.each([
     ['missing protocol', { executorDescriptorRevision: 'r1' }, /protocol.*missing/i],
     ['missing revision', { executorProtocol: 'acp-v1' }, /revision.*missing/i],
     [
@@ -155,6 +253,7 @@ describe('AgentExecutionService', () => {
       id: 'fake-provider',
       protocol: 'acp-v1',
       validateOptions: () => ({}),
+      validateBinding: (value) => ({ ok: true, binding: value }),
       create,
     };
     const registry: IAgentExecutorRegistry = {
@@ -165,7 +264,7 @@ describe('AgentExecutionService', () => {
         options: {},
         provider,
       }),
-      validateBinding: (_id, _options, binding) => binding,
+      validateBinding: (_id, _options, binding) => ({ ok: true, binding }),
       resolveExecutable: async function () { return this.resolve(); },
       discover: async () => [],
       provider: () => provider,
@@ -196,7 +295,7 @@ describe('AgentExecutionService', () => {
         descriptor: { id: 'missing', protocol: 'acp-v1', args: [], revision: 'r1' },
         options: {},
       }),
-      validateBinding: (_id, _options, binding) => binding,
+      validateBinding: (_id, _options, binding) => ({ ok: true, binding }),
       resolveExecutable: async function () { return this.resolve(); },
       discover: async () => [],
       provider: () => undefined,

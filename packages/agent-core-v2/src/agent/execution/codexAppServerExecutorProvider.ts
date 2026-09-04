@@ -16,6 +16,9 @@ export const CodexAppServerExecutorProvider: AgentExecutorProvider = {
   validateOptions(value: unknown): AgentExecutorOptions {
     return codexExecutorOptionsSchema.parse(value ?? {});
   },
+  validateBinding(binding) {
+    return { ok: true, binding };
+  },
   create(context) {
     return new CodexAppServerExecutorSession(context);
   },

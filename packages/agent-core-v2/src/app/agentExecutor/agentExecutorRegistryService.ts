@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 
 import { normalize } from 'pathe';
-import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
+import type {
+  ExecutorBinding,
+  ExecutorValidationResult,
+} from '@kiki/agent-profiles/ports';
 
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -105,8 +108,39 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     };
   }
 
-  validateBinding(id: string, options: unknown, binding: ExecutorBinding): ExecutorBinding {
-    return this.resolve(id, options).provider?.validateBinding?.(binding) ?? binding;
+  validateBinding(
+    id: string,
+    options: unknown,
+    binding: ExecutorBinding,
+  ): ExecutorValidationResult {
+    try {
+      const resolved = this.resolve(id, options);
+      if (resolved.provider === undefined) {
+        return {
+          ok: false,
+          diagnostic: `External executor "${id}" is unsupported because protocol "${resolved.descriptor.protocol}" has no registered provider`,
+        };
+      }
+      const result = resolved.provider.validateBinding(binding);
+      if (!result.ok) return result;
+      for (const field of ['modelAlias', 'thinkingEffort'] as const) {
+        if (
+          binding[field] !== undefined &&
+          (result.binding[field] === undefined || result.binding[field].trim().length === 0)
+        ) {
+          return {
+            ok: false,
+            diagnostic: `External executor "${id}" returned an empty ${field} binding`,
+          };
+        }
+      }
+      return result;
+    } catch (error) {
+      return {
+        ok: false,
+        diagnostic: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   async resolveExecutable(

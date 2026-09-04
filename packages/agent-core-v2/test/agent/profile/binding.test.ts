@@ -24,6 +24,7 @@ import {
   type AgentExecutorProvider,
 } from '#/app/agentExecutor/agentExecutor';
 import { descriptorRevisionFromConfig } from '#/app/agentExecutor/agentExecutorRegistryService';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -44,6 +45,7 @@ import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionT
 import { IWireService } from '#/wire/wire';
 import { IEventBus } from '#/app/event/eventBus';
 import { WarningIssued } from '#/agent/profile/profileOps';
+import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import type { ExecutableTool, ToolExecution, ToolResult, ToolSource } from '#/tool/toolContract';
 
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
@@ -130,6 +132,7 @@ function disabledDefaultCatalog(): ISessionAgentProfileCatalog {
 function routedCatalog(
   modelAlias = MOCK_MODEL,
   thinkingEffort = 'off',
+  executor = 'native',
 ): ISessionAgentProfileCatalog {
   const base = normalizeAgentProfile({
     name: 'reviewer',
@@ -137,6 +140,7 @@ function routedCatalog(
     tools: ['Read', 'Bash'],
     disallowedTools: ['Write'],
     subagents: ['explore', 'coder'],
+    executor,
     systemPrompt: () => 'base reviewer',
   });
   const {
@@ -196,19 +200,20 @@ const DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR: AgentExecutorDescriptor = {
 
 function externalExecutorRegistry(
   descriptor: AgentExecutorDescriptor = DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR,
-  validateBinding?: NonNullable<AgentExecutorProvider['validateBinding']>,
+  validateBinding: AgentExecutorProvider['validateBinding'] = (binding) => ({
+    ok: true,
+    binding,
+  }),
 ): IAgentExecutorRegistry {
-  const provider: AgentExecutorProvider | undefined = validateBinding === undefined
-    ? undefined
-    : {
-        id: 'test-provider',
-        protocol: descriptor.protocol,
-        validateOptions: (value) => value as Readonly<Record<string, string | number | boolean>>,
-        validateBinding,
-        create: () => {
-          throw new Error('not used');
-        },
-      };
+  const provider: AgentExecutorProvider = {
+    id: 'test-provider',
+    protocol: descriptor.protocol,
+    validateOptions: (value) => value as Readonly<Record<string, string | number | boolean>>,
+    validateBinding,
+    create: () => {
+      throw new Error('not used');
+    },
+  };
   return {
     _serviceBrand: undefined,
     get: (id) => id === 'native'
@@ -230,7 +235,7 @@ function externalExecutorRegistry(
         provider,
       };
     },
-    validateBinding: (_id, _options, binding) => provider?.validateBinding?.(binding) ?? binding,
+    validateBinding: (_id, _options, binding) => provider.validateBinding(binding),
     resolveExecutable: async function (id, options) { return this.resolve(id, options); },
     discover: async () => [],
     provider: (protocol) => provider?.protocol === protocol ? provider : undefined,
@@ -402,6 +407,70 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
+  it.each(['XHIGH', 'on', 'off'])(
+    'keeps external effort %s outside colliding native thinking rules',
+    async (thinkingEffort) => {
+      const modelAlias = 'collision-model';
+      const external = normalizeAgentProfile({
+        name: `external-${thinkingEffort}`,
+        executor: 'grok-acp',
+        modelAlias,
+        thinkingEffort,
+        systemPrompt: () => 'external worker',
+      });
+      ctx = createTestAgent(
+        {
+          initialConfig: {
+            thinking: { enabled: false, effort: 'low', forcedEffort: 'max' },
+            providers: {
+              strict: {
+                type: 'kimi',
+                apiKey: 'test-key',
+                baseUrl: 'https://api.example.test/v1',
+              },
+            },
+            models: {
+              [modelAlias]: {
+                provider: 'strict',
+                model: modelAlias,
+                maxContextSize: 1_000_000,
+                capabilities: ['thinking', 'always_thinking'],
+                supportEfforts: ['high'],
+              },
+            },
+          },
+        },
+        appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+        sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
+        hostEnvironmentServices(homeDir, hostPathClass),
+      );
+      const svc = ctx.get(IAgentProfileService);
+      const statuses: AgentStatusUpdated[] = [];
+      ctx.get(IEventBus).subscribe(AgentStatusUpdated, (event) => statuses.push(event));
+
+      await svc.bind({ profile: external.name, delegationPosition: 'sub' });
+      svc.republishStatus();
+
+      expect(svc.data()).toMatchObject({
+        modelAlias,
+        thinkingLevel: thinkingEffort,
+        modelCapabilities: UNKNOWN_CAPABILITY,
+      });
+      expect(svc.getEffectiveThinkingLevel()).toBe(thinkingEffort);
+      expect(svc.getModelCapabilities()).toBe(UNKNOWN_CAPABILITY);
+      expect(svc.getMaxOutputSize()).toBeUndefined();
+      expect(svc.resolveRequestParams()).toMatchObject({ thinkingEffort });
+      expect(svc.hasProvider()).toBe(true);
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({
+          model: modelAlias,
+          thinkingEffort,
+          maxContextTokens: undefined,
+        });
+      });
+    },
+  );
+
   it('adopts only an executor validator explicit binding normalization', async () => {
     const external = normalizeAgentProfile({
       name: 'validated-worker',
@@ -417,7 +486,10 @@ describe('AgentProfileService.bind', () => {
         command: 'validated',
         args: [],
         revision: 'test-revision',
-      }, () => ({ modelAlias: 'executor-model', thinkingEffort: 'xhigh' }))),
+      }, () => ({
+        ok: true,
+        binding: { modelAlias: 'executor-model', thinkingEffort: 'xhigh' },
+      }))),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
@@ -448,9 +520,10 @@ describe('AgentProfileService.bind', () => {
         command: 'strict',
         args: [],
         revision: 'test-revision',
-      }, (binding) => {
-        throw new Error(`thinking_effort ${binding.thinkingEffort} is unsupported`);
-      })),
+      }, (binding) => ({
+        ok: false,
+        diagnostic: `thinking_effort ${binding.thinkingEffort} is unsupported`,
+      }))),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
@@ -605,6 +678,45 @@ describe('AgentProfileService.bind', () => {
     });
     expect(ctx.get(IModelCatalog).get(svc.data().modelAlias!).id).toBe(canonicalId);
     await expect(svc.setModel(MOCK_MODEL)).resolves.toMatchObject({ model: canonicalId });
+  });
+
+  it('normalizes external route locks before comparing and persisting them', async () => {
+    ctx = createTestAgent(
+      appService(IAgentExecutorRegistry, externalExecutorRegistry({
+        id: 'grok-acp',
+        protocol: 'acp-v1',
+        command: 'grok',
+        args: [],
+        revision: 'test-revision',
+      }, (binding) => ({
+        ok: true,
+        binding: {
+          modelAlias:
+            binding.modelAlias === 'vendor-short' ? 'vendor/model' : binding.modelAlias,
+          thinkingEffort: binding.thinkingEffort,
+        },
+      }))),
+      sessionService(
+        ISessionAgentProfileCatalog,
+        routedCatalog('vendor-short', 'xhigh', 'grok-acp'),
+      ),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const svc = ctx.get(IAgentProfileService);
+
+    await svc.bind({
+      route: 'reviewer.ui-k3',
+      model: 'vendor-short',
+      thinking: 'xhigh',
+      delegationPosition: 'sub',
+    });
+
+    expect(svc.data()).toMatchObject({
+      modelAlias: 'vendor/model',
+      lockedModelAlias: 'vendor/model',
+      thinkingLevel: 'xhigh',
+      lockedThinkingEffort: 'xhigh',
+    });
   });
 
   it('does not admit deleted collaboration tools on any builtin profile', () => {

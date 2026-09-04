@@ -12,10 +12,11 @@ import {
   type HostProcessServiceLike,
 } from '@moonshot-ai/codex-client';
 
-import type {
-  AgentExecutionStatus,
-  AgentExecutorContext,
-  AgentExecutorSession,
+import {
+  agentExecutorBindingFingerprint,
+  type AgentExecutionStatus,
+  type AgentExecutorContext,
+  type AgentExecutorSession,
 } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
@@ -249,6 +250,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
         executorId: this.context.descriptor.id,
         descriptorRevision: this.context.descriptor.revision,
+        bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding),
         sessionRef: {
           executorId: this.context.descriptor.id,
           version: 1,
@@ -422,7 +424,9 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         `Executor session state does not match descriptor "${this.context.descriptor.id}"`,
       );
     }
-    const priorThreadId = threadIdFromState(state.sessionRef);
+    const reusable =
+      state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding);
+    const priorThreadId = reusable ? threadIdFromState(state.sessionRef) : undefined;
     if (priorThreadId !== undefined) {
       try {
         const resumed = await this.#client.resumeThread({
@@ -441,6 +445,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         const fresh = await this.#startFreshThread(roots, signal);
         return { threadId: fresh.thread.id, mode: 'handoff', handoff };
       }
+    }
+    if (state.sessionRef !== undefined && !reusable) {
+      const handoff = buildHandoff(this.#memory.get());
+      const fresh = await this.#startFreshThread(roots, signal);
+      return { threadId: fresh.thread.id, mode: 'handoff', handoff };
     }
     const fresh = await this.#startFreshThread(roots, signal);
     return { threadId: fresh.thread.id, mode: 'new' };

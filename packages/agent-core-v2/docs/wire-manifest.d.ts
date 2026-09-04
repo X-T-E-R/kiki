@@ -222,6 +222,7 @@ interface ExecutorSessionUpdatedPayload {
   _name: 'executor.session.updated';
   executorId: string;
   descriptorRevision: string;
+  bindingFingerprint?: string;
   sessionRef: {
     executorId: string;
     version: number;

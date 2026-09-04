@@ -19,7 +19,10 @@ import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentUsageService } from '#/agent/usage/usage';
-import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import {
+  agentExecutorBindingFingerprint,
+  type AgentExecutorContext,
+} from '#/app/agentExecutor/agentExecutor';
 import type { Event2 } from '#/app/event/event2';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { ISessionApprovalService } from '#/session/approval/approval';
@@ -31,7 +34,10 @@ import { IWireService } from '#/wire/wire';
 
 interface HarnessOptions {
   readonly models?: readonly string[];
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
   readonly priorThreadId?: string;
+  readonly priorBindingFingerprint?: string;
   readonly resumeError?: unknown;
   readonly approvalOptionId?: string;
   readonly history?: readonly ContextMessage[];
@@ -55,6 +61,7 @@ function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<
 function createHarness(options: HarnessOptions = {}) {
   const events: Event2[] = [];
   const starts: Readonly<Record<string, unknown>>[] = [];
+  const modelLists: string[][] = [];
   const resumes: Readonly<Record<string, unknown>>[] = [];
   const prompts: Readonly<Record<string, unknown>>[] = [];
   const serverResults: unknown[] = [];
@@ -89,6 +96,7 @@ function createHarness(options: HarnessOptions = {}) {
         stateValues.set(externalExecutorKey, {
           executorId: event.executorId,
           descriptorRevision: event.descriptorRevision,
+          bindingFingerprint: event.bindingFingerprint,
           sessionRef: event.sessionRef,
           sessionEpoch: event.sessionEpoch,
           profileDeliveredSessionId: event.profileDeliveredSessionId,
@@ -177,22 +185,34 @@ function createHarness(options: HarnessOptions = {}) {
       revision: 'r1',
     },
     binding: {
-      modelAlias: 'gpt-test',
-      thinkingLevel: 'high',
+      modelAlias: options.modelAlias ?? 'gpt-test',
+      thinkingLevel: options.thinkingEffort ?? 'high',
       systemPrompt: 'Frozen profile instructions',
       executorId: 'codex-app-server',
       executorProtocol: 'codex-app-server',
       executorDescriptorRevision: 'r1',
     },
   };
+  const priorState = stateValues.get(externalExecutorKey) as Record<string, unknown>;
+  if (priorState['sessionRef'] !== undefined) {
+    stateValues.set(externalExecutorKey, {
+      ...priorState,
+      bindingFingerprint:
+        options.priorBindingFingerprint ?? agentExecutorBindingFingerprint(context.binding),
+    });
+  }
   let serverHandler: CodexServerRequestHandler | undefined;
   const client = {
     status: () => ({ state: 'ready' as const }),
     connect: async () => {},
-    listModels: async () => ({
-      data: (options.models ?? ['gpt-test']).map((id) => ({ id })),
-      nextCursor: null,
-    }),
+    listModels: async () => {
+      const models = [...(options.models ?? [options.modelAlias ?? 'gpt-test'])];
+      modelLists.push(models);
+      return {
+        data: models.map((id) => ({ id })),
+        nextCursor: null,
+      };
+    },
     startThread: async (params: Readonly<Record<string, unknown>>) => {
       starts.push(params);
       return { thread: { id: 'thread-new' } };
@@ -275,6 +295,7 @@ function createHarness(options: HarnessOptions = {}) {
     client,
     events,
     starts,
+    modelLists,
     resumes,
     prompts,
     serverResults,
@@ -319,6 +340,55 @@ describe('Codex app-server external executor', () => {
         executorId: 'codex-app-server',
       },
     ]]);
+    await harness.session.shutdown();
+  });
+
+  it('passes the original model through model/list, thread creation, and xhigh turn start', async () => {
+    const harness = createHarness({
+      modelAlias: 'vendor-short',
+      thinkingEffort: 'xhigh',
+    });
+
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await handle.completion;
+
+    expect(harness.modelLists).toEqual([['vendor-short']]);
+    expect(harness.starts[0]).toMatchObject({ model: 'vendor-short' });
+    expect(harness.prompts[0]).toMatchObject({
+      threadId: 'thread-new',
+      effort: 'xhigh',
+    });
+    await harness.session.shutdown();
+  });
+
+  it('starts a new Codex thread when the persisted binding fingerprint differs', async () => {
+    const harness = createHarness({
+      priorThreadId: 'thread-old',
+      priorBindingFingerprint: '0'.repeat(64),
+      modelAlias: 'model-b',
+      thinkingEffort: 'xhigh',
+      history: [{
+        role: 'user',
+        content: [{ type: 'text', text: 'prior work' }],
+        toolCalls: [],
+      }],
+    });
+
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'continue' },
+      { signal: new AbortController().signal },
+    );
+    await handle.completion;
+
+    expect(harness.resumes).toEqual([]);
+    expect(harness.starts[0]).toMatchObject({ model: 'model-b' });
+    expect(harness.prompts[0]).toMatchObject({ effort: 'xhigh' });
+    expect(harness.prompts[0]?.['input']).toEqual([
+      expect.objectContaining({ text: expect.stringContaining('BEGIN KIKI PRIOR TRANSCRIPT HANDOFF') }),
+    ]);
     await harness.session.shutdown();
   });
 

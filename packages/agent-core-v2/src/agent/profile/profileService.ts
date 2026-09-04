@@ -1,3 +1,8 @@
+import type {
+  ExecutorBinding,
+  ExecutorValidationResult,
+} from '@kiki/agent-profiles/ports';
+
 import { type CollectionView } from '#/_base/di/collection';
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -309,7 +314,24 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   update(changed: ProfileUpdateData): void {
-    const { activeToolNames, ...configChanged } = changed;
+    const { activeToolNames, ...requestedConfigChanged } = changed;
+    let configChanged = requestedConfigChanged;
+    if (
+      this.isExternalExecutor &&
+      (configChanged.modelAlias !== undefined || configChanged.thinkingLevel !== undefined)
+    ) {
+      const binding = this.requireValidBinding(
+        this.validateBinding({
+          modelAlias: configChanged.modelAlias,
+          thinkingEffort: configChanged.thinkingLevel,
+        }),
+      );
+      configChanged = {
+        ...configChanged,
+        modelAlias: binding.modelAlias,
+        thinkingLevel: binding.thinkingEffort,
+      };
+    }
     if (
       changed.profileName !== undefined &&
       this.activeProfile?.name !== changed.profileName
@@ -640,26 +662,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
     }
     const routeModelAlias = selection.route?.lockedModelAlias;
-    if (
-      routeModelAlias !== undefined &&
-      input.model !== undefined &&
-      input.model !== routeModelAlias
-    ) {
-      throw new Error2(
-        ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${selection.route!.id}" locks model_alias to "${routeModelAlias}"`,
-      );
-    }
-    if (
-      selection.route?.lockedThinkingEffort !== undefined &&
-      input.thinking !== undefined &&
-      input.thinking !== selection.route.lockedThinkingEffort
-    ) {
-      throw new Error2(
-        ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${selection.route.id}" locks thinking_effort to "${selection.route.lockedThinkingEffort}"`,
-      );
-    }
     const requested = resolveMainModelCandidate({
       inputModel: input.model,
       routeLockedAlias: routeModelAlias,
@@ -688,12 +690,41 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           ? this.thinkingLevel
           : undefined,
     }) ?? 'off';
-    const validated = executor.provider?.validateBinding?.({
-      modelAlias: requestedAlias,
-      thinkingEffort: requestedThinking,
-    });
-    const alias = validated?.modelAlias ?? requestedAlias;
-    const thinkingLevel = (validated?.thinkingEffort ?? requestedThinking) as ThinkingEffort;
+    const validated = this.requireValidBinding(
+      this.executors.validateBinding(executor.descriptor.id, executor.options, {
+        modelAlias: requestedAlias,
+        thinkingEffort: requestedThinking,
+      }),
+    );
+    const alias = validated.modelAlias!;
+    const thinkingLevel = validated.thinkingEffort as ThinkingEffort;
+    const routeBinding =
+      selection.route === undefined
+        ? undefined
+        : this.requireValidBinding(
+            this.executors.validateBinding(executor.descriptor.id, executor.options, {
+              modelAlias: selection.route.lockedModelAlias ?? alias,
+              thinkingEffort: selection.route.lockedThinkingEffort ?? thinkingLevel,
+            }),
+          );
+    if (
+      selection.route?.lockedModelAlias !== undefined &&
+      routeBinding?.modelAlias !== alias
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${selection.route.id}" locks model_alias to "${selection.route.lockedModelAlias}"`,
+      );
+    }
+    if (
+      selection.route?.lockedThinkingEffort !== undefined &&
+      routeBinding?.thinkingEffort !== thinkingLevel
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${selection.route.id}" locks thinking_effort to "${selection.route.lockedThinkingEffort}"`,
+      );
+    }
     await this.sessionToolPolicy.ready;
     const context = await this.buildSystemPromptContext(profile);
     this.assertRouteBindable(selection.route?.id);
@@ -716,9 +747,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profileName: selection.baseProfile.name,
       profileDefinitionId: selection.baseProfile.definitionId,
       routeId: selection.route?.id,
-      lockedModelAlias: routeModelAlias === undefined ? undefined : alias,
+      lockedModelAlias:
+        routeModelAlias === undefined ? undefined : routeBinding?.modelAlias,
       lockedThinkingEffort:
-        selection.route?.lockedThinkingEffort === undefined ? undefined : thinkingLevel,
+        selection.route?.lockedThinkingEffort === undefined
+          ? undefined
+          : routeBinding?.thinkingEffort,
       executorId: executor.descriptor.id,
       executorProtocol: executor.descriptor.protocol,
       executorOptions: { ...executor.options },
@@ -748,14 +782,32 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.publishToolPatternWarnings();
   }
 
-  async setModel(alias: string): Promise<ProfileSetModelResult> {
-    if (this.profileState.executorId !== undefined && this.profileState.executorId !== 'native') {
-      const validated = this.executors.validateBinding(
-        this.profileState.executorId,
+  validateBinding(binding: ExecutorBinding): ExecutorValidationResult {
+    const complete = {
+      modelAlias: binding.modelAlias ?? this.modelAlias,
+      thinkingEffort: binding.thinkingEffort ?? this.profileState.thinkingLevel,
+    };
+    if (this.isExternalExecutor) {
+      return this.executors.validateBinding(
+        this.profileState.executorId!,
         this.profileState.executorOptions,
-        { modelAlias: alias, thinkingEffort: this.thinkingLevel },
+        complete,
       );
-      const externalAlias = validated.modelAlias ?? alias;
+    }
+    return {
+      ok: true,
+      binding: {
+        modelAlias:
+          complete.modelAlias === undefined ? undefined : this.resolveModelId(complete.modelAlias),
+        thinkingEffort: complete.thinkingEffort,
+      },
+    };
+  }
+
+  async setModel(alias: string): Promise<ProfileSetModelResult> {
+    if (this.isExternalExecutor) {
+      const validated = this.requireValidBinding(this.validateBinding({ modelAlias: alias }));
+      const externalAlias = validated.modelAlias!;
       if (
         this.profileState.lockedModelAlias !== undefined &&
         externalAlias !== this.profileState.lockedModelAlias
@@ -834,16 +886,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   setThinking(level: string): void {
-    const external =
-      this.profileState.executorId !== undefined && this.profileState.executorId !== 'native';
+    const external = this.isExternalExecutor;
     let effort: string;
     if (external) {
-      const validated = this.executors.validateBinding(
-        this.profileState.executorId!,
-        this.profileState.executorOptions,
-        { modelAlias: this.modelAlias, thinkingEffort: level },
-      );
-      effort = validated.thinkingEffort ?? level;
+      const validated = this.requireValidBinding(this.validateBinding({ thinkingEffort: level }));
+      effort = validated.thinkingEffort!;
     } else {
       this.assertThinkingEffortSupported(level, this.tryResolveRawModel(), this.modelAlias ?? '');
       effort = normalizeRequestedThinkingEffort(level) ?? level;
@@ -1115,6 +1162,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   getEffectiveThinkingLevel(): ThinkingEffort {
+    if (this.isExternalExecutor) return this.profileState.thinkingLevel as ThinkingEffort;
     return this.resolveThinkingState(this.tryResolveRawModel()).effective;
   }
 
@@ -1140,6 +1188,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   resolveRequestParams(): ModelRequestParams {
+    if (this.isExternalExecutor) {
+      return {
+        cacheKey: this.sessionContext.sessionId,
+        thinkingEffort: this.profileState.thinkingLevel as ThinkingEffort,
+      };
+    }
     const model = this.tryResolveRawModel();
     const thinking = this.resolveThinkingState(model);
     const thinkingConfig = this.config.get<ThinkingConfig>(THINKING_SECTION);
@@ -1169,10 +1223,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   getModelCapabilities(): ModelCapability {
+    if (this.isExternalExecutor) return UNKNOWN_CAPABILITY;
     return this.tryResolveRawModel()?.capabilities ?? UNKNOWN_CAPABILITY;
   }
 
   getMaxOutputSize(): number | undefined {
+    if (this.isExternalExecutor) return undefined;
     return this.tryResolveRawModel()?.maxOutputSize;
   }
 
@@ -1185,6 +1241,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   hasProvider(): boolean {
+    if (this.isExternalExecutor) {
+      return this.executors.provider(this.profileState.executorProtocol!) !== undefined;
+    }
     return this.tryResolveRawModel() !== undefined;
   }
 
@@ -1215,10 +1274,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (changed.modelAlias !== undefined) payload.modelAlias = changed.modelAlias;
     if (changed.profileName !== undefined) payload.profileName = changed.profileName;
     if (changed.thinkingLevel !== undefined || changed.modelAlias !== undefined) {
-      const model = this.resolveModelForThinking(changed.modelAlias ?? this.modelAlias);
-      const requested =
-        changed.thinkingLevel ?? (this.modelAlias === undefined ? undefined : this.thinkingLevel);
-      payload.thinkingEffort = this.resolveThinkingEffort(requested, model);
+      if (this.isExternalExecutor) {
+        payload.thinkingEffort =
+          (changed.thinkingLevel ?? this.profileState.thinkingLevel) as ThinkingEffort;
+      } else {
+        const model = this.resolveModelForThinking(changed.modelAlias ?? this.modelAlias);
+        const requested =
+          changed.thinkingLevel ?? (this.modelAlias === undefined ? undefined : this.thinkingLevel);
+        payload.thinkingEffort = this.resolveThinkingEffort(requested, model);
+      }
     }
     if (changed.systemPrompt !== undefined) {
       payload.systemPrompt = changed.systemPrompt;
@@ -1237,11 +1301,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private afterConfigDispatch(changed: Omit<ProfileUpdateData, 'activeToolNames'>): void {
     if (changed.modelAlias !== undefined) {
-      const model = this.tryResolveRawModel();
-      this.telemetryContext.set({
-        provider_type: model?.providerType ?? model?.protocol,
-        protocol: model?.protocol,
-      });
+      if (this.isExternalExecutor) {
+        this.telemetryContext.set({});
+      } else {
+        const model = this.tryResolveRawModel();
+        this.telemetryContext.set({
+          provider_type: model?.providerType ?? model?.protocol,
+          protocol: model?.protocol,
+        });
+      }
     }
     if (changed.modelAlias !== undefined || changed.thinkingLevel !== undefined) {
       this.warnAboutAnthropicThinkingEffort();
@@ -1252,6 +1320,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private warnAboutAnthropicThinkingEffort(): void {
+    if (this.isExternalExecutor) return;
     try {
       const model = this.tryResolveRawModel();
       if (model?.protocol !== 'anthropic') return;
@@ -1292,13 +1361,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
     const modelAlias = this.modelAlias;
     if (modelAlias === undefined) return;
-    const capabilities = this.tryResolveRawModel()?.capabilities;
+    const capabilities = this.isExternalExecutor
+      ? undefined
+      : this.tryResolveRawModel()?.capabilities;
     const maxContextTokens = capabilities?.max_input_tokens ?? capabilities?.max_context_tokens;
     void this.dispatcher.dispatch(
       new AgentStatusUpdated({
         model: modelAlias,
         thinkingEffort: includeThinkingEffort
-          ? this.getEffectiveThinkingLevel()
+          ? this.isExternalExecutor
+            ? this.profileState.thinkingLevel as ThinkingEffort
+            : this.getEffectiveThinkingLevel()
           : undefined,
         maxContextTokens:
           maxContextTokens !== undefined && maxContextTokens > 0 ? maxContextTokens : undefined,
@@ -1351,7 +1424,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private get thinkingLevel(): ThinkingEffort {
-    const stored = this.profileState.thinkingLevel;
+    const stored = this.profileState.thinkingLevel as ThinkingEffort;
+    if (this.isExternalExecutor) return stored;
     if (stored === 'off' && this.alwaysThinkingModel) {
       return this.resolveThinkingEffort(stored, this.tryResolveRawModel());
     }
@@ -1363,6 +1437,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     readonly forced: ThinkingEffort | undefined;
   } {
     const base = this.thinkingLevel;
+    if (this.isExternalExecutor) return { effective: base, forced: undefined };
     const forced = resolveForcedThinkingEffort(
       this.config.get<ThinkingConfig>(THINKING_SECTION)?.forcedEffort,
       base,
@@ -1396,7 +1471,19 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return modelSupportsThinkingEffort(effort, model, this.strictThinkingValidation(model));
   }
 
+  private get isExternalExecutor(): boolean {
+    return this.profileState.executorId !== undefined && this.profileState.executorId !== 'native';
+  }
+
+  private requireValidBinding(result: ExecutorValidationResult): ExecutorBinding {
+    if (!result.ok) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, result.diagnostic);
+    }
+    return result.binding;
+  }
+
   private get alwaysThinkingModel(): boolean {
+    if (this.isExternalExecutor) return false;
     return this.tryResolveRawModel()?.alwaysThinking === true;
   }
 
@@ -1405,6 +1492,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private tryResolveRawModel(): Model | undefined {
+    if (this.isExternalExecutor) return undefined;
     const alias = this.modelAlias;
     return this.resolveModelForThinking(alias);
   }

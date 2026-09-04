@@ -15,11 +15,12 @@ import {
   type NormalizedExecutorEvent,
 } from '@moonshot-ai/acp-client';
 
-import type {
-  AgentExecutionStatus,
-  AgentExecutorContext,
-  AgentExecutorPermissionModeMapping,
-  AgentExecutorSession,
+import {
+  agentExecutorBindingFingerprint,
+  type AgentExecutionStatus,
+  type AgentExecutorContext,
+  type AgentExecutorPermissionModeMapping,
+  type AgentExecutorSession,
 } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
@@ -180,7 +181,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const losses = new Set<ExecutorLossCode>(['acp_no_step_boundaries']);
     const configured = await this.#configure(opened, options.signal);
     const prior = this.#states.get(externalExecutorKey);
-    const priorSessionId = sessionIdFromState(prior.sessionRef);
+    const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);
+    const reusablePrior = prior.bindingFingerprint === bindingFingerprint;
+    const priorSessionId = reusablePrior ? sessionIdFromState(prior.sessionRef) : undefined;
     const sessionEpoch = priorSessionId === configured.sessionId
       ? prior.sessionEpoch ?? 1
       : (prior.sessionEpoch ?? 0) + 1;
@@ -191,7 +194,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       losses.add('resume_new_session_handoff');
       if (handoff.truncated) losses.add('handoff_truncated');
     }
-    const deliverProfile = prior.profileDeliveredSessionId !== configured.sessionId;
+    const deliverProfile =
+      !reusablePrior || prior.profileDeliveredSessionId !== configured.sessionId;
     if (deliverProfile) losses.add('profile_as_user_preamble');
     const remotePrompt = buildRemotePrompt({
       prompt: request.prompt,
@@ -255,6 +259,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         new ExecutorSessionUpdated({
           executorId: this.context.descriptor.id,
           descriptorRevision: this.context.descriptor.revision,
+          bindingFingerprint,
           sessionRef: configured.sessionRef,
           sessionEpoch,
           profileDeliveredSessionId: deliverProfile
@@ -426,7 +431,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
       mcpServers: [],
-      sessionRef: state.sessionRef as ExecutorSessionRefEnvelope | undefined,
+      sessionRef:
+        state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding)
+          ? state.sessionRef as ExecutorSessionRefEnvelope | undefined
+          : undefined,
       signal,
     };
   }

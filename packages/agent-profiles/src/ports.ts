@@ -22,15 +22,14 @@ export interface ExecutorBinding {
   readonly thinkingEffort?: string;
 }
 
-export interface ExecutorValidationResult {
-  readonly binding?: ExecutorBinding;
-  readonly diagnostic?: string;
-}
+export type ExecutorValidationResult =
+  | { readonly ok: true; readonly binding: ExecutorBinding }
+  | { readonly ok: false; readonly diagnostic: string };
 
 export interface ExecutorValidator {
   validateExecutor(
     id: string,
     options: ExecutorOptions | undefined,
-    binding?: ExecutorBinding,
-  ): ExecutorValidationResult | string | undefined;
+    binding: ExecutorBinding,
+  ): ExecutorValidationResult | string;
 }

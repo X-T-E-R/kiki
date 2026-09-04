@@ -363,12 +363,12 @@ export class SessionDispatchService implements ISessionDispatchService {
     const resolver = modelAliasResolverForExecutor(profile.executor, this.models);
     if (input.resolvedBinding !== undefined) {
       const model = resolver.resolveId(input.resolvedBinding.model) ?? input.resolvedBinding.model;
-      assertProfileRouteBinding(
-        selection.route,
-        { modelAlias: model, thinkingEffort: input.resolvedBinding.thinking },
-        resolver,
-      );
       if (native) {
+        assertProfileRouteBinding(
+          selection.route,
+          { modelAlias: model, thinkingEffort: input.resolvedBinding.thinking },
+          resolver,
+        );
         assertProfileRouteModelAvailable(selection.route, this.modelCatalog, resolver);
         this.modelCatalog.get(model);
       }
@@ -379,12 +379,14 @@ export class SessionDispatchService implements ISessionDispatchService {
       target.lease,
       selection.route,
     );
-    assertProfileRouteBinding(
-      selection.route,
-      { modelAlias: filled.modelAlias, thinkingEffort: filled.thinkingEffort },
-      resolver,
-    );
-    if (native) assertProfileRouteModelAvailable(selection.route, this.modelCatalog, resolver);
+    if (native) {
+      assertProfileRouteBinding(
+        selection.route,
+        { modelAlias: filled.modelAlias, thinkingEffort: filled.thinkingEffort },
+        resolver,
+      );
+      assertProfileRouteModelAvailable(selection.route, this.modelCatalog, resolver);
+    }
     const roleConstraints = roleConstraintsFromProfile(
       profile,
       spawnConstraintOrigin(target.lease, target.spawnPolicy),

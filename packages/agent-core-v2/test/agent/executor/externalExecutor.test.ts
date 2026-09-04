@@ -34,7 +34,10 @@ import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentUsageService } from '#/agent/usage/usage';
-import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import {
+  agentExecutorBindingFingerprint,
+  type AgentExecutorContext,
+} from '#/app/agentExecutor/agentExecutor';
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptors';
 import type { Event2 } from '#/app/event/event2';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
@@ -63,6 +66,10 @@ interface FakeHarnessOptions {
   readonly providerName?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly modelBinding?: 'session_config' | 'argv';
+  readonly modelArgs?: readonly string[];
+  readonly args?: readonly string[];
+  readonly priorBindingFingerprint?: string;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -142,6 +149,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
   const loopEvents: unknown[] = [];
   const appendedMessages: ContextMessage[] = [];
   const starts: AcpTurnRequest[] = [];
+  const opens: AcpOpenSessionOptions[] = [];
   const selections: Array<{ configId: string; value: string | boolean }> = [];
   const permissionDecisions: AcpPermissionDecision[] = [];
   const state = stateHarness(options.prior);
@@ -160,6 +168,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
         state.values.set(externalExecutorKey, {
           executorId: event.executorId,
           descriptorRevision: event.descriptorRevision,
+          bindingFingerprint: event.bindingFingerprint,
           sessionRef: event.sessionRef,
           sessionEpoch: event.sessionEpoch,
           profileDeliveredSessionId: event.profileDeliveredSessionId,
@@ -249,7 +258,10 @@ function createHarness(options: FakeHarnessOptions = {}) {
   });
   const client = {
     status: () => ({ state: 'ready' as const, sessionId: 'remote-2' }),
-    openSession: async (_input: AcpOpenSessionOptions) => openResult(),
+    openSession: async (input: AcpOpenSessionOptions) => {
+      opens.push(input);
+      return openResult();
+    },
     configureSession: async (input: {
       readonly configOptions?: readonly { configId: string; value: string | boolean }[];
     }) => {
@@ -324,8 +336,9 @@ function createHarness(options: FakeHarnessOptions = {}) {
       id: options.executorId ?? 'example-acp',
       protocol: 'acp-v1',
       command: 'example-acp',
-      args: [],
-      modelBinding: 'session_config',
+      args: options.args ?? [],
+      modelBinding: options.modelBinding ?? 'session_config',
+      modelArgs: options.modelArgs,
       modelConfigCategory: 'model',
       thoughtConfigCategory: 'thought_level',
       permissionModeMapping: options.permissionMapping ?? {
@@ -345,6 +358,15 @@ function createHarness(options: FakeHarnessOptions = {}) {
       executorDescriptorRevision: 'r1',
     },
   };
+  const priorState = state.values.get(externalExecutorKey) as Record<string, unknown>;
+  if (priorState['sessionRef'] !== undefined) {
+    state.values.set(externalExecutorKey, {
+      ...priorState,
+      bindingFingerprint:
+        options.priorBindingFingerprint ??
+        agentExecutorBindingFingerprint(executorContext.binding),
+    });
+  }
   const session = new AcpAgentExecutorSession(
     executorContext,
     (_process, handler) => {
@@ -354,10 +376,12 @@ function createHarness(options: FakeHarnessOptions = {}) {
   );
   return {
     session,
+    executorContext,
     events,
     loopEvents,
     appendedMessages,
     starts,
+    opens,
     selections,
     permissionDecisions,
     interaction,
@@ -663,16 +687,25 @@ describe('ACP external executor', () => {
     ]);
   });
 
-  it('passes xhigh through when the ACP executor advertises it', async () => {
-    const sessionConfigOptions = configOptions().map((option) =>
-      option.id === 'thought-id' && option.type === 'select'
-        ? {
-            ...option,
-            options: [...option.options, { value: 'xhigh', name: 'Extra high' }],
-          }
-        : option,
-    ) as AcpSessionConfigOption[];
+  it('passes the original Grok alias and xhigh through session config', async () => {
+    const sessionConfigOptions = configOptions().map((option) => {
+      if (option.id === 'model-id' && option.type === 'select') {
+        return {
+          ...option,
+          options: [...option.options, { value: 'grok-4.6', name: 'Grok 4.6' }],
+        };
+      }
+      if (option.id === 'thought-id' && option.type === 'select') {
+        return {
+          ...option,
+          options: [...option.options, { value: 'xhigh', name: 'Extra high' }],
+        };
+      }
+      return option;
+    }) as AcpSessionConfigOption[];
     const harness = createHarness({
+      executorId: 'grok-acp',
+      modelAlias: 'grok-4.6',
       thinkingEffort: 'xhigh',
       sessionConfigOptions,
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
@@ -684,19 +717,107 @@ describe('ACP external executor', () => {
     );
     await run.completion;
 
+    expect(harness.selections).toContainEqual({ configId: 'model-id', value: 'grok-4.6' });
     expect(harness.selections).toContainEqual({ configId: 'thought-id', value: 'xhigh' });
   });
 
-  it('reports an unsupported ACP effort before starting the turn', async () => {
+  it('opens a new ACP session when the persisted binding fingerprint differs', async () => {
+    const sessionConfigOptions = configOptions().map((option) => {
+      if (option.id === 'model-id' && option.type === 'select') {
+        return {
+          ...option,
+          options: [...option.options, { value: 'model-b', name: 'Model B' }],
+        };
+      }
+      if (option.id === 'thought-id' && option.type === 'select') {
+        return {
+          ...option,
+          options: [...option.options, { value: 'xhigh', name: 'Extra high' }],
+        };
+      }
+      return option;
+    }) as AcpSessionConfigOption[];
     const harness = createHarness({
+      mode: 'new',
+      modelAlias: 'model-b',
       thinkingEffort: 'xhigh',
+      priorBindingFingerprint: '0'.repeat(64),
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: {
+          executorId: 'example-acp',
+          version: 1,
+          ref: { sessionId: 'remote-1' },
+        },
+        sessionEpoch: 1,
+        profileDeliveredSessionId: 'remote-1',
+      },
+      sessionConfigOptions,
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.opens[0]?.sessionRef).toBeUndefined();
+    expect(harness.selections).toContainEqual({ configId: 'model-id', value: 'model-b' });
+    expect(harness.selections).toContainEqual({ configId: 'thought-id', value: 'xhigh' });
+  });
+
+  it('passes the original Cursor alias through argv and xhigh through session config', async () => {
+    const sessionConfigOptions = configOptions().map((option) =>
+      option.id === 'thought-id' && option.type === 'select'
+        ? {
+            ...option,
+            options: [...option.options, { value: 'xhigh', name: 'Extra high' }],
+          }
+        : option,
+    ) as AcpSessionConfigOption[];
+    const harness = createHarness({
+      executorId: 'cursor-acp',
+      modelAlias: 'cursor-fast',
+      thinkingEffort: 'xhigh',
+      modelBinding: 'argv',
+      modelArgs: ['--model', '{model}'],
+      args: ['acp'],
+      sessionConfigOptions,
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    expect(resolveAcpProcessArgs(harness.executorContext)).toEqual([
+      '--model',
+      'cursor-fast',
+      'acp',
+    ]);
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.selections).not.toContainEqual({ configId: 'model-id', value: 'cursor-fast' });
+    expect(harness.selections).toContainEqual({ configId: 'thought-id', value: 'xhigh' });
+  });
+
+  it('reports an unsupported Cursor effort before starting the turn', async () => {
+    const harness = createHarness({
+      executorId: 'cursor-acp',
+      modelAlias: 'cursor-fast',
+      thinkingEffort: 'ultra',
+      modelBinding: 'argv',
+      modelArgs: ['--model', '{model}'],
+      args: ['acp'],
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
     });
 
     await expect(harness.session.run(
       { kind: 'prompt', prompt: 'work' },
       { signal: new AbortController().signal },
-    )).rejects.toThrow(/thought level "xhigh" is unavailable/);
+    )).rejects.toThrow(/thought level "ultra" is unavailable/);
     expect(harness.starts).toHaveLength(0);
   });
 

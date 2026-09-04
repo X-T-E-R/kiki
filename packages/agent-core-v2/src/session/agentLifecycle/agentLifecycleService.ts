@@ -150,8 +150,19 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       }
       const existing = this.handles.get(opts.agentId);
       if (existing !== undefined) {
-        const persisted = existing.accessor.get(IAgentProfileService).data();
-        const resolver = modelAliasResolverForExecutor(persisted.executorId, this.models);
+        const profile = existing.accessor.get(IAgentProfileService);
+        const persisted = profile.data();
+        const validation =
+          opts.binding === undefined
+            ? undefined
+            : profile.validateBinding({
+                modelAlias: opts.binding.model,
+                thinkingEffort: opts.binding.thinking,
+              });
+        if (validation !== undefined && !validation.ok) {
+          throw new Error2(ErrorCodes.CONFIG_INVALID, validation.diagnostic);
+        }
+        const normalized = validation?.binding;
         if (opts.binding !== undefined && opts.binding.route !== persisted.routeId) {
           throw new Error2(
             ErrorCodes.ROUTE_SWITCH_FORBIDDEN,
@@ -160,9 +171,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         }
         if (
           persisted.lockedModelAlias !== undefined &&
-          opts.binding?.model !== undefined &&
-          (resolver.resolveId(opts.binding.model) ?? opts.binding.model) !==
-            persisted.lockedModelAlias
+          normalized !== undefined &&
+          normalized.modelAlias !== persisted.lockedModelAlias
         ) {
           throw new Error2(
             ErrorCodes.ROUTE_BINDING_CONFLICT,
@@ -171,8 +181,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         }
         if (
           persisted.lockedThinkingEffort !== undefined &&
-          opts.binding?.thinking !== undefined &&
-          opts.binding.thinking !== persisted.lockedThinkingEffort
+          normalized !== undefined &&
+          normalized.thinkingEffort !== persisted.lockedThinkingEffort
         ) {
           throw new Error2(
             ErrorCodes.ROUTE_BINDING_CONFLICT,
@@ -211,6 +221,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           };
     const route = selection.route!;
     const native = (selection.profile.executor ?? 'native') === 'native';
+    if (!native) return;
     const resolver = modelAliasResolverForExecutor(selection.profile.executor, this.models);
     const canonicalRouteModelAlias =
       route.lockedModelAlias === undefined
@@ -236,7 +247,6 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         `Agent profile route "${route.id}" locks thinking_effort to "${route.lockedThinkingEffort}"`,
       );
     }
-    if (!native) return;
     const requestedAlias = resolveMainModelCandidate({
       inputModel: binding.model,
       routeLockedAlias: route.lockedModelAlias,

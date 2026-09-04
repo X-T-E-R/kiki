@@ -266,6 +266,13 @@ describe('SessionExternalDelegationService', () => {
       agent.stub(IAgentProfileService, {
         _serviceBrand: undefined,
         data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', executorId, subagents: ['coder'] }),
+        validateBinding: (binding) => ({
+          ok: true,
+          binding: {
+            modelAlias: binding.modelAlias ?? modelAlias,
+            thinkingEffort: binding.thinkingEffort ?? thinkingLevel,
+          },
+        }),
       });
       permissionModes.set(id, 'auto');
       const setPermissionMode = (mode: PermissionMode): void => {

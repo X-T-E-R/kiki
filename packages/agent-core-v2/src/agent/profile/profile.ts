@@ -1,4 +1,9 @@
 import type {
+  ExecutorBinding,
+  ExecutorValidationResult,
+} from '@kiki/agent-profiles/ports';
+
+import type {
   AgentProfile,
   AgentProfileContext,
   EnvironmentDisclosureSnapshot,
@@ -155,6 +160,7 @@ export interface IAgentProfileService {
   bind(input: BindAgentInput): Promise<void>;
   setModel(model: string): Promise<ProfileSetModelResult>;
   setThinking(level: string): void;
+  validateBinding(binding: ExecutorBinding): ExecutorValidationResult;
   republishStatus(): void;
   getModel(): string;
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void;

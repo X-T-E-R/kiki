@@ -11,12 +11,12 @@ Agent profile parsing, filesystem discovery, layered catalog projection, dispatc
   - `stat(path: string): Promise<HostFileStat>`
   - `realpath(path: string): Promise<string>`
 - Model port: `ModelAliasResolver.resolveId(alias: string): string | undefined`
-- Executor port: `ExecutorValidator.validateExecutor(id: string, options: ExecutorOptions | undefined, binding?: ExecutorBinding): ExecutorValidationResult | string | undefined`
+- Executor port: `ExecutorValidator.validateExecutor(id: string, options: ExecutorOptions | undefined, binding: ExecutorBinding): ExecutorValidationResult | string`
 - Parsing: `parseAgentFileText`, `parseAgentRouteFileText`, `parseSubagentList`, `parseSpawnConstraints`
 - Discovery: `discoverAgentFiles`, `resolveAgentSourceGraph`, `profilesFromDiscovery`, `loadSystemMdProfile`
 - Catalog: `projectAgentProfileCatalog`, `buildProfileCatalogEntries`, `renderProfileCatalogEntries`, `buildProfileDescriptions`
 
-`realpath` supplies canonical paths for deduplication and symbolic-link escape checks. `resolveId` returns the canonical model id or `undefined` when the alias is unresolved. `validateExecutor` returns `undefined` for an unchanged valid binding, a diagnostic string or result when validation fails, or an explicit normalized binding when the executor owns that normalization.
+`realpath` supplies canonical paths for deduplication and symbolic-link escape checks. `resolveId` returns the canonical model id or `undefined` when the alias is unresolved. `validateExecutor` returns an explicit accepted binding or a diagnostic; legacy diagnostic strings are converted at this boundary.
 
 ## Agent profile frontmatter
 

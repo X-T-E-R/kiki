@@ -55,6 +55,7 @@ export interface ExecutorTurnMetadata extends ExecutorTurnMetadataPayload {}
 const executorSessionUpdatedSchema = z.object({
   executorId: z.string().min(1),
   descriptorRevision: z.string().min(1),
+  bindingFingerprint: z.string().length(64).optional(),
   sessionRef: z.object({
     executorId: z.string().min(1),
     version: z.number().int().positive(),
@@ -116,6 +117,7 @@ export interface ExecutorRuntimeUpdate extends z.infer<typeof executorRuntimeUpd
 export interface ExternalExecutorState {
   readonly executorId?: string;
   readonly descriptorRevision?: string;
+  readonly bindingFingerprint?: string;
   readonly sessionRef?: {
     readonly executorId: string;
     readonly version: number;
@@ -132,6 +134,7 @@ export const externalExecutorKey = defineState(
   .on(ExecutorSessionUpdated, (_state, event) => ({
     executorId: event.executorId,
     descriptorRevision: event.descriptorRevision,
+    bindingFingerprint: event.bindingFingerprint,
     sessionRef: event.sessionRef,
     sessionEpoch: event.sessionEpoch,
     profileDeliveredSessionId: event.profileDeliveredSessionId,

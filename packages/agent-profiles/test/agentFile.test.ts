@@ -797,9 +797,10 @@ describe('agentProfileFromFile', () => {
     const contribution = profilesFromDiscovery(discovery, basePrompt, undefined, {
       allowExternal: true,
       validateExecutor: (_id, _options, binding) => ({
+        ok: true,
         binding: {
-          modelAlias: `${binding?.modelAlias}-validated`,
-          thinkingEffort: binding?.thinkingEffort,
+          modelAlias: `${binding.modelAlias}-validated`,
+          thinkingEffort: binding.thinkingEffort,
         },
       }),
     });
@@ -812,6 +813,46 @@ describe('agentProfileFromFile', () => {
       modelAlias: 'grok-4.6-validated',
       thinkingEffort: 'xhigh',
     });
+  });
+
+  it('omits an external profile when the validation port returns a diagnostic', () => {
+    const definition = {
+      ...base,
+      executor: 'missing-executor',
+      modelAlias: 'external-model',
+    };
+    const discovery: AgentFileDiscoveryResult = {
+      agents: [definition],
+      routes: [],
+      skipped: [],
+      scannedRoots: ['/tmp/agents'],
+      scopedBindings: new Map(),
+      sourceDefinitions: new Map([[definition.definitionId, definition]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+
+    const contribution = profilesFromDiscovery(discovery, basePrompt, undefined, {
+      allowExternal: true,
+      validateExecutor: () => ({ ok: false, diagnostic: 'provider missing' }),
+    });
+
+    expect(contribution.profiles).toEqual([]);
+    expect(contribution.sourceDefinitions?.size).toBe(0);
+    expect(contribution.skipped).toEqual([
+      expect.objectContaining({ reason: 'provider missing' }),
+    ]);
+    expect(contribution.diagnostics).toEqual([
+      expect.objectContaining({ message: 'provider missing' }),
+    ]);
+    const legacy = profilesFromDiscovery(discovery, basePrompt, undefined, {
+      allowExternal: true,
+      validateExecutor: () => 'legacy provider missing',
+    });
+    expect(legacy.profiles).toEqual([]);
+    expect(legacy.skipped).toEqual([
+      expect.objectContaining({ reason: 'legacy provider missing' }),
+    ]);
   });
 
   it('returns a plain body verbatim and injects no unreferenced context', () => {

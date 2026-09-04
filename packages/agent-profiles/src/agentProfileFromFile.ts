@@ -179,18 +179,24 @@ function validateExecutorProfile(
         `External executor "${profile.executor}" is not allowed for this profile source`,
     };
   }
-  const result = validation.validateExecutor(profile.executor!, profile.executorOptions, {
-    modelAlias: profile.modelAlias,
-    thinkingEffort: profile.thinkingEffort,
-  });
-  if (typeof result === 'string') return { profile, error: result };
-  if (result?.diagnostic !== undefined) return { profile, error: result.diagnostic };
-  if (result?.binding === undefined) return { profile };
+  const validationResult = validation.validateExecutor(
+    profile.executor!,
+    profile.executorOptions,
+    {
+      modelAlias: profile.modelAlias,
+      thinkingEffort: profile.thinkingEffort,
+    },
+  );
+  const result =
+    typeof validationResult === 'string'
+      ? { ok: false as const, diagnostic: validationResult }
+      : validationResult;
+  if (!result.ok) return { profile, error: result.diagnostic };
   return {
     profile: normalizeAgentProfile({
       ...profile,
-      modelAlias: result.binding.modelAlias ?? profile.modelAlias,
-      thinkingEffort: result.binding.thinkingEffort ?? profile.thinkingEffort,
+      modelAlias: result.binding.modelAlias,
+      thinkingEffort: result.binding.thinkingEffort,
     }),
   };
 }
