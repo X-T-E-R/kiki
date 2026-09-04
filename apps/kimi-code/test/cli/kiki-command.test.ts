@@ -141,6 +141,11 @@ describe('kiki delegation CLI', () => {
     expect(program.commands.map((command) => command.name())).toEqual(projected.map((entry) => entry.command.split(/[ <[]/u)[0]));
   });
 
+  it('keeps the delegation CLI free of direct agent-core imports', async () => {
+    const source = await readFile(join(import.meta.dirname, '../../src/kiki/delegation.ts'), 'utf8');
+    expect(source).not.toContain('@moonshot-ai/agent-core-v2');
+  });
+
   it('executes Commander positionals and options through the generic projection', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-commander-test-'));
     roots.push(root);
@@ -260,6 +265,11 @@ describe('kiki delegation CLI', () => {
     expect(calls.map((call) => call.name)).toEqual(['dispatch', 'wait', 'respond', 'wait', 'result']);
     expect(calls[0]!.input).toEqual(expect.objectContaining({ dispatchKey: expect.any(String) }));
     expect(calls[3]!.input).toEqual({ dispatchId: 'dispatch-1', timeoutMs: 45_000 });
+    expect(harness.closed()).toBe(4);
+
+    const failed = runtimeHarness(workspace, [], {});
+    expect(await runDelegationCommand('list', [], { workspace }, failed.dependencies)).toBe(KIKI_EXIT.failure);
+    expect(failed.closed()).toBe(1);
   });
 
   it('follows event cursors as JSONL and returns stable terminal exit codes', async () => {
@@ -344,8 +354,10 @@ function runtimeHarness(
   createSeat: ReturnType<typeof vi.fn>;
   createClient: ReturnType<typeof vi.fn>;
   stdout(): string;
+  closed(): number;
 } {
   let stdout = '';
+  let closed = 0;
   const ensure = vi.fn(async () => ({ url: 'http://127.0.0.1:58627', token: 'server-token', serverId: 'server' }));
   const createSeat = vi.fn(async () => ({
     seatId: 'seat-1',
@@ -362,6 +374,9 @@ function runtimeHarness(
       if (queue === undefined || queue.length === 0) throw new Error(`Missing fake output for ${name}`);
       return queue.shift();
     },
+    close: async () => {
+      closed += 1;
+    },
   } as unknown as SeatKlient;
   const createClient = vi.fn(() => client);
   return {
@@ -377,5 +392,6 @@ function runtimeHarness(
     createSeat,
     createClient,
     stdout: () => stdout,
+    closed: () => closed,
   };
 }

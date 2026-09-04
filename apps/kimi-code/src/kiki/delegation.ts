@@ -279,11 +279,12 @@ export async function runDelegationCommand(
 ): Promise<number> {
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
+  let client: SeatKlient | undefined;
   try {
     const command = projectDelegationCommands()
       .find((candidate) => candidate.procedure.name === procedureName)!;
     const input = command.canonicalInput(positionals, options);
-    const client = await createCliSeatKlient(options, dependencies);
+    client = await createCliSeatKlient(options, dependencies);
     if (command.behavior === 'events' && options['follow'] === true) {
       return followEvents(client, input as DelegationProcedureInput<'events'>, options, dependencies, stdout);
     }
@@ -296,6 +297,8 @@ export async function runDelegationCommand(
   } catch (error) {
     stderr.write(`${redact(error instanceof Error ? error.message : String(error))}\n`);
     return exitCodeForError(error);
+  } finally {
+    await client?.close();
   }
 }
 

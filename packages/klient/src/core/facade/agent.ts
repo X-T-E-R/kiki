@@ -18,16 +18,14 @@ import type { IAgentPlanService } from '@moonshot-ai/agent-core-v2/features/plan
 import type { IAgentProfileService } from '@moonshot-ai/agent-core-v2/agent/profile/profile';
 import type { IAgentShellCommandService } from '@moonshot-ai/agent-core-v2/agent/shellCommand/shellCommand';
 import type { IAgentSkillService } from '@moonshot-ai/agent-core-v2/agent/skill/skill';
-import type { IAgentTaskService } from '@moonshot-ai/agent-core-v2/agent/task/task';
 import type { IAgentUsageService } from '@moonshot-ai/agent-core-v2/agent/usage/usage';
 import type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
 import type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
 
+import type { AgentTaskInfo } from '../../contract/agent/schemas.js';
 import type { ScopeRef } from '../channel.js';
 import type { ScopedCaller } from './session.js';
 
-// Wire-type aliases derived through the engine service interfaces (keeps
-// klient free of protocol-package imports).
 export type PromptLaunchResult = Awaited<ReturnType<IAgentPromptService['submit']>>;
 export type PromptWithSkillsInput = Parameters<IAgentSkillService['promptWithSkills']>[0];
 export type PromptWithSkillsResult = Awaited<ReturnType<IAgentSkillService['promptWithSkills']>>;
@@ -42,7 +40,7 @@ export type AgentContextData = {
 export type AgentCommandInfo = Awaited<ReturnType<IAgentCommandService['list']>>[number];
 export type RuntimeBinding = ReturnType<IAgentRuntimeBindingService['get']>;
 export type PlanData = Awaited<ReturnType<IAgentPlanService['status']>>;
-export type AgentTaskInfo = Awaited<ReturnType<IAgentTaskService['list']>>[number];
+export type { AgentTaskInfo } from '../../contract/agent/schemas.js';
 export type McpServerEntry = ReturnType<IAgentMcpService['list']>[number];
 
 export interface AgentFacade {
