@@ -11,12 +11,14 @@ import {
 import { clipboard } from '#/utils/clipboard/clipboard-native';
 import { openUrl } from '#/utils/open-url';
 
-import { FooterComponent } from './components/chrome/footer';import { GutterContainer } from './components/chrome/gutter-container';
+import { FooterComponent } from './components/chrome/footer';
+import { GutterContainer } from './components/chrome/gutter-container';
 import type { MoonLoader, SpinnerStyle } from './components/chrome/moon-loader';
 import { TodoPanelComponent } from './components/chrome/todo-panel';
 import type { SessionRow } from './components/dialogs/session-picker';
 import { CustomEditor } from './components/editor/custom-editor';
 import { DEFAULT_TUI_CONFIG } from './config';
+import type { TasksBrowserState } from './controllers/tasks-browser';
 import { CHROME_GUTTER } from './constant/rendering';
 import { currentTheme, type Theme } from './theme';
 import { setMarkdownRenderLatex } from './utils/markdown-options';
@@ -80,6 +82,7 @@ export interface TUIState {
    * this flag to avoid starting a goal ahead of the user's earlier message.
    */
   queuedMessageDispatchPending: boolean;
+  tasksBrowser: TasksBrowserState | undefined;
   swarmModeEntry: 'manual' | 'task' | undefined;
 }
 
@@ -187,6 +190,7 @@ export function createTUIState(options: KimiTUIOptions): TUIState {
     externalEditorRunning: false,
     queuedMessages: [],
     queuedMessageDispatchPending: false,
+    tasksBrowser: undefined,
     swarmModeEntry: undefined,
   };
 }

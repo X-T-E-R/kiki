@@ -1,6 +1,8 @@
 import chalk from 'chalk';
 import { truncateToWidth, visibleWidth } from '@moonshot-ai/pi-tui';
 
+import type { SlashCommandHost } from '../commands/dispatch';
+import type { ParsedSlashInput } from '../commands/types';
 import { currentTheme } from '../theme';
 
 /** Frame interval for the rainbow flow animation. */
@@ -202,4 +204,22 @@ export class RainbowDance implements RainbowDanceController {
       this.flowStopTimer = null;
     }
   }
+}
+
+export function tryHandleDanceCommand(host: SlashCommandHost, parsed: ParsedSlashInput): boolean {
+  if (parsed.name !== 'dance') return false;
+  if (currentDanceController === undefined) return false;
+
+  const cmd = (text: string): string => currentTheme.boldFg('primary', text);
+  const sub = parsed.args.trim().toLowerCase();
+  if (sub === 'off') {
+    currentDanceController.stop();
+  } else if (sub === 'on') {
+    currentDanceController.start({ hold: true });
+    host.showStatus(`Dancing — use ${cmd('/dance off')} to turn it off.`);
+  } else {
+    currentDanceController.start({ hold: false });
+    host.showStatus(`Use ${cmd('/dance on')} to keep the rainbow on.`);
+  }
+  return true;
 }

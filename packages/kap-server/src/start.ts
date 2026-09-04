@@ -392,7 +392,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
 
   const shutdownController = new AbortController();
-  const leaseRegistry = new LeaseRegistry(opts.leaseTtlMs);
+  const leaseRegistry = new LeaseRegistry(opts.leaseTtlMs, Date.now, (error) => {
+    logger.warn({ err: error }, 'lease resource expiry cleanup failed');
+  });
   let idleTimer: NodeJS.Timeout | undefined;
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
@@ -401,8 +403,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const doClose = async (): Promise<void> => {
     shutdownController.abort();
     if (idleTimer !== undefined) clearInterval(idleTimer);
-    leaseRegistry.dispose();
     const closeErrors: unknown[] = [];
+    try {
+      leaseRegistry.dispose();
+    } catch (error) {
+      closeErrors.push(error);
+      logger.warn({ err: error }, 'lease registry dispose failed; continuing server cleanup');
+    }
     let appClosing: Promise<void>;
     try {
       appClosing = app.close().catch((error) => {

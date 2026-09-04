@@ -95,6 +95,9 @@ describe('daemon command registry', () => {
     ]) {
       expect(statuses.get(name), name).toBe('supported');
     }
+    for (const name of ['add-dir', 'export-md', 'export-debug-zip', 'reload-tui', 'web']) {
+      expect(statuses.get(name), name).toBe('disabled');
+    }
     expect([...statuses.values()].filter((status) => status === 'supported').length).toBeGreaterThan(29);
   });
 });

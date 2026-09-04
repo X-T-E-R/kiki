@@ -112,6 +112,8 @@ const SUPPORTED_COMMANDS = [
 ] as const satisfies readonly DaemonCommandDefinition[];
 
 const DISABLED_COMMANDS = [
+  disabled('add-dir', [], 'Add a directory to the current workspace'),
+  disabled('export-md', [], 'Export the complete session as Markdown'),
   disabled('export-debug-zip', [], 'Export current session as a debug ZIP archive'),
   disabled('reload-tui', [], 'Reload TUI preferences'),
   disabled('web', [], 'Open the current session in the Web UI'),

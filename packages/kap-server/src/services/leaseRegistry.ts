@@ -17,9 +17,14 @@ export class LeaseRegistry {
   constructor(
     private readonly ttlMs = 60_000,
     private readonly now: () => number = Date.now,
+    private readonly onSweepError: (error: AggregateError) => void = () => {},
   ) {
     this.sweepTimer = setInterval(() => {
-      this.sweep();
+      try {
+        this.sweep();
+      } catch (error) {
+        this.onSweepError(error as AggregateError);
+      }
     }, Math.min(ttlMs, 1_000));
     this.sweepTimer.unref();
   }
@@ -64,21 +69,33 @@ export class LeaseRegistry {
 
   dispose(): void {
     clearInterval(this.sweepTimer);
-    for (const lease of this.leases.values()) this.cleanup(lease);
+    const errors: unknown[] = [];
+    for (const lease of this.leases.values()) errors.push(...this.cleanup(lease));
     this.leases.clear();
+    if (errors.length > 0) throw new AggregateError(errors, 'Failed to dispose lease resources');
   }
 
   private sweep(): void {
     const now = this.now();
+    const errors: unknown[] = [];
     for (const [leaseId, lease] of this.leases) {
       if (lease.expiresAt > now) continue;
       this.leases.delete(leaseId);
-      this.cleanup(lease);
+      errors.push(...this.cleanup(lease));
     }
+    if (errors.length > 0) throw new AggregateError(errors, 'Failed to expire lease resources');
   }
 
-  private cleanup(lease: LeaseEntry): void {
-    for (const cleanup of lease.resources.values()) cleanup();
+  private cleanup(lease: LeaseEntry): unknown[] {
+    const errors: unknown[] = [];
+    for (const cleanup of lease.resources.values()) {
+      try {
+        cleanup();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     lease.resources.clear();
+    return errors;
   }
 }

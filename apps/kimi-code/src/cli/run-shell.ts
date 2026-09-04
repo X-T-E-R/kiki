@@ -1,6 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 
-import { flushDiagnosticLogsSync, log } from '@moonshot-ai/kimi-code-sdk';
+import {
+  createKimiHarness,
+  flushDiagnosticLogsSync,
+  log,
+  type KimiHarnessOptions,
+} from '@moonshot-ai/kimi-code-sdk';
 
 import { CLI_UI_MODE } from '#/constant/app';
 import type { TuiConfig } from '#/tui/config';
@@ -9,13 +14,16 @@ import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { DaemonTUI } from '#/tui/daemon/daemon-tui';
 import { discoverDaemon, ensureDaemon, resolveDaemonHome } from '#/tui/daemon/discovery';
 import { runWorkspaceTrustGate } from '#/tui/daemon/workspace-trust';
+import { KimiTUI } from '#/tui/index';
 import { startupTrace } from '#/utils/startup-trace';
 import { currentTheme, getColorPalette } from '#/tui/theme';
+import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
 import { restoreTerminalModes } from '#/utils/terminal-restore';
 import { resolveCommandPath } from '#/utils/process/resolve-command';
 
 import type { CLIOptions } from './options';
 import { resolveAgentProfileSelection } from './agent-selection';
+import { createKimiCodeHostIdentity } from './version';
 
 export async function runShell(opts: CLIOptions, version: string): Promise<void> {
   let tuiConfig: TuiConfig;
@@ -33,6 +41,12 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   currentTheme.setPalette(palette);
 
   const workDir = process.cwd();
+  const harnessOptions: KimiHarnessOptions = {
+    identity: createKimiCodeHostIdentity(version),
+    skillDirs: opts.skillsDirs,
+  };
+  const harness = createKimiHarness(harnessOptions);
+  startupTrace('harness:created');
   log.info('kimi-code starting', {
     version,
     uiMode: CLI_UI_MODE,
@@ -40,23 +54,46 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     platform: `${process.platform}/${process.arch}`,
     workDir,
   });
-
-  const homeDir = resolveDaemonHome();
-  if (!(await runWorkspaceTrustGate({ homeDir, workDir }))) return;
-  const agentProfile = await resolveAgentProfileSelection(opts, workDir);
-  const connection =
-    (await discoverDaemon(homeDir, workDir)) ??
-    (await ensureDaemon({ homeDir, workspacePath: workDir }));
-  startupTrace('daemon:connected');
-  const tui = new DaemonTUI(connection, {
-    cliOptions: opts,
-    agentProfile,
-    additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
-    tuiConfig,
-    version,
-    workDir,
-    startupNotice: configWarning,
-  });
+  await harness.ensureConfigFile();
+  const config = await harness.getConfig();
+  startupTrace('config:loaded');
+  const useDaemonTui = isTuiDaemonEnabled(config.experimental);
+  let tui: KimiTUI | DaemonTUI;
+  let closeOnStartFailure: () => Promise<void>;
+  if (useDaemonTui) {
+    await harness.close();
+    const homeDir = resolveDaemonHome();
+    if (!(await runWorkspaceTrustGate({ homeDir, workDir }))) return;
+    const agentProfile = await resolveAgentProfileSelection(opts, workDir);
+    const connection =
+      (await discoverDaemon(homeDir, workDir)) ??
+      (await ensureDaemon({ homeDir, workspacePath: workDir }));
+    startupTrace('daemon:connected');
+    const daemonTui = new DaemonTUI(connection, {
+      cliOptions: opts,
+      agentProfile,
+      additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
+      tuiConfig,
+      version,
+      workDir,
+      startupNotice: configWarning,
+    });
+    tui = daemonTui;
+    closeOnStartFailure = () => daemonTui.close();
+  } else {
+    const agentProfile = await resolveAgentProfileSelection(opts, workDir);
+    tui = new KimiTUI(harness, {
+      cliOptions: opts,
+      agentProfile,
+      additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
+      tuiConfig,
+      version,
+      workDir,
+      startupNotice: configWarning,
+      engineV2: true,
+    });
+    closeOnStartFailure = () => harness.close();
+  }
 
   let savedStty: string | undefined;
   // Resolve stty to an absolute PATH hit so a workspace binary cannot shadow
@@ -141,7 +178,8 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   const onSighup = onTerminationSignal(129);
   const closeAfterOutputError = async (): Promise<void> => {
     try {
-      await tui.close();
+      if ('close' in tui) await tui.close();
+      else await harness.close();
     } catch (closeError) {
       log.error('TUI close failed after output stream error', { error: String(closeError) });
     } finally {
@@ -178,12 +216,19 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     if (sessionId !== '' && hasContent) {
       hints.push(`${gutter}To resume this session: kimi -r ${sessionId}`);
     }
+    if ('exitOpenUrl' in tui && tui.exitOpenUrl !== undefined) {
+      hints.push(`${gutter}open ${toTerminalHyperlink(tui.exitOpenUrl, tui.exitOpenUrl)}`);
+    }
     if (hints.length > 0) {
       process.stderr.write(`\n${hints.join('\n')}\n`);
     }
     removeHandlers();
     restoreTerminalModes();
     restoreStty();
+    if ('exitForegroundTask' in tui && tui.exitForegroundTask !== undefined) {
+      await tui.exitForegroundTask(exitCode);
+      return;
+    }
     process.exit(exitCode);
   };
   try {
@@ -193,7 +238,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   } catch (error) {
     removeHandlers();
     try {
-      await tui.close();
+      await closeOnStartFailure();
     } catch (closeError) {
       try {
         log.error('TUI close failed after startup error', { error: String(closeError) });
@@ -206,6 +251,29 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     }
     throw error;
   }
+}
+
+const TUI_DAEMON_ENV = 'KIMI_CODE_EXPERIMENTAL_TUI_DAEMON';
+const EXPERIMENTAL_MASTER_ENV = 'KIMI_CODE_EXPERIMENTAL_FLAG';
+
+export function isTuiDaemonEnabled(
+  experimental: Readonly<Record<string, boolean>> | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const override = parseBooleanEnv(env[TUI_DAEMON_ENV]);
+  if (override !== undefined) return override;
+  const configured = experimental?.['tui_daemon'];
+  if (configured !== undefined) return configured;
+  const master = parseBooleanEnv(env[EXPERIMENTAL_MASTER_ENV]);
+  return master ?? true;
+}
+
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === undefined || normalized === '') return undefined;
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return undefined;
 }
 
 export function isTerminalOutputError(error: NodeJS.ErrnoException): boolean {

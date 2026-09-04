@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isTerminalOutputError, runShell } from '#/cli/run-shell';
+import { isTerminalOutputError, isTuiDaemonEnabled, runShell } from '#/cli/run-shell';
 
 const mocks = vi.hoisted(() => ({
   order: [] as string[],
   trust: vi.fn(),
   discover: vi.fn(),
   ensure: vi.fn(),
+  harnessEnsureConfigFile: vi.fn(),
+  harnessGetConfig: vi.fn(),
+  harnessClose: vi.fn(),
   daemonConstructor: vi.fn(),
+  legacyConstructor: vi.fn(),
   tuiStart: vi.fn(),
   tuiClose: vi.fn(),
   tuiStop: vi.fn(),
@@ -18,6 +22,11 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@moonshot-ai/kimi-code-sdk')>();
   return {
     ...actual,
+    createKimiHarness: vi.fn(() => ({
+      ensureConfigFile: mocks.harnessEnsureConfigFile,
+      getConfig: mocks.harnessGetConfig,
+      close: mocks.harnessClose,
+    })),
     flushDiagnosticLogsSync: vi.fn(),
     log: { info: vi.fn(), error: vi.fn() },
   };
@@ -80,6 +89,26 @@ vi.mock('../../src/tui/daemon/daemon-tui', () => ({
   },
 }));
 
+vi.mock('../../src/tui/index', () => ({
+  KimiTUI: class KimiTUI {
+    onExit?: (exitCode?: number) => Promise<void>;
+
+    constructor(...args: unknown[]) {
+      mocks.order.push('legacy');
+      mocks.legacyConstructor(...args);
+    }
+
+    start = async () => {
+      mocks.order.push('start');
+      await mocks.tuiStart();
+    };
+
+    stop = mocks.tuiStop;
+    getCurrentSessionId = () => '';
+    hasSessionContent = () => false;
+  },
+}));
+
 vi.mock('../../src/cli/agent-selection', () => ({
   resolveAgentProfileSelection: vi.fn(async () => {
     mocks.order.push('agent');
@@ -119,6 +148,8 @@ describe('runShell daemon startup', () => {
     mocks.trust.mockResolvedValue(true);
     mocks.discover.mockResolvedValue({ url: 'http://127.0.0.1:57580', token: 'token' });
     mocks.ensure.mockResolvedValue({ url: 'http://127.0.0.1:57580', token: 'token' });
+    mocks.harnessGetConfig.mockResolvedValue({ providers: {}, defaultModel: 'k2' });
+    mocks.harnessClose.mockResolvedValue(undefined);
     mocks.tuiStart.mockResolvedValue(undefined);
     mocks.tuiClose.mockResolvedValue(undefined);
     mocks.tuiStop.mockResolvedValue(undefined);
@@ -134,9 +165,7 @@ describe('runShell daemon startup', () => {
     expect(isTerminalOutputError(Object.assign(new Error('other'), { code: 'EINVAL' }))).toBe(false);
   });
 
-  it('always attaches the interactive shell to DaemonTUI', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '0');
-
+  it('attaches the interactive shell to DaemonTUI by default', async () => {
     await runShell(options, '1.0.0');
 
     expect(mocks.order).toEqual(['trust', 'agent', 'discover', 'daemon', 'start']);
@@ -144,6 +173,26 @@ describe('runShell daemon startup', () => {
       cliOptions: options,
       workDir: process.cwd(),
     });
+  });
+
+  it('uses the legacy TUI when the daemon override is disabled', async () => {
+    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '0');
+
+    await runShell(options, '1.0.0');
+
+    expect(mocks.order).toEqual(['agent', 'legacy', 'start']);
+    expect(mocks.legacyConstructor).toHaveBeenCalledOnce();
+    expect(mocks.trust).not.toHaveBeenCalled();
+    expect(mocks.daemonConstructor).not.toHaveBeenCalled();
+  });
+
+  it('honors config and explicit environment precedence', () => {
+    expect(isTuiDaemonEnabled({ tui_daemon: false }, {})).toBe(false);
+    expect(isTuiDaemonEnabled({ tui_daemon: false }, { KIMI_CODE_EXPERIMENTAL_TUI_DAEMON: '1' })).toBe(
+      true,
+    );
+    expect(isTuiDaemonEnabled(undefined, { KIMI_CODE_EXPERIMENTAL_FLAG: '0' })).toBe(false);
+    expect(isTuiDaemonEnabled(undefined, {})).toBe(true);
   });
 
   it('passes plan mode through to the daemon TUI', async () => {

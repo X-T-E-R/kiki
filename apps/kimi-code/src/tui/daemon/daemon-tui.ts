@@ -30,6 +30,7 @@ import {
   CTRL_D_HINT,
   EXIT_CONFIRM_WINDOW_MS,
 } from '#/tui/constant/kimi-tui';
+import { MEDIA_STAGING_TTL_SECONDS } from '#/tui/constant/media';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { adaptApprovalRequest } from '#/tui/interactions/approval-adapter';
 import {
@@ -97,6 +98,7 @@ interface AttachmentSettlementLease {
   readonly promptId?: string;
   readonly turnId?: string;
   readonly uploadIds: Set<string>;
+  readonly observedVersion: number;
   observed: boolean;
   settled: boolean;
   releasing: boolean;
@@ -129,7 +131,10 @@ export class DaemonTUI {
   private sourceOverlayLeaseExpiresAt: number | undefined;
   private sourceOverlayHeartbeat: ReturnType<typeof setTimeout> | undefined;
   private sourceOverlaySessionId: string | undefined;
+  private sourceOverlayReattachPending = false;
+  private sourceOverlayHeartbeatFailures = 0;
   private readonly attachmentSettlementLeases = new Map<string, AttachmentSettlementLease>();
+  private readonly attachmentControllerDisposes = new Map<SessionController, () => void>();
   private readonly sideControllers = new Set<SessionController>();
   private stopped = false;
 
@@ -228,6 +233,10 @@ export class DaemonTUI {
     this.mainControllerDispose = undefined;
     await cleanup(() => this.controller?.close());
     this.controller = undefined;
+    await cleanup(() => {
+      for (const dispose of this.attachmentControllerDisposes.values()) dispose();
+      this.attachmentControllerDisposes.clear();
+    });
     await cleanup(() => {
       for (const controller of this.sideControllers) controller.close();
       this.sideControllers.clear();
@@ -402,6 +411,7 @@ export class DaemonTUI {
           data: media.bytes,
           filename: `clipboard.${imageExtension(media.mimeType)}`,
           mimeType: media.mimeType,
+          expiresInSec: MEDIA_STAGING_TTL_SECONDS,
         })
         .then(async (upload) => {
           const completed = this.imageAttachments.completeImage(attachment, {
@@ -432,6 +442,7 @@ export class DaemonTUI {
           data,
           filename: media.filename,
           mimeType: media.mimeType,
+          expiresInSec: MEDIA_STAGING_TTL_SECONDS,
         }),
       )
       .then(async (upload) => {
@@ -512,33 +523,37 @@ export class DaemonTUI {
   private async ensureSourceOverlayLease(): Promise<string> {
     const previousLeaseId = this.sourceOverlayLeaseId;
     const lease = await this.client.renewServerLease(previousLeaseId);
-    if (
-      previousLeaseId !== undefined &&
-      lease.lease_id !== previousLeaseId &&
-      this.sourceOverlaySessionId !== undefined
-    ) {
+    this.sourceOverlayLeaseId = lease.lease_id;
+    this.sourceOverlayLeaseExpiresAt = lease.expires_at;
+    if (previousLeaseId !== undefined && lease.lease_id !== previousLeaseId) {
+      this.sourceOverlayReattachPending = this.sourceOverlaySessionId !== undefined;
+    }
+    if (this.sourceOverlayReattachPending && this.sourceOverlaySessionId !== undefined) {
       await this.client.updateSessionSourceOverlay(this.sourceOverlaySessionId, {
         lease_id: lease.lease_id,
         agent_files: this.startup.cliOptions.agentFiles,
         skill_dirs: this.startup.cliOptions.skillsDirs,
       });
+      this.sourceOverlayReattachPending = false;
     }
-    this.sourceOverlayLeaseId = lease.lease_id;
-    this.sourceOverlayLeaseExpiresAt = lease.expires_at;
+    this.sourceOverlayHeartbeatFailures = 0;
     this.scheduleSourceOverlayHeartbeat();
     return lease.lease_id;
   }
 
-  private scheduleSourceOverlayHeartbeat(): void {
+  private scheduleSourceOverlayHeartbeat(retry = false): void {
     this.clearSourceOverlayHeartbeat();
     const expiresAt = this.sourceOverlayLeaseExpiresAt;
     if (expiresAt === undefined) return;
-    const delay = Math.max(25, Math.floor((expiresAt - Date.now()) / 2));
+    const delay = retry
+      ? Math.min(10_000, 250 * 2 ** Math.min(this.sourceOverlayHeartbeatFailures - 1, 6))
+      : Math.max(25, Math.floor((expiresAt - Date.now()) / 2));
     this.sourceOverlayHeartbeat = setTimeout(() => {
       this.sourceOverlayHeartbeat = undefined;
       void this.ensureSourceOverlayLease().catch((error: unknown) => {
+        this.sourceOverlayHeartbeatFailures += 1;
         this.showStatus(`Source overlay lease renewal failed: ${formatErrorMessage(error)}`, 'error');
-        this.scheduleSourceOverlayHeartbeat();
+        this.scheduleSourceOverlayHeartbeat(true);
       });
     }, delay);
     this.sourceOverlayHeartbeat.unref();
@@ -665,14 +680,24 @@ export class DaemonTUI {
   }
 
   private async openSession(sessionId: string): Promise<void> {
-    if (this.controller !== undefined && this.controller.sessionId !== sessionId) {
+    const previous = this.controller;
+    if (previous !== undefined && previous.sessionId !== sessionId) {
       await this.clearAttachments();
       this.state.editor.setText('');
     }
     this.focusedControllerDispose?.();
     this.focusedControllerDispose = undefined;
     this.mainControllerDispose?.();
-    this.controller?.close();
+    if (
+      previous !== undefined &&
+      previous.sessionId !== sessionId &&
+      this.hasUnsettledAttachmentLeases(previous.sessionId)
+    ) {
+      this.retainAttachmentSettlementController(previous);
+    } else {
+      previous?.close();
+    }
+    this.releaseAttachmentSettlementController(sessionId);
     this.focusedAgentId = 'main';
     const controller = new SessionController(this.client, this.socket, sessionId);
     this.controller = controller;
@@ -808,6 +833,7 @@ export class DaemonTUI {
 
   private async sendPrompt(text: string, profile?: string): Promise<void> {
     const controller = await this.ensureSession();
+    const observedVersion = controller.getState().version;
     const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments);
     if (profile === undefined) {
       const skillMap = new Map<string, string>();
@@ -827,13 +853,15 @@ export class DaemonTUI {
             input: prepared?.engineContent ?? [{ type: 'text', text }],
             skills: inlineSkills.map((skill) => ({ name: skill.skillName })),
           });
+        await controller.resync();
         if (prepared !== undefined) {
           this.handoffPreparedMedia(prepared, controller, {
             promptId: result.prompt_id,
             turnId: result.turn_id,
+            observed: true,
+            observedVersion,
           });
         }
-        await controller.resync();
         return;
       }
       if (controller.getState().goal?.status === 'active') {
@@ -843,10 +871,26 @@ export class DaemonTUI {
         const result = await this.client.klient.session(controller.sessionId).agent('main').steer({
           input: prepared?.engineContent ?? [{ type: 'text', text }],
         });
-        if (prepared !== undefined) {
-          this.handoffPreparedMedia(prepared, controller, { turnId: result!.turn_id });
+        if (result === undefined || result === null) {
+          await controller.resync();
+          if (prepared !== undefined) {
+            const view = controller.getState();
+            if (view.busy || view.goal?.status === 'active') {
+              this.handoffPreparedMediaToExpiry(prepared);
+            } else {
+              await this.releasePreparedMedia(prepared);
+            }
+          }
+          return;
         }
         await controller.resync();
+        if (prepared !== undefined) {
+          this.handoffPreparedMedia(prepared, controller, {
+            turnId: result.turn_id,
+            observed: true,
+            observedVersion,
+          });
+        }
         return;
       }
     }
@@ -865,14 +909,24 @@ export class DaemonTUI {
     });
     if (prepared !== undefined) {
       await this.releasePreparedFileAttachments(prepared);
-      this.handoffPreparedMedia(prepared, controller, { promptId: result.prompt_id });
+      await controller.resync();
+      this.handoffPreparedMedia(prepared, controller, {
+        promptId: result.prompt_id,
+        observed: true,
+        observedVersion,
+      });
     }
   }
 
   private handoffPreparedMedia(
     prepared: PreparedDaemonPrompt,
     controller: SessionController,
-    identity: { readonly promptId?: string; readonly turnId?: number },
+    identity: {
+      readonly promptId?: string;
+      readonly turnId?: number;
+      readonly observed: boolean;
+      readonly observedVersion: number;
+    },
   ): void {
     if (prepared.mediaUploadIds.length === 0) return;
     for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
@@ -885,12 +939,51 @@ export class DaemonTUI {
       promptId: identity.promptId,
       turnId,
       uploadIds: new Set(prepared.mediaUploadIds),
-      observed: false,
+      observedVersion: identity.observedVersion,
+      observed: identity.observed,
       settled: false,
       releasing: false,
     };
     this.attachmentSettlementLeases.set(key, lease);
     this.settleAttachmentLeases(controller.getState());
+  }
+
+  private handoffPreparedMediaToExpiry(prepared: PreparedDaemonPrompt): void {
+    for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
+  }
+
+  private async releasePreparedMedia(prepared: PreparedDaemonPrompt): Promise<void> {
+    for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
+    for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
+    await Promise.allSettled(
+      [...prepared.mediaUploadIds, ...prepared.fileUploadIds].map((fileId) =>
+        this.client.klient.global.files.delete(fileId),
+      ),
+    );
+  }
+
+  private hasUnsettledAttachmentLeases(sessionId: string): boolean {
+    return [...this.attachmentSettlementLeases.values()].some(
+      (lease) => lease.sessionId === sessionId && !lease.settled,
+    );
+  }
+
+  private retainAttachmentSettlementController(controller: SessionController): void {
+    this.sideControllers.add(controller);
+    const dispose = controller.subscribe(() => {
+      this.settleAttachmentLeases(controller.getState());
+    });
+    this.attachmentControllerDisposes.set(controller, dispose);
+  }
+
+  private releaseAttachmentSettlementController(sessionId: string): void {
+    for (const [controller, dispose] of this.attachmentControllerDisposes) {
+      if (controller.sessionId !== sessionId) continue;
+      dispose();
+      controller.close();
+      this.attachmentControllerDisposes.delete(controller);
+      this.sideControllers.delete(controller);
+    }
   }
 
   private settleAttachmentLeases(view: SessionViewState): void {
@@ -917,9 +1010,12 @@ export class DaemonTUI {
         lease.observed = true;
         continue;
       }
-      if (!lease.observed) continue;
+      if (!lease.observed || view.version <= lease.observedVersion) continue;
       lease.settled = true;
       void this.releaseAttachmentSettlementLease(key, lease);
+    }
+    if (!this.hasUnsettledAttachmentLeases(view.sessionId)) {
+      this.releaseAttachmentSettlementController(view.sessionId);
     }
   }
 
@@ -1429,6 +1525,7 @@ export class DaemonTUI {
       data,
       filename: name,
       mimeType: mediaType,
+      expiresInSec: MEDIA_STAGING_TTL_SECONDS,
     });
     const id = this.nextFileAttachmentId++;
     const attachment: DaemonFileAttachment = {
@@ -1454,25 +1551,21 @@ export class DaemonTUI {
 
   private async exportMarkdown(path: string): Promise<void> {
     const controller = await this.ensureSession();
-    const history = controller.getState().blocks.flatMap((block) => {
-      if (block.kind !== 'user' && block.kind !== 'assistant') return [];
-      return [{
-        role: block.kind,
-        content: [{ type: 'text', text: block.text }],
-        toolCalls: [],
-      }];
-    });
     const outputPath = resolve(
       this.startup.workDir,
       path === '' ? `kimi-session-${controller.sessionId}.md` : path,
     );
-    await writeFile(outputPath, buildExportMarkdown({
-      sessionId: controller.sessionId,
-      workDir: this.startup.workDir,
-      history: history as never,
-      tokenCount: this.state.appState.contextTokens,
-      now: new Date(),
-    }), 'utf8');
+    await writeFile(
+      outputPath,
+      buildLoadedTranscriptMarkdown({
+        sessionId: controller.sessionId,
+        workDir: this.startup.workDir,
+        blocks: controller.getState().blocks,
+        tokenCount: this.state.appState.contextTokens,
+        now: new Date(),
+      }),
+      'utf8',
+    );
     this.showStatus(outputPath);
   }
 
@@ -1485,6 +1578,11 @@ export class DaemonTUI {
     await side.open();
     let turnId: string | undefined;
     await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        unsubscribe();
+        side.close();
+        this.sideControllers.delete(side);
+      };
       const finish = () => {
         const view = side.getState();
         if (turnId === undefined || view.turnTail?.turnId !== turnId) return;
@@ -1502,9 +1600,7 @@ export class DaemonTUI {
               : `Side session ${child.id} ended without an answer.`,
           answer?.kind === 'assistant' ? 'normal' : 'error',
         );
-        unsubscribe();
-        side.close();
-        this.sideControllers.delete(side);
+        cleanup();
         resolve();
       };
       const unsubscribe = side.subscribe(finish);
@@ -1513,13 +1609,17 @@ export class DaemonTUI {
         .agent('main')
         .prompt({ input: [{ type: 'text', text: question }] })
         .then((result) => {
-          turnId = String(result!.turn_id);
+          if (result === undefined || result === null) {
+            this.showStatus(`Side session ${child.id} did not start.`, 'error');
+            cleanup();
+            resolve();
+            return;
+          }
+          turnId = String(result.turn_id);
           finish();
         })
         .catch((error: unknown) => {
-          unsubscribe();
-          side.close();
-          this.sideControllers.delete(side);
+          cleanup();
           reject(error);
         });
     });
@@ -1937,6 +2037,33 @@ export class DaemonTUI {
     this.state.footer.setState({ ...this.state.appState });
     this.state.ui.requestRender();
   }
+}
+
+export function buildLoadedTranscriptMarkdown(input: {
+  readonly sessionId: string;
+  readonly workDir: string;
+  readonly blocks: readonly Block[];
+  readonly tokenCount: number;
+  readonly now: Date;
+}): string {
+  const history = input.blocks.flatMap((block) => {
+    if (block.kind !== 'user' && block.kind !== 'assistant') return [];
+    return [{
+      role: block.kind,
+      content: [{ type: 'text', text: block.text }],
+      toolCalls: [],
+    }];
+  });
+  return buildExportMarkdown({
+    sessionId: input.sessionId,
+    workDir: input.workDir,
+    history: history as never,
+    tokenCount: input.tokenCount,
+    now: input.now,
+  }).replace(
+    '# Kimi Session Export',
+    '# Kimi Loaded Transcript View\n\n> Includes only loaded user and assistant text. Tools, media, and other blocks are omitted.',
+  );
 }
 
 function isSettledInteractionError(error: unknown): boolean {
