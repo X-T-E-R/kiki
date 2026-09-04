@@ -139,7 +139,8 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
   // Busy/loading locks the textarea; a missing workspace or absolute path
   // only blocks sending so the draft and the pickers stay usable — a hint
   // under the workspace chip and the send button's tooltip say what to do.
-  const composerDisabled = state.busy || state.workspacesLoading;
+  const composerDisabled =
+    state.busy || state.workspacesLoading || state.agentProfileCatalogPending;
   const cwd = state.cwd.trim();
   const sendDisabled =
     state.effectiveWorkspace === undefined && (cwd === '' || !isAbsoluteCwdPath(cwd));
@@ -198,6 +199,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
           effort={state.effectiveEffort}
           busyPlaceholder={t('new.creating')}
           workspaceId={cwd === '' ? state.effectiveWorkspace?.id : undefined}
+          agentProfileCatalogMode={state.agentProfileCatalogMode}
           fsSearch={fsSearch}
           attachments={state.attachments}
           onChangeAttachments={state.setAttachments}
@@ -235,6 +237,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
       state.effectiveEffort,
       cwd,
       state.effectiveWorkspace,
+      state.agentProfileCatalogMode,
       fsSearch,
       state.attachments,
       state.setAttachments,

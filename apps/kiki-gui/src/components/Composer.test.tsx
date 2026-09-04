@@ -125,6 +125,7 @@ async function renderComposer(
                 defaultModel={undefined}
                 serverDefaultModel="fixture/kiki-pro"
                 modelSource="server-default"
+                agentProfileCatalogMode={{ mode: 'global' }}
                 permissionMode="manual"
                 planMode={false}
                 swarmMode={false}
@@ -371,6 +372,7 @@ describe('Composer agent profile picker', () => {
     }));
     const { container } = await renderComposer({
       workspaceId: 'wd_alpha',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_alpha' },
       agentProfile: 'alpha-main',
       onChangeAgentProfile: () => {},
     });
@@ -399,6 +401,7 @@ describe('Composer agent profile picker', () => {
     });
     const rendered = await renderComposer({
       workspaceId: 'wd_alpha',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_alpha' },
       agentProfile: 'alpha-main',
       onChangeAgentProfile: () => {},
     });
@@ -406,6 +409,7 @@ describe('Composer agent profile picker', () => {
 
     await rendered.rerender({
       workspaceId: 'wd_beta',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_beta' },
       agentProfile: 'beta-main',
       onChangeAgentProfile: () => {},
     });
@@ -433,6 +437,7 @@ describe('Composer agent profile picker', () => {
     listNamedAgentProfiles.mockReturnValue(catalog.promise);
     const rendered = await renderComposer({
       sessionId: 'session-1',
+      agentProfileCatalogMode: { mode: 'disabled' },
       agentProfile: 'workspace-main',
       onChangeAgentProfile: () => {},
     });
@@ -442,6 +447,7 @@ describe('Composer agent profile picker', () => {
 
     await rendered.rerender({
       workspaceId: 'wd_session',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_session' },
       sessionId: 'session-1',
       agentProfile: 'workspace-main',
       onChangeAgentProfile: () => {},
@@ -1036,6 +1042,7 @@ function StatefulHarness({
       defaultModel={undefined}
       serverDefaultModel="fixture/kiki-pro"
       modelSource="server-default"
+      agentProfileCatalogMode={{ mode: 'global' }}
       permissionMode="manual"
       planMode={false}
       swarmMode={false}

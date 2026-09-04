@@ -91,6 +91,11 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
+import {
+  agentProfileCatalogQueryKey,
+  loadAgentProfileCatalog,
+  type AgentProfileCatalogMode,
+} from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
@@ -1468,10 +1473,16 @@ export function SessionView({
     staleTime: 60_000,
   });
   const profileWorkspaceId = sessionAgentProfileWorkspaceId(state.session);
+  const agentProfileCatalogMode = useMemo<AgentProfileCatalogMode>(
+    () => profileWorkspaceId === undefined
+      ? { mode: 'disabled' }
+      : { mode: 'workspace', workspaceId: profileWorkspaceId },
+    [profileWorkspaceId],
+  );
   const agentProfilesQuery = useQuery({
-    queryKey: ['agentProfiles', profileWorkspaceId ?? 'global'],
-    queryFn: () => client.listNamedAgentProfiles(profileWorkspaceId),
-    enabled: profileWorkspaceId !== undefined,
+    queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
+    queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
+    enabled: agentProfileCatalogMode.mode === 'workspace',
     staleTime: 60_000,
     retry: false,
   });
@@ -2256,6 +2267,7 @@ export function SessionView({
             sessionUsage={usage}
             sessionId={sessionId}
             workspaceId={profileWorkspaceId}
+            agentProfileCatalogMode={agentProfileCatalogMode}
             fsSearch={handleFsSearch}
             attachments={attachments}
             onChangeAttachments={updateAttachments}
@@ -2310,6 +2322,7 @@ export function SessionView({
     contextLimit,
     sessionId,
     profileWorkspaceId,
+    agentProfileCatalogMode,
     handleFsSearch,
     attachments,
     updateAttachments,

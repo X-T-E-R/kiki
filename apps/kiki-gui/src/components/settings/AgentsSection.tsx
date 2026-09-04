@@ -21,6 +21,7 @@ import {
 } from '@kiki/session-core/settings';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
+import { loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import type {
   ListNamedAgentProfilesResponse,
   NamedAgentProfile,
@@ -537,7 +538,7 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   const [toggleSaving, setToggleSaving] = useState<string | null>(null);
   const profilesQuery = useQuery({
     queryKey: ['named-agent-profiles'],
-    queryFn: () => client.listNamedAgentProfiles(),
+    queryFn: () => loadAgentProfileCatalog(client, { mode: 'global' }),
     staleTime: 15_000,
   });
   const configQuery = useQuery({

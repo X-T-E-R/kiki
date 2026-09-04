@@ -13,7 +13,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { AuthSummary, PermissionMode, SessionCreate, Workspace } from '@moonshot-ai/protocol';
+import type {
+  AuthSummary,
+  NamedAgentProfile,
+  PermissionMode,
+  SessionCreate,
+  Workspace,
+} from '@moonshot-ai/protocol';
 
 import {
   buildPromptContent,
@@ -35,6 +41,11 @@ import {
 } from '@kiki/session-core/settings';
 import { DEFAULT_AGENT_PROFILE } from './Composer';
 import { useHost } from '../host';
+import {
+  agentProfileCatalogQueryKey,
+  loadAgentProfileCatalog,
+  type AgentProfileCatalogMode,
+} from '../lib/agentProfileCatalog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
@@ -127,13 +138,20 @@ export function useNewSessionDraft({
   const [planMode, setPlanMode] = useState(settings.defaultPlanMode);
   const [swarmMode, setSwarmMode] = useState(false);
   const [goalObjective, setGoalObjective] = useState('');
-  const [modelOverride, setModelOverride] = useState(() =>
+  const [modelOverride, setModelOverrideState] = useState(() =>
     resolveSessionModelOverride(undefined),
   );
   const [agentProfile, setAgentProfileState] = useState(DEFAULT_AGENT_PROFILE);
   // The selected effort is the wire value. When the model catalog supplies a
   // visible default, sending without touching the select still submits it.
-  const [effortOverride, setEffortOverride] = useState<string | undefined>(undefined);
+  const [effortOverride, setEffortOverrideState] = useState<string | undefined>(undefined);
+  const [initialProfileValidated, setInitialProfileValidated] = useState(
+    initialProfile === undefined,
+  );
+  const [profileCatalogTransitionPending, setProfileCatalogTransitionPending] = useState(false);
+  const profileCatalogTransitionRef = useRef(false);
+  const modelOverrideFromProfile = useRef(false);
+  const effortOverrideFromProfile = useRef(false);
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
@@ -162,10 +180,20 @@ export function useNewSessionDraft({
     queryFn: () => client.listModels(),
     staleTime: 60_000,
   });
+  const agentProfileCatalogMode = useMemo<AgentProfileCatalogMode>(() => {
+    if (
+      cwd.trim() !== ''
+      || workspacesQuery.data === undefined
+      || effectiveWorkspace === undefined
+    ) {
+      return { mode: 'disabled' };
+    }
+    return { mode: 'workspace', workspaceId: effectiveWorkspace.id };
+  }, [cwd, effectiveWorkspace, workspacesQuery.data]);
   const agentProfilesQuery = useQuery({
-    queryKey: ['agentProfiles', effectiveWorkspace?.id ?? 'global'],
-    queryFn: () => client.listNamedAgentProfiles(effectiveWorkspace?.id),
-    enabled: workspacesQuery.data !== undefined,
+    queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
+    queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
+    enabled: agentProfileCatalogMode.mode === 'workspace',
     staleTime: 60_000,
     retry: false,
   });
@@ -201,31 +229,89 @@ export function useNewSessionDraft({
     setDraft(readDraft(DRAFT_KEY));
   }, []);
 
-  const appliedInitialProfileDefaults = useRef(false);
+  const setModelOverride = useCallback((model: string | undefined) => {
+    modelOverrideFromProfile.current = false;
+    setModelOverrideState(model);
+  }, []);
+  const setEffortOverride = useCallback((thinking: string | undefined) => {
+    effortOverrideFromProfile.current = false;
+    setEffortOverrideState(thinking);
+  }, []);
+  const applyAgentProfile = useCallback((
+    items: readonly NamedAgentProfile[],
+    name: string,
+  ) => {
+    const defaults = composerDefaultsForProfile(items, name);
+    setAgentProfileState(name);
+    modelOverrideFromProfile.current = true;
+    effortOverrideFromProfile.current = true;
+    setModelOverrideState(defaults.model);
+    setEffortOverrideState(defaults.thinking);
+  }, []);
+
   useEffect(() => {
-    if (appliedInitialProfileDefaults.current) return;
-    if (initialProfile === undefined) return;
     const items = agentProfilesQuery.data?.items;
-    if (items === undefined) return;
-    appliedInitialProfileDefaults.current = true;
-    const profile = items.find((item) => item.name === initialProfile && item.main);
-    if (profile === undefined) return;
-    const defaults = composerDefaultsForProfile(items, profile.name);
-    setAgentProfileState(profile.name);
-    setModelOverride(defaults.model);
-    setEffortOverride(defaults.thinking);
-  }, [agentProfilesQuery.data, initialProfile]);
+    if (agentProfileCatalogMode.mode === 'workspace' && items === undefined) return;
+    if (
+      agentProfileCatalogMode.mode === 'disabled'
+      && cwd.trim() === ''
+      && workspacesQuery.data === undefined
+    ) return;
+
+    const profiles = items ?? [];
+    const validatingInitialProfile = initialProfile !== undefined && !initialProfileValidated;
+    const requestedProfile = validatingInitialProfile ? initialProfile : agentProfile;
+    const nextProfile = profiles.find((item) =>
+      item.name === requestedProfile && item.main
+    )?.name ?? DEFAULT_AGENT_PROFILE;
+    const defaults = composerDefaultsForProfile(profiles, nextProfile);
+    setAgentProfileState(nextProfile);
+    if (validatingInitialProfile || modelOverrideFromProfile.current) {
+      modelOverrideFromProfile.current = true;
+      setModelOverrideState(defaults.model);
+    }
+    if (validatingInitialProfile || effortOverrideFromProfile.current) {
+      effortOverrideFromProfile.current = true;
+      setEffortOverrideState(defaults.thinking);
+    }
+    if (validatingInitialProfile) setInitialProfileValidated(true);
+    profileCatalogTransitionRef.current = false;
+    setProfileCatalogTransitionPending(false);
+  }, [
+    agentProfile,
+    agentProfileCatalogMode,
+    agentProfilesQuery.data,
+    cwd,
+    initialProfile,
+    initialProfileValidated,
+    workspacesQuery.data,
+  ]);
 
   const updateDraft = useCallback((text: string) => {
     setDraft(text);
     writeDraft(DRAFT_KEY, text);
   }, []);
 
+  const agentProfileCatalogPending =
+    !initialProfileValidated
+    || profileCatalogTransitionPending
+    || (
+      cwd.trim() === ''
+      && (
+        workspacesQuery.data === undefined
+        || (
+          agentProfileCatalogMode.mode === 'workspace'
+          && agentProfilesQuery.data === undefined
+        )
+      )
+    );
+
   // Refs keep the send path stable across renders: the /new page publishes a
   // memoized composer element into the conversation shell, and a send that
   // changes identity on every keystroke would defeat the memo.
   const sendContextRef = useRef({
     busy,
+    agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
     modelOverride,
@@ -238,6 +324,7 @@ export function useNewSessionDraft({
   });
   sendContextRef.current = {
     busy,
+    agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
     modelOverride,
@@ -255,7 +342,9 @@ export function useNewSessionDraft({
     initialSkill?: DraftSkillHandoff;
   }) => {
     const context = sendContextRef.current;
-    if (context.busy) return;
+    if (context.busy || context.agentProfileCatalogPending || profileCatalogTransitionRef.current) {
+      return;
+    }
     const trimmedCwd = context.cwd.trim();
     // A free-text cwd must be an absolute path — a relative one would be
     // resolved against the server's own cwd and silently land elsewhere.
@@ -322,10 +411,21 @@ export function useNewSessionDraft({
     });
   }, [createThenNavigate]);
 
+  const beginProfileCatalogTransition = useCallback(() => {
+    profileCatalogTransitionRef.current = true;
+    setProfileCatalogTransitionPending(true);
+  }, []);
   const selectWorkspace = useCallback((nextId: string) => {
+    if (nextId === workspaceId && (nextId === '' || cwd === '')) return;
+    beginProfileCatalogTransition();
     setWorkspaceId(nextId);
     if (nextId !== '') setCwd('');
-  }, []);
+  }, [beginProfileCatalogTransition, cwd, workspaceId]);
+  const updateCwd = useCallback((nextCwd: string) => {
+    if (nextCwd === cwd) return;
+    beginProfileCatalogTransition();
+    setCwd(nextCwd);
+  }, [beginProfileCatalogTransition, cwd]);
 
   /**
    * Native folder picker (desktop only). A picked folder lands in the cwd
@@ -336,20 +436,22 @@ export function useNewSessionDraft({
     try {
       const picked = await host.pickDirectory?.();
       if (picked === undefined || picked === null) return;
+      beginProfileCatalogTransition();
       setWorkspaceId('');
       setCwd(picked);
       setError(null);
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, [host]);
+  }, [beginProfileCatalogTransition, host]);
 
   const setAgentProfile = useCallback((name: string) => {
-    const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
-    setAgentProfileState(name);
-    setModelOverride(defaults.model);
-    setEffortOverride(defaults.thinking);
-  }, [agentProfilesQuery.data]);
+    const items = agentProfilesQuery.data?.items;
+    if (items === undefined) return;
+    const profile = items.find((item) => item.name === name && item.main);
+    if (profile === undefined) return;
+    applyAgentProfile(items, profile.name);
+  }, [agentProfilesQuery.data, applyAgentProfile]);
 
   return {
     draft,
@@ -367,6 +469,8 @@ export function useNewSessionDraft({
     workspaces,
     workspacesLoading,
     effectiveWorkspace,
+    agentProfileCatalogMode,
+    agentProfileCatalogPending,
     needsProviderSetup: providerSetupNeeded,
     canBrowseForWorkspace: host.pickDirectory !== undefined,
     browseForWorkspace,
@@ -378,7 +482,7 @@ export function useNewSessionDraft({
     updateDraft,
     setAttachments,
     selectWorkspace,
-    setCwd,
+    setCwd: updateCwd,
     setPermissionMode,
     setPlanMode,
     setSwarmMode,
