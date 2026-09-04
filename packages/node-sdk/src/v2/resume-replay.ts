@@ -49,9 +49,13 @@
 import { readFile } from 'node:fs/promises';
 
 import {
+  applyContextCompactionRecord,
+  computeUndoCut,
   createLoopEventFold,
+  isFullyUndoable,
   isNewerWireVersion,
   migrateWireRecord,
+  readContextCompactedCount,
   resolveWireMigrations,
   type ContentPart,
   type ContextMessage,
@@ -64,9 +68,8 @@ import {
   type ToolCall,
   type WireMigration,
   type WireMigrationRecord,
+  type WireRecord,
 } from '@moonshot-ai/agent-core-v2';
-import { isRealUserInput } from '@moonshot-ai/agent-core-v2/agent/contextMemory/compactionHandoff';
-
 import type { AgentReplayRecord, AgentReplayRecordPayload } from '#/protocol';
 import type { AgentRecord } from '#/wire/records';
 
@@ -289,29 +292,16 @@ class ReplayFold {
   }
 
   /**
-   * Mirror of the live undo: walk back over the context skipping injections,
-   * stop at a compaction summary, and drop messages until `count` real user
-   * inputs are gone. The dropped messages' replay records go with them.
+   * Mirror of the live undo: compute the same context cut and remove the
+   * corresponding message replay records.
    */
   private undo(count: number): void {
-    if (count <= 0 || this.history.length === 0) return;
-    let removedUserCount = 0;
-    const removed = new Set<ContextMessage>();
-    for (let i = this.history.length - 1; i >= 0; i--) {
-      const message = this.history[i];
-      if (message === undefined) continue;
-      if (message.origin?.kind === 'injection') continue;
-      if (message.origin?.kind === 'compaction_summary') break;
-      removed.add(message);
-      this.history.splice(i, 1);
-      if (isRealUserInput(message)) {
-        removedUserCount++;
-        if (removedUserCount >= count) break;
-      }
-    }
+    const cut = computeUndoCut(this.history, count);
+    if (!isFullyUndoable(cut, count)) return;
+    const removed = new Set(this.history.slice(cut.cutIndex));
+    this.history = this.history.slice(0, cut.cutIndex);
     this.removeMessages(removed);
-    this.openAssistant = undefined;
-    this.fold.reset();
+    this.restoreFold();
   }
 
   private removeMessages(removed: ReadonlySet<ContextMessage>): void {
@@ -325,22 +315,31 @@ class ReplayFold {
   }
 
   /**
-   * A compaction's outcome patches the `compaction` record it opened, and the
-   * mirrored context collapses to the summary message. The kept-verbatim user
-   * messages are not re-emitted: their replay records are already in place.
+   * A compaction's outcome patches the `compaction` record it opened and folds
+   * the mirrored context through the engine's compaction projection.
    */
   private applyCompaction(record: Extract<AgentRecord, { type: 'context.apply_compaction' }>): void {
     const { type: _type, time: _time, ...result } = record;
     this.patchLastCompaction({ result });
-    const summaryMessage: MutableContextMessage = {
-      role: 'user',
-      content: [{ type: 'text', text: result.contextSummary ?? result.summary }],
-      toolCalls: [],
-      origin: { kind: 'compaction_summary' },
-    };
-    this.history = [...this.history.filter((message) => isRealUserInput(message)), summaryMessage];
+    const previous = this.history;
+    const wireRecord = record as unknown as WireRecord;
+    const compactedCount = readContextCompactedCount(wireRecord);
+    const removedTailInjections = new Set(
+      previous
+        .slice(compactedCount)
+        .filter((message) => message.origin?.kind === 'injection'),
+    );
+    this.history = applyContextCompactionRecord(
+      previous,
+      wireRecord,
+    ) as MutableContextMessage[];
+    this.removeMessages(removedTailInjections);
+    this.restoreFold();
+  }
+
+  private restoreFold(): void {
     this.openAssistant = undefined;
-    this.fold.reset();
+    this.fold = createLoopEventFold(this.sink);
   }
 
   private goalCreate(goalId: string, objective: string, completionCriterion?: string): void {

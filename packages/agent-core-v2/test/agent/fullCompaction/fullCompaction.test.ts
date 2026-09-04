@@ -657,7 +657,7 @@ describe('FullCompaction', () => {
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'manual',
-        tokens_before: 17_576,
+        tokens_before: 17_776,
         retry_count: 1,
         trace_id: 'trace-compact-1',
       }),
@@ -1124,7 +1124,7 @@ describe('FullCompaction', () => {
       properties: expect.objectContaining({
         agent_id: 'main',
         source: 'manual',
-        tokens_before: 17_576,
+        tokens_before: 17_776,
         duration_ms: expect.any(Number),
         round: 1,
         retry_count: 0,
@@ -1349,7 +1349,7 @@ describe('FullCompaction', () => {
       event: 'compaction_failed',
       properties: expect.objectContaining({
         source: 'manual',
-        tokens_before: 17_576,
+        tokens_before: 17_776,
         duration_ms: expect.any(Number),
         retry_count: 4,
         error_type: 'APIConnectionError',
@@ -1382,7 +1382,7 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   });
 
-  it('closes an unresolved tool exchange in the compaction prompt with a synthetic result', async () => {
+  it('keeps an unresolved tool exchange intact in the recent tail', async () => {
     const ctx = testAgent();
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
@@ -1405,16 +1405,14 @@ describe('FullCompaction', () => {
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
-        user: text "run both tools"
-        assistant: []  calls call_open_one:LookupOne { "query": "one" }, call_open_two:LookupTwo { "query": "two" }
-        tool[call_open_one]: text "one result"
-        tool[call_open_two]: text "Tool result is not available in the current context. Do not assume the tool completed successfully."
         user: text <compaction-instruction>
     `);
     expect(ctx.context.get().map((message) => message.role)).toEqual([
       'user',
       'user',
       'user',
+      'assistant',
+      'tool',
     ]);
     await ctx.dispatch({
       type: 'context.append_loop_event',
@@ -1429,6 +1427,8 @@ describe('FullCompaction', () => {
       'user',
       'user',
       'user',
+      'assistant',
+      'tool',
     ]);
     await ctx.expectResumeMatches();
   });
@@ -1483,12 +1483,12 @@ describe('FullCompaction', () => {
         },
         {
           "role": "user",
-          "text": "new user while compacting",
+          "text": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
+      Compacted prefix.",
         },
         {
           "role": "user",
-          "text": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
-      Compacted prefix.",
+          "text": "new user while compacting",
         },
       ]
     `);
@@ -1545,7 +1545,7 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   });
 
-  it('auto-compacts very large context in one full-history round when the summarizer accepts it', async () => {
+  it('auto-compacts only the selected prefix when the summarizer accepts it', async () => {
     const maxContextTokens = 22_000;
     const ctx = testAgent();
     ctx.configure({
@@ -1578,8 +1578,9 @@ describe('FullCompaction', () => {
     expect(countEvents(events, 'full_compaction.complete')).toBe(1);
     expect(countEvents(events, 'compaction.completed')).toBe(1);
     expect(compactedPrefixSizes).toHaveLength(1);
-    expect(compactedPrefixSizes[0]).toBe(initialTokens);
-    expect(ctx.contextData().tokenCount).toBeLessThan(maxContextTokens * 0.85);
+    expect(compactedPrefixSizes[0]).toBeLessThan(initialTokens);
+    expect(compactedPrefixSizes[0]).toBeLessThanOrEqual(maxContextTokens);
+    expect(ctx.contextData().tokenCount).toBeLessThan(initialTokens);
     await ctx.expectResumeMatches();
   });
 
@@ -1694,6 +1695,8 @@ describe('FullCompaction', () => {
         expect.objectContaining({ type: '[rpc]', event: 'turn.ended' }),
       ]),
     );
+    expect(countEvents(events, 'compaction.started')).toBe(1);
+    expect(countEvents(events, 'compaction.completed')).toBe(1);
     expect(eventIndex(events, 'turn.prompt')).toBeLessThan(
       eventIndex(events, 'full_compaction.begin'),
     );
@@ -1715,23 +1718,23 @@ describe('FullCompaction', () => {
           assistant: text "old assistant one"
           user: text "old user two"
           assistant: text "old assistant two"
-          user: text "recent user three"
-          assistant: text "recent assistant three"
-          user: text "Answer after compacting"
           user: text <compaction-instruction>
 
       call 2:
         messages:
-          user: text "old user one\\n\\nold user two\\n\\nrecent user three\\n\\nAnswer after compacting"
+          user: text "old user one\\n\\nold user two"
           user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary."
+          user: text "recent user three"
+          assistant: text "recent assistant three"
+          user: text "Answer after compacting"
     `);
     expect(records).toContainEqual({
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'auto',
         tokens_before: 4_219,
-        tokens_after: 4_203,
-        compacted_count: 7,
+        tokens_after: expect.any(Number),
+        compacted_count: 4,
         retry_count: 0,
       }),
     });
@@ -1832,8 +1835,9 @@ describe('FullCompaction', () => {
       'user',
       'user',
       'user',
+      'assistant',
     ]);
-    expect(ctx.context.get().at(-1)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.context.get()[1]?.origin).toEqual({ kind: 'compaction_summary' });
 
     await ctx.dispatch({
       type: 'context.append_loop_event',
@@ -1857,6 +1861,7 @@ describe('FullCompaction', () => {
       'user',
       'user',
       'user',
+      'assistant',
     ]);
   });
 
@@ -1900,8 +1905,10 @@ describe('FullCompaction', () => {
       'user',
       'user',
       'user',
+      'assistant',
+      'tool',
     ]);
-    expect(ctx.context.get().at(-1)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.context.get()[1]?.origin).toEqual({ kind: 'compaction_summary' });
 
     await ctx.dispatch({
       type: 'context.append_loop_event',
@@ -1916,36 +1923,47 @@ describe('FullCompaction', () => {
       'user',
       'user',
       'user',
+      'assistant',
+      'tool',
     ]);
   });
 
-  it('compacts a single user message and keeps it ahead of the summary', async () => {
+  it('rejects manual compaction for a single unsplittable user message', async () => {
     const ctx = testAgent();
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
     });
     ctx.appendUserMessage([{ type: 'text', text: 'only pending user' }]);
-    const compacted = ctx.once('full_compaction.complete');
-    const completed = ctx.once('compaction.completed');
 
-    ctx.mockNextResponse({ type: 'text', text: 'Single message summary.' });
-    await ctx.rpc.beginCompaction({});
-    await compacted;
-    await completed;
+    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+      code: 'compaction.unable',
+    });
 
-    expect(ctx.llmCalls).toHaveLength(1);
-    expect(ctx.compactHistory()).toEqual([
-      { role: 'user', text: 'only pending user' },
-      {
-        role: 'user',
-        text: `${COMPACTION_SUMMARY_PREFIX}\nSingle message summary.`,
-      },
-    ]);
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(ctx.compactHistory()).toEqual([{ role: 'user', text: 'only pending user' }]);
     await ctx.expectResumeMatches();
   });
 
-  it('manual compaction can run after a previous single-message compaction', async () => {
+  it('rejects manual compaction for an unresolved tool exchange without a safe prefix', async () => {
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+    });
+    ctx.appendUnresolvedToolExchange(1);
+    const before = ctx.compactHistory();
+
+    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+      code: 'compaction.unable',
+    });
+
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(ctx.compactHistory()).toEqual(before);
+    await ctx.expectResumeMatches();
+  });
+
+  it('manual compaction can run after rejecting an unsplittable history', async () => {
     const ctx = testAgent();
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
@@ -1953,9 +1971,9 @@ describe('FullCompaction', () => {
     });
 
     ctx.appendUserMessage([{ type: 'text', text: 'only pending user' }]);
-    ctx.mockNextResponse({ type: 'text', text: 'Single message summary.' });
-    await ctx.rpc.beginCompaction({});
-    await ctx.once('compaction.completed');
+    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+      code: 'compaction.unable',
+    });
 
     ctx.clearContext();
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
@@ -1963,18 +1981,18 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    ctx.mockNextResponse({ type: 'text', text: 'Compacted after single-message compact.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted after rejected history.' });
     await ctx.rpc.beginCompaction({});
     await compacted;
     await completed;
 
-    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls).toHaveLength(1);
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
       {
         role: 'user',
-        text: expect.stringContaining('Compacted after single-message compact.'),
+        text: expect.stringContaining('Compacted after rejected history.'),
       },
     ]);
     await ctx.expectResumeMatches();
@@ -2081,6 +2099,180 @@ describe('FullCompaction', () => {
     }
   });
 
+  it('triggers auto compaction when pending tokens cross the default soft context cap', async () => {
+    const ctx = testAgent({
+      initialConfig: {
+        providers: {},
+        loopControl: { reservedContextSize: 0 },
+      },
+    });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: {
+        ...CATALOGUED_MODEL_CAPABILITIES,
+        max_context_tokens: 700_000,
+      },
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 255_000);
+
+    ctx.mockNextResponse({ type: 'text', text: 'Soft-cap compacted summary.' });
+    ctx.mockNextResponse({ type: 'text', text: 'I can answer after soft-cap compaction.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'x'.repeat(8_000) }] });
+    await ctx.untilTurnEnd();
+
+    expect(ctx.llmCalls).toHaveLength(2);
+    const [compactionCall, answerCall] = ctx.llmCalls;
+    expect(messageText(compactionCall?.history.at(-1))).toContain('first-person handoff note');
+    expect(
+      answerCall?.history.map(messageText).some((text) => text.includes('Soft-cap compacted summary.')),
+    ).toBe(true);
+    await ctx.expectResumeMatches();
+  });
+
+  it.each([
+    { softContextSize: 0, compactedCount: 2 },
+    { softContextSize: 256_000, compactedCount: 4 },
+    { softContextSize: 512_000, compactedCount: 3 },
+  ])(
+    'selects the real auto compaction prefix for soft cap $softContextSize',
+    async ({ softContextSize, compactedCount }) => {
+      const ctx = testAgent({
+        initialConfig: {
+          providers: {},
+          loopControl: {
+            reservedContextSize: 0,
+            compactionSoftContextSize: softContextSize,
+          },
+        },
+      });
+      ctx.configure({
+        provider: CATALOGUED_PROVIDER,
+        modelCapabilities: {
+          ...CATALOGUED_MODEL_CAPABILITIES,
+          max_context_tokens: 700_000,
+        },
+      });
+      for (let i = 0; i < 6; i++) {
+        ctx.context.append(textMessage('assistant', `assistant ${String(i)}`));
+      }
+      vi.spyOn(ctx.tokenCounting, 'estimateMessage').mockReturnValue(40_000);
+      ctx.mockNextResponse({ type: 'text', text: `Summary for ${String(softContextSize)}.` });
+
+      const compaction = ctx.get(IAgentFullCompactionService);
+      expect(compaction.begin({ source: 'auto' })).toBe(true);
+      const result = await compaction.compacting!.promise;
+
+      expect(result.compactedCount).toBe(compactedCount);
+      expect(ctx.llmCalls[0]?.history.slice(0, -1).map(messageText)).toEqual(
+        Array.from({ length: compactedCount }, (_, i) => `assistant ${String(i)}`),
+      );
+      expect(ctx.compactHistory()).toEqual([
+        {
+          role: 'user',
+          text: `${COMPACTION_SUMMARY_PREFIX}\nSummary for ${String(softContextSize)}.`,
+        },
+        ...Array.from({ length: 6 - compactedCount }, (_, i) => ({
+          role: 'assistant' as const,
+          text: `assistant ${String(i + compactedCount)}`,
+        })),
+      ]);
+      if (softContextSize > 0) {
+        expect(result.tokensAfter).toBeLessThan(softContextSize);
+      }
+      await ctx.expectResumeMatches();
+    },
+  );
+
+  it('uses the real model window for manual prefix selection', async () => {
+    const ctx = testAgent({
+      initialConfig: {
+        providers: {},
+        loopControl: {
+          reservedContextSize: 0,
+          compactionSoftContextSize: 256_000,
+        },
+      },
+    });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: {
+        ...CATALOGUED_MODEL_CAPABILITIES,
+        max_context_tokens: 700_000,
+      },
+    });
+    for (let i = 0; i < 6; i++) {
+      ctx.context.append(textMessage('assistant', `manual ${String(i)}`));
+    }
+    vi.spyOn(ctx.tokenCounting, 'estimateMessage').mockReturnValue(40_000);
+    ctx.mockNextResponse({ type: 'text', text: 'Manual summary.' });
+
+    const compaction = ctx.get(IAgentFullCompactionService);
+    expect(compaction.begin({ source: 'manual' })).toBe(true);
+    const result = await compaction.compacting!.promise;
+
+    expect(result.compactedCount).toBe(6);
+    expect(ctx.llmCalls[0]?.history.slice(0, -1).map(messageText)).toEqual(
+      Array.from({ length: 6 }, (_, i) => `manual ${String(i)}`),
+    );
+    expect(ctx.compactHistory()).toEqual([
+      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nManual summary.` },
+    ]);
+    await ctx.expectResumeMatches();
+  });
+
+  it('uses the real model window when reducing a prefix after summary overflow', async () => {
+    let attempts = 0;
+    const inputs: string[][] = [];
+    const generate: GenerateFn = async (_provider, _system, _tools, history) => {
+      attempts += 1;
+      inputs.push(history.slice(0, -1).map(messageText));
+      if (attempts === 1) {
+        throw new APIContextOverflowError(400, 'Context length exceeded', 'req-summary-overflow');
+      }
+      return textResult('Overflow-reduced summary.');
+    };
+    const ctx = testAgent({
+      generate,
+      initialConfig: {
+        providers: {},
+        loopControl: {
+          reservedContextSize: 0,
+          compactionSoftContextSize: 256,
+        },
+      },
+    });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: {
+        ...CATALOGUED_MODEL_CAPABILITIES,
+        max_context_tokens: 100_000,
+      },
+    });
+    for (let i = 0; i < 6; i++) {
+      ctx.context.append(textMessage('assistant', `overflow ${String(i)}`));
+    }
+    vi.spyOn(ctx.tokenCounting, 'estimateMessage').mockReturnValue(10);
+
+    const compaction = ctx.get(IAgentFullCompactionService);
+    expect(compaction.begin({ source: 'manual' })).toBe(true);
+    const result = await compaction.compacting!.promise;
+
+    expect(inputs).toEqual([
+      Array.from({ length: 6 }, (_, i) => `overflow ${String(i)}`),
+      ['overflow 0', 'overflow 1'],
+    ]);
+    expect(result.compactedCount).toBe(2);
+    expect(result.droppedCount).toBeUndefined();
+    expect(ctx.compactHistory()).toEqual([
+      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nOverflow-reduced summary.` },
+      ...Array.from({ length: 4 }, (_, i) => ({
+        role: 'assistant' as const,
+        text: `overflow ${String(i + 2)}`,
+      })),
+    ]);
+    await ctx.expectResumeMatches();
+  });
+
   it('triggers auto compaction when pending tokens cross the reserved threshold', async () => {
     const ctx = testAgent({
       initialConfig: {
@@ -2111,7 +2303,7 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   });
 
-  it('includes an oversized pending user prompt in auto compaction', async () => {
+  it('keeps an oversized pending user prompt in the recent tail', async () => {
     const ctx = testAgent();
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
@@ -2131,11 +2323,10 @@ describe('FullCompaction', () => {
     expect(ctx.llmCalls).toHaveLength(2);
     const [compactionCall, answerCall] = ctx.llmCalls;
     const compactionTexts = compactionCall?.history.map(messageText) ?? [];
-    expect(compactionTexts.some((text) => text.includes('keep-this-pending-verbatim'))).toBe(true);
+    expect(compactionTexts.some((text) => text.includes('keep-this-pending-verbatim'))).toBe(false);
     expect(compactionCall?.history.map((message) => message.role)).toEqual([
       'user',
       'assistant',
-      'user',
       'user',
     ]);
     expect(
@@ -2167,11 +2358,10 @@ describe('FullCompaction', () => {
     expect(ctx.llmCalls).toHaveLength(2);
     const [compactionCall, answerCall] = ctx.llmCalls;
     const compactionTexts = compactionCall?.history.map(messageText) ?? [];
-    expect(compactionTexts.some((text) => text.includes('ratio-pending-verbatim'))).toBe(true);
+    expect(compactionTexts.some((text) => text.includes('ratio-pending-verbatim'))).toBe(false);
     expect(compactionCall?.history.map((message) => message.role)).toEqual([
       'user',
       'assistant',
-      'user',
       'user',
     ]);
     expect(
@@ -2229,7 +2419,7 @@ describe('FullCompaction', () => {
         args: expect.objectContaining({
           result: expect.objectContaining({
             summary: 'Overflow compacted summary.',
-            compactedCount: 4,
+            compactedCount: 2,
           }),
         }),
       }),
@@ -2250,15 +2440,13 @@ describe('FullCompaction', () => {
         [
           "user: old user one",
           "assistant: old assistant one",
-          "user: Retry after provider overflow",
           "user: <compaction-instruction>",
         ],
         [
-          "user: old user one
-
-      Retry after provider overflow",
+          "user: old user one",
           "user: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
       Overflow compacted summary.",
+          "user: Retry after provider overflow",
         ],
       ]
     `);
@@ -2726,7 +2914,7 @@ describe('FullCompaction', () => {
         args: expect.objectContaining({
           result: expect.objectContaining({
             summary: 'Unknown window compacted summary.',
-            compactedCount: 4,
+            compactedCount: 2,
           }),
         }),
       }),
@@ -2937,8 +3125,8 @@ describe('FullCompaction', () => {
         args: expect.objectContaining({
           result: expect.objectContaining({
             summary: 'Placeholder compacted summary.',
-            compactedCount: 3,
-            droppedCount: 2,
+            compactedCount: 2,
+            droppedCount: 1,
           }),
         }),
       }),
@@ -2957,7 +3145,7 @@ describe('FullCompaction', () => {
       requestEvents.map((event) => [event.args['kind'], event.args['droppedCount']]),
     ).toEqual([
       ['compaction', 0],
-      ['compaction', 2],
+      ['compaction', 1],
       ['loop', undefined],
     ]);
     expect(events).toContainEqual(
@@ -2971,19 +3159,17 @@ describe('FullCompaction', () => {
         [
           "user: old user one",
           "assistant: old assistant one",
-          "user: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "user: <compaction-instruction>",
         ],
         [
-          "user: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "assistant: old assistant one",
           "user: <compaction-instruction>",
         ],
         [
-          "user: old user one
-
-      xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "user: old user one",
           "user: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
       Placeholder compacted summary.",
+          "user: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         ],
       ]
     `);
@@ -3414,7 +3600,7 @@ describe('goal reminder re-injection after full compaction', () => {
     await ctx.untilTurnEnd();
 
     expect(ctx.llmCalls.length).toBeGreaterThanOrEqual(2);
-    expect(goalReminderCount(ctx.llmCalls[0]!.history)).toBe(1);
+    expect(goalReminderCount(ctx.llmCalls[0]!.history)).toBe(0);
     expect(goalReminderCount(ctx.llmCalls[1]!.history)).toBe(1);
   });
 

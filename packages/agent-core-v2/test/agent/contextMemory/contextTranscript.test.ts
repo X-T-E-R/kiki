@@ -86,7 +86,7 @@ describe('reduceContextTranscript', () => {
     expect(result.foldedLength).toBe(2);
   });
 
-  it('compaction keeps the prefix and appends a user-role summary marker', () => {
+  it('compaction keeps the transcript and tracks the collapsed logical view', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('u1')),
       ...assistantStep('s1', 'a1'),
@@ -98,10 +98,10 @@ describe('reduceContextTranscript', () => {
     expect(texts(result)).toEqual(['u1', 'a1', 'u2', 'a2', 'SUM', 'u3']);
     expect(result.entries[4]!.origin).toEqual({ kind: 'compaction_summary' });
     expect(result.entries[4]!.role).toBe('user');
-    expect(result.foldedLength).toBe(4);
+    expect(result.foldedLength).toBe(2);
   });
 
-  it('uses the recorded kept-user count for foldedLength when present', () => {
+  it('derives foldedLength through the live compaction projection', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('u1')),
       appendMessage(userMessage('u2')),
@@ -109,17 +109,29 @@ describe('reduceContextTranscript', () => {
       compaction('SUM', 3, 1),
       appendMessage(userMessage('u4')),
     ]);
-    expect(result.foldedLength).toBe(3);
+    expect(result.foldedLength).toBe(5);
   });
 
-  it('accounts for the elision marker when the record kept a head segment', () => {
+  it('does not synthesize an elision marker for a small compacted prefix', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('u1')),
       appendMessage(userMessage('u2')),
       ...assistantStep('s1', 'a1'),
       compaction('SUM', 3, 2, 1),
     ]);
-    expect(result.foldedLength).toBe(4);
+    expect(result.foldedLength).toBe(3);
+  });
+
+  it('includes an elision marker in the logical length for an oversized prefix', () => {
+    const result = reduceContextTranscript([
+      appendMessage(userMessage(`u1 ${'x'.repeat(40_000)}`)),
+      appendMessage(userMessage(`u2 ${'x'.repeat(40_000)}`)),
+      appendMessage(userMessage(`u3 ${'x'.repeat(40_000)}`)),
+      compaction('SUM', 3, 2, 1),
+    ]);
+
+    expect(result.foldedLength).toBe(5);
+    expect(result.entries.some((message) => message.origin?.kind === 'injection')).toBe(true);
   });
 
   it('carries the originating wire record time per entry', () => {
@@ -192,15 +204,16 @@ describe('reduceContextTranscript', () => {
     expect(texts(result)).toEqual(['keep me', 'kept answer']);
   });
 
-  it('undo stops at a compaction summary', () => {
+  it('undo removes the logical tail without crossing a compaction summary', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('old')),
       compaction('SUM', 1, 1),
       appendMessage(userMessage('recent')),
       appendMessage(assistantMessage('answer')),
-      undo(2),
+      undo(1),
     ]);
     expect(texts(result)).toEqual(['old', 'SUM']);
+    expect(result.foldedLength).toBe(2);
   });
 
   it('clear keeps prior transcript entries but resets the folded view', () => {
@@ -393,7 +406,61 @@ describe('live fold parity', () => {
     expect(live[2]!.origin).toEqual({ kind: 'compaction_summary' });
   });
 
-  it('settles a frame left open by a failed attempt when compaction lands mid-fold', () => {
+  it('tracks a modern partial compaction with an assistant and tool tail', () => {
+    const records: WireRecord[] = [
+      appendMessage(userMessage('old user')),
+      appendMessage(assistantMessage('old assistant')),
+      appendMessage(userMessage('recent user')),
+      loopEvent({ type: 'step.begin', uuid: 's2' }),
+      loopEvent({ type: 'tool.call', stepUuid: 's2', toolCallId: 'c1', name: 'Bash' }),
+      loopEvent({ type: 'tool.result', toolCallId: 'c1', result: { output: 'done' } }),
+      loopEvent({ type: 'step.end', uuid: 's2' }),
+      appendMessage(userMessage('stale injection', { kind: 'injection', variant: 'test' })),
+      compaction('SUM', 2, 1),
+    ];
+    const live = foldLive(records);
+    const transcript = reduceContextTranscript(records);
+
+    expect(live.map((message) => message.role)).toEqual([
+      'user',
+      'user',
+      'user',
+      'assistant',
+      'tool',
+    ]);
+    expect(texts(transcript)).toEqual([
+      'old user',
+      'old assistant',
+      'recent user',
+      '',
+      'done',
+      'SUM',
+    ]);
+    expect(transcript.foldedLength).toBe(live.length);
+  });
+
+  it('undo removes a modern partial tail recorded before the summary', () => {
+    const records: WireRecord[] = [
+      appendMessage(userMessage('old user')),
+      appendMessage(assistantMessage('old assistant')),
+      appendMessage(userMessage('recent user')),
+      loopEvent({ type: 'step.begin', uuid: 's2' }),
+      loopEvent({ type: 'tool.call', stepUuid: 's2', toolCallId: 'c1', name: 'Bash' }),
+      loopEvent({ type: 'tool.result', toolCallId: 'c1', result: { output: 'done' } }),
+      loopEvent({ type: 'step.end', uuid: 's2' }),
+      compaction('SUM', 2, 1),
+      undo(1),
+    ];
+    const live = foldLive(records);
+    const transcript = reduceContextTranscript(records);
+
+    expect(texts(transcript)).toEqual(['old user', 'old assistant', 'SUM']);
+    expect(transcript.foldedLength).toBe(live.length);
+    expect(live.map((message) => message.role)).toEqual(['user', 'user']);
+    expect(live[1]?.origin?.kind).toBe('compaction_summary');
+  });
+
+  it('keeps a raw open frame while matching the compacted logical view', () => {
     const records: WireRecord[] = [
       appendMessage(userMessage('u1')),
       ...assistantStep('s1', 'a1'),
@@ -404,11 +471,11 @@ describe('live fold parity', () => {
     const live = foldLive(records);
     const transcript = reduceContextTranscript(records);
     expect(live.map((m) => m.role)).toEqual(['user', 'user', 'assistant']);
-    expect(texts(transcript)).toEqual(['u1', 'a1', 'SUM', 'a3']);
+    expect(texts(transcript)).toEqual(['u1', 'a1', '', 'SUM', 'a3']);
     expect(transcript.foldedLength).toBe(live.length);
   });
 
-  it('closes a pending tool exchange when compaction lands mid-fold', () => {
+  it('keeps a raw pending tool exchange while matching the compacted logical view', () => {
     const records: WireRecord[] = [
       appendMessage(userMessage('u1')),
       loopEvent({ type: 'step.begin', uuid: 's2' }),
@@ -421,12 +488,10 @@ describe('live fold parity', () => {
     expect(transcript.entries.map((m) => m.role)).toEqual([
       'user',
       'assistant',
-      'tool',
       'user',
       'assistant',
     ]);
-    expect(transcript.entries[2]!.toolCallId).toBe('c1');
-    expect(transcript.entries[2]!.isError).toBe(true);
+    expect(transcript.entries[1]!.toolCalls[0]?.id).toBe('c1');
     expect(transcript.foldedLength).toBe(live.length);
   });
 

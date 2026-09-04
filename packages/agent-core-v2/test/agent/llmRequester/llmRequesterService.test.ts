@@ -214,6 +214,7 @@ function createService(
       thinkingLevel,
       reservedContextSize: undefined,
       compactionTriggerRatio: undefined,
+      compactionSoftContextSize: undefined,
     }),
     resolveRequestParams: () => options.requestParams ?? { cacheKey: sessionId },
     getSystemPrompt: () => 'system',

@@ -515,6 +515,53 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     expect(body.data.items.every((m) => MSG_ID.test(m.id))).toBe(true);
   });
 
+  it('does not duplicate a partial compaction tail in live or cold message history', async () => {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id);
+    if (session === undefined) throw new Error(`session ${id} not found`);
+    const agent = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+    const ctx = agent.accessor.get(IAgentContextMemoryService);
+    ctx.append(
+      { role: 'user', content: [{ type: 'text', text: 'old user' }], toolCalls: [] },
+      { role: 'assistant', content: [{ type: 'text', text: 'old assistant' }], toolCalls: [] },
+      { role: 'user', content: [{ type: 'text', text: 'recent user' }], toolCalls: [] },
+      { role: 'assistant', content: [{ type: 'text', text: 'recent assistant' }], toolCalls: [] },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'stale reminder' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'test' },
+      },
+    );
+    ctx.applyCompaction({
+      summary: 'summary',
+      contextSummary: 'summary',
+      compactedCount: 2,
+      tokensBefore: 100,
+    });
+    await agent.accessor.get(IWireService).flush();
+
+    const readTexts = async (): Promise<string[]> => {
+      const { body } = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+      return body.data.items.map((item) =>
+        item.content.map((part) => (part.type === 'text' ? part['text'] : '')).join(''),
+      );
+    };
+    const liveTexts = await readTexts();
+    expect(liveTexts.filter((text) => text === 'recent user')).toHaveLength(1);
+    expect(liveTexts.filter((text) => text === 'recent assistant')).toHaveLength(1);
+    expect(liveTexts).not.toContain('stale reminder');
+
+    await server!.close();
+    server = undefined;
+    await boot();
+
+    const coldTexts = await readTexts();
+    expect(coldTexts.filter((text) => text === 'recent user')).toHaveLength(1);
+    expect(coldTexts.filter((text) => text === 'recent assistant')).toHaveLength(1);
+    expect(coldTexts).not.toContain('stale reminder');
+  });
+
   it('reads the persisted full transcript for a cold session', async () => {
     const id = await createSession();
     const session = getLiveSessionById(server!.core.accessor, id);

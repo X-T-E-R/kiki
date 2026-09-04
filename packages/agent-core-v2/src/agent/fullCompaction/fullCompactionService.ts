@@ -5,7 +5,6 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { defineState } from '#/state/state';
 import { renderPrompt } from "#/_base/utils/render-prompt";
-import { estimateTokensForMessage } from "#/kosong/contract/tokens";
 import { buildCompactionSummaryText, isRealUserInput } from '#/agent/contextMemory/compactionHandoff';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -70,7 +69,6 @@ const DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS = 128 * 1024;
 const OVERFLOW_CONTEXT_SAFETY_RATIO = 0.85;
 const OVERFLOW_STATUS_RECOVERY_RATIO = 0.5;
 const MAX_COMPACTION_OVERFLOW_SHRINK_ATTEMPTS = 3;
-const COMPACTION_OVERFLOW_SHRINK_RATIOS = [0.7, 0.5, 0.35] as const;
 const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
   type: 'object',
   properties: {},
@@ -379,6 +377,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         'Cannot compact while a turn is active. Wait for it to finish, then retry.',
       );
     }
+    if (this.strategy.computeCompactCount(history, source) <= 0) {
+      throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
+    }
     return this.requestTokens(history);
   }
 
@@ -633,12 +634,28 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
           customInstruction.length > 0 ? `\nOptional user instruction:\n${customInstruction}\n` : '',
       }).trimEnd();
 
+      let compactCount = this.strategy.computeCompactCount(originalHistory, data.source);
+      if (compactCount <= 0) {
+        throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
+      }
+
       const delays = retryBackoffDelays(MAX_COMPACTION_RETRY_ATTEMPTS);
       let attempt: CompactionAttemptResult | undefined;
-      let historyForModel: readonly ContextMessage[] = stripDynamicToolContext(originalHistory);
       let droppedCount = 0;
       let overflowShrinkCount = 0;
       let emptyOrTruncatedShrinkCount = 0;
+      let leadingDropRounds = 0;
+      const selectHistoryForModel = (): readonly ContextMessage[] => {
+        let selected = stripDynamicToolContext(originalHistory.slice(0, compactCount));
+        droppedCount = 0;
+        for (let i = 0; i < leadingDropRounds; i++) {
+          const reduced = dropOldestMessageAndLeadingToolResults(selected);
+          droppedCount += selected.length - reduced.length;
+          selected = reduced;
+        }
+        return selected;
+      };
+      let historyForModel = selectHistoryForModel();
       while (true) {
         const messagesToCompact = historyForModel;
         const messages: Message[] = [...messagesToCompact, createUserMessage(instruction)];
@@ -670,19 +687,24 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
           if (isContextOverflow) {
             this.observeContextOverflow(estimatedCompactionRequestTokens);
             overflowShrinkCount += 1;
-            if (
-              overflowShrinkCount > MAX_COMPACTION_OVERFLOW_SHRINK_ATTEMPTS ||
-              messagesToCompact.length <= 1
-            ) {
+            if (overflowShrinkCount > MAX_COMPACTION_OVERFLOW_SHRINK_ATTEMPTS) {
               throw error;
             }
-            const before = messagesToCompact.length;
-            historyForModel = shrinkCompactionHistoryAfterOverflow(
-              messagesToCompact,
-              overflowShrinkCount,
-              (message) => this.tokenCounting.estimateMessage(message),
+            const reducedCount = this.strategy.reduceCompactOnOverflow(
+              originalHistory.slice(0, compactCount),
             );
-            droppedCount += before - historyForModel.length;
+            if (reducedCount <= 0) {
+              throw error;
+            }
+            if (reducedCount < compactCount) {
+              compactCount = reducedCount;
+            } else {
+              if (messagesToCompact.length <= 1) {
+                throw error;
+              }
+              leadingDropRounds += 1;
+            }
+            historyForModel = selectHistoryForModel();
             retryCount = 0;
             continue;
           }
@@ -697,9 +719,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
             if (emptyOrTruncatedShrinkCount > MAX_COMPACTION_RETRY_ATTEMPTS) {
               throw error;
             }
-            const reduced = dropOldestMessageAndLeadingToolResults(messagesToCompact);
-            droppedCount += messagesToCompact.length - reduced.length;
-            historyForModel = reduced;
+            leadingDropRounds += 1;
+            historyForModel = selectHistoryForModel();
             retryCount = 0;
             continue;
           }
@@ -732,7 +753,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const result = this.context.applyCompaction({
         summary,
         contextSummary: buildCompactionSummaryText(summary),
-        compactedCount: originalHistory.length,
+        compactedCount: compactCount,
         tokensBefore,
         summaryOutputTokens: attempt.usage?.output,
         requestOverheadTokens: this.requestTokens([]),
@@ -834,38 +855,6 @@ function historySafeToCompact(
   if (current.length < original.length) return false;
   if (!original.every((message, index) => message === current[index])) return false;
   return current.slice(original.length).every(isRealUserInput);
-}
-
-function shrinkCompactionHistoryAfterOverflow<T extends Message>(
-  messages: readonly T[],
-  attempt: number,
-  estimateMessage: (message: T) => number = estimateTokensForMessage,
-): T[] {
-  if (messages.length <= 1) return messages.slice();
-  const ratio = COMPACTION_OVERFLOW_SHRINK_RATIOS[
-    Math.min(attempt - 1, COMPACTION_OVERFLOW_SHRINK_RATIOS.length - 1)
-  ]!;
-  let totalTokens = 0;
-  for (const message of messages) totalTokens += estimateMessage(message);
-  const tokenBudget = Math.floor(totalTokens * ratio);
-  return takeRecentMessagesWithinTokenBudget(messages, tokenBudget, estimateMessage);
-}
-
-function takeRecentMessagesWithinTokenBudget<T extends Message>(
-  messages: readonly T[],
-  tokenBudget: number,
-  estimateMessage: (message: T) => number = estimateTokensForMessage,
-): T[] {
-  let start = messages.length;
-  let tokens = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const messageTokens = estimateMessage(messages[i]!);
-    if (tokens + messageTokens > tokenBudget) break;
-    tokens += messageTokens;
-    start = i;
-  }
-  if (start === 0) start = 1;
-  return dropLeadingToolResults(messages.slice(start));
 }
 
 function dropOldestMessageAndLeadingToolResults<T extends { readonly role: string }>(

@@ -80,7 +80,11 @@ export function buildContextCompactionShape(
     };
   }
 
-  const compactableUserMessages = collectCompactableUserMessages(history);
+  const compactedHistory = history.slice(0, input.compactedCount);
+  const tail = history
+    .slice(input.compactedCount)
+    .filter((message) => message.origin?.kind !== 'injection');
+  const compactableUserMessages = collectCompactableUserMessages(compactedHistory);
   const selection = selectCompactionUserMessages(
     compactableUserMessages,
     COMPACT_USER_MESSAGE_MAX_TOKENS,
@@ -94,11 +98,13 @@ export function buildContextCompactionShape(
     ? [...selection.head, ...selection.tail]
     : [...selection.head, elisionMessage, ...selection.tail];
   const contextSummary = input.contextSummary ?? input.summary;
+  const summaryMessage = createCompactionSummaryMessage(contextSummary);
+  const messages = [...keptMessages, summaryMessage, ...tail];
   const tokensAfter =
     input.tokensAfter ??
     (input.requestOverheadTokens ?? 0) +
       (input.summaryOutputTokens ?? estimate.text(contextSummary)) +
-      estimate.messages(keptMessages);
+      estimate.messages([...keptMessages, ...tail]);
   const keptUserMessageCount =
     input.keptUserMessageCount ?? selection.head.length + selection.tail.length;
   const keptHeadUserMessageCount =
@@ -113,7 +119,7 @@ export function buildContextCompactionShape(
     keptUserMessageCount,
     keptHeadUserMessageCount,
     droppedCount: input.droppedCount,
-    messages: [...keptMessages, createCompactionSummaryMessage(contextSummary)],
+    messages,
   };
 }
 
