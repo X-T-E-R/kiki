@@ -19,7 +19,7 @@ import { DEFAULT_PERMISSION_MODE_SECTION } from '#/agent/permissionMode/configSe
 import { permissionModeConfiguredKey } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { profileKey } from '#/agent/profile/profileOps';
-import { TOWER_WORKER_PROFILE } from '#/features/tower/tower';
+import { hasPinnedPermissionMode } from '#/features/tower/tower';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -58,6 +58,7 @@ import {
   type ForkAgentOptions,
   IAgentLifecycleService,
 } from './agentLifecycle';
+import { withSubagentProfile } from './subagentMetadata';
 import { resolveDelegationPosition } from '#/agent/profile/delegationContext';
 import { resolveMainModelCandidate } from '#/agent/profile/mainModelCandidate';
 
@@ -362,13 +363,17 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if ((profile.executorId ?? 'native') === 'native') {
         await handle.accessor.get(IAgentToolActivationService).activate();
       }
+      const delegationPosition = resolveDelegationPosition(agentId, opts.delegator);
       await this.sessionMetadata.registerAgent(agentId, {
         homedir: agentHomedir,
-        type: resolveDelegationPosition(agentId, opts.delegator),
+        type: delegationPosition,
         parentAgentId,
         delegator: opts.delegator,
         forkedFrom: opts.forkedFrom,
-        labels: opts.labels,
+        labels: withSubagentProfile(
+          opts.labels,
+          delegationPosition === 'main' ? undefined : profile.profileName,
+        ),
         displayName: priorAgentMeta?.displayName ?? profile.routeId ?? profile.profileName,
         userLabel: opts.userLabel ?? priorAgentMeta?.userLabel,
         model: profile.modelAlias,
@@ -454,6 +459,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       runtimeId: source.accessor.get(IAgentRuntimeBindingService).current.runtimeId,
       forkedFrom: source.id,
       binding: overrideBinding,
+      labels:
+        overrideBinding === undefined
+          ? withSubagentProfile(undefined, sourceData.profileName)
+          : undefined,
     });
     const childProfile = child.accessor.get(IAgentProfileService);
     if (overrideBinding === undefined) {
@@ -482,12 +491,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   broadcastPermissionMode(mode: PermissionMode): void {
     for (const handle of this.handles.values()) {
-      if (
-        handle.accessor.get(IAgentStateService).get(profileKey).profileName ===
-        TOWER_WORKER_PROFILE
-      ) {
-        continue;
-      }
+      const profileName = handle.accessor.get(IAgentStateService).get(profileKey).profileName;
+      if (hasPinnedPermissionMode(profileName)) continue;
       handle.accessor.get(IAgentPermissionModeService).setMode(mode);
     }
   }

@@ -37,7 +37,13 @@ import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import {
+  subagentParentAgentId,
+  subagentProfileName,
+} from '#/session/agentLifecycle/subagentMetadata';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
   ISessionDispatchService,
@@ -94,6 +100,7 @@ export class SubagentTool implements ISubagentTool {
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
     @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ISessionAgentProfileCatalog private readonly catalog: ISessionAgentProfileCatalog,
     @IAgentScopeContext scopeContext: IAgentScopeContext,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
@@ -244,7 +251,7 @@ export class SubagentTool implements ISubagentTool {
 
     const profileNameForDisplay =
       resumeAgentId !== undefined && resumeAgentId.length > 0
-        ? this.resumeProfileName(resumeAgentId) ?? RESUMED_LABEL
+        ? (await this.resumeProfileName(resumeAgentId)) ?? RESUMED_LABEL
         : requestedRoute ?? requestedProfileName ?? DEFAULT_PROFILE_NAME;
     const prefix = args.background === true ? 'Launching background' : 'Launching';
     if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
@@ -264,10 +271,16 @@ export class SubagentTool implements ISubagentTool {
     };
   }
 
-  private resumeProfileName(agentId: string): string | undefined {
-    const target = this.lifecycle.get(agentId);
-    if (target === undefined) return undefined;
-    return target.accessor.get(IAgentProfileService).data().profileName;
+  private async resumeProfileName(ref: string): Promise<string | undefined> {
+    const target = this.lifecycle.get(ref);
+    if (target !== undefined) return target.accessor.get(IAgentProfileService).data().profileName;
+    const agents = (await this.metadata.read()).agents ?? {};
+    const matches = Object.entries(agents).filter(([agentId, meta]) =>
+      subagentParentAgentId(meta) === this.callerAgentId &&
+      (agentId === ref || meta.labels?.[COLLABORATION_TASK_NAME_LABEL] === ref),
+    );
+    if (matches.length !== 1) return undefined;
+    return subagentProfileName(matches[0]![1]);
   }
 
   private async launch(

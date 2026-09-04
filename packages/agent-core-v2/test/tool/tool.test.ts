@@ -1134,6 +1134,72 @@ describe('AgentRun tool execution contract', () => {
     expect(lifecycle.get).toHaveBeenCalledWith('agent-existing');
   });
 
+  it('uses an offline persisted profile for resume display and permission rules', async () => {
+    const lifecycle = createAgentLifecycleStub();
+    const context = createAgentToolContext(
+      lifecycle,
+      sessionService(
+        ISessionMetadata,
+        sessionMetadataStub({
+          'agent-existing': {
+            type: 'sub',
+            labels: { parentAgentId: 'main', profileName: 'explore' },
+          },
+        }),
+      ),
+    );
+
+    const execution = await agentTool(context).resolveExecution({
+      prompt: 'Continue',
+      description: 'Continue work',
+      resume: 'agent-existing',
+    });
+
+    if (execution.isError === true) throw new Error('expected runnable execution');
+    expect(execution.description).toBe('Launching explore agent: Continue work');
+    expect(execution.display).toMatchObject({ agent_name: 'explore' });
+    expect(execution.matchesRule?.('explore')).toBe(true);
+    expect(execution.matchesRule?.('coder')).toBe(false);
+    expect(lifecycle.create).not.toHaveBeenCalled();
+  });
+
+  it('resolves a cold named route by its persisted base profile', async () => {
+    const lifecycle = createAgentLifecycleStub();
+    const context = createAgentToolContext(
+      lifecycle,
+      sessionService(
+        ISessionMetadata,
+        sessionMetadataStub({
+          'agent-existing': {
+            type: 'sub',
+            displayName: 'review-route',
+            model: 'external/model',
+            thinkingEffort: 'xhigh',
+            executor: 'grok-acp',
+            labels: {
+              parentAgentId: 'main',
+              profileName: 'coder',
+              [COLLABORATION_TASK_NAME_LABEL]: 'reviewer',
+              [COLLABORATION_AGENT_TYPE_LABEL]: 'coder',
+            },
+          },
+        }),
+      ),
+    );
+
+    const execution = await agentTool(context).resolveExecution({
+      prompt: 'Continue',
+      description: 'Continue work',
+      resume: 'reviewer',
+    });
+
+    if (execution.isError === true) throw new Error('expected runnable execution');
+    expect(execution.description).toBe('Launching coder agent: Continue work');
+    expect(execution.matchesRule?.('coder')).toBe(true);
+    expect(execution.matchesRule?.('review-route')).toBe(false);
+    expect(lifecycle.create).not.toHaveBeenCalled();
+  });
+
   it('returns an error when continuing with a profile', async () => {
     const lifecycle = createAgentLifecycleStub();
     const context = createAgentToolContext(lifecycle);
