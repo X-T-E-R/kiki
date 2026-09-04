@@ -3,7 +3,7 @@ import { basename, resolve } from 'node:path';
 
 import { Text, TuiAltScreen } from '@moonshot-ai/pi-tui';
 import type { PermissionMode } from '@moonshot-ai/kimi-code-sdk';
-import type { UpdateSessionProfileRequest } from '@moonshot-ai/protocol';
+import type { PromptStatus, UpdateSessionProfileRequest } from '@moonshot-ai/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { SessionController } from '@kiki/session-core/session/sessionController';
@@ -30,7 +30,11 @@ import {
   CTRL_D_HINT,
   EXIT_CONFIRM_WINDOW_MS,
 } from '#/tui/constant/kimi-tui';
-import { MEDIA_STAGING_TTL_SECONDS } from '#/tui/constant/media';
+import {
+  MEDIA_SETTLEMENT_RETRY_BASE_MS,
+  MEDIA_SETTLEMENT_RETRY_MAX_MS,
+  MEDIA_STAGING_TTL_SECONDS,
+} from '#/tui/constant/media';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { adaptApprovalRequest } from '#/tui/interactions/approval-adapter';
 import {
@@ -53,6 +57,7 @@ import { openUrl } from '#/utils/open-url';
 import { loadPluginMarketplace } from '#/utils/plugin-marketplace';
 import { editInExternalEditor, resolveEditorCommand } from '#/utils/process/external-editor';
 
+import { projectAttachmentSettlement } from './attachment-settlement';
 import {
   prepareDaemonPrompt,
   type DaemonFileAttachment,
@@ -97,11 +102,19 @@ interface AttachmentSettlementLease {
   readonly sessionId: string;
   readonly promptId?: string;
   readonly turnId?: string;
+  readonly promptState?: PromptStatus;
   readonly uploadIds: Set<string>;
-  readonly observedVersion: number;
-  observed: boolean;
+  readonly deadlineAt: number;
+  deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  deleteRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  deleteFailures: number;
   settled: boolean;
   releasing: boolean;
+}
+
+interface AttachmentControllerLease {
+  readonly dispose: () => void;
+  readonly deadlineTimer: ReturnType<typeof setTimeout>;
 }
 
 export class DaemonTUI {
@@ -134,7 +147,7 @@ export class DaemonTUI {
   private sourceOverlayReattachPending = false;
   private sourceOverlayHeartbeatFailures = 0;
   private readonly attachmentSettlementLeases = new Map<string, AttachmentSettlementLease>();
-  private readonly attachmentControllerDisposes = new Map<SessionController, () => void>();
+  private readonly attachmentControllerLeases = new Map<SessionController, AttachmentControllerLease>();
   private readonly sideControllers = new Set<SessionController>();
   private stopped = false;
 
@@ -234,8 +247,11 @@ export class DaemonTUI {
     await cleanup(() => this.controller?.close());
     this.controller = undefined;
     await cleanup(() => {
-      for (const dispose of this.attachmentControllerDisposes.values()) dispose();
-      this.attachmentControllerDisposes.clear();
+      for (const lease of this.attachmentControllerLeases.values()) {
+        lease.dispose();
+        clearTimeout(lease.deadlineTimer);
+      }
+      this.attachmentControllerLeases.clear();
     });
     await cleanup(() => {
       for (const controller of this.sideControllers) controller.close();
@@ -249,6 +265,9 @@ export class DaemonTUI {
     });
     await cleanup(() => this.clearAttachments());
     await cleanup(() => this.releaseSettledAttachmentLeases());
+    await cleanup(() => {
+      this.clearAttachmentSettlementTimers();
+    });
     await cleanup(() => this.releaseExplicitSources());
     await cleanup(() => {
       this.clearSourceOverlayHeartbeat();
@@ -833,7 +852,6 @@ export class DaemonTUI {
 
   private async sendPrompt(text: string, profile?: string): Promise<void> {
     const controller = await this.ensureSession();
-    const observedVersion = controller.getState().version;
     const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments);
     if (profile === undefined) {
       const skillMap = new Map<string, string>();
@@ -853,15 +871,14 @@ export class DaemonTUI {
             input: prepared?.engineContent ?? [{ type: 'text', text }],
             skills: inlineSkills.map((skill) => ({ name: skill.skillName })),
           });
-        await controller.resync();
         if (prepared !== undefined) {
           this.handoffPreparedMedia(prepared, controller, {
             promptId: result.prompt_id,
             turnId: result.turn_id,
-            observed: true,
-            observedVersion,
+            promptState: result.state,
           });
         }
+        await controller.resync();
         return;
       }
       if (controller.getState().goal?.status === 'active') {
@@ -883,14 +900,10 @@ export class DaemonTUI {
           }
           return;
         }
-        await controller.resync();
         if (prepared !== undefined) {
-          this.handoffPreparedMedia(prepared, controller, {
-            turnId: result.turn_id,
-            observed: true,
-            observedVersion,
-          });
+          this.handoffPreparedMedia(prepared, controller, { turnId: result.turn_id });
         }
+        await controller.resync();
         return;
       }
     }
@@ -909,12 +922,11 @@ export class DaemonTUI {
     });
     if (prepared !== undefined) {
       await this.releasePreparedFileAttachments(prepared);
-      await controller.resync();
       this.handoffPreparedMedia(prepared, controller, {
         promptId: result.prompt_id,
-        observed: true,
-        observedVersion,
+        promptState: result.status,
       });
+      await controller.resync();
     }
   }
 
@@ -924,8 +936,7 @@ export class DaemonTUI {
     identity: {
       readonly promptId?: string;
       readonly turnId?: number;
-      readonly observed: boolean;
-      readonly observedVersion: number;
+      readonly promptState?: PromptStatus;
     },
   ): void {
     if (prepared.mediaUploadIds.length === 0) return;
@@ -934,16 +945,24 @@ export class DaemonTUI {
     const key = identity.promptId === undefined
       ? `turn:${controller.sessionId}:${turnId}`
       : `prompt:${controller.sessionId}:${identity.promptId}`;
+    const deadlineAt = Date.now() + MEDIA_STAGING_TTL_SECONDS * 1_000;
     const lease: AttachmentSettlementLease = {
       sessionId: controller.sessionId,
       promptId: identity.promptId,
       turnId,
+      promptState: identity.promptState,
       uploadIds: new Set(prepared.mediaUploadIds),
-      observedVersion: identity.observedVersion,
-      observed: identity.observed,
+      deadlineAt,
+      deadlineTimer: undefined,
+      deleteRetryTimer: undefined,
+      deleteFailures: 0,
       settled: false,
       releasing: false,
     };
+    lease.deadlineTimer = setTimeout(() => {
+      this.expireAttachmentSettlementLease(key, lease);
+    }, MEDIA_STAGING_TTL_SECONDS * 1_000);
+    lease.deadlineTimer.unref();
     this.attachmentSettlementLeases.set(key, lease);
     this.settleAttachmentLeases(controller.getState());
   }
@@ -973,15 +992,25 @@ export class DaemonTUI {
     const dispose = controller.subscribe(() => {
       this.settleAttachmentLeases(controller.getState());
     });
-    this.attachmentControllerDisposes.set(controller, dispose);
+    const deadlineAt = Math.min(
+      ...[...this.attachmentSettlementLeases.values()]
+        .filter((lease) => lease.sessionId === controller.sessionId && !lease.settled)
+        .map((lease) => lease.deadlineAt),
+    );
+    const deadlineTimer = setTimeout(() => {
+      this.releaseAttachmentSettlementController(controller.sessionId);
+    }, Math.max(0, deadlineAt - Date.now()));
+    deadlineTimer.unref();
+    this.attachmentControllerLeases.set(controller, { dispose, deadlineTimer });
   }
 
   private releaseAttachmentSettlementController(sessionId: string): void {
-    for (const [controller, dispose] of this.attachmentControllerDisposes) {
+    for (const [controller, lease] of this.attachmentControllerLeases) {
       if (controller.sessionId !== sessionId) continue;
-      dispose();
+      lease.dispose();
+      clearTimeout(lease.deadlineTimer);
       controller.close();
-      this.attachmentControllerDisposes.delete(controller);
+      this.attachmentControllerLeases.delete(controller);
       this.sideControllers.delete(controller);
     }
   }
@@ -989,28 +1018,15 @@ export class DaemonTUI {
   private settleAttachmentLeases(view: SessionViewState): void {
     for (const [key, lease] of this.attachmentSettlementLeases) {
       if (lease.sessionId !== view.sessionId || lease.settled) continue;
-      if (lease.turnId !== undefined) {
-        if (view.turnTail?.turnId !== lease.turnId) continue;
-        lease.settled = true;
-        void this.releaseAttachmentSettlementLease(key, lease);
-        continue;
-      }
-      const promptId = lease.promptId!;
-      const user = view.blocks.find(
-        (block) => block.kind === 'user' && block.promptId === promptId,
+      const projection = projectAttachmentSettlement(
+        {
+          promptId: lease.promptId,
+          turnId: lease.turnId,
+          promptState: lease.promptState,
+        },
+        view,
       );
-      const active =
-        view.activePromptId === promptId ||
-        view.queuedPromptIds.includes(promptId) ||
-        (user?.kind === 'user' &&
-          (user.promptStatus === 'running' ||
-            user.promptStatus === 'queued' ||
-            user.promptStatus === 'blocked'));
-      if (active) {
-        lease.observed = true;
-        continue;
-      }
-      if (!lease.observed || view.version <= lease.observedVersion) continue;
+      if (projection !== 'terminal') continue;
       lease.settled = true;
       void this.releaseAttachmentSettlementLease(key, lease);
     }
@@ -1024,6 +1040,14 @@ export class DaemonTUI {
     lease: AttachmentSettlementLease,
   ): Promise<void> {
     if (lease.releasing || !lease.settled) return;
+    if (Date.now() >= lease.deadlineAt) {
+      this.expireAttachmentSettlementLease(key, lease);
+      return;
+    }
+    if (lease.deleteRetryTimer !== undefined) {
+      clearTimeout(lease.deleteRetryTimer);
+      lease.deleteRetryTimer = undefined;
+    }
     lease.releasing = true;
     const uploadIds = [...lease.uploadIds];
     const results = await Promise.allSettled(
@@ -1033,7 +1057,42 @@ export class DaemonTUI {
       if (result.status === 'fulfilled') lease.uploadIds.delete(uploadIds[index]!);
     }
     lease.releasing = false;
-    if (lease.uploadIds.size === 0) this.attachmentSettlementLeases.delete(key);
+    if (this.attachmentSettlementLeases.get(key) !== lease) return;
+    if (lease.uploadIds.size === 0) {
+      this.completeAttachmentSettlementLease(key, lease);
+      return;
+    }
+    if (this.stopped || Date.now() >= lease.deadlineAt) {
+      this.expireAttachmentSettlementLease(key, lease);
+      return;
+    }
+    lease.deleteFailures += 1;
+    const retryDelay = Math.min(
+      MEDIA_SETTLEMENT_RETRY_MAX_MS,
+      MEDIA_SETTLEMENT_RETRY_BASE_MS * 2 ** Math.min(lease.deleteFailures - 1, 6),
+      lease.deadlineAt - Date.now(),
+    );
+    lease.deleteRetryTimer = setTimeout(() => {
+      lease.deleteRetryTimer = undefined;
+      void this.releaseAttachmentSettlementLease(key, lease);
+    }, retryDelay);
+    lease.deleteRetryTimer.unref();
+  }
+
+  private completeAttachmentSettlementLease(
+    key: string,
+    lease: AttachmentSettlementLease,
+  ): void {
+    if (lease.deadlineTimer !== undefined) clearTimeout(lease.deadlineTimer);
+    if (lease.deleteRetryTimer !== undefined) clearTimeout(lease.deleteRetryTimer);
+    this.attachmentSettlementLeases.delete(key);
+  }
+
+  private expireAttachmentSettlementLease(key: string, lease: AttachmentSettlementLease): void {
+    this.completeAttachmentSettlementLease(key, lease);
+    if (!this.hasUnsettledAttachmentLeases(lease.sessionId)) {
+      this.releaseAttachmentSettlementController(lease.sessionId);
+    }
   }
 
   private async releaseSettledAttachmentLeases(): Promise<void> {
@@ -1042,6 +1101,13 @@ export class DaemonTUI {
         .filter(([, lease]) => lease.settled)
         .map(([key, lease]) => this.releaseAttachmentSettlementLease(key, lease)),
     );
+  }
+
+  private clearAttachmentSettlementTimers(): void {
+    for (const lease of this.attachmentSettlementLeases.values()) {
+      if (lease.deadlineTimer !== undefined) clearTimeout(lease.deadlineTimer);
+      if (lease.deleteRetryTimer !== undefined) clearTimeout(lease.deleteRetryTimer);
+    }
   }
 
   private async releasePreparedFileAttachments(prepared: PreparedDaemonPrompt): Promise<void> {
@@ -1344,7 +1410,7 @@ export class DaemonTUI {
     const fork = await this.client.klient
       .session(controller.sessionId)
       .fork(title === '' ? undefined : { title });
-    await this.openSession(fork.id);
+    this.showStatus(`Session forked: ${fork.id}`);
   }
 
   private async handlePluginsCommand(args: string): Promise<void> {

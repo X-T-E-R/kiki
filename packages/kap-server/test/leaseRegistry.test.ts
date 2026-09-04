@@ -42,36 +42,50 @@ describe('LeaseRegistry', () => {
     vi.useRealTimers();
   });
 
-  it('continues an expiry sweep after a resource cleanup throws', async () => {
+  it('retries failed expiry cleanup on the bounded timer schedule', async () => {
     vi.useFakeTimers();
-    const onSweepError = vi.fn();
-    const registry = new LeaseRegistry(100, Date.now, onSweepError);
-    const first = registry.renew();
-    const second = registry.renew();
-    const cleanupError = new Error('cleanup failed');
-    const cleanup = vi.fn();
-    registry.attach(first.leaseId, 'first', () => {
-      throw cleanupError;
-    });
-    registry.attach(second.leaseId, 'second', cleanup);
+    try {
+      const onSweepError = vi.fn();
+      const registry = new LeaseRegistry(100, Date.now, onSweepError);
+      const first = registry.renew();
+      const second = registry.renew();
+      const cleanupError = new Error('cleanup failed');
+      const retryingCleanup = vi.fn()
+        .mockImplementationOnce(() => {
+          throw cleanupError;
+        })
+        .mockImplementationOnce(() => {});
+      const cleanup = vi.fn();
+      registry.attach(first.leaseId, 'first', retryingCleanup);
+      registry.attach(second.leaseId, 'second', cleanup);
 
-    await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(100);
 
-    expect(cleanup).toHaveBeenCalledOnce();
-    expect(onSweepError).toHaveBeenCalledOnce();
-    expect(onSweepError.mock.calls[0]?.[0]).toBeInstanceOf(AggregateError);
-    expect((onSweepError.mock.calls[0]?.[0] as AggregateError).errors).toEqual([cleanupError]);
-    expect(registry.activeCount()).toBe(0);
-    registry.dispose();
-    vi.useRealTimers();
+      expect(retryingCleanup).toHaveBeenCalledOnce();
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(onSweepError).toHaveBeenCalledOnce();
+      expect(onSweepError.mock.calls[0]?.[0]).toBeInstanceOf(AggregateError);
+      expect((onSweepError.mock.calls[0]?.[0] as AggregateError).errors).toEqual([cleanupError]);
+      expect(registry.activeCount()).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(299);
+      expect(retryingCleanup).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(retryingCleanup).toHaveBeenCalledTimes(2);
+      registry.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('removes a resource even when its explicit cleanup throws', () => {
+  it('retries pending cleanup on a second explicit release', () => {
     const registry = new LeaseRegistry();
     const lease = registry.renew();
-    const cleanup = vi.fn(() => {
-      throw new Error('cleanup failed');
-    });
+    const cleanup = vi.fn()
+      .mockImplementationOnce(() => {
+        throw new Error('cleanup failed');
+      })
+      .mockImplementationOnce(() => {});
     registry.attach(lease.leaseId, 'resource', cleanup);
 
     expect(() => {
@@ -80,24 +94,29 @@ describe('LeaseRegistry', () => {
     expect(() => {
       registry.releaseResource('resource');
     }).not.toThrow();
+    expect(cleanup).toHaveBeenCalledTimes(2);
     registry.dispose();
   });
 
-  it('aggregates dispose failures while cleaning every resource', () => {
+  it('retries every failed cleanup during dispose and aggregates remaining failures', () => {
     const registry = new LeaseRegistry();
     const lease = registry.renew();
-    const cleanup = vi.fn();
-    registry.attach(lease.leaseId, 'first', () => {
+    const first = vi.fn(() => {
       throw new Error('first failed');
     });
-    registry.attach(lease.leaseId, 'second', cleanup);
-    registry.attach(lease.leaseId, 'third', () => {
+    const cleanup = vi.fn();
+    const third = vi.fn(() => {
       throw new Error('third failed');
     });
+    registry.attach(lease.leaseId, 'first', first);
+    registry.attach(lease.leaseId, 'second', cleanup);
+    registry.attach(lease.leaseId, 'third', third);
 
     expect(() => {
       registry.dispose();
     }).toThrow(AggregateError);
+    expect(first).toHaveBeenCalledTimes(2);
     expect(cleanup).toHaveBeenCalledOnce();
+    expect(third).toHaveBeenCalledTimes(2);
   });
 });

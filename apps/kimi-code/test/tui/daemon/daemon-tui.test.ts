@@ -45,6 +45,8 @@ function driver(
     version: 0,
     sessionId: 'session-1',
     busy: false,
+    resyncing: false,
+    resyncFailed: false,
     blocks: [] as Array<Record<string, unknown>>,
     activePromptId: undefined as string | undefined,
     queuedPromptIds: [] as string[],
@@ -375,7 +377,9 @@ describe('DaemonTUI commands', () => {
     expect(agentFacade.compact).toHaveBeenCalledWith({ instruction: 'keep decisions' });
     expect(agentFacade.stopTask).toHaveBeenCalledWith({ taskId: 'task-1' });
     expect(sessionFacade.fork).toHaveBeenCalledWith({ title: 'Review copy' });
-    expect(openSession).toHaveBeenCalledWith('fork-1');
+    expect(openSession).not.toHaveBeenCalled();
+    expect(internal.controller).toBe(controller);
+    expect(internal.showStatus).toHaveBeenCalledWith('Session forked: fork-1');
     expect(pluginsFacade.install).toHaveBeenCalledWith('C:\\plugins\\local');
     expect(providerFacade.addProvider).toHaveBeenCalledWith(
       'example',
@@ -598,6 +602,50 @@ describe('DaemonTUI commands', () => {
     });
   });
 
+  it('retries settled media deletion with bounded backoff during normal runtime', async () => {
+    vi.useFakeTimers();
+    try {
+      const { internal, controller, controllerState, filesFacade } = driver();
+      filesFacade.delete
+        .mockRejectedValueOnce(new Error('delete failed once'))
+        .mockRejectedValueOnce(new Error('delete failed twice'))
+        .mockResolvedValueOnce(undefined);
+      const image = internal.imageAttachments.addImage(
+        new Uint8Array([1, 2, 3]),
+        'image/png',
+        1,
+        1,
+        undefined,
+        'retry-image-upload',
+      );
+      controller.sendPrompt.mockResolvedValue({
+        prompt_id: 'retry-image-prompt',
+        user_message_id: 'retry-image-user',
+        status: 'running',
+        content: [{ type: 'text', text: 'inspect image' }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      });
+
+      await internal.handleInput(`inspect ${image.placeholder}`);
+      controllerState.blocks = [{ kind: 'user', promptId: 'retry-image-prompt' }];
+      internal.settleAttachmentLeases(controllerState);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(filesFacade.delete).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(249);
+      expect(filesFacade.delete).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(filesFacade.delete).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(filesFacade.delete).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(filesFacade.delete).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps tracking media settlement after switching sessions', async () => {
     const { internal, controller, controllerState, emitController, filesFacade } = driver();
     const image = internal.imageAttachments.addImage(
@@ -627,11 +675,51 @@ describe('DaemonTUI commands', () => {
     controllerState.version += 1;
     controllerState.activePromptId = undefined;
     emitController();
+    expect(filesFacade.delete).not.toHaveBeenCalled();
+    expect(controller.close).not.toHaveBeenCalled();
 
+    controllerState.blocks = [{ kind: 'user', promptId: 'switched-image-prompt' }];
+    emitController();
     await vi.waitFor(() => {
       expect(filesFacade.delete).toHaveBeenCalledWith('switched-image-upload');
     });
     expect(controller.close).toHaveBeenCalledOnce();
+  });
+
+  it('closes a retained settlement controller at the media TTL when no terminal arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const { internal, controller, controllerState, filesFacade } = driver();
+      const image = internal.imageAttachments.addImage(
+        new Uint8Array([1, 2, 3]),
+        'image/png',
+        1,
+        1,
+        undefined,
+        'never-settled-image-upload',
+      );
+      controller.sendPrompt.mockImplementation(async () => {
+        controllerState.activePromptId = 'never-settled-prompt';
+        return {
+          prompt_id: 'never-settled-prompt',
+          user_message_id: 'never-settled-user',
+          status: 'running',
+          content: [{ type: 'text', text: 'inspect image' }],
+          created_at: '2026-01-01T00:00:00.000Z',
+        };
+      });
+
+      await internal.handleInput(`inspect ${image.placeholder}`);
+      internal.startupOverridesPending = false;
+      await internal.openSession('session-2');
+      await vi.advanceTimersByTimeAsync(MEDIA_STAGING_TTL_SECONDS * 1_000);
+
+      expect(controller.close).toHaveBeenCalledOnce();
+      expect(internal.sideControllers.has(controller as never)).toBe(false);
+      expect(filesFacade.delete).not.toHaveBeenCalledWith('never-settled-image-upload');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not delete media handed to an active prompt when the TUI closes', async () => {
@@ -844,8 +932,12 @@ describe('DaemonTUI commands', () => {
     expect(controller.resync).toHaveBeenCalledOnce();
   });
 
-  it('treats queued inline-skill results as observed until a later snapshot settles', async () => {
-    const { internal, controllerState, agentFacade, filesFacade } = driver();
+  it('keeps queued inline-skill media through a failed resync until terminal projection', async () => {
+    const { internal, controller, controllerState, agentFacade, filesFacade } = driver();
+    controller.resync.mockImplementationOnce(async () => {
+      controllerState.resyncFailed = true;
+      throw new Error('resync failed');
+    });
     internal.skillCommands.set('skill:reviewskill', {
       commandName: 'skill:ReviewSkill',
       name: 'ReviewSkill',
@@ -865,15 +957,66 @@ describe('DaemonTUI commands', () => {
       'skill-image-upload',
     );
 
-    await internal.handleInput(`Please /skill:ReviewSkill inspect ${image.placeholder}`);
+    await expect(
+      internal.handleInput(`Please /skill:ReviewSkill inspect ${image.placeholder}`),
+    ).rejects.toThrow('resync failed');
     expect(filesFacade.delete).not.toHaveBeenCalled();
 
     controllerState.version += 1;
+    internal.settleAttachmentLeases(controllerState);
+    expect(filesFacade.delete).not.toHaveBeenCalled();
+
+    controllerState.resyncFailed = false;
+    internal.settleAttachmentLeases(controllerState);
+    expect(filesFacade.delete).not.toHaveBeenCalled();
+
+    controllerState.blocks = [{ kind: 'user', promptId: 'skill-prompt' }];
     internal.settleAttachmentLeases(controllerState);
     await vi.waitFor(() => {
       expect(filesFacade.delete).toHaveBeenCalledWith('skill-image-upload');
     });
   });
+
+  it.each(['running', 'blocked'] as const)(
+    'keeps %s inline-skill media until an explicit terminal prompt projection',
+    async (state) => {
+      const { internal, controllerState, agentFacade, filesFacade } = driver();
+      internal.skillCommands.set('skill:reviewskill', {
+        commandName: 'skill:ReviewSkill',
+        name: 'ReviewSkill',
+        description: 'Review changes',
+      });
+      agentFacade.promptWithSkills.mockResolvedValue({
+        prompt_id: 'skill-prompt',
+        created_at: '2026-01-01T00:00:00.000Z',
+        state,
+      });
+      controllerState.blocks = [{ kind: 'user', promptId: 'skill-prompt', promptStatus: state }];
+      const image = internal.imageAttachments.addImage(
+        new Uint8Array([1, 2, 3]),
+        'image/png',
+        1,
+        1,
+        undefined,
+        `${state}-skill-image-upload`,
+      );
+
+      await internal.handleInput(`Please /skill:ReviewSkill inspect ${image.placeholder}`);
+      internal.settleAttachmentLeases(controllerState);
+      expect(filesFacade.delete).not.toHaveBeenCalled();
+
+      controllerState.resyncing = true;
+      controllerState.blocks = [{ kind: 'user', promptId: 'skill-prompt' }];
+      internal.settleAttachmentLeases(controllerState);
+      expect(filesFacade.delete).not.toHaveBeenCalled();
+
+      controllerState.resyncing = false;
+      internal.settleAttachmentLeases(controllerState);
+      await vi.waitFor(() => {
+        expect(filesFacade.delete).toHaveBeenCalledWith(`${state}-skill-image-upload`);
+      });
+    },
+  );
 
   it('registers and releases explicit sources as a client-owned session overlay', async () => {
     const { tui, internal } = driver(false, {

@@ -2,6 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isTerminalOutputError, isTuiDaemonEnabled, runShell } from '#/cli/run-shell';
 
+const uncaughtExceptionListeners = new Set(process.listeners('uncaughtException'));
+const unhandledRejectionListeners = new Set(process.listeners('unhandledRejection'));
+const sigtermListeners = new Set(process.listeners('SIGTERM'));
+const sighupListeners = new Set(process.listeners('SIGHUP'));
+const stdoutErrorListeners = new Set(
+  process.stdout.listeners('error') as Array<(error: Error) => void>,
+);
+const stderrErrorListeners = new Set(
+  process.stderr.listeners('error') as Array<(error: Error) => void>,
+);
+
 const mocks = vi.hoisted(() => ({
   order: [] as string[],
   trust: vi.fn(),
@@ -156,6 +167,24 @@ describe('runShell daemon startup', () => {
   });
 
   afterEach(() => {
+    for (const listener of process.listeners('uncaughtException')) {
+      if (!uncaughtExceptionListeners.has(listener)) process.off('uncaughtException', listener);
+    }
+    for (const listener of process.listeners('unhandledRejection')) {
+      if (!unhandledRejectionListeners.has(listener)) process.off('unhandledRejection', listener);
+    }
+    for (const listener of process.listeners('SIGTERM')) {
+      if (!sigtermListeners.has(listener)) process.off('SIGTERM', listener);
+    }
+    for (const listener of process.listeners('SIGHUP')) {
+      if (!sighupListeners.has(listener)) process.off('SIGHUP', listener);
+    }
+    for (const listener of process.stdout.listeners('error') as Array<(error: Error) => void>) {
+      if (!stdoutErrorListeners.has(listener)) process.stdout.off('error', listener);
+    }
+    for (const listener of process.stderr.listeners('error') as Array<(error: Error) => void>) {
+      if (!stderrErrorListeners.has(listener)) process.stderr.off('error', listener);
+    }
     vi.unstubAllEnvs();
   });
 

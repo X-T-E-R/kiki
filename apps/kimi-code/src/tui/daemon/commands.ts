@@ -70,6 +70,8 @@ export interface DaemonSlashInput {
   readonly args: string;
 }
 
+const EXPORT_VIEW_DESCRIPTION = 'Export loaded user and assistant text as Markdown';
+
 const SUPPORTED_COMMANDS = [
   command('exit', ['quit', 'q'], 'Exit the application', 'none'),
   command('sessions', ['resume'], 'Browse and resume sessions', 'none'),
@@ -101,7 +103,7 @@ const SUPPORTED_COMMANDS = [
   command('undo', [], 'Withdraw the last prompt', 'none'),
   command('attach', [], 'Attach a local file to the next prompt', 'optional-rest', '<path>'),
   command('experiments', ['experimental'], 'List experimental features (read-only)', 'none'),
-  command('export-view', ['export'], 'Export the currently loaded transcript view as Markdown', 'optional-rest', '[path]'),
+  command('export-view', ['export'], EXPORT_VIEW_DESCRIPTION, 'optional-rest', '[path]'),
   command('btw', [], 'Ask a forked side agent a question', 'optional-rest', '<question>'),
   command('copy', [], 'Copy the last assistant message to the clipboard', 'none'),
   command('editor', [], 'Set the external editor for this TUI session', 'optional-rest', '[command]'),
@@ -204,7 +206,7 @@ export function daemonAutocompleteCommands(
 export function daemonCommandHelp(): string {
   const supported = SUPPORTED_COMMANDS.map(formatCommand).join(', ');
   const disabled = DISABLED_COMMANDS.map(formatCommand).join(', ');
-  return `Daemon TUI commands\nSupported: ${supported}\nDisabled: ${disabled}`;
+  return `Daemon TUI commands\nSupported: ${supported}\n${EXPORT_VIEW_DESCRIPTION}\nDisabled: ${disabled}`;
 }
 
 function command(

@@ -69,11 +69,16 @@ describe('daemon command registry', () => {
           aliases: ['config'],
           description: expect.stringContaining('supported'),
         }),
+        expect.objectContaining({
+          name: 'export-view',
+          description: '[supported in daemon TUI] Export loaded user and assistant text as Markdown',
+        }),
         expect.objectContaining({ name: 'skill:ReviewSkill', description: 'Review changes' }),
         expect.objectContaining({ name: 'Reviewer', argumentHint: '<prompt>' }),
       ]),
     );
     expect(daemonCommandHelp()).toContain('Supported:');
+    expect(daemonCommandHelp()).toContain('Export loaded user and assistant text as Markdown');
     expect(daemonCommandHelp()).toContain('Disabled:');
   });
 
