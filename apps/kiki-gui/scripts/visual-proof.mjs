@@ -1077,7 +1077,7 @@ async function scenarioDraftFlow() {
   await page.fill('textarea', 'Run the fixture draft flow.');
   await page.press('textarea', 'Enter');
   await page.waitForURL(/\/s\//, { timeout: 10_000 });
-  await page.waitForSelector(`text=${S.working}`, { timeout: 10_000 });
+  await page.waitForSelector('[data-phase="active"]', { timeout: 10_000 });
   await page.waitForSelector('text=Here is the fixture answer', { timeout: 20_000 });
   await page.waitForTimeout(600);
   await shot('draft-flow');
