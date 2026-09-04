@@ -377,6 +377,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         'Cannot compact while a turn is active. Wait for it to finish, then retry.',
       );
     }
+    if (this.strategy.computeCompactCount(history, source) <= 0) {
+      throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
+    }
     return this.requestTokens(history);
   }
 

@@ -127,6 +127,20 @@ describe('DefaultCompactionStrategy', () => {
     expect(estimateTokensForMessages(messages.slice(0, count + 1))).toBeGreaterThan(maxSize);
   });
 
+  it('rejects manual compaction without a safe split boundary', () => {
+    const strategy = testCompactionStrategy();
+    const messages: Message[] = [
+      textMessage('user', 'run tool'),
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [{ type: 'function', id: 'call_a', name: 'Lookup', arguments: '{}' }],
+      },
+    ];
+
+    expect(strategy.computeCompactCount(messages, 'manual')).toBe(0);
+  });
+
   it('degrades to count-based recency and skips window fitting under a zero estimator', () => {
     const zeroed = new DefaultCompactionStrategy(
       () => 1_000,

@@ -171,7 +171,7 @@ export class DefaultCompactionStrategy implements CompactionStrategy {
           return this.fitCompactCountToWindow(messages, i + 1);
         }
       }
-      return this.fitCompactCountToWindow(messages, messages.length);
+      return 0;
     }
 
 

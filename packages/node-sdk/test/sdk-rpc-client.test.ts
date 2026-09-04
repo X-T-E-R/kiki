@@ -1146,6 +1146,25 @@ max_context_size = 1000
 });
 
 describe('foldAgentWireReplay', () => {
+  async function foldRecords(records: readonly object[]) {
+    const dir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-fold-'));
+    tempDirs.push(dir);
+    const wirePath = join(dir, 'wire.jsonl');
+    await writeFile(
+      wirePath,
+      records.map((record) => JSON.stringify(record)).join('\n') + '\n',
+      'utf-8',
+    );
+    return foldAgentWireReplay(wirePath);
+  }
+
+  const message = (role: 'user' | 'assistant', text: string, origin?: object) => ({
+    role,
+    content: [{ type: 'text', text }],
+    toolCalls: [],
+    ...(origin === undefined ? {} : { origin }),
+  });
+
   it('folds a journal into v1 replay records and the tool store', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-fold-'));
     tempDirs.push(dir);
@@ -1185,6 +1204,143 @@ describe('foldAgentWireReplay', () => {
     ]);
     // Last write wins per store key.
     expect(folded.toolStore).toEqual({ todo: [{ title: 'new', status: 'pending' }] });
+  });
+
+  it('folds a modern partial compaction and filters injected tail messages', async () => {
+    const folded = await foldRecords([
+      { type: 'metadata', protocol_version: '1.5', created_at: 1000 },
+      { type: 'context.append_message', message: message('user', 'old user'), time: 1001 },
+      { type: 'context.append_message', message: message('assistant', 'old assistant'), time: 1002 },
+      { type: 'context.append_message', message: message('user', 'recent user'), time: 1003 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', uuid: 's1' }, time: 1004 },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'tool.call', stepUuid: 's1', toolCallId: 'c1', name: 'Read' },
+        time: 1005,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'tool.result', toolCallId: 'c1', result: { output: 'done' } },
+        time: 1006,
+      },
+      { type: 'context.append_loop_event', event: { type: 'step.end', uuid: 's1' }, time: 1007 },
+      {
+        type: 'context.append_message',
+        message: message('user', 'stale reminder', { kind: 'injection', variant: 'test' }),
+        time: 1008,
+      },
+      { type: 'full_compaction.begin', source: 'auto', time: 1009 },
+      {
+        type: 'context.apply_compaction',
+        summary: 'summary',
+        contextSummary: 'prefixed summary',
+        compactedCount: 2,
+        tokensBefore: 100,
+        tokensAfter: 20,
+        keptUserMessageCount: 1,
+        time: 1010,
+      },
+    ]);
+
+    expect(
+      folded.replay
+        .filter((record) => record.type === 'message')
+        .map((record) => record.message.role),
+    ).toEqual(['user', 'assistant', 'user', 'assistant', 'tool']);
+    expect(
+      folded.replay
+        .filter((record) => record.type === 'message')
+        .map((record) => record.message.content[0])
+        .filter((part) => part?.type === 'text')
+        .map((part) => part.text),
+    ).not.toContain('stale reminder');
+    expect(folded.replay.at(-1)).toMatchObject({
+      type: 'compaction',
+      result: { compactedCount: 2, contextSummary: 'prefixed summary' },
+    });
+  });
+
+  it('undo removes a modern partial assistant and tool tail from replay', async () => {
+    const folded = await foldRecords([
+      { type: 'metadata', protocol_version: '1.5', created_at: 1000 },
+      { type: 'context.append_message', message: message('user', 'old user'), time: 1001 },
+      { type: 'context.append_message', message: message('assistant', 'old assistant'), time: 1002 },
+      { type: 'context.append_message', message: message('user', 'recent user'), time: 1003 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', uuid: 's1' }, time: 1004 },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'tool.call', stepUuid: 's1', toolCallId: 'c1', name: 'Read' },
+        time: 1005,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'tool.result', toolCallId: 'c1', result: { output: 'done' } },
+        time: 1006,
+      },
+      { type: 'context.append_loop_event', event: { type: 'step.end', uuid: 's1' }, time: 1007 },
+      { type: 'full_compaction.begin', source: 'auto', time: 1008 },
+      {
+        type: 'context.apply_compaction',
+        summary: 'summary',
+        contextSummary: 'prefixed summary',
+        compactedCount: 2,
+        tokensBefore: 100,
+        tokensAfter: 20,
+        keptUserMessageCount: 1,
+        time: 1009,
+      },
+      { type: 'context.undo', count: 1, time: 1010 },
+    ]);
+
+    expect(
+      folded.replay
+        .filter((record) => record.type === 'message')
+        .map((record) => record.message.role),
+    ).toEqual(['user', 'assistant']);
+    expect(folded.replay.at(-1)).toMatchObject({
+      type: 'compaction',
+      result: { compactedCount: 2 },
+    });
+  });
+
+  it('keeps full modern and legacy compaction records as undo boundaries', async () => {
+    const modern = await foldRecords([
+      { type: 'metadata', protocol_version: '1.5', created_at: 1000 },
+      { type: 'context.append_message', message: message('user', 'modern user'), time: 1001 },
+      { type: 'context.append_message', message: message('assistant', 'modern answer'), time: 1002 },
+      { type: 'full_compaction.begin', source: 'manual', time: 1003 },
+      {
+        type: 'context.apply_compaction',
+        summary: 'modern summary',
+        contextSummary: 'prefixed modern summary',
+        compactedCount: 2,
+        tokensBefore: 100,
+        tokensAfter: 20,
+        keptUserMessageCount: 1,
+        time: 1004,
+      },
+      { type: 'context.undo', count: 1, time: 1005 },
+    ]);
+    const legacy = await foldRecords([
+      { type: 'metadata', protocol_version: '1.5', created_at: 1000 },
+      { type: 'context.append_message', message: message('user', 'legacy user'), time: 1001 },
+      { type: 'context.append_message', message: message('assistant', 'legacy answer'), time: 1002 },
+      { type: 'full_compaction.begin', source: 'manual', time: 1003 },
+      {
+        type: 'context.apply_compaction',
+        count: 2,
+        summary: message('assistant', 'legacy summary', { kind: 'compaction_summary' }),
+        tokensBefore: 100,
+        tokensAfter: 20,
+        time: 1004,
+      },
+      { type: 'context.undo', count: 1, time: 1005 },
+    ]);
+
+    expect(modern.replay.filter((record) => record.type === 'message')).toHaveLength(2);
+    expect(legacy.replay.filter((record) => record.type === 'message')).toHaveLength(2);
+    expect(modern.replay.at(-1)?.type).toBe('compaction');
+    expect(legacy.replay.at(-1)?.type).toBe('compaction');
   });
 
   it('degrades to an empty fold on a missing or corrupt journal', async () => {

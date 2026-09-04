@@ -1928,33 +1928,42 @@ describe('FullCompaction', () => {
     ]);
   });
 
-  it('compacts a single user message and keeps it ahead of the summary', async () => {
+  it('rejects manual compaction for a single unsplittable user message', async () => {
     const ctx = testAgent();
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
     });
     ctx.appendUserMessage([{ type: 'text', text: 'only pending user' }]);
-    const compacted = ctx.once('full_compaction.complete');
-    const completed = ctx.once('compaction.completed');
 
-    ctx.mockNextResponse({ type: 'text', text: 'Single message summary.' });
-    await ctx.rpc.beginCompaction({});
-    await compacted;
-    await completed;
+    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+      code: 'compaction.unable',
+    });
 
-    expect(ctx.llmCalls).toHaveLength(1);
-    expect(ctx.compactHistory()).toEqual([
-      { role: 'user', text: 'only pending user' },
-      {
-        role: 'user',
-        text: `${COMPACTION_SUMMARY_PREFIX}\nSingle message summary.`,
-      },
-    ]);
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(ctx.compactHistory()).toEqual([{ role: 'user', text: 'only pending user' }]);
     await ctx.expectResumeMatches();
   });
 
-  it('manual compaction can run after a previous single-message compaction', async () => {
+  it('rejects manual compaction for an unresolved tool exchange without a safe prefix', async () => {
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+    });
+    ctx.appendUnresolvedToolExchange(1);
+    const before = ctx.compactHistory();
+
+    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+      code: 'compaction.unable',
+    });
+
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(ctx.compactHistory()).toEqual(before);
+    await ctx.expectResumeMatches();
+  });
+
+  it('manual compaction can run after rejecting an unsplittable history', async () => {
     const ctx = testAgent();
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
@@ -1962,9 +1971,9 @@ describe('FullCompaction', () => {
     });
 
     ctx.appendUserMessage([{ type: 'text', text: 'only pending user' }]);
-    ctx.mockNextResponse({ type: 'text', text: 'Single message summary.' });
-    await ctx.rpc.beginCompaction({});
-    await ctx.once('compaction.completed');
+    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+      code: 'compaction.unable',
+    });
 
     ctx.clearContext();
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
@@ -1972,18 +1981,18 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    ctx.mockNextResponse({ type: 'text', text: 'Compacted after single-message compact.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted after rejected history.' });
     await ctx.rpc.beginCompaction({});
     await compacted;
     await completed;
 
-    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls).toHaveLength(1);
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
       {
         role: 'user',
-        text: expect.stringContaining('Compacted after single-message compact.'),
+        text: expect.stringContaining('Compacted after rejected history.'),
       },
     ]);
     await ctx.expectResumeMatches();

@@ -1,12 +1,13 @@
 import { type ContentPart, type ToolCall } from '#/kosong/contract/message';
 import type { WireRecord } from '#/wire/record';
 
+import { COMPACTION_ELISION_VARIANT } from './compactionHandoff';
 import {
-  COMPACT_USER_MESSAGE_MAX_TOKENS,
-  collectCompactableUserMessages,
-  selectRecentUserMessages,
-} from './compactionHandoff';
-import { isPromptOwnedInjection, isUndoAnchor } from './conversationTime';
+  applyContextCompactionRecord,
+  computeUndoCut,
+  isFullyUndoable,
+  readContextCompactedCount,
+} from './contextOps';
 import { createLoopEventFold, type LoopRecordedEvent } from './loopEventFold';
 import type { ContextMessage } from './types';
 
@@ -30,6 +31,7 @@ interface MutableMessage {
   isError?: boolean;
   note?: string;
   origin?: ContextMessage['origin'];
+  partial?: boolean;
 }
 
 interface MutableEntry {
@@ -45,109 +47,120 @@ export function reduceContextTranscript(records: Iterable<WireRecord>): ContextT
 
 export function createContextTranscriptReducer(): ContextTranscriptReducer {
   const transcript: MutableEntry[] = [];
-  let foldedLength = 0;
-  let clearFloor = 0;
+  let logical: MutableEntry[] = [];
   let openEntry: MutableEntry | undefined;
 
   const push = (...entries: MutableEntry[]): void => {
     transcript.push(...entries);
-    foldedLength += entries.length;
+    logical.push(...entries);
   };
 
-  const fold = createLoopEventFold({
-    openAssistant: (time) => {
-      openEntry = { message: { role: 'assistant', content: [], toolCalls: [] }, time };
+  const sink = {
+    openAssistant: (time: number | undefined) => {
+      openEntry = {
+        message: { role: 'assistant', content: [], toolCalls: [], partial: true },
+        time,
+      };
       push(openEntry);
     },
-    appendOpenContent: (part) => {
+    appendOpenContent: (part: ContentPart) => {
       openEntry?.message.content.push(part);
     },
-    appendOpenToolCall: (call) => {
+    appendOpenToolCall: (call: ToolCall) => {
       openEntry?.message.toolCalls.push(call);
     },
     dropOpenAssistant: () => {
-      if (openEntry === undefined) return;
-      const index = transcript.indexOf(openEntry);
+      const entry = openEntry;
       openEntry = undefined;
-      if (index === -1) return;
-      transcript.splice(index, 1);
-      foldedLength = Math.max(0, foldedLength - 1);
+      if (entry === undefined) return;
+      removeEntry(transcript, entry);
+      removeEntry(logical, entry);
     },
     sealOpenAssistant: () => {
+      if (openEntry !== undefined) openEntry.message.partial = undefined;
       openEntry = undefined;
     },
-    pushToolMessage: (message, time) => {
-      push({ message: message as MutableMessage, time });
-    },
-    pushMessage: (message, time) => {
+    pushToolMessage: (message: ContextMessage, time: number | undefined) => {
       push(toMutableEntry(message, time));
     },
-  });
+    pushMessage: (message: ContextMessage, time: number | undefined) => {
+      push(toMutableEntry(message, time));
+    },
+  };
+  let fold = createLoopEventFold(sink);
 
   const resetOpenState = (): void => {
-    fold.reset();
     openEntry = undefined;
+    fold = createLoopEventFold(sink);
   };
 
   const applyUndo = (count: number): void => {
-    if (count <= 0) return;
-    let removedUserCount = 0;
-    for (let i = transcript.length - 1; i >= clearFloor; i--) {
-      const message = transcript[i]!.message;
-      if (message.origin?.kind === 'injection') continue;
-      if (message.origin?.kind === 'compaction_summary') break;
-      transcript.splice(i, 1);
-      foldedLength = Math.max(0, foldedLength - 1);
-      if (isUndoAnchor(message)) {
-        removedUserCount++;
-        while (
-          i > clearFloor &&
-          isPromptOwnedInjection(transcript[i - 1]!.message, message)
-        ) {
-          transcript.splice(i - 1, 1);
-          i--;
-          foldedLength = Math.max(0, foldedLength - 1);
-        }
-        if (removedUserCount >= count) break;
-      }
+    const messages = logical.map((entry) => entry.message);
+    const cut = computeUndoCut(messages, count);
+    if (!isFullyUndoable(cut, count)) return;
+    const removed = new Set(logical.slice(cut.cutIndex));
+    logical = logical.slice(0, cut.cutIndex);
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (removed.has(transcript[i]!)) transcript.splice(i, 1);
     }
+    resetOpenState();
+  };
+
+  const applyCompaction = (record: WireRecord): void => {
+    const previous = logical;
+    const entriesByMessage = new Map(previous.map((entry) => [entry.message, entry]));
+    const nextMessages = applyContextCompactionRecord(
+      previous.map((entry) => entry.message),
+      record,
+    );
+    const compactedCount = readContextCompactedCount(record);
+    for (const entry of previous.slice(compactedCount)) {
+      if (entry.message.origin?.kind === 'injection') removeEntry(transcript, entry);
+    }
+    const summaryEntry: MutableEntry = {
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: readCompactionSummaryText(record) }],
+        toolCalls: [],
+        origin: { kind: 'compaction_summary' },
+      },
+      time: record.time,
+    };
+    logical = nextMessages.map((message) => {
+      const existing = entriesByMessage.get(message as MutableMessage);
+      if (existing !== undefined) return existing;
+      if (message.origin?.kind === 'compaction_summary') {
+        transcript.push(summaryEntry);
+        return summaryEntry;
+      }
+      const entry = toMutableEntry(message, record.time);
+      if (
+        message.origin?.kind === 'injection' &&
+        message.origin.variant === COMPACTION_ELISION_VARIANT
+      ) {
+        transcript.push(entry);
+      }
+      return entry;
+    });
     resetOpenState();
   };
 
   const add = (record: WireRecord): void => {
     switch (record.type) {
-      case 'context.append_message': {
+      case 'context.append_message':
         fold.appendMessage(record['message'] as ContextMessage, record.time);
         break;
-      }
-      case 'context.append_loop_event': {
+      case 'context.append_loop_event':
         fold.loopEvent(record['event'] as LoopRecordedEvent, record.time);
         break;
-      }
-      case 'context.apply_compaction': {
-        if (readNumber(record, 'keptUserMessageCount') !== undefined) {
-          fold.settle(record.time);
-        } else {
-          resetOpenState();
-        }
-        transcript.push({
-          message: {
-            role: 'user',
-            content: [{ type: 'text', text: readCompactionSummaryText(record) }],
-            toolCalls: [],
-            origin: { kind: 'compaction_summary' },
-          },
-          time: record.time,
-        });
-        foldedLength = recoverFoldedLength(record, transcript, clearFloor, foldedLength);
+      case 'context.apply_compaction':
+        applyCompaction(record);
         break;
-      }
       case 'context.undo':
         applyUndo(record['count'] as number);
         break;
       case 'context.clear':
-        clearFloor = transcript.length;
-        foldedLength = 0;
+        logical = [];
         resetOpenState();
         break;
       default:
@@ -160,7 +173,7 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
     result: () => ({
       entries: transcript.map((e) => e.message),
       times: transcript.map((e) => e.time),
-      foldedLength,
+      foldedLength: logical.length,
     }),
   };
 }
@@ -174,32 +187,17 @@ function toMutableEntry(message: ContextMessage, time: number | undefined): Muta
       toolCalls: [...message.toolCalls],
       ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
       ...(message.isError !== undefined ? { isError: message.isError } : {}),
+      ...(message.note !== undefined ? { note: message.note } : {}),
       ...(message.origin !== undefined ? { origin: message.origin } : {}),
+      ...(message.partial !== undefined ? { partial: message.partial } : {}),
     },
     time,
   };
 }
 
-function recoverFoldedLength(
-  record: WireRecord,
-  transcript: readonly MutableEntry[],
-  clearFloor: number,
-  foldedLength: number,
-): number {
-  const keptUserMessageCount = readNumber(record, 'keptUserMessageCount');
-  const keptHeadUserMessageCount = readNumber(record, 'keptHeadUserMessageCount');
-  const compactedCount = readNumber(record, 'compactedCount');
-  if (keptUserMessageCount !== undefined) {
-    return keptUserMessageCount + (keptHeadUserMessageCount === undefined ? 1 : 2);
-  }
-  if (compactedCount !== undefined && compactedCount < foldedLength) {
-    return 1 + (foldedLength - compactedCount);
-  }
-  const keptUserMessages = selectRecentUserMessages(
-    collectCompactableUserMessages(transcript.slice(clearFloor).map((e) => e.message)),
-    COMPACT_USER_MESSAGE_MAX_TOKENS,
-  );
-  return keptUserMessages.length + 1;
+function removeEntry(entries: MutableEntry[], entry: MutableEntry): void {
+  const index = entries.indexOf(entry);
+  if (index !== -1) entries.splice(index, 1);
 }
 
 function readCompactionSummaryText(record: WireRecord): string {
@@ -223,9 +221,4 @@ function textOfParts(content: readonly ContentPart[]): string {
     if (part.type === 'text') text += part.text;
   }
   return text;
-}
-
-function readNumber(record: WireRecord, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === 'number' ? value : undefined;
 }
