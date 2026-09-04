@@ -56,9 +56,15 @@ export interface QuestionTaskInfo extends AgentTaskInfoBase {
   readonly toolCallId?: string;
 }
 
-export type AgentTaskInfo = ProcessTaskInfo | SubagentTaskInfo | QuestionTaskInfo;
+export interface AgentTaskInfoByKind {
+  readonly process: ProcessTaskInfo;
+  readonly agent: SubagentTaskInfo;
+  readonly question: QuestionTaskInfo;
+}
 
-export type AgentTaskKind = AgentTaskInfo['kind'];
+export type AgentTaskKind = keyof AgentTaskInfoByKind;
+
+export type AgentTaskInfo = AgentTaskInfoByKind[AgentTaskKind];
 
 export interface AgentTaskSink {
   readonly signal: AbortSignal;

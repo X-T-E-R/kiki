@@ -8,10 +8,11 @@ import type { McpSeat, SeatResolver } from '../mcp/seatResolver';
 import { errEnvelope, okEnvelope } from '../protocol/envelope';
 import { ErrorCode } from '../protocol/error-codes';
 import {
-  externalDelegationFailureCode,
+  externalDelegationLogFailure,
   externalDelegationPublicFailure,
 } from './errors';
 import { ExternalDelegationProcedureHost } from './externalDelegationHost';
+import { withReplyCloseSignal } from './requestSignal';
 
 export const SEAT_KLIENT_DELEGATION_PREFIX = '/api/klient/delegation';
 
@@ -51,18 +52,20 @@ export function registerSeatKlientDelegationRoutes(
       const { delegationToken: _delegationToken, ...authoritySeat } = auth.seat(req);
       try {
         const input = procedure.inputSchema.parse(req.body ?? {});
-        const data = await host.call(authoritySeat, procedure.name as DelegationProcedureName, input as never);
+        const data = procedure.name === 'wait'
+          ? await withReplyCloseSignal(reply, (signal) =>
+              host.call(authoritySeat, procedure.name, input as never, signal),
+            )
+          : await host.call(authoritySeat, procedure.name as DelegationProcedureName, input as never);
         return reply.send(okEnvelope(data, req.id));
       } catch (error) {
-        const failureCode = externalDelegationFailureCode(error);
+        const logFailure = externalDelegationLogFailure(error);
         const log = {
           request_id: req.id,
           action: procedure.name,
-          error_message: error instanceof Error ? error.message : String(error),
-          error_stack: error instanceof Error ? error.stack : undefined,
-          failure_code: failureCode,
+          ...logFailure,
         };
-        if (failureCode === undefined) req.log.warn(log, 'external delegation request failed');
+        if (logFailure.failure_code === undefined) req.log.warn(log, 'external delegation request failed');
         else req.log.info(log, 'external delegation request failed');
         const failure = externalDelegationPublicFailure(error);
         return reply.send({

@@ -256,6 +256,25 @@ describe('ExternalDelegationProcedureHost', () => {
     await expect(klient.list()).rejects.toThrow('seat klient closed');
     expect(service.list).not.toHaveBeenCalled();
   });
+
+  it('aborts an active embedded seat wait when the klient closes', async () => {
+    let signal: AbortSignal | undefined;
+    service.wait.mockImplementation(async (input) => {
+      signal = input.signal;
+      return new Promise((_resolve, reject) => {
+        input.signal?.addEventListener('abort', () => reject(input.signal?.reason), { once: true });
+      });
+    });
+    const host = new ExternalDelegationProcedureHost({} as never);
+    const klient = host.klient(seat);
+
+    const pending = klient.wait({ dispatchId: 'dispatch-1' });
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    await klient.close();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(signal?.aborted).toBe(true);
+  });
 });
 
 describe('seat klient delegation HTTP routes', () => {
@@ -327,6 +346,121 @@ describe('seat klient delegation HTTP routes', () => {
     expect(unknown.statusCode).toBe(404);
     expect(observedAuthorization).toEqual([undefined, undefined, undefined]);
 
+    await app.close();
+  });
+
+  it('logs seat HTTP failures without credential or private error text', async () => {
+    let logs = '';
+    const app = Fastify({
+      logger: {
+        level: 'warn',
+        stream: { write: (chunk: string) => { logs += chunk; } },
+      },
+    });
+    const call = vi.fn(async () => {
+      throw new Error('Bearer SEAT_SECRET https://example.test/signed?token=URL_SECRET C:\\private\\workspace');
+    });
+    const auth = createSeatKlientDelegationAuth(() => ({
+      async resolve(token: string) {
+        return token === 'SEAT_TOKEN' ? { ...seat, delegationToken: 'SEAT_TOKEN' } : null;
+      },
+    }));
+    app.addHook('onRequest', auth.onRequest);
+    registerSeatKlientDelegationRoutes(
+      app,
+      { call } as unknown as ExternalDelegationProcedureHost,
+      auth,
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/klient/delegation/list',
+      headers: { authorization: 'Bearer SEAT_TOKEN' },
+      payload: {},
+    });
+    await app.close();
+
+    expect(response.json()).toMatchObject({ code: 40001, msg: 'External delegation request failed.' });
+    expect(logs).toContain('"error_class":"internal_error"');
+    expect(logs).not.toContain('SEAT_TOKEN');
+    expect(logs).not.toContain('SEAT_SECRET');
+    expect(logs).not.toContain('URL_SECRET');
+    expect(logs).not.toContain('private\\workspace');
+  });
+
+  it('aborts a seat HTTP wait when the request disconnects', async () => {
+    const app = Fastify({ logger: false });
+    let signal: AbortSignal | undefined;
+    const call = vi.fn(async (_seat, _name, _input, inputSignal?: AbortSignal) => {
+      signal = inputSignal;
+      return new Promise((_resolve, reject) => {
+        inputSignal?.addEventListener('abort', () => reject(inputSignal.reason), { once: true });
+      });
+    });
+    const auth = createSeatKlientDelegationAuth(() => ({
+      async resolve(token: string) {
+        return token === 'SEAT_TOKEN' ? { ...seat, delegationToken: 'SEAT_TOKEN' } : null;
+      },
+    }));
+    app.addHook('onRequest', auth.onRequest);
+    registerSeatKlientDelegationRoutes(
+      app,
+      { call } as unknown as ExternalDelegationProcedureHost,
+      auth,
+    );
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    const disconnect = new AbortController();
+
+    const pending = fetch(`${address}/api/klient/delegation/wait`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer SEAT_TOKEN',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ dispatchId: 'dispatch-1' }),
+      signal: disconnect.signal,
+    });
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    disconnect.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+    await app.close();
+  });
+
+  it('does not abort a normally completed seat HTTP wait', async () => {
+    const app = Fastify({ logger: false });
+    let signal: AbortSignal | undefined;
+    const call = vi.fn(async (_seat, _name, _input, inputSignal?: AbortSignal) => {
+      signal = inputSignal;
+      return {
+        waitStatus: 'completed',
+        waitedMs: 1,
+        completedDuringWait: [],
+        interactions: [],
+      };
+    });
+    const auth = createSeatKlientDelegationAuth(() => ({
+      async resolve(token: string) {
+        return token === 'SEAT_TOKEN' ? { ...seat, delegationToken: 'SEAT_TOKEN' } : null;
+      },
+    }));
+    app.addHook('onRequest', auth.onRequest);
+    registerSeatKlientDelegationRoutes(
+      app,
+      { call } as unknown as ExternalDelegationProcedureHost,
+      auth,
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/klient/delegation/wait',
+      headers: { authorization: 'Bearer SEAT_TOKEN' },
+      payload: { dispatchId: 'dispatch-1' },
+    });
+
+    expect(response.json()).toMatchObject({ code: 0, data: { waitStatus: 'completed' } });
+    expect(signal?.aborted).toBe(false);
     await app.close();
   });
 });

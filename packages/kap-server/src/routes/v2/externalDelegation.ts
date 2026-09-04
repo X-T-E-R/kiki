@@ -10,13 +10,14 @@ import type { ExternalDelegationState } from '../../protocol/rest-meta';
 import { errEnvelope, okEnvelope } from '../../protocol/envelope';
 import { ErrorCode } from '../../protocol/error-codes';
 import {
-  externalDelegationFailureCode,
+  externalDelegationLogFailure,
   externalDelegationPublicFailure,
 } from '../../procedures/errors';
 import {
   ExternalDelegationProcedureHost,
   type ExternalDelegationSeatAuthority,
 } from '../../procedures/externalDelegationHost';
+import { withReplyCloseSignal } from '../../procedures/requestSignal';
 
 interface RouteRequest {
   readonly id: string;
@@ -29,11 +30,20 @@ interface RouteRequest {
   };
 }
 
+interface RouteReply {
+  readonly raw: {
+    readonly writableFinished: boolean;
+    once(event: 'close', listener: () => void): void;
+    off(event: 'close', listener: () => void): void;
+  };
+  send(payload: unknown): unknown;
+}
+
 interface ExternalDelegationRouteHost {
   post(
     path: string,
     options: { schema?: Record<string, unknown> },
-    handler: (req: RouteRequest, reply: { send(payload: unknown): unknown }) => Promise<void>,
+    handler: (req: RouteRequest, reply: RouteReply) => Promise<void>,
   ): unknown;
 }
 
@@ -97,22 +107,24 @@ export function registerV2ExternalDelegationRoutes(
         }
         const wireInput = procedure.legacy.input.schema.parse(req.body ?? {});
         const input = procedure.legacy.input.decode(wireInput as never);
-        const output = await host.call(
-          seat,
-          procedure.name as DelegationProcedureName,
-          input as never,
-        );
+        const output = procedure.name === 'wait'
+          ? await withReplyCloseSignal(reply, (signal) =>
+              host.call(seat, procedure.name, input as never, signal),
+            )
+          : await host.call(
+              seat,
+              procedure.name as DelegationProcedureName,
+              input as never,
+            );
         reply.send(okEnvelope(procedure.legacy.encodeOutput(output as never), req.id));
       } catch (error) {
-        const failureCode = externalDelegationFailureCode(error);
+        const logFailure = externalDelegationLogFailure(error);
         const log = {
           request_id: req.id,
           action: procedure.name,
-          error_message: error instanceof Error ? error.message : String(error),
-          error_stack: error instanceof Error ? error.stack : undefined,
-          failure_code: failureCode,
+          ...logFailure,
         };
-        if (failureCode === undefined) req.log.warn(log, 'external delegation request failed');
+        if (logFailure.failure_code === undefined) req.log.warn(log, 'external delegation request failed');
         else req.log.info(log, 'external delegation request failed');
         const failure = externalDelegationPublicFailure(error);
         reply.send({
