@@ -132,7 +132,7 @@ function McpTimeoutsCard() {
  * live status list, and the server-wide timeouts.
  */
 export function McpSection() {
-  const { client } = useConnection();
+  const { client, klient } = useConnection();
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -174,7 +174,7 @@ export function McpSection() {
   const mcpCwd = sortedWorkspaces.find((workspace) => workspace.id === workspaceId)?.root ?? '';
   const mcpConfigQuery = useQuery({
     queryKey: ['mcp-managed-servers', mcpCwd],
-    queryFn: () => client.listManagedMcpServers(mcpCwd === '' ? undefined : mcpCwd),
+    queryFn: () => klient.global.mcp.list({ cwd: mcpCwd === '' ? undefined : mcpCwd }),
     staleTime: 60_000,
   });
 

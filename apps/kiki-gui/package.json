@@ -54,6 +54,7 @@
     "@fontsource-variable/fraunces": "^5.2.5",
     "@fontsource/jetbrains-mono": "^5.2.5",
     "@fontsource/space-grotesk": "^5.2.5",
+    "@moonshot-ai/klient": "workspace:^",
     "@moonshot-ai/protocol": "workspace:^",
     "@moonshot-ai/transcript": "workspace:^",
     "@streamdown/code": "^1.0.2",

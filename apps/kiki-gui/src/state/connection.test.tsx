@@ -13,6 +13,11 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   meta: vi.fn(),
   renewLease: vi.fn(),
+  klients: [] as Array<{
+    endpoint: string;
+    token?: string;
+    close: ReturnType<typeof vi.fn>;
+  }>,
   sockets: [] as Array<{
     baseUrl: string;
     connect: ReturnType<typeof vi.fn>;
@@ -36,6 +41,14 @@ vi.mock('@tauri-apps/api/event', () => ({
       if (mocks.stageListener === listener) mocks.stageListener = undefined;
     });
   }),
+}));
+
+vi.mock('@moonshot-ai/klient/http', () => ({
+  createKlient: (options: { endpoint: string; token?: string }) => {
+    const klient = { ...options, close: vi.fn(async () => undefined) };
+    mocks.klients.push(klient);
+    return klient;
+  },
 }));
 
 vi.mock('../lib/client', () => ({
@@ -106,6 +119,7 @@ beforeEach(() => {
   mocks.meta.mockReset();
   mocks.renewLease.mockReset();
   mocks.renewLease.mockResolvedValue(undefined);
+  mocks.klients.length = 0;
   mocks.sockets.length = 0;
   mocks.stageListener = undefined;
 });
@@ -182,10 +196,14 @@ describe('ConnectionProvider desktop backend recovery', () => {
     const container = await mountProvider();
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(oldConfig.url);
     expect(mocks.sockets).toHaveLength(1);
+    expect(mocks.klients).toHaveLength(1);
+    expect(mocks.klients[0]).toMatchObject({ endpoint: oldConfig.url, token: oldConfig.token });
 
     await emitStage('waiting');
     await flush();
     expect(mocks.sockets[0]!.close).toHaveBeenCalledTimes(1);
+    expect(mocks.klients[0]!.close).toHaveBeenCalledTimes(1);
+    expect(mocks.klients).toHaveLength(2);
     expect(mocks.meta).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-connected-url]')).toBeNull();
 
@@ -197,6 +215,7 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.textContent).toContain('waiting for it to become ready');
     expect(container.querySelector('[data-connected-url]')).toBeNull();
     expect(mocks.sockets).toHaveLength(1);
+    expect(mocks.klients[1]!.close).toHaveBeenCalledTimes(1);
 
     newDesktopConnection.resolve({ config: newConfig, persist: false });
     await flush();
@@ -207,6 +226,8 @@ describe('ConnectionProvider desktop backend recovery', () => {
     await flush();
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(newConfig.url);
     expect(mocks.sockets).toHaveLength(2);
+    expect(mocks.klients).toHaveLength(3);
+    expect(mocks.klients[2]).toMatchObject({ endpoint: newConfig.url, token: newConfig.token });
     expect(mocks.sockets[1]!.baseUrl).toBe(newConfig.url);
     expect(mocks.sockets[1]!.connect).toHaveBeenCalledTimes(1);
   });
@@ -273,6 +294,7 @@ describe('ConnectionProvider desktop backend recovery', () => {
       mocks.meta.mockResolvedValue({ serverVersion: 'test' });
 
       await mountProvider();
+      expect(mocks.klients).toHaveLength(1);
       expect(mocks.renewLease).toHaveBeenCalledTimes(1);
       expect(mocks.renewLease).toHaveBeenLastCalledWith({
         clientId: expect.any(String),
@@ -292,6 +314,7 @@ describe('ConnectionProvider desktop backend recovery', () => {
       entry!.container.remove();
       await vi.advanceTimersByTimeAsync(15_000);
       expect(mocks.renewLease).toHaveBeenCalledTimes(2);
+      expect(mocks.klients[0]!.close).toHaveBeenCalledTimes(1);
     } finally {
       if (descriptor === undefined) Reflect.deleteProperty(crypto, 'randomUUID');
       else Object.defineProperty(crypto, 'randomUUID', descriptor);

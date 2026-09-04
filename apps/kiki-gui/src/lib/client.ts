@@ -351,71 +351,6 @@ export type NamedAgentProfile = ProtocolNamedAgentProfile;
 export type ListNamedAgentProfilesResponse = ProtocolListNamedAgentProfilesResponse;
 export type UpdateNamedAgentProfileRequest = ProtocolUpdateNamedAgentProfileRequest;
 
-export type McpTransport = 'stdio' | 'http' | 'sse';
-
-/** Which layer an entry came from. Only `global` (user-level) entries are writable. */
-export type McpServerSource = 'global' | 'plugin' | 'caller';
-
-interface McpCommonConfig {
-  readonly enabled?: boolean;
-  readonly startupTimeoutMs?: number;
-  readonly toolTimeoutMs?: number;
-  readonly enabledTools?: readonly string[];
-  readonly disabledTools?: readonly string[];
-}
-
-export type McpServerConfig =
-  | (McpCommonConfig & {
-      readonly transport: 'stdio';
-      readonly command: string;
-      readonly args?: readonly string[];
-      readonly env?: Readonly<Record<string, string>>;
-      readonly cwd?: string;
-      readonly executor?: 'local' | 'kaos';
-      readonly runtime_id?: string;
-    })
-  | (McpCommonConfig & {
-      readonly transport: 'http' | 'sse';
-      readonly url: string;
-      readonly headers?: Readonly<Record<string, string>>;
-      readonly auth?: 'oauth';
-      readonly bearerTokenEnvVar?: string;
-    });
-
-/**
- * What the management plane returns. Writable entries carry the full config so
- * the editor can prefill; read-only ones are redacted to sorted key lists and
- * never disclose secret values.
- */
-export type McpServerConfigView =
-  | (Omit<Extract<McpServerConfig, { readonly transport: 'stdio' }>, 'env'> & {
-      readonly envKeys?: readonly string[];
-    })
-  | (Omit<Exclude<McpServerConfig, { readonly transport: 'stdio' }>, 'headers'> & {
-      readonly headerKeys?: readonly string[];
-    });
-
-/** Writable entries arrive as the full config; read-only ones as the redacted view. */
-export type McpManagedServerConfig = McpServerConfig | McpServerConfigView;
-
-export interface McpManagedServer {
-  readonly name: string;
-  readonly config: McpManagedServerConfig;
-  readonly source: McpServerSource;
-  /** The file or plugin the effective entry was last defined in. */
-  readonly origin: string;
-  readonly mutable: boolean;
-  readonly plugin?: { readonly id: string; readonly name: string };
-}
-
-/** The management plane writes the user-level file; the body carries the name. */
-export type McpManagedServerInput = McpServerConfig & { readonly name: string };
-
-export interface McpServerTestResult {
-  readonly success: boolean;
-  readonly output: string;
-}
-
 /**
  * Installed-plugin summary from `GET /api/v1/plugins` (mirrors the
  * kap-server `pluginSummarySchema`): identity + enabled/error state + the
@@ -1404,60 +1339,6 @@ export class KikiClient {
       `/plugins/${encodeURIComponent(pluginId)}:remove`,
       { body: {} },
     );
-  }
-
-  /**
-   * The `/api/v2/mcp/*` management plane. `cwd` widens resolution to the
-   * project layers of that workspace; writes always land in the user-level
-   * `mcp.json`, and every mutation echoes the refreshed list.
-   */
-  listManagedMcpServers(cwd?: string): Promise<readonly McpManagedServer[]> {
-    return this.request<readonly McpManagedServer[]>('GET', '/mcp/servers', {
-      apiVersion: 'v2',
-      query: { cwd },
-    });
-  }
-
-  addManagedMcpServer(
-    server: McpManagedServerInput,
-    cwd?: string,
-  ): Promise<readonly McpManagedServer[]> {
-    return this.request<readonly McpManagedServer[]>('POST', '/mcp/servers', {
-      apiVersion: 'v2',
-      query: { cwd },
-      body: server,
-    });
-  }
-
-  /** The path owns the identity, so the body carries the config without a name. */
-  updateManagedMcpServer(
-    name: string,
-    config: McpServerConfig,
-    cwd?: string,
-  ): Promise<readonly McpManagedServer[]> {
-    return this.request<readonly McpManagedServer[]>(
-      'PUT',
-      `/mcp/servers/${encodeURIComponent(name)}`,
-      { apiVersion: 'v2', query: { cwd }, body: config },
-    );
-  }
-
-  removeManagedMcpServer(name: string, cwd?: string): Promise<readonly McpManagedServer[]> {
-    return this.request<readonly McpManagedServer[]>(
-      'DELETE',
-      `/mcp/servers/${encodeURIComponent(name)}`,
-      { apiVersion: 'v2', query: { cwd } },
-    );
-  }
-
-  /** Probe a real connection without persisting anything. */
-  testManagedMcpServer(
-    target: { readonly name?: string; readonly server?: McpManagedServerInput; readonly cwd?: string },
-  ): Promise<McpServerTestResult> {
-    return this.request<McpServerTestResult>('POST', '/mcp/servers::test', {
-      apiVersion: 'v2',
-      body: target,
-    });
   }
 
   restartMcpServer(serverId: string): Promise<RestartMcpServerResult> {
