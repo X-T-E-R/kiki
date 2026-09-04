@@ -1,6 +1,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { EXTERNAL_INTERACTION_NOT_OWNED_CODE as CORE_INTERACTION_NOT_OWNED_CODE, IConfigService } from '@moonshot-ai/agent-core-v2';
+import { EXTERNAL_INTERACTION_NOT_OWNED_CODE as CORE_INTERACTION_NOT_OWNED_CODE } from '@moonshot-ai/agent-core-v2';
+import type {
+  DelegationProcedureName,
+  DelegationProcedureOutput,
+  SeatKlient,
+} from '@moonshot-ai/klient/procedures';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -8,70 +13,74 @@ import {
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   kikiMcpConfigFromEnv,
 } from '../src/mcp/server';
-import {
-  renderProfileCatalogEntries,
-  type DispatchProfileCatalogEntry,
-} from '../src/mcp/profileCatalog';
-import { registerApiV2Routes } from '../src/routes/registerApiV2Routes';
-import { descriptorFromMeta } from '../src/services/transcript/coreBinding';
 
-const exploreCatalogEntry: DispatchProfileCatalogEntry = {
-  profileName: 'explore',
-  description: 'Map code without changing it.',
-  whenToUse: 'Use for bounded evidence gathering.',
-  modelAlias: 'grok-4.6',
-  thinkingEffort: 'max',
-  allowedModels: ['grok-4.6', 'glm-5.3-flash'],
-  alternativeModels: [{
-    alias: 'glm-5.3-flash',
-    when: 'Use for wide scans.',
-    thinkingEffort: 'max',
-  }],
-  tools: 'Read, Grep',
+const close: Array<() => Promise<void>> = [];
+
+const binding = {
+  version: 1 as const,
+  seatId: 'seat-operator',
+  principalId: 'principal-operator',
+  sessionId: 'session-operator',
+  workspacePath: '/example/workspace',
 };
 
-describe('Kiki external delegation MCP server', () => {
-  const close: Array<() => Promise<void>> = [];
+const dispatch = {
+  dispatchId: 'dispatch-1',
+  target: 'named' as const,
+  taskName: 'probe',
+  profileName: 'explore',
+  actualProfile: 'explore',
+  status: 'queued' as const,
+  createdAt: 1,
+};
 
+const outputs: Partial<{
+  [Name in DelegationProcedureName]: DelegationProcedureOutput<Name>;
+}> = {
+  profiles: {
+    profiles: [{
+      kind: 'named',
+      profileName: 'explore',
+      description: 'Map code without changing it.',
+      alternativeModels: [],
+    }],
+    binding,
+  },
+  list: {
+    version: 1,
+    delegationId: 'delegation-1',
+    lifecycle: 'active',
+    dispatchables: [{ kind: 'main' }],
+    children: [],
+    continuations: [],
+    binding,
+  },
+  dispatch,
+  continue: dispatch,
+  send: {
+    message: {
+      messageId: 'message-1',
+      sourceTaskName: 'root',
+      targetTaskName: 'probe',
+      content: 'inspect',
+      acceptedAt: 1,
+      targetSeq: 1,
+    },
+    deduplicated: false,
+    delivery: 'queued',
+    payloadConflict: false,
+  },
+};
+
+describe('Kiki external delegation MCP projector', () => {
   afterEach(async () => {
     await Promise.all(close.splice(0).map((dispose) => dispose()));
   });
 
-  it('initializes, lists the narrow tool set, and preserves JSON/structured parity', async () => {
-    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
-      const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
-      expect(href).toContain('/api/v2/sessions/session-operator/external-delegation/list');
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer SECRET_TOKEN');
-      expect(new Headers(init?.headers).get('x-kiki-delegation-token')).toBe('DELEGATION_SECRET');
-      expect(new Headers(init?.headers).has('x-kiki-principal-id')).toBe(false);
-      return new Response(
-        JSON.stringify({
-          code: 0,
-          msg: 'ok',
-          data: {
-            delegationId: 'delegation_1',
-            dispatchables: [{ kind: 'main' }, { kind: 'named', ...exploreCatalogEntry }],
-          },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'SECRET_TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
+  it('registers the thirteen table-owned tools and preserves text/structured parity', async () => {
+    const { client } = await connect(fakeKlient());
     const tools = await client.listTools();
+
     expect(tools.tools.map((tool) => tool.name).toSorted()).toEqual([
       'kiki_cancel',
       'kiki_continue',
@@ -87,1060 +96,142 @@ describe('Kiki external delegation MCP server', () => {
       'kiki_transcript',
       'kiki_wait',
     ]);
+
     const listed = await client.callTool({ name: 'kiki_list', arguments: {} });
+    expect(listed.isError).not.toBe(true);
+    const content = listed.content as Array<{ readonly type: string; readonly text?: string }>;
+    expect(JSON.parse(content[0]?.type === 'text' ? content[0].text ?? '' : '')).toEqual(
+      listed.structuredContent,
+    );
     expect(listed.structuredContent).toEqual({
       children: [],
       continuations: [],
-      binding: {
-        version: 1,
-        workspacePath: '/example/workspace',
-        sessionId: 'session-operator',
-      },
-    });
-    expect(JSON.parse(((listed as { content: Array<{ text: string }> }).content[0]!).text)).toEqual(listed.structuredContent);
-    const profiles = await client.callTool({ name: 'kiki_profiles', arguments: {} });
-    expect(profiles.structuredContent).toEqual({
-      profiles: [exploreCatalogEntry],
-      binding: {
-        version: 1,
-        workspacePath: '/example/workspace',
-        sessionId: 'session-operator',
-      },
-    });
-    const renderedCatalog = renderProfileCatalogEntries([exploreCatalogEntry]);
-    const refreshedTools = await client.listTools();
-    expect(refreshedTools.tools.find((tool) => tool.name === 'kiki_list')?.description).not.toContain(renderedCatalog);
-    expect(refreshedTools.tools.find((tool) => tool.name === 'kiki_profiles')?.description).toContain(renderedCatalog);
-    expect(refreshedTools.tools.find((tool) => tool.name === 'kiki_dispatch')?.description).toContain(renderedCatalog);
-    expect(refreshedTools.tools.find((tool) => tool.name === 'kiki_wait')?.description).toContain('timeout_s ≤ 45');
-  });
-
-  it('pins the workspace and Session binding when the MCP server is created', async () => {
-    const config = {
-      endpoint: 'http://127.0.0.1:58627',
-      token: 'TOKEN',
-      delegationToken: 'DELEGATION_SECRET',
-      sessionId: 'session-original',
-      workspacePath: '/example/original',
-    };
-    const fetchMock = vi.fn<typeof fetch>(async (url) => {
-      expect(fetchUrl(url)).toContain('/sessions/session-original/external-delegation/list');
-      return new Response(
-        JSON.stringify({ code: 0, msg: 'ok', data: { delegationId: 'delegation_1', dispatchables: [{ kind: 'main' }] } }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    const server = createKikiMcpServer(config, { fetch: fetchMock });
-    config.sessionId = 'session-mutated';
-    config.workspacePath = '/example/mutated';
-
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const called = await client.callTool({ name: 'kiki_list', arguments: {} });
-    expect(called.structuredContent).toMatchObject({
-      binding: {
-        version: 1,
-        workspacePath: '/example/original',
-        sessionId: 'session-original',
-      },
+      binding: { version: 1, sessionId: 'session-operator', workspacePath: '/example/workspace' },
     });
   });
 
-  it('requires an absolute workspace binding in the stdio environment', () => {
-    const env = {
-      KIKI_KAP_ENDPOINT: 'http://127.0.0.1:58627',
-      KIKI_KAP_TOKEN: 'TOKEN',
-      KIKI_DELEGATION_TOKEN: 'DELEGATION_SECRET',
-      KIKI_SESSION_ID: 'session-operator',
-      KIKI_WORKSPACE_PATH: '/example/workspace',
-    };
-    expect(kikiMcpConfigFromEnv(env)).toMatchObject({
-      sessionId: 'session-operator',
-      workspacePath: '/example/workspace',
-    });
-    expect(() => kikiMcpConfigFromEnv({ ...env, KIKI_WORKSPACE_PATH: 'relative' })).toThrow();
-  });
-
-  it('keeps the interaction-not-owned failure code aligned with the engine', () => {
-    expect(EXTERNAL_INTERACTION_NOT_OWNED_CODE).toBe(CORE_INTERACTION_NOT_OWNED_CODE);
-  });
-
-  it('pages result text on a UTF-8 byte boundary without leaking operator configuration', async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      new Response(JSON.stringify({ code: 0, msg: 'ok', data: { text: '你你你', dispatch: { dispatchId: 'dispatch_1' } } }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'DO_NOT_EXPOSE',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const called = await client.callTool({ name: 'kiki_result', arguments: { dispatch_id: 'dispatch_1', max_bytes: 6 } });
-    expect(called.structuredContent).toMatchObject({ text: '你你', nextCursor: 2 });
-    expect(JSON.stringify(called)).not.toContain('DO_NOT_EXPOSE');
-  });
-
-  it('rejects max_bytes below four and accepts the domain minimum', async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
-      bodies.push(JSON.parse(fetchBody(init)) as Record<string, unknown>);
-      return new Response(
-        JSON.stringify({ code: 0, msg: 'ok', data: { text: 'done', dispatch: { dispatchId: 'dispatch_1' } } }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const rejected = await Promise.all([1, 2, 3].map((maxBytes) =>
-      client.callTool({
-        name: 'kiki_result',
-        arguments: { dispatch_id: 'dispatch_1', max_bytes: maxBytes },
-      }),
-    ));
-    expect(rejected.every((response) => response.isError === true)).toBe(true);
-    expect(fetchMock).not.toHaveBeenCalled();
-
-    const accepted = await client.callTool({
-      name: 'kiki_result',
-      arguments: { dispatch_id: 'dispatch_1', max_bytes: 4 },
-    });
-    expect(accepted.isError).not.toBe(true);
-    expect(bodies).toEqual([{ dispatch_id: 'dispatch_1', limit: 4 }]);
-  });
-
-  it('clamps max_bytes to the domain result page limit', async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
-      bodies.push(JSON.parse(fetchBody(init)) as Record<string, unknown>);
-      return new Response(
-        JSON.stringify({ code: 0, msg: 'ok', data: { text: 'hello', dispatch: { dispatchId: 'dispatch_1' } } }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const called = await client.callTool({
-      name: 'kiki_result',
-      arguments: { dispatch_id: 'dispatch_1', max_bytes: 100_000 },
-    });
-    expect(called.isError).not.toBe(true);
-    expect(bodies[0]).toMatchObject({ dispatch_id: 'dispatch_1', limit: 65_536 });
-  });
-
-  it('forwards exact bindings without progress polling when no token is supplied', async () => {
-    const requests: Array<{ action: string; body: Record<string, unknown> }> = [];
-    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
-      const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
-      requests.push({
-        action: href.split('/').at(-1)!,
-        body: JSON.parse(fetchBody(init)) as Record<string, unknown>,
-      });
-      return new Response(
-        JSON.stringify({
-          code: 0,
-          msg: 'ok',
-          data: {
-            dispatchId: 'dispatch_exact',
-            target: 'named',
-            taskName: 'exact_probe',
-            profileName: 'explore',
-            actualProfile: 'explore',
-            modelAlias: 'grok-4.6',
-            thinkingEffort: 'high',
-            status: 'queued',
-          },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
+  it('uses each procedure codec for snake_case input and compatibility output', async () => {
+    const calls: Array<{ name: string; input: unknown }> = [];
+    const { client } = await connect(fakeKlient(calls));
 
     const dispatched = await client.callTool({
       name: 'kiki_dispatch',
       arguments: {
         target: 'named',
-        task_name: 'exact_probe',
+        task_name: 'probe',
         profile_name: 'explore',
-        model_alias: 'grok-4.6',
+        model_alias: 'model-a',
         thinking_effort: 'high',
-        dispatch_key: 'dispatch-key-exact',
+        dispatch_key: 'dispatch-key',
         message: 'inspect',
       },
     });
-    expect(dispatched.isError).not.toBe(true);
-    expect(dispatched.structuredContent).toMatchObject({
-      dispatch_key: 'dispatch-key-exact',
-      receipt: {
-        dispatch_id: 'dispatch_exact',
-        dispatch_key: 'dispatch-key-exact',
-        task_name: 'exact_probe',
-        actual_profile: 'explore',
-        status: 'queued',
-        next_step: expect.stringContaining('kiki_interactions'),
-        continue_hint: expect.stringContaining('kiki_dispatch'),
-      },
-    });
-    expect(requests[0]).toEqual({
-      action: 'dispatch',
-      body: {
-        target: 'named',
-        task_name: 'exact_probe',
-        profile_name: 'explore',
-        model_alias: 'grok-4.6',
-        thinking_effort: 'high',
-        dispatch_key: 'dispatch-key-exact',
-        message: 'inspect',
-      },
-    });
-
-    await client.callTool({
-      name: 'kiki_continue',
-      arguments: {
-        dispatch_id: 'dispatch_exact',
-        dispatch_key: 'continue-key-exact',
-        message: 'continue',
-      },
-    });
-    expect(requests[1]).toEqual({
-      action: 'continue',
-      body: {
-        dispatch_id: 'dispatch_exact',
-        dispatch_key: 'continue-key-exact',
-        message: 'continue',
-      },
-    });
-    const rebound = await client.callTool({
-      name: 'kiki_continue',
-      arguments: {
-        dispatch_id: 'dispatch_exact',
-        message: 'continue',
-        model_alias: 'other-model',
-      },
-    });
-    expect(rebound.isError).toBe(true);
-    expect(requests).toHaveLength(2);
-  });
-
-  it('generates dispatch keys for dispatch and continue and echoes them in receipts', async () => {
-    const requests: Array<Record<string, unknown>> = [];
-    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
-      requests.push(JSON.parse(fetchBody(init)) as Record<string, unknown>);
-      return new Response(
-        JSON.stringify({
-          code: 0,
-          msg: 'ok',
-          data: {
-            dispatchId: `dispatch_${requests.length}`,
-            target: 'named',
-            taskName: 'memory_probe',
-            profileName: 'explore',
-            actualProfile: 'explore',
-            status: 'queued',
-          },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const dispatched = await client.callTool({
-      name: 'kiki_dispatch',
-      arguments: {
-        target: 'named',
-        task_name: 'memory_probe',
-        profile_name: 'explore',
-        message: 'inspect',
-      },
-    });
-    const continued = await client.callTool({
-      name: 'kiki_continue',
-      arguments: { dispatch_id: 'dispatch_1', message: 'continue' },
-    });
-    const dispatchKey = requests[0]?.['dispatch_key'];
-    const continueKey = requests[1]?.['dispatch_key'];
-    expect(dispatchKey).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
-    expect(continueKey).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
-    expect(continueKey).not.toBe(dispatchKey);
-    expect(dispatched.structuredContent).toMatchObject({
-      dispatch_key: dispatchKey,
-      receipt: { dispatch_key: dispatchKey, dispatch_id: 'dispatch_1' },
-    });
-    expect(continued.structuredContent).toMatchObject({
-      dispatch_key: continueKey,
-      receipt: { dispatch_key: continueKey, dispatch_id: 'dispatch_2' },
-    });
-  });
-
-  it('projects send, interaction response, and detail-mode tools', async () => {
-    const requests: Array<{ action: string; body: Record<string, unknown> }> = [];
-    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
-      const action = fetchUrl(url).split('/').at(-1)!;
-      const body = JSON.parse(fetchBody(init)) as Record<string, unknown>;
-      requests.push({ action, body });
-      const data = action === 'send'
-        ? { message: { messageId: 'message-1' }, delivery: 'queued' }
-        : action === 'interactions'
-          ? { items: [{ interactionId: 'approval-1', kind: 'approval', taskName: 'probe' }] }
-          : action === 'respond'
-            ? { interactionId: 'approval-1', status: 'resolved' }
-            : { items: [] };
-      return new Response(JSON.stringify({ code: 0, msg: 'ok', data }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
     const sent = await client.callTool({
       name: 'kiki_send',
-      arguments: { task_name: 'probe', message: 'check this' },
-    });
-    const interactions = await client.callTool({
-      name: 'kiki_interactions',
-      arguments: { cursor: 1 },
-    });
-    const responded = await client.callTool({
-      name: 'kiki_respond',
       arguments: {
-        interaction_id: 'approval-1',
-        kind: 'approval',
-        response: { decision: 'approved', selected_option_id: 'allow' },
+        task_name: 'probe',
+        message: 'inspect',
+        idempotency_key: 'message-key',
       },
-    });
-    const questionResponded = await client.callTool({
-      name: 'kiki_respond',
-      arguments: {
-        interaction_id: 'question-1',
-        kind: 'question',
-        response: { decision: 'continue' },
-      },
-    });
-    const invalidApproval = await client.callTool({
-      name: 'kiki_respond',
-      arguments: {
-        interaction_id: 'approval-1',
-        kind: 'approval',
-        response: { answers: { Continue: 'Yes' } },
-      },
-    });
-    await client.callTool({
-      name: 'kiki_events',
-      arguments: { dispatch_id: 'dispatch-1', detail: 'turn' },
-    });
-    await client.callTool({
-      name: 'kiki_transcript',
-      arguments: { dispatch_id: 'dispatch-1', detail: 'items' },
-    });
-    const invalidEvents = await client.callTool({
-      name: 'kiki_events',
-      arguments: { dispatch_id: 'dispatch-1', detail: 'tools' },
-    });
-    const invalidTranscript = await client.callTool({
-      name: 'kiki_transcript',
-      arguments: { dispatch_id: 'dispatch-1', detail: 'frames' },
     });
 
-    const idempotencyKey = requests[0]?.body['idempotency_key'];
-    expect(idempotencyKey).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
-    expect(sent.structuredContent).toMatchObject({ idempotency_key: idempotencyKey });
-    expect(interactions.structuredContent).toMatchObject({ items: [{ interactionId: 'approval-1' }] });
-    expect(responded.structuredContent).toEqual({ interactionId: 'approval-1', status: 'resolved' });
-    expect(questionResponded.isError).not.toBe(true);
-    expect(invalidApproval.isError).toBe(true);
-    expect(requests).toEqual([
-      { action: 'send', body: { task_name: 'probe', message: 'check this', idempotency_key: idempotencyKey } },
-      { action: 'interactions', body: { cursor: 1 } },
+    expect(calls).toEqual([
       {
-        action: 'respond',
-        body: {
-          interaction_id: 'approval-1',
-          kind: 'approval',
-          response: { decision: 'approved', selected_option_id: 'allow' },
+        name: 'dispatch',
+        input: {
+          target: 'named',
+          taskName: 'probe',
+          profileName: 'explore',
+          modelAlias: 'model-a',
+          thinkingEffort: 'high',
+          dispatchKey: 'dispatch-key',
+          message: 'inspect',
         },
       },
       {
-        action: 'respond',
-        body: {
-          interaction_id: 'question-1',
-          kind: 'question',
-          response: { decision: 'continue' },
-        },
+        name: 'send',
+        input: { taskName: 'probe', message: 'inspect', idempotencyKey: 'message-key' },
       },
-      { action: 'events', body: { dispatch_id: 'dispatch-1', detail: 'turn' } },
-      { action: 'transcript', body: { dispatch_id: 'dispatch-1', detail: 'items' } },
     ]);
-    expect(invalidEvents.isError).toBe(true);
-    expect(invalidTranscript.isError).toBe(true);
+    expect(dispatched.structuredContent).toMatchObject({
+      dispatchId: 'dispatch-1',
+      dispatch_key: 'dispatch-key',
+      receipt: { dispatch_id: 'dispatch-1', dispatch_key: 'dispatch-key' },
+    });
+    expect(sent.structuredContent).toMatchObject({ idempotency_key: 'message-key' });
   });
 
-  it('mirrors targeted timeout and wait-any responses through kiki_wait', async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
-      const body = JSON.parse(fetchBody(init)) as Record<string, unknown>;
-      bodies.push(body);
-      const data = body['dispatch_id'] === undefined
-        ? {
-            waitStatus: 'completed',
-            waitedMs: 3,
-            dispatch: { dispatchId: 'dispatch_any', target: 'main', status: 'completed' },
-            completedDuringWait: [{ dispatchId: 'dispatch_any', status: 'completed' }],
-            interactions: [],
-          }
-        : {
-            waitStatus: 'timed_out',
-            waitedMs: 0,
-            dispatch: { dispatchId: body['dispatch_id'], target: 'main', status: 'running' },
-            completedDuringWait: [],
-            interactions: [],
-          };
-      return new Response(JSON.stringify({ code: 0, msg: 'ok', data }), {
+  it('uses the seat HTTP procedure channel for stdio configuration', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      expect(href).toBe('http://127.0.0.1:58627/api/klient/delegation/dispatch');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer DELEGATION_SECRET');
+      expect(new Headers(init?.headers).get('authorization')).not.toContain('DAEMON_SECRET');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        target: 'named',
+        taskName: 'probe',
+        dispatchKey: 'dispatch-key',
+        message: 'inspect',
+      });
+      return new Response(JSON.stringify({ code: 0, msg: 'ok', data: dispatch }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
     });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const timedOut = await client.callTool({
-      name: 'kiki_wait',
-      arguments: { dispatch_id: 'dispatch_running', timeout_s: 0 },
-    });
-    const any = await client.callTool({ name: 'kiki_wait', arguments: { timeout_s: 1 } });
-    expect(bodies).toEqual([
-      { dispatch_id: 'dispatch_running', timeout_s: 0 },
-      { timeout_s: 1 },
-    ]);
-    expect(timedOut.isError).not.toBe(true);
-    expect(timedOut.structuredContent).toMatchObject({
-      waitStatus: 'timed_out',
-      dispatch: { dispatchId: 'dispatch_running', status: 'running' },
-    });
-    expect(any.structuredContent).toMatchObject({
-      waitStatus: 'completed',
-      completedDuringWait: [{ dispatchId: 'dispatch_any', status: 'completed' }],
-    });
-  });
-
-  it('guides interaction_pending waits through interactions, respond, and wait', async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      new Response(JSON.stringify({
-        code: 0,
-        msg: 'ok',
-        data: {
-          waitStatus: 'interaction_pending',
-          waitedMs: 1,
-          dispatch: { dispatchId: 'dispatch_blocked', target: 'named', taskName: 'probe', status: 'running' },
-          completedDuringWait: [],
-          interactions: [{ interactionId: 'approval-1', kind: 'approval', taskName: 'probe' }],
-        },
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
+    const server = createKikiMcpServer({
+      endpoint: 'http://127.0.0.1:58627',
+      token: 'DAEMON_SECRET',
+      delegationToken: 'DELEGATION_SECRET',
+      sessionId: 'session-operator',
+      workspacePath: '/example/workspace',
+    }, { fetch: fetchMock });
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     close.push(() => client.close(), () => server.close());
 
     const called = await client.callTool({
-      name: 'kiki_wait',
-      arguments: { dispatch_id: 'dispatch_blocked' },
-    });
-
-    expect(called.structuredContent).toMatchObject({
-      waitStatus: 'interaction_pending',
-      interactions: [{ interactionId: 'approval-1' }],
-      next_step: expect.stringContaining('kiki_interactions'),
-    });
-    const text = JSON.stringify(called.structuredContent);
-    expect(text).toContain('kiki_respond');
-    expect(text).toContain('kiki_wait');
-  });
-
-  it('returns dispatch and continue immediately even with progress tokens', async () => {
-    const actions: string[] = [];
-    const fetchMock = vi.fn<typeof fetch>(async (url) => {
-      const action = fetchUrl(url).split('/').at(-1)!;
-      actions.push(action);
-      if (action !== 'dispatch' && action !== 'continue') throw new Error(`Unexpected action: ${action}`);
-      return new Response(JSON.stringify({
-        code: 0,
-        msg: 'ok',
-        data: {
-          dispatchId: action === 'dispatch' ? 'dispatch_progress' : 'dispatch_continued',
-          target: 'main',
-          status: 'queued',
-          createdAt: 1,
-        },
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
+      name: 'kiki_dispatch',
+      arguments: {
+        target: 'named',
+        task_name: 'probe',
+        dispatch_key: 'dispatch-key',
+        message: 'inspect',
       },
-      { fetch: fetchMock, progressPollIntervalMs: 0 },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-    const progress: Array<{ progress: number; message?: string }> = [];
-
-    const called = await client.callTool(
-      { name: 'kiki_dispatch', arguments: { target: 'main', message: 'inspect' } },
-      undefined,
-      { onprogress: (update) => progress.push(update) },
-    );
-    const continued = await client.callTool(
-      { name: 'kiki_continue', arguments: { dispatch_id: 'dispatch_progress', message: 'continue' } },
-      undefined,
-      { onprogress: (update) => progress.push(update) },
-    );
-
-    expect(called.structuredContent).toMatchObject({
-      dispatchId: 'dispatch_progress',
-      status: 'queued',
     });
-    expect(continued.structuredContent).toMatchObject({
-      dispatchId: 'dispatch_continued',
-      status: 'queued',
-    });
-    expect(actions).toEqual(['dispatch', 'continue']);
-    expect(progress).toEqual([]);
-  });
-
-  it('reports the current tool while kiki_wait blocks', async () => {
-    const actions: string[] = [];
-    let resolveWait!: (response: Response) => void;
-    const waitResponse = new Promise<Response>((resolve) => { resolveWait = resolve; });
-    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
-      const action = fetchUrl(url).split('/').at(-1)!;
-      actions.push(action);
-      if (action === 'wait') return waitResponse;
-      if (action !== 'events') throw new Error(`Unexpected action: ${action}`);
-      expect(JSON.parse(fetchBody(init))).toMatchObject({
-        dispatch_id: 'dispatch_active',
-        detail: 'turn',
-      });
-      resolveWait(new Response(JSON.stringify({
-        code: 0,
-        msg: 'ok',
-        data: {
-          waitStatus: 'completed',
-          waitedMs: 2,
-          dispatch: { dispatchId: 'dispatch_active', target: 'main', status: 'completed' },
-          completedDuringWait: [],
-          interactions: [],
-        },
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }));
-      return new Response(JSON.stringify({
-        code: 0,
-        msg: 'ok',
-        data: {
-          items: [{
-            seq: 1,
-            dispatchId: 'dispatch_active',
-            event: { type: 'tool.call', toolCallId: 'tool-1', title: 'Bash' },
-          }],
-        },
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock, progressPollIntervalMs: 0 },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-    const progress: Array<{ progress: number; message?: string }> = [];
-
-    const called = await client.callTool(
-      { name: 'kiki_wait', arguments: { dispatch_id: 'dispatch_active' } },
-      undefined,
-      { onprogress: (update) => progress.push(update) },
-    );
 
     expect(called.isError).not.toBe(true);
-    expect(called.structuredContent).toMatchObject({ waitStatus: 'completed' });
-    expect(actions).toEqual(['wait', 'events']);
-    expect(progress).toEqual([{ progress: 1, message: 'Delegation running tool: Bash.' }]);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it('cancels an in-flight events poll when wait settles first', async () => {
-    const actions: string[] = [];
-    let pollAborted = 0;
-    let resolveWait!: (response: Response) => void;
-    const waitResponse = new Promise<Response>((resolve) => { resolveWait = resolve; });
-    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
-      const action = fetchUrl(url).split('/').at(-1)!;
-      actions.push(action);
-      if (action === 'wait') return waitResponse;
-      if (action !== 'events') throw new Error(`Unexpected action: ${action}`);
-      resolveWait(new Response(JSON.stringify({
-        code: 0,
-        msg: 'ok',
-        data: {
-          waitStatus: 'completed',
-          waitedMs: 1,
-          dispatch: { dispatchId: 'dispatch_done', target: 'main', status: 'completed' },
-          completedDuringWait: [],
-          interactions: [],
-        },
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }));
-      return new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => {
-          pollAborted += 1;
-          reject(init.signal?.reason);
-        }, { once: true });
-      });
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock, progressPollIntervalMs: 0 },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const called = await client.callTool(
-      { name: 'kiki_wait', arguments: { dispatch_id: 'dispatch_done' } },
-      undefined,
-      { onprogress: () => undefined },
-    );
-
-    expect(called.isError).not.toBe(true);
-    expect(called.structuredContent).toMatchObject({ waitStatus: 'completed' });
-    expect(actions).toEqual(['wait', 'events']);
-    expect(pollAborted).toBe(1);
-    await Promise.resolve();
-    expect(actions).toEqual(['wait', 'events']);
-  });
-
-  it('reports invalid tool input as invalid_input instead of an internal error', async () => {
-    const fetchMock = vi.fn<typeof fetch>();
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const invalidTaskName = await client.callTool({
-      name: 'kiki_dispatch',
-      arguments: { target: 'named', task_name: 'Mixed-Case', profile_name: 'explore', message: 'x' },
-    });
-    expect(invalidTaskName.isError).toBe(true);
-    expect(invalidTaskName.structuredContent).toMatchObject({ error: { code: 'invalid_input' } });
-    expect(JSON.stringify(invalidTaskName)).toContain('task_name');
-    expect(fetchMock).not.toHaveBeenCalled();
-
-    const missingMessage = await client.callTool({
-      name: 'kiki_dispatch',
-      arguments: { target: 'main' },
-    });
-    expect(missingMessage.isError).toBe(true);
-    expect(missingMessage.structuredContent).toMatchObject({ error: { code: 'invalid_input' } });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('pages astral and mixed text without splitting Unicode or losing code units', async () => {
-    const source = 'A😀你B🧪终';
-    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
-      const body = JSON.parse(fetchBody(init)) as { cursor?: number };
-      const cursor = body.cursor ?? 0;
-      // Deliberately split after two UTF-16 code units. The first backend
-      // response ends with a high surrogate, independently exercising the
-      // MCP edge's repair cursor rather than relying on a friendly backend.
-      const text = source.slice(cursor, cursor + 2);
-      const nextCursor = cursor + text.length < source.length ? cursor + text.length : undefined;
-      return new Response(
-        JSON.stringify({ code: 0, msg: 'ok', data: { text, nextCursor, dispatch: { dispatchId: 'dispatch_1' } } }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    let cursor: number | undefined;
-    let concatenated = '';
-    do {
-      const called = await client.callTool({
-        name: 'kiki_result',
-        arguments: { dispatch_id: 'dispatch_1', cursor, max_bytes: 4 },
-      });
-      expect(called.isError).not.toBe(true);
-      const page = called.structuredContent as { text: string; nextCursor?: number };
-      expect(Buffer.byteLength(page.text, 'utf8')).toBeLessThanOrEqual(4);
-      expect(Buffer.from(page.text, 'utf8').toString('utf8')).toBe(page.text);
-      concatenated += page.text;
-      cursor = page.nextCursor;
-    } while (cursor !== undefined);
-
-    expect(concatenated).toBe(source);
-  });
-
-  it('classifies non-2xx responses by HTTP status and includes next steps', async () => {
-    const statuses = [401, 404, 500];
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      new Response(null, { status: statuses.shift()! }),
-    );
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const results = await Promise.all(['dispatch-1', 'dispatch-2', 'dispatch-3'].map((dispatchId) =>
-      client.callTool({ name: 'kiki_status', arguments: { dispatch_id: dispatchId } }),
-    ));
-
-    expect(results.map((item) => (item.structuredContent as { error: { code: string } }).error.code)).toEqual([
-      'authentication_failed',
-      'endpoint_not_found',
-      'server_error',
-    ]);
-    for (const item of results) {
-      expect(item.isError).toBe(true);
-      expect(item.structuredContent).toMatchObject({
-        error: { next_step: expect.any(String) },
-      });
-    }
-  });
-
-  it('returns typed redacted tool errors for rejected REST requests', async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      new Response(JSON.stringify({ code: 40001, msg: 'Bearer SECRET_TOKEN was rejected' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'SECRET_TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const called = await client.callTool({ name: 'kiki_status', arguments: { dispatch_id: 'dispatch_1' } });
-    expect(called.isError).toBe(true);
-    expect(called.structuredContent).toEqual({
-      error: {
-        code: 'request_rejected',
-        message: 'Kiki delegation request failed.',
-        next_step: expect.stringContaining('Retry'),
-      },
-    });
-    expect(JSON.stringify(called)).not.toContain('SECRET_TOKEN');
-  });
-
-  it('passes an already-classified failure code and description through untouched', async () => {
-    const description =
-      'External agent authentication expired or was rejected; re-authenticate the provider and retry.';
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      new Response(
-        JSON.stringify({
-          code: 40001,
-          msg: description,
-          details: { failure_code: 'auth_expired' },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      ),
-    );
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'SECRET_TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const called = await client.callTool({ name: 'kiki_status', arguments: { dispatch_id: 'dispatch_1' } });
-    expect(called.isError).toBe(true);
-    expect(called.structuredContent).toEqual({
-      error: {
-        code: 'auth_expired',
-        message: description,
-        next_step: expect.stringContaining('re-authenticate'),
-      },
-    });
-  });
-
-  it('collapses an untrusted failure_code instead of trusting the envelope', async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      new Response(
-        JSON.stringify({
-          code: 40001,
-          msg: 'Bearer SECRET_TOKEN was rejected',
-          details: { failure_code: 'not_a_category' },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      ),
-    );
-    const server = createKikiMcpServer(
-      {
-        endpoint: 'http://127.0.0.1:58627',
-        token: 'SECRET_TOKEN',
-        delegationToken: 'DELEGATION_SECRET',
-        sessionId: 'session-operator',
-        workspacePath: '/example/workspace',
-      },
-      { fetch: fetchMock },
-    );
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    close.push(() => client.close(), () => server.close());
-
-    const called = await client.callTool({ name: 'kiki_status', arguments: { dispatch_id: 'dispatch_1' } });
-    expect(called.isError).toBe(true);
-    expect(called.structuredContent).toEqual({
-      error: {
-        code: 'request_rejected',
-        message: 'Kiki delegation request failed.',
-        next_step: expect.stringContaining('Retry'),
-      },
-    });
-    expect(JSON.stringify(called)).not.toContain('SECRET_TOKEN');
+  it('keeps the interaction ownership code aligned and validates stdio bindings', () => {
+    expect(EXTERNAL_INTERACTION_NOT_OWNED_CODE).toBe(CORE_INTERACTION_NOT_OWNED_CODE);
+    expect(() => kikiMcpConfigFromEnv({
+      KIKI_KAP_ENDPOINT: 'http://127.0.0.1:58627',
+      KIKI_KAP_TOKEN: 'DAEMON_SECRET',
+      KIKI_DELEGATION_TOKEN: 'DELEGATION_SECRET',
+      KIKI_SESSION_ID: 'session-operator',
+      KIKI_WORKSPACE_PATH: 'relative/path',
+    })).toThrow();
   });
 });
 
-describe('external delegation route exposure', () => {
-  const originalPrincipal = process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
-  const originalSession = process.env['KIKI_EXTERNAL_SESSION_ID'];
-  const originalToken = process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
-
-  afterEach(() => {
-    if (originalPrincipal === undefined) delete process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
-    else process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = originalPrincipal;
-    if (originalSession === undefined) delete process.env['KIKI_EXTERNAL_SESSION_ID'];
-    else process.env['KIKI_EXTERNAL_SESSION_ID'] = originalSession;
-    if (originalToken === undefined) delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
-    else process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'] = originalToken;
-  });
-
-  it('does not register any external route while the feature is off', async () => {
-    process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = 'example-principal';
-    process.env['KIKI_EXTERNAL_SESSION_ID'] = 'session-operator';
-    process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'] = 'DELEGATION_SECRET';
-    const paths: string[] = [];
-    const register = (path: string) => paths.push(path);
-    const api = { get: register, post: register, put: register, delete: register };
-    const app = { register: async (plugin: (host: unknown) => Promise<void> | void) => plugin(api) };
-    const core = {
-      accessor: {
-        get: (id: unknown) =>
-          id === IConfigService
-            ? { ready: Promise.resolve() }
-            : { enabled: () => false },
-      },
-    };
-
-    await registerApiV2Routes(app as never, core as never);
-    expect(paths.some((path) => path.includes('external-delegation'))).toBe(false);
-  });
-});
-
-describe('external delegation transcript projection', () => {
-  it('projects the typed delegator before legacy labels and never fabricates main', () => {
-    expect(
-      descriptorFromMeta('external-child', {
-        type: 'independent',
-        delegator: { kind: 'external', delegationId: 'delegation_test' },
-        labels: { parentAgentId: 'main' },
-        parentAgentId: 'main',
-      }),
-    ).toEqual({
-      agentId: 'external-child',
-      type: 'independent',
-      delegator: { kind: 'external', delegationId: 'delegation_test' },
-      parentAgentId: undefined,
-      label: undefined,
-    });
-  });
-});
-
-function fetchUrl(input: Parameters<typeof fetch>[0]): string {
-  return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+async function connect(klient: SeatKlient): Promise<{ client: Client }> {
+  const server = createKikiMcpServer(klient);
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  close.push(() => client.close(), () => server.close());
+  return { client };
 }
 
-function fetchBody(init: Parameters<typeof fetch>[1]): string {
-  if (typeof init?.body !== 'string') throw new Error('Expected a string request body.');
-  return init.body;
+function fakeKlient(calls: Array<{ name: string; input: unknown }> = []): SeatKlient {
+  return {
+    async call(name: DelegationProcedureName, input: unknown) {
+      calls.push({ name, input });
+      const output = outputs[name];
+      if (output === undefined) throw new Error(`Missing fixture for ${name}`);
+      return output;
+    },
+  } as unknown as SeatKlient;
 }

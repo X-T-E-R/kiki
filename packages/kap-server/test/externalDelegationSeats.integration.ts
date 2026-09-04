@@ -78,6 +78,19 @@ async function invokeSeat(sessionId: string, delegationToken: string) {
   return response.json() as Promise<{ code: number; data: unknown }>;
 }
 
+async function invokeSeatProcedure(delegationToken: string) {
+  const base = `http://127.0.0.1:${server!.port}`;
+  const response = await fetch(`${base}/api/klient/delegation/list`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${delegationToken}`,
+      'content-type': 'application/json',
+    },
+    body: '{}',
+  });
+  return { status: response.status, body: await response.json() as { code: number; data: unknown } };
+}
+
 async function provisionAddress(sessionId: string) {
   const session = await resumeSessionById(server!.core.accessor, sessionId);
   const context = session!.accessor.get(ISessionContext);
@@ -120,6 +133,10 @@ describe('external delegation seats', () => {
       code: 0,
       data: { version: 1, lifecycle: 'active' },
     });
+    expect(await invokeSeatProcedure(delegationToken)).toMatchObject({
+      status: 200,
+      body: { code: 0, data: { binding: { seatId: first.data['seatId'], sessionId } } },
+    });
 
     const live = await listLiveServerInstances(home);
     expect(live).toHaveLength(1);
@@ -135,6 +152,10 @@ describe('external delegation seats', () => {
     expect(await revoked.json()).toMatchObject({ code: 0, data: { seatId } });
 
     expect(await invokeSeat(sessionId, delegationToken)).toMatchObject({ code: 40001 });
+    expect(await invokeSeatProcedure(delegationToken)).toMatchObject({
+      status: 401,
+      body: { code: 40101 },
+    });
   });
 
   it.each([
