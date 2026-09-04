@@ -30,7 +30,14 @@ type Handler = (
       warn(bindings: Record<string, unknown>, message: string): void;
     };
   },
-  reply: { send(payload: unknown): unknown },
+  reply: {
+    readonly raw: {
+      readonly writableFinished: boolean;
+      once(event: 'close', listener: () => void): void;
+      off(event: 'close', listener: () => void): void;
+    };
+    send(payload: unknown): unknown;
+  },
 ) => Promise<void>;
 
 const authorityConfig = {
@@ -171,8 +178,9 @@ describe('external delegation route projection', () => {
       message: 'continue',
     });
 
-    expect(first.data).toEqual(dispatchView);
-    expect(replay.data).toEqual(dispatchView);
+    expect(first.data).toEqual(expect.objectContaining({ dispatchId: dispatchView.dispatchId }));
+    expect(first.data).not.toHaveProperty('agentId');
+    expect(replay.data).toEqual(first.data);
     expect(service.dispatch).toHaveBeenNthCalledWith(1, expect.objectContaining({
       dispatchKey: 'stable-dispatch-key',
     }));
@@ -186,9 +194,36 @@ describe('external delegation route projection', () => {
   });
 
   it('projects send, interactions, and respond requests onto core operations', async () => {
-    service.send.mockResolvedValue({ message: { messageId: 'message-1' }, delivery: 'queued' });
+    service.send.mockResolvedValue({
+      message: {
+        messageId: 'message-1',
+        sessionId: 'session-operator',
+        sourceAgentId: 'agent-source',
+        sourceTaskName: 'root',
+        targetAgentId: 'agent-target',
+        targetTaskName: 'probe',
+        content: 'check this',
+        acceptedAt: 1,
+        targetSeq: 1,
+      },
+      deduplicated: false,
+      delivery: 'queued',
+      payloadConflict: false,
+    });
     service.interactions.mockResolvedValue({
-      items: [{ interactionId: 'approval-1', kind: 'approval', taskName: 'probe', payload: {}, createdAt: 1 }],
+      items: [{
+        interactionId: 'approval-1',
+        kind: 'approval',
+        taskName: 'probe',
+        payload: {
+          sessionId: 'session-operator',
+          agentId: 'agent-internal',
+          toolName: 'Inspect',
+          action: 'inspect files',
+          display: { kind: 'generic', summary: 'Inspect files' },
+        },
+        createdAt: 1,
+      }],
     });
     service.respond.mockResolvedValue({ interactionId: 'approval-1', status: 'resolved' });
 
@@ -274,8 +309,10 @@ describe('external delegation route projection', () => {
     expect(service.transcript).toHaveBeenCalledWith(expect.objectContaining({ detail: 'items' }));
   });
 
-  it('logs unclassified failures before returning the redacted response', async () => {
-    service.list.mockRejectedValue(new Error('provider returned private failure text'));
+  it('logs stable diagnostics without persisting private failure text', async () => {
+    service.list.mockRejectedValue(new Error(
+      'Bearer SEAT_SECRET https://example.test/signed?token=URL_SECRET C:\\private\\workspace',
+    ));
 
     const response = await invoke('list', {});
 
@@ -284,13 +321,16 @@ describe('external delegation route projection', () => {
       msg: 'External delegation request failed.',
     });
     expect(response.code).not.toBe(0);
-    expect(JSON.stringify(response)).not.toContain('private failure text');
+    const serialized = JSON.stringify({ response, calls: logger.warn.mock.calls });
+    expect(serialized).not.toContain('SEAT_SECRET');
+    expect(serialized).not.toContain('URL_SECRET');
+    expect(serialized).not.toContain('private\\workspace');
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
         request_id: 'request-list',
         action: 'list',
-        error_message: 'provider returned private failure text',
-        error_stack: expect.stringContaining('provider returned private failure text'),
+        error_class: 'internal_error',
+        error_code: undefined,
         failure_code: undefined,
       }),
       'external delegation request failed',
@@ -319,10 +359,55 @@ describe('external delegation route projection', () => {
       expect.objectContaining({
         request_id: 'request-respond',
         action: 'respond',
+        error_class: 'coded_error',
+        error_code: ErrorCodes.REQUEST_INVALID,
         failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE,
       }),
       'external delegation request failed',
     );
+  });
+
+  it('aborts a legacy wait when the caller disconnects and removes the close listener', async () => {
+    let signal: AbortSignal | undefined;
+    service.wait.mockImplementation(async (input) => {
+      signal = input.signal;
+      return new Promise((_resolve, reject) => {
+        input.signal?.addEventListener('abort', () => reject(input.signal?.reason), { once: true });
+      });
+    });
+    const routeReply = createRouteReply();
+
+    const pending = invoke('wait', { dispatch_id: 'dispatch_replay', timeout_s: 45 }, routeReply);
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    expect(routeReply.listeners()).toBe(1);
+    routeReply.close();
+    const response = await pending;
+
+    expect(signal?.aborted).toBe(true);
+    expect(routeReply.listeners()).toBe(0);
+    expect(response.code).not.toBe(0);
+  });
+
+  it('removes the legacy wait close listener without aborting a completed wait', async () => {
+    let signal: AbortSignal | undefined;
+    service.wait.mockImplementation(async (input) => {
+      signal = input.signal;
+      return {
+        waitStatus: 'completed',
+        waitedMs: 2,
+        dispatch: { ...dispatchView, status: 'completed' },
+        completedDuringWait: [{ ...dispatchView, status: 'completed' }],
+        interactions: [],
+      };
+    });
+    const routeReply = createRouteReply();
+
+    const response = await invoke('wait', { dispatch_id: 'dispatch_replay' }, routeReply);
+    routeReply.close();
+
+    expect(response.code).toBe(0);
+    expect(signal?.aborted).toBe(false);
+    expect(routeReply.listeners()).toBe(0);
   });
 
   it('projects targeted timeout and wait-any without treating timeout as an error', async () => {
@@ -332,12 +417,14 @@ describe('external delegation route projection', () => {
         waitedMs: 600_000,
         dispatch: { ...dispatchView, status: 'running' },
         completedDuringWait: [],
+        interactions: [],
       })
       .mockResolvedValueOnce({
         waitStatus: 'completed',
         waitedMs: 2,
         dispatch: { ...dispatchView, status: 'completed' },
         completedDuringWait: [{ ...dispatchView, status: 'completed' }],
+        interactions: [],
       });
 
     const timedOut = await invoke('wait', { dispatch_id: 'dispatch_replay', timeout_s: 600 });
@@ -434,7 +521,11 @@ describe('external delegation route projection', () => {
     expect(service.result).toHaveBeenCalledWith(expect.objectContaining({ limit: 100_000 }));
   });
 
-  async function invoke(action: string, body: unknown): Promise<{
+  async function invoke(
+    action: string,
+    body: unknown,
+    routeReply = createRouteReply(),
+  ): Promise<{
     code: number;
     msg?: string;
     data?: any;
@@ -442,7 +533,6 @@ describe('external delegation route projection', () => {
   }> {
     const handler = handlers.get(`/sessions/:session_id/external-delegation/${action}`);
     expect(handler).toBeDefined();
-    let payload: unknown;
     await handler!(
       {
         id: `request-${action}`,
@@ -451,9 +541,9 @@ describe('external delegation route projection', () => {
         headers: { 'x-kiki-delegation-token': 'DELEGATION_SECRET' },
         log: logger,
       },
-      { send: (value) => { payload = value; } },
+      routeReply.reply,
     );
-    return payload as {
+    return routeReply.payload() as {
       code: number;
       msg?: string;
       data?: any;
@@ -461,3 +551,34 @@ describe('external delegation route projection', () => {
     };
   }
 });
+
+function createRouteReply() {
+  const closeListeners = new Set<() => void>();
+  let sent: unknown;
+  let writableFinished = false;
+  return {
+    reply: {
+      raw: {
+        get writableFinished() {
+          return writableFinished;
+        },
+        once: (_event: 'close', listener: () => void) => {
+          closeListeners.add(listener);
+        },
+        off: (_event: 'close', listener: () => void) => {
+          closeListeners.delete(listener);
+        },
+      },
+      send: (payload: unknown) => {
+        sent = payload;
+        writableFinished = true;
+        return payload;
+      },
+    },
+    close: () => {
+      for (const listener of [...closeListeners]) listener();
+    },
+    listeners: () => closeListeners.size,
+    payload: () => sent,
+  };
+}

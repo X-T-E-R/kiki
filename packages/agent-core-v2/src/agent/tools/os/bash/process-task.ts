@@ -1,28 +1,17 @@
 import type { Readable } from 'node:stream';
 
-import type { IHostProcess } from '#/os/interface/hostProcess';
-
-type ProcessHandle = Omit<IHostProcess, '_serviceBrand'>;
-
 import type {
   AgentTask,
   AgentTaskInfoBase,
   AgentTaskSink,
   AgentTaskSettlement,
+  ProcessTaskInfo,
 } from '#/agent/task/types';
+import type { IHostProcess } from '#/os/interface/hostProcess';
 
-export interface ProcessTaskInfo extends AgentTaskInfoBase {
-  readonly kind: 'process';
-  readonly command: string;
-  readonly pid: number;
-  readonly exitCode: number | null;
-}
+export type { ProcessTaskInfo } from '#/agent/task/types';
 
-declare module '#/agent/task/types' {
-  interface AgentTaskInfoByKind {
-    readonly process: ProcessTaskInfo;
-  }
-}
+type ProcessHandle = Omit<IHostProcess, '_serviceBrand'>;
 
 export type ProcessTaskOutputKind = 'stdout' | 'stderr';
 

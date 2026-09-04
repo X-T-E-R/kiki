@@ -32,9 +32,37 @@ export interface AgentTaskInfoBase {
   readonly timeoutMs?: number;
 }
 
-export interface AgentTaskInfoByKind {}
+export interface ProcessTaskInfo extends AgentTaskInfoBase {
+  readonly kind: 'process';
+  readonly command: string;
+  readonly pid: number;
+  readonly exitCode: number | null;
+}
 
-export type AgentTaskKind = Extract<keyof AgentTaskInfoByKind, string>;
+export interface SubagentTaskInfo extends AgentTaskInfoBase {
+  readonly kind: 'agent';
+  readonly agentId?: string;
+  readonly profile?: string;
+  readonly parentToolCallId?: string;
+  readonly model?: string;
+  readonly thinkingEffort?: string;
+  readonly collaborationTaskName?: string;
+  readonly collaborationAgentType?: string;
+}
+
+export interface QuestionTaskInfo extends AgentTaskInfoBase {
+  readonly kind: 'question';
+  readonly questionCount: number;
+  readonly toolCallId?: string;
+}
+
+export type AgentTaskInfoByKind = {
+  readonly process: ProcessTaskInfo;
+  readonly agent: SubagentTaskInfo;
+  readonly question: QuestionTaskInfo;
+};
+
+export type AgentTaskKind = keyof AgentTaskInfoByKind;
 
 export type AgentTaskInfo = AgentTaskInfoByKind[AgentTaskKind];
 

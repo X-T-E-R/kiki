@@ -67,7 +67,7 @@ export const DEFAULT_OAUTH_PROVIDER_NAME = 'managed:kimi-code';
 // auto-propagates instead of silently breaking the startup recovery path.
 export const OAUTH_LOGIN_REQUIRED_CODE = ErrorCodes.AUTH_LOGIN_REQUIRED;
 
-// Region-aware asset root for managed tools and the plugin marketplace.
+// Region-aware asset root for managed tool assets such as fd.
 export function kimiCodeCdnBase(): string {
   return currentKimiProfile().cdnBase;
 }
@@ -75,11 +75,6 @@ export function kimiCodeCdnBase(): string {
 // domain (kap-server consumes it from there). Deep-path import: this module is
 // evaluated on every CLI invocation, so it must not pull in the engine root.
 export { KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV } from '@moonshot-ai/agent-core-v2/app/plugin/marketplace';
-// The CLI-side default catalog derives from the current region profile; the
-// env override above takes priority at the call site.
-export function kimiCodePluginMarketplaceUrl(): string {
-  return `${kimiCodeCdnBase()}/plugins/marketplace.json`;
-}
 // Official plugins whose usage bills against the user's plan quota. Installing
 // one of these shows a quota note after the install result.
 export const QUOTA_CONSUMING_PLUGIN_IDS: readonly string[] = ['kimi-datasource'];

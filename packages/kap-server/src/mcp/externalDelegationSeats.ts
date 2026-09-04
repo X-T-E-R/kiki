@@ -41,6 +41,8 @@ export type ExternalDelegationSeat = ExternalDelegationSeatView & {
 };
 
 export interface ExternalDelegationMcpSeat {
+  readonly seatId: string;
+  readonly principalId: string;
   readonly sessionId: string;
   readonly delegationToken: string;
   readonly workspacePath: string;
@@ -146,7 +148,12 @@ export class ExternalDelegationSeatManager {
   async resolve(
     sessionId: string,
     token: string,
-  ): Promise<{ readonly principalId: string; readonly sessionId: string } | undefined> {
+  ): Promise<{
+    readonly seatId: string;
+    readonly principalId: string;
+    readonly sessionId: string;
+    readonly workspacePath: string;
+  } | undefined> {
     const document = await this.read();
     const seat = document.seats.find((candidate) => candidate.sessionId === sessionId);
     if (seat === undefined) return undefined;
@@ -158,7 +165,12 @@ export class ExternalDelegationSeatManager {
     ) {
       return undefined;
     }
-    return { principalId: provision.principalId, sessionId: seat.sessionId };
+    return {
+      seatId: seat.seatId,
+      principalId: provision.principalId,
+      sessionId: seat.sessionId,
+      workspacePath: seat.workspace,
+    };
   }
 
   async resolveBearer(bearer: string): Promise<ExternalDelegationMcpSeat | undefined> {
@@ -171,6 +183,8 @@ export class ExternalDelegationSeatManager {
         tokenMatches(bearer, provision.delegationToken)
       ) {
         return {
+          seatId: seat.seatId,
+          principalId: seat.principal,
           sessionId: seat.sessionId,
           delegationToken: provision.delegationToken,
           workspacePath: seat.workspace,

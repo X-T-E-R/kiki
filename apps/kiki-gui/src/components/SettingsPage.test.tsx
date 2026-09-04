@@ -14,7 +14,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
@@ -27,11 +27,30 @@ const WORKSPACES = {
   ],
 };
 
+const MCP_ENTRY = {
+  name: 'old-server',
+  config: { transport: 'stdio' as const, command: 'node', args: ['server.js'] },
+  source: 'global' as const,
+  origin: '/tmp/mcp.json',
+  mutable: true,
+};
+
+const klient = {
+  global: {
+    mcp: {
+      list: vi.fn(async (): Promise<readonly typeof MCP_ENTRY[]> => []),
+      add: vi.fn(async (): Promise<readonly typeof MCP_ENTRY[]> => []),
+      update: vi.fn(async (): Promise<readonly typeof MCP_ENTRY[]> => []),
+      remove: vi.fn(async (): Promise<readonly typeof MCP_ENTRY[]> => []),
+      test: vi.fn(async () => ({ success: true, output: '' })),
+    },
+  },
+};
+
 const client = {
   getConfig: vi.fn(async () => ({})),
   meta: vi.fn(async () => ({ experimental_flags: {} })),
   listWorkspaces: vi.fn(async () => WORKSPACES),
-  listManagedMcpServers: vi.fn(async () => []),
   listMcpServers: vi.fn(async () => ({ servers: [] })),
   listPlugins: vi.fn(async () => ({ plugins: [] })),
   listPluginMarketplace: vi.fn(async () => ({ configured: false, entries: [] })),
@@ -62,7 +81,7 @@ const client = {
 };
 
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client }),
+  useConnection: () => ({ client, klient }),
 }));
 
 vi.mock('../host', () => ({
@@ -82,6 +101,19 @@ beforeAll(() => {
   // …and no scrollIntoView, which the search-flash scroll runs on a card hit.
   Element.prototype.scrollIntoView ??= () => {};
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+});
+
+beforeEach(() => {
+  klient.global.mcp.list.mockReset();
+  klient.global.mcp.add.mockReset();
+  klient.global.mcp.update.mockReset();
+  klient.global.mcp.remove.mockReset();
+  klient.global.mcp.test.mockReset();
+  klient.global.mcp.list.mockResolvedValue([]);
+  klient.global.mcp.add.mockResolvedValue([]);
+  klient.global.mcp.update.mockResolvedValue([]);
+  klient.global.mcp.remove.mockResolvedValue([]);
+  klient.global.mcp.test.mockResolvedValue({ success: true, output: '' });
 });
 
 afterEach(() => {
@@ -132,6 +164,14 @@ async function click(element: Element): Promise<void> {
   });
 }
 
+async function setInput(input: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
 function scopeHeader(container: HTMLDivElement): HTMLElement {
   return container.querySelector<HTMLElement>('[data-settings-scope-header]')!;
 }
@@ -152,6 +192,8 @@ describe('SettingsPage scope header workspace sync', () => {
     await flush();
     expect(scopeHeader(container).textContent).toContain('Workspace · Beta');
     expect(scopeHeader(container).textContent).not.toContain('Workspace · Alpha');
+    expect(klient.global.mcp.list).toHaveBeenCalledWith({ cwd: '/tmp/alpha' });
+    expect(klient.global.mcp.list).toHaveBeenCalledWith({ cwd: '/tmp/beta' });
   });
 
   it('shows no workspace name on pages without a workspace surface', async () => {
@@ -185,6 +227,55 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-mcp')).not.toBeNull();
     expect(container.querySelector('#st-card-mcp-status')).not.toBeNull();
     expect(container.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
+  });
+
+  it('tests a draft and renames it by adding the new name before removing the old name', async () => {
+    klient.global.mcp.list.mockResolvedValue([MCP_ENTRY]);
+    klient.global.mcp.add.mockResolvedValue([MCP_ENTRY]);
+    const container = await renderSettings('/settings/mcp');
+    const card = container.querySelector('#st-card-mcp')!;
+    const edit = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
+    await click(edit);
+    const fieldset = card.querySelector('fieldset')!;
+    await setInput(fieldset.querySelector('input')!, 'new-server');
+    await click(fieldset.querySelectorAll('button')[1]!);
+    await flush();
+
+    expect(klient.global.mcp.test).toHaveBeenCalledWith({
+      server: { name: 'new-server', transport: 'stdio', command: 'node', args: ['server.js'] },
+      cwd: '/tmp/alpha',
+    });
+
+    await click(fieldset.querySelectorAll('button')[0]!);
+    await flush();
+
+    expect(klient.global.mcp.add).toHaveBeenCalledWith({
+      server: { name: 'new-server', transport: 'stdio', command: 'node', args: ['server.js'] },
+      cwd: '/tmp/alpha',
+    });
+    expect(klient.global.mcp.remove).toHaveBeenCalledWith({ name: 'old-server', cwd: '/tmp/alpha' });
+    expect(klient.global.mcp.add.mock.invocationCallOrder[0]).toBeLessThan(
+      klient.global.mcp.remove.mock.invocationCallOrder[0]!,
+    );
+    expect(klient.global.mcp.update).not.toHaveBeenCalled();
+  });
+
+  it('updates an MCP server through klient.global.mcp.update', async () => {
+    klient.global.mcp.list.mockResolvedValue([MCP_ENTRY]);
+    const container = await renderSettings('/settings/mcp');
+    const card = container.querySelector('#st-card-mcp')!;
+    const edit = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
+    await click(edit);
+    const save = card.querySelector('fieldset')!.querySelectorAll('button')[0]!;
+    await click(save);
+    await flush();
+
+    expect(klient.global.mcp.update).toHaveBeenCalledWith({
+      server: { name: 'old-server', transport: 'stdio', command: 'node', args: ['server.js'] },
+      cwd: '/tmp/alpha',
+    });
+    expect(klient.global.mcp.add).not.toHaveBeenCalled();
+    expect(klient.global.mcp.remove).not.toHaveBeenCalled();
   });
 
   it('mounts the automation leaf with tool policy and hooks cards', async () => {
