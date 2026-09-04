@@ -20,7 +20,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApprovalPanelComponent } from '#/tui/components/dialogs/approval-panel';
 import { EffortSelectorComponent } from '#/tui/components/dialogs/effort-selector';
-import { kimiCodePluginMarketplaceUrl } from '#/constant/app';
 import { MOON_SPINNER_FRAMES } from '#/tui/constant/rendering';
 import {
   AgentSwarmProgressComponent,
@@ -6464,7 +6463,7 @@ command = "vim"
     expect(session.installPlugin).not.toHaveBeenCalled();
   });
 
-  it('loads a local plugin marketplace file and installs from it', async () => {
+  it('loads the plugin marketplace source from config.toml and installs from it', async () => {
     const marketplaceDir = await makeTempHome();
     const marketplacePath = join(marketplaceDir, 'marketplace.json');
     await writeFile(
@@ -6482,9 +6481,13 @@ command = "vim"
       }),
       'utf8',
     );
-    process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] = marketplacePath;
+    delete process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'];
     const session = makeSession();
-    const { driver } = await makeDriver(session);
+    const getConfig = vi.fn(async () => ({
+      models: { k2: { model: 'moonshot-v1', maxContextSize: 100 } },
+      raw: { plugins: { marketplace_url: marketplacePath } },
+    }));
+    const { driver } = await makeDriver(session, { getConfig });
 
     driver.handleUserInput('/plugins marketplace');
 
@@ -6680,21 +6683,15 @@ command = "vim"
     expect(session.activateSkill).not.toHaveBeenCalled();
   });
 
-  it('installs default marketplace entries through plain install', async () => {
+  it('installs source-checkout marketplace entries without a network fetch', async () => {
     const originalFetch = globalThis.fetch;
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
-      plugins: [
-        {
-          id: 'kimi-datasource',
-          tier: 'official',
-          displayName: 'Kimi Datasource',
-          description: 'Datasource plugin',
-          source: './official/kimi-datasource.zip',
-        },
-      ],
-    }))));
+    const fetchMock = vi.fn(async () => {
+      throw new Error('network fetch is forbidden');
+    });
+    vi.stubGlobal('fetch', fetchMock);
     const session = makeSession();
     const { driver } = await makeDriver(session);
+    fetchMock.mockClear();
 
     try {
       driver.handleUserInput('/plugins marketplace');
@@ -6706,17 +6703,14 @@ command = "vim"
       await vi.waitFor(() => {
         expect(stripSgr(panel.render(120).join('\n'))).toContain('Kimi Datasource');
       });
-      // The pinned Kimi WebBridge row leads the Official tab, so move down to
-      // the Kimi Datasource entry before installing.
-      panel.handleInput('\u001B[B');
       panel.handleInput('\r');
 
       await vi.waitFor(() => {
         expect(session.installPlugin).toHaveBeenCalledWith(
-          'https://code.kimi.com/kimi-code/plugins/official/kimi-datasource.zip',
+          resolve(import.meta.dirname, '../../../../plugins/official/kimi-datasource'),
         );
       });
-      expect(globalThis.fetch).toHaveBeenCalledWith(kimiCodePluginMarketplaceUrl());
+      expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       vi.stubGlobal('fetch', originalFetch);
     }

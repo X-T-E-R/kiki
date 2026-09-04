@@ -6,8 +6,7 @@ export const THIRD_PARTY_BADGE = 'third-party';
 
 export type PluginTrustLabel = 'official' | 'curated' | 'third-party';
 
-// Trusted plugin hosts come in .com / .ai region pairs: code.kimi.* is the
-// per-region marketplace CDN (cdnBase), cdn.kimi.* the content CDN. Both
+// Trusted plugin artifact hosts come in .com / .ai region pairs. Both host
 // families are trusted regardless of the current region — a zip served by
 // either deployment is still an official build.
 const CODE_CDN_HOSTS = new Set(['code.kimi.com', 'code.kimi.ai']);

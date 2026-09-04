@@ -341,9 +341,9 @@ export interface PluginsPanelOptions {
   readonly installedIds: ReadonlySet<string>;
   readonly capabilities?: readonly CapabilityStatus[];
   /**
-   * False when the marketplace was explicitly replaced (slash-command
-   * source or env override): built-in rows then stay out of the Official
-   * tab entirely. Undefined means the default catalog.
+   * False when the marketplace was explicitly replaced (slash-command,
+   * env, or config source): built-in rows then stay out of the Official tab
+   * entirely. Undefined means the default catalog.
    */
   readonly catalogIsDefault?: boolean;
   readonly initialTab?: PluginsPanelTabId;

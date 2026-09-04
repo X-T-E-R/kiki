@@ -6,12 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PluginSummary } from '@moonshot-ai/kimi-code-sdk';
 
-import { kimiCodePluginMarketplaceUrl } from '#/constant/app';
 import {
   PluginUpdateNotifier,
   type PluginUpdateNotifierSession,
 } from '#/tui/controllers/plugin-update-notifier';
-import type { PluginMarketplace } from '#/utils/plugin-marketplace';
+import {
+  LOCAL_DEV_PLUGIN_MARKETPLACE_SOURCE,
+  type PluginMarketplace,
+} from '#/utils/plugin-marketplace';
 import { readPluginUpdateNoticeState } from '#/utils/plugin-update-notice-state';
 
 function makePluginSummary(overrides: Partial<PluginSummary> = {}): PluginSummary {
@@ -49,7 +51,7 @@ function makeMarketplaceEntry(
 
 function makeMarketplace(version = '3.4.0'): PluginMarketplace {
   return {
-    source: kimiCodePluginMarketplaceUrl(),
+    source: LOCAL_DEV_PLUGIN_MARKETPLACE_SOURCE,
     plugins: [makeMarketplaceEntry('kimi-datasource', 'Kimi Datasource', version)],
   };
 }
@@ -96,6 +98,7 @@ describe('PluginUpdateNotifier', () => {
   function makeNotifier(harness: ReturnType<typeof makeHarness>) {
     return new PluginUpdateNotifier({
       getSession: () => harness.session,
+      getConfigSource: async () => undefined,
       workDir: tempDir,
       notify: harness.notify,
       loadMarketplace: harness.loadMarketplace,
@@ -268,7 +271,7 @@ describe('PluginUpdateNotifier', () => {
   it('keeps every notified plugin when a turn uses two outdated plugins', async () => {
     const harness = makeHarness({
       marketplace: {
-        source: kimiCodePluginMarketplaceUrl(),
+        source: LOCAL_DEV_PLUGIN_MARKETPLACE_SOURCE,
         plugins: [
           makeMarketplaceEntry('kimi-datasource', 'Kimi Datasource', '3.4.0'),
           makeMarketplaceEntry('another-plugin', 'Another Plugin', '2.0.0'),

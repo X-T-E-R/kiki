@@ -173,22 +173,35 @@ describe('plugins command capability surface', () => {
     expect(statuses.some((s) => s.includes('runtime binaries were left untouched'))).toBe(true);
   });
 
-  it('treats only the default catalog (and the dev server) as injectable', () => {
-    expect(isDefaultMarketplaceCatalog(undefined, {})).toBe(true);
+  it('treats only the source checkout and its dev server as injectable', () => {
+    expect(isDefaultMarketplaceCatalog(undefined, undefined, {})).toBe(true);
     // The dev marketplace server started by scripts/dev.mjs serves this
     // repo's own catalog — it counts as default, not as a user override.
     expect(
-      isDefaultMarketplaceCatalog(undefined, {
+      isDefaultMarketplaceCatalog(undefined, undefined, {
         KIMI_CODE_PLUGIN_MARKETPLACE_URL: 'http://127.0.0.1:60056/marketplace.json',
         KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER: '1',
       }),
     ).toBe(true);
     expect(
-      isDefaultMarketplaceCatalog(undefined, {
+      isDefaultMarketplaceCatalog(undefined, undefined, {
         KIMI_CODE_PLUGIN_MARKETPLACE_URL: 'https://example.test/marketplace.json',
       }),
     ).toBe(false);
-    expect(isDefaultMarketplaceCatalog('https://example.test/marketplace.json', {})).toBe(false);
+    expect(
+      isDefaultMarketplaceCatalog(
+        undefined,
+        'https://config.test/marketplace.json',
+        {},
+      ),
+    ).toBe(false);
+    expect(
+      isDefaultMarketplaceCatalog(
+        'https://example.test/marketplace.json',
+        undefined,
+        {},
+      ),
+    ).toBe(false);
   });
 
   it('removePlugin stays quiet for non-capability plugins', async () => {

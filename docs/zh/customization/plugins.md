@@ -60,7 +60,7 @@ Plugins 把可复用的 Kimi Code CLI 能力打包成可安装单元——可以
 
 ### 自定义 marketplace JSON
 
-浏览自定义目录时，把 JSON 路径或 URL 传给 `/plugins marketplace <source>`；或通过 [`KIMI_CODE_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md) 覆盖默认 marketplace。`plugins` 数组中每个条目需要 `id` 和 `source`（本地路径、zip URL 或 GitHub URL）：
+浏览 marketplace 时，把 JSON 路径或 URL 传给 `/plugins marketplace <source>`，设置 [`KIMI_CODE_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md)，或在 `config.toml` 中配置 `[plugins] marketplace_url`。优先级依次为命令 source、环境变量和配置；没有任何 source 时，Kimi Code CLI 不拉取远程目录，但仍显示内置产品能力。`plugins` 数组中每个条目需要 `id` 和 `source`（本地路径、zip URL 或 GitHub URL）：
 
 ```json
 {

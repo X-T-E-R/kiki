@@ -1,8 +1,8 @@
 import type { PluginSummary } from '@moonshot-ai/kimi-code-sdk';
 
-import { kimiCodePluginMarketplaceUrl } from '#/constant/app';
 import {
   computeUpdateStatus,
+  isLocalDevPluginMarketplaceSource,
   loadPluginMarketplace,
   type PluginMarketplace,
 } from '#/utils/plugin-marketplace';
@@ -23,6 +23,7 @@ export interface PluginUpdateNotifierSession {
 
 export interface PluginUpdateNotifierDeps {
   readonly getSession: () => PluginUpdateNotifierSession | undefined;
+  readonly getConfigSource: () => Promise<string | undefined>;
   readonly workDir: string;
   readonly notify: (message: string) => void;
   /** Overridable for tests; defaults to the shared marketplace loader. */
@@ -163,10 +164,10 @@ export class PluginUpdateNotifier {
       const session = this.deps.getSession();
       if (session === undefined) return;
       const marketplace = await this.loadCatalog();
-      // Only the default official catalog can back an "Official Marketplace"
-      // notice — a custom catalog (KIMI_CODE_PLUGIN_MARKETPLACE_URL) may
-      // advertise anything under any id.
-      if (marketplace.source !== kimiCodePluginMarketplaceUrl()) return;
+      // Only this checkout's local development catalog can back an "Official
+      // Marketplace" notice. Explicit env/config catalogs may advertise
+      // anything under any id and must never inherit product identity.
+      if (!isLocalDevPluginMarketplaceSource(marketplace.source)) return;
       const entry = marketplace.plugins.find((plugin) => plugin.id === pluginId);
       if (entry === undefined) return;
       const installed = (await session.listPlugins()).find((plugin) => plugin.id === pluginId);
@@ -200,9 +201,12 @@ export class PluginUpdateNotifier {
     return this.marketplacePromise;
   }
 
-  private loadMarketplace(): Promise<PluginMarketplace> {
+  private async loadMarketplace(): Promise<PluginMarketplace> {
     const load = this.deps.loadMarketplace;
     if (load !== undefined) return load();
-    return loadPluginMarketplace({ workDir: this.deps.workDir });
+    return loadPluginMarketplace({
+      workDir: this.deps.workDir,
+      configSource: await this.deps.getConfigSource(),
+    });
   }
 }
