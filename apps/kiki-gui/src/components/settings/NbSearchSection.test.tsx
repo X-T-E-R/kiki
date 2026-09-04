@@ -8,6 +8,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { NbSearchCapabilities } from '@moonshot-ai/protocol';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
@@ -26,12 +27,12 @@ vi.mock('../../host', () => ({
   useHost: () => ({ kind: 'browser' }),
 }));
 
-const CAPABILITIES = {
+const CAPABILITIES: NbSearchCapabilities = {
   schema_version: '3.0',
   revision: 'config-fixture',
   providers: {
     descriptors: [
-      { provider_id: 'exa', adapter_version: '1', query_operations: [], fetch_operations: [], activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
+      { provider_id: 'exa', adapter_version: '1', query_operations: [], fetch_operations: [], activation: { credential: 'required', endpoint: 'optional' }, option_keys: ['user_location'] },
     ],
     instances: [
       {
@@ -57,7 +58,7 @@ const CAPABILITIES = {
   search: {
     lanes: [
       { id: 'exa.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync'], availability: 'unavailable', issues: [{ code: 'LANE_NOT_CONFIGURED' }], latency: 'fast', cost: 'cheap' },
-      { id: 'github.repositories', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
+      { id: 'github.repositories', output: { channel: 'typed', schema_id: 'github.repositories@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
     ],
     presets: [],
     limits: { max_queries: 64, max_results: 100, max_timeout_ms: 3_600_000, max_inline_bytes: 65_536 },
@@ -97,8 +98,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
-  for (const root of roots.splice(0)) root.unmount();
+afterEach(async () => {
+  await act(async () => {
+    for (const root of roots.splice(0)) root.unmount();
+  });
   for (const container of containers.splice(0)) container.remove();
 });
 
@@ -167,11 +170,15 @@ describe('NbSearchSection status', () => {
     const container = await renderSection();
     const defaults = container.querySelector('#st-card-search-defaults')!;
     expect(defaults.textContent).toContain('exa.search');
+    expect(defaults.textContent).toContain('results · nb-search.results@1');
     expect(defaults.textContent).toContain('github.repositories');
+    expect(defaults.textContent).toContain('typed · github.repositories@1');
     expect(defaults.textContent).toContain('No default (fail closed)');
     const providers = container.querySelector('#st-card-search-providers')!;
     expect(providers.textContent).toContain('exa.default');
     expect(providers.textContent).toContain('credential missing');
+    expect(providers.querySelectorAll('textarea')).toHaveLength(1);
+    expect(providers.textContent).toContain('user_location');
     // The env input holds a variable NAME only; no secret field exists.
     const envInput = providers.querySelector<HTMLInputElement>('input[placeholder="NB_SEARCH_EXA_API_KEY"]')!;
     expect(envInput.value).toBe('');
@@ -179,7 +186,15 @@ describe('NbSearchSection status', () => {
 });
 
 describe('NbSearchSection save', () => {
-  it('patches only nb_search with replace_domains after a lane choice and credential env edit', async () => {
+  it('patches only nb_search and refetches capabilities after a lane choice and credential env edit', async () => {
+    getNbSearchCapabilities
+      .mockReset()
+      .mockResolvedValueOnce(CAPABILITIES)
+      .mockResolvedValueOnce({
+        ...CAPABILITIES,
+        revision: 'config-after-save',
+        search: { ...CAPABILITIES.search, default_lane: 'github.repositories' },
+      });
     const container = await renderSection();
     const defaults = container.querySelector('#st-card-search-defaults')!;
     const laneRadio = [...defaults.querySelectorAll<HTMLInputElement>('input[type="radio"]')]
@@ -211,6 +226,48 @@ describe('NbSearchSection save', () => {
         credential_slots: { 'exa.default': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' } },
       },
       replace_domains: ['nb_search'],
+    });
+    expect(getNbSearchCapabilities).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('#st-card-search-status')!.textContent).toContain('Ready');
+  });
+
+  it('preserves a non-instance credential slot id across read, edit, and save', async () => {
+    getConfig.mockResolvedValueOnce({
+      providers: {},
+      nb_search: {
+        provider_instances: {
+          'exa.default': {
+            provider_id: 'exa',
+            enabled: true,
+            credential_slot_id: 'team-search',
+            options: {},
+          },
+        },
+        credential_slots: {
+          'team-search': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' },
+        },
+      },
+    } as KikiConfigResponse);
+    const container = await renderSection();
+    const envInput = container.querySelector<HTMLInputElement>(
+      '#st-card-search-providers input[placeholder="NB_SEARCH_EXA_API_KEY"]',
+    )!;
+    expect(envInput.value).toBe('TEAM_EXA_API_KEY');
+    await setInputValue(envInput, 'ROTATED_EXA_API_KEY');
+    const saveButton = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Save search & retrieval')!;
+    await click(saveButton);
+    await flush();
+
+    const patch = patchConfig.mock.calls[0]![0] as {
+      nb_search: {
+        provider_instances: Record<string, { credential_slot_id?: string }>;
+        credential_slots: Record<string, { provider_id: string; env: string }>;
+      };
+    };
+    expect(patch.nb_search.provider_instances['exa.default']!.credential_slot_id).toBe('team-search');
+    expect(patch.nb_search.credential_slots).toEqual({
+      'team-search': { provider_id: 'exa', env: 'ROTATED_EXA_API_KEY' },
     });
   });
 

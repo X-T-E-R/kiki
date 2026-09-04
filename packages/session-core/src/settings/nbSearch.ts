@@ -1,106 +1,12 @@
-/**
- * nb-search settings helpers: wire-shape mirrors of the secret-free
- * `/nb-search/capabilities` + `/nb-search/test` payloads, and the draft/patch
- * mapping for the `nb_search` config domain. Pure and framework-free; the GUI
- * section composes these, the backend contract lives in kap-server's
- * rest-nb-search.ts and agent-core-v2's nbSearch configSection.
- *
- * Secret discipline: credential slots carry only an environment-variable
- * NAME. These types have no field that can hold a secret value, and the
- * capabilities payload is secret-free by construction (kap-server test
- * asserts no credential value leaks).
- */
+import type {
+  NbSearchCapabilities,
+  NbSearchConfigPatch,
+  NbSearchTestStatus,
+} from '@moonshot-ai/protocol';
 
 import { LocalizedError } from '../i18n/locale';
 
-// ---- wire mirrors (secret-free) ----
-
-export interface NbSearchCapabilityIssue {
-  readonly code: string;
-  readonly execution?: string;
-}
-
-export interface NbSearchProviderDescriptor {
-  readonly provider_id: string;
-  readonly adapter_version: string;
-  readonly activation: {
-    readonly credential: 'required' | 'none';
-    readonly endpoint: 'required' | 'optional' | 'none';
-  };
-  readonly option_keys: readonly string[];
-}
-
-export interface NbSearchProviderInstance {
-  readonly id: string;
-  readonly provider_id: string;
-  readonly enabled: boolean;
-  readonly availability: 'ready' | 'unavailable';
-  readonly issues: readonly NbSearchCapabilityIssue[];
-  readonly credential: {
-    readonly requirement: 'required' | 'none' | 'unknown';
-    readonly configured: boolean;
-    readonly slot_id?: string;
-  };
-  readonly endpoint: {
-    readonly requirement: 'required' | 'optional' | 'none' | 'unknown';
-    readonly configured: boolean;
-  };
-}
-
-export interface NbSearchLane {
-  readonly id: string;
-  readonly execution_modes: readonly string[];
-  readonly availability: 'ready' | 'unavailable';
-  readonly issues: readonly NbSearchCapabilityIssue[];
-  readonly latency: string;
-  readonly cost: string;
-}
-
-export interface NbSearchFetchPipeline {
-  readonly id: string;
-  readonly execution_modes: readonly string[];
-  readonly availability: 'ready' | 'unavailable';
-  readonly issues: readonly NbSearchCapabilityIssue[];
-  readonly latency: string;
-  readonly cost: string;
-}
-
-export interface NbSearchFetchChain {
-  readonly input_kind: string;
-  readonly representation?: string;
-  readonly pipelines: readonly string[];
-}
-
-export interface NbSearchCapabilities {
-  readonly schema_version: string;
-  readonly revision: string;
-  readonly providers: {
-    readonly descriptors: readonly NbSearchProviderDescriptor[];
-    readonly instances: readonly NbSearchProviderInstance[];
-  };
-  readonly search: {
-    readonly default_lane?: string;
-    readonly lanes: readonly NbSearchLane[];
-    readonly limits: { readonly max_timeout_ms: number };
-  };
-  readonly fetch: {
-    readonly chains: readonly NbSearchFetchChain[];
-    readonly pipelines: readonly NbSearchFetchPipeline[];
-  };
-}
-
-export interface NbSearchReadiness {
-  readonly configured: boolean;
-  readonly available: boolean;
-  readonly selection?: string;
-  readonly issues: readonly string[];
-}
-
-export interface NbSearchTestStatus {
-  readonly revision: string;
-  readonly search: NbSearchReadiness;
-  readonly fetch: NbSearchReadiness;
-}
+export type NbSearchReadiness = NbSearchTestStatus['search'];
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -112,140 +18,18 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function asString(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
-function asBoolean(value: unknown, fallback = false): boolean {
-  return typeof value === 'boolean' ? value : fallback;
+export function nbSearchIssueCodes(issues: readonly { readonly code: string }[]): string[] {
+  return issues.map((issue) => issue.code);
 }
 
-function parseIssue(value: unknown): NbSearchCapabilityIssue {
-  const record = asRecord(value);
-  const execution = record['execution'];
-  return { code: asString(record['code'], 'UNKNOWN'), execution: asString(execution) === '' ? undefined : asString(execution) };
-}
-
-function parseIssues(value: unknown): readonly NbSearchCapabilityIssue[] {
-  return asArray(value).map(parseIssue);
-}
-
-/** Tolerant parse: kap-server already validated the envelope; missing keys degrade to empty lists instead of crashing the panel. */
-export function parseNbSearchCapabilities(value: unknown): NbSearchCapabilities {
-  const root = asRecord(value);
-  const providers = asRecord(root['providers']);
-  const search = asRecord(root['search']);
-  const fetch = asRecord(root['fetch']);
-  const defaultLane = search['default_lane'];
-  return {
-    schema_version: asString(root['schema_version']),
-    revision: asString(root['revision']),
-    providers: {
-      descriptors: asArray(providers['descriptors']).map((entry) => {
-        const record = asRecord(entry);
-        const activation = asRecord(record['activation']);
-        return {
-          provider_id: asString(record['provider_id']),
-          adapter_version: asString(record['adapter_version']),
-          activation: {
-            credential: activation['credential'] === 'none' ? 'none' : 'required',
-            endpoint:
-              activation['endpoint'] === 'required' || activation['endpoint'] === 'optional'
-                ? activation['endpoint']
-                : 'none',
-          },
-          option_keys: asArray(record['option_keys']).map((key) => asString(key)),
-        };
-      }),
-      instances: asArray(providers['instances']).map((entry) => {
-        const record = asRecord(entry);
-        const credential = asRecord(record['credential']);
-        const endpoint = asRecord(record['endpoint']);
-        const slotId = credential['slot_id'];
-        const credentialRequirement = credential['requirement'];
-        const endpointRequirement = endpoint['requirement'];
-        return {
-          id: asString(record['id']),
-          provider_id: asString(record['provider_id']),
-          enabled: asBoolean(record['enabled'], true),
-          availability: record['availability'] === 'ready' ? 'ready' : 'unavailable',
-          issues: parseIssues(record['issues']),
-          credential: {
-            requirement:
-              credentialRequirement === 'required' || credentialRequirement === 'none'
-                ? credentialRequirement
-                : 'unknown',
-            configured: asBoolean(credential['configured']),
-            slot_id: typeof slotId === 'string' ? slotId : undefined,
-          },
-          endpoint: {
-            requirement:
-              endpointRequirement === 'required' || endpointRequirement === 'optional' || endpointRequirement === 'none'
-                ? endpointRequirement
-                : 'unknown',
-            configured: asBoolean(endpoint['configured']),
-          },
-        };
-      }),
-    },
-    search: {
-      default_lane: typeof defaultLane === 'string' ? defaultLane : undefined,
-      lanes: asArray(search['lanes']).map((entry) => {
-        const record = asRecord(entry);
-        return {
-          id: asString(record['id']),
-          execution_modes: asArray(record['execution_modes']).map((mode) => asString(mode)),
-          availability: record['availability'] === 'ready' ? 'ready' : 'unavailable',
-          issues: parseIssues(record['issues']),
-          latency: asString(record['latency']),
-          cost: asString(record['cost']),
-        };
-      }),
-      limits: { max_timeout_ms: Number(asRecord(search['limits'])['max_timeout_ms'] ?? 0) },
-    },
-    fetch: {
-      chains: asArray(fetch['chains']).map((entry) => {
-        const record = asRecord(entry);
-        const representation = record['representation'];
-        return {
-          input_kind: asString(record['input_kind']),
-          representation: typeof representation === 'string' ? representation : undefined,
-          pipelines: asArray(record['pipelines']).map((id) => asString(id)),
-        };
-      }),
-      pipelines: asArray(fetch['pipelines']).map((entry) => {
-        const record = asRecord(entry);
-        return {
-          id: asString(record['id']),
-          execution_modes: asArray(record['execution_modes']).map((mode) => asString(mode)),
-          availability: record['availability'] === 'ready' ? 'ready' : 'unavailable',
-          issues: parseIssues(record['issues']),
-          latency: asString(record['latency']),
-          cost: asString(record['cost']),
-        };
-      }),
-    },
-  };
-}
-
-function parseReadiness(value: unknown): NbSearchReadiness {
-  const record = asRecord(value);
-  const selection = record['selection'];
-  return {
-    configured: asBoolean(record['configured']),
-    available: asBoolean(record['available']),
-    selection: typeof selection === 'string' ? selection : undefined,
-    issues: asArray(record['issues']).map((issue) => asString(issue)),
-  };
-}
-
-export function parseNbSearchTestStatus(value: unknown): NbSearchTestStatus {
-  const root = asRecord(value);
-  return {
-    revision: asString(root['revision']),
-    search: parseReadiness(root['search']),
-    fetch: parseReadiness(root['fetch']),
-  };
+export function formatNbSearchOutput(
+  output: NbSearchCapabilities['search']['lanes'][number]['output'],
+): string {
+  return `${output.channel} · ${output.schema_id}`;
 }
 
 /**
@@ -318,6 +102,7 @@ export interface NbSearchExecutionDraft {
 export interface NbSearchProviderDraft {
   readonly enabled: boolean;
   readonly baseUrl: string;
+  readonly credentialSlotId: string;
   /** Environment-variable NAME for the credential slot; never a secret value. */
   readonly credentialEnv: string;
   readonly optionsJson: string;
@@ -352,13 +137,8 @@ function executionDraftFromConfig(execution: Record<string, unknown>): NbSearchE
   };
 }
 
-/** Slot id a provider instance's credential env name lives under. */
-export function nbSearchCredentialSlotId(instance: NbSearchProviderInstance): string {
-  return instance.credential.slot_id ?? instance.id;
-}
-
 export function nbSearchDraftFromConfig(
-  configValue: unknown,
+  configValue: NbSearchConfigPatch | undefined,
   capabilities: NbSearchCapabilities,
 ): NbSearchDraft {
   const config = asRecord(configValue);
@@ -379,19 +159,25 @@ export function nbSearchDraftFromConfig(
       candidate.input_kind === NB_SEARCH_FETCH_CHAIN_INPUT
       && candidate.representation === NB_SEARCH_FETCH_CHAIN_REPRESENTATION,
   );
+  const optionKeysByProvider = new Map(
+    capabilities.providers.descriptors.map((descriptor) => [descriptor.provider_id, new Set(descriptor.option_keys)]),
+  );
   const providers: Record<string, NbSearchProviderDraft> = {};
   for (const instance of capabilities.providers.instances) {
     const override = asRecord(instances[instance.id]);
-    const slot = asRecord(slots[nbSearchCredentialSlotId(instance)]);
-    const options = override['options'];
+    const configuredSlotId = asString(override['credential_slot_id']);
+    const credentialSlotId = configuredSlotId || instance.credential.slot_id || instance.id;
+    const slot = configuredSlotId === '' ? {} : asRecord(slots[configuredSlotId]);
+    const allowedOptionKeys = optionKeysByProvider.get(instance.provider_id) ?? new Set<string>();
+    const options = Object.fromEntries(
+      Object.entries(asRecord(override['options'])).filter(([key]) => allowedOptionKeys.has(key)),
+    );
     providers[instance.id] = {
       enabled: typeof override['enabled'] === 'boolean' ? override['enabled'] : instance.enabled,
       baseUrl: asString(override['base_url']),
+      credentialSlotId,
       credentialEnv: asString(slot['env']),
-      optionsJson:
-        options !== null && typeof options === 'object' && Object.keys(asRecord(options)).length > 0
-          ? JSON.stringify(options, null, 2)
-          : '',
+      optionsJson: Object.keys(options).length > 0 ? JSON.stringify(options, null, 2) : '',
     };
   }
   return {
@@ -431,12 +217,15 @@ function assignNumber(target: Record<string, unknown>, key: string, raw: string)
  * key removes a stale override.
  */
 export function nbSearchConfigPatch(
-  configValue: unknown,
+  configValue: NbSearchConfigPatch | undefined,
   draft: NbSearchDraft,
   capabilities: NbSearchCapabilities,
-): { readonly nb_search: Record<string, unknown>; readonly replace_domains: readonly ['nb_search'] } {
+): { readonly nb_search: NbSearchConfigPatch; readonly replace_domains: readonly ['nb_search'] } {
   const config = asRecord(configValue);
   const result: Record<string, unknown> = { ...config };
+  const optionKeysByProvider = new Map(
+    capabilities.providers.descriptors.map((descriptor) => [descriptor.provider_id, new Set(descriptor.option_keys)]),
+  );
 
   const instances: Record<string, unknown> = {};
   const slots: Record<string, unknown> = {};
@@ -456,6 +245,10 @@ export function nbSearchConfigPatch(
         throw new LocalizedError({ key: 'st.nbSearch.invalidOptions', params: { id: instance.id } });
       }
       options = parsed as Record<string, unknown>;
+      const allowedOptionKeys = optionKeysByProvider.get(instance.provider_id) ?? new Set<string>();
+      if (Object.keys(options).some((key) => !allowedOptionKeys.has(key))) {
+        throw new LocalizedError({ key: 'st.nbSearch.invalidOptions', params: { id: instance.id } });
+      }
     }
     const inherited =
       providerDraft.enabled === instance.enabled
@@ -463,15 +256,14 @@ export function nbSearchConfigPatch(
       && providerDraft.credentialEnv.trim() === ''
       && optionsText === '';
     if (inherited) continue;
-    const slotId = nbSearchCredentialSlotId(instance);
     const env = providerDraft.credentialEnv.trim();
     if (env !== '') {
-      slots[slotId] = { provider_id: instance.provider_id, env };
+      slots[providerDraft.credentialSlotId] = { provider_id: instance.provider_id, env };
     }
     instances[instance.id] = {
       provider_id: instance.provider_id,
       enabled: providerDraft.enabled,
-      credential_slot_id: env === '' ? undefined : slotId,
+      credential_slot_id: env === '' ? undefined : providerDraft.credentialSlotId,
       base_url: providerDraft.baseUrl.trim() === '' ? undefined : providerDraft.baseUrl.trim(),
       options: options ?? {},
     };
@@ -525,7 +317,7 @@ export function nbSearchConfigPatch(
   if (Object.keys(execution).length > 0) result['execution'] = execution;
   else delete result['execution'];
 
-  return { nb_search: result, replace_domains: ['nb_search'] };
+  return { nb_search: result as NbSearchConfigPatch, replace_domains: ['nb_search'] };
 }
 
 /** Dirty check for the page-level guard: any field away from the loaded baseline. */

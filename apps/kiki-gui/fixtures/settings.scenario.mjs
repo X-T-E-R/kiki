@@ -33,6 +33,7 @@ export default {
     nb_search: {
       credential_slots: {
         'exa.default': { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY' },
+        'team-tavily': { provider_id: 'tavily', env: 'TEAM_TAVILY_API_KEY' },
       },
       provider_instances: {
         'exa.default': {
@@ -41,7 +42,12 @@ export default {
           credential_slot_id: 'exa.default',
           options: {},
         },
-        'tavily.default': { provider_id: 'tavily', enabled: false, options: {} },
+        'tavily.default': {
+          provider_id: 'tavily',
+          enabled: false,
+          credential_slot_id: 'team-tavily',
+          options: {},
+        },
       },
       defaults: { search_lane: 'exa.search' },
       execution: { max_concurrency: 4, search_timeout_ms: 30000 },
@@ -74,7 +80,7 @@ export default {
       ],
       instances: [
         { id: 'exa.default', provider_id: 'exa', enabled: true, availability: 'ready', issues: [], credential: { requirement: 'required', configured: true, slot_id: 'exa.default' }, endpoint: { requirement: 'optional', configured: false } },
-        { id: 'tavily.default', provider_id: 'tavily', enabled: false, availability: 'unavailable', issues: [{ code: 'CREDENTIAL_NOT_CONFIGURED' }, { code: 'PROVIDER_DISABLED' }], credential: { requirement: 'required', configured: false, slot_id: 'tavily.default' }, endpoint: { requirement: 'optional', configured: false } },
+        { id: 'tavily.default', provider_id: 'tavily', enabled: false, availability: 'unavailable', issues: [{ code: 'CREDENTIAL_NOT_CONFIGURED' }, { code: 'PROVIDER_DISABLED' }], credential: { requirement: 'required', configured: false, slot_id: 'team-tavily' }, endpoint: { requirement: 'optional', configured: false } },
         { id: 'searxng.default', provider_id: 'searxng', enabled: true, availability: 'unavailable', issues: [{ code: 'ENDPOINT_NOT_CONFIGURED' }], credential: { requirement: 'none', configured: false }, endpoint: { requirement: 'required', configured: false } },
         { id: 'direct-http.default', provider_id: 'direct-http', enabled: true, availability: 'ready', issues: [], credential: { requirement: 'none', configured: false }, endpoint: { requirement: 'none', configured: false } },
         { id: 'jina-reader.default', provider_id: 'jina-reader', enabled: true, availability: 'ready', issues: [], credential: { requirement: 'none', configured: false, slot_id: 'jina-reader.default' }, endpoint: { requirement: 'optional', configured: false } },
@@ -86,7 +92,7 @@ export default {
         { id: 'exa.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'fast', cost: 'cheap' },
         { id: 'tavily.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: [], availability: 'unavailable', issues: [{ code: 'CREDENTIAL_NOT_CONFIGURED' }, { code: 'PROVIDER_DISABLED' }], latency: 'fast', cost: 'cheap' },
         { id: 'searxng.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: [], availability: 'unavailable', issues: [{ code: 'ENDPOINT_NOT_CONFIGURED' }], latency: 'medium', cost: 'free' },
-        { id: 'github.repositories', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [{ code: 'RATE_LIMIT_UNAUTHENTICATED' }], latency: 'fast', cost: 'free' },
+        { id: 'github.repositories', output: { channel: 'typed', schema_id: 'github.repositories@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [{ code: 'RATE_LIMIT_UNAUTHENTICATED' }], latency: 'fast', cost: 'free' },
       ],
       presets: [],
       limits: { max_queries: 64, max_results: 100, max_timeout_ms: 3_600_000, max_inline_bytes: 65_536 },

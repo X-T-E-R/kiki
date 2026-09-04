@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import {
+  nbSearchCapabilitiesSchema,
+  nbSearchTestStatusSchema,
+  type NbSearchCapabilities,
+  type NbSearchConfigPatch,
+} from '@moonshot-ai/protocol';
 
 import {
+  formatNbSearchOutput,
   nbSearchConfigPatch,
-  nbSearchCredentialSlotId,
   nbSearchDraftDirty,
   nbSearchDraftFromConfig,
+  nbSearchIssueCodes,
   nbSearchReadinessFromCapabilities,
-  parseNbSearchCapabilities,
-  parseNbSearchTestStatus,
-  type NbSearchCapabilities,
 } from './nbSearch';
 
 const CAPABILITIES: NbSearchCapabilities = {
@@ -19,12 +23,20 @@ const CAPABILITIES: NbSearchCapabilities = {
       {
         provider_id: 'exa',
         adapter_version: '1',
+        query_operations: [{
+          operation_id: 'search',
+          output: { channel: 'results', schema_id: 'nb-search.results@1' },
+          built_in_async: true,
+        }],
+        fetch_operations: [],
         activation: { credential: 'required', endpoint: 'optional' },
         option_keys: ['user_location'],
       },
       {
         provider_id: 'direct-http',
         adapter_version: '1',
+        query_operations: [],
+        fetch_operations: [{ operation_id: 'fetch' }],
         activation: { credential: 'none', endpoint: 'none' },
         option_keys: [],
       },
@@ -53,41 +65,99 @@ const CAPABILITIES: NbSearchCapabilities = {
   search: {
     default_lane: undefined,
     lanes: [
-      { id: 'exa.search', execution_modes: ['sync'], availability: 'unavailable', issues: [{ code: 'LANE_NOT_CONFIGURED' }], latency: 'fast', cost: 'cheap' },
-      { id: 'github.repositories', execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
+      {
+        id: 'exa.search',
+        output: { channel: 'results', schema_id: 'nb-search.results@1' },
+        execution_modes: ['sync'],
+        availability: 'unavailable',
+        issues: [{ code: 'LANE_NOT_CONFIGURED' }],
+        latency: 'fast',
+        cost: 'cheap',
+      },
+      {
+        id: 'github.repositories',
+        output: { channel: 'typed', schema_id: 'github.repositories@1' },
+        execution_modes: ['sync', 'async'],
+        availability: 'ready',
+        issues: [],
+        latency: 'fast',
+        cost: 'free',
+      },
     ],
-    limits: { max_timeout_ms: 3_600_000 },
+    presets: [],
+    limits: { max_queries: 64, max_results: 100, max_timeout_ms: 3_600_000, max_inline_bytes: 65_536 },
   },
   fetch: {
+    default_representation: 'markdown',
+    inputs: [{ kind: 'url', enabled: true }],
     chains: [
       { input_kind: 'url', representation: 'markdown', pipelines: ['direct.fetch', 'jina.reader'] },
       { input_kind: 'file', representation: 'markdown', pipelines: ['direct.local'] },
     ],
     pipelines: [
-      { id: 'direct.fetch', execution_modes: ['sync'], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
-      { id: 'jina.reader', execution_modes: ['sync', 'async'], availability: 'unavailable', issues: [{ code: 'LANE_NOT_CONFIGURED' }], latency: 'medium', cost: 'free' },
-      { id: 'direct.local', execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
+      {
+        id: 'direct.fetch',
+        input_kinds: ['url'],
+        media_types: ['text/html'],
+        representations: ['markdown'],
+        execution_modes: ['sync'],
+        egress: 'url',
+        stages: [{ id: 'direct-http', role: 'acquire' }],
+        availability: 'ready',
+        issues: [],
+        latency: 'fast',
+        cost: 'free',
+      },
+      {
+        id: 'jina.reader',
+        input_kinds: ['url'],
+        media_types: ['text/html'],
+        representations: ['markdown'],
+        execution_modes: ['sync', 'async'],
+        egress: 'url',
+        stages: [{ id: 'jina-reader', role: 'reader' }],
+        availability: 'unavailable',
+        issues: [{ code: 'LANE_NOT_CONFIGURED' }],
+        latency: 'medium',
+        cost: 'free',
+      },
+      {
+        id: 'direct.local',
+        input_kinds: ['file'],
+        media_types: ['text/plain'],
+        representations: ['markdown'],
+        execution_modes: ['sync', 'async'],
+        egress: 'none',
+        stages: [{ id: 'direct-file', role: 'acquire' }],
+        availability: 'ready',
+        issues: [],
+        latency: 'fast',
+        cost: 'free',
+      },
     ],
+    limits: {
+      max_source_bytes: 2_097_152,
+      max_response_bytes: 2_097_152,
+      max_content_chars: 200_000,
+      max_redirects: 5,
+      max_timeout_ms: 60_000,
+      max_inline_bytes: 65_536,
+    },
   },
+  jobs: { result_ttl_seconds: 259_200, cancel_supported: true },
 };
 
-describe('parseNbSearchCapabilities', () => {
-  it('parses the wire payload and tolerates missing subtrees', () => {
-    const parsed = parseNbSearchCapabilities(CAPABILITIES);
+describe('shared nb-search contracts', () => {
+  it('keeps the capabilities fixture valid and formats shared issue/output shapes', () => {
+    const parsed = nbSearchCapabilitiesSchema.parse(CAPABILITIES);
     expect(parsed.providers.instances.map((instance) => instance.id)).toEqual(['exa.default', 'direct-http.default']);
-    expect(parsed.search.lanes[0]?.issues[0]?.code).toBe('LANE_NOT_CONFIGURED');
-    expect(parsed.fetch.chains[0]?.pipelines).toEqual(['direct.fetch', 'jina.reader']);
-
-    const empty = parseNbSearchCapabilities({});
-    expect(empty.providers.instances).toEqual([]);
-    expect(empty.search.lanes).toEqual([]);
-    expect(empty.fetch.chains).toEqual([]);
+    expect(nbSearchIssueCodes(parsed.search.lanes[0]!.issues)).toEqual(['LANE_NOT_CONFIGURED']);
+    expect(formatNbSearchOutput(parsed.search.lanes[0]!.output)).toBe('results · nb-search.results@1');
+    expect(formatNbSearchOutput(parsed.search.lanes[1]!.output)).toBe('typed · github.repositories@1');
   });
-});
 
-describe('parseNbSearchTestStatus', () => {
-  it('parses readiness entries with optional selection', () => {
-    const parsed = parseNbSearchTestStatus({
+  it('uses the protocol readiness schema with optional selection', () => {
+    const parsed = nbSearchTestStatusSchema.parse({
       revision: 'r1',
       search: { configured: false, available: false, issues: ['DEFAULT_NOT_CONFIGURED'] },
       fetch: { configured: true, available: true, selection: 'direct.fetch -> jina.reader', issues: [] },
@@ -134,31 +204,60 @@ describe('nbSearchDraftFromConfig', () => {
     expect(draft.defaultSearchLane).toBe('');
     expect(draft.fetchChainInherited).toBe(true);
     expect(draft.fetchChain).toEqual(['direct.fetch', 'jina.reader']);
-    expect(draft.providers['exa.default']).toEqual({ enabled: true, baseUrl: '', credentialEnv: '', optionsJson: '' });
+    expect(draft.providers['exa.default']).toEqual({
+      enabled: true,
+      baseUrl: '',
+      credentialSlotId: 'exa.default',
+      credentialEnv: '',
+      optionsJson: '',
+    });
     expect(draft.execution.maxProviderCalls).toBe('');
   });
 
   it('round-trips saved overrides into the draft', () => {
-    const draft = nbSearchDraftFromConfig({
+    const config: NbSearchConfigPatch = {
       defaults: {
         search_lane: 'exa.search',
         fetch_chain: [{ input_kind: 'url', representation: 'markdown', pipelines: ['jina.reader'] }],
       },
-      provider_instances: { 'exa.default': { provider_id: 'exa', enabled: false, base_url: 'https://exa.example.com', options: { user_location: 'US' } } },
-      credential_slots: { 'exa.default': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' } },
+      provider_instances: {
+        'exa.default': {
+          provider_id: 'exa',
+          enabled: false,
+          credential_slot_id: 'team-search',
+          base_url: 'https://exa.example.com',
+          options: { user_location: 'US', retired_option: true },
+        },
+      },
+      credential_slots: { 'team-search': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' } },
       execution: { max_concurrency: 4, fetch: { max_redirects: 3 } },
-    }, CAPABILITIES);
+    };
+    const draft = nbSearchDraftFromConfig(config, CAPABILITIES);
     expect(draft.defaultSearchLane).toBe('exa.search');
     expect(draft.fetchChainInherited).toBe(false);
     expect(draft.fetchChain).toEqual(['jina.reader']);
     expect(draft.providers['exa.default']).toEqual({
       enabled: false,
       baseUrl: 'https://exa.example.com',
+      credentialSlotId: 'team-search',
       credentialEnv: 'TEAM_EXA_API_KEY',
       optionsJson: JSON.stringify({ user_location: 'US' }, null, 2),
     });
     expect(draft.execution.maxConcurrency).toBe('4');
     expect(draft.execution.fetchMaxRedirects).toBe('3');
+
+    const edited = {
+      ...draft,
+      providers: {
+        ...draft.providers,
+        'exa.default': { ...draft.providers['exa.default']!, credentialEnv: 'ROTATED_EXA_API_KEY' },
+      },
+    };
+    const patch = nbSearchConfigPatch(config, edited, CAPABILITIES);
+    expect(patch.nb_search.provider_instances?.['exa.default']?.credential_slot_id).toBe('team-search');
+    expect(patch.nb_search.credential_slots).toEqual({
+      'team-search': { provider_id: 'exa', env: 'ROTATED_EXA_API_KEY' },
+    });
   });
 });
 
@@ -199,14 +298,14 @@ describe('nbSearchConfigPatch', () => {
   });
 
   it('clears a saved default lane when the draft selects fail-closed', () => {
-    const config = { defaults: { search_lane: 'exa.search' } };
+    const config: NbSearchConfigPatch = { defaults: { search_lane: 'exa.search' } };
     const draft = nbSearchDraftFromConfig(config, CAPABILITIES);
     const patch = nbSearchConfigPatch(config, { ...draft, defaultSearchLane: '' }, CAPABILITIES);
     expect(patch.nb_search['defaults']).toBeUndefined();
   });
 
   it('replaces only the url→markdown chain and keeps sibling chains', () => {
-    const config = {
+    const config: NbSearchConfigPatch = {
       defaults: {
         fetch_chain: [
           { input_kind: 'url', representation: 'markdown', pipelines: ['direct.fetch'] },
@@ -225,7 +324,13 @@ describe('nbSearchConfigPatch', () => {
   });
 
   it('writes numeric execution fields and removes emptied ones', () => {
-    const config = { execution: { max_concurrency: 4, retry_count: 1, fetch: { max_redirects: 5, quality: { min_content_chars: 100, blocked_markers: [] } } } };
+    const config: NbSearchConfigPatch = {
+      execution: {
+        max_concurrency: 4,
+        retry_count: 1,
+        fetch: { max_redirects: 5, quality: { min_content_chars: 100, blocked_markers: [] } },
+      },
+    };
     const base = nbSearchDraftFromConfig(config, CAPABILITIES);
     const draft = {
       ...base,
@@ -239,7 +344,7 @@ describe('nbSearchConfigPatch', () => {
     });
   });
 
-  it('rejects malformed numbers, options JSON, and empty custom chains', () => {
+  it('rejects malformed numbers, undeclared options, and empty custom chains', () => {
     const base = nbSearchDraftFromConfig(undefined, CAPABILITIES);
     expect(() => nbSearchConfigPatch(undefined, {
       ...base,
@@ -251,18 +356,20 @@ describe('nbSearchConfigPatch', () => {
     }, CAPABILITIES)).toThrowError(/must be a JSON object/);
     expect(() => nbSearchConfigPatch(undefined, {
       ...base,
+      providers: {
+        ...base.providers,
+        'exa.default': { ...base.providers['exa.default']!, optionsJson: '{"undeclared":true}' },
+      },
+    }, CAPABILITIES)).toThrowError(/must be a JSON object/);
+    expect(() => nbSearchConfigPatch(undefined, {
+      ...base,
       fetchChainInherited: false,
       fetchChain: [],
     }, CAPABILITIES)).toThrowError(/at least one pipeline/);
   });
 });
 
-describe('nbSearchCredentialSlotId / nbSearchDraftDirty', () => {
-  it('falls back to the instance id when the slot id is absent', () => {
-    expect(nbSearchCredentialSlotId(CAPABILITIES.providers.instances[0]!)).toBe('exa.default');
-    expect(nbSearchCredentialSlotId(CAPABILITIES.providers.instances[1]!)).toBe('direct-http.default');
-  });
-
+describe('nbSearchDraftDirty', () => {
   it('compares drafts structurally', () => {
     const base = nbSearchDraftFromConfig(undefined, CAPABILITIES);
     expect(nbSearchDraftDirty(base, base)).toBe(false);

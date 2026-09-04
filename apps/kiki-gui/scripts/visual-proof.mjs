@@ -1776,11 +1776,20 @@ async function scenarioSettingsNbSearch() {
   await shot('settings-nbsearch');
 
   // Default lane is a radio over existing lanes only (no new lane creation).
+  const defaultsText = await page.locator('#st-card-search-defaults').textContent();
+  if (!defaultsText?.includes('results · nb-search.results@1') || !defaultsText.includes('typed · github.repositories@1')) {
+    throw new Error(`lane outputs must show result/typed channel schemas, saw "${defaultsText}"`);
+  }
   await page.locator('#st-card-search-defaults label', { hasText: 'github.repositories' })
     .locator('input[type="radio"]').click();
   // Credential slot editing is the env-var name; the secret never appears.
   const tavilyCard = page.locator('#st-card-search-providers details', { hasText: 'tavily.default' });
-  await tavilyCard.locator('input[placeholder="NB_SEARCH_EXA_API_KEY"]').fill('NB_SEARCH_TAVILY_API_KEY');
+  const tavilyEnv = tavilyCard.locator('input[placeholder="NB_SEARCH_EXA_API_KEY"]');
+  const loadedEnv = await tavilyEnv.inputValue();
+  if (loadedEnv !== 'TEAM_TAVILY_API_KEY') {
+    throw new Error(`credential env name did not load through the custom slot id, saw "${loadedEnv}"`);
+  }
+  await tavilyEnv.fill('NB_SEARCH_TAVILY_API_KEY');
   await tavilyCard.scrollIntoViewIfNeeded();
   await shot('settings-nbsearch-provider-edit');
   await page.locator('button', { hasText: S.nbSearchSave }).click();

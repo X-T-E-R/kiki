@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { NbSearchCapabilities, NbSearchTestStatus } from '@moonshot-ai/protocol';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
+  formatNbSearchOutput,
   nbSearchConfigPatch,
   nbSearchDraftDirty,
   nbSearchDraftFromConfig,
+  nbSearchIssueCodes,
   nbSearchReadinessFromCapabilities,
-  type NbSearchCapabilities,
   type NbSearchDraft,
   type NbSearchProviderDraft,
-  type NbSearchReadiness,
-  type NbSearchTestStatus,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -29,6 +29,7 @@ import { SectionCard } from './SectionCard';
  * fields this page does not render survive untouched.
  */
 
+type NbSearchReadiness = NbSearchTestStatus['search'];
 type ReadinessState = 'ready' | 'degraded' | 'unconfigured' | 'unavailable';
 
 function webSearchState(readiness: NbSearchReadiness): ReadinessState {
@@ -139,7 +140,7 @@ function ProviderInstanceCard({ instance, descriptor, providerDraft, onChange }:
   const [open, setOpen] = useState(attention);
   const needsCredential = instance.credential.requirement !== 'none';
   const needsEndpoint = instance.endpoint.requirement === 'required' || instance.endpoint.requirement === 'optional';
-  const showOptions = (descriptor?.option_keys.length ?? 0) > 0 || providerDraft.optionsJson !== '';
+  const showOptions = (descriptor?.option_keys.length ?? 0) > 0;
   return (
     <details
       open={open}
@@ -169,7 +170,7 @@ function ProviderInstanceCard({ instance, descriptor, providerDraft, onChange }:
           checked={providerDraft.enabled}
           onChange={(enabled) => { onChange({ enabled }); }}
         />
-        <IssueList issues={instance.issues.map((issue) => issue.code)} />
+        <IssueList issues={nbSearchIssueCodes(instance.issues)} />
         {needsCredential ? (
           <label className="block text-[11px] font-medium text-ink-soft">
             {t('st.nbSearch.credentialEnvLabel')}
@@ -202,9 +203,7 @@ function ProviderInstanceCard({ instance, descriptor, providerDraft, onChange }:
               placeholder="{}"
               onChange={(event) => { onChange({ optionsJson: event.target.value }); }}
             />
-            {(descriptor?.option_keys.length ?? 0) > 0 ? (
-              <Hint>{t('st.nbSearch.optionsHint', { keys: descriptor!.option_keys.join(', ') })}</Hint>
-            ) : null}
+            <Hint>{t('st.nbSearch.optionsHint', { keys: descriptor?.option_keys.join(', ') ?? '' })}</Hint>
           </label>
         ) : null}
       </div>
@@ -362,9 +361,10 @@ export function NbSearchSection() {
                   <span className="flex flex-wrap items-center gap-2">
                     <span className="font-mono text-[12px] font-medium text-ink">{lane.id}</span>
                     <AvailabilityBadge availability={lane.availability} />
+                    <span className="font-mono text-[10px] text-ink-faint">{formatNbSearchOutput(lane.output)}</span>
                     <span className="font-mono text-[10px] text-ink-faint">{lane.latency} · {lane.cost}</span>
                   </span>
-                  <IssueList issues={lane.issues.map((issue) => issue.code)} />
+                  <IssueList issues={nbSearchIssueCodes(lane.issues)} />
                 </span>
               </label>
             ))}

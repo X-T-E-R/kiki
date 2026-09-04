@@ -7,6 +7,7 @@
  * can widen the accepted-code set per request.
  */
 
+import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@moonshot-ai/protocol';
 import type {
   ActivateSkillRequest,
   ActivateSkillResult,
@@ -43,6 +44,8 @@ import type {
   NamedAgentRoute as ProtocolNamedAgentRoute,
   NamedAgentSpawnConstraints as ProtocolNamedAgentSpawnConstraints,
   NamedAgentSubagentLease as ProtocolNamedAgentSubagentLease,
+  NbSearchCapabilities,
+  NbSearchTestStatus,
   OAuthFlowSnapshot,
   OAuthFlowStart,
   OAuthLoginQuery,
@@ -81,12 +84,6 @@ import type {
 } from '@moonshot-ai/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
-import {
-  parseNbSearchCapabilities,
-  parseNbSearchTestStatus,
-  type NbSearchCapabilities,
-  type NbSearchTestStatus,
-} from '@kiki/session-core/settings';
 
 import type { UsageResponseWire } from './usageV2';
 
@@ -1189,12 +1186,12 @@ export class KikiClient {
 
   /** `GET /nb-search/capabilities` — secret-free provider/lane/pipeline descriptors. */
   async getNbSearchCapabilities(): Promise<NbSearchCapabilities> {
-    return parseNbSearchCapabilities(await this.request<unknown>('GET', '/nb-search/capabilities'));
+    return nbSearchCapabilitiesSchema.parse(await this.request<unknown>('GET', '/nb-search/capabilities'));
   }
 
   /** `GET /nb-search/test` — on-demand readiness check; callers pass a signal so the panel can cancel. */
   async testNbSearch(signal?: AbortSignal): Promise<NbSearchTestStatus> {
-    return parseNbSearchTestStatus(await this.request<unknown>('GET', '/nb-search/test', { signal }));
+    return nbSearchTestStatusSchema.parse(await this.request<unknown>('GET', '/nb-search/test', { signal }));
   }
 
   listNamedAgentProfiles(): Promise<ListNamedAgentProfilesResponse> {
