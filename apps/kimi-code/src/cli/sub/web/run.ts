@@ -16,15 +16,14 @@ import chalk from 'chalk';
 import type { Command } from 'commander';
 
 import { WEB_USER_AGENT_SUFFIX } from '#/constant/app';
-import { getNativeWebAssetsDir } from '#/native/web-assets';
+import {
+  getNativeWebAssetsDir,
+  resolveServerWebAssetsDir,
+} from '#/native/web-assets';
 import { darkColors } from '#/tui/theme/colors';
 import { openUrl as defaultOpenUrl } from '#/utils/open-url';
 import { getDataDir } from '#/utils/paths';
-import {
-  createKimiCodeHostIdentity,
-  getHostPackageRoot,
-  getVersion,
-} from '../../version';
+import { createKimiCodeHostIdentity, getVersion } from '../../version';
 import {
   accessUrlLines,
   buildOpenableUrl,
@@ -44,8 +43,6 @@ import {
   type ParsedServerOptions,
   type ServerCliOptions,
 } from './shared';
-
-const WEB_ASSETS_DIR = 'dist/web';
 
 /**
  * Minimal surface `runServerInProcess` needs from the server. kap-server's
@@ -444,11 +441,7 @@ export function serverWebAssetsDir(
   return dir;
 }
 
-export function resolveServerWebAssetsDir(
-  nativeWebAssetsDir: string | null = getNativeWebAssetsDir(),
-): string {
-  return nativeWebAssetsDir ?? join(getHostPackageRoot(), WEB_ASSETS_DIR);
-}
+export { resolveServerWebAssetsDir };
 
 interface FormatReadyBannerOptions {
   /** Persistent bearer token to print; omitted when unresolvable. */
