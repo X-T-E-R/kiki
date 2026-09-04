@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { StrictMode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { browserHost, HostProvider } from '../host';
 import { I18nProvider } from '../i18n';
 import { ConnectionProvider, nextGuiLeaseClientId, useConnection } from './connection';
 
@@ -16,7 +17,9 @@ const mocks = vi.hoisted(() => ({
   klients: [] as Array<{
     endpoint: string;
     token?: string;
+    closed: boolean;
     close: ReturnType<typeof vi.fn>;
+    global: { mcp: { list: ReturnType<typeof vi.fn> } };
   }>,
   sockets: [] as Array<{
     baseUrl: string;
@@ -45,7 +48,19 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 vi.mock('@moonshot-ai/klient/http', () => ({
   createKlient: (options: { endpoint: string; token?: string }) => {
-    const klient = { ...options, close: vi.fn(async () => undefined) };
+    const klient: (typeof mocks.klients)[number] = {
+      ...options,
+      closed: false,
+      close: vi.fn(),
+      global: { mcp: { list: vi.fn() } },
+    };
+    klient.close.mockImplementation(async () => {
+      klient.closed = true;
+    });
+    klient.global.mcp.list.mockImplementation(async () => {
+      if (klient.closed) throw new Error('klient closed');
+      return [];
+    });
     mocks.klients.push(klient);
     return klient;
   },
@@ -103,6 +118,32 @@ function ConnectedHarness() {
   return <span data-connected-url>{connection.config.url}</span>;
 }
 
+function StrictLifecycleHarness() {
+  const connection = useConnection();
+  return (
+    <>
+      <span data-connected-url>{connection.config.url}</span>
+      <button type="button" data-list-mcp onClick={() => void connection.klient.global.mcp.list()} />
+      <button
+        type="button"
+        data-equivalent-pair
+        onClick={() => connection.applyConnection({
+          url: 'http://127.0.0.1:41001////',
+          token: 'strict-token',
+        })}
+      />
+      <button
+        type="button"
+        data-changed-pair
+        onClick={() => connection.applyConnection({
+          url: 'http://127.0.0.1:42002/',
+          token: ' next-token ',
+        })}
+      />
+    </>
+  );
+}
+
 const mounted: Array<{ container: HTMLDivElement; root: Root }> = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -122,6 +163,7 @@ beforeEach(() => {
   mocks.klients.length = 0;
   mocks.sockets.length = 0;
   mocks.stageListener = undefined;
+  localStorage.clear();
 });
 
 afterEach(async () => {
@@ -145,7 +187,7 @@ async function flush(): Promise<void> {
   });
 }
 
-async function mountProvider(): Promise<HTMLDivElement> {
+async function mountProvider(strict = false): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -153,16 +195,19 @@ async function mountProvider(): Promise<HTMLDivElement> {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  const connection = (
+    <ConnectionProvider>
+      {strict ? <StrictLifecycleHarness /> : <ConnectedHarness />}
+    </ConnectionProvider>
+  );
+  const hosted = strict ? <HostProvider host={browserHost}>{connection}</HostProvider> : connection;
+  const tree = (
+    <QueryClientProvider client={queryClient}>
+      <I18nProvider>{hosted}</I18nProvider>
+    </QueryClientProvider>
+  );
   await act(async () => {
-    root.render(
-      <QueryClientProvider client={queryClient}>
-        <I18nProvider>
-          <ConnectionProvider>
-            <ConnectedHarness />
-          </ConnectionProvider>
-        </I18nProvider>
-      </QueryClientProvider>,
-    );
+    root.render(strict ? <StrictMode>{tree}</StrictMode> : tree);
   });
   await flush();
   return container;
@@ -174,6 +219,64 @@ async function emitStage(payload: unknown): Promise<void> {
     await Promise.resolve();
   });
 }
+
+describe('ConnectionProvider Klient ownership', () => {
+  it('rebuilds the StrictMode lease and owns normalized pair changes through final unmount', async () => {
+    localStorage.setItem('kiki.connection', JSON.stringify({
+      url: 'http://127.0.0.1:41001/',
+      token: ' strict-token ',
+    }));
+    mocks.meta.mockResolvedValue({ serverVersion: 'test' });
+
+    const container = await mountProvider(true);
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe('http://127.0.0.1:41001/');
+    expect(mocks.klients).toHaveLength(2);
+    expect(mocks.klients[0]).toMatchObject({
+      endpoint: 'http://127.0.0.1:41001',
+      token: 'strict-token',
+      closed: true,
+    });
+    expect(mocks.klients[1]).toMatchObject({
+      endpoint: 'http://127.0.0.1:41001',
+      token: 'strict-token',
+      closed: false,
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-list-mcp]')!.click();
+      await Promise.resolve();
+    });
+    expect(mocks.klients[0]!.global.mcp.list).not.toHaveBeenCalled();
+    expect(mocks.klients[1]!.global.mcp.list).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-equivalent-pair]')!.click();
+    });
+    await flush();
+    expect(mocks.klients).toHaveLength(2);
+    expect(mocks.klients.filter((klient) => !klient.closed)).toEqual([mocks.klients[1]]);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-changed-pair]')!.click();
+    });
+    await flush();
+    expect(mocks.klients).toHaveLength(3);
+    expect(mocks.klients[1]!.closed).toBe(true);
+    expect(mocks.klients[2]).toMatchObject({
+      endpoint: 'http://127.0.0.1:42002',
+      token: 'next-token',
+      closed: false,
+    });
+
+    const mountedEntry = mounted.pop()!;
+    await act(async () => {
+      mountedEntry.root.unmount();
+    });
+    mountedEntry.container.remove();
+    expect(mocks.klients[2]!.closed).toBe(true);
+    expect(mocks.klients.filter((klient) => !klient.closed)).toHaveLength(0);
+  });
+});
 
 describe('ConnectionProvider desktop backend recovery', () => {
   it('invalidates stale meta, closes the old socket, and connects only after the new endpoint validates', async () => {

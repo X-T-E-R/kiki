@@ -327,17 +327,16 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     () => endpoint === null || token === null ? null : new KikiClient({ baseUrl: endpoint, token }),
     [endpoint, token],
   );
-  const klient = useMemo(
-    () => endpoint === null || token === null ? null : createKlient({ endpoint, token }),
-    [endpoint, token],
-  );
+  const [klient, setKlient] = useState<Klient | null>(null);
 
   useEffect(() => {
-    if (klient === null) return;
+    if (endpoint === null || token === null) return;
+    const instance = createKlient({ endpoint, token });
+    setKlient(instance);
     return () => {
-      void klient.close();
+      void instance.close();
     };
-  }, [klient]);
+  }, [endpoint, token]);
 
   // Validate the config against /meta before entering the app.
   useEffect(() => {
