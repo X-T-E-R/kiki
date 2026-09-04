@@ -1,9 +1,16 @@
+import { createHash } from 'node:crypto';
+
 import {
   createDecorator,
   type ServiceIdentifier,
   type ServicesAccessor,
 } from '#/_base/di/instantiation';
 import type { IDisposable } from '#/_base/di/lifecycle';
+import type {
+  ExecutorBinding,
+  ExecutorValidationResult,
+} from '@kiki/agent-profiles/ports';
+
 import type { Hooks } from '#/hooks';
 import type { ProfileBindingSnapshot } from '#/agent/profile/profile';
 import type {
@@ -115,10 +122,28 @@ export interface AgentExecutorContext {
   readonly binding: ProfileBindingSnapshot;
 }
 
+export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot): string {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      executorId: binding.executorId,
+      executorProtocol: binding.executorProtocol,
+      executorOptions: binding.executorOptions,
+      executorDescriptorRevision: binding.executorDescriptorRevision,
+      profileDefinitionId: binding.profileDefinitionId,
+      routeId: binding.routeId,
+      modelAlias: binding.modelAlias,
+      thinkingLevel: binding.thinkingLevel,
+      systemPrompt: binding.systemPrompt,
+      renderGeneration: binding.renderGeneration,
+    }))
+    .digest('hex');
+}
+
 export interface AgentExecutorProvider {
   readonly id: string;
   readonly protocol: AgentExecutorProtocol;
   validateOptions(value: unknown): AgentExecutorOptions;
+  validateBinding(binding: ExecutorBinding): ExecutorValidationResult;
   create(context: AgentExecutorContext): AgentExecutorSession;
 }
 
@@ -133,6 +158,11 @@ export interface IAgentExecutorRegistry {
 
   get(id: string): AgentExecutorDescriptor | undefined;
   resolve(id?: string, options?: unknown): ResolvedAgentExecutor;
+  validateBinding(
+    id: string,
+    options: unknown,
+    binding: ExecutorBinding,
+  ): ExecutorValidationResult;
   resolveExecutable(id?: string, options?: unknown): Promise<ResolvedAgentExecutor>;
   discover(id: string): Promise<readonly AgentExecutorSourceProbe[]>;
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined;

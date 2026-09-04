@@ -217,7 +217,10 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
   let lifecycle: AgentLifecycleStub;
   let created = 0;
   const stateByAgentId = new Map<string, AgentStateService>();
-  const profileByAgentId = new Map<string, string>();
+  const profileByAgentId = new Map<
+    string,
+    { readonly profileName: string; readonly modelAlias?: string; readonly thinkingLevel: string }
+  >();
   const handles = new Map<string, IAgentScopeHandle>();
   const servicesByAgentId = new Map(options.handleServices);
   const publishedEvents: Event2[] = [];
@@ -245,10 +248,10 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
         if (serviceId === IAgentProfileService) {
           return {
             _serviceBrand: undefined,
-            data: () => ({ profileName: profileByAgentId.get(agentId) }),
+            data: () => profileByAgentId.get(agentId),
             update: () => {},
             republishStatus: () => {},
-            getEffectiveThinkingLevel: () => 'off',
+            getEffectiveThinkingLevel: () => profileByAgentId.get(agentId)?.thinkingLevel ?? 'off',
             isToolActive: () => false,
           } as never;
         }
@@ -362,7 +365,11 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
         `agent-child-${String(created + 1)}`;
       created += 1;
       const profileName = input.binding?.profile ?? 'coder';
-      profileByAgentId.set(agentId, profileName);
+      profileByAgentId.set(agentId, {
+        profileName,
+        modelAlias: input.binding?.model,
+        thinkingLevel: input.binding?.thinking ?? 'off',
+      });
       const createdHandle = handle(agentId);
       handles.set(agentId, createdHandle);
       return createdHandle;
@@ -388,7 +395,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
       handles.delete(agentId);
     }),
     addHandle: (agentId, profileName, services) => {
-      profileByAgentId.set(agentId, profileName);
+      profileByAgentId.set(agentId, { profileName, thinkingLevel: 'off' });
       if (services !== undefined) servicesByAgentId.set(agentId, services);
       handles.set(agentId, handle(agentId));
     },
@@ -3346,6 +3353,7 @@ describe('Agent tools', () => {
       expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
         [emit] agent.activity.updated       { "time": "<time>", "lifecycle": "ready", "lastTurn": { "turnId": 0, "reason": "completed", "at": "<time>" }, "background": [] }
         [wire] tools.unregister_user_tool   { "name": "Lookup", "time": "<time>" }
+        [wire] prompt.completed             { "promptId": "<msg-1>", "finishedAt": "<time>", "reason": "completed", "time": "<time>" }
         [emit] prompt.completed             { "time": "<time>", "promptId": "<msg-1>", "finishedAt": "<time>", "reason": "completed" }
         [wire] prompt.accepted              { "promptId": "<msg-2>", "time": "<time>" }
         [emit] prompt.submitted             { "time": "<time>", "agentId": "main", "promptId": "<msg-2>", "userMessageId": "<msg-2>", "status": "running", "content": [ { "type": "text", "text": "Can you still use Lookup?" } ], "createdAt": "<time>" }

@@ -11,6 +11,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import {
   type AgentExecutionStatus,
   type AgentExecutorAgentContext,
+  agentExecutorBindingFingerprint,
   IAgentExecutorRegistry,
   type AgentExecutorSession,
 } from '#/app/agentExecutor/agentExecutor';
@@ -45,7 +46,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
   private readonly agent: AgentExecutorAgentContext;
   private readonly runs = new Set<ActiveRun>();
   private session: AgentExecutorSession | undefined;
-  private sessionExecutorId: string | undefined;
+  private sessionBindingKey: string | undefined;
   private broken: unknown;
   private cancelling = false;
   private shuttingDown = false;
@@ -159,22 +160,29 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
   private async resolveSession(): Promise<AgentExecutorSession> {
     const binding = this.profile.data();
     const executorId = binding.executorId ?? 'native';
-    if (this.session !== undefined) {
-      if (this.sessionExecutorId !== executorId) {
+    const bindingKey =
+      executorId === 'native' ? 'native' : agentExecutorBindingFingerprint(binding);
+    if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {
+      const status = this.session.status();
+      if (status.state !== 'idle') {
         throw new Error2(
           ErrorCodes.CONFIG_INVALID,
-          `Agent executor binding changed from "${this.sessionExecutorId}" to "${executorId}" after execution started`,
+          `Agent executor binding cannot change while the executor session is ${status.state}`,
         );
       }
-      return this.session;
+      await this.session.settled();
+      await this.session.shutdown(new Error('Agent executor binding changed'));
+      this.session = undefined;
+      this.sessionBindingKey = undefined;
     }
+    if (this.session !== undefined) return this.session;
     try {
       if (executorId === 'native') {
         this.session = new NativeAgentExecutorSession(this.agent);
       } else {
         this.session = await this.createExternalSession(binding, executorId);
       }
-      this.sessionExecutorId = executorId;
+      this.sessionBindingKey = bindingKey;
       return this.session;
     } catch (error) {
       this.broken = error;

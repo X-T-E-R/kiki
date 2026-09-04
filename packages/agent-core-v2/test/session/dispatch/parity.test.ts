@@ -1,3 +1,7 @@
+import type {
+  ExecutorBinding,
+  ExecutorValidationResult,
+} from '@kiki/agent-profiles/ports';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CollectionView } from '#/_base/di/collection';
@@ -449,6 +453,9 @@ interface TaskRecord {
 interface LaneOptions {
   readonly profile?: AgentProfile;
   readonly mainModel?: string;
+  readonly resolveModelAlias?: (id: string) => string | undefined;
+  readonly modelCatalogGet?: (id: string) => Model;
+  readonly validateBinding?: (binding: ExecutorBinding) => ExecutorValidationResult;
 }
 
 interface ParityLane {
@@ -528,6 +535,25 @@ function createLane(
             _serviceBrand: undefined,
             data: () => data,
             getEffectiveThinkingLevel: () => data.thinkingLevel,
+            validateBinding: (binding: ExecutorBinding) => {
+              const complete = {
+                modelAlias: binding.modelAlias ?? data.modelAlias,
+                thinkingEffort: binding.thinkingEffort ?? data.thinkingLevel,
+              };
+              if (data.executorId !== undefined && data.executorId !== 'native') {
+                return options.validateBinding?.(complete) ?? { ok: true, binding: complete };
+              }
+              return {
+                ok: true,
+                binding: {
+                  modelAlias:
+                    complete.modelAlias === undefined
+                      ? undefined
+                      : options.resolveModelAlias?.(complete.modelAlias) ?? complete.modelAlias,
+                  thinkingEffort: complete.thinkingEffort,
+                },
+              };
+            },
             republishStatus: () => {},
           };
         }
@@ -650,13 +676,28 @@ function createLane(
   const lifecycleCreate = vi.fn(async (createOptions: CreateAgentOptions = {}) => {
     const agentId = createOptions.agentId ?? `agent_child_${String(++created)}`;
     const binding = createOptions.binding;
+    const prior = profileByAgent.get(agentId);
+    if (binding === undefined && prior !== undefined) {
+      const restoredHandle = handle(agentId);
+      handles.set(agentId, restoredHandle);
+      return restoredHandle;
+    }
     const resolved = binding?.resolvedProfile ?? profile;
-    profileByAgent.set(agentId, {
+    const requestedBinding = {
       modelAlias: binding?.model ?? resolved.modelAlias,
+      thinkingEffort: binding?.thinking ?? resolved.thinkingEffort ?? 'off',
+    };
+    const validated =
+      resolved.executor !== undefined && resolved.executor !== 'native'
+        ? options.validateBinding?.(requestedBinding) ?? { ok: true as const, binding: requestedBinding }
+        : { ok: true as const, binding: requestedBinding };
+    if (!validated.ok) throw new Error(validated.diagnostic);
+    profileByAgent.set(agentId, {
+      modelAlias: validated.binding.modelAlias,
       modelCapabilities: UNKNOWN_CAPABILITY,
       profileName: binding?.profile ?? resolved.name,
       profileDefinitionId: resolved.definitionId,
-      thinkingLevel: binding?.thinking ?? resolved.thinkingEffort ?? 'off',
+      thinkingLevel: validated.binding.thinkingEffort ?? 'off',
       systemPrompt: '',
       activeToolNames: resolved.tools,
       disallowedTools: resolved.disallowedTools,
@@ -673,8 +714,8 @@ function createLane(
       delegator: createOptions.delegator,
       labels: createOptions.labels,
       displayName: binding?.profile,
-      model: binding?.model,
-      thinkingEffort: binding?.thinking,
+      model: validated.binding.modelAlias,
+      thinkingEffort: validated.binding.thinkingEffort,
       executor: resolved.executor,
     };
     const createdHandle = handle(agentId);
@@ -904,9 +945,9 @@ function createLane(
   });
   ix.stub(IBootstrapService, { getEnv: () => 'yolo' });
   ix.stub(IConfigService, { get: <T>() => undefined as T });
-  ix.stub(IModelService, { resolveId: (id: string) => id });
+  ix.stub(IModelService, { resolveId: options.resolveModelAlias ?? ((id: string) => id) });
   ix.stub(IModelCatalog, {
-    get: (id: string) => ({ id }) as Model,
+    get: options.modelCatalogGet ?? ((id: string) => ({ id }) as Model),
     getRequester: (id: string) => ({
       model: { id } as Model,
       request: async function* () {},
@@ -1517,6 +1558,126 @@ describe('AgentRun and dispatch parity golden', () => {
       profileName: 'coder',
       message: 'reject',
     })).rejects.toThrow(/No model is bound/);
+  });
+
+  it('preserves external bindings across AgentRun, delegation dispatch, and named reuse', async () => {
+    const externalProfile = normalizeAgentProfile({
+      ...parityProfile,
+      executor: 'grok-acp',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      allowedModels: ['grok-4.6'],
+      allowedEfforts: ['xhigh'],
+    });
+    const options: LaneOptions = {
+      profile: externalProfile,
+      resolveModelAlias: (id) => id === 'grok-4.6' ? 'axon-message/grok-4.6' : id,
+      modelCatalogGet: (id) => {
+        throw new Error(`native model catalog must not resolve ${id}`);
+      },
+    };
+    const internal = createLane(disposables, 'internal', options);
+    const external = createLane(disposables, 'external', options);
+
+    const internalResult = await internal.runInternal({
+      prompt: 'agent run',
+      description: 'External AgentRun',
+      profile: 'coder',
+      name: 'external_agent_run',
+      background: true,
+    });
+    const first = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'external_named',
+      profileName: 'coder',
+      message: 'delegation run',
+    });
+    await completeExternal(external, first.dispatchId, 0);
+    const resumed = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'external_named',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      message: 'reuse',
+    });
+
+    expect(internalResult.isError).not.toBe(true);
+    expect(internal.metadataAgents['agent_child_1']).toMatchObject({
+      model: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      executor: 'grok-acp',
+    });
+    expect(external.metadataAgents['agent_child_1']).toMatchObject({
+      model: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      executor: 'grok-acp',
+    });
+    expect(resumed).toMatchObject({
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+    });
+    expect(external.lifecycleCreate).toHaveBeenCalledTimes(1);
+    expect(external.subagentRun).toHaveBeenCalledTimes(2);
+  });
+
+  it('normalizes named binding comparisons across warm and cold reuse', async () => {
+    const externalProfile = normalizeAgentProfile({
+      ...parityProfile,
+      executor: 'grok-acp',
+      modelAlias: 'vendor-short',
+      thinkingEffort: 'xhigh',
+      allowedModels: ['vendor-short', 'vendor/model'],
+      allowedEfforts: ['xhigh'],
+    });
+    const external = createLane(disposables, 'external', {
+      profile: externalProfile,
+      validateBinding: (binding) => ({
+        ok: true,
+        binding: {
+          modelAlias:
+            binding.modelAlias === 'vendor-short' ? 'vendor/model' : binding.modelAlias,
+          thinkingEffort: binding.thinkingEffort,
+        },
+      }),
+    });
+
+    const first = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'normalized_named',
+      profileName: 'coder',
+      message: 'first',
+    });
+    await completeExternal(external, first.dispatchId, 0);
+    const warm = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'normalized_named',
+      modelAlias: 'vendor-short',
+      thinkingEffort: 'xhigh',
+      message: 'warm',
+    });
+    await completeExternal(external, warm.dispatchId, 1);
+    external.dropHandle('agent_child_1');
+    const cold = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'normalized_named',
+      modelAlias: 'vendor-short',
+      thinkingEffort: 'xhigh',
+      message: 'cold',
+    });
+
+    expect(external.metadataAgents['agent_child_1']).toMatchObject({
+      model: 'vendor/model',
+      thinkingEffort: 'xhigh',
+    });
+    expect(warm).toMatchObject({ modelAlias: 'vendor/model', thinkingEffort: 'xhigh' });
+    expect(cold).toMatchObject({ modelAlias: 'vendor/model', thinkingEffort: 'xhigh' });
+    expect(external.lifecycleCreate).toHaveBeenCalledTimes(2);
+    expect(external.subagentRun).toHaveBeenCalledTimes(3);
   });
 
   it('P11 reports the available profile catalog when a profile is unknown', async () => {

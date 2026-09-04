@@ -137,6 +137,7 @@ describe('AgentExecutorRegistryService', () => {
         }
         return options as Readonly<Record<string, string | number | boolean>>;
       },
+      validateBinding: (binding) => ({ ok: true, binding }),
       create: () => {
         throw new Error('not used');
       },
@@ -160,6 +161,150 @@ describe('AgentExecutorRegistryService', () => {
     expect(() => registry.resolve('fake-acp', { typo: true })).toThrow(
       /Unknown executor option "typo"/,
     );
+  });
+
+  it('returns a diagnostic when the executor protocol has no provider', () => {
+    services.set(IConfigService, configWith({
+      missing: {
+        protocol: 'missing-v1',
+        command: 'missing',
+        args: [],
+      },
+    }));
+    services.set(
+      IAgentExecutorRegistry,
+      new SyncDescriptor(AgentExecutorRegistryService),
+    );
+
+    expect(services.get(IAgentExecutorRegistry).validateBinding(
+      'missing',
+      {},
+      { modelAlias: 'external-model', thinkingEffort: 'xhigh' },
+    )).toEqual({
+      ok: false,
+      diagnostic:
+        'External executor "missing" is unsupported because protocol "missing-v1" has no registered provider',
+    });
+  });
+
+  it('rejects an empty provider binding result', () => {
+    provider = registerAgentExecutorProvider({
+      id: 'empty-provider',
+      protocol: 'empty-v1',
+      validateOptions: () => ({}),
+      validateBinding: () => ({ ok: true, binding: {} }),
+      create: () => {
+        throw new Error('not used');
+      },
+    });
+    services.set(IConfigService, configWith({
+      empty: { protocol: 'empty-v1', command: 'empty', args: [] },
+    }));
+    services.set(
+      IAgentExecutorRegistry,
+      new SyncDescriptor(AgentExecutorRegistryService),
+    );
+
+    expect(services.get(IAgentExecutorRegistry).validateBinding(
+      'empty',
+      {},
+      { modelAlias: 'external-model', thinkingEffort: 'xhigh' },
+    )).toEqual({
+      ok: false,
+      diagnostic: 'External executor "empty" returned an empty modelAlias binding',
+    });
+  });
+
+  it('preserves a provider diagnostic', () => {
+    provider = registerAgentExecutorProvider({
+      id: 'diagnostic-provider',
+      protocol: 'diagnostic-v1',
+      validateOptions: () => ({}),
+      validateBinding: () => ({ ok: false, diagnostic: 'xhigh is unsupported' }),
+      create: () => {
+        throw new Error('not used');
+      },
+    });
+    services.set(IConfigService, configWith({
+      diagnostic: { protocol: 'diagnostic-v1', command: 'diagnostic', args: [] },
+    }));
+    services.set(
+      IAgentExecutorRegistry,
+      new SyncDescriptor(AgentExecutorRegistryService),
+    );
+
+    expect(services.get(IAgentExecutorRegistry).validateBinding(
+      'diagnostic',
+      {},
+      { modelAlias: 'external-model', thinkingEffort: 'xhigh' },
+    )).toEqual({ ok: false, diagnostic: 'xhigh is unsupported' });
+  });
+
+  it('accepts an explicit provider identity binding', () => {
+    provider = registerAgentExecutorProvider({
+      id: 'identity-provider',
+      protocol: 'identity-v1',
+      validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }),
+      create: () => {
+        throw new Error('not used');
+      },
+    });
+    services.set(IConfigService, configWith({
+      identity: { protocol: 'identity-v1', command: 'identity', args: [] },
+    }));
+    services.set(
+      IAgentExecutorRegistry,
+      new SyncDescriptor(AgentExecutorRegistryService),
+    );
+    const binding = { modelAlias: 'external-model', thinkingEffort: 'xhigh' };
+
+    expect(services.get(IAgentExecutorRegistry).validateBinding(
+      'identity',
+      {},
+      binding,
+    )).toEqual({ ok: true, binding });
+  });
+
+  it('uses only provider-declared external binding normalization', () => {
+    provider = registerAgentExecutorProvider({
+      id: 'fake-acp',
+      protocol: 'acp-v1',
+      validateOptions: () => ({}),
+      validateBinding: (binding) => ({
+        ok: true,
+        binding: {
+          modelAlias: `${binding.modelAlias}-canonical`,
+          thinkingEffort: binding.thinkingEffort,
+        },
+      }),
+      create: () => {
+        throw new Error('not used');
+      },
+    });
+    services.set(IConfigService, configWith({
+      'fake-acp': {
+        protocol: 'acp-v1',
+        command: 'fake',
+        args: [],
+      },
+    }));
+    services.set(
+      IAgentExecutorRegistry,
+      new SyncDescriptor(AgentExecutorRegistryService),
+    );
+
+    expect(services.get(IAgentExecutorRegistry).validateBinding(
+      'fake-acp',
+      {},
+      { modelAlias: 'external-model', thinkingEffort: 'xhigh' },
+    )).toEqual({
+      ok: true,
+      binding: {
+        modelAlias: 'external-model-canonical',
+        thinkingEffort: 'xhigh',
+      },
+    });
   });
 
   it('parses trusted snake-case descriptors and rejects unknown descriptor keys', () => {

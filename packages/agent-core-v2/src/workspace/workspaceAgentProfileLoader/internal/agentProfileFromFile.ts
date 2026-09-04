@@ -42,14 +42,8 @@ export function profilesFromDiscovery(
 
 function executorValidator(registry: IAgentExecutorRegistry): ExecutorValidator {
   return {
-    validateExecutor: (id, options) => {
-      try {
-        registry.resolve(id, options);
-        return undefined;
-      } catch (error) {
-        return error instanceof Error ? error.message : String(error);
-      }
-    },
+    validateExecutor: (id, options, binding) =>
+      registry.validateBinding(id, options, binding),
   };
 }
 

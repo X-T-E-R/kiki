@@ -16,6 +16,9 @@ export const AcpAgentExecutorProvider: AgentExecutorProvider = {
   validateOptions(value: unknown): AgentExecutorOptions {
     return acpExecutorOptionsSchema.parse(value ?? {});
   },
+  validateBinding(binding) {
+    return { ok: true, binding };
+  },
   create(context) {
     return new AcpAgentExecutorSession(context);
   },

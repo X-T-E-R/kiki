@@ -5,10 +5,11 @@
  * availability checks use the app model registry's canonical resolver.
  */
 
+import type { ModelAliasResolver } from '@kiki/agent-profiles/ports';
+
 import { Error2, ErrorCodes } from '#/errors';
 import type { ResolvedAgentProfileRoute } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { IModelCatalog } from '#/kosong/model/catalog';
-import type { IModelService } from '#/kosong/model/model';
 
 export function assertProfileRouteBinding(
   route: ResolvedAgentProfileRoute | undefined,
@@ -16,7 +17,7 @@ export function assertProfileRouteBinding(
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;
   },
-  models: IModelService,
+  models: ModelAliasResolver,
 ): void {
   if (route === undefined) return;
   if (
@@ -46,7 +47,7 @@ export function assertProfileRouteBinding(
 export function assertProfileRouteModelAvailable(
   route: ResolvedAgentProfileRoute | undefined,
   catalog: IModelCatalog,
-  models: IModelService,
+  models: ModelAliasResolver,
 ): void {
   if (route?.lockedModelAlias === undefined) return;
   try {
@@ -60,6 +61,6 @@ export function assertProfileRouteModelAvailable(
   }
 }
 
-function resolveModelId(models: IModelService, modelId: string): string {
+function resolveModelId(models: ModelAliasResolver, modelId: string): string {
   return models.resolveId(modelId) ?? modelId;
 }

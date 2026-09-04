@@ -70,6 +70,21 @@ describe('buildProfileDescriptions recommended models: advisory lines, catalog f
     expect(text).not.toContain('axon-message/grok-4.6');
   });
 
+  it('keeps external executor aliases and effort visible outside the native catalog', () => {
+    const text = render(profile({
+      executor: 'grok-acp',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      modelProfiles: [{ alias: 'grok-4.6-fast', when: 'Fast external pass.', thinkingEffort: 'xhigh' }],
+    }), []);
+
+    expect(text).toContain('  Model alias: grok-4.6');
+    expect(text).toContain('  Thinking effort: xhigh');
+    expect(text).toContain(
+      '  Alternative models: grok-4.6-fast (thinking_effort=xhigh) — Fast external pass.',
+    );
+  });
+
   it('omits the alternative-models line when every entry is unavailable', () => {
     const text = render(profile(), []);
 
