@@ -2,4 +2,4 @@
 "@moonshot-ai/kimi-code": patch
 ---
 
-Fix long-conversation latency by compacting oversized contexts earlier.
+Compact oversized contexts earlier in long conversations.

@@ -381,6 +381,57 @@ describe('AgentContextMemoryService (wire-backed)', () => {
     });
   });
 
+  it('replays a modern partial compaction with its recent tail after the summary', async () => {
+    const records: WireRecord[] = [
+      { type: 'context.append_message', message: userMessage('old user') },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'old assistant' }],
+          toolCalls: [],
+        },
+      },
+      { type: 'context.append_message', message: userMessage('recent user') },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'recent assistant' }],
+          toolCalls: [],
+        },
+      },
+      {
+        type: 'context.apply_compaction',
+        summary: 'raw summary',
+        contextSummary: 'model-facing summary',
+        compactedCount: 2,
+        tokensBefore: 100,
+        tokensAfter: 20,
+        keptUserMessageCount: 1,
+      },
+    ];
+
+    const replay = buildHost(REPLAY_KEY);
+    await restoreTestEventDispatcher(
+      replay.dispatcher,
+      replay.log,
+      testWireScope(SCOPE, REPLAY_KEY),
+      records,
+    );
+
+    const model = replay.agentState.get(contextMemoryKey);
+    expect(model.map(textOf)).toEqual([
+      'old user',
+      'model-facing summary',
+      'recent user',
+      'recent assistant',
+    ]);
+    expect(model[1]).toMatchObject({
+      origin: { kind: 'compaction_summary' },
+    });
+  });
+
   it('replays pre-contextSummary kept-user records without adding a new prefix', async () => {
     const records: WireRecord[] = [
       { type: 'context.append_message', message: userMessage('old user') },

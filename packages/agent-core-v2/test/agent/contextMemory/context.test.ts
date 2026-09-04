@@ -788,6 +788,38 @@ describe('Agent context', () => {
       expect(shape.messages[1]?.origin?.kind).toBe('compaction_summary');
     });
 
+    it('splices the summary before the uncompacted recent tail', () => {
+      const history = [
+        userMessage('old user'),
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'old assistant' }],
+          toolCalls: [],
+        } as ContextMessage,
+        userMessage('recent user'),
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'recent assistant' }],
+          toolCalls: [],
+        } as ContextMessage,
+        userMessage('stale reminder', { kind: 'injection', variant: 'test' }),
+      ];
+
+      const shape = buildContextCompactionShape(
+        history,
+        { summary: 'summary', compactedCount: 2, tokensBefore: 0 },
+        zero,
+      );
+
+      expect(shape.messages.map(textOf)).toEqual([
+        'old user',
+        'summary',
+        'recent user',
+        'recent assistant',
+      ]);
+      expect(shape.messages[1]?.origin?.kind).toBe('compaction_summary');
+    });
+
     it('prefers the measured summary output tokens over the text estimate', () => {
       const history = [userMessage('u1'), {
         role: 'assistant',
