@@ -96,6 +96,9 @@ describe('external delegation procedures', () => {
           taskName: 'probe',
           status: 'queued',
           createdAt: 1,
+          activity: {
+            activeToolCalls: [{ toolCallId: 'call-1', name: 'Read', since: 1 }],
+          },
         },
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     });
@@ -109,7 +112,10 @@ describe('external delegation procedures', () => {
       target: 'named',
       taskName: 'probe',
       message: 'inspect',
-    })).resolves.toMatchObject({ dispatchId: 'dispatch-1' });
+    })).resolves.toMatchObject({
+      dispatchId: 'dispatch-1',
+      activity: { activeToolCalls: [{ toolCallId: 'call-1', name: 'Read', since: 1 }] },
+    });
   });
 
   it('closes the HTTP client idempotently and aborts active calls', async () => {

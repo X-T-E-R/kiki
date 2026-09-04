@@ -7,7 +7,6 @@ import {
   delegationProcedureTable,
   SeatKlientError,
   type DelegationProcedureInput,
-  type DelegationProcedureName,
   type SeatKlient,
 } from '@moonshot-ai/klient/procedures';
 import { z } from 'zod';
@@ -152,7 +151,7 @@ function isSeatKlient(value: SeatKlient | KikiMcpConfig): value is SeatKlient {
   return typeof (value as { readonly call?: unknown }).call === 'function';
 }
 
-async function followWaitProgress(
+export async function followWaitProgress(
   klient: SeatKlient,
   input: DelegationProcedureInput<'wait'>,
   context: ProgressRequestContext,
@@ -167,46 +166,17 @@ async function followWaitProgress(
     () => waitSettled,
     () => waitSettled,
   );
-  let eventCursor = 0;
   let progress = 0;
   let reportedTool: string | undefined;
-  const toolTitles = new Map<string, string>();
 
   while (true) {
     context.signal.throwIfAborted();
-    const rawEvents = await Promise.race([
+    const status = await Promise.race([
       settlement,
-      klient.events({
-        dispatchId: input.dispatchId,
-        cursor: eventCursor,
-        limit: 100,
-        detail: 'turn',
-      }),
+      klient.status({ dispatchId: input.dispatchId }),
     ]);
-    if ('settled' in rawEvents) return await waitPromise;
-    let currentTool: string | undefined;
-    for (const item of rawEvents.items) {
-      if (!('event' in item) || item.event === null || typeof item.event !== 'object') continue;
-      eventCursor = Math.max(eventCursor, item.seq);
-      const event = item.event as {
-        readonly type?: unknown;
-        readonly toolCallId?: unknown;
-        readonly title?: unknown;
-      };
-      if (
-        event.type === 'tool.call' &&
-        typeof event.toolCallId === 'string' &&
-        typeof event.title === 'string'
-      ) {
-        toolTitles.set(event.toolCallId, event.title);
-        currentTool = event.title;
-      } else if (event.type === 'tool.update' && typeof event.toolCallId === 'string') {
-        if (typeof event.title === 'string') toolTitles.set(event.toolCallId, event.title);
-        currentTool = typeof event.title === 'string'
-          ? event.title
-          : toolTitles.get(event.toolCallId);
-      }
-    }
+    if ('settled' in status) return await waitPromise;
+    const currentTool = status.activity?.activeToolCalls.at(-1)?.name;
     if (currentTool !== undefined && currentTool !== reportedTool) {
       reportedTool = currentTool;
       await context.sendNotification({

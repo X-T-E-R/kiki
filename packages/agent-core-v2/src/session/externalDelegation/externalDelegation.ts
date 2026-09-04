@@ -131,6 +131,14 @@ export interface DispatchUsageView {
   readonly cacheWrite: number;
 }
 
+export interface ExternalDispatchActivityView {
+  readonly activeToolCalls: readonly {
+    readonly toolCallId: string;
+    readonly name: string;
+    readonly since: number;
+  }[];
+}
+
 export interface ExternalDispatchView {
   readonly dispatchId: string;
   readonly target: 'main' | 'named';
@@ -147,6 +155,7 @@ export interface ExternalDispatchView {
   readonly startedAt?: number;
   readonly endedAt?: number;
   readonly continuationOf?: string;
+  readonly activity?: ExternalDispatchActivityView;
   readonly usage?: DispatchUsageView;
   /**
    * Stable failure category (`ExternalFailureCategory`); the untrusted

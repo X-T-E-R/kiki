@@ -172,6 +172,25 @@ describe('SessionSubagentService idle release', () => {
     expect(remove).toHaveBeenCalledTimes(1);
   });
 
+  it('starts a fresh grace period after a previously non-releasable agent becomes idle', async () => {
+    const child = fakeAgent('agent-1');
+    agents.set('agent-1', child);
+    const run = await startRun('agent-1');
+    child.runs[0]!.resolve('done');
+    await run.completion;
+    child.activeTasks = [{ taskId: 'bg' }];
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS);
+    expect(remove).not.toHaveBeenCalled();
+
+    child.activeTasks = [];
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS);
+    expect(remove).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS - 1);
+    expect(remove).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(remove).toHaveBeenCalledWith('agent-1');
+  });
+
   it('skips release while the agent is busy, queued, has live tasks, or is in swarm mode', async () => {
     const child = fakeAgent('agent-1');
     agents.set('agent-1', child);

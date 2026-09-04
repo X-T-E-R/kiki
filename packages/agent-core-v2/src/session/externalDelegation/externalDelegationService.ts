@@ -11,7 +11,7 @@
 import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 import { ulid } from 'ulid';
 
-import { Disposable } from '#/_base/di/lifecycle';
+import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
 import { Emitter, Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
@@ -31,6 +31,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { AgentActivityUpdated, IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { listAvailableSubagentTargets } from '#/app/agentProfileCatalog/subagentDispatch';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -107,7 +108,10 @@ interface StoredChild {
   latestDispatchId?: string;
 }
 
-interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedAt' | 'endedAt' | 'usage'> {
+interface StoredDispatch extends Omit<
+  ExternalDispatchView,
+  'status' | 'startedAt' | 'endedAt' | 'activity' | 'usage'
+> {
   agentId: string;
   status: ExternalDispatchStatus;
   startedAt?: number;
@@ -148,15 +152,15 @@ interface ExternalDelegationDocument {
 }
 
 interface ProjectionCacheEntry {
+  readonly handle: IAgentScopeHandle;
+  readonly subscriptions: DisposableStore;
   generation: number;
+  requestedGeneration: number;
   snapshot?: {
     readonly generation: number;
     readonly projection: AgentTurnProjection;
   };
-  rebuilding?: {
-    readonly generation: number;
-    readonly promise: Promise<AgentTurnProjection>;
-  };
+  rebuilding?: Promise<AgentTurnProjection>;
 }
 
 interface DispatchTranscriptBoundary {
@@ -186,6 +190,7 @@ export class SessionExternalDelegationService
   >();
   private readonly terminalizations = new Map<string, Promise<void>>();
   private readonly projectionCache = new Map<string, ProjectionCacheEntry>();
+  private readonly projectionRebuilds = new Map<string, Promise<AgentTurnProjection>>();
   private readonly dispatchLineages = new Map<string, Set<string>>();
   private readonly interactionConsumerId: string;
   private readonly permissionCeiling: PermissionMode;
@@ -240,6 +245,8 @@ export class SessionExternalDelegationService
       dispose: () => {
         for (const controller of this.controllers.values()) controller.abort(new Error('Session closed'));
         this.controllers.clear();
+        for (const entry of this.projectionCache.values()) entry.subscriptions.dispose();
+        this.projectionCache.clear();
         this.releaseInteractionConsumer();
         void this.interruptActive('Session closed');
       },
@@ -427,7 +434,16 @@ export class SessionExternalDelegationService
 
   async status(request: ExternalDispatchLookup): Promise<ExternalDispatchView> {
     const doc = await this.authorize(request.authority);
-    return dispatchView(this.lookup(doc, request.dispatchId));
+    const dispatch = this.lookup(doc, request.dispatchId);
+    const view = dispatchView(dispatch);
+    if (!ACTIVE.has(dispatch.status)) return view;
+    const handle = await this.materializeDispatchAgent(doc, dispatch);
+    return {
+      ...view,
+      activity: {
+        activeToolCalls: handle.accessor.get(IAgentActivityView).state().turn?.activeToolCalls ?? [],
+      },
+    };
   }
 
   async wait(request: DispatchWaitRequest): Promise<DispatchWaitView> {
@@ -487,11 +503,8 @@ export class SessionExternalDelegationService
     const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
     const limit = boundedLimit(request.limit, 100);
     if (request.detail === 'turn') {
-      await this.terminalizations.get(dispatch.dispatchId);
       const handle = await this.materializeDispatchAgent(doc, dispatch);
-      const projection = await this.buildTurnProjection(handle);
-      const start = dispatch.transcriptStart;
-      const end = ACTIVE.has(dispatch.status) ? projection.cursor : dispatch.transcriptEnd!;
+      const { projection, start, end } = await this.turnProjectionWindow(handle, dispatch);
       if (cursor > end) throw invalid('cursor is invalid.');
       return projection.eventPage(dispatch.dispatchId, start, end, cursor, limit);
     }
@@ -515,12 +528,9 @@ export class SessionExternalDelegationService
     const dispatch = this.lookup(doc, request.dispatchId);
     const limit = boundedLimit(request.limit, 50);
     if (request.detail === 'items') {
-      await this.terminalizations.get(dispatch.dispatchId);
       const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
       const handle = await this.materializeDispatchAgent(doc, dispatch);
-      const projection = await this.buildTurnProjection(handle);
-      const start = dispatch.transcriptStart;
-      const end = ACTIVE.has(dispatch.status) ? projection.cursor : dispatch.transcriptEnd!;
+      const { projection, start, end } = await this.turnProjectionWindow(handle, dispatch);
       if (cursor > end) throw invalid('cursor is invalid.');
       return projection.itemPage(start, end, cursor, limit);
     }
@@ -842,13 +852,50 @@ export class SessionExternalDelegationService
     ).agent;
   }
 
+  private async turnProjectionWindow(
+    handle: IAgentScopeHandle,
+    dispatch: StoredDispatch,
+  ): Promise<{
+    readonly projection: AgentTurnProjection;
+    readonly start: number;
+    readonly end: number;
+  }> {
+    if (ACTIVE.has(dispatch.status)) {
+      const projection = await this.buildTurnProjection(handle);
+      if (ACTIVE.has(dispatch.status)) {
+        return { projection, start: dispatch.transcriptStart, end: projection.cursor };
+      }
+    }
+    await this.terminalizations.get(dispatch.dispatchId);
+    const projection = await this.buildTurnProjection(
+      handle,
+      true,
+      undefined,
+      dispatch.transcriptTurnId,
+    );
+    return { projection, start: dispatch.transcriptStart, end: dispatch.transcriptEnd! };
+  }
+
   private projectionEntry(handle: IAgentScopeHandle): ProjectionCacheEntry {
-    let entry = this.projectionCache.get(handle.id);
-    if (entry !== undefined) return entry;
-    entry = { generation: 0 };
+    const existing = this.projectionCache.get(handle.id);
+    if (existing?.handle === handle) return existing;
+    existing?.subscriptions.dispose();
+    const subscriptions = new DisposableStore();
+    const entry: ProjectionCacheEntry = {
+      handle,
+      subscriptions,
+      generation: 0,
+      requestedGeneration: 0,
+    };
     this.projectionCache.set(handle.id, entry);
-    this._register(handle.accessor.get(IEventBus).subscribe((event) => {
-      if ((event.constructor as Event2Class).durable) entry!.generation++;
+    const eventBus = handle.accessor.get(IEventBus);
+    subscriptions.add(eventBus.subscribe((event) => {
+      if ((event.constructor as Event2Class).durable) entry.generation++;
+    }));
+    subscriptions.add(eventBus.subscribe(AgentActivityUpdated, (activity) => {
+      if (activity.lifecycle !== 'disposed' || this.projectionCache.get(handle.id) !== entry) return;
+      this.projectionCache.delete(handle.id);
+      subscriptions.dispose();
     }));
     return entry;
   }
@@ -862,10 +909,13 @@ export class SessionExternalDelegationService
     const wire = handle.accessor.get(IWireService);
     const entry = this.projectionEntry(handle);
     if (!cached) {
-      await wire.flush();
-      return AgentTurnProjection.build(wire.readJournal());
+      return this.serializeProjectionBuild(handle.id, async () => {
+        await wire.flush();
+        return AgentTurnProjection.build(wire.readJournal());
+      });
     }
     const required = requiredGeneration ?? entry.generation;
+    entry.requestedGeneration = Math.max(entry.requestedGeneration, required);
     for (;;) {
       if (
         entry.snapshot !== undefined &&
@@ -875,25 +925,53 @@ export class SessionExternalDelegationService
         return entry.snapshot.projection;
       }
       let rebuilding = entry.rebuilding;
-      if (rebuilding === undefined || rebuilding.generation !== required) {
-        const generation = Math.max(required, entry.generation);
-        const promise = (async () => {
-          await wire.flush();
-          const projection = await AgentTurnProjection.build(wire.readJournal());
-          if (entry.snapshot === undefined || entry.snapshot.generation <= generation) {
-            entry.snapshot = { generation, projection };
+      if (rebuilding === undefined) {
+        rebuilding = this.serializeProjectionBuild(handle.id, async () => {
+          let projection: AgentTurnProjection;
+          for (;;) {
+            const generation = Math.max(entry.requestedGeneration, entry.generation);
+            await wire.flush();
+            projection = await AgentTurnProjection.build(wire.readJournal());
+            if (this.projectionCache.get(handle.id) === entry) {
+              entry.snapshot = { generation, projection };
+            }
+            if (generation >= entry.generation && generation >= entry.requestedGeneration) {
+              return projection;
+            }
           }
-          return projection;
-        })();
-        rebuilding = { generation, promise };
+        });
         entry.rebuilding = rebuilding;
       }
+      let projection: AgentTurnProjection;
       try {
-        await rebuilding.promise;
+        projection = await rebuilding;
       } finally {
         if (entry.rebuilding === rebuilding) entry.rebuilding = undefined;
       }
+      if (this.projectionCache.get(handle.id) !== entry) return projection;
     }
+  }
+
+  private serializeProjectionBuild(
+    agentId: string,
+    build: () => Promise<AgentTurnProjection>,
+  ): Promise<AgentTurnProjection> {
+    const previous = this.projectionRebuilds.get(agentId);
+    const ready = previous?.then(
+      () => undefined,
+      () => undefined,
+    ) ?? Promise.resolve();
+    const running = ready.then(build);
+    this.projectionRebuilds.set(agentId, running);
+    void running.then(
+      () => {
+        if (this.projectionRebuilds.get(agentId) === running) this.projectionRebuilds.delete(agentId);
+      },
+      () => {
+        if (this.projectionRebuilds.get(agentId) === running) this.projectionRebuilds.delete(agentId);
+      },
+    );
+    return running;
   }
 
   private captureTranscriptBoundary(

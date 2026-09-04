@@ -78,6 +78,16 @@ export const externalDispatchSchema = z
     startedAt: z.number().optional(),
     endedAt: z.number().optional(),
     continuationOf: z.string().optional(),
+    activity: z
+      .object({
+        activeToolCalls: z.array(z.object({
+          toolCallId: z.string(),
+          name: z.string(),
+          since: z.number(),
+        }).strict()),
+      })
+      .strict()
+      .optional(),
     usage: usageSchema.optional(),
     errorCode: failureCategorySchema.optional(),
   })

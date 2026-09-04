@@ -110,22 +110,30 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     this.pendingReleases.delete(agentId);
   }
 
-  private scheduleRelease(agentId: string): void {
+  private scheduleRelease(agentId: string, idleObserved = true): void {
     if (agentId === MAIN_AGENT_ID || this.stopped) return;
     if (!this.flags.enabled(SUBAGENT_RELEASE_IDLE_FLAG)) return;
     this.cancelRelease(agentId);
     const timer = setTimeout(() => {
       this.pendingReleases.delete(agentId);
-      void this.releaseIfIdle(agentId);
+      void this.releaseIfIdle(agentId, idleObserved);
     }, this.releaseGraceMs);
     timer.unref?.();
     this.pendingReleases.set(agentId, timer);
   }
 
-  private async releaseIfIdle(agentId: string): Promise<void> {
+  private async releaseIfIdle(agentId: string, idleObserved: boolean): Promise<void> {
     if (this.stopped || !this.flags.enabled(SUBAGENT_RELEASE_IDLE_FLAG)) return;
     const handle = this.agentLifecycle.get(agentId);
-    if (handle === undefined || !isReleasable(handle)) return;
+    if (handle === undefined) return;
+    if (!isReleasable(handle)) {
+      this.scheduleRelease(agentId, false);
+      return;
+    }
+    if (!idleObserved) {
+      this.scheduleRelease(agentId, true);
+      return;
+    }
     this.log.info('releasing idle subagent scope', { agentId });
     try {
       await this.agentLifecycle.remove(agentId);
