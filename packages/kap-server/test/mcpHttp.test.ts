@@ -236,7 +236,7 @@ describe('Kiki MCP HTTP daemon mount', () => {
       `http://127.0.0.1:${String(server.port)}/api/klient/delegation/list`,
       {
         method: 'POST',
-        headers: { authorization: 'Bearer DELEGATION_SECRET', 'content-type': 'application/json' },
+        headers: authHeaders(server, { 'content-type': 'application/json' }),
         body: '{}',
       },
     );

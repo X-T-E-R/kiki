@@ -31,6 +31,7 @@ export interface SeatKlient {
   events(input: DelegationProcedureInput<'events'>): Promise<DelegationProcedureOutput<'events'>>;
   transcript(input: DelegationProcedureInput<'transcript'>): Promise<DelegationProcedureOutput<'transcript'>>;
   cancel(input: DelegationProcedureInput<'cancel'>): Promise<DelegationProcedureOutput<'cancel'>>;
+  close(): Promise<void>;
 }
 
 export interface CreateSeatKlientOptions {
@@ -53,31 +54,50 @@ export class SeatKlientError extends Error {
 export function createSeatKlient(options: CreateSeatKlientOptions): SeatKlient {
   const endpoint = options.endpoint.replace(/\/$/u, '');
   const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
+  const active = new Set<AbortController>();
+  const closedResult = Promise.resolve();
+  let closed = false;
 
   const call = async <Name extends DelegationProcedureName>(
     name: Name,
     input: DelegationProcedureInput<Name>,
     callOptions?: { readonly signal?: AbortSignal },
   ): Promise<DelegationProcedureOutput<Name>> => {
+    if (closed) throw new Error('seat klient closed');
     const procedure = delegationProcedure(name);
     const canonicalInput = procedure.inputSchema.parse(input) as DelegationProcedureInput<Name>;
-    const response = await fetchImpl(
-      `${endpoint}/api/klient/delegation/${encodeURIComponent(name)}`,
-      {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${options.token}`,
-          'content-type': 'application/json',
+    const controller = new AbortController();
+    active.add(controller);
+    try {
+      const response = await fetchImpl(
+        `${endpoint}/api/klient/delegation/${encodeURIComponent(name)}`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${options.token}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(canonicalInput),
+          signal: callOptions?.signal === undefined
+            ? controller.signal
+            : AbortSignal.any([controller.signal, callOptions.signal]),
         },
-        body: JSON.stringify(canonicalInput),
-        signal: callOptions?.signal,
-      },
-    );
-    const envelope = (await response.json()) as Envelope<unknown>;
-    if (!response.ok || envelope.code !== 0) {
-      throw new SeatKlientError(envelope.code, envelope.msg, envelope.details);
+      );
+      const envelope = (await response.json()) as Envelope<unknown>;
+      if (!response.ok || envelope.code !== 0) {
+        throw new SeatKlientError(envelope.code, envelope.msg, envelope.details);
+      }
+      return procedure.outputSchema.parse(envelope.data) as DelegationProcedureOutput<Name>;
+    } finally {
+      active.delete(controller);
     }
-    return procedure.outputSchema.parse(envelope.data) as DelegationProcedureOutput<Name>;
+  };
+  const close = (): Promise<void> => {
+    if (closed) return closedResult;
+    closed = true;
+    for (const controller of active) controller.abort();
+    active.clear();
+    return closedResult;
   };
 
   return {
@@ -95,5 +115,6 @@ export function createSeatKlient(options: CreateSeatKlientOptions): SeatKlient {
     events: (input) => call('events', input),
     transcript: (input) => call('transcript', input),
     cancel: (input) => call('cancel', input),
+    close,
   };
 }

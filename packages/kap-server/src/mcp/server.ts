@@ -58,11 +58,24 @@ export function createKikiMcpServer(
   source: SeatKlient | KikiMcpConfig,
   options: KikiMcpServerOptions = {},
 ): McpServer {
-  const klient = isSeatKlient(source)
-    ? source
-    : createSeatKlient({ endpoint: source.endpoint, token: source.delegationToken, fetch: options.fetch });
+  const ownsKlient = !isSeatKlient(source);
+  const klient = ownsKlient
+    ? createSeatKlient({ endpoint: source.endpoint, token: source.delegationToken, fetch: options.fetch })
+    : source;
   const progressPollIntervalMs = Math.max(0, options.progressPollIntervalMs ?? 250);
   const server = new McpServer({ name: 'kiki-external-delegation', version: '0.1.0' });
+  const closeServer = server.close.bind(server);
+  let closePromise: Promise<void> | undefined;
+  server.close = () => {
+    closePromise ??= (async () => {
+      try {
+        await closeServer();
+      } finally {
+        if (ownsKlient) await klient.close();
+      }
+    })();
+    return closePromise;
+  };
   const tools = new Map<string, RegisteredTool>();
 
   (server as unknown as { createToolError(message: string): unknown }).createToolError = (message) => {
@@ -240,8 +253,7 @@ function updateProfileDescriptions(
     .parse(encoded)
     .profiles as DispatchProfileCatalogEntry[];
   const rendered = renderProfileCatalogEntries(profiles);
-  if (rendered.length === 0) return;
-  const catalog = `\n\nAvailable agent profiles:\n${rendered}`;
+  const catalog = rendered.length === 0 ? '' : `\n\nAvailable agent profiles:\n${rendered}`;
   for (const toolName of ['kiki_profiles', 'kiki_dispatch']) {
     const procedure = delegationProcedureTable.find((candidate) => candidate.mcp.toolName === toolName)!;
     tools.get(toolName)?.update({ description: `${procedure.mcp.description}${catalog}` });

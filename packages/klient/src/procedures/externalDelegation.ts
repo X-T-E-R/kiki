@@ -247,8 +247,56 @@ const lifecycleEventSchema = z
     message: z.string().optional(),
   })
   .strict();
+const normalizedExecutorContentSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('text'), text: z.string() }).strict(),
+  z.object({ type: z.literal('image'), mimeType: z.string(), data: z.string() }).strict(),
+  z.object({ type: z.literal('resource_link'), uri: z.string(), name: z.string().optional() }).strict(),
+  z.object({ type: z.literal('opaque'), contentType: z.string() }).strict(),
+]);
+const normalizedExecutorEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('message.delta'),
+    role: z.enum(['user', 'assistant']),
+    messageId: z.string().optional(),
+    content: normalizedExecutorContentSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('thought.delta'),
+    messageId: z.string().optional(),
+    content: normalizedExecutorContentSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('tool.call'),
+    toolCallId: z.string(),
+    title: z.string(),
+    kind: z.string().optional(),
+    status: z.string().optional(),
+    rawInput: z.unknown().optional(),
+    content: z.array(z.unknown()).optional(),
+    locations: z.array(z.unknown()).optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('tool.update'),
+    toolCallId: z.string(),
+    title: z.string().optional(),
+    kind: z.string().optional(),
+    status: z.string().optional(),
+    rawInput: z.unknown().optional(),
+    rawOutput: z.unknown().optional(),
+    content: z.array(z.unknown()).optional(),
+    locations: z.array(z.unknown()).optional(),
+  }).strict(),
+  z.object({ type: z.literal('plan.update'), plan: z.unknown(), unstable: z.boolean() }).strict(),
+  z.object({ type: z.literal('plan.remove'), planId: z.string().optional(), unstable: z.literal(true) }).strict(),
+  z.object({ type: z.literal('commands.update'), commands: z.array(z.unknown()) }).strict(),
+  z.object({ type: z.literal('mode.update'), currentModeId: z.string() }).strict(),
+  z.object({ type: z.literal('config.update'), configOptions: z.array(z.unknown()) }).strict(),
+  z.object({ type: z.literal('session.info'), title: z.string().optional(), meta: z.unknown().optional() }).strict(),
+  z.object({ type: z.literal('usage'), used: z.number(), size: z.number(), cost: z.unknown().optional() }).strict(),
+  z.object({ type: z.literal('unknown'), updateType: z.string() }).strict(),
+]);
 const turnEventSchema = z
-  .object({ seq: z.number(), dispatchId: z.string(), at: z.number(), event: z.unknown() })
+  .object({ seq: z.number(), dispatchId: z.string(), at: z.number(), event: normalizedExecutorEventSchema })
   .strict();
 const eventsOutputSchema = z
   .object({
@@ -260,13 +308,91 @@ const eventsOutputSchema = z
 const transcriptTextItemSchema = z
   .object({ index: z.number(), role: z.enum(['user', 'assistant', 'system', 'tool']), text: z.string() })
   .strict();
-const transcriptOutputSchema = z
-  .object({
-    items: z.array(z.union([transcriptTextItemSchema, z.record(z.string(), z.unknown())])),
-    cursor: z.number().optional(),
-    nextCursor: z.number().optional(),
-  })
-  .strict();
+const transcriptTextFrameSchema = z.object({
+  kind: z.literal('text'),
+  frameId: z.string(),
+  role: z.enum(['assistant', 'user']),
+  text: z.string(),
+}).strict();
+const transcriptThinkingFrameSchema = z.object({
+  kind: z.literal('thinking'),
+  frameId: z.string(),
+  text: z.string(),
+}).strict();
+const transcriptToolFrameSchema = z.object({
+  kind: z.literal('tool'),
+  frameId: z.string(),
+  toolCallId: z.string(),
+  name: z.string(),
+  state: z.enum(['running', 'done', 'error', 'interrupted']),
+  input: z.unknown().optional(),
+  output: z.unknown().optional(),
+  display: z.unknown().optional(),
+  progress: z.unknown().optional(),
+  startedAt: z.string().optional(),
+  endedAt: z.string().optional(),
+}).strict();
+const transcriptFrameSchema = z.discriminatedUnion('kind', [
+  transcriptTextFrameSchema,
+  transcriptThinkingFrameSchema,
+  transcriptToolFrameSchema,
+]);
+const transcriptStepSchema = z.object({
+  kind: z.literal('step'),
+  stepId: z.string(),
+  turnId: z.string(),
+  ordinal: z.number(),
+  state: z.enum(['running', 'completed', 'interrupted', 'failed']),
+  frames: z.array(transcriptFrameSchema),
+  startedAt: z.string().optional(),
+  endedAt: z.string().optional(),
+  usage: z.object({
+    inputOther: z.number(),
+    output: z.number(),
+    inputCacheRead: z.number(),
+    inputCacheCreation: z.number(),
+  }).strict().optional(),
+}).strict();
+const transcriptTurnSchema = z.object({
+  kind: z.literal('turn'),
+  turnId: z.string(),
+  ordinal: z.number(),
+  state: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled']),
+  origin: z.unknown(),
+  prompt: z.string().optional(),
+  steps: z.array(transcriptStepSchema),
+  startedAt: z.string().optional(),
+  endedAt: z.string().optional(),
+  usage: z.unknown().optional(),
+}).strict();
+const transcriptMarkerSchema = z.object({
+  kind: z.literal('marker'),
+  markerId: z.string(),
+  marker: z.string(),
+  payload: z.unknown().optional(),
+  at: z.string().optional(),
+}).strict();
+const transcriptTaskRefSchema = z.object({
+  kind: z.literal('taskref'),
+  refId: z.string(),
+  taskId: z.string(),
+  at: z.string().optional(),
+}).strict();
+const transcriptL1ItemSchema = z.discriminatedUnion('kind', [
+  transcriptTurnSchema,
+  transcriptMarkerSchema,
+  transcriptTaskRefSchema,
+]);
+const transcriptTextPageSchema = z.object({
+  items: z.array(transcriptTextItemSchema),
+  nextCursor: z.number().optional(),
+}).strict();
+const transcriptItemsPageSchema = z.object({
+  items: z.array(transcriptL1ItemSchema),
+  cursor: z.number(),
+  nextCursor: z.number().optional(),
+}).strict();
+const transcriptOutputSchema = z.union([transcriptTextPageSchema, transcriptItemsPageSchema]);
 
 const dispatchMcpInput = z
   .object({

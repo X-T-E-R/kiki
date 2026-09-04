@@ -1,10 +1,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { EXTERNAL_INTERACTION_NOT_OWNED_CODE as CORE_INTERACTION_NOT_OWNED_CODE } from '@moonshot-ai/agent-core-v2';
-import type {
-  DelegationProcedureName,
-  DelegationProcedureOutput,
-  SeatKlient,
+import {
+  delegationProcedureTable,
+  type DelegationProcedureName,
+  type DelegationProcedureOutput,
+  type SeatKlient,
 } from '@moonshot-ai/klient/procedures';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -204,6 +205,77 @@ describe('Kiki external delegation MCP projector', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it('refreshes dynamic profile descriptions for A, B, and an empty catalog', async () => {
+    const catalogs = [
+      [{ kind: 'named' as const, profileName: 'profile_a', description: 'Catalog A.', alternativeModels: [] }],
+      [{ kind: 'named' as const, profileName: 'profile_b', description: 'Catalog B.', alternativeModels: [] }],
+      [],
+    ];
+    let catalogIndex = 0;
+    const klient = {
+      ...fakeKlient(),
+      async call(name: DelegationProcedureName) {
+        if (name !== 'profiles') throw new Error(`Unexpected procedure ${name}`);
+        return { profiles: catalogs[catalogIndex++]!, binding } as never;
+      },
+    } as SeatKlient;
+    const { client } = await connect(klient);
+    const profilesBase = delegationProcedureTable.find((procedure) => procedure.name === 'profiles')!.mcp.description;
+    const dispatchBase = delegationProcedureTable.find((procedure) => procedure.name === 'dispatch')!.mcp.description;
+
+    await client.callTool({ name: 'kiki_profiles', arguments: {} });
+    const afterA = await client.listTools();
+    expect(afterA.tools.find((tool) => tool.name === 'kiki_profiles')?.description).toContain('profile_a');
+    expect(afterA.tools.find((tool) => tool.name === 'kiki_dispatch')?.description).toContain('profile_a');
+
+    await client.callTool({ name: 'kiki_profiles', arguments: {} });
+    const afterB = await client.listTools();
+    expect(afterB.tools.find((tool) => tool.name === 'kiki_profiles')?.description).toContain('profile_b');
+    expect(afterB.tools.find((tool) => tool.name === 'kiki_profiles')?.description).not.toContain('profile_a');
+    expect(afterB.tools.find((tool) => tool.name === 'kiki_dispatch')?.description).toContain('profile_b');
+
+    await client.callTool({ name: 'kiki_profiles', arguments: {} });
+    const afterEmpty = await client.listTools();
+    expect(afterEmpty.tools.find((tool) => tool.name === 'kiki_profiles')?.description).toBe(profilesBase);
+    expect(afterEmpty.tools.find((tool) => tool.name === 'kiki_dispatch')?.description).toBe(dispatchBase);
+  });
+
+  it('leaves injected clients open and closes owned HTTP clients idempotently', async () => {
+    const injected = fakeKlient();
+    const injectedClose = vi.spyOn(injected, 'close');
+    const injectedServer = createKikiMcpServer(injected);
+    const injectedFirst = injectedServer.close();
+    const injectedSecond = injectedServer.close();
+    expect(injectedFirst).toBe(injectedSecond);
+    await injectedFirst;
+    expect(injectedClose).not.toHaveBeenCalled();
+
+    let ownedSignal: AbortSignal | null | undefined;
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      ownedSignal = init?.signal;
+      ownedSignal?.addEventListener('abort', () => reject(ownedSignal?.reason), { once: true });
+    }));
+    const ownedServer = createKikiMcpServer({
+      endpoint: 'http://127.0.0.1:58627',
+      token: 'DAEMON_SECRET',
+      delegationToken: 'DELEGATION_SECRET',
+      sessionId: 'session-operator',
+      workspacePath: '/example/workspace',
+    }, { fetch: fetchMock });
+    const ownedClient = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([ownedServer.connect(serverTransport), ownedClient.connect(clientTransport)]);
+    const pending = ownedClient.callTool({ name: 'kiki_list', arguments: {} });
+    await vi.waitFor(() => expect(ownedSignal).toBeDefined());
+    const ownedFirst = ownedServer.close();
+    const ownedSecond = ownedServer.close();
+    expect(ownedFirst).toBe(ownedSecond);
+    await ownedFirst;
+    expect(ownedSignal?.aborted).toBe(true);
+    await Promise.allSettled([pending]);
+    await ownedClient.close();
+  });
+
   it('keeps the interaction ownership code aligned and validates stdio bindings', () => {
     expect(EXTERNAL_INTERACTION_NOT_OWNED_CODE).toBe(CORE_INTERACTION_NOT_OWNED_CODE);
     expect(() => kikiMcpConfigFromEnv({
@@ -233,5 +305,6 @@ function fakeKlient(calls: Array<{ name: string; input: unknown }> = []): SeatKl
       if (output === undefined) throw new Error(`Missing fixture for ${name}`);
       return output;
     },
+    async close() {},
   } as unknown as SeatKlient;
 }

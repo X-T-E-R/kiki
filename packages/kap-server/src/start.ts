@@ -108,7 +108,10 @@ import {
   type SeatResolver,
 } from './mcp/seatResolver';
 import { ExternalDelegationProcedureHost } from './procedures/externalDelegationHost';
-import { registerSeatKlientDelegationRoutes } from './procedures/http';
+import {
+  createSeatKlientDelegationAuth,
+  registerSeatKlientDelegationRoutes,
+} from './procedures/http';
 
 import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
 import {
@@ -351,6 +354,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     disableRequestLogging: true,
     genReqId: (req) => resolveRequestId(req.headers),
   }) as unknown as FastifyInstance;
+  let seatResolver!: SeatResolver;
+  const seatDelegationAuth = exposureClass === 'loopback'
+    ? createSeatKlientDelegationAuth(() => seatResolver)
+    : undefined;
+  if (seatDelegationAuth !== undefined) app.addHook('onRequest', seatDelegationAuth.onRequest);
   app.server.requestTimeout = 0;
   registerRequestLogging(app);
   app.setValidatorCompiler(() => () => true);
@@ -367,7 +375,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   if (opts.disableAuth !== true) {
     app.addHook(
       'onRequest',
-      createAuthHook(authTokenService, { limiter: authFailureLimiter, validateCredential }),
+      createAuthHook(authTokenService, {
+        bypassSeatDelegation: exposureClass === 'loopback',
+        limiter: authFailureLimiter,
+        validateCredential,
+      }),
     );
   } else {
     logger.warn(
@@ -636,13 +648,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           delegationToken: externalDelegation.token,
         })
       : undefined;
-  const seatResolver = createCompositeSeatResolver(
+  seatResolver = createCompositeSeatResolver(
     createCompositeSeatResolver(runtimeSeatResolver, opts.mcpSeatResolver),
     envSeatResolver,
   );
   const externalDelegationHost = new ExternalDelegationProcedureHost(core);
   if (exposureClass === 'loopback') {
-    registerSeatKlientDelegationRoutes(app, externalDelegationHost, seatResolver);
+    registerSeatKlientDelegationRoutes(app, externalDelegationHost, seatDelegationAuth!);
     registerKikiMcpHttp(app, {
       seatResolver,
       resolveKlient: async (seat) => {

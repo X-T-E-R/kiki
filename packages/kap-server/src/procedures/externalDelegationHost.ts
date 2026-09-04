@@ -5,6 +5,15 @@ import {
   resumeSessionById,
   type ExternalAuthority,
   type ExternalDispatchView,
+  type ExternalEventPage,
+  type ExternalInteractionView,
+  type ExternalTranscriptItemsPage,
+  type ExternalTranscriptL1Item,
+  type ExternalTranscriptPage,
+  type ExternalTranscriptStep,
+  type ExternalTranscriptToolFrame,
+  type ExternalTranscriptTurn,
+  type ExternalTurnEventPage,
   type ISessionExternalDelegationService as ExternalDelegationService,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
@@ -15,6 +24,7 @@ import {
   type DelegationProcedureOutput,
   type SeatKlient,
 } from '@moonshot-ai/klient/procedures';
+import type { NormalizedExecutorContent, NormalizedExecutorEvent } from '@moonshot-ai/protocol';
 
 import { ensureMainAgent } from '../transport/mainAgent';
 
@@ -45,11 +55,33 @@ export class ExternalDelegationProcedureHost {
   }
 
   klient(seat: ExternalDelegationSeatAuthority): SeatKlient {
-    const call = <Name extends DelegationProcedureName>(
+    const active = new Set<AbortController>();
+    const closedResult = Promise.resolve();
+    let closed = false;
+    const call = async <Name extends DelegationProcedureName>(
       name: Name,
       input: DelegationProcedureInput<Name>,
       options?: { readonly signal?: AbortSignal },
-    ) => this.call(seat, name, input, options?.signal);
+    ): Promise<DelegationProcedureOutput<Name>> => {
+      if (closed) throw new Error('seat klient closed');
+      const controller = new AbortController();
+      active.add(controller);
+      try {
+        const signal = options?.signal === undefined
+          ? controller.signal
+          : AbortSignal.any([controller.signal, options.signal]);
+        return await this.call(seat, name, input, signal);
+      } finally {
+        active.delete(controller);
+      }
+    };
+    const close = (): Promise<void> => {
+      if (closed) return closedResult;
+      closed = true;
+      for (const controller of active) controller.abort();
+      active.clear();
+      return closedResult;
+    };
     return {
       call,
       profiles: (input = {}) => call('profiles', input),
@@ -65,6 +97,7 @@ export class ExternalDelegationProcedureHost {
       events: (input) => call('events', input),
       transcript: (input) => call('transcript', input),
       cancel: (input) => call('cancel', input),
+      close,
     };
   }
 }
@@ -130,7 +163,10 @@ async function execute<Name extends DelegationProcedureName>(
     case 'interactions': {
       const value = input as DelegationProcedureInput<'interactions'>;
       const page = await service.interactions({ authority, cursor: value.cursor });
-      return redactAgentIds(page) as DelegationProcedureOutput<Name>;
+      return {
+        items: page.items.map(publicInteraction),
+        nextCursor: page.nextCursor,
+      } as DelegationProcedureOutput<Name>;
     }
     case 'respond': {
       const value = input as DelegationProcedureInput<'respond'>;
@@ -144,24 +180,31 @@ async function execute<Name extends DelegationProcedureName>(
       const value = input as DelegationProcedureInput<'wait'>;
       const waited = await service.wait({ authority, ...value, signal });
       return {
-        ...waited,
+        waitStatus: waited.waitStatus,
+        waitedMs: waited.waitedMs,
         dispatch: waited.dispatch === undefined ? undefined : publicDispatch(waited.dispatch),
         completedDuringWait: waited.completedDuringWait.map(publicDispatch),
-        interactions: redactAgentIds(waited.interactions),
+        interactions: waited.interactions.map(publicInteraction),
       } as DelegationProcedureOutput<Name>;
     }
     case 'result': {
       const value = input as DelegationProcedureInput<'result'>;
       const page = await service.result({ authority, ...value });
-      return { ...page, dispatch: publicDispatch(page.dispatch) } as DelegationProcedureOutput<Name>;
+      return {
+        dispatch: publicDispatch(page.dispatch),
+        text: page.text,
+        nextCursor: page.nextCursor,
+      } as DelegationProcedureOutput<Name>;
     }
     case 'events': {
       const value = input as DelegationProcedureInput<'events'>;
-      return redactAgentIds(await service.events({ authority, ...value })) as DelegationProcedureOutput<Name>;
+      const page = await service.events({ authority, ...value });
+      return publicEvents(page) as DelegationProcedureOutput<Name>;
     }
     case 'transcript': {
       const value = input as DelegationProcedureInput<'transcript'>;
-      return redactAgentIds(await service.transcript({ authority, ...value })) as DelegationProcedureOutput<Name>;
+      const page = await service.transcript({ authority, ...value });
+      return publicTranscript(page) as DelegationProcedureOutput<Name>;
     }
     case 'cancel': {
       const value = input as DelegationProcedureInput<'cancel'>;
@@ -181,8 +224,24 @@ function binding(seat: ExternalDelegationSeatAuthority) {
 }
 
 function publicDispatch(value: ExternalDispatchView): Omit<ExternalDispatchView, 'agentId'> {
-  const { agentId: _agentId, ...dispatch } = value;
-  return dispatch;
+  return {
+    dispatchId: value.dispatchId,
+    target: value.target,
+    taskName: value.taskName,
+    profileName: value.profileName,
+    actualProfile: value.actualProfile,
+    modelAlias: value.modelAlias,
+    thinkingEffort: value.thinkingEffort,
+    status: value.status,
+    nextStep: value.nextStep,
+    continueHint: value.continueHint,
+    createdAt: value.createdAt,
+    startedAt: value.startedAt,
+    endedAt: value.endedAt,
+    continuationOf: value.continuationOf,
+    usage: value.usage,
+    errorCode: value.errorCode,
+  };
 }
 
 function authorityFor(seat: ExternalDelegationSeatAuthority): ExternalAuthority {
@@ -197,13 +256,210 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function redactAgentIds<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(redactAgentIds) as T;
-  if (value === null || typeof value !== 'object') return value;
-  const result: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (key === 'agentId' || key === 'sourceAgentId' || key === 'targetAgentId' || key === 'agent_id') continue;
-    result[key] = redactAgentIds(entry);
+function publicInteraction(value: ExternalInteractionView): ExternalInteractionView {
+  return {
+    interactionId: value.interactionId,
+    kind: value.kind,
+    taskName: value.taskName,
+    payload: value.payload,
+    createdAt: value.createdAt,
+  };
+}
+
+function publicEvents(page: ExternalEventPage | ExternalTurnEventPage) {
+  return {
+    items: page.items.map((item) => 'event' in item
+      ? {
+          seq: item.seq,
+          dispatchId: item.dispatchId,
+          at: item.at,
+          event: publicExecutorEvent(item.event),
+        }
+      : {
+          seq: item.seq,
+          dispatchId: item.dispatchId,
+          type: item.type,
+          at: item.at,
+          message: item.message,
+        }),
+    nextCursor: page.nextCursor,
+    truncated_before_seq: 'truncated_before_seq' in page ? page.truncated_before_seq : undefined,
+  };
+}
+
+function publicExecutorContent(content: NormalizedExecutorContent): NormalizedExecutorContent {
+  switch (content.type) {
+    case 'text':
+      return { type: content.type, text: content.text };
+    case 'image':
+      return { type: content.type, mimeType: content.mimeType, data: content.data };
+    case 'resource_link':
+      return { type: content.type, uri: content.uri, name: content.name };
+    case 'opaque':
+      return { type: content.type, contentType: content.contentType };
   }
-  return result as T;
+}
+
+function publicExecutorEvent(event: NormalizedExecutorEvent): NormalizedExecutorEvent {
+  switch (event.type) {
+    case 'message.delta':
+      return {
+        type: event.type,
+        role: event.role,
+        messageId: event.messageId,
+        content: publicExecutorContent(event.content),
+      };
+    case 'thought.delta':
+      return {
+        type: event.type,
+        messageId: event.messageId,
+        content: publicExecutorContent(event.content),
+      };
+    case 'tool.call':
+      return {
+        type: event.type,
+        toolCallId: event.toolCallId,
+        title: event.title,
+        kind: event.kind,
+        status: event.status,
+        rawInput: event.rawInput,
+        content: event.content,
+        locations: event.locations,
+      };
+    case 'tool.update':
+      return {
+        type: event.type,
+        toolCallId: event.toolCallId,
+        title: event.title,
+        kind: event.kind,
+        status: event.status,
+        rawInput: event.rawInput,
+        rawOutput: event.rawOutput,
+        content: event.content,
+        locations: event.locations,
+      };
+    case 'plan.update':
+      return { type: event.type, plan: event.plan, unstable: event.unstable };
+    case 'plan.remove':
+      return { type: event.type, planId: event.planId, unstable: event.unstable };
+    case 'commands.update':
+      return { type: event.type, commands: event.commands };
+    case 'mode.update':
+      return { type: event.type, currentModeId: event.currentModeId };
+    case 'config.update':
+      return { type: event.type, configOptions: event.configOptions };
+    case 'session.info':
+      return { type: event.type, title: event.title, meta: event.meta };
+    case 'usage':
+      return { type: event.type, used: event.used, size: event.size, cost: event.cost };
+    case 'unknown':
+      return { type: event.type, updateType: event.updateType };
+  }
+}
+
+function publicTranscript(page: ExternalTranscriptPage | ExternalTranscriptItemsPage) {
+  if ('cursor' in page) {
+    return {
+      items: page.items.map(publicTranscriptItem),
+      cursor: page.cursor,
+      nextCursor: page.nextCursor,
+    };
+  }
+  return {
+    items: page.items.map((item) => ({
+      index: item.index,
+      role: item.role,
+      text: item.text,
+    })),
+    nextCursor: page.nextCursor,
+  };
+}
+
+function publicTranscriptItem(item: ExternalTranscriptL1Item): ExternalTranscriptL1Item {
+  switch (item.kind) {
+    case 'turn':
+      return publicTranscriptTurn(item);
+    case 'marker':
+      return {
+        kind: item.kind,
+        markerId: item.markerId,
+        marker: item.marker,
+        payload: item.payload,
+        at: item.at,
+      };
+    case 'taskref':
+      return {
+        kind: item.kind,
+        refId: item.refId,
+        taskId: item.taskId,
+        at: item.at,
+      };
+  }
+}
+
+function publicTranscriptTurn(turn: ExternalTranscriptTurn): ExternalTranscriptTurn {
+  return {
+    kind: turn.kind,
+    turnId: turn.turnId,
+    ordinal: turn.ordinal,
+    state: turn.state,
+    origin: turn.origin,
+    prompt: turn.prompt,
+    steps: turn.steps.map(publicTranscriptStep),
+    startedAt: turn.startedAt,
+    endedAt: turn.endedAt,
+    usage: turn.usage,
+  };
+}
+
+function publicTranscriptStep(step: ExternalTranscriptStep): ExternalTranscriptStep {
+  return {
+    kind: step.kind,
+    stepId: step.stepId,
+    turnId: step.turnId,
+    ordinal: step.ordinal,
+    state: step.state,
+    frames: step.frames.map(publicTranscriptFrame),
+    startedAt: step.startedAt,
+    endedAt: step.endedAt,
+    usage: step.usage,
+  };
+}
+
+function publicTranscriptFrame(
+  frame: ExternalTranscriptStep['frames'][number],
+): ExternalTranscriptStep['frames'][number] {
+  switch (frame.kind) {
+    case 'text':
+      return {
+        kind: frame.kind,
+        frameId: frame.frameId,
+        role: frame.role,
+        text: frame.text,
+      };
+    case 'thinking':
+      return {
+        kind: frame.kind,
+        frameId: frame.frameId,
+        text: frame.text,
+      };
+    case 'tool':
+      return publicTranscriptToolFrame(frame);
+  }
+}
+
+function publicTranscriptToolFrame(frame: ExternalTranscriptToolFrame): ExternalTranscriptToolFrame {
+  return {
+    kind: frame.kind,
+    frameId: frame.frameId,
+    toolCallId: frame.toolCallId,
+    name: frame.name,
+    state: frame.state,
+    input: frame.input,
+    output: frame.output,
+    display: frame.display,
+    progress: frame.progress,
+    startedAt: frame.startedAt,
+    endedAt: frame.endedAt,
+  };
 }

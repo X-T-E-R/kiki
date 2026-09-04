@@ -2,11 +2,11 @@ import {
   delegationProcedureTable,
   type DelegationProcedureName,
 } from '@moonshot-ai/klient/procedures';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
+import type { McpSeat, SeatResolver } from '../mcp/seatResolver';
 import { errEnvelope, okEnvelope } from '../protocol/envelope';
 import { ErrorCode } from '../protocol/error-codes';
-import type { SeatResolver } from '../mcp/seatResolver';
 import {
   externalDelegationFailureCode,
   externalDelegationPublicFailure,
@@ -15,22 +15,42 @@ import { ExternalDelegationProcedureHost } from './externalDelegationHost';
 
 export const SEAT_KLIENT_DELEGATION_PREFIX = '/api/klient/delegation';
 
-export function registerSeatKlientDelegationRoutes(
-  app: FastifyInstance,
-  host: ExternalDelegationProcedureHost,
-  seatResolver: SeatResolver,
-): void {
-  for (const procedure of delegationProcedureTable) {
-    app.post(`${SEAT_KLIENT_DELEGATION_PREFIX}/${procedure.name}`, { schema: { hide: true } }, async (req, reply) => {
-      const bearer = readBearer(req);
-      if (req.headers.authorization !== undefined) req.headers.authorization = '[redacted]';
-      const seat = bearer === undefined ? null : await seatResolver.resolve(bearer);
+export interface SeatKlientDelegationAuth {
+  onRequest(req: FastifyRequest, reply: FastifyReply): Promise<FastifyReply | void>;
+  seat(req: FastifyRequest): McpSeat;
+}
+
+export function createSeatKlientDelegationAuth(
+  resolveSeatResolver: () => SeatResolver,
+): SeatKlientDelegationAuth {
+  const seats = new WeakMap<FastifyRequest, McpSeat>();
+  return {
+    async onRequest(req, reply) {
+      if (!isSeatDelegationPath(req.url)) return;
+      const bearer = readBearer(req.headers.authorization);
+      delete req.headers.authorization;
+      const seat = bearer === undefined ? null : await resolveSeatResolver().resolve(bearer);
       if (seat === null) {
         return reply.code(401).send(errEnvelope(40101, 'Unauthorized', req.id));
       }
+      seats.set(req, seat);
+    },
+    seat(req) {
+      return seats.get(req)!;
+    },
+  };
+}
+
+export function registerSeatKlientDelegationRoutes(
+  app: FastifyInstance,
+  host: ExternalDelegationProcedureHost,
+  auth: SeatKlientDelegationAuth,
+): void {
+  for (const procedure of delegationProcedureTable) {
+    app.post(`${SEAT_KLIENT_DELEGATION_PREFIX}/${procedure.name}`, { schema: { hide: true } }, async (req, reply) => {
+      const { delegationToken: _delegationToken, ...authoritySeat } = auth.seat(req);
       try {
         const input = procedure.inputSchema.parse(req.body ?? {});
-        const { delegationToken: _delegationToken, ...authoritySeat } = seat;
         const data = await host.call(authoritySeat, procedure.name as DelegationProcedureName, input as never);
         return reply.send(okEnvelope(data, req.id));
       } catch (error) {
@@ -54,8 +74,16 @@ export function registerSeatKlientDelegationRoutes(
   }
 }
 
-function readBearer(req: FastifyRequest): string | undefined {
-  const header = req.headers.authorization;
+function isSeatDelegationPath(rawUrl: string): boolean {
+  const rawPath = rawUrl.split('?', 1)[0] ?? rawUrl;
+  try {
+    return decodeURIComponent(rawPath).startsWith(`${SEAT_KLIENT_DELEGATION_PREFIX}/`);
+  } catch {
+    return false;
+  }
+}
+
+function readBearer(header: string | string[] | undefined): string | undefined {
   if (header === undefined || Array.isArray(header) || !header.startsWith('Bearer ')) return undefined;
   const token = header.slice('Bearer '.length);
   return token.length === 0 ? undefined : token;

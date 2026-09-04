@@ -111,4 +111,95 @@ describe('external delegation procedures', () => {
       message: 'inspect',
     })).resolves.toMatchObject({ dispatchId: 'dispatch-1' });
   });
+
+  it('closes the HTTP client idempotently and aborts active calls', async () => {
+    let aborted = false;
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        aborted = true;
+        reject(init.signal?.reason);
+      }, { once: true });
+    }));
+    const klient = createSeatKlient({
+      endpoint: 'http://127.0.0.1:58627',
+      token: 'SEAT_TOKEN',
+      fetch: fetchMock,
+    });
+    const pending = klient.list();
+    const first = klient.close();
+    const second = klient.close();
+
+    expect(first).toBe(second);
+    await first;
+    await expect(pending).rejects.toBeDefined();
+    await expect(klient.list()).rejects.toThrow('seat klient closed');
+    expect(aborted).toBe(true);
+  });
+
+  it('validates every transcript variant and rejects malformed structured items', () => {
+    const schema = delegationProcedureTable.find((procedure) => procedure.name === 'transcript')!.outputSchema;
+    const textPage = {
+      items: [{ index: 0, role: 'assistant', text: 'done' }],
+      nextCursor: 1,
+    };
+    const itemsPage = {
+      cursor: 0,
+      nextCursor: 3,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 'turn-1',
+          ordinal: 0,
+          state: 'completed',
+          origin: { source: 'external' },
+          prompt: 'inspect',
+          steps: [{
+            kind: 'step',
+            stepId: 'step-1',
+            turnId: 'turn-1',
+            ordinal: 0,
+            state: 'completed',
+            frames: [
+              { kind: 'text', frameId: 'frame-text', role: 'assistant', text: 'done' },
+              { kind: 'thinking', frameId: 'frame-thinking', text: 'inspect' },
+              {
+                kind: 'tool',
+                frameId: 'frame-tool',
+                toolCallId: 'tool-1',
+                name: 'Inspect',
+                state: 'done',
+                input: { agentId: 'customer-input' },
+                output: { ok: true },
+                display: { title: 'Inspect' },
+                progress: { current: 1 },
+              },
+            ],
+            usage: {
+              inputOther: 1,
+              output: 2,
+              inputCacheRead: 3,
+              inputCacheCreation: 4,
+            },
+          }],
+          usage: { total: 3 },
+        },
+        {
+          kind: 'marker',
+          markerId: 'marker-1',
+          marker: 'checkpoint',
+          payload: { agentId: 'customer-marker' },
+        },
+        {
+          kind: 'taskref',
+          refId: 'ref-1',
+          taskId: 'task-1',
+        },
+      ],
+    };
+
+    expect(schema.safeParse(textPage).success).toBe(true);
+    expect(schema.safeParse(itemsPage).success).toBe(true);
+    expect(schema.safeParse({ cursor: 0, items: [{ kind: 'turn' }] }).success).toBe(false);
+    expect(schema.safeParse({ cursor: 0, items: [{ kind: 'unknown' }] }).success).toBe(false);
+  });
 });
