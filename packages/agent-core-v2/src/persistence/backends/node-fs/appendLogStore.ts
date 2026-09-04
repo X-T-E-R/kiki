@@ -137,7 +137,9 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
   async flush(...target: [] | [scope: string, key: string]): Promise<void> {
     if (target.length === 2) {
       const [scope, key] = target;
-      await this.flushState(scope, key, this.logs.get(logId(scope, key))!);
+      const state = this.logs.get(logId(scope, key));
+      if (state === undefined) return;
+      await this.flushState(scope, key, state);
       return;
     }
     const inFlight = [...this.logs.entries()].map(([id, state]) => {

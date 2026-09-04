@@ -114,6 +114,22 @@ describe('AppendLogStore', () => {
     blockedOwner.dispose();
   });
 
+  it('treats missing and retired scoped targets as a no-op', async () => {
+    const logs = (record as unknown as { readonly logs: Map<string, unknown> }).logs;
+    await record.flush('agents/missing', 'wire.jsonl');
+    expect(logs.size).toBe(0);
+
+    const owner = record.acquire(SCOPE, KEY);
+    record.append(SCOPE, KEY, { n: 1 });
+    await record.flush(SCOPE, KEY);
+    owner.dispose();
+    await record.drainRetirements();
+    expect(logs.size).toBe(0);
+
+    await record.flush(SCOPE, KEY);
+    expect(logs.size).toBe(0);
+  });
+
   it('later flush reports an ambiguous auto-flush failure without retrying the batch', async () => {
     const failure = new Error('append failed after commit');
     let markAppendStarted!: () => void;

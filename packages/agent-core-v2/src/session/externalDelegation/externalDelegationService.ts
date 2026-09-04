@@ -503,15 +503,8 @@ export class SessionExternalDelegationService
     const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
     const limit = boundedLimit(request.limit, 100);
     if (request.detail === 'turn') {
-      await this.terminalizations.get(dispatch.dispatchId);
       const handle = await this.materializeDispatchAgent(doc, dispatch);
-      const projection = await this.buildTurnProjection(handle);
-      const start = dispatch.transcriptStart;
-      let end = projection.cursor;
-      if (!ACTIVE.has(dispatch.status)) {
-        await this.terminalizations.get(dispatch.dispatchId);
-        end = dispatch.transcriptEnd!;
-      }
+      const { projection, start, end } = await this.turnProjectionWindow(handle, dispatch);
       if (cursor > end) throw invalid('cursor is invalid.');
       return projection.eventPage(dispatch.dispatchId, start, end, cursor, limit);
     }
@@ -535,16 +528,9 @@ export class SessionExternalDelegationService
     const dispatch = this.lookup(doc, request.dispatchId);
     const limit = boundedLimit(request.limit, 50);
     if (request.detail === 'items') {
-      await this.terminalizations.get(dispatch.dispatchId);
       const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
       const handle = await this.materializeDispatchAgent(doc, dispatch);
-      const projection = await this.buildTurnProjection(handle);
-      const start = dispatch.transcriptStart;
-      let end = projection.cursor;
-      if (!ACTIVE.has(dispatch.status)) {
-        await this.terminalizations.get(dispatch.dispatchId);
-        end = dispatch.transcriptEnd!;
-      }
+      const { projection, start, end } = await this.turnProjectionWindow(handle, dispatch);
       if (cursor > end) throw invalid('cursor is invalid.');
       return projection.itemPage(start, end, cursor, limit);
     }
@@ -864,6 +850,30 @@ export class SessionExternalDelegationService
         dispatch.taskName!,
       )
     ).agent;
+  }
+
+  private async turnProjectionWindow(
+    handle: IAgentScopeHandle,
+    dispatch: StoredDispatch,
+  ): Promise<{
+    readonly projection: AgentTurnProjection;
+    readonly start: number;
+    readonly end: number;
+  }> {
+    if (ACTIVE.has(dispatch.status)) {
+      const projection = await this.buildTurnProjection(handle);
+      if (ACTIVE.has(dispatch.status)) {
+        return { projection, start: dispatch.transcriptStart, end: projection.cursor };
+      }
+    }
+    await this.terminalizations.get(dispatch.dispatchId);
+    const projection = await this.buildTurnProjection(
+      handle,
+      true,
+      undefined,
+      dispatch.transcriptTurnId,
+    );
+    return { projection, start: dispatch.transcriptStart, end: dispatch.transcriptEnd! };
   }
 
   private projectionEntry(handle: IAgentScopeHandle): ProjectionCacheEntry {

@@ -54,6 +54,7 @@ import {
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
+import { AgentTurnProjection } from '#/session/externalDelegation/turnProjection';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { SessionInteractionService } from '#/session/interaction/interactionService';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
@@ -83,6 +84,15 @@ const profile: AgentProfile = {
   modelAlias: 'model',
   systemPrompt: () => 'coder',
   renderSystemPrompt: () => ({ text: 'coder', environment: { cwd: '', date: { disclosed: false } } }),
+};
+
+type ProjectionInternals = {
+  buildTurnProjection(
+    handle: IAgentScopeHandle,
+    cached?: boolean,
+    requiredGeneration?: number,
+    requiredTurnId?: number,
+  ): Promise<AgentTurnProjection>;
 };
 
 describe('SessionExternalDelegationService', () => {
@@ -1419,6 +1429,128 @@ describe('SessionExternalDelegationService', () => {
     });
     expect(repeated.items).toEqual(turnEvents.items);
   });
+
+  it.each(['items', 'turn'] as const)(
+    'pairs a terminal %s cursor with the projection rebuilt after terminalization',
+    async (detail) => {
+      const service = ix.get(ISessionExternalDelegationService);
+      const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+      const records = wireRecords.get('main')!;
+      records.push(
+        {
+          type: 'turn.prompt',
+          time: 1,
+          turnId: 1,
+          input: [{ type: 'text', text: 'work' }],
+          origin: { kind: 'user' },
+        },
+        {
+          type: 'context.append_loop_event',
+          time: 2,
+          event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+        },
+        {
+          type: 'context.append_loop_event',
+          time: 3,
+          event: {
+            type: 'content.part',
+            stepUuid: 's1',
+            turnId: '1',
+            step: 1,
+            uuid: 'm1',
+            part: { type: 'text', text: 'before' },
+          },
+        },
+      );
+      let cursor: number;
+      if (detail === 'items') {
+        cursor = (await service.transcript({
+          authority,
+          dispatchId: dispatch.dispatchId,
+          detail: 'items',
+        })).cursor;
+      } else {
+        cursor = (await service.events({
+          authority,
+          dispatchId: dispatch.dispatchId,
+          detail: 'turn',
+        })).items.at(-1)!.seq;
+      }
+      const internals = service as unknown as ProjectionInternals;
+      const buildTurnProjection = internals.buildTurnProjection.bind(internals);
+      let injectTerminalization = true;
+      vi.spyOn(internals, 'buildTurnProjection').mockImplementation(async (...args) => {
+        const projection = await buildTurnProjection(...args);
+        if (!injectTerminalization || args[1] === false) return projection;
+        injectTerminalization = false;
+        records.push(
+          {
+            type: 'context.append_loop_event',
+            time: 4,
+            event: {
+              type: 'content.part',
+              stepUuid: 's1',
+              turnId: '1',
+              step: 1,
+              uuid: 'm1',
+              part: { type: 'text', text: ' after' },
+            },
+          },
+          { type: 'turn.ended', time: 5, turnId: 1, reason: 'completed' },
+        );
+        completions[0]!.resolve({ summary: 'done' });
+        await vi.waitFor(() => {
+          const stored = documents.get('root') as {
+            dispatches: Record<string, { transcriptEnd?: number }>;
+          };
+          expect(stored.dispatches[dispatch.dispatchId]!.transcriptEnd).toBeGreaterThan(cursor);
+        });
+        return projection;
+      });
+
+      if (detail === 'items') {
+        const page = await service.transcript({
+          authority,
+          dispatchId: dispatch.dispatchId,
+          detail: 'items',
+          cursor,
+        });
+        const stored = documents.get('root') as {
+          dispatches: Record<string, { transcriptEnd: number }>;
+        };
+        expect(page).toMatchObject({
+          items: [{
+            kind: 'turn',
+            turnId: 't1',
+            state: 'completed',
+            steps: [{ frames: [{ kind: 'text', text: 'before after' }] }],
+          }],
+          cursor: stored.dispatches[dispatch.dispatchId]!.transcriptEnd,
+        });
+        await expect(service.transcript({
+          authority,
+          dispatchId: dispatch.dispatchId,
+          detail: 'items',
+          cursor: page.cursor,
+        })).resolves.toEqual({ items: [], cursor: page.cursor, nextCursor: undefined });
+      } else {
+        const page = await service.events({
+          authority,
+          dispatchId: dispatch.dispatchId,
+          detail: 'turn',
+          cursor,
+        });
+        expect(page.items.map((item) => item.event.type)).toEqual(['message.delta']);
+        expect(page.items[0]!.seq).toBeGreaterThan(cursor);
+        await expect(service.events({
+          authority,
+          dispatchId: dispatch.dispatchId,
+          detail: 'turn',
+          cursor: page.items[0]!.seq,
+        })).resolves.toEqual({ items: [], nextCursor: undefined });
+      }
+    },
+  );
 
   it('rebinds projection state when a released agent id is rematerialized', async () => {
     const service = ix.get(ISessionExternalDelegationService);
