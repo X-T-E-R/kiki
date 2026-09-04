@@ -16,7 +16,11 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService, type AgentLoopStatus } from '#/agent/loop/loop';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import {
+  constrainPermissionMode,
+  IAgentPermissionModeService,
+} from '#/agent/permissionMode/permissionMode';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -51,6 +55,7 @@ import type {
   SpawnConstraints,
   SubagentLease,
 } from '#/app/agentProfileCatalog/subagentLease';
+import { TOWER_WORKER_PROFILE } from '#/features/tower/tower';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
@@ -456,6 +461,7 @@ interface LaneOptions {
   readonly resolveModelAlias?: (id: string) => string | undefined;
   readonly modelCatalogGet?: (id: string) => Model;
   readonly validateBinding?: (binding: ExecutorBinding) => ExecutorValidationResult;
+  readonly externalPermissionCeiling?: PermissionMode;
 }
 
 interface ParityLane {
@@ -472,6 +478,9 @@ interface ParityLane {
   readonly profile: AgentProfile;
   taskRelease?: 'detached' | 'timeout_detached' | 'terminal';
   runInternal(args: SubagentToolInput): Promise<ExecutableToolResult>;
+  context(agentId: string): readonly string[];
+  permissionMode(agentId: string): PermissionMode;
+  setPermissionMode(agentId: string, mode: PermissionMode): void;
   setExecutionRunning(agentId: string, running: boolean): void;
   setLoopStatus(agentId: string, status: AgentLoopStatus): void;
   dropHandle(agentId: string): void;
@@ -492,6 +501,9 @@ function createLane(
   const taskRecords = new Map<string, TaskRecord>();
   const stateByAgent = new Map<string, AgentStateService>();
   const profileByAgent = new Map<string, ProfileData>();
+  const contextByAgent = new Map<string, string[]>();
+  const permissionModeByAgent = new Map<string, PermissionMode>();
+  const permissionCeilingByAgent = new Map<string, PermissionMode>();
   const executionRunning = new Set<string>();
   const loopStatusByAgent = new Map<string, AgentLoopStatus>();
   const mailboxQueue: Array<{
@@ -558,13 +570,28 @@ function createLane(
           };
         }
         if (serviceId === IAgentPermissionModeService) {
+          permissionModeByAgent.set(
+            agentId,
+            permissionModeByAgent.get(agentId) ?? (agentId === 'main' ? 'manual' : 'auto'),
+          );
           return {
             _serviceBrand: undefined,
-            mode: agentId === 'main' ? 'manual' : 'auto',
-            setMode: (mode: string) => {
-              probe.permissions.push(['permission', mode]);
+            get mode() {
+              return permissionModeByAgent.get(agentId)!;
             },
-            setModeCeiling: () => {},
+            setMode: (mode: PermissionMode) => {
+              const ceiling = permissionCeilingByAgent.get(agentId);
+              const effective = ceiling === undefined ? mode : constrainPermissionMode(mode, ceiling);
+              permissionModeByAgent.set(agentId, effective);
+              probe.permissions.push(['permission', effective]);
+            },
+            setModeCeiling: (mode: PermissionMode) => {
+              permissionCeilingByAgent.set(agentId, mode);
+              permissionModeByAgent.set(
+                agentId,
+                constrainPermissionMode(permissionModeByAgent.get(agentId)!, mode),
+              );
+            },
           };
         }
         if (serviceId === IAgentUserToolService) {
@@ -671,6 +698,8 @@ function createLane(
     spawnPolicy: profile === parityProfile ? paritySpawnPolicy : undefined,
   });
   metadataAgents['main'] = { type: 'main', labels: {} };
+  contextByAgent.set('main', []);
+  permissionModeByAgent.set('main', 'manual');
   handles.set('main', handle('main'));
 
   const lifecycleCreate = vi.fn(async (createOptions: CreateAgentOptions = {}) => {
@@ -712,12 +741,17 @@ function createLane(
         ? createOptions.delegator.agentId
         : undefined,
       delegator: createOptions.delegator,
-      labels: createOptions.labels,
+      labels: {
+        ...createOptions.labels,
+        profileName: binding?.profile ?? resolved.name,
+      },
       displayName: binding?.profile,
       model: validated.binding.modelAlias,
       thinkingEffort: validated.binding.thinkingEffort,
       executor: resolved.executor,
     };
+    contextByAgent.set(agentId, []);
+    permissionModeByAgent.set(agentId, permissionModeByAgent.get(agentId) ?? 'auto');
     const createdHandle = handle(agentId);
     handles.set(agentId, createdHandle);
     probe.recordCreate(lane, agentId, createOptions);
@@ -768,6 +802,11 @@ function createLane(
         request.kind,
         request.kind === 'prompt' ? request.prompt : undefined,
       ]);
+      if (request.kind === 'prompt') {
+        const context = contextByAgent.get(agentId) ?? [];
+        context.push(request.prompt);
+        contextByAgent.set(agentId, context);
+      }
       const completion = deferred<{ summary: string; usage?: TokenUsage }>();
       completions.push(completion);
       void completion.promise.then((result) => {
@@ -943,7 +982,9 @@ function createLane(
     debug: () => {},
     child: () => ix.get(ILogService),
   });
-  ix.stub(IBootstrapService, { getEnv: () => 'yolo' });
+  ix.stub(IBootstrapService, {
+    getEnv: () => options.externalPermissionCeiling ?? 'yolo',
+  });
   ix.stub(IConfigService, { get: <T>() => undefined as T });
   ix.stub(IModelService, { resolveId: options.resolveModelAlias ?? ((id: string) => id) });
   ix.stub(IModelCatalog, {
@@ -1045,6 +1086,11 @@ function createLane(
         signal: new AbortController().signal,
       });
     },
+    context: (agentId) => contextByAgent.get(agentId) ?? [],
+    permissionMode: (agentId) => permissionModeByAgent.get(agentId)!,
+    setPermissionMode: (agentId, mode) => {
+      permissionModeByAgent.set(agentId, mode);
+    },
     setExecutionRunning: (agentId, running) => {
       if (running) executionRunning.add(agentId);
       else executionRunning.delete(agentId);
@@ -1054,6 +1100,7 @@ function createLane(
     },
     dropHandle: (agentId) => {
       handles.delete(agentId);
+      permissionCeilingByAgent.delete(agentId);
     },
   };
   return laneRef;
@@ -1310,6 +1357,128 @@ describe('AgentRun and dispatch parity golden', () => {
       message: 'switch profile',
     })).rejects.toThrow(/cannot change profile/);
     expect(invalidInternal.isError).toBe(true);
+  });
+
+  it('rebuilds a cold named child with its context and the caller current mode', async () => {
+    const internal = createLane(disposables, 'internal');
+    const first = await internal.runInternal({
+      prompt: 'remember restart context',
+      description: 'Persist child',
+      profile: 'coder',
+      name: 'restart_child',
+      model_alias: 'parity-model',
+      background: true,
+    });
+    await complete(internal, 0);
+    internal.setPermissionMode('main', 'yolo');
+    internal.dropHandle('agent_child_1');
+
+    const resumed = await internal.runInternal({
+      prompt: 'continue after restart',
+      description: 'Resume child',
+      resume: 'restart_child',
+      background: true,
+    });
+
+    expect(first.isError).not.toBe(true);
+    expect(resumed.isError).not.toBe(true);
+    expect(fieldMap(outputText(resumed.output))).toMatchObject({
+      agent_id: 'agent_child_1',
+      actual_profile: 'coder',
+    });
+    expect(internal.permissionMode('agent_child_1')).toBe('yolo');
+    expect(internal.context('agent_child_1')).toEqual([
+      'remember restart context',
+      'continue after restart',
+    ]);
+    expect(internal.lifecycleCreate).toHaveBeenCalledTimes(2);
+    expect(internal.lifecycleCreate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ agentId: 'agent_child_1' }),
+    );
+    expect(internal.probe.agentIds).toEqual(['agent_child_1']);
+    expect([...internal.handles.keys()].toSorted()).toEqual(['agent_child_1', 'main']);
+    expect(internal.metadataAgents['agent_child_1']?.labels).toMatchObject({
+      collaborationTaskName: 'restart_child',
+      profileName: 'coder',
+    });
+    await complete(internal, 1);
+  });
+
+  it('keeps a cold fixed-mode worker on its persisted permission mode', async () => {
+    const workerProfile = normalizeAgentProfile({
+      ...parityProfile,
+      name: TOWER_WORKER_PROFILE,
+      definitionId: 'profile-tower-worker',
+    });
+    const internal = createLane(disposables, 'internal', { profile: workerProfile });
+    await internal.runInternal({
+      prompt: 'worker first run',
+      description: 'Persist worker',
+      profile: TOWER_WORKER_PROFILE,
+      name: 'fixed_worker',
+      model_alias: 'parity-model',
+      background: true,
+    });
+    await complete(internal, 0);
+    internal.setPermissionMode('agent_child_1', 'auto');
+    internal.setPermissionMode('main', 'yolo');
+    internal.dropHandle('agent_child_1');
+
+    await internal.runInternal({
+      prompt: 'worker resumed run',
+      description: 'Resume worker',
+      resume: 'fixed_worker',
+      background: true,
+    });
+
+    expect(internal.permissionMode('agent_child_1')).toBe('auto');
+    expect(internal.lifecycleCreate).toHaveBeenCalledTimes(2);
+    expect(internal.probe.agentIds).toEqual(['agent_child_1']);
+    await complete(internal, 1);
+  });
+
+  it('reapplies the external seat ceiling when a named child is rebuilt cold', async () => {
+    const externalProfile = normalizeAgentProfile({
+      ...parityProfile,
+      executor: 'grok-acp',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+      allowedModels: ['grok-4.6'],
+      allowedEfforts: ['xhigh'],
+    });
+    const external = createLane(disposables, 'external', {
+      profile: externalProfile,
+      externalPermissionCeiling: 'auto',
+    });
+    external.setPermissionMode('main', 'yolo');
+    const first = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'bounded_external',
+      profileName: 'coder',
+      message: 'first external run',
+    });
+    await completeExternal(external, first.dispatchId, 0);
+    external.setPermissionMode('agent_child_1', 'yolo');
+    external.dropHandle('agent_child_1');
+
+    const resumed = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'bounded_external',
+      message: 'resume external run',
+    });
+
+    expect(resumed).toMatchObject({
+      agentId: 'agent_child_1',
+      profileName: 'coder',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'xhigh',
+    });
+    expect(external.permissionMode('agent_child_1')).toBe('auto');
+    expect(external.lifecycleCreate).toHaveBeenCalledTimes(2);
+    expect(external.probe.agentIds).toEqual(['agent_child_1']);
+    await completeExternal(external, resumed.dispatchId, 1);
   });
 
   it('keeps transcript and events readable while a named dispatch is running', async () => {
