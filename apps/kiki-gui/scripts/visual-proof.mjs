@@ -958,8 +958,7 @@ async function scenarioErrorAbort() {
   // stream then starts — abort it mid-flight.
   await waitForText('recovering slowly', 20_000);
   await page.waitForTimeout(500);
-  await page.mouse.click(720, 300); // non-editable focus
-  await page.keyboard.press('Escape'); // …then aborted mid-stream
+  await page.locator('[data-composer-toolbar] button:has-text("■")').click();
   await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('error-abort');
