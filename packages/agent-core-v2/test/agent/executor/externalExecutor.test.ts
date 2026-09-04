@@ -803,14 +803,30 @@ describe('ACP external executor', () => {
     expect(harness.selections).toContainEqual({ configId: 'thought-id', value: 'xhigh' });
   });
 
-  it('reports an unsupported Cursor effort before starting the turn', async () => {
+  it.each([
+    [
+      'Grok session config',
+      {
+        executorId: 'grok-acp',
+        modelAlias: 'model-a',
+        thinkingEffort: 'ultra',
+        modelBinding: 'session_config' as const,
+      },
+    ],
+    [
+      'Cursor argv',
+      {
+        executorId: 'cursor-acp',
+        modelAlias: 'cursor-fast',
+        thinkingEffort: 'ultra',
+        modelBinding: 'argv' as const,
+        modelArgs: ['--model', '{model}'],
+        args: ['acp'],
+      },
+    ],
+  ])('reports an unsupported effort for %s before starting the turn', async (_name, input) => {
     const harness = createHarness({
-      executorId: 'cursor-acp',
-      modelAlias: 'cursor-fast',
-      thinkingEffort: 'ultra',
-      modelBinding: 'argv',
-      modelArgs: ['--model', '{model}'],
-      args: ['acp'],
+      ...input,
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
     });
 
@@ -819,6 +835,8 @@ describe('ACP external executor', () => {
       { signal: new AbortController().signal },
     )).rejects.toThrow(/thought level "ultra" is unavailable/);
     expect(harness.starts).toHaveLength(0);
+    expect(harness.selections).not.toContainEqual({ configId: 'thought-id', value: 'low' });
+    expect(harness.selections).not.toContainEqual({ configId: 'thought-id', value: 'high' });
   });
 
   it.each([
