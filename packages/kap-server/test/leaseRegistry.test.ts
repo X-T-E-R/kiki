@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { LeaseRegistry } from '../src/services/leaseRegistry';
 
@@ -18,7 +18,27 @@ describe('LeaseRegistry', () => {
     });
     now = 1699;
     expect(registry.activeCount()).toBe(1);
+    const cleanup = vi.fn();
+    expect(registry.attach(created.leaseId, 'session:source', cleanup)).toBe(true);
     now = 1700;
     expect(registry.activeCount()).toBe(0);
+    expect(cleanup).toHaveBeenCalledOnce();
+    registry.dispose();
+  });
+
+  it('automatically releases attached resources when the owner lease expires', async () => {
+    vi.useFakeTimers();
+    const registry = new LeaseRegistry(100);
+    const lease = registry.renew();
+    const cleanup = vi.fn();
+    registry.attach(lease.leaseId, 'session:source', cleanup);
+
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(registry.activeCount()).toBe(0);
+    expect(registry.renew(lease.leaseId).leaseId).not.toBe(lease.leaseId);
+    registry.dispose();
+    vi.useRealTimers();
   });
 });

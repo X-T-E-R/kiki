@@ -401,6 +401,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const doClose = async (): Promise<void> => {
     shutdownController.abort();
     if (idleTimer !== undefined) clearInterval(idleTimer);
+    leaseRegistry.dispose();
     const closeErrors: unknown[] = [];
     let appClosing: Promise<void>;
     try {

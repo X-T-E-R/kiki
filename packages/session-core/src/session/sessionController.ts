@@ -10,6 +10,7 @@ import type {
   MessageContent,
   PermissionMode,
   PromptPlanGate,
+  PromptSubmitResult,
   QuestionResponse,
   Session,
 } from '@moonshot-ai/protocol';
@@ -922,7 +923,7 @@ export class SessionController {
     swarmMode?: boolean;
     goalObjective?: string;
     goalControl?: 'pause' | 'resume' | 'cancel';
-  }): Promise<void> {
+  }): Promise<PromptSubmitResult> {
     assertSessionWritable(this.state);
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
     const result = await this.client.submitPrompt(this.sessionId, {
@@ -951,6 +952,7 @@ export class SessionController {
         media: projection.media,
       }),
     );
+    return result;
   }
 
   /**

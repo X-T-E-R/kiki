@@ -24,7 +24,8 @@ describe('daemon prompt attachments', () => {
       hasFileAttachment: false,
       imageAttachmentIds: [image.id],
       fileAttachmentIds: [],
-      uploadIds: ['img-1'],
+      mediaUploadIds: ['img-1'],
+      fileUploadIds: [],
     });
   });
 

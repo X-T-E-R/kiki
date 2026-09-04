@@ -182,14 +182,21 @@ export class DaemonClient implements SessionTransport {
     return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}`);
   }
 
-  getGoal(sessionId: string): Promise<{ readonly goal: GoalSnapshot | null }> {
+  getGoal(sessionId: string): Promise<GoalSnapshot | null> {
     return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/goal`);
+  }
+
+  renewServerLease(leaseId?: string): Promise<{
+    readonly lease_id: string;
+    readonly expires_at: number;
+  }> {
+    return this.request('POST', '/leases', { lease_id: leaseId });
   }
 
   updateSessionSourceOverlay(
     sessionId: string,
     body: {
-      readonly owner_id: string;
+      readonly lease_id: string;
       readonly agent_files: readonly string[];
       readonly skill_dirs: readonly string[];
     },

@@ -1272,7 +1272,7 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(cancelled.body.data).toBeNull();
   });
 
-  it('isolates explicit source overlays by session owner and releases them independently', async () => {
+  it('isolates explicit source overlays by active lease and releases them independently', async () => {
     const cwd = home as string;
     const overlayRoot = join(cwd, 'session-overlays');
     const skillsA = join(overlayRoot, 'skills-a');
@@ -1293,14 +1293,23 @@ describe('server-v2 /api/v1/sessions', () => {
     );
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
     const id = created.body.data.id;
+    const unauthorized = await postJson<null>(`/api/v1/sessions/${id}/source-overlay`, {
+      lease_id: 'arbitrary-owner',
+      agent_files: [agentA],
+      skill_dirs: [skillsA],
+    });
+    expect(unauthorized.body.code).toBe(40001);
 
-    for (const [owner, agent, skills] of [
-      ['owner-a', agentA, skillsA],
-      ['owner-b', agentB, skillsB],
+    const leases: string[] = [];
+    for (const [agent, skills] of [
+      [agentA, skillsA],
+      [agentB, skillsB],
     ] as const) {
+      const lease = await postJson<{ lease_id: string }>('/api/v1/leases', {});
+      leases.push(lease.body.data.lease_id);
       const response = await postJson<{ profiles: number; skills: number }>(
         `/api/v1/sessions/${id}/source-overlay`,
-        { owner_id: owner, agent_files: [agent], skill_dirs: [skills] },
+        { lease_id: lease.body.data.lease_id, agent_files: [agent], skill_dirs: [skills] },
       );
       expect(response.body.code, JSON.stringify(response.body)).toBe(0);
     }
@@ -1316,7 +1325,7 @@ describe('server-v2 /api/v1/sessions', () => {
     );
 
     await postJson(`/api/v1/sessions/${id}/source-overlay`, {
-      owner_id: 'owner-a',
+      lease_id: leases[0],
       agent_files: [],
       skill_dirs: [],
     });
@@ -1324,6 +1333,47 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(profiles.get('overlay-agent-b')).toBeDefined();
     expect((await skills.list()).map((skill) => skill.name)).not.toContain('overlay-skill-a');
     expect((await skills.list()).map((skill) => skill.name)).toContain('overlay-skill-b');
+
+    await (server as RunningServer).core.accessor.get(ISessionManager).close(id);
+    expect(profiles.get('overlay-agent-b')).toBeUndefined();
+    expect((await skills.list()).map((skill) => skill.name)).not.toContain('overlay-skill-b');
+  });
+
+  it('removes a session source overlay when its owner lease expires', async () => {
+    await (server as RunningServer).close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+      leaseTtlMs: 300,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const agentFile = join(home as string, 'leased-agent.md');
+    await writeFile(
+      agentFile,
+      '---\nname: leased-agent\ndescription: leased\n---\n\nLeased.\n',
+    );
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const lease = await postJson<{ lease_id: string }>('/api/v1/leases', {});
+    await postJson(`/api/v1/sessions/${created.body.data.id}/source-overlay`, {
+      lease_id: lease.body.data.lease_id,
+      agent_files: [agentFile],
+      skill_dirs: [],
+    });
+    const session = getLiveSessionById(
+      (server as RunningServer).core.accessor,
+      created.body.data.id,
+    );
+    if (session === undefined) throw new Error('expected a live session');
+    const profiles = session.accessor.get(ISessionAgentProfileCatalog);
+    expect(profiles.get('leased-agent')).toBeDefined();
+
+    await vi.waitFor(() => expect(profiles.get('leased-agent')).toBeUndefined(), { timeout: 2_000 });
   });
 
   it('starts one continuation when the Web profile resumes a blocked goal', async () => {

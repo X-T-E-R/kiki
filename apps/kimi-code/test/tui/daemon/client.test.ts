@@ -140,10 +140,30 @@ describe('DaemonClient', () => {
     ]);
   });
 
-  it('loads the active goal through authenticated kap-server REST', async () => {
+  it('loads the active goal through the real kap-server envelope shape', async () => {
     const fake = fakeKlient();
+    const goal = {
+      goalId: 'goal-1',
+      objective: 'Ship the release',
+      status: 'active' as const,
+      turnsUsed: 1,
+      tokensUsed: 12,
+      wallClockMs: 25,
+      budget: {
+        tokenBudget: null,
+        turnBudget: null,
+        wallClockBudgetMs: null,
+        remainingTokens: null,
+        remainingTurns: null,
+        remainingWallClockMs: null,
+        tokenBudgetReached: false,
+        turnBudgetReached: false,
+        wallClockBudgetReached: false,
+        overBudget: false,
+      },
+    };
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
-      json: async () => ({ code: 0, msg: 'ok', data: { goal: null } }),
+      json: async () => ({ code: 0, msg: 'ok', data: goal }),
     }) as Response);
     const client = new DaemonClient({
       url: 'http://127.0.0.1:57580/',
@@ -152,7 +172,7 @@ describe('DaemonClient', () => {
       klient: fake.klient as never,
     });
 
-    await expect(client.getGoal('session 1')).resolves.toEqual({ goal: null });
+    await expect(client.getGoal('session 1')).resolves.toEqual(goal);
     expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
       'http://127.0.0.1:57580/api/v1/sessions/session%201/goal',
     );
@@ -163,6 +183,28 @@ describe('DaemonClient', () => {
         Authorization: 'Bearer secret',
       },
     });
+  });
+
+  it('creates and renews server leases through kap-server REST', async () => {
+    const fake = fakeKlient();
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
+      json: async () => ({
+        code: 0,
+        msg: 'ok',
+        data: { lease_id: 'lease-1', expires_at: 1234 },
+      }),
+    }) as Response);
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580/',
+      token: 'secret',
+      fetch: fetch as typeof globalThis.fetch,
+      klient: fake.klient as never,
+    });
+
+    await client.renewServerLease('lease-1');
+
+    expect(requestUrl(fetch.mock.calls[0]![0])).toBe('http://127.0.0.1:57580/api/v1/leases');
+    expect(jsonRequestBody(fetch.mock.calls[0]?.[1])).toEqual({ lease_id: 'lease-1' });
   });
 
   it('updates a session-owned source overlay through kap-server REST', async () => {
@@ -177,7 +219,7 @@ describe('DaemonClient', () => {
       klient: fake.klient as never,
     });
     const body = {
-      owner_id: 'owner-1',
+      lease_id: 'lease-1',
       agent_files: ['reviewer.md'],
       skill_dirs: ['skills'],
     };

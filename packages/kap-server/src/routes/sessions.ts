@@ -83,6 +83,7 @@ import {
   type ModelTokenUsage,
 } from '../pricing/modelPricingService';
 import { readLegacyStatus } from '../services/legacyStatus/legacyStatus';
+import type { LeaseRegistry } from '../services/leaseRegistry';
 import { loadMessageHistoryEntries } from '../services/messages/messageHistory';
 import {
   assertCursor,
@@ -197,7 +198,7 @@ const sessionActionRequestSchema = z.preprocess(
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
 const sessionSourceOverlaySchema = z.strictObject({
-  owner_id: z.string().min(1),
+  lease_id: z.string().min(1),
   agent_files: z.array(z.string().min(1)).default([]),
   skill_dirs: z.array(z.string().min(1)).default([]),
 });
@@ -209,9 +210,23 @@ const sessionSourceOverlayResponseSchema = z.object({
 export function registerSessionsRoutes(
   app: SessionRouteHost,
   core: Scope,
-  broadcaster?: SessionEventBroadcaster,
-  onWorkspaceServed?: (workspace: string) => void | Promise<void>,
+  broadcaster: SessionEventBroadcaster | undefined,
+  onWorkspaceServed: ((workspace: string) => void | Promise<void>) | undefined,
+  leaseRegistry: LeaseRegistry,
 ): void {
+  const overlayResourcesBySession = new Map<string, Set<string>>();
+  const releaseSessionOverlays = (sessionId: string) => {
+    const resources = overlayResourcesBySession.get(sessionId);
+    if (resources === undefined) return;
+    overlayResourcesBySession.delete(sessionId);
+    for (const resourceId of resources) leaseRegistry.releaseResource(resourceId);
+  };
+  core.accessor.get(ISessionManager).onDidCloseSession?.(({ sessionId }) => {
+    releaseSessionOverlays(sessionId);
+  });
+  core.accessor.get(ISessionManager).onDidArchiveSession?.(({ sessionId }) => {
+    releaseSessionOverlays(sessionId);
+  });
   const createRoute = defineRoute(
     {
       method: 'POST',
@@ -1043,7 +1058,7 @@ export function registerSessionsRoutes(
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
       },
-      description: 'Replace one owner source overlay for a live session',
+      description: 'Replace one lease-owned source overlay for a live session',
       tags: ['sessions'],
     },
     async (req, reply) => {
@@ -1063,12 +1078,22 @@ export function registerSessionsRoutes(
           );
           return;
         }
-        const sourceId = `session-source:${req.body.owner_id}`;
+        if (!leaseRegistry.isActive(req.body.lease_id)) {
+          reply.send(
+            buildValidationEnvelope(
+              [{ path: 'lease_id', message: 'lease is missing or expired' }],
+              req.id,
+            ),
+          );
+          return;
+        }
+        const sourceId = `session-source:${req.body.lease_id}`;
+        const resourceId = `${session_id}:${sourceId}`;
         const profiles = session.accessor.get(ISessionAgentProfileCatalog) as SessionAgentProfileCatalogService;
         const skills = session.accessor.get(ISessionSkillCatalog) as SessionSkillCatalogService;
         if (req.body.agent_files.length === 0 && req.body.skill_dirs.length === 0) {
-          profiles.removeContribution(sourceId);
-          skills.remove(sourceId);
+          leaseRegistry.releaseResource(resourceId);
+          overlayResourcesBySession.get(session_id)?.delete(resourceId);
           reply.send(okEnvelope({ profiles: 0, skills: 0 }, req.id));
           return;
         }
@@ -1076,6 +1101,15 @@ export function registerSessionsRoutes(
           agentFiles: req.body.agent_files,
           skillDirs: req.body.skill_dirs,
         });
+        if (!leaseRegistry.isActive(req.body.lease_id)) {
+          reply.send(
+            buildValidationEnvelope(
+              [{ path: 'lease_id', message: 'lease expired while loading sources' }],
+              req.id,
+            ),
+          );
+          return;
+        }
         if (req.body.agent_files.length === 0) profiles.removeContribution(sourceId);
         else {
           profiles.setContribution(
@@ -1090,6 +1124,16 @@ export function registerSessionsRoutes(
             priority: SKILL_SOURCE_PRIORITY.workspace + 1,
           });
         }
+        leaseRegistry.attach(req.body.lease_id, resourceId, () => {
+          profiles.removeContribution(sourceId);
+          skills.remove(sourceId);
+          const resources = overlayResourcesBySession.get(session_id);
+          resources?.delete(resourceId);
+          if (resources?.size === 0) overlayResourcesBySession.delete(session_id);
+        });
+        const resources = overlayResourcesBySession.get(session_id) ?? new Set<string>();
+        resources.add(resourceId);
+        overlayResourcesBySession.set(session_id, resources);
         reply.send(okEnvelope({
           profiles: contributions.profiles.profiles.length,
           skills: contributions.skills.skills.length,

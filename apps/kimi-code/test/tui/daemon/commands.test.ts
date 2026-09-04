@@ -19,7 +19,7 @@ describe('daemon command registry', () => {
     ['config', 'settings'],
     ['disconnect', 'logout'],
     ['experimental', 'experiments'],
-    ['export', 'export-md'],
+    ['export', 'export-view'],
   ])('normalizes supported alias /%s to /%s', (alias, canonical) => {
     const resolved = resolveDaemonCommand(alias, '');
 

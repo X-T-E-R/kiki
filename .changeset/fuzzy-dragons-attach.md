@@ -2,4 +2,4 @@
 "@moonshot-ai/kimi-code": patch
 ---
 
-Use the daemon-backed terminal UI for interactive sessions with session-scoped sources and safe goal, provider, settings, and attachment workflows.
+Use the daemon-backed terminal UI with lease-scoped sources and settled media uploads; export now covers the loaded view, experiments are read-only, and debug ZIP, TUI reload, and Web commands are retired.

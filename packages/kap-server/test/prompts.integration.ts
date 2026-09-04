@@ -1,4 +1,5 @@
 import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
@@ -763,6 +764,80 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(JSON.stringify(content)).not.toContain(mediaPath);
 
     expect(JSON.stringify(content)).not.toContain('kimi-file://');
+  });
+
+  it('resolves a queued uploaded image to a data URL when its provider turn starts', async () => {
+    const requests: unknown[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const provider = createHttpServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown);
+      if (requests.length === 1) await firstGate;
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(
+        `data: ${JSON.stringify({
+          id: `chatcmpl-${String(requests.length)}`,
+          choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        })}\n\ndata: [DONE]\n\n`,
+      );
+    });
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+
+    await server!.close();
+    server = undefined;
+    await writeConfigToml(
+      home as string,
+      PROMPT_TOML
+        .replace('http://127.0.0.1:9999', `http://127.0.0.1:${String(address.port)}/v1`)
+        .replaceAll('capabilities = ["thinking"]', 'capabilities = ["thinking", "image_in"]'),
+    );
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    try {
+      const id = await createSession(home as string);
+      const active = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+        content: [{ type: 'text', text: 'active turn' }],
+        model: 'stub',
+      });
+      expect(active.body.data.status).toBe('running');
+      await vi.waitFor(() => expect(requests).toHaveLength(1), { timeout: 5_000 });
+
+      const image = solidPng(10, 10);
+      const uploaded = await uploadFile(image, 'image/png', 'queued.png');
+      const queued = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+        content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
+      });
+      expect(queued.body.data.status).toBe('queued');
+      await expect(server.core.accessor.get(IFileService).get(uploaded.id)).resolves.toBeDefined();
+
+      releaseFirst();
+      await vi.waitFor(() => expect(requests).toHaveLength(2), { timeout: 5_000 });
+      expect(JSON.stringify(requests[1])).toContain(
+        `data:image/png;base64,${image.toString('base64')}`,
+      );
+    } finally {
+      releaseFirst();
+      await new Promise<void>((resolve, reject) => {
+        provider.close((error) => {
+          if (error === undefined) resolve();
+          else reject(error);
+        });
+      });
+    }
   });
 
   it('accepts a stored session-media reference after the transient upload is deleted', async () => {

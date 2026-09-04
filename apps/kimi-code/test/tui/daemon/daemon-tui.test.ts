@@ -6,6 +6,7 @@ import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 import { DEFAULT_TUI_CONFIG } from '#/tui/config';
 import { DaemonTUI } from '#/tui/daemon/daemon-tui';
+import type { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 
 const created: DaemonTUI[] = [];
 
@@ -39,14 +40,23 @@ function driver(
   );
   created.push(tui);
   const controllerState = {
+    sessionId: 'session-1',
     busy: false,
-    blocks: [],
-    activePromptId: undefined,
+    blocks: [] as Array<Record<string, unknown>>,
+    activePromptId: undefined as string | undefined,
+    queuedPromptIds: [] as string[],
+    turnTail: undefined as { turnId: string } | undefined,
     goal: null as null | { status: 'active' | 'paused' | 'blocked' | 'complete' },
   };
   const controller = {
     sessionId: 'session-1',
-    sendPrompt: vi.fn(),
+    sendPrompt: vi.fn(async () => ({
+      prompt_id: 'prompt-1',
+      user_message_id: 'user-1',
+      status: 'running',
+      content: [{ type: 'text', text: 'prompt' }],
+      created_at: '2026-01-01T00:00:00.000Z',
+    })),
     abortActive: vi.fn(),
     close: vi.fn(),
     handleSessionRecord: vi.fn(),
@@ -56,6 +66,7 @@ function driver(
   };
   const internal = tui as unknown as {
     controller: typeof controller;
+    imageAttachments: ImageAttachmentStore;
     skillCommands: Map<
       string,
       { commandName: string; name: string; description: string }
@@ -79,6 +90,7 @@ function driver(
       setSwarmMode: ReturnType<typeof vi.fn>;
       setTitle: ReturnType<typeof vi.fn>;
       updateSessionProfile: ReturnType<typeof vi.fn>;
+      renewServerLease: ReturnType<typeof vi.fn>;
       updateSessionSourceOverlay: ReturnType<typeof vi.fn>;
       resolveApproval: ReturnType<typeof vi.fn>;
       resolveQuestion: ReturnType<typeof vi.fn>;
@@ -90,8 +102,10 @@ function driver(
     handleInterrupt(kind: 'ctrl-c'): Promise<void>;
     openSession(sessionId: string): Promise<void>;
     configureExplicitSources(sessionId: string): Promise<void>;
+    ensureSourceOverlayLease(): Promise<string>;
     initializeSession(): Promise<void>;
     renderSession(view: unknown): void;
+    settleAttachmentLeases(view: unknown): void;
     refreshAgentCommands(): Promise<void>;
     refreshSkillCommands(sessionId: string): Promise<void>;
     showSessionPicker(scope?: 'cwd' | 'all'): Promise<void>;
@@ -165,7 +179,7 @@ function driver(
   };
   internal.client.listSessions = vi.fn(async () => ({ items: [], nextCursor: undefined }));
   internal.client.createSession = vi.fn(async () => ({ id: 'session-created' }));
-  internal.client.getGoal = vi.fn(async () => ({ goal: null }));
+  internal.client.getGoal = vi.fn(async () => null);
   internal.client.undoSession = vi.fn();
   internal.client.listModels = vi.fn(async () => ({
     items: [
@@ -203,6 +217,10 @@ function driver(
   internal.client.setSwarmMode = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.setTitle = vi.fn(async (_sessionId, title) => ({ id: 'session-1', title }));
   internal.client.updateSessionProfile = vi.fn(async () => ({ id: 'session-1' }));
+  internal.client.renewServerLease = vi.fn(async () => ({
+    lease_id: 'lease-1',
+    expires_at: Date.now() + 60_000,
+  }));
   internal.client.updateSessionSourceOverlay = vi.fn(async () => ({ profiles: 0, skills: 0 }));
   internal.client.resolveApproval = vi.fn();
   internal.client.resolveQuestion = vi.fn();
@@ -381,7 +399,7 @@ describe('DaemonTUI commands', () => {
 
   it('replaces an existing goal through cancel then create profile updates', async () => {
     const { internal, controller } = driver();
-    internal.client.getGoal.mockResolvedValue({ goal: { status: 'active' } });
+    internal.client.getGoal.mockResolvedValue({ status: 'active' });
 
     await internal.handleSlash('/goal replace Finish the release');
 
@@ -392,6 +410,16 @@ describe('DaemonTUI commands', () => {
     ]);
     expect(controller.handleSessionRecord).toHaveBeenCalledTimes(2);
     expect(controller.resync).toHaveBeenCalledTimes(2);
+  });
+
+  it('creates a replacement goal without cancelling when no goal exists', async () => {
+    const { internal } = driver();
+
+    await internal.handleSlash('/goal replace Finish the release');
+
+    expect(internal.client.updateSessionProfile.mock.calls).toEqual([
+      ['session-1', { agent_config: { goal_objective: 'Finish the release' } }],
+    ]);
   });
 
   it('steers ordinary input into an active goal', async () => {
@@ -405,6 +433,27 @@ describe('DaemonTUI commands', () => {
     });
     expect(controller.sendPrompt).not.toHaveBeenCalled();
     expect(controller.resync).toHaveBeenCalledOnce();
+  });
+
+  it('keeps active-goal media until the steered turn settles', async () => {
+    const { internal, controllerState, agentFacade, filesFacade } = driver();
+    controllerState.goal = { status: 'active' };
+    agentFacade.steer.mockResolvedValue({ turn_id: 42 });
+    const image = internal.imageAttachments.addImage(
+      new Uint8Array([1, 2, 3]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'steer-image-upload',
+    );
+
+    await internal.handleInput(`steer ${image.placeholder}`);
+    expect(filesFacade.delete).not.toHaveBeenCalled();
+
+    controllerState.turnTail = { turnId: '42' };
+    internal.settleAttachmentLeases(controllerState);
+    await vi.waitFor(() => expect(filesFacade.delete).toHaveBeenCalledWith('steer-image-upload'));
   });
 
   it('uploads local files and sends real file content parts', async () => {
@@ -427,6 +476,74 @@ describe('DaemonTUI commands', () => {
       }),
     );
     expect(filesFacade.delete).toHaveBeenCalledWith('file-1');
+  });
+
+  it('keeps uploaded media until the accepted prompt settles', async () => {
+    const { internal, controller, controllerState, filesFacade } = driver();
+    const image = internal.imageAttachments.addImage(
+      new Uint8Array([1, 2, 3]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'image-upload-1',
+    );
+    controller.sendPrompt.mockImplementation(async () => {
+      controllerState.activePromptId = 'prompt-image';
+      controllerState.blocks = [{
+        kind: 'user',
+        promptId: 'prompt-image',
+        promptStatus: 'running',
+      }];
+      return {
+        prompt_id: 'prompt-image',
+        user_message_id: 'user-image',
+        status: 'running',
+        content: [{ type: 'text', text: 'inspect image' }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      };
+    });
+
+    await internal.handleInput(`inspect ${image.placeholder}`);
+    expect(filesFacade.delete).not.toHaveBeenCalled();
+
+    controllerState.activePromptId = undefined;
+    controllerState.blocks = [{ kind: 'user', promptId: 'prompt-image' }];
+    internal.settleAttachmentLeases(controllerState);
+
+    await vi.waitFor(() => expect(filesFacade.delete).toHaveBeenCalledWith('image-upload-1'));
+  });
+
+  it('does not delete media handed to an active prompt when the TUI closes', async () => {
+    const { tui, internal, controller, controllerState, filesFacade } = driver();
+    const image = internal.imageAttachments.addImage(
+      new Uint8Array([1, 2, 3]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'active-image-upload',
+    );
+    controller.sendPrompt.mockImplementation(async () => {
+      controllerState.activePromptId = 'active-image-prompt';
+      controllerState.blocks = [{
+        kind: 'user',
+        promptId: 'active-image-prompt',
+        promptStatus: 'running',
+      }];
+      return {
+        prompt_id: 'active-image-prompt',
+        user_message_id: 'active-image-user',
+        status: 'running',
+        content: [{ type: 'text', text: 'inspect image' }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      };
+    });
+
+    await internal.handleInput(`inspect ${image.placeholder}`);
+    await tui.close();
+
+    expect(filesFacade.delete).not.toHaveBeenCalledWith('active-image-upload');
   });
 
   it('retains staged attachments after a failed send so the draft can retry', async () => {
@@ -607,6 +724,37 @@ describe('DaemonTUI commands', () => {
     expect(controller.resync).toHaveBeenCalledOnce();
   });
 
+  it('keeps queued inline-skill media until the prompt settles', async () => {
+    const { internal, controllerState, agentFacade, filesFacade } = driver();
+    internal.skillCommands.set('skill:reviewskill', {
+      commandName: 'skill:ReviewSkill',
+      name: 'ReviewSkill',
+      description: 'Review changes',
+    });
+    agentFacade.promptWithSkills.mockResolvedValue({
+      prompt_id: 'skill-prompt',
+      created_at: '2026-01-01T00:00:00.000Z',
+      state: 'queued',
+    });
+    const image = internal.imageAttachments.addImage(
+      new Uint8Array([1, 2, 3]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'skill-image-upload',
+    );
+
+    await internal.handleInput(`Please /skill:ReviewSkill inspect ${image.placeholder}`);
+    controllerState.queuedPromptIds = ['skill-prompt'];
+    internal.settleAttachmentLeases(controllerState);
+    expect(filesFacade.delete).not.toHaveBeenCalled();
+
+    controllerState.queuedPromptIds = [];
+    internal.settleAttachmentLeases(controllerState);
+    await vi.waitFor(() => expect(filesFacade.delete).toHaveBeenCalledWith('skill-image-upload'));
+  });
+
   it('registers and releases explicit sources as a client-owned session overlay', async () => {
     const { tui, internal } = driver(false, {
       skillsDirs: ['skills'],
@@ -616,12 +764,12 @@ describe('DaemonTUI commands', () => {
     await internal.configureExplicitSources('session-created');
     await tui.close();
 
-    const ownerId = internal.client.updateSessionSourceOverlay.mock.calls[0]?.[1].owner_id;
+    expect(internal.client.renewServerLease).toHaveBeenCalledWith(undefined);
     expect(internal.client.updateSessionSourceOverlay.mock.calls).toEqual([
       [
         'session-created',
         {
-          owner_id: ownerId,
+          lease_id: 'lease-1',
           agent_files: ['reviewer.md'],
           skill_dirs: ['skills'],
         },
@@ -629,12 +777,49 @@ describe('DaemonTUI commands', () => {
       [
         'session-created',
         {
-          owner_id: ownerId,
+          lease_id: 'lease-1',
           agent_files: [],
           skill_dirs: [],
         },
       ],
     ]);
+  });
+
+  it('keeps a failed source release attached so close retries it', async () => {
+    const { tui, internal } = driver(false, { skillsDirs: ['skills'] });
+    internal.client.updateSessionSourceOverlay
+      .mockResolvedValueOnce({ profiles: 0, skills: 1 })
+      .mockRejectedValueOnce(new Error('release failed'))
+      .mockResolvedValueOnce({ profiles: 0, skills: 0 });
+
+    await internal.configureExplicitSources('session-one');
+    await expect(internal.configureExplicitSources('session-two')).rejects.toThrow('release failed');
+    await tui.close();
+
+    expect(internal.client.updateSessionSourceOverlay.mock.calls.slice(1)).toEqual([
+      ['session-one', { lease_id: 'lease-1', agent_files: [], skill_dirs: [] }],
+      ['session-one', { lease_id: 'lease-1', agent_files: [], skill_dirs: [] }],
+    ]);
+  });
+
+  it('reattaches explicit sources when an expired lease is replaced', async () => {
+    const { internal } = driver(false, {
+      skillsDirs: ['skills'],
+      agentFiles: ['reviewer.md'],
+    });
+    await internal.configureExplicitSources('session-one');
+    internal.client.renewServerLease.mockResolvedValueOnce({
+      lease_id: 'lease-2',
+      expires_at: Date.now() + 60_000,
+    });
+
+    await internal.ensureSourceOverlayLease();
+
+    expect(internal.client.updateSessionSourceOverlay).toHaveBeenLastCalledWith('session-one', {
+      lease_id: 'lease-2',
+      agent_files: ['reviewer.md'],
+      skill_dirs: ['skills'],
+    });
   });
 
   it('pages continue lookup until the current workspace is found', async () => {

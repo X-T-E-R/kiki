@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
@@ -93,6 +92,16 @@ export interface DaemonTUIStartupInput {
 
 type SessionSummary = Awaited<ReturnType<DaemonClient['listSessions']>>['items'][number];
 
+interface AttachmentSettlementLease {
+  readonly sessionId: string;
+  readonly promptId?: string;
+  readonly turnId?: string;
+  readonly uploadIds: Set<string>;
+  observed: boolean;
+  settled: boolean;
+  releasing: boolean;
+}
+
 export class DaemonTUI {
   readonly state: TUIState;
   public onExit?: (exitCode?: number) => Promise<void>;
@@ -116,8 +125,12 @@ export class DaemonTUI {
     | undefined;
   private startupOverridesPending = true;
   private todoExpanded = false;
-  private readonly sourceOverlayOwnerId = randomUUID();
+  private sourceOverlayLeaseId: string | undefined;
+  private sourceOverlayLeaseExpiresAt: number | undefined;
+  private sourceOverlayHeartbeat: ReturnType<typeof setTimeout> | undefined;
   private sourceOverlaySessionId: string | undefined;
+  private readonly attachmentSettlementLeases = new Map<string, AttachmentSettlementLease>();
+  private readonly sideControllers = new Set<SessionController>();
   private stopped = false;
 
   constructor(connection: DaemonConnection, startup: DaemonTUIStartupInput) {
@@ -128,16 +141,24 @@ export class DaemonTUI {
       ...connection,
       events: {
         onStatus: (status) => {
-          if (status === 'closed') this.controller?.handleWsDrop();
+          if (status !== 'closed') return;
+          this.controller?.handleWsDrop();
+          for (const controller of this.sideControllers) controller.handleWsDrop();
         },
-        onFrame: (frame) => this.controller?.handleFrame(frame),
-        onTranscript: (event, generation) => this.controller?.handleTranscript(event, generation),
-        onResyncRequired: (payload) => this.controller?.handleResyncRequired(payload),
+        onFrame: (frame) =>
+          (frame.session_id === undefined ? this.controller : this.controllerFor(frame.session_id))
+            ?.handleFrame(frame),
+        onTranscript: (event, generation) =>
+          this.controllerFor(event.session_id)?.handleTranscript(event, generation),
+        onResyncRequired: (payload) =>
+          this.controllerFor(payload.session_id)?.handleResyncRequired(payload),
         onSubscribeAck: (_accepted, rejected, reconnected, generation) => {
-          if (rejected.includes(this.controller?.sessionId ?? '')) {
-            this.controller?.handleSubscribeRejected(generation);
-          } else if (reconnected) {
+          for (const sessionId of rejected) {
+            this.controllerFor(sessionId)?.handleSubscribeRejected(generation);
+          }
+          if (reconnected) {
             this.controller?.handleReconnectAck();
+            for (const controller of this.sideControllers) controller.handleReconnectAck();
           }
         },
       },
@@ -150,6 +171,11 @@ export class DaemonTUI {
     this.buildLayout();
     this.installEditor();
     this.setupAutocomplete();
+  }
+
+  private controllerFor(sessionId: string): SessionController | undefined {
+    if (this.controller?.sessionId === sessionId) return this.controller;
+    return [...this.sideControllers].find((controller) => controller.sessionId === sessionId);
   }
 
   async start(): Promise<void> {
@@ -203,13 +229,21 @@ export class DaemonTUI {
     await cleanup(() => this.controller?.close());
     this.controller = undefined;
     await cleanup(() => {
+      for (const controller of this.sideControllers) controller.close();
+      this.sideControllers.clear();
+    });
+    await cleanup(() => {
       this.renderer.dispose();
     });
     await cleanup(() => {
       this.socket.close();
     });
     await cleanup(() => this.clearAttachments());
+    await cleanup(() => this.releaseSettledAttachmentLeases());
     await cleanup(() => this.releaseExplicitSources());
+    await cleanup(() => {
+      this.clearSourceOverlayHeartbeat();
+    });
     await cleanup(() => this.client.close());
     await cleanup(() => {
       this.state.footer.dispose();
@@ -466,23 +500,66 @@ export class DaemonTUI {
     if (this.sourceOverlaySessionId !== undefined && this.sourceOverlaySessionId !== sessionId) {
       await this.releaseExplicitSources();
     }
+    const leaseId = await this.ensureSourceOverlayLease();
     await this.client.updateSessionSourceOverlay(sessionId, {
-      owner_id: this.sourceOverlayOwnerId,
+      lease_id: leaseId,
       agent_files: agentFiles,
       skill_dirs: skillDirs,
     });
     this.sourceOverlaySessionId = sessionId;
   }
 
+  private async ensureSourceOverlayLease(): Promise<string> {
+    const previousLeaseId = this.sourceOverlayLeaseId;
+    const lease = await this.client.renewServerLease(previousLeaseId);
+    if (
+      previousLeaseId !== undefined &&
+      lease.lease_id !== previousLeaseId &&
+      this.sourceOverlaySessionId !== undefined
+    ) {
+      await this.client.updateSessionSourceOverlay(this.sourceOverlaySessionId, {
+        lease_id: lease.lease_id,
+        agent_files: this.startup.cliOptions.agentFiles,
+        skill_dirs: this.startup.cliOptions.skillsDirs,
+      });
+    }
+    this.sourceOverlayLeaseId = lease.lease_id;
+    this.sourceOverlayLeaseExpiresAt = lease.expires_at;
+    this.scheduleSourceOverlayHeartbeat();
+    return lease.lease_id;
+  }
+
+  private scheduleSourceOverlayHeartbeat(): void {
+    this.clearSourceOverlayHeartbeat();
+    const expiresAt = this.sourceOverlayLeaseExpiresAt;
+    if (expiresAt === undefined) return;
+    const delay = Math.max(25, Math.floor((expiresAt - Date.now()) / 2));
+    this.sourceOverlayHeartbeat = setTimeout(() => {
+      this.sourceOverlayHeartbeat = undefined;
+      void this.ensureSourceOverlayLease().catch((error: unknown) => {
+        this.showStatus(`Source overlay lease renewal failed: ${formatErrorMessage(error)}`, 'error');
+        this.scheduleSourceOverlayHeartbeat();
+      });
+    }, delay);
+    this.sourceOverlayHeartbeat.unref();
+  }
+
+  private clearSourceOverlayHeartbeat(): void {
+    if (this.sourceOverlayHeartbeat === undefined) return;
+    clearTimeout(this.sourceOverlayHeartbeat);
+    this.sourceOverlayHeartbeat = undefined;
+  }
+
   private async releaseExplicitSources(): Promise<void> {
-    if (this.sourceOverlaySessionId === undefined) return;
     const sessionId = this.sourceOverlaySessionId;
-    this.sourceOverlaySessionId = undefined;
+    const leaseId = this.sourceOverlayLeaseId;
+    if (sessionId === undefined || leaseId === undefined) return;
     await this.client.updateSessionSourceOverlay(sessionId, {
-      owner_id: this.sourceOverlayOwnerId,
+      lease_id: leaseId,
       agent_files: [],
       skill_dirs: [],
     });
+    this.sourceOverlaySessionId = undefined;
   }
 
   private setupAutocomplete(): void {
@@ -642,6 +719,7 @@ export class DaemonTUI {
   }
 
   private renderSession(view: SessionViewState): void {
+    this.settleAttachmentLeases(view);
     if (this.focusedAgentId === 'main') this.renderer.sync(view.blocks);
     this.setAppState({
       sessionId: view.sessionId,
@@ -731,63 +809,149 @@ export class DaemonTUI {
   private async sendPrompt(text: string, profile?: string): Promise<void> {
     const controller = await this.ensureSession();
     const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments);
-    let sent = false;
-    try {
-      if (profile === undefined) {
-        const skillMap = new Map<string, string>();
-        for (const skill of this.skillCommands.values()) {
-          skillMap.set(skill.commandName, skill.name);
-          skillMap.set(skill.name, skill.name);
+    if (profile === undefined) {
+      const skillMap = new Map<string, string>();
+      for (const skill of this.skillCommands.values()) {
+        skillMap.set(skill.commandName, skill.name);
+        skillMap.set(skill.name, skill.name);
+      }
+      const inlineSkills = extractInlineSkillActivations(text, skillMap);
+      if (inlineSkills.length > 0) {
+        if (prepared?.hasFileAttachment === true) {
+          throw new Error('File attachments cannot be combined with inline skills.');
         }
-        const inlineSkills = extractInlineSkillActivations(text, skillMap);
-        if (inlineSkills.length > 0) {
-          if (prepared?.hasFileAttachment === true) {
-            throw new Error('File attachments cannot be combined with inline skills.');
-          }
-          await this.client.klient.session(controller.sessionId).agent('main').promptWithSkills({
+        const result = await this.client.klient
+          .session(controller.sessionId)
+          .agent('main')
+          .promptWithSkills({
             input: prepared?.engineContent ?? [{ type: 'text', text }],
             skills: inlineSkills.map((skill) => ({ name: skill.skillName })),
           });
-          sent = true;
-          await controller.resync();
-          return;
-        }
-        if (controller.getState().goal?.status === 'active') {
-          if (prepared?.hasFileAttachment === true) {
-            throw new Error('File attachments cannot be steered into an active goal.');
-          }
-          await this.client.klient.session(controller.sessionId).agent('main').steer({
-            input: prepared?.engineContent ?? [{ type: 'text', text }],
+        if (prepared !== undefined) {
+          this.handoffPreparedMedia(prepared, controller, {
+            promptId: result.prompt_id,
+            turnId: result.turn_id,
           });
-          sent = true;
-          await controller.resync();
-          return;
         }
+        await controller.resync();
+        return;
       }
-      await controller.sendPrompt({
-        text,
-        content: prepared?.content,
-        profile,
-        model:
-          profile === undefined && this.state.appState.model !== ''
-            ? this.state.appState.model
-            : undefined,
-        thinking: profile === undefined ? this.state.appState.thinkingEffort : undefined,
-        permissionMode: this.state.appState.permissionMode,
-        planMode: this.state.appState.planMode,
-        swarmMode: this.state.appState.swarmMode,
-      });
-      sent = true;
-    } finally {
-      if (sent && prepared !== undefined) await this.releasePreparedAttachments(prepared);
+      if (controller.getState().goal?.status === 'active') {
+        if (prepared?.hasFileAttachment === true) {
+          throw new Error('File attachments cannot be steered into an active goal.');
+        }
+        const result = await this.client.klient.session(controller.sessionId).agent('main').steer({
+          input: prepared?.engineContent ?? [{ type: 'text', text }],
+        });
+        if (prepared !== undefined) {
+          this.handoffPreparedMedia(prepared, controller, { turnId: result!.turn_id });
+        }
+        await controller.resync();
+        return;
+      }
+    }
+    const result = await controller.sendPrompt({
+      text,
+      content: prepared?.content,
+      profile,
+      model:
+        profile === undefined && this.state.appState.model !== ''
+          ? this.state.appState.model
+          : undefined,
+      thinking: profile === undefined ? this.state.appState.thinkingEffort : undefined,
+      permissionMode: this.state.appState.permissionMode,
+      planMode: this.state.appState.planMode,
+      swarmMode: this.state.appState.swarmMode,
+    });
+    if (prepared !== undefined) {
+      await this.releasePreparedFileAttachments(prepared);
+      this.handoffPreparedMedia(prepared, controller, { promptId: result.prompt_id });
     }
   }
 
-  private async releasePreparedAttachments(prepared: PreparedDaemonPrompt): Promise<void> {
+  private handoffPreparedMedia(
+    prepared: PreparedDaemonPrompt,
+    controller: SessionController,
+    identity: { readonly promptId?: string; readonly turnId?: number },
+  ): void {
+    if (prepared.mediaUploadIds.length === 0) return;
     for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
+    const turnId = identity.turnId === undefined ? undefined : String(identity.turnId);
+    const key = identity.promptId === undefined
+      ? `turn:${controller.sessionId}:${turnId}`
+      : `prompt:${controller.sessionId}:${identity.promptId}`;
+    const lease: AttachmentSettlementLease = {
+      sessionId: controller.sessionId,
+      promptId: identity.promptId,
+      turnId,
+      uploadIds: new Set(prepared.mediaUploadIds),
+      observed: false,
+      settled: false,
+      releasing: false,
+    };
+    this.attachmentSettlementLeases.set(key, lease);
+    this.settleAttachmentLeases(controller.getState());
+  }
+
+  private settleAttachmentLeases(view: SessionViewState): void {
+    for (const [key, lease] of this.attachmentSettlementLeases) {
+      if (lease.sessionId !== view.sessionId || lease.settled) continue;
+      if (lease.turnId !== undefined) {
+        if (view.turnTail?.turnId !== lease.turnId) continue;
+        lease.settled = true;
+        void this.releaseAttachmentSettlementLease(key, lease);
+        continue;
+      }
+      const promptId = lease.promptId!;
+      const user = view.blocks.find(
+        (block) => block.kind === 'user' && block.promptId === promptId,
+      );
+      const active =
+        view.activePromptId === promptId ||
+        view.queuedPromptIds.includes(promptId) ||
+        (user?.kind === 'user' &&
+          (user.promptStatus === 'running' ||
+            user.promptStatus === 'queued' ||
+            user.promptStatus === 'blocked'));
+      if (active) {
+        lease.observed = true;
+        continue;
+      }
+      if (!lease.observed) continue;
+      lease.settled = true;
+      void this.releaseAttachmentSettlementLease(key, lease);
+    }
+  }
+
+  private async releaseAttachmentSettlementLease(
+    key: string,
+    lease: AttachmentSettlementLease,
+  ): Promise<void> {
+    if (lease.releasing || !lease.settled) return;
+    lease.releasing = true;
+    const uploadIds = [...lease.uploadIds];
+    const results = await Promise.allSettled(
+      uploadIds.map((fileId) => this.client.klient.global.files.delete(fileId)),
+    );
+    for (const [index, result] of results.entries()) {
+      if (result.status === 'fulfilled') lease.uploadIds.delete(uploadIds[index]!);
+    }
+    lease.releasing = false;
+    if (lease.uploadIds.size === 0) this.attachmentSettlementLeases.delete(key);
+  }
+
+  private async releaseSettledAttachmentLeases(): Promise<void> {
+    await Promise.all(
+      [...this.attachmentSettlementLeases]
+        .filter(([, lease]) => lease.settled)
+        .map(([key, lease]) => this.releaseAttachmentSettlementLease(key, lease)),
+    );
+  }
+
+  private async releasePreparedFileAttachments(prepared: PreparedDaemonPrompt): Promise<void> {
     for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
     await Promise.allSettled(
-      prepared.uploadIds.map((fileId) => this.client.klient.global.files.delete(fileId)),
+      prepared.fileUploadIds.map((fileId) => this.client.klient.global.files.delete(fileId)),
     );
   }
 
@@ -938,7 +1102,7 @@ export class DaemonTUI {
       case 'experiments':
         await this.showExperiments();
         return;
-      case 'export-md':
+      case 'export-view':
         await this.exportMarkdown(args);
         return;
       case 'btw':
@@ -1204,11 +1368,11 @@ export class DaemonTUI {
     }
     const controller = await this.ensureSession();
     if (parsed.kind === 'status') {
-      this.showStatus(JSON.stringify((await this.client.getGoal(controller.sessionId)).goal, undefined, 2));
+      this.showStatus(JSON.stringify(await this.client.getGoal(controller.sessionId), undefined, 2));
       return;
     }
     if (parsed.kind === 'create') {
-      if (parsed.replace && (await this.client.getGoal(controller.sessionId)).goal !== null) {
+      if (parsed.replace && (await this.client.getGoal(controller.sessionId)) !== null) {
         await this.applyGoalConfig(controller, { goal_control: 'cancel' });
       }
       await this.applyGoalConfig(controller, { goal_objective: parsed.objective });
@@ -1316,10 +1480,49 @@ export class DaemonTUI {
     if (question === '') throw new Error('/btw requires a question.');
     const controller = await this.ensureSession();
     const child = await this.client.klient.session(controller.sessionId).fork({ title: 'BTW' });
-    await this.client.klient.session(child.id).agent('main').prompt({
-      input: [{ type: 'text', text: question }],
+    const side = new SessionController(this.client, this.socket, child.id);
+    this.sideControllers.add(side);
+    await side.open();
+    let turnId: string | undefined;
+    await new Promise<void>((resolve, reject) => {
+      const finish = () => {
+        const view = side.getState();
+        if (turnId === undefined || view.turnTail?.turnId !== turnId) return;
+        const answer = view.blocks.findLast(
+          (block) => block.kind === 'assistant' && block.turnId === turnId && !block.streaming,
+        );
+        const failure = view.blocks.findLast(
+          (block) => block.kind === 'notice' && block.tone === 'danger',
+        );
+        this.showStatus(
+          answer?.kind === 'assistant'
+            ? answer.text
+            : failure?.kind === 'notice'
+              ? failure.text
+              : `Side session ${child.id} ended without an answer.`,
+          answer?.kind === 'assistant' ? 'normal' : 'error',
+        );
+        unsubscribe();
+        side.close();
+        this.sideControllers.delete(side);
+        resolve();
+      };
+      const unsubscribe = side.subscribe(finish);
+      void this.client.klient
+        .session(child.id)
+        .agent('main')
+        .prompt({ input: [{ type: 'text', text: question }] })
+        .then((result) => {
+          turnId = String(result!.turn_id);
+          finish();
+        })
+        .catch((error: unknown) => {
+          unsubscribe();
+          side.close();
+          this.sideControllers.delete(side);
+          reject(error);
+        });
     });
-    this.showStatus(`Started side session ${child.id}.`);
   }
 
   private async copyLastAssistantMessage(): Promise<void> {
