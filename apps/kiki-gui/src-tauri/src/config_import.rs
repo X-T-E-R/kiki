@@ -8,10 +8,9 @@ use std::{
 
 use toml_edit::{DocumentMut, Item, Table};
 
-pub const IMPORT_CATEGORIES: [&str; 8] = [
+pub const IMPORT_CATEGORIES: [&str; 7] = [
     "providers",
     "models",
-    "services",
     "default_model",
     "default_provider",
     "thinking",
@@ -19,7 +18,7 @@ pub const IMPORT_CATEGORIES: [&str; 8] = [
     "disabled_named_profiles",
 ];
 
-const MAP_CATEGORIES: [&str; 3] = ["providers", "models", "services"];
+const MAP_CATEGORIES: [&str; 2] = ["providers", "models"];
 const REPLACE_CATEGORIES: [&str; 5] = [
     "default_model",
     "default_provider",
@@ -744,13 +743,6 @@ type = "kimi"
 provider = "shared"
 model = "source-model"
 
-[services.web]
-url = "https://source.example.test"
-
-[services.web.oauth]
-storage = "file"
-key = "oauth/kimi-code"
-
 [thinking]
 enabled = true
 effort = "high"
@@ -807,7 +799,6 @@ enabled = false
             vec![
                 "providers",
                 "models",
-                "services",
                 "default_model",
                 "default_provider",
                 "thinking",
@@ -822,7 +813,6 @@ enabled = false
         assert!(imported.contains("SOURCE_SECRET"));
         assert!(!imported.contains("TARGET_SECRET"));
         assert!(imported.contains("[providers.shared.oauth]"));
-        assert!(imported.contains("[services.web.oauth]"));
         assert!(!target_home.join("credentials").exists());
         assert!(imported.contains("[models.kiki_only]"));
         assert!(imported.contains("source-model"));

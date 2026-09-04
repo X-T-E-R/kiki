@@ -569,7 +569,6 @@ export function parseExperimentalFlags(value: string): Record<string, boolean> {
 
 export interface AdvancedServerConfigPatch {
   permission?: unknown;
-  services?: unknown;
   loop_control?: unknown;
   background?: unknown;
 }
@@ -588,7 +587,7 @@ export function parseAdvancedServerConfig(value: string): AdvancedServerConfigPa
   // Hooks left this editor in the batch-3 split: they only enter through the
   // Automation leaf's parseHooksJson, so a pasted `hooks` key is rejected as
   // an unsupported field like any other unknown domain.
-  const allowed = new Set(['permission', 'services', 'loop_control', 'background']);
+  const allowed = new Set(['permission', 'loop_control', 'background']);
   const unknownKeys = Object.keys(source).filter((key) => !allowed.has(key));
   if (unknownKeys.length > 0) {
     throw new LocalizedError({ key: 'val.advancedUnknown', params: { fields: unknownKeys.join(', ') } });
@@ -598,7 +597,6 @@ export function parseAdvancedServerConfig(value: string): AdvancedServerConfigPa
   }
   return {
     permission: source['permission'],
-    services: source['services'],
     loop_control: source['loop_control'],
     background: source['background'],
   };

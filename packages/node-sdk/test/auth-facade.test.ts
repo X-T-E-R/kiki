@@ -253,10 +253,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
       apiKey: '',
       oauth: { storage: 'file', key: 'oauth/kimi-code' },
     });
-    expect(config.services?.moonshotSearch?.oauth).toEqual({
-      storage: 'file',
-      key: 'oauth/kimi-code',
-    });
+    expect(config.nbSearch).toBeUndefined();
   });
 
   it('logs in against the configured scoped OAuth host and base URL when env is absent', async () => {
@@ -677,16 +674,6 @@ max_context_size = 262144
 provider = "custom"
 model = "custom-model"
 max_context_size = 1000
-
-[services.moonshot_search]
-base_url = "https://api.kimi.com/coding/v1/search"
-api_key = ""
-oauth = { storage = "file", key = "oauth/kimi-code" }
-
-[services.moonshot_fetch]
-base_url = "https://api.kimi.com/coding/v1/fetch"
-api_key = ""
-oauth = { storage = "file", key = "oauth/kimi-code" }
 `,
     );
 
@@ -703,8 +690,6 @@ oauth = { storage = "file", key = "oauth/kimi-code" }
     expect(config.providers['custom']).toMatchObject({ apiKey: 'sk-existing' });
     expect(config.models?.['kimi-code/kimi-for-coding']).toBeUndefined();
     expect(config.models?.['custom-default']).toMatchObject({ provider: 'custom' });
-    expect(config.services?.moonshotSearch).toBeUndefined();
-    expect(config.services?.moonshotFetch).toBeUndefined();
     await expect(
       new FileTokenStorage(join(homeDir, 'credentials')).load('kimi-code'),
     ).resolves.toBeUndefined();
@@ -712,7 +697,6 @@ oauth = { storage = "file", key = "oauth/kimi-code" }
     const text = await readFile(join(homeDir, 'config.toml'), 'utf-8');
     expect(text).not.toContain('managed:kimi-code');
     expect(text).not.toContain('kimi-code/kimi-for-coding');
-    expect(text).not.toContain('moonshot_search');
   });
 
   it('removes the configured scoped OAuth token on logout without touching the production token', async () => {

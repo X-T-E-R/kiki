@@ -189,7 +189,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     });
   });
 
-  it('writes the managed provider, models, services, and default model through an adapter', async () => {
+  it('writes the managed provider, models, and default model through an adapter', async () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         custom: {
@@ -266,12 +266,6 @@ describe('provisionManagedKimiCodeConfig', () => {
       displayName: 'Kimi for Coding',
     });
     expect(config.models?.['kimi-code/kimi-k2.5']?.capabilities).toBeUndefined();
-    expect(config.services?.moonshotSearch).toMatchObject({
-      baseUrl: 'https://api.kimi.com/coding/v1/search',
-      apiKey: '',
-      oauth: { storage: 'file', key: 'oauth/kimi-code' },
-    });
-    expect(Object.keys(config.services ?? {})).toEqual(['moonshotSearch', 'moonshotFetch']);
   });
 
   it('writes scoped OAuth refs when provisioning against a non-default environment', async () => {
@@ -303,16 +297,6 @@ describe('provisionManagedKimiCodeConfig', () => {
         key: oauthKey,
         oauthHost: 'https://auth.dev.example.test',
       },
-    });
-    expect(config.services?.moonshotSearch?.oauth).toEqual({
-      storage: 'file',
-      key: oauthKey,
-      oauthHost: 'https://auth.dev.example.test',
-    });
-    expect(config.services?.moonshotFetch?.oauth).toEqual({
-      storage: 'file',
-      key: oauthKey,
-      oauthHost: 'https://auth.dev.example.test',
     });
   });
 
@@ -602,7 +586,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     expect(config.thinking?.enabled).toBe(false);
   });
 
-  it('removes managed provider, models, services, and default model on logout', () => {
+  it('removes the managed provider, models, and default model on logout', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [KIMI_CODE_PROVIDER_NAME]: {
@@ -628,11 +612,6 @@ describe('provisionManagedKimiCodeConfig', () => {
           maxContextSize: 1000,
         },
       },
-      services: {
-        moonshotSearch: { baseUrl: 'https://api.kimi.com/coding/v1/search' },
-        moonshotFetch: { baseUrl: 'https://api.kimi.com/coding/v1/fetch' },
-        customService: { baseUrl: 'https://service.example.test' },
-      },
       raw: {
         default_model: 'kimi-code/kimi-for-coding',
         providers: {
@@ -649,10 +628,6 @@ describe('provisionManagedKimiCodeConfig', () => {
             model: 'custom-model',
           },
         },
-        services: {
-          moonshot_search: { base_url: 'https://api.kimi.com/coding/v1/search' },
-          moonshot_fetch: { base_url: 'https://api.kimi.com/coding/v1/fetch' },
-        },
       },
     };
 
@@ -663,11 +638,6 @@ describe('provisionManagedKimiCodeConfig', () => {
     expect(config.providers['custom']).toBeDefined();
     expect(config.models?.['kimi-code/kimi-for-coding']).toBeUndefined();
     expect(config.models?.['custom-default']).toBeDefined();
-    expect(config.services?.moonshotSearch).toBeUndefined();
-    expect(config.services?.moonshotFetch).toBeUndefined();
-    expect(config.services?.['customService']).toEqual({
-      baseUrl: 'https://service.example.test',
-    });
   });
 
   it('rejects managed models that do not include a positive context_length', async () => {
@@ -778,7 +748,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     ).rejects.toBeInstanceOf(ManagedKimiCodeModelsAuthError);
   });
 
-  it('clears managed provider, models, default model, and services on logout', () => {
+  it('clears the managed provider, models, and default model on logout', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [KIMI_CODE_PROVIDER_NAME]: {
@@ -804,19 +774,6 @@ describe('provisionManagedKimiCodeConfig', () => {
           maxContextSize: 128000,
         },
       },
-      services: {
-        moonshotSearch: {
-          baseUrl: 'https://api.kimi.com/coding/v1/search',
-          apiKey: '',
-          oauth: { storage: 'file', key: 'oauth/kimi-code' },
-        },
-        moonshotFetch: {
-          baseUrl: 'https://api.kimi.com/coding/v1/fetch',
-          apiKey: '',
-          oauth: { storage: 'file', key: 'oauth/kimi-code' },
-        },
-        otherService: { baseUrl: 'https://service.example.test' },
-      },
     };
 
     const result = clearManagedKimiCodeConfig(config);
@@ -826,18 +783,12 @@ describe('provisionManagedKimiCodeConfig', () => {
       removedProvider: true,
       removedModels: ['kimi-code/kimi-for-coding'],
       defaultModelCleared: true,
-      removedServices: ['moonshotSearch', 'moonshotFetch'],
     });
     expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toBeUndefined();
     expect(config.providers['custom']).toMatchObject({ apiKey: 'sk-existing' });
     expect(config.defaultModel).toBeUndefined();
     expect(config.models?.['kimi-code/kimi-for-coding']).toBeUndefined();
     expect(config.models?.['custom-default']).toMatchObject({ provider: 'custom' });
-    expect(config.services?.moonshotSearch).toBeUndefined();
-    expect(config.services?.moonshotFetch).toBeUndefined();
-    expect(config.services?.['otherService']).toMatchObject({
-      baseUrl: 'https://service.example.test',
-    });
   });
 });
 
@@ -1299,7 +1250,7 @@ describe('selective merge', () => {
 });
 
 describe('applyManagedApiKeyProviderModels', () => {
-  it('merges upstream models without touching provider, services, or defaults', () => {
+  it('merges upstream models without touching the provider or defaults', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         'my-kimi': {
@@ -1344,10 +1295,9 @@ describe('applyManagedApiKeyProviderModels', () => {
       baseUrl: 'https://api.example.test/coding/v1',
       apiKey: 'sk-distributed-key',
     });
-    // Defaults and services are the orchestrator's / OAuth branch's business.
+    // Defaults are the orchestrator's / OAuth branch's business.
     expect(config.defaultModel).toBe('my-kimi/kimi-k2');
     expect(config.thinking).toEqual({ enabled: false });
-    expect(config.services).toBeUndefined();
     // Upstream-owned fields merge; hand-written extras survive.
     const alias = config.models?.['my-kimi/kimi-k2'];
     expect(alias?.['displayName']).toBe('Fresh K2');

@@ -68,14 +68,28 @@ keep_alive_on_exit = false
 kill_grace_period_ms = 2000
 print_wait_ceiling_s = 3600
 
-[services.moonshot_search]
-base_url = "https://api.kimi.com/coding/v1/search"
-api_key = "sk-search"
-custom_headers = { "X-Search" = "1" }
+[nb_search.provider_instances."exa.team"]
+provider_id = "exa"
+enabled = true
+credential_slot_id = "exa.team"
+options = {}
 
-[services.moonshot_fetch]
-base_url = "https://api.kimi.com/coding/v1/fetch"
-api_key = "sk-fetch"
+[nb_search.credential_slots."exa.team"]
+provider_id = "exa"
+env = "TEAM_EXA_API_KEY"
+
+[nb_search.lanes."team.search"]
+provider_instance_id = "exa.team"
+operation_id = "search"
+latency = "fast"
+cost = "cheap"
+
+[nb_search.defaults]
+search_lane = "team.search"
+
+[nb_search.execution]
+search_timeout_ms = 15000
+fetch_timeout_ms = 20000
 
 [notifications]
 claim_stale_after_ms = 15000
@@ -120,6 +134,55 @@ max_context_size = "large"
     });
   });
 
+  it('rejects unknown nb_search providers through config validation', async () => {
+    const rpc = createKimiConfigRpc();
+
+    await expect(rpc.validateConfigToml({
+      text: `
+[nb_search.provider_instances.unknown]
+provider_id = "unknown-provider"
+enabled = true
+options = {}
+`,
+      filePath: 'unknown-provider.toml',
+    })).rejects.toMatchObject({ code: 'config.invalid' } satisfies Partial<KimiError>);
+  });
+
+  it('rejects nb_search credential slots bound to a different provider', async () => {
+    const rpc = createKimiConfigRpc();
+
+    await expect(rpc.validateConfigToml({
+      text: `
+[nb_search.provider_instances."exa.team"]
+provider_id = "exa"
+enabled = true
+credential_slot_id = "team"
+options = {}
+
+[nb_search.credential_slots.team]
+provider_id = "tavily"
+env = "TEAM_SEARCH_API_KEY"
+`,
+      filePath: 'credential-mismatch.toml',
+    })).rejects.toMatchObject({ code: 'config.invalid' } satisfies Partial<KimiError>);
+  });
+
+  it('accepts a configured provider whose credential environment variable is absent', async () => {
+    const rpc = createKimiConfigRpc();
+
+    await expect(rpc.validateConfigToml({
+      text: `
+[nb_search.credential_slots."exa.default"]
+provider_id = "exa"
+env = "MISSING_EXA_API_KEY"
+
+[nb_search.defaults]
+search_lane = "exa.search"
+`,
+      filePath: 'missing-credential.toml',
+    })).resolves.toBeUndefined();
+  });
+
   it('parses the documented config shape and keeps TUI-only fields in raw', () => {
     const config = parseConfigString(COMPLETE_TOML, 'complete.toml');
 
@@ -160,8 +223,11 @@ max_context_size = "large"
       killGracePeriodMs: 2000,
       printWaitCeilingS: 3600,
     });
-    expect(config.services?.moonshotSearch?.customHeaders).toEqual({ 'X-Search': '1' });
-    expect(config.services?.moonshotFetch?.apiKey).toBe('sk-fetch');
+    expect(config.nbSearch?.defaults?.search_lane).toBe('team.search');
+    expect(config.nbSearch?.credential_slots?.['exa.team']).toEqual({
+      provider_id: 'exa',
+      env: 'TEAM_EXA_API_KEY',
+    });
 
     expect('theme' in config).toBe(false);
     expect(config.raw?.['theme']).toBe('dark');
@@ -217,10 +283,6 @@ maxContextSize = 128000
 displayName = "Camel Model"
 custom_model_field = "raw-only"
 
-[services.moonshotSearch]
-baseUrl = "https://example.test/search"
-apiKey = "sk-search"
-
 [loopControl]
 maxStepsPerRun = 7
 
@@ -237,10 +299,6 @@ maxRunningTasks = 2
     expect(config.models?.['camel-model']).toMatchObject({
       maxContextSize: 128000,
       displayName: 'Camel Model',
-    });
-    expect(config.services?.moonshotSearch).toMatchObject({
-      baseUrl: 'https://example.test/search',
-      apiKey: 'sk-search',
     });
     expect(config.loopControl?.maxStepsPerTurn).toBe(7);
     expect(config.background?.maxRunningTasks).toBe(2);
@@ -269,9 +327,9 @@ describe('KimiHarness config API', () => {
           apiKey: 'sk-updated',
         },
       },
-      services: {
-        moonshotSearch: {
-          apiKey: 'sk-search-updated',
+      nbSearch: {
+        execution: {
+          search_timeout_ms: 25_000,
         },
       },
     });
@@ -283,7 +341,7 @@ describe('KimiHarness config API', () => {
       apiKey: 'sk-updated',
       env: { GOOGLE_CLOUD_PROJECT: 'project-1' },
     });
-    expect(config.services?.moonshotSearch?.apiKey).toBe('sk-search-updated');
+    expect(config.nbSearch?.execution?.search_timeout_ms).toBe(25_000);
     expect(config.raw?.['theme']).toBe('dark');
 
     const text = await readFile(configPath, 'utf-8');
@@ -316,6 +374,62 @@ describe('KimiHarness config API', () => {
     await expect(readFile(configPath, 'utf-8')).resolves.toBe(before);
   });
 
+  it('rejects inline nb_search secret options without changing the config file', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(configPath, COMPLETE_TOML, 'utf-8');
+    const before = await readFile(configPath, 'utf-8');
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+
+    await expect(harness.setConfig({
+      nbSearch: {
+        provider_instances: {
+          'openai-compatible.default': { options: { api_key: 'secret-value' } },
+        },
+      },
+    })).rejects.toMatchObject({ code: 'config.invalid' } satisfies Partial<KimiError>);
+
+    await expect(readFile(configPath, 'utf-8')).resolves.toBe(before);
+    expect(await readFile(configPath, 'utf-8')).not.toContain('secret-value');
+  });
+
+  it('validates a local nb_search patch after merging it with the saved config', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(configPath, COMPLETE_TOML, 'utf-8');
+    const before = await readFile(configPath, 'utf-8');
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+
+    await expect(harness.setConfig({
+      nbSearch: {
+        credential_slots: {
+          'exa.team': { provider_id: 'tavily', env: 'TEAM_EXA_API_KEY' },
+        },
+      },
+    })).rejects.toMatchObject({ code: 'config.invalid' } satisfies Partial<KimiError>);
+
+    await expect(readFile(configPath, 'utf-8')).resolves.toBe(before);
+  });
+
+  it('keeps the original file when direct write validation rejects an unknown provider', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(configPath, COMPLETE_TOML, 'utf-8');
+    const before = await readFile(configPath, 'utf-8');
+    const config = parseConfigString(COMPLETE_TOML, configPath);
+
+    await expect(writeConfigFile(configPath, {
+      ...config,
+      nbSearch: {
+        provider_instances: {
+          unknown: { provider_id: 'unknown-provider', enabled: true, options: {} },
+        },
+      },
+    })).rejects.toBeInstanceOf(KimiError);
+
+    await expect(readFile(configPath, 'utf-8')).resolves.toBe(before);
+  });
+
   it('uses default config when the config file is absent', async () => {
     const homeDir = await makeTempDir();
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
@@ -328,7 +442,6 @@ describe('KimiHarness config API', () => {
       models: {},
       thinking: {},
       defaultPlanMode: false,
-      services: {},
       mergeAllAvailableSkills: true,
       extraSkillDirs: [],
       loopControl: {},

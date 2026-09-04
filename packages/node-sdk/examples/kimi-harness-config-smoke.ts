@@ -43,16 +43,10 @@ async function main(): Promise<void> {
       reservedContextSize: 50000,
       compactionTriggerRatio: 0.85,
     },
-    services: {
-      moonshotSearch: {
-        baseUrl: 'https://api.kimi.com/coding/v1/search',
-        apiKey: '',
-        oauth: { storage: 'file', key: 'oauth/kimi-code' },
-      },
-      moonshotFetch: {
-        baseUrl: 'https://api.kimi.com/coding/v1/fetch',
-        apiKey: '',
-        oauth: { storage: 'file', key: 'oauth/kimi-code' },
+    nbSearch: {
+      defaults: { search_lane: 'exa.search' },
+      credential_slots: {
+        'exa.default': { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY' },
       },
     },
   });
@@ -65,7 +59,7 @@ async function main(): Promise<void> {
     '[providers."managed:kimi-code"]',
     '[providers."managed:kimi-code".oauth]',
     '[models."kimi-code/kimi-for-coding"]',
-    '[services.moonshot_search]',
+    '[nb_search.defaults]',
   ]) {
     if (!text.includes(expected)) {
       throw new Error(`missing ${expected} in written config`);

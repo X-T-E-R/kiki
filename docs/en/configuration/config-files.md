@@ -67,13 +67,12 @@ reserved_context_size = 50000
 max_running_tasks = 4
 keep_alive_on_exit = false
 
-[services.moonshot_search]
-base_url = "https://api.kimi.com/coding/v1/search"
-api_key = ""
+[nb_search.credential_slots."exa.default"]
+provider_id = "exa"
+env = "NB_SEARCH_EXA_API_KEY"
 
-[services.moonshot_fetch]
-base_url = "https://api.kimi.com/coding/v1/fetch"
-api_key = ""
+[nb_search.defaults]
+search_lane = "exa.search"
 
 [[permission.rules]]
 decision = "allow"
@@ -463,27 +462,42 @@ Like the `tools` / `disallowedTools` fields of an agent file, this section shape
 | `micro_compaction` | `boolean` | `false` | Trim older large tool results from context while preserving recent conversation |
 -->
 
-## `services`
+## `nb_search`
 
-`services` configures two built-in services: web search (`moonshot_search`) and web fetch (`moonshot_fetch`). Only these two fixed keys are recognized; other keys are ignored. Both entries share the same fields:
+`nb_search` configures the nb-search runtime used by the built-in `WebSearch` and `FetchURL` tools. The field names and merge behavior follow the canonical `@nb-corp/nb-search` configuration contract.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `base_url` | `string` | No | Service API URL |
-| `api_key` | `string` | No | API key |
-| `oauth` | `table` | No | OAuth credential reference, same structure as `providers.*.oauth` |
-| `custom_headers` | `table<string, string>` | No | Custom HTTP headers attached to each request |
+| `provider_instances` | `table` | No | Named provider instances with `provider_id`, `enabled`, optional `credential_slot_id` / `base_url`, and provider-specific `options` |
+| `credential_slots` | `table` | No | Named credential slots containing only `provider_id` and the environment-variable name in `env` |
+| `lanes` | `table` | No | Named operation lanes with `provider_instance_id`, `operation_id`, `latency`, `cost`, and optional `evidence_groups` |
+| `defaults.search_lane` | `string` | No | Default lane selected by `WebSearch`; without it, web search fails closed |
+| `defaults.fetch_chain` | `array<table>` | No | Fetch pipeline chain by input kind and representation; the SDK default for URLs is `direct.fetch` followed by `jina.reader` |
+| `execution` | `table` | No | Provider-call, concurrency, retry, timeout, inline-output, response-size, redirect, content-size, and quality budgets |
 
-`base_url` and `api_key` can also come from environment variables, which take priority over the config file: `KIMI_WEB_SEARCH_BASE_URL` / `KIMI_WEB_SEARCH_API_KEY` for `moonshot_search`, and `KIMI_WEB_FETCH_BASE_URL` / `KIMI_WEB_FETCH_API_KEY` for `moonshot_fetch`. An env base URL defines a separate service endpoint, so the persisted API key, OAuth reference, and custom headers are not forwarded to it; set the matching env API key when that endpoint requires authentication. An env API key without an env base URL keeps the configured endpoint and custom headers but replaces both configured credential forms. Setting the base URL and API key through env without any config section also enables the service.
+Credential values are never stored in `config.toml`. Put the environment-variable name in a credential slot's `env` field, then set the actual secret in the process environment.
 
 ```toml
-[services.moonshot_search]
-base_url = "https://api.moonshot.cn/v1/search"
-api_key = "sk-xxx"
+[nb_search.credential_slots."exa.default"]
+provider_id = "exa"
+env = "NB_SEARCH_EXA_API_KEY"
 
-[services.moonshot_fetch]
-base_url = "https://api.moonshot.cn/v1/fetch"
-api_key = "sk-xxx"
+[nb_search.defaults]
+search_lane = "exa.search"
+
+[nb_search.execution]
+max_provider_calls = 16
+max_concurrency = 4
+retry_count = 1
+search_timeout_ms = 30000
+fetch_timeout_ms = 60000
+max_inline_bytes = 65536
+
+[nb_search.execution.fetch]
+max_source_bytes = 2097152
+max_response_bytes = 2097152
+max_content_chars = 200000
+max_redirects = 5
 ```
 
 ## `permission`

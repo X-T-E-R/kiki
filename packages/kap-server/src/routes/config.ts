@@ -123,7 +123,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
 function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
   const wire: Record<string, unknown> = {};
   for (const [domain, value] of Object.entries(resolved)) {
-    if (domain === 'telemetry') {
+    if (domain === 'telemetry' || domain === 'services') {
       continue;
     } else if (domain === 'providers') {
       wire['providers'] = toProviderResponses(value);
@@ -191,10 +191,15 @@ function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
   if (isPlainObject(obj)) {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
-      result[preserveKeys ? key : snakeToCamel(key)] = convertKeysSnakeToCamel(
-        value,
-        !preserveKeys && MAP_VALUED_CONFIG_KEYS.has(key),
-      );
+      const targetKey = preserveKeys ? key : snakeToCamel(key);
+      if (!preserveKeys && key === 'nb_search') {
+        result[targetKey] = value;
+      } else {
+        result[targetKey] = convertKeysSnakeToCamel(
+          value,
+          !preserveKeys && MAP_VALUED_CONFIG_KEYS.has(key),
+        );
+      }
     }
     return result;
   }

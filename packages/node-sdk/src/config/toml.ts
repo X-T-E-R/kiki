@@ -16,11 +16,10 @@ import {
   type LoopControl,
   type McpConfig,
   type ModelAlias,
-  type MoonshotServiceConfig,
+  type NbSearchConfig,
   type OAuthRef,
   type PermissionConfig,
   type ProviderConfig,
-  type ServicesConfig,
   type SubagentConfig,
   type ThinkingConfig,
   validateConfig,
@@ -309,8 +308,8 @@ export function transformTomlData(data: Record<string, unknown>): Record<string,
       result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'permission' && isPlainObject(value)) {
       result[targetKey] = transformPermissionData(value);
-    } else if (targetKey === 'services' && isPlainObject(value)) {
-      result[targetKey] = transformRecord(value, transformServiceData, snakeToCamel);
+    } else if (targetKey === 'nbSearch' && isPlainObject(value)) {
+      result[targetKey] = cloneRecord(value);
     } else if (targetKey === 'loopControl' && isPlainObject(value)) {
       result[targetKey] = transformLoopControlData(value);
     } else if (targetKey === 'background' && isPlainObject(value)) {
@@ -432,21 +431,6 @@ function transformPermissionRule(value: unknown, decision?: 'allow' | 'deny' | '
   return out;
 }
 
-function transformServiceData(data: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(data)) {
-    const targetKey = snakeToCamel(key);
-    if (targetKey === 'oauth') {
-      out[targetKey] = isPlainObject(value) ? transformPlainObject(value) : value;
-    } else if (targetKey === 'customHeaders') {
-      out[targetKey] = cloneObjectValue(value);
-    } else {
-      out[targetKey] = value;
-    }
-  }
-  return out;
-}
-
 function transformLoopControlData(data: Record<string, unknown>): Record<string, unknown> {
   const out = transformPlainObject(data);
   if (out['maxStepsPerTurn'] === undefined && out['maxStepsPerRun'] !== undefined) {
@@ -478,6 +462,7 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   delete out['defaultPermissionMode'];
   delete out['default_thinking'];
   delete out['defaultThinking'];
+  delete out['services'];
 
   // Top-level scalar fields
   const scalarFields: (keyof KimiConfig)[] = [
@@ -498,7 +483,7 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   setRecordSection(out, 'providers', config.providers, providerToToml);
   setRecordSection(out, 'models', config.models, modelToToml);
   setSection(out, 'thinking', config.thinking, thinkingToToml);
-  setSection(out, 'services', config.services, servicesToToml);
+  setSection(out, 'nb_search', config.nbSearch, nbSearchToToml);
   setSection(out, 'loop_control', config.loopControl, loopControlToToml);
   setSection(out, 'background', config.background, backgroundToToml);
   setSection(out, 'subagent', config.subagent, subagentToToml);
@@ -636,33 +621,8 @@ function permissionRuleToToml(
   return out;
 }
 
-function servicesToToml(services: ServicesConfig, rawServices: unknown): Record<string, unknown> {
-  const out = cloneRecord(rawServices);
-  if (services.moonshotSearch !== undefined) {
-    out['moonshot_search'] = serviceToToml(services.moonshotSearch);
-  } else {
-    delete out['moonshot_search'];
-  }
-  if (services.moonshotFetch !== undefined) {
-    out['moonshot_fetch'] = serviceToToml(services.moonshotFetch);
-  } else {
-    delete out['moonshot_fetch'];
-  }
-  return out;
-}
-
-function serviceToToml(service: MoonshotServiceConfig): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(service)) {
-    if (key === 'oauth' && value !== undefined) {
-      out[camelToSnake(key)] = oauthToToml(value as OAuthRef);
-    } else if (key === 'customHeaders' && value !== undefined) {
-      out[camelToSnake(key)] = cloneUnknown(value);
-    } else {
-      setDefined(out, camelToSnake(key), value);
-    }
-  }
-  return out;
+function nbSearchToToml(config: NbSearchConfig): Record<string, unknown> {
+  return cloneRecord(config);
 }
 
 function loopControlToToml(

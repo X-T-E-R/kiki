@@ -1321,7 +1321,7 @@ export const zh: Record<I18nKey, string> = {
   'st.experimental.saved': '实验特性覆盖已保存，实际状态已刷新。',
   'st.advanced.title': '高级引擎域',
   'st.advanced.hint':
-    '编辑协议定义的 permission、services、loop_control 和 background 域。Hooks 已移到「工具与 Hooks」页的独立编辑器。未知字段会在请求发出前被拒绝；各域的模式随后由 kap-server 校验。',
+    '编辑协议定义的 permission、loop_control 和 background 域。Hooks 已移到「工具与 Hooks」页的独立编辑器。未知字段会在请求发出前被拒绝；各域的模式随后由 kap-server 校验。',
   'st.advanced.aria': '高级引擎域',
   'st.advanced.save': '保存高级域配置',
   'st.advanced.saved': '服务器已校验、保存并回显高级引擎域。',

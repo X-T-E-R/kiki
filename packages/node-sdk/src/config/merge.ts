@@ -32,9 +32,31 @@ function deepMerge(
   for (const [key, sourceValue] of Object.entries(source)) {
     if (sourceValue === undefined) continue;
     const targetValue = result[key];
-    if (isPlainObject(targetValue) && isPlainObject(sourceValue)) {
+    if (key === 'nbSearch' && isPlainObject(sourceValue)) {
+      result[key] = mergeCanonicalPatch(isPlainObject(targetValue) ? targetValue : {}, sourceValue);
+    } else if (isPlainObject(targetValue) && isPlainObject(sourceValue)) {
       result[key] = deepMerge(targetValue, sourceValue);
     } else {
+      result[key] = sourceValue;
+    }
+  }
+  return result;
+}
+
+function mergeCanonicalPatch(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = { ...target };
+  for (const [key, sourceValue] of Object.entries(source)) {
+    if (sourceValue === null) {
+      delete result[key];
+    } else if (isPlainObject(sourceValue)) {
+      result[key] = mergeCanonicalPatch(
+        isPlainObject(result[key]) ? result[key] : {},
+        sourceValue,
+      );
+    } else if (sourceValue !== undefined) {
       result[key] = sourceValue;
     }
   }

@@ -53,9 +53,9 @@
 | `WebSearch` | 自动放行 | 网络搜索 |
 | `FetchURL` | 自动放行 | 获取指定 URL 的内容 |
 
-**`WebSearch`** 接受 `query`（搜索词）。需要宿主提供搜索实现，未注入时不会出现在工具列表中。
+**`WebSearch`** 接受 `query`（搜索词），并使用 `[nb_search.defaults]` 配置的默认 lane。results lane 返回排序后的链接；typed lane 返回 schema、source lane、来源和有界结构化数据。未配置 `search_lane` 时，工具会 fail-closed 并返回不可用错误。
 
-**`FetchURL`** 接受单个 `url` 参数，返回页面内容。对 HTML 页面，宿主会提取正文而非返回完整 HTML；纯文本或 Markdown 页面直接透传。同样需要宿主注入实现。
+**`FetchURL`** 接受单个 `url` 参数，通过 nb-search 默认 fetch chain 返回页面内容。对 HTML 页面，运行时会提取正文而非返回完整 HTML；纯文本或 Markdown 页面直接透传。
 
 ## Plan 模式
 

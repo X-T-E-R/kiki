@@ -73,6 +73,7 @@
   },
   "dependencies": {
     "@antfu/utils": "^9.3.0",
+    "@nb-corp/nb-search": "0.2.0",
     "pathe": "^2.0.3",
     "smol-toml": "^1.6.1",
     "yazl": "^3.3.1",

@@ -17,6 +17,7 @@ import {
 } from '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@moonshot-ai/agent-core-v2/workspace/workspaceInstance/configSection';
 import { RequestIdentityPolicyWireSchema } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import { nbSearchConfigPatchSchema } from '@moonshot-ai/protocol';
 import { z } from 'zod';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -81,6 +82,7 @@ const replaceableConfigDomainSchema = z.enum([
   'disabled_builtin_profiles',
   'disabled_named_profiles',
   'mcp',
+  'nb_search',
   'plugins',
   'tools',
 ]);
@@ -120,7 +122,7 @@ export const configResponseSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
-  services: z.unknown().optional(),
+  nb_search: nbSearchConfigPatchSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
@@ -161,7 +163,7 @@ export const patchConfigRequestSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
-  services: z.unknown().optional(),
+  nb_search: nbSearchConfigPatchSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
