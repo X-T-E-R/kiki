@@ -321,26 +321,17 @@ async function runServerInProcess(
     close: () => v2.close(),
   };
 
-  const heapPolicy = resolveHeapWatchdogPolicy(process.env);
-  if (heapPolicy !== undefined) {
-    const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
-    logger.info(
-      { threshold_mb: mb(heapPolicy.thresholdBytes), interval_ms: heapPolicy.intervalMs },
-      'heap watchdog armed',
-    );
+  const memoryPolicy = resolveHeapWatchdogPolicy(process.env);
+  if (memoryPolicy !== undefined) {
+    logger.info(memoryPolicy, 'memory watchdog armed');
     startHeapWatchdog({
-      policy: heapPolicy,
+      policy: memoryPolicy,
       onTrip: (trip) => {
         logger.warn(
-          {
-            heap_used_mb: mb(trip.heapUsed),
-            heap_total_mb: mb(trip.heapTotal),
-            rss_mb: mb(trip.rss),
-            threshold_mb: mb(trip.thresholdBytes),
-          },
-          'heap watchdog tripped; restarting the server before the old-space limit',
+          trip,
+          'memory watchdog tripped; restarting the server before sustained memory pressure stalls it',
         );
-        void shutdown('heap_limit');
+        void shutdown('memory_limit');
       },
     });
   }
