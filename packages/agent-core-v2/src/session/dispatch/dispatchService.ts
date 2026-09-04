@@ -12,6 +12,7 @@ import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMo
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IConfigService } from '#/app/config/config';
+import { hasPinnedPermissionMode } from '#/features/tower/tower';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { fillLeasePins, spawnConstraintOrigin } from '#/app/agentProfileCatalog/applySubagentLease';
 import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
@@ -229,8 +230,9 @@ export class SessionDispatchService implements ISessionDispatchService {
       );
     }
     const childDelegator = delegatorRef(meta)!;
+    const live = this.lifecycle.get(resolvedAgentId);
     const child =
-      this.lifecycle.get(resolvedAgentId) ??
+      live ??
       (await this.lifecycle.create({
         agentId: resolvedAgentId,
         forkedFrom: meta.forkedFrom,
@@ -238,6 +240,16 @@ export class SessionDispatchService implements ISessionDispatchService {
         delegator: childDelegator,
       }));
     const data = child.accessor.get(IAgentProfileService).data();
+    if (
+      live === undefined &&
+      childDelegator.kind === 'agent' &&
+      !hasPinnedPermissionMode(data.profileName)
+    ) {
+      const delegator = this.requireHandle(childDelegator.agentId, 'Delegator agent');
+      child
+        .accessor.get(IAgentPermissionModeService)
+        .setMode(delegator.accessor.get(IAgentPermissionModeService).mode);
+    }
     return this.childView(
       child,
       meta.labels?.[COLLABORATION_TASK_NAME_LABEL] ??

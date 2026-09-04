@@ -753,7 +753,7 @@ describe('AgentLifecycleService', () => {
       parentAgentId: 'main',
       delegator: undefined,
       forkedFrom: 'main',
-      labels: { swarmItem: 'swarm-item-1' },
+      labels: { swarmItem: 'swarm-item-1', profileName: 'explore' },
       displayName: 'explore',
       userLabel: 'Review usage accounting',
       model: 'provider/child-model',
@@ -761,6 +761,39 @@ describe('AgentLifecycleService', () => {
       executor: 'native',
       executorProtocol: 'native',
     });
+  });
+
+  it('recreates one persisted child with its profile binding', async () => {
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+      {
+        type: 'profile.bind',
+        modelAlias: 'provider/child-model',
+        profileName: 'explore',
+        thinkingEffort: 'high',
+        systemPrompt: '',
+        disallowedTools: [],
+        time: 2,
+      },
+    ]).store);
+    const svc = ix.get(IAgentLifecycleService);
+
+    const first = await svc.create({ agentId: 'child' });
+    await svc.remove('child');
+    const restored = await svc.create({ agentId: 'child' });
+
+    expect(restored).not.toBe(first);
+    expect(restored.id).toBe('child');
+    expect(svc.list().map((agent) => agent.id)).toEqual(['child']);
+    expect(restored.accessor.get(IAgentProfileService).data()).toMatchObject({
+      profileName: 'explore',
+      modelAlias: 'provider/child-model',
+      thinkingLevel: 'high',
+    });
+    expect(registerAgent).toHaveBeenLastCalledWith(
+      'child',
+      expect.objectContaining({ labels: { profileName: 'explore' } }),
+    );
   });
 
   it('keeps a persisted display name when restored profile metadata differs', async () => {
