@@ -10,8 +10,8 @@ import { INPUT, PRIMARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 
 /**
- * Raw JSON domains (redesign §8.3 / §10.3): permission, services,
- * loop_control, and background as one JSON document. Hooks left this editor
+ * Raw JSON domains (redesign §8.3 / §10.3): permission, loop_control, and
+ * background as one JSON document. Hooks left this editor
  * in batch 3 — they only enter through the Automation leaf's parseHooksJson —
  * so a pasted `hooks` key is rejected as an unsupported field.
  */
@@ -29,7 +29,6 @@ export function AdvancedSection() {
     if (config === undefined) return;
     setAdvanced(JSON.stringify({
       permission: config.permission ?? {},
-      services: config.services ?? {},
       loop_control: config.loop_control ?? {},
       background: config.background ?? {},
     }, null, 2));
@@ -50,7 +49,6 @@ export function AdvancedSection() {
       queryClient.setQueryData(['config'], echoed);
       setAdvanced(JSON.stringify({
         permission: echoed.permission ?? {},
-        services: echoed.services ?? {},
         loop_control: echoed.loop_control ?? {},
         background: echoed.background ?? {},
       }, null, 2));

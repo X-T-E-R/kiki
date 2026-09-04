@@ -17,7 +17,12 @@ import { IConfigService, type ConfigChangedEvent } from '#/app/config/config';
 import { NB_SEARCH_SECTION } from '#/app/nbSearch/configSection';
 import { INbSearchService, type NbSearchTestStatus } from '#/app/nbSearch/nbSearch';
 import { NbSearchService } from '#/app/nbSearch/nbSearchService';
-import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
+import {
+  DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS,
+  type ExecutableToolContext,
+  type ExecutableToolResult,
+  type ToolExecution,
+} from '#/tool/toolContract';
 
 const { createRuntimeMock } = vi.hoisted(() => ({ createRuntimeMock: vi.fn() }));
 
@@ -138,6 +143,32 @@ function searchEnvelope(status: SearchRunSyncEnvelope['status']): SearchRunSyncE
   };
 }
 
+function typedSearchEnvelope(
+  status: SearchRunSyncEnvelope['status'] = 'succeeded',
+): SearchRunSyncEnvelope {
+  return {
+    schema_version: '3.0',
+    action: 'run',
+    execution: 'sync',
+    selection: { source: 'default', lanes: ['context7.docs'] },
+    status,
+    output: {
+      channel: 'typed',
+      lane: 'context7.docs',
+      schema_id: 'nb-search.docs-context@1',
+      status,
+      data: {
+        library: { id: '/example/library', title: 'Example Library' },
+        content: '### Example\n\nTyped documentation content.',
+        sources: [{ url: 'https://example.com/docs', title: 'Example docs' }],
+      },
+      lane_outcomes: [],
+      hints: [],
+    },
+    hints: [],
+  };
+}
+
 function fetchEnvelope(status: FetchRunSyncEnvelope['status'], content = 'BODY'): FetchRunSyncEnvelope {
   return {
     schema_version: '3.0',
@@ -217,7 +248,9 @@ describe('NbSearchService', () => {
     });
   });
 
-  afterEach(() => disposables.dispose());
+  afterEach(() => {
+    disposables.dispose();
+  });
 
   it('uses runtime.search and runtime.fetch without a provider fallback', async () => {
     const runtime = {
@@ -285,6 +318,34 @@ describe('NbSearchService', () => {
     });
   });
 
+  it('reports a ready typed default lane as available', async () => {
+    const capabilities = structuredClone(CAPABILITIES);
+    capabilities.search.default_lane = 'context7.docs';
+    capabilities.search.lanes = [{
+      id: 'context7.docs',
+      output: { channel: 'typed', schema_id: 'nb-search.docs-context@1' },
+      execution_modes: ['sync'],
+      availability: 'ready',
+      issues: [],
+      latency: 'medium',
+      cost: 'cheap',
+    }];
+    createRuntimeMock.mockReturnValue({
+      search: vi.fn(),
+      fetch: vi.fn(),
+      capabilities: vi.fn().mockResolvedValue(capabilities),
+    } satisfies NbSearchRuntime);
+
+    await expect(ix.get(INbSearchService).test()).resolves.toMatchObject({
+      search: {
+        configured: true,
+        available: true,
+        selection: 'context7.docs',
+        issues: [],
+      },
+    });
+  });
+
   it('reports the fetch chain unavailable when no pipeline can run', async () => {
     const capabilities = structuredClone(CAPABILITIES);
     for (const pipeline of capabilities.fetch.pipelines) {
@@ -324,7 +385,9 @@ describe('nb-search tool adapters', () => {
     });
   });
 
-  afterEach(() => disposables.dispose());
+  afterEach(() => {
+    disposables.dispose();
+  });
 
   it('keeps the WebSearch schema and display while forwarding cancellation', async () => {
     const controller = new AbortController();
@@ -342,7 +405,7 @@ describe('nb-search tool adapters', () => {
     expect(result.output).toContain('URL: https://example.com/result');
   });
 
-  it.each(['partial', 'empty', 'failed', 'timed_out', 'cancelled'] as const)(
+  it.each(['failed', 'timed_out', 'cancelled'] as const)(
     'does not report %s search output as success',
     async (status) => {
       service.search = vi.fn().mockResolvedValue(searchEnvelope(status));
@@ -353,6 +416,74 @@ describe('nb-search tool adapters', () => {
       expect(result.isError).toBe(true);
     },
   );
+
+  it('reports an empty results response as a normal successful search', async () => {
+    service.search = vi.fn().mockResolvedValue(searchEnvelope('empty'));
+    const result = await execute(
+      ix.get(IWebSearchTool).resolveExecution({ query: 'example query' }),
+      new AbortController().signal,
+    );
+
+    expect(result).toMatchObject({ isError: false, output: 'No search results found.' });
+  });
+
+  it('keeps partial results and marks them incomplete', async () => {
+    service.search = vi.fn().mockResolvedValue(searchEnvelope('partial'));
+    const result = await execute(
+      ix.get(IWebSearchTool).resolveExecution({ query: 'example query' }),
+      new AbortController().signal,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('Title: Example');
+    expect(result.output).toContain('Search completed partially');
+  });
+
+  it('renders a succeeded typed lane with schema, sources, content, and JSON', async () => {
+    service.search = vi.fn().mockResolvedValue(typedSearchEnvelope());
+    const result = await execute(
+      ix.get(IWebSearchTool).resolveExecution({ query: 'example library' }),
+      new AbortController().signal,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain('Schema: nb-search.docs-context@1');
+    expect(result.output).toContain('Source lane: context7.docs');
+    expect(result.output).toContain('Example docs: https://example.com/docs');
+    expect(result.output).toContain('Typed documentation content.');
+    expect(result.output).toContain('Data:');
+  });
+
+  it('bounds large typed output through the tool accumulator', async () => {
+    const envelope = typedSearchEnvelope();
+    if (envelope.output?.channel !== 'typed') throw new Error('expected typed output');
+    envelope.output.data = {
+      content: 'x'.repeat(DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS + 1),
+      sources: [],
+    };
+    service.search = vi.fn().mockResolvedValue(envelope);
+    const result = await execute(
+      ix.get(IWebSearchTool).resolveExecution({ query: 'example library' }),
+      new AbortController().signal,
+    );
+
+    expect(result.isError).toBe(false);
+    if (typeof result.output !== 'string') throw new Error('expected text output');
+    expect(result.output.length).toBeLessThanOrEqual(DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS);
+    expect(result.spill).toBeDefined();
+  });
+
+  it('keeps typed partial data and marks it incomplete', async () => {
+    service.search = vi.fn().mockResolvedValue(typedSearchEnvelope('partial'));
+    const result = await execute(
+      ix.get(IWebSearchTool).resolveExecution({ query: 'example library' }),
+      new AbortController().signal,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('Schema: nb-search.docs-context@1');
+    expect(result.output).toContain('Search completed partially');
+  });
 
   it('uses the default fetch chain and preserves extracted output wording', async () => {
     const controller = new AbortController();

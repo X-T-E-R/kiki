@@ -1352,7 +1352,7 @@ export const en = {
   'st.experimental.saved': 'Experimental overrides saved; effective state refreshed.',
   'st.advanced.title': 'Advanced engine domains',
   'st.advanced.hint':
-    'Edit the protocol-backed permission, services, loop_control, and background domains. Hooks have their own editor under Tools & hooks. Unknown fields are rejected before the request; domain schemas are then validated by kap-server.',
+    'Edit the protocol-backed permission, loop_control, and background domains. Hooks have their own editor under Tools & hooks. Unknown fields are rejected before the request; domain schemas are then validated by kap-server.',
   'st.advanced.aria': 'Advanced engine domains',
   'st.advanced.save': 'Save advanced domains',
   'st.advanced.saved': 'Server validated, saved, and echoed the advanced engine domains.',

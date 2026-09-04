@@ -209,6 +209,37 @@ describe('SettingsPage batch-3 leaves', () => {
     }
   });
 
+  it('saves advanced settings without the retired services domain', async () => {
+    client.getConfig.mockResolvedValueOnce({
+      permission: { mode: 'manual' },
+      services: { legacy: true },
+      loop_control: { max_steps_per_turn: 12 },
+      background: { max_running_tasks: 2 },
+    });
+    client.patchConfig.mockResolvedValueOnce({
+      permission: { mode: 'manual' },
+      loop_control: { max_steps_per_turn: 12 },
+      background: { max_running_tasks: 2 },
+    });
+    client.patchConfig.mockClear();
+    const container = await renderSettings('/settings/advanced');
+    const card = container.querySelector('#st-card-advanced')!;
+    const textarea = card.querySelector('textarea')!;
+    expect(textarea.value).not.toContain('services');
+
+    const saveButton = [...card.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Save advanced domains',
+    )!;
+    await click(saveButton);
+    await flush();
+
+    expect(client.patchConfig).toHaveBeenCalledWith({
+      permission: { mode: 'manual' },
+      loop_control: { max_steps_per_turn: 12 },
+      background: { max_running_tasks: 2 },
+    });
+  });
+
   it('mounts the subagents leaf with profiles, governance, and the timeout card', async () => {
     const container = await renderSettings('/settings/subagents');
     expect(container.querySelector('#st-card-subagent-profiles')).not.toBeNull();

@@ -290,7 +290,6 @@ describe('applyOpenPlatformConfig', () => {
     });
     expect(config.defaultModel).toBe('moonshot-cn/kimi-k2-0712-preview');
     expect(config.thinking?.enabled).toBe(true);
-    expect(config['services']).toBeUndefined();
   });
 
   it('clears stale models for the same provider', () => {

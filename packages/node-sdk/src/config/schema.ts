@@ -1,6 +1,15 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { parsePattern } from '@moonshot-ai/agent-core-v2';
 import { HOOK_EVENT_TYPES } from '@moonshot-ai/agent-core-v2/features/externalHooks/internal/types';
-import { parseConfigPatch, type CanonicalConfigPatch } from '@nb-corp/nb-search';
+import {
+  builtInProviderRegistrations,
+  createNbSearchRuntime,
+  parseConfigPatch,
+  type CanonicalConfigPatch,
+} from '@nb-corp/nb-search';
+import { findUnknownNbSearchProviderOptions } from '@moonshot-ai/protocol';
 
 import { ErrorCodes, KimiError } from '../errors';
 import { z } from 'zod';
@@ -251,10 +260,35 @@ export const HookDefSchema = z
 
 export type HookDefConfig = z.infer<typeof HookDefSchema>;
 
+const nbSearchProviderOptionDescriptors = builtInProviderRegistrations().map(
+  (registration) => registration.descriptor,
+);
+const nbSearchValidationEnv: NodeJS.ProcessEnv = {
+  NB_SEARCH_HOME: join(tmpdir(), 'kimi-code-sdk-nb-search-validation'),
+};
+
+export const NbSearchConfigPatchSchema = z.custom<CanonicalConfigPatch>(
+  (value) => {
+    try {
+      parseConfigPatch(value, 'Kiki nb_search configuration patch');
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { error: 'Invalid nb_search configuration patch.' },
+).transform((value) => parseConfigPatch(value, 'Kiki nb_search configuration patch'));
+
 export const NbSearchConfigSchema = z.custom<CanonicalConfigPatch>(
   (value) => {
     try {
-      parseConfigPatch(value, 'Kiki nb_search configuration');
+      const config = parseConfigPatch(value, 'Kiki nb_search configuration');
+      const issues = findUnknownNbSearchProviderOptions(
+        config,
+        nbSearchProviderOptionDescriptors,
+      );
+      if (issues.length > 0) throw new Error('Invalid nb_search provider configuration.');
+      createNbSearchRuntime({ env: nbSearchValidationEnv, config });
       return true;
     } catch {
       return false;
@@ -393,7 +427,7 @@ export const KimiConfigPatchSchema = z
     defaultPlanMode: z.boolean().optional(),
     permission: PermissionConfigPatchSchema.optional(),
     hooks: z.array(HookDefSchema).optional(),
-    nbSearch: NbSearchConfigSchema.optional(),
+    nbSearch: NbSearchConfigPatchSchema.optional(),
     mergeAllAvailableSkills: z.boolean().optional(),
     extraSkillDirs: z.array(z.string()).optional(),
     extraAgentDirs: z.array(z.string()).optional(),

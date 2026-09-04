@@ -1,8 +1,8 @@
 import { INbSearchService, type Scope } from '@moonshot-ai/agent-core-v2';
+import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@moonshot-ai/protocol';
 
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '../protocol/rest-nb-search';
 
 interface NbSearchRouteHost {
   get(

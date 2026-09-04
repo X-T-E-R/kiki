@@ -51,8 +51,11 @@ export class WebSearchTool implements IWebSearchTool {
 }
 
 function renderSearchResult(envelope: SearchRunSyncEnvelope): ExecutableToolResult {
-  if (envelope.output?.channel !== 'results') {
+  if (envelope.output === undefined) {
     return { isError: true, output: classifySearchFailure(envelope.error, envelope.status) };
+  }
+  if (envelope.output.channel === 'typed') {
+    return renderTypedSearchResult(envelope);
   }
 
   const builder = new ToolOutputAccumulator();
@@ -67,7 +70,14 @@ function renderSearchResult(envelope: SearchRunSyncEnvelope): ExecutableToolResu
     builder.write(`Snippet: ${result.snippet}\n\n`);
   }
 
-  if (envelope.status === 'succeeded' && envelope.output.results.length > 0) {
+  if (
+    envelope.error === undefined &&
+    (envelope.status === 'empty' ||
+      (envelope.status === 'succeeded' && envelope.output.results.length === 0))
+  ) {
+    return { isError: false, output: 'No search results found.' };
+  }
+  if (envelope.status === 'succeeded') {
     builder.write(
       'When you rely on a result in your answer, cite it inline as a markdown link, e.g. [title](url).',
     );
@@ -79,6 +89,60 @@ function renderSearchResult(envelope: SearchRunSyncEnvelope): ExecutableToolResu
     return { isError: true, output: detail };
   }
   return builder.error(detail);
+}
+
+function renderTypedSearchResult(envelope: SearchRunSyncEnvelope): ExecutableToolResult {
+  const output = envelope.output;
+  if (output?.channel !== 'typed') {
+    return { isError: true, output: classifySearchFailure(envelope.error, envelope.status) };
+  }
+  const builder = new ToolOutputAccumulator();
+  builder.write(`Schema: ${output.schema_id}\nSource lane: ${output.lane}\n`);
+  const sources = typedSources(output.data);
+  builder.write('Sources:\n');
+  if (sources.length === 0) {
+    builder.write('None\n');
+  } else {
+    for (const source of sources) {
+      builder.write(`- ${source.title === undefined ? source.url : `${source.title}: ${source.url}`}\n`);
+    }
+  }
+  const content = typedContent(output.data);
+  if (content !== undefined) {
+    builder.write(`\nContent:\n${content}\n`);
+  }
+  builder.write(`\nData:\n${JSON.stringify(output.data ?? null, null, 2)}`);
+
+  if (envelope.error === undefined && envelope.status === 'empty') {
+    builder.write('\n\nNo search results found.');
+    return builder.ok();
+  }
+  if (envelope.status === 'succeeded') {
+    return builder.ok();
+  }
+  return builder.error(classifySearchFailure(envelope.error, envelope.status));
+}
+
+function typedSources(data: unknown): Array<{ url: string; title?: string }> {
+  if (!isRecord(data) || !Array.isArray(data['sources'])) return [];
+  return data['sources'].flatMap((source) => {
+    if (!isRecord(source) || typeof source['url'] !== 'string') return [];
+    return [{
+      url: source['url'],
+      title: typeof source['title'] === 'string' ? source['title'] : undefined,
+    }];
+  });
+}
+
+function typedContent(data: unknown): string | undefined {
+  if (!isRecord(data) || typeof data['content'] !== 'string' || data['content'].length === 0) {
+    return undefined;
+  }
+  return data['content'];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function classifySearchFailure(error: PublicError | undefined, status: string): string {
@@ -94,7 +158,7 @@ function classifySearchFailure(error: PublicError | undefined, status: string): 
   if (error?.code === 'DEFAULT_NOT_CONFIGURED') {
     return `Search unavailable: ${error.message}`;
   }
-  if (status === 'empty') {
+  if (status === 'empty' && error === undefined) {
     return 'Search returned no results. Status: empty.';
   }
   if (status === 'partial') {

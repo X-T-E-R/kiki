@@ -189,7 +189,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     });
   });
 
-  it('writes the managed provider, models, services, and default model through an adapter', async () => {
+  it('writes the managed provider, models, and default model through an adapter', async () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         custom: {
@@ -266,7 +266,6 @@ describe('provisionManagedKimiCodeConfig', () => {
       displayName: 'Kimi for Coding',
     });
     expect(config.models?.['kimi-code/kimi-k2.5']?.capabilities).toBeUndefined();
-    expect(config['services']).toBeUndefined();
   });
 
   it('writes scoped OAuth refs when provisioning against a non-default environment', async () => {
@@ -299,7 +298,6 @@ describe('provisionManagedKimiCodeConfig', () => {
         oauthHost: 'https://auth.dev.example.test',
       },
     });
-    expect(config['services']).toBeUndefined();
   });
 
   it('persists the default OAuth host when only the API base URL is scoped', async () => {
@@ -588,7 +586,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     expect(config.thinking?.enabled).toBe(false);
   });
 
-  it('removes managed provider, models, services, and default model on logout', () => {
+  it('removes the managed provider, models, and default model on logout', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [KIMI_CODE_PROVIDER_NAME]: {
@@ -614,11 +612,6 @@ describe('provisionManagedKimiCodeConfig', () => {
           maxContextSize: 1000,
         },
       },
-      services: {
-        unrelatedSearch: { baseUrl: 'https://api.kimi.com/coding/v1/search' },
-        unrelatedFetch: { baseUrl: 'https://api.kimi.com/coding/v1/fetch' },
-        customService: { baseUrl: 'https://service.example.test' },
-      },
       raw: {
         default_model: 'kimi-code/kimi-for-coding',
         providers: {
@@ -635,10 +628,6 @@ describe('provisionManagedKimiCodeConfig', () => {
             model: 'custom-model',
           },
         },
-        services: {
-          unrelated_search: { base_url: 'https://api.example.test/search' },
-          unrelated_fetch: { base_url: 'https://api.example.test/fetch' },
-        },
       },
     };
 
@@ -649,11 +638,6 @@ describe('provisionManagedKimiCodeConfig', () => {
     expect(config.providers['custom']).toBeDefined();
     expect(config.models?.['kimi-code/kimi-for-coding']).toBeUndefined();
     expect(config.models?.['custom-default']).toBeDefined();
-    expect(config['services']).toEqual({
-      unrelatedSearch: { baseUrl: 'https://api.kimi.com/coding/v1/search' },
-      unrelatedFetch: { baseUrl: 'https://api.kimi.com/coding/v1/fetch' },
-      customService: { baseUrl: 'https://service.example.test' },
-    });
   });
 
   it('rejects managed models that do not include a positive context_length', async () => {
@@ -764,7 +748,7 @@ describe('provisionManagedKimiCodeConfig', () => {
     ).rejects.toBeInstanceOf(ManagedKimiCodeModelsAuthError);
   });
 
-  it('clears managed provider, models, default model, and services on logout', () => {
+  it('clears the managed provider, models, and default model on logout', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         [KIMI_CODE_PROVIDER_NAME]: {
@@ -790,19 +774,6 @@ describe('provisionManagedKimiCodeConfig', () => {
           maxContextSize: 128000,
         },
       },
-      services: {
-        unrelatedSearch: {
-          baseUrl: 'https://api.kimi.com/coding/v1/search',
-          apiKey: '',
-          oauth: { storage: 'file', key: 'oauth/kimi-code' },
-        },
-        unrelatedFetch: {
-          baseUrl: 'https://api.kimi.com/coding/v1/fetch',
-          apiKey: '',
-          oauth: { storage: 'file', key: 'oauth/kimi-code' },
-        },
-        otherService: { baseUrl: 'https://service.example.test' },
-      },
     };
 
     const result = clearManagedKimiCodeConfig(config);
@@ -818,19 +789,6 @@ describe('provisionManagedKimiCodeConfig', () => {
     expect(config.defaultModel).toBeUndefined();
     expect(config.models?.['kimi-code/kimi-for-coding']).toBeUndefined();
     expect(config.models?.['custom-default']).toMatchObject({ provider: 'custom' });
-    expect(config['services']).toEqual({
-      unrelatedSearch: {
-        baseUrl: 'https://api.kimi.com/coding/v1/search',
-        apiKey: '',
-        oauth: { storage: 'file', key: 'oauth/kimi-code' },
-      },
-      unrelatedFetch: {
-        baseUrl: 'https://api.kimi.com/coding/v1/fetch',
-        apiKey: '',
-        oauth: { storage: 'file', key: 'oauth/kimi-code' },
-      },
-      otherService: { baseUrl: 'https://service.example.test' },
-    });
   });
 });
 
@@ -1292,7 +1250,7 @@ describe('selective merge', () => {
 });
 
 describe('applyManagedApiKeyProviderModels', () => {
-  it('merges upstream models without touching provider, services, or defaults', () => {
+  it('merges upstream models without touching the provider or defaults', () => {
     const config: ManagedKimiConfigShape = {
       providers: {
         'my-kimi': {
@@ -1337,10 +1295,9 @@ describe('applyManagedApiKeyProviderModels', () => {
       baseUrl: 'https://api.example.test/coding/v1',
       apiKey: 'sk-distributed-key',
     });
-    // Defaults and services are the orchestrator's / OAuth branch's business.
+    // Defaults are the orchestrator's / OAuth branch's business.
     expect(config.defaultModel).toBe('my-kimi/kimi-k2');
     expect(config.thinking).toEqual({ enabled: false });
-    expect(config['services']).toBeUndefined();
     // Upstream-owned fields merge; hand-written extras survive.
     const alias = config.models?.['my-kimi/kimi-k2'];
     expect(alias?.['displayName']).toBe('Fresh K2');

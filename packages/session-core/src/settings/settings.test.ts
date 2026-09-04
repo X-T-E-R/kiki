@@ -205,6 +205,7 @@ describe('settings persistence and validation', () => {
     expect(() => parseExperimentalFlags('{"flag":"yes"}')).toThrow('true or false');
     expect(parseExperimentalFlags('{"search_worker":true}')).toEqual({ search_worker: true });
     expect(() => parseAdvancedServerConfig('{"hooks":{}}')).toThrow('Unsupported');
+    expect(() => parseAdvancedServerConfig('{"services":{}}')).toThrow('Unsupported');
     expect(() => parseAdvancedServerConfig('{"unknown":true}')).toThrow('Unsupported');
     // Hooks left the advanced editor in the batch-3 split: they only enter
     // through the Automation leaf's parseHooksJson, so a pasted hooks key is
@@ -212,7 +213,6 @@ describe('settings persistence and validation', () => {
     expect(() => parseAdvancedServerConfig('{"hooks":[],"background":{"max":2}}')).toThrow('Unsupported');
     expect(parseAdvancedServerConfig('{"background":{"max":2}}')).toEqual({
       permission: undefined,
-      services: undefined,
       loop_control: undefined,
       background: { max: 2 },
     });
