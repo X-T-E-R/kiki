@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest';
 import {
   getNativeWebAssetsDir,
   getWebAssetCacheRoot,
+  requireServerWebAssetsDir,
+  resolveServerWebAssetsDir,
   WEB_ASSET_MANIFEST_VERSION,
   type WebAssetManifest,
   type WebAssetSource,
@@ -109,5 +111,38 @@ describe('web assets', () => {
 
   it('returns null when no SEA web asset source is available', () => {
     expect(getNativeWebAssetsDir({ source: null })).toBeNull();
+  });
+
+  it('fails closed when a SEA executable has no embedded web manifest', () => {
+    const source: WebAssetSource = {
+      getAssetKeys: () => [],
+      getRawAsset: () => Buffer.alloc(0),
+    };
+
+    expect(() => getNativeWebAssetsDir({ source })).toThrow(
+      'Embedded Kimi web assets were not found',
+    );
+  });
+
+  it('resolves package dist/web outside SEA mode', () => {
+    expect(resolveServerWebAssetsDir(null)).toMatch(/[/\\]dist[/\\]web$/);
+  });
+
+  it('passes extracted Windows asset paths through unchanged', () => {
+    const windowsPath = String.raw`C:\Program Files\Kiki\cache\dist\web`;
+    expect(resolveServerWebAssetsDir(windowsPath)).toBe(windowsPath);
+  });
+
+  it('requires the built index before starting a server owner', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-required-web-assets-'));
+    try {
+      expect(() => requireServerWebAssetsDir(dir)).toThrow(
+        `Kimi web assets were not found at ${dir}`,
+      );
+      writeFileSync(join(dir, 'index.html'), '<html></html>');
+      expect(requireServerWebAssetsDir(dir)).toBe(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 });

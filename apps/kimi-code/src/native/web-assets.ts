@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { KIMI_BUILD_INFO } from '#/cli/build-info';
+import { getHostPackageRoot } from '#/cli/version';
 import {
   getNativeCacheBase,
   getSeaAssetSource,
@@ -14,6 +15,8 @@ import {
 } from '../../scripts/native/manifest.mjs';
 
 export const WEB_ASSET_MANIFEST_VERSION = MANIFEST_VERSION;
+
+const WEB_ASSETS_DIR = 'dist/web';
 
 export interface WebAssetFile {
   readonly assetKey: string;
@@ -164,8 +167,11 @@ export function getNativeWebAssetsDir(options: WebAssetOptions = {}): string | n
   const source = options.source ?? getSeaAssetSource();
   if (source === null) return null;
 
-  const manifest = options.manifest ?? getEmbeddedWebAssetManifest(source, currentTarget());
-  if (manifest === null) return null;
+  const target = currentTarget();
+  const manifest = options.manifest ?? getEmbeddedWebAssetManifest(source, target);
+  if (manifest === null) {
+    throw new Error(`Embedded Kimi web assets were not found for ${target}.`);
+  }
 
   const cacheRoot = getWebAssetCacheRoot(manifest, options);
   for (const file of manifest.files) {
@@ -180,4 +186,22 @@ export function getNativeWebAssetsDir(options: WebAssetOptions = {}): string | n
     ensureFile(join(cacheRoot, file.relativePath), bytes, file.sha256);
   }
   return cacheRoot;
+}
+
+export function resolveServerWebAssetsDir(
+  nativeWebAssetsDir: string | null = getNativeWebAssetsDir(),
+): string {
+  return nativeWebAssetsDir ?? join(getHostPackageRoot(), WEB_ASSETS_DIR);
+}
+
+export function requireServerWebAssetsDir(
+  nativeWebAssetsDir: string | null = getNativeWebAssetsDir(),
+): string {
+  const assetsDir = resolveServerWebAssetsDir(nativeWebAssetsDir);
+  try {
+    if (statSync(join(assetsDir, 'index.html')).isFile()) return assetsDir;
+  } catch {}
+  throw new Error(
+    `Kimi web assets were not found at ${assetsDir}. Run the package build before starting the server.`,
+  );
 }
