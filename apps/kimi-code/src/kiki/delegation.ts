@@ -2,6 +2,13 @@ import { realpath } from 'node:fs/promises';
 import { normalize, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import {
+  delegationProcedureTable,
+  type DelegationProcedureInput,
+  type DelegationProcedureName,
+  type DelegationProcedureTable,
+} from '@moonshot-ai/klient/procedures';
+import { createSeatKlient, type SeatKlient } from '@moonshot-ai/klient/procedures/http';
 import type { Command } from 'commander';
 
 import { resolveKikiHome } from './home';
@@ -19,41 +26,13 @@ export const KIKI_EXIT = {
   timedOut: 124,
 } as const;
 
-interface Schema<T> {
-  parse(value: unknown): T;
-}
-
-export interface DelegationProcedureEntry {
-  readonly name: string;
-  readonly mcp: {
-    readonly description: string;
-    readonly input: {
-      readonly schema: Schema<unknown>;
-      decode(value: never): unknown;
-    };
-  };
-}
-
-export interface DelegationProcedureTableModule {
-  readonly delegationProcedureTable: readonly DelegationProcedureEntry[];
-}
-
-export interface SeatKlientLike {
-  call(name: string, input: unknown): Promise<unknown>;
-  close(): Promise<void>;
-}
-
-interface SeatKlientModule {
-  createSeatKlient(options: { readonly endpoint: string; readonly token: string }): SeatKlientLike;
-}
+export type DelegationProcedureEntry = DelegationProcedureTable[number];
 
 export interface DelegationRuntimeDependencies {
   readonly cwd?: () => string;
   readonly ensureServer?: typeof ensureServer;
   readonly createSeat?: typeof createSeatOnConnection;
-  readonly createSeatKlient?: SeatKlientModule['createSeatKlient'];
-  readonly loadProcedures?: () => Promise<DelegationProcedureTableModule>;
-  readonly loadHttp?: () => Promise<SeatKlientModule>;
+  readonly createSeatKlient?: typeof createSeatKlient;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly stdout?: Pick<NodeJS.WriteStream, 'write'>;
   readonly stderr?: Pick<NodeJS.WriteStream, 'write'>;
@@ -76,7 +55,7 @@ interface CliOptionMetadata {
 }
 
 interface CliProcedureMetadata {
-  readonly procedure: string;
+  readonly procedure: DelegationProcedureName;
   readonly command: string;
   readonly positionals?: readonly CliPositionalMetadata[];
   readonly options?: readonly CliOptionMetadata[];
@@ -230,12 +209,11 @@ const CLI_METADATA: readonly CliProcedureMetadata[] = [
 ];
 
 export function projectDelegationCommands(
-  table: readonly DelegationProcedureEntry[],
+  table: DelegationProcedureTable = delegationProcedureTable,
 ): readonly ProjectedDelegationCommand[] {
   const byName = new Map(table.map((procedure) => [procedure.name, procedure]));
   return CLI_METADATA.map((metadata) => {
-    const procedure = byName.get(metadata.procedure);
-    if (procedure === undefined) throw new Error(`Delegation procedure table is missing ${metadata.procedure}.`);
+    const procedure = byName.get(metadata.procedure)!;
     const positionals = metadata.positionals ?? [];
     const options = [...(metadata.options ?? []), ...COMMON_OPTIONS];
     return {
@@ -264,13 +242,9 @@ export function projectDelegationCommands(
 
 export function registerDelegationCommands(
   program: Command,
-  table: readonly DelegationProcedureEntry[],
+  table: DelegationProcedureTable = delegationProcedureTable,
   dependencies: DelegationRuntimeDependencies = {},
 ): void {
-  const runtimeDependencies: DelegationRuntimeDependencies = {
-    ...dependencies,
-    loadProcedures: async () => ({ delegationProcedureTable: table }),
-  };
   for (const projected of projectDelegationCommands(table)) {
     const command = program.command(projected.command).exitOverride((error) => {
       if (error.exitCode !== 0) error.exitCode = KIKI_EXIT.usage;
@@ -291,35 +265,29 @@ export function registerDelegationCommands(
       const commander = args.at(-1) as Command;
       const rawOptions = commander.opts<Record<string, unknown>>();
       const positionals = args.slice(0, -2);
-      const exitCode = await runDelegationCommand(projected.procedure.name, positionals, rawOptions, runtimeDependencies);
+      const exitCode = await runDelegationCommand(projected.procedure.name, positionals, rawOptions, dependencies);
       process.exitCode = exitCode;
     });
   }
 }
 
-export async function loadDelegationProcedureTable(): Promise<readonly DelegationProcedureEntry[]> {
-  return (await loadProcedures()).delegationProcedureTable;
-}
-
 export async function runDelegationCommand(
-  procedureName: string,
+  procedureName: DelegationProcedureName,
   positionals: readonly unknown[],
   options: Record<string, unknown>,
   dependencies: DelegationRuntimeDependencies = {},
 ): Promise<number> {
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
-  let client: SeatKlientLike | undefined;
   try {
-    const procedures = await (dependencies.loadProcedures ?? loadProcedures)();
-    const command = projectDelegationCommands(procedures.delegationProcedureTable)
+    const command = projectDelegationCommands()
       .find((candidate) => candidate.procedure.name === procedureName)!;
     const input = command.canonicalInput(positionals, options);
-    client = await createCliSeatKlient(options, dependencies);
+    const client = await createCliSeatKlient(options, dependencies);
     if (command.behavior === 'events' && options['follow'] === true) {
-      return followEvents(client, input as Record<string, unknown>, options, dependencies, stdout);
+      return followEvents(client, input as DelegationProcedureInput<'events'>, options, dependencies, stdout);
     }
-    const output = await client.call(procedureName, input);
+    const output = await callProcedure(client, procedureName, input);
     if (command.behavior === 'dispatch' && options['wait'] === true) {
       return finishDispatch(client, output, options, stdout);
     }
@@ -328,9 +296,15 @@ export async function runDelegationCommand(
   } catch (error) {
     stderr.write(`${redact(error instanceof Error ? error.message : String(error))}\n`);
     return exitCodeForError(error);
-  } finally {
-    if (client !== undefined) await client.close();
   }
+}
+
+function callProcedure(
+  client: SeatKlient,
+  name: DelegationProcedureName,
+  input: unknown,
+): Promise<unknown> {
+  return client.call(name, input as never);
 }
 
 export async function canonicalWorkspace(
@@ -343,7 +317,7 @@ export async function canonicalWorkspace(
 async function createCliSeatKlient(
   options: Record<string, unknown>,
   dependencies: DelegationRuntimeDependencies,
-): Promise<SeatKlientLike> {
+): Promise<SeatKlient> {
   const workspace = await canonicalWorkspace(asString(options['workspace']), dependencies.cwd);
   const homeDir = resolveKikiHome(asString(options['home']));
   const connection = await (dependencies.ensureServer ?? ensureServer)({ homeDir, workspace });
@@ -351,13 +325,14 @@ async function createCliSeatKlient(
     workspace,
     principal: KIKI_CLI_PRINCIPAL,
   });
-  const createClient = dependencies.createSeatKlient
-    ?? (await (dependencies.loadHttp ?? loadHttp)()).createSeatKlient;
-  return createClient({ endpoint: connection.url, token: seat.delegationToken });
+  return (dependencies.createSeatKlient ?? createSeatKlient)({
+    endpoint: connection.url,
+    token: seat.delegationToken,
+  });
 }
 
 async function finishDispatch(
-  client: SeatKlientLike,
+  client: SeatKlient,
   dispatched: unknown,
   options: Record<string, unknown>,
   stdout: Pick<NodeJS.WriteStream, 'write'>,
@@ -378,8 +353,8 @@ async function finishDispatch(
 }
 
 async function followEvents(
-  client: SeatKlientLike,
-  initialInput: Record<string, unknown>,
+  client: SeatKlient,
+  initialInput: DelegationProcedureInput<'events'>,
   options: Record<string, unknown>,
   dependencies: DelegationRuntimeDependencies,
   stdout: Pick<NodeJS.WriteStream, 'write'>,
@@ -489,14 +464,4 @@ function asString(value: unknown): string | undefined {
 
 function isTerminalStatus(value: unknown): boolean {
   return value === 'completed' || value === 'failed' || value === 'cancelled' || value === 'interrupted';
-}
-
-async function loadProcedures(): Promise<DelegationProcedureTableModule> {
-  const specifier = '@moonshot-ai/klient/procedures';
-  return import(specifier) as Promise<DelegationProcedureTableModule>;
-}
-
-async function loadHttp(): Promise<SeatKlientModule> {
-  const specifier = '@moonshot-ai/klient/procedures/http';
-  return import(specifier) as Promise<SeatKlientModule>;
 }

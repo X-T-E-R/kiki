@@ -2,6 +2,8 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { delegationProcedureTable } from '@moonshot-ai/klient/procedures';
+import type { SeatKlient } from '@moonshot-ai/klient/procedures/http';
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,9 +13,7 @@ import {
   projectDelegationCommands,
   registerDelegationCommands,
   runDelegationCommand,
-  type DelegationProcedureEntry,
   type DelegationRuntimeDependencies,
-  type SeatKlientLike,
 } from '../../src/kiki/delegation';
 import { doctor } from '../../src/kiki/doctor';
 import { resolveKikiHome } from '../../src/kiki/home';
@@ -117,38 +117,11 @@ describe('kiki command helpers', () => {
   });
 });
 
-const procedureNames = [
-  'profiles',
-  'list',
-  'dispatch',
-  'continue',
-  'send',
-  'interactions',
-  'respond',
-  'status',
-  'wait',
-  'result',
-  'events',
-  'transcript',
-  'cancel',
-] as const;
-
-const fakeProcedureTable = procedureNames.map((name): DelegationProcedureEntry => ({
-  name,
-  mcp: {
-    description: name,
-    input: {
-      schema: { parse: (value) => value },
-      decode: (value) => decodeWireInput(name, value),
-    },
-  },
-}));
-
 describe('kiki delegation CLI', () => {
   it('projects and registers the thirteen delegation commands from one table', () => {
-    const projected = projectDelegationCommands(fakeProcedureTable);
+    const projected = projectDelegationCommands(delegationProcedureTable);
     const program = new Command();
-    registerDelegationCommands(program, fakeProcedureTable);
+    registerDelegationCommands(program, delegationProcedureTable);
 
     expect(projected.map((entry) => entry.command.split(/[ <[]/u)[0])).toEqual([
       'agents',
@@ -178,7 +151,7 @@ describe('kiki delegation CLI', () => {
       dispatch: [{ dispatchId: 'dispatch-1', status: 'queued' }],
     });
     const program = new Command();
-    registerDelegationCommands(program, fakeProcedureTable, harness.dependencies);
+    registerDelegationCommands(program, delegationProcedureTable, harness.dependencies);
 
     await program.parseAsync([
       'node',
@@ -208,7 +181,7 @@ describe('kiki delegation CLI', () => {
   });
 
   it('maps positionals and options through the procedure codec into canonical input', () => {
-    const commands = projectDelegationCommands(fakeProcedureTable);
+    const commands = projectDelegationCommands(delegationProcedureTable);
     const dispatch = commands.find((entry) => entry.procedure.name === 'dispatch')!;
     const respond = commands.find((entry) => entry.procedure.name === 'respond')!;
 
@@ -287,7 +260,6 @@ describe('kiki delegation CLI', () => {
     expect(calls.map((call) => call.name)).toEqual(['dispatch', 'wait', 'respond', 'wait', 'result']);
     expect(calls[0]!.input).toEqual(expect.objectContaining({ dispatchKey: expect.any(String) }));
     expect(calls[3]!.input).toEqual({ dispatchId: 'dispatch-1', timeoutMs: 45_000 });
-    expect(harness.closed()).toBe(4);
   });
 
   it('follows event cursors as JSONL and returns stable terminal exit codes', async () => {
@@ -372,10 +344,8 @@ function runtimeHarness(
   createSeat: ReturnType<typeof vi.fn>;
   createClient: ReturnType<typeof vi.fn>;
   stdout(): string;
-  closed(): number;
 } {
   let stdout = '';
-  let closed = 0;
   const ensure = vi.fn(async () => ({ url: 'http://127.0.0.1:58627', token: 'server-token', serverId: 'server' }));
   const createSeat = vi.fn(async () => ({
     seatId: 'seat-1',
@@ -385,24 +355,20 @@ function runtimeHarness(
     workspace,
     mode: 'manual',
   }));
-  const client: SeatKlientLike = {
-    call: async (name, input) => {
+  const client = {
+    call: async (name: string, input: unknown) => {
       calls.push({ name, input });
       const queue = outputs[name];
       if (queue === undefined || queue.length === 0) throw new Error(`Missing fake output for ${name}`);
       return queue.shift();
     },
-    close: async () => {
-      closed += 1;
-    },
-  };
+  } as unknown as SeatKlient;
   const createClient = vi.fn(() => client);
   return {
     dependencies: {
       ensureServer: ensure as never,
       createSeat: createSeat as never,
-      createSeatKlient: createClient,
-      loadProcedures: async () => ({ delegationProcedureTable: fakeProcedureTable }),
+      createSeatKlient: createClient as never,
       stdout: { write: (value) => { stdout += String(value); return true; } },
       stderr: { write: () => true },
       sleep: async () => {},
@@ -411,50 +377,5 @@ function runtimeHarness(
     createSeat,
     createClient,
     stdout: () => stdout,
-    closed: () => closed,
   };
-}
-
-function decodeWireInput(name: string, value: never): unknown {
-  const wire = value as Record<string, unknown>;
-  if (name === 'dispatch') return {
-    target: wire['target'],
-    taskName: wire['task_name'],
-    profileName: wire['profile_name'],
-    modelAlias: wire['model_alias'],
-    thinkingEffort: wire['thinking_effort'],
-    dispatchKey: wire['dispatch_key'] ?? crypto.randomUUID(),
-    message: wire['message'],
-  };
-  if (name === 'continue') return {
-    dispatchId: wire['dispatch_id'],
-    dispatchKey: wire['dispatch_key'] ?? crypto.randomUUID(),
-    message: wire['message'],
-  };
-  if (name === 'send') return {
-    taskName: wire['task_name'],
-    message: wire['message'],
-    idempotencyKey: wire['idempotency_key'] ?? crypto.randomUUID(),
-  };
-  if (name === 'respond') {
-    const response = wire['response'] as Record<string, unknown>;
-    return wire['kind'] === 'approval'
-      ? {
-          interactionId: wire['interaction_id'],
-          kind: 'approval',
-          response: {
-            decision: response['decision'],
-            feedback: response['feedback'],
-            selectedLabel: response['selected_label'],
-            selectedOptionId: response['selected_option_id'],
-          },
-        }
-      : { interactionId: wire['interaction_id'], kind: 'question', response };
-  }
-  return Object.fromEntries(Object.entries(wire).map(([key, item]) => [
-    name === 'wait' && key === 'timeout_s'
-      ? 'timeoutMs'
-      : key.replaceAll(/_([a-z])/gu, (_match, letter: string) => letter.toUpperCase()),
-    name === 'wait' && key === 'timeout_s' ? Number(item) * 1_000 : item,
-  ]));
 }
