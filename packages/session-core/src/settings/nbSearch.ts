@@ -103,8 +103,7 @@ export interface NbSearchProviderDraft {
   readonly enabled: boolean;
   readonly baseUrl: string;
   readonly credentialSlotId: string;
-  /** Environment-variable NAME for the credential slot; never a secret value. */
-  readonly credentialEnv: string;
+  readonly credentialSlotExplicit: boolean;
   readonly optionsJson: string;
 }
 
@@ -114,6 +113,7 @@ export interface NbSearchDraft {
   /** True while the url→markdown chain inherits the runtime default. */
   readonly fetchChainInherited: boolean;
   readonly providers: Readonly<Record<string, NbSearchProviderDraft>>;
+  readonly credentialSlots: NbSearchConfigPatch['credential_slots'];
   readonly execution: NbSearchExecutionDraft;
 }
 
@@ -137,13 +137,44 @@ function executionDraftFromConfig(execution: Record<string, unknown>): NbSearchE
   };
 }
 
+function cloneCredentialSlots(
+  value: NbSearchConfigPatch['credential_slots'],
+): NbSearchConfigPatch['credential_slots'] {
+  if (value === undefined || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([id, slot]) => [id, slot === null ? null : { ...slot }]),
+  );
+}
+
+export function nbSearchCredentialEnv(draft: NbSearchDraft, providerInstanceId: string): string {
+  const slotId = draft.providers[providerInstanceId]!.credentialSlotId;
+  return draft.credentialSlots?.[slotId]?.env ?? '';
+}
+
+export function setNbSearchCredentialEnv(
+  draft: NbSearchDraft,
+  providerInstanceId: string,
+  providerId: string,
+  credentialEnv: string,
+): NbSearchDraft {
+  const slotId = draft.providers[providerInstanceId]!.credentialSlotId;
+  const slots = { ...(draft.credentialSlots ?? {}) };
+  const existing = slots[slotId];
+  if (credentialEnv === '') delete slots[slotId];
+  else slots[slotId] = { provider_id: existing?.provider_id ?? providerId, env: credentialEnv };
+  return {
+    ...draft,
+    credentialSlots: Object.keys(slots).length === 0 ? undefined : slots,
+  };
+}
+
 export function nbSearchDraftFromConfig(
   configValue: NbSearchConfigPatch | undefined,
   capabilities: NbSearchCapabilities,
 ): NbSearchDraft {
   const config = asRecord(configValue);
   const instances = asRecord(config['provider_instances']);
-  const slots = asRecord(config['credential_slots']);
+  const credentialSlots = cloneCredentialSlots(configValue?.credential_slots);
   const defaults = asRecord(config['defaults']);
   const lane = defaults['search_lane'];
   const chains = asArray(defaults['fetch_chain']);
@@ -167,7 +198,6 @@ export function nbSearchDraftFromConfig(
     const override = asRecord(instances[instance.id]);
     const configuredSlotId = asString(override['credential_slot_id']);
     const credentialSlotId = configuredSlotId || instance.credential.slot_id || instance.id;
-    const slot = configuredSlotId === '' ? {} : asRecord(slots[configuredSlotId]);
     const allowedOptionKeys = optionKeysByProvider.get(instance.provider_id) ?? new Set<string>();
     const options = Object.fromEntries(
       Object.entries(asRecord(override['options'])).filter(([key]) => allowedOptionKeys.has(key)),
@@ -176,7 +206,7 @@ export function nbSearchDraftFromConfig(
       enabled: typeof override['enabled'] === 'boolean' ? override['enabled'] : instance.enabled,
       baseUrl: asString(override['base_url']),
       credentialSlotId,
-      credentialEnv: asString(slot['env']),
+      credentialSlotExplicit: configuredSlotId !== '',
       optionsJson: Object.keys(options).length > 0 ? JSON.stringify(options, null, 2) : '',
     };
   }
@@ -187,6 +217,7 @@ export function nbSearchDraftFromConfig(
       : [...(effectiveChain?.pipelines ?? [])],
     fetchChainInherited: ownChain === undefined,
     providers,
+    credentialSlots,
     execution: executionDraftFromConfig(asRecord(config['execution'])),
   };
 }
@@ -227,11 +258,13 @@ export function nbSearchConfigPatch(
     capabilities.providers.descriptors.map((descriptor) => [descriptor.provider_id, new Set(descriptor.option_keys)]),
   );
 
-  const instances: Record<string, unknown> = {};
-  const slots: Record<string, unknown> = {};
+  const baselineDraft = nbSearchDraftFromConfig(configValue, capabilities);
+  const instances: Record<string, unknown> = { ...asRecord(config['provider_instances']) };
+  let providerInstancesChanged = false;
   for (const instance of capabilities.providers.instances) {
     const providerDraft = draft.providers[instance.id];
-    if (providerDraft === undefined) continue;
+    const baselineProvider = baselineDraft.providers[instance.id];
+    if (providerDraft === undefined || baselineProvider === undefined) continue;
     const optionsText = providerDraft.optionsJson.trim();
     let options: Record<string, unknown> | undefined;
     if (optionsText !== '') {
@@ -250,47 +283,60 @@ export function nbSearchConfigPatch(
         throw new LocalizedError({ key: 'st.nbSearch.invalidOptions', params: { id: instance.id } });
       }
     }
+    const providerChanged =
+      providerDraft.enabled !== baselineProvider.enabled
+      || providerDraft.baseUrl !== baselineProvider.baseUrl
+      || providerDraft.optionsJson !== baselineProvider.optionsJson;
+    if (!providerChanged) continue;
+    providerInstancesChanged = true;
     const inherited =
       providerDraft.enabled === instance.enabled
       && providerDraft.baseUrl.trim() === ''
-      && providerDraft.credentialEnv.trim() === ''
+      && !providerDraft.credentialSlotExplicit
       && optionsText === '';
-    if (inherited) continue;
-    const env = providerDraft.credentialEnv.trim();
-    if (env !== '') {
-      slots[providerDraft.credentialSlotId] = { provider_id: instance.provider_id, env };
+    if (inherited) {
+      delete instances[instance.id];
+      continue;
     }
     instances[instance.id] = {
+      ...asRecord(instances[instance.id]),
       provider_id: instance.provider_id,
       enabled: providerDraft.enabled,
-      credential_slot_id: env === '' ? undefined : providerDraft.credentialSlotId,
+      credential_slot_id: providerDraft.credentialSlotExplicit
+        ? providerDraft.credentialSlotId
+        : undefined,
       base_url: providerDraft.baseUrl.trim() === '' ? undefined : providerDraft.baseUrl.trim(),
       options: options ?? {},
     };
   }
-  if (Object.keys(instances).length > 0) result['provider_instances'] = instances;
-  else delete result['provider_instances'];
-  if (Object.keys(slots).length > 0) result['credential_slots'] = slots;
-  else delete result['credential_slots'];
+  if (providerInstancesChanged) {
+    if (Object.keys(instances).length > 0) result['provider_instances'] = instances;
+    else delete result['provider_instances'];
+  }
+  if (draft.credentialSlots === undefined) delete result['credential_slots'];
+  else result['credential_slots'] = cloneCredentialSlots(draft.credentialSlots);
 
   const defaults: Record<string, unknown> = { ...asRecord(config['defaults']) };
   if (draft.defaultSearchLane === '') delete defaults['search_lane'];
   else defaults['search_lane'] = draft.defaultSearchLane;
-  if (!draft.fetchChainInherited) {
+  const keptFetchChains = asArray(asRecord(config['defaults'])['fetch_chain'])
+    .map((entry) => asRecord(entry))
+    .filter(
+      (entry) =>
+        !(
+          entry['input_kind'] === NB_SEARCH_FETCH_CHAIN_INPUT
+          && (entry['representation'] ?? NB_SEARCH_FETCH_CHAIN_REPRESENTATION) === NB_SEARCH_FETCH_CHAIN_REPRESENTATION
+        ),
+    );
+  if (draft.fetchChainInherited) {
+    if (keptFetchChains.length === 0) delete defaults['fetch_chain'];
+    else defaults['fetch_chain'] = keptFetchChains;
+  } else {
     if (draft.fetchChain.length === 0) {
       throw new LocalizedError({ key: 'st.nbSearch.chainEmpty' });
     }
-    const kept = asArray(asRecord(config['defaults'])['fetch_chain'])
-      .map((entry) => asRecord(entry))
-      .filter(
-        (entry) =>
-          !(
-            entry['input_kind'] === NB_SEARCH_FETCH_CHAIN_INPUT
-            && (entry['representation'] ?? NB_SEARCH_FETCH_CHAIN_REPRESENTATION) === NB_SEARCH_FETCH_CHAIN_REPRESENTATION
-          ),
-      );
     defaults['fetch_chain'] = [
-      ...kept,
+      ...keptFetchChains,
       {
         input_kind: NB_SEARCH_FETCH_CHAIN_INPUT,
         representation: NB_SEARCH_FETCH_CHAIN_REPRESENTATION,

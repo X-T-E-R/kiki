@@ -33,6 +33,7 @@ const CAPABILITIES: NbSearchCapabilities = {
   providers: {
     descriptors: [
       { provider_id: 'exa', adapter_version: '1', query_operations: [], fetch_operations: [], activation: { credential: 'required', endpoint: 'optional' }, option_keys: ['user_location'] },
+      { provider_id: 'example', adapter_version: '1', query_operations: [{ operation_id: 'documents', output: { channel: 'typed', schema_id: 'example.documents@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] },
     ],
     instances: [
       {
@@ -58,7 +59,8 @@ const CAPABILITIES: NbSearchCapabilities = {
   search: {
     lanes: [
       { id: 'exa.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync'], availability: 'unavailable', issues: [{ code: 'LANE_NOT_CONFIGURED' }], latency: 'fast', cost: 'cheap' },
-      { id: 'github.repositories', output: { channel: 'typed', schema_id: 'github.repositories@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
+      { id: 'github.repositories', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
+      { id: 'example.documents', output: { channel: 'typed', schema_id: 'example.documents@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
     ],
     presets: [],
     limits: { max_queries: 64, max_results: 100, max_timeout_ms: 3_600_000, max_inline_bytes: 65_536 },
@@ -78,6 +80,7 @@ const CAPABILITIES: NbSearchCapabilities = {
 
 const containers: HTMLDivElement[] = [];
 const roots: Root[] = [];
+let renderedQueryClient: QueryClient;
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
@@ -116,10 +119,10 @@ async function renderSection(): Promise<HTMLDivElement> {
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderedQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(
-      <QueryClientProvider client={client}>
+      <QueryClientProvider client={renderedQueryClient}>
         <I18nProvider>
           <NbSearchSection />
         </I18nProvider>
@@ -172,7 +175,8 @@ describe('NbSearchSection status', () => {
     expect(defaults.textContent).toContain('exa.search');
     expect(defaults.textContent).toContain('results · nb-search.results@1');
     expect(defaults.textContent).toContain('github.repositories');
-    expect(defaults.textContent).toContain('typed · github.repositories@1');
+    expect(defaults.textContent).toContain('example.documents');
+    expect(defaults.textContent).toContain('typed · example.documents@1');
     expect(defaults.textContent).toContain('No default (fail closed)');
     const providers = container.querySelector('#st-card-search-providers')!;
     expect(providers.textContent).toContain('exa.default');
@@ -214,21 +218,70 @@ describe('NbSearchSection save', () => {
     expect(patchConfig).toHaveBeenCalledWith({
       nb_search: {
         defaults: { search_lane: 'github.repositories' },
-        provider_instances: {
-          'exa.default': {
-            provider_id: 'exa',
-            enabled: true,
-            credential_slot_id: 'exa.default',
-            base_url: undefined,
-            options: {},
-          },
-        },
         credential_slots: { 'exa.default': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' } },
       },
       replace_domains: ['nb_search'],
     });
     expect(getNbSearchCapabilities).toHaveBeenCalledTimes(2);
     expect(container.querySelector('#st-card-search-status')!.textContent).toContain('Ready');
+  });
+
+  it('keeps a dirty draft intact when capabilities refetch in the background', async () => {
+    getNbSearchCapabilities
+      .mockReset()
+      .mockResolvedValueOnce(CAPABILITIES)
+      .mockResolvedValueOnce({ ...CAPABILITIES, revision: 'background-refresh' });
+    const container = await renderSection();
+    const envInput = container.querySelector<HTMLInputElement>(
+      '#st-card-search-providers input[placeholder="NB_SEARCH_EXA_API_KEY"]',
+    )!;
+    await setInputValue(envInput, 'UNSAVED_EXA_API_KEY');
+    const saveButton = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Save search & retrieval')!;
+    expect(saveButton.disabled).toBe(false);
+
+    await act(async () => {
+      await renderedQueryClient.invalidateQueries({ queryKey: ['nb-search-capabilities'] });
+    });
+
+    expect(getNbSearchCapabilities).toHaveBeenCalledTimes(2);
+    expect(envInput.value).toBe('UNSAVED_EXA_API_KEY');
+    expect(saveButton.disabled).toBe(false);
+  });
+
+  it('resets a custom fetch chain to runtime defaults while preserving a file sibling', async () => {
+    getConfig.mockResolvedValueOnce({
+      providers: {},
+      nb_search: {
+        defaults: {
+          fetch_chain: [
+            { input_kind: 'url', representation: 'markdown', pipelines: ['jina.reader'] },
+            { input_kind: 'file', representation: 'markdown', pipelines: ['direct.local'] },
+          ],
+        },
+      },
+    } as KikiConfigResponse);
+    const container = await renderSection();
+    const defaults = container.querySelector('#st-card-search-defaults')!;
+    const resetButton = [...defaults.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Use runtime default')!;
+    await click(resetButton);
+    const saveButton = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Save search & retrieval')!;
+    await click(saveButton);
+    await flush();
+
+    expect(patchConfig).toHaveBeenCalledWith({
+      nb_search: {
+        defaults: {
+          fetch_chain: [
+            { input_kind: 'file', representation: 'markdown', pipelines: ['direct.local'] },
+          ],
+        },
+      },
+      replace_domains: ['nb_search'],
+    });
+    expect(defaults.textContent).toContain('Inheriting the runtime default chain');
   });
 
   it('preserves a non-instance credential slot id across read, edit, and save', async () => {

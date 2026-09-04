@@ -9,10 +9,12 @@ import {
 import {
   formatNbSearchOutput,
   nbSearchConfigPatch,
+  nbSearchCredentialEnv,
   nbSearchDraftDirty,
   nbSearchDraftFromConfig,
   nbSearchIssueCodes,
   nbSearchReadinessFromCapabilities,
+  setNbSearchCredentialEnv,
 } from './nbSearch';
 
 const CAPABILITIES: NbSearchCapabilities = {
@@ -31,6 +33,18 @@ const CAPABILITIES: NbSearchCapabilities = {
         fetch_operations: [],
         activation: { credential: 'required', endpoint: 'optional' },
         option_keys: ['user_location'],
+      },
+      {
+        provider_id: 'example',
+        adapter_version: '1',
+        query_operations: [{
+          operation_id: 'documents',
+          output: { channel: 'typed', schema_id: 'example.documents@1' },
+          built_in_async: true,
+        }],
+        fetch_operations: [],
+        activation: { credential: 'none', endpoint: 'none' },
+        option_keys: [],
       },
       {
         provider_id: 'direct-http',
@@ -76,7 +90,16 @@ const CAPABILITIES: NbSearchCapabilities = {
       },
       {
         id: 'github.repositories',
-        output: { channel: 'typed', schema_id: 'github.repositories@1' },
+        output: { channel: 'results', schema_id: 'nb-search.results@1' },
+        execution_modes: ['sync', 'async'],
+        availability: 'ready',
+        issues: [],
+        latency: 'fast',
+        cost: 'free',
+      },
+      {
+        id: 'example.documents',
+        output: { channel: 'typed', schema_id: 'example.documents@1' },
         execution_modes: ['sync', 'async'],
         availability: 'ready',
         issues: [],
@@ -153,7 +176,8 @@ describe('shared nb-search contracts', () => {
     expect(parsed.providers.instances.map((instance) => instance.id)).toEqual(['exa.default', 'direct-http.default']);
     expect(nbSearchIssueCodes(parsed.search.lanes[0]!.issues)).toEqual(['LANE_NOT_CONFIGURED']);
     expect(formatNbSearchOutput(parsed.search.lanes[0]!.output)).toBe('results · nb-search.results@1');
-    expect(formatNbSearchOutput(parsed.search.lanes[1]!.output)).toBe('typed · github.repositories@1');
+    expect(formatNbSearchOutput(parsed.search.lanes[1]!.output)).toBe('results · nb-search.results@1');
+    expect(formatNbSearchOutput(parsed.search.lanes[2]!.output)).toBe('typed · example.documents@1');
   });
 
   it('uses the protocol readiness schema with optional selection', () => {
@@ -208,9 +232,11 @@ describe('nbSearchDraftFromConfig', () => {
       enabled: true,
       baseUrl: '',
       credentialSlotId: 'exa.default',
-      credentialEnv: '',
+      credentialSlotExplicit: false,
       optionsJson: '',
     });
+    expect(draft.credentialSlots).toBeUndefined();
+    expect(nbSearchCredentialEnv(draft, 'exa.default')).toBe('');
     expect(draft.execution.maxProviderCalls).toBe('');
   });
 
@@ -240,24 +266,110 @@ describe('nbSearchDraftFromConfig', () => {
       enabled: false,
       baseUrl: 'https://exa.example.com',
       credentialSlotId: 'team-search',
-      credentialEnv: 'TEAM_EXA_API_KEY',
+      credentialSlotExplicit: true,
       optionsJson: JSON.stringify({ user_location: 'US' }, null, 2),
     });
+    expect(nbSearchCredentialEnv(draft, 'exa.default')).toBe('TEAM_EXA_API_KEY');
     expect(draft.execution.maxConcurrency).toBe('4');
     expect(draft.execution.fetchMaxRedirects).toBe('3');
 
-    const edited = {
-      ...draft,
-      providers: {
-        ...draft.providers,
-        'exa.default': { ...draft.providers['exa.default']!, credentialEnv: 'ROTATED_EXA_API_KEY' },
-      },
-    };
+    const edited = setNbSearchCredentialEnv(
+      draft,
+      'exa.default',
+      'exa',
+      'ROTATED_EXA_API_KEY',
+    );
     const patch = nbSearchConfigPatch(config, edited, CAPABILITIES);
     expect(patch.nb_search.provider_instances?.['exa.default']?.credential_slot_id).toBe('team-search');
     expect(patch.nb_search.credential_slots).toEqual({
       'team-search': { provider_id: 'exa', env: 'ROTATED_EXA_API_KEY' },
     });
+  });
+});
+
+describe('credential slot preservation', () => {
+  it('reads and preserves a capability default slot without a provider override', () => {
+    const config: NbSearchConfigPatch = {
+      credential_slots: {
+        'exa.default': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' },
+      },
+    };
+    const draft = nbSearchDraftFromConfig(config, CAPABILITIES);
+    expect(draft.providers['exa.default']!.credentialSlotExplicit).toBe(false);
+    expect(nbSearchCredentialEnv(draft, 'exa.default')).toBe('TEAM_EXA_API_KEY');
+    const patch = nbSearchConfigPatch(config, { ...draft, defaultSearchLane: 'github.repositories' }, CAPABILITIES);
+    expect(patch.nb_search.provider_instances).toBeUndefined();
+    expect(patch.nb_search.credential_slots).toEqual(config.credential_slots);
+  });
+
+  it('preserves a non-matching unresolved explicit slot reference', () => {
+    const config: NbSearchConfigPatch = {
+      provider_instances: {
+        'exa.default': { provider_id: 'exa', credential_slot_id: 'team-missing' },
+      },
+    };
+    const draft = nbSearchDraftFromConfig(config, CAPABILITIES);
+    expect(draft.providers['exa.default']!.credentialSlotId).toBe('team-missing');
+    expect(draft.providers['exa.default']!.credentialSlotExplicit).toBe(true);
+    expect(nbSearchCredentialEnv(draft, 'exa.default')).toBe('');
+    const patch = nbSearchConfigPatch(config, { ...draft, defaultSearchLane: 'github.repositories' }, CAPABILITIES);
+    expect(patch.nb_search.provider_instances).toEqual(config.provider_instances);
+    expect(patch.nb_search.credential_slots).toBeUndefined();
+  });
+
+  it('uses one canonical draft value for two instances that share a slot', () => {
+    const sharedInstance = {
+      ...CAPABILITIES.providers.instances[0]!,
+      credential: {
+        ...CAPABILITIES.providers.instances[0]!.credential,
+        slot_id: 'shared-search',
+      },
+    };
+    const capabilities: NbSearchCapabilities = {
+      ...CAPABILITIES,
+      providers: {
+        ...CAPABILITIES.providers,
+        instances: [
+          sharedInstance,
+          { ...sharedInstance, id: 'exa.backup' },
+          CAPABILITIES.providers.instances[1]!,
+        ],
+      },
+    };
+    const config: NbSearchConfigPatch = {
+      credential_slots: {
+        'shared-search': { provider_id: 'exa', env: 'SHARED_EXA_API_KEY' },
+      },
+    };
+    const draft = nbSearchDraftFromConfig(config, capabilities);
+    expect(nbSearchCredentialEnv(draft, 'exa.default')).toBe('SHARED_EXA_API_KEY');
+    expect(nbSearchCredentialEnv(draft, 'exa.backup')).toBe('SHARED_EXA_API_KEY');
+    const edited = setNbSearchCredentialEnv(draft, 'exa.backup', 'exa', 'ROTATED_SHARED_API_KEY');
+    expect(nbSearchCredentialEnv(edited, 'exa.default')).toBe('ROTATED_SHARED_API_KEY');
+    expect(nbSearchCredentialEnv(edited, 'exa.backup')).toBe('ROTATED_SHARED_API_KEY');
+    const patch = nbSearchConfigPatch(config, edited, capabilities);
+    expect(patch.nb_search.credential_slots).toEqual({
+      'shared-search': { provider_id: 'exa', env: 'ROTATED_SHARED_API_KEY' },
+    });
+  });
+
+  it('keeps default, shared, orphan, and null slots unchanged for lane/execution-only edits', () => {
+    const config: NbSearchConfigPatch = {
+      credential_slots: {
+        'exa.default': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' },
+        shared: { provider_id: 'exa', env: 'SHARED_EXA_API_KEY' },
+        orphan: { provider_id: 'example', env: 'ORPHAN_API_KEY' },
+        retired: null,
+      },
+    };
+    const base = nbSearchDraftFromConfig(config, CAPABILITIES);
+    const draft = {
+      ...base,
+      defaultSearchLane: 'github.repositories',
+      execution: { ...base.execution, maxConcurrency: '8' },
+    };
+    const patch = nbSearchConfigPatch(config, draft, CAPABILITIES);
+    expect(patch.nb_search.credential_slots).toEqual(config.credential_slots);
   });
 });
 
@@ -270,28 +382,15 @@ describe('nbSearchConfigPatch', () => {
     expect('provider_instances' in patch.nb_search).toBe(false);
   });
 
-  it('writes only edited provider instances and carries unknown keys through', () => {
-    const base = nbSearchDraftFromConfig({ presets: { fast: { lanes: ['exa.search'] } } }, CAPABILITIES);
-    const draft = {
-      ...base,
-      defaultSearchLane: 'exa.search',
-      providers: {
-        ...base.providers,
-        'exa.default': { ...base.providers['exa.default']!, credentialEnv: 'TEAM_EXA_API_KEY' },
-      },
-    };
-    const patch = nbSearchConfigPatch({ presets: { fast: { lanes: ['exa.search'] } } }, draft, CAPABILITIES);
+  it('writes an implicit default credential slot without inventing a provider override', () => {
+    const config: NbSearchConfigPatch = { presets: { fast: { lanes: ['exa.search'] } } };
+    const base = nbSearchDraftFromConfig(config, CAPABILITIES);
+    const withEnv = setNbSearchCredentialEnv(base, 'exa.default', 'exa', 'TEAM_EXA_API_KEY');
+    const draft = { ...withEnv, defaultSearchLane: 'exa.search' };
+    const patch = nbSearchConfigPatch(config, draft, CAPABILITIES);
     expect(patch.nb_search['presets']).toEqual({ fast: { lanes: ['exa.search'] } });
     expect(patch.nb_search['defaults']).toEqual({ search_lane: 'exa.search' });
-    expect(patch.nb_search['provider_instances']).toEqual({
-      'exa.default': {
-        provider_id: 'exa',
-        enabled: true,
-        credential_slot_id: 'exa.default',
-        base_url: undefined,
-        options: {},
-      },
-    });
+    expect(patch.nb_search['provider_instances']).toBeUndefined();
     expect(patch.nb_search['credential_slots']).toEqual({
       'exa.default': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' },
     });
@@ -321,6 +420,26 @@ describe('nbSearchConfigPatch', () => {
         { input_kind: 'url', representation: 'markdown', pipelines: ['jina.reader', 'direct.fetch'] },
       ],
     });
+  });
+
+  it('removes the saved url→markdown chain when reset to runtime default and preserves siblings', () => {
+    const config: NbSearchConfigPatch = {
+      defaults: {
+        fetch_chain: [
+          { input_kind: 'url', representation: 'markdown', pipelines: ['jina.reader'] },
+          { input_kind: 'file', representation: 'markdown', pipelines: ['direct.local'] },
+        ],
+      },
+    };
+    const base = nbSearchDraftFromConfig(config, CAPABILITIES);
+    expect(base.fetchChainInherited).toBe(false);
+    const patch = nbSearchConfigPatch(config, { ...base, fetchChainInherited: true }, CAPABILITIES);
+    expect(patch.nb_search.defaults?.fetch_chain).toEqual([
+      { input_kind: 'file', representation: 'markdown', pipelines: ['direct.local'] },
+    ]);
+    const reloaded = nbSearchDraftFromConfig(patch.nb_search, CAPABILITIES);
+    expect(reloaded.fetchChainInherited).toBe(true);
+    expect(reloaded.fetchChain).toEqual(['direct.fetch', 'jina.reader']);
   });
 
   it('writes numeric execution fields and removes emptied ones', () => {

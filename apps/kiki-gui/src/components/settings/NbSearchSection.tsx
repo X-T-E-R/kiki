@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { NbSearchCapabilities, NbSearchTestStatus } from '@moonshot-ai/protocol';
+import type { NbSearchCapabilities, NbSearchConfigPatch, NbSearchTestStatus } from '@moonshot-ai/protocol';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
   formatNbSearchOutput,
   nbSearchConfigPatch,
+  nbSearchCredentialEnv,
   nbSearchDraftDirty,
   nbSearchDraftFromConfig,
   nbSearchIssueCodes,
   nbSearchReadinessFromCapabilities,
+  setNbSearchCredentialEnv,
   type NbSearchDraft,
   type NbSearchProviderDraft,
 } from '@kiki/session-core/settings';
@@ -129,11 +131,20 @@ function AvailabilityBadge({ availability }: { availability: 'ready' | 'unavaila
   );
 }
 
-function ProviderInstanceCard({ instance, descriptor, providerDraft, onChange }: {
+function ProviderInstanceCard({
+  instance,
+  descriptor,
+  providerDraft,
+  credentialEnv,
+  onChange,
+  onCredentialEnvChange,
+}: {
   instance: NbSearchCapabilities['providers']['instances'][number];
   descriptor: NbSearchCapabilities['providers']['descriptors'][number] | undefined;
   providerDraft: NbSearchProviderDraft;
+  credentialEnv: string;
   onChange: (patch: Partial<NbSearchProviderDraft>) => void;
+  onCredentialEnvChange: (credentialEnv: string) => void;
 }) {
   const { t } = useI18n();
   const attention = instance.availability === 'unavailable' || instance.issues.length > 0;
@@ -141,6 +152,7 @@ function ProviderInstanceCard({ instance, descriptor, providerDraft, onChange }:
   const needsCredential = instance.credential.requirement !== 'none';
   const needsEndpoint = instance.endpoint.requirement === 'required' || instance.endpoint.requirement === 'optional';
   const showOptions = (descriptor?.option_keys.length ?? 0) > 0;
+  const credentialPlaceholder = `NB_SEARCH_${instance.provider_id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
   return (
     <details
       open={open}
@@ -176,9 +188,9 @@ function ProviderInstanceCard({ instance, descriptor, providerDraft, onChange }:
             {t('st.nbSearch.credentialEnvLabel')}
             <input
               className={`${INPUT} mt-1 font-mono`}
-              value={providerDraft.credentialEnv}
-              placeholder={t('st.nbSearch.credentialEnvPlaceholder')}
-              onChange={(event) => { onChange({ credentialEnv: event.target.value }); }}
+              value={credentialEnv}
+              placeholder={credentialPlaceholder}
+              onChange={(event) => { onCredentialEnvChange(event.target.value); }}
             />
             <Hint>{t('st.nbSearch.credentialEnvHint')}</Hint>
           </label>
@@ -218,10 +230,17 @@ type TestRun =
   | { readonly status: 'error'; readonly message: string }
   | { readonly status: 'cancelled' };
 
+interface NbSearchEditorBaseline {
+  readonly config: NbSearchConfigPatch | undefined;
+  readonly capabilities: NbSearchCapabilities;
+  readonly draft: NbSearchDraft;
+}
+
 export function NbSearchSection() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
+  const [editorBaseline, setEditorBaseline] = useState<NbSearchEditorBaseline | null>(null);
   const [draft, setDraft] = useState<NbSearchDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -234,21 +253,27 @@ export function NbSearchSection() {
     staleTime: 30_000,
   });
 
-  const capabilities = capsQuery.data;
-  const baseline = useMemo(
-    () => capabilities === undefined || configQuery.data === undefined
-      ? null
-      : nbSearchDraftFromConfig(configQuery.data.nb_search, capabilities),
-    [configQuery.data, capabilities],
-  );
+  const loadedBaseline = useMemo((): NbSearchEditorBaseline | null => {
+    if (capsQuery.data === undefined || configQuery.data === undefined) return null;
+    return {
+      config: configQuery.data.nb_search,
+      capabilities: capsQuery.data,
+      draft: nbSearchDraftFromConfig(configQuery.data.nb_search, capsQuery.data),
+    };
+  }, [configQuery.data, capsQuery.data]);
   useEffect(() => {
-    if (baseline !== null) setDraft(baseline);
-  }, [baseline]);
+    if (editorBaseline !== null || loadedBaseline === null) return;
+    setEditorBaseline(loadedBaseline);
+    setDraft(loadedBaseline.draft);
+  }, [editorBaseline, loadedBaseline]);
 
-  const dirty = draft !== null && baseline !== null && nbSearchDraftDirty(baseline, draft);
+  const capabilities = editorBaseline?.capabilities;
+  const dirty = draft !== null
+    && editorBaseline !== null
+    && nbSearchDraftDirty(editorBaseline.draft, draft);
   useDirtyReporter('nb-search', dirty);
 
-  if (draft === null || capabilities === undefined) {
+  if (draft === null || editorBaseline === null || capabilities === undefined) {
     return (
       <SectionCard id="st-card-search-status" title={t('st.nbSearch.statusTitle')}>
         {configQuery.isError ? <InlineError error={configQuery.error} />
@@ -265,6 +290,11 @@ export function NbSearchSection() {
       providers: { ...current.providers, [id]: { ...current.providers[id]!, ...patch } },
     });
   };
+  const updateCredentialEnv = (instanceId: string, providerId: string, credentialEnv: string) => {
+    setDraft((current) => current === null
+      ? current
+      : setNbSearchCredentialEnv(current, instanceId, providerId, credentialEnv));
+  };
   const updateExecution = (patch: Partial<NbSearchDraft['execution']>) => {
     setDraft((current) => current === null ? current : { ...current, execution: { ...current.execution, ...patch } });
   };
@@ -272,7 +302,7 @@ export function NbSearchSection() {
   const save = async () => {
     let patch;
     try {
-      patch = nbSearchConfigPatch(configQuery.data?.nb_search, draft, capabilities);
+      patch = nbSearchConfigPatch(editorBaseline.config, draft, capabilities);
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
       return;
@@ -282,9 +312,15 @@ export function NbSearchSection() {
     try {
       const echoed = await client.patchConfig(patch);
       queryClient.setQueryData(['config'], echoed);
-      // The runtime rebuilds on config change; capabilities reflect the new
-      // readiness after refetch.
       await queryClient.invalidateQueries({ queryKey: ['nb-search-capabilities'] });
+      const refreshedCapabilities = queryClient.getQueryData<NbSearchCapabilities>(['nb-search-capabilities'])!;
+      const resetDraft = nbSearchDraftFromConfig(echoed.nb_search, refreshedCapabilities);
+      setEditorBaseline({
+        config: echoed.nb_search,
+        capabilities: refreshedCapabilities,
+        draft: resetDraft,
+      });
+      setDraft(resetDraft);
       setFeedback({ tone: 'success', text: t('st.nbSearch.saved') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -495,7 +531,11 @@ export function NbSearchSection() {
                 instance={instance}
                 descriptor={descriptorByProvider.get(instance.provider_id)}
                 providerDraft={draft.providers[instance.id]!}
+                credentialEnv={nbSearchCredentialEnv(draft, instance.id)}
                 onChange={(patch) => { updateProviders(instance.id, patch); }}
+                onCredentialEnvChange={(credentialEnv) => {
+                  updateCredentialEnv(instance.id, instance.provider_id, credentialEnv);
+                }}
               />
             ))}
           </fieldset>
