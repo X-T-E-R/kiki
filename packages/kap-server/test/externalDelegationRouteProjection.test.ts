@@ -171,8 +171,9 @@ describe('external delegation route projection', () => {
       message: 'continue',
     });
 
-    expect(first.data).toEqual(dispatchView);
-    expect(replay.data).toEqual(dispatchView);
+    expect(first.data).toEqual(expect.objectContaining({ dispatchId: dispatchView.dispatchId }));
+    expect(first.data).not.toHaveProperty('agentId');
+    expect(replay.data).toEqual(first.data);
     expect(service.dispatch).toHaveBeenNthCalledWith(1, expect.objectContaining({
       dispatchKey: 'stable-dispatch-key',
     }));
@@ -186,9 +187,36 @@ describe('external delegation route projection', () => {
   });
 
   it('projects send, interactions, and respond requests onto core operations', async () => {
-    service.send.mockResolvedValue({ message: { messageId: 'message-1' }, delivery: 'queued' });
+    service.send.mockResolvedValue({
+      message: {
+        messageId: 'message-1',
+        sessionId: 'session-operator',
+        sourceAgentId: 'agent-source',
+        sourceTaskName: 'root',
+        targetAgentId: 'agent-target',
+        targetTaskName: 'probe',
+        content: 'check this',
+        acceptedAt: 1,
+        targetSeq: 1,
+      },
+      deduplicated: false,
+      delivery: 'queued',
+      payloadConflict: false,
+    });
     service.interactions.mockResolvedValue({
-      items: [{ interactionId: 'approval-1', kind: 'approval', taskName: 'probe', payload: {}, createdAt: 1 }],
+      items: [{
+        interactionId: 'approval-1',
+        kind: 'approval',
+        taskName: 'probe',
+        payload: {
+          sessionId: 'session-operator',
+          agentId: 'agent-internal',
+          toolName: 'Inspect',
+          action: 'inspect files',
+          display: { kind: 'generic', summary: 'Inspect files' },
+        },
+        createdAt: 1,
+      }],
     });
     service.respond.mockResolvedValue({ interactionId: 'approval-1', status: 'resolved' });
 
@@ -332,12 +360,14 @@ describe('external delegation route projection', () => {
         waitedMs: 600_000,
         dispatch: { ...dispatchView, status: 'running' },
         completedDuringWait: [],
+        interactions: [],
       })
       .mockResolvedValueOnce({
         waitStatus: 'completed',
         waitedMs: 2,
         dispatch: { ...dispatchView, status: 'completed' },
         completedDuringWait: [{ ...dispatchView, status: 'completed' }],
+        interactions: [],
       });
 
     const timedOut = await invoke('wait', { dispatch_id: 'dispatch_replay', timeout_s: 600 });

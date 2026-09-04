@@ -54,4 +54,21 @@ if (!result.stderr.includes('Kiki MCP configuration is invalid.')) {
   fail(`kiki-mcp stderr missing invalid-config message: ${JSON.stringify(result.stderr)}`);
 }
 
+const seatOnly = spawnSync(process.execPath, [bin], {
+  env: {
+    KIKI_KAP_ENDPOINT: 'http://127.0.0.1:58627',
+    KIKI_DELEGATION_TOKEN: 'SEAT_TOKEN',
+    KIKI_SESSION_ID: 'session-test',
+    KIKI_WORKSPACE_PATH: pkgRoot,
+  },
+  input: '',
+  encoding: 'utf8',
+  timeout: 15_000,
+  windowsHide: true,
+});
+if (seatOnly.error) fail(`seat-only kiki-mcp spawn failed: ${seatOnly.error.message}`);
+if (seatOnly.status !== 0) {
+  fail(`seat-only kiki-mcp expected exit status 0, got ${String(seatOnly.status)}: ${JSON.stringify(seatOnly.stderr)}`);
+}
+
 process.stdout.write(`kiki-mcp bin smoke ok (${reachable.size} chunks)\n`);

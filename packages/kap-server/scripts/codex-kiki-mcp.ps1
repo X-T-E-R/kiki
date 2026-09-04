@@ -1523,7 +1523,6 @@ function Assert-WorkspaceAuthority {
   }
   return [pscustomobject]@{
     endpoint = [string]$binding.endpoint
-    kapToken = $kapToken
     delegationToken = $BindingRecord.secret
     sessionId = [string]$binding.sessionId
     workspacePath = $Workspace
@@ -1561,7 +1560,7 @@ function Invoke-KikiMcpLauncher {
   $install = $initialized.install
   $connection = $initialized.connection
   [Environment]::SetEnvironmentVariable('KIKI_KAP_ENDPOINT', [string]$connection.endpoint, 'Process')
-  [Environment]::SetEnvironmentVariable('KIKI_KAP_TOKEN', [string]$connection.kapToken, 'Process')
+  [Environment]::SetEnvironmentVariable('KIKI_KAP_TOKEN', $null, 'Process')
   [Environment]::SetEnvironmentVariable(
     'KIKI_DELEGATION_TOKEN',
     [string]$connection.delegationToken,
