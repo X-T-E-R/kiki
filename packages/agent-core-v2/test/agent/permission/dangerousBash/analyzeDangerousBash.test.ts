@@ -87,8 +87,13 @@ describe('analyzeDangerousBash', () => {
     'nice echo ok',
     'busybox --list',
     'eval "echo ok"',
+    'gh --body "$(cat <<\'EOF\'\nit\'s $(broken ` text\nEOF\n)"',
   ])('does not flag `%s`', (command) => {
     expect(analyze(command)).toBeUndefined();
+  });
+
+  it('uses the hardened parser budget', () => {
+    expect(DANGEROUS_BASH_PARSE_OPTIONS).toEqual({ timeoutMs: 500, maxNodes: 10_000 });
   });
 
   it.each(['$CMD --force', 'bash -c "echo $HOME"', 'echo "unterminated', 'env $FLAGS'])(
