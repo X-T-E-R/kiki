@@ -153,7 +153,7 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
             multiSelect: q.multi_select,
           })),
         },
-        { signal, agentId: this.scopeContext.agentId },
+        { signal, agentId: this.scopeContext.agentId, detached: args.background === true },
       );
 
       const normalized = normalizeQuestionResult(result);

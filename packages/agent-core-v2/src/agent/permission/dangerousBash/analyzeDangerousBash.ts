@@ -1,6 +1,6 @@
 import type { BashParseResult, BashSyntaxNode } from '#/app/bashParser/bashParser';
 
-export const DANGEROUS_BASH_PARSE_OPTIONS = { timeoutMs: 20, maxNodes: 10_000 } as const;
+export const DANGEROUS_BASH_PARSE_OPTIONS = { timeoutMs: 500, maxNodes: 10_000 } as const;
 
 const MAX_NESTED_SHELL_DEPTH = 4;
 

@@ -7,6 +7,8 @@ import type { SeatKlient } from '@moonshot-ai/klient/procedures/http';
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { RunningServer, ServerStartOptions } from '@moonshot-ai/kap-server';
+
 import {
   KIKI_CLI_PRINCIPAL,
   KIKI_EXIT,
@@ -20,7 +22,7 @@ import { resolveKikiHome } from '../../src/kiki/home';
 import { mcpCommandConfig, upsertMcpServer } from '../../src/kiki/install';
 import { createSeatOnConnection } from '../../src/kiki/seat';
 import { mcpPrincipal } from '../../src/kiki/mcp';
-import { parseDuration } from '../../src/kiki/serve';
+import { parseDuration, startServeServer } from '../../src/kiki/serve';
 
 const roots: string[] = [];
 
@@ -37,6 +39,29 @@ describe('kiki command helpers', () => {
     expect(parseDuration('30m')).toBe(1_800_000);
     expect(parseDuration('2h')).toBe(7_200_000);
     expect(() => parseDuration('30')).toThrow('Invalid duration.');
+  });
+
+  it('injects the packaged web assets into the kap server owner', async () => {
+    const webAssetsDir = String.raw`C:\Program Files\Kiki\cache\dist\web`;
+    let received: ServerStartOptions | undefined;
+    const startServer = async (options: ServerStartOptions): Promise<RunningServer> => {
+      received = options;
+      return {} as RunningServer;
+    };
+
+    await startServeServer(
+      { homeDir: String.raw`C:\Users\Example\.kiki`, port: 0, idleExitMs: 60_000 },
+      webAssetsDir,
+      startServer,
+    );
+
+    expect(received).toMatchObject({
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: String.raw`C:\Users\Example\.kiki`,
+      idleExitMs: 60_000,
+      webAssetsDir,
+    });
   });
 
   it('resolves Kiki home consistently and reports the KIKI_HOME token path', async () => {

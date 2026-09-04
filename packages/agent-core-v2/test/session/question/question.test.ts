@@ -131,6 +131,54 @@ describe('ISessionQuestionService (Session scope facade over the interaction ker
     await expect(main).resolves.toBeNull();
   });
 
+  it('keeps a detached request pending after its asking turn ends', async () => {
+    const interaction = session.accessor.get(ISessionInteractionService);
+    const questions = session.accessor.get(ISessionQuestionService);
+
+    const foreground = questions.request({ ...makeRequest('q-fg'), turnId: 3 });
+    const detached = questions.request(
+      { ...makeRequest('q-bg'), turnId: 3 },
+      { detached: true },
+    );
+    expect(interaction.listPending().find((item) => item.id === 'q-fg')?.origin.turnId).toBe(3);
+    expect(interaction.listPending().find((item) => item.id === 'q-bg')?.origin.turnId).toBeUndefined();
+
+    interaction.cancelPendingForTurn(3);
+
+    await expect(foreground).resolves.toBeNull();
+    expect(questions.listPending().map((request) => request.id)).toEqual(['q-bg']);
+    expect(questions.listPending()[0]?.turnId).toBe(3);
+
+    questions.answer('q-bg', { answers: { q_0: 'Yes' } });
+    await expect(detached).resolves.toEqual({ answers: { q_0: 'Yes' } });
+  });
+
+  it('translates an interaction cancellation into a dismissed question result', async () => {
+    const interaction = session.accessor.get(ISessionInteractionService);
+    const questions = session.accessor.get(ISessionQuestionService);
+    const resolved: { id: string; response: unknown }[] = [];
+    disposables.add(interaction.onDidResolve((resolution) => resolved.push(resolution)));
+
+    const pending = questions.request({ ...makeRequest('q1'), turnId: 2 });
+    interaction.cancelPendingForTurn(2);
+
+    await expect(pending).resolves.toBeNull();
+    expect(resolved).toEqual([
+      { id: 'q1', response: { cancelled: true, reason: 'turn_ended' } },
+    ]);
+    expect(questions.listPending()).toEqual([]);
+  });
+
+  it('translates an agent-close cancellation instead of treating it as answers', async () => {
+    const interaction = session.accessor.get(ISessionInteractionService);
+    const questions = session.accessor.get(ISessionQuestionService);
+
+    const pending = questions.request(makeRequest('q1'));
+    interaction.respond('q1', { cancelled: true, reason: 'agent_closed' });
+
+    await expect(pending).resolves.toBeNull();
+  });
+
   it('request with a pre-aborted signal resolves null and parks nothing', async () => {
     const questions = session.accessor.get(ISessionQuestionService);
     const controller = new AbortController();
