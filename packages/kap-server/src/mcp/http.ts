@@ -4,14 +4,16 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import { createKikiMcpServer, type KikiMcpConfig, type KikiMcpServerOptions } from './server';
+import type { SeatKlient } from '@moonshot-ai/klient/procedures';
+
+import { createKikiMcpServer, type KikiMcpServerOptions } from './server';
 import type { McpSeat, SeatResolver } from './seatResolver';
 
 export const KIKI_MCP_HTTP_PATH = '/mcp';
 
 export interface RegisterKikiMcpHttpOptions {
   readonly seatResolver: SeatResolver;
-  readonly resolveConfig: (seat: McpSeat) => KikiMcpConfig | Promise<KikiMcpConfig>;
+  readonly resolveKlient: (seat: McpSeat) => SeatKlient | Promise<SeatKlient>;
   readonly serverOptions?: KikiMcpServerOptions;
 }
 
@@ -56,6 +58,7 @@ export function registerKikiMcpHttp(
     schema: { hide: true },
     handler: async (req, reply) => {
       const bearer = readBearer(req.headers.authorization);
+      if (req.headers.authorization !== undefined) req.headers.authorization = '[redacted]';
       const seat = bearer === undefined ? null : await options.seatResolver.resolve(bearer);
       if (seat === null) {
         return reply.code(401).send(UNAUTHORIZED);
@@ -67,7 +70,7 @@ export function registerKikiMcpHttp(
         if (existing === undefined) {
           return reply.code(404).send(SESSION_NOT_FOUND);
         }
-        if (existing.seat.delegationToken !== seat.delegationToken) {
+        if (existing.seat.seatId !== seat.seatId) {
           return reply.code(401).send(UNAUTHORIZED);
         }
         return dispatch(existing.transport, req, reply);
@@ -85,7 +88,7 @@ export function registerKikiMcpHttp(
           void closed.server.close();
         },
       });
-      const server = createKikiMcpServer(await options.resolveConfig(seat), options.serverOptions);
+      const server = createKikiMcpServer(await options.resolveKlient(seat), options.serverOptions);
       session = { seat, transport, server };
       await server.connect(transport);
       await dispatch(transport, req, reply);
