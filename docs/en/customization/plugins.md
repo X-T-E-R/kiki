@@ -60,7 +60,7 @@ Network requests only go through `github.com` redirects and `codeload.github.com
 
 ### Custom marketplace JSON
 
-Pass a custom marketplace JSON path or URL to `/plugins marketplace <source>`, or set [`KIMI_CODE_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md) to override the default catalog. Each entry in the `plugins` array needs an `id` and a `source` (local path, zip URL, or GitHub URL):
+Pass a marketplace JSON path or URL to `/plugins marketplace <source>`, set [`KIMI_CODE_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md), or configure `[plugins] marketplace_url` in `config.toml`. The order is command source, environment variable, then config; without any source, Kimi Code CLI does not fetch a remote catalog and still shows built-in capabilities. Each entry in the `plugins` array needs an `id` and a `source` (local path, zip URL, or GitHub URL):
 
 ```json
 {
