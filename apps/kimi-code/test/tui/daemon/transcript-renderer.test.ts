@@ -2,7 +2,7 @@ import { Container } from '@moonshot-ai/pi-tui';
 import type { Block } from '@kiki/session-core/session/transcript/types';
 import { describe, expect, it } from 'vitest';
 
-import { questionAnswersFromPanel } from '#/tui/daemon/daemon-tui';
+import { adaptQuestionResponse } from '#/tui/interactions/question-adapter';
 import { DaemonTranscriptRenderer } from '#/tui/daemon/transcript-renderer';
 
 function strip(text: string): string {
@@ -272,7 +272,7 @@ describe('DaemonTranscriptRenderer', () => {
 
   it('maps question dialog labels back to REST option identifiers', () => {
     expect(
-      questionAnswersFromPanel(
+      adaptQuestionResponse(
         {
           kind: 'question',
           id: 'question-1',

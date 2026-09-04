@@ -1,8 +1,6 @@
-import type { ApprovalRequest, ApprovalResponse, ToolInputDisplay } from '@moonshot-ai/kimi-code-sdk';
-
-import type { ApprovalPanelResponse } from '#/tui/components/dialogs/approval-panel';
+import type { ApprovalRequest, ToolInputDisplay } from '@moonshot-ai/kimi-code-sdk';
 import { goalStartOptions } from '#/tui/components/dialogs/goal-start-permission-prompt';
-import type { ApprovalPanelChoice, ApprovalPanelData, DisplayBlock } from '#/tui/reverse-rpc/types';
+import type { ApprovalPanelChoice, ApprovalPanelData, DisplayBlock } from '#/tui/interactions/types';
 
 const DEFAULT_APPROVAL_CHOICES: ApprovalPanelChoice[] = [
   { label: 'Approve once', response: 'approved' },
@@ -260,36 +258,13 @@ function inferFileOp(toolName: string): 'read' | 'write' | 'edit' | 'glob' | 'gr
   return 'read';
 }
 
-export function adaptPanelResponse(response: ApprovalPanelResponse): ApprovalResponse {
-  const base: ApprovalResponse =
-    response.response === 'approved_for_session'
-      ? {
-          decision: 'approved',
-          scope: 'session',
-          feedback: response.feedback,
-          selectedLabel: response.selected_label,
-        }
-      : {
-          decision:
-            response.response === 'approved'
-              ? 'approved'
-              : response.response === 'rejected'
-                ? 'rejected'
-                : 'cancelled',
-          feedback: response.feedback,
-          selectedLabel: response.selected_label,
-        };
-  if (response.selected_option_id === undefined) return base;
-  // selectedOptionId joins the engine's ApprovalResponse contract with the
-  // external-harness slice (design §9); pass it through structurally until
-  // the SDK type catches up.
-  return { ...base, selectedOptionId: response.selected_option_id } as ApprovalResponse;
-}
-
 function describeApproval(display: ToolInputDisplay, action: string): string {
   switch (display.kind) {
     case 'plan_review':
       return '';
+    case 'plan_enter':
+    case 'external_permission':
+      return action;
     case 'goal_start':
       return 'Start a goal?';
     case 'generic':
@@ -435,10 +410,15 @@ function adaptDisplay(display: ToolInputDisplay): DisplayBlock[] {
         },
       ];
     case 'plan_review':
+    case 'plan_enter':
+    case 'external_permission':
       return [];
     case 'goal_start': {
       const lines = [`Start goal: ${display.objective}`];
-      if (typeof display.completionCriterion === 'string' && display.completionCriterion.length > 0) {
+      if (
+        typeof display.completionCriterion === 'string' &&
+        display.completionCriterion.length > 0
+      ) {
         lines.push(`Done when: ${display.completionCriterion}`);
       }
       return [{ type: 'brief', text: lines.join('\n') }];

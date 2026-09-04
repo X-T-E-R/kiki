@@ -9,13 +9,18 @@ export type DaemonCommandName =
   | 'permission'
   | 'yolo'
   | 'auto'
+  | 'plan'
+  | 'swarm'
   | 'agents'
   | 'agent-transcript'
   | 'effort'
+  | 'title'
+  | 'status'
+  | 'usage'
   | 'help'
   | 'version';
 
-type DaemonCommandArgument = 'none' | 'optional-one' | 'permission';
+type DaemonCommandArgument = 'none' | 'optional-one' | 'optional-rest' | 'permission';
 
 export interface DaemonCommandDefinition {
   readonly name: string;
@@ -54,9 +59,14 @@ const SUPPORTED_COMMANDS = [
   command('permission', [], 'Select permission mode', 'permission', '[manual|yolo|auto]'),
   command('yolo', ['yes'], 'Toggle YOLO mode', 'none'),
   command('auto', [], 'Toggle Auto mode', 'none'),
+  command('plan', [], 'Toggle plan mode', 'none'),
+  command('swarm', [], 'Toggle swarm mode', 'none'),
   command('agents', [], 'List agents in the current session', 'none'),
   command('agent-transcript', [], 'Show an agent transcript', 'optional-one', '[agent-id]'),
   command('effort', ['thinking'], 'Switch thinking effort', 'optional-one', '[effort]'),
+  command('title', ['rename'], 'Set or show session title', 'optional-rest', '[title]'),
+  command('status', [], 'Show current session and runtime status', 'none'),
+  command('usage', [], 'Show session token usage', 'none'),
   command('help', ['h', '?'], 'Show daemon TUI command support', 'none'),
   command('version', [], 'Show version information', 'none'),
 ] as const satisfies readonly DaemonCommandDefinition[];
@@ -64,7 +74,6 @@ const SUPPORTED_COMMANDS = [
 const DISABLED_COMMANDS = [
   disabled('settings', ['config'], 'Open TUI settings'),
   disabled('experiments', ['experimental'], 'Manage experimental features'),
-  disabled('title', ['rename'], 'Set or show session title'),
   disabled('logout', ['disconnect'], 'Log out of a configured provider'),
   disabled('export-md', ['export'], 'Export current session as a Markdown file'),
   disabled('add-dir', [], 'Add or list an additional workspace directory'),
@@ -78,17 +87,13 @@ const DISABLED_COMMANDS = [
   disabled('init', [], 'Analyze the codebase and generate AGENTS.md'),
   disabled('login', [], 'Authenticate a provider'),
   disabled('mcp', [], 'Show MCP server status'),
-  disabled('plan', [], 'Toggle plan mode'),
   disabled('plugins', [], 'Manage plugins'),
   disabled('provider', ['providers'], 'Manage AI providers'),
   disabled('reload', [], 'Reload session configuration'),
   disabled('reload-tui', [], 'Reload TUI preferences'),
-  disabled('status', [], 'Show current session and runtime status'),
-  disabled('swarm', [], 'Toggle swarm mode'),
   disabled('tasks', ['task'], 'Browse background tasks'),
   disabled('theme', [], 'Set the terminal UI theme'),
   disabled('undo', [], 'Withdraw the last prompt'),
-  disabled('usage', [], 'Show session token usage'),
   disabled('web', [], 'Open the current session in the Web UI'),
 ] as const satisfies readonly DaemonCommandDefinition[];
 
@@ -138,6 +143,8 @@ export function validateDaemonCommandArgs(command: ResolvedDaemonCommand): strin
       return args === '' || !/\s/u.test(args)
         ? undefined
         : `/${command.invokedAs} accepts at most one argument.`;
+    case 'optional-rest':
+      return undefined;
     case 'permission':
       return args === '' || args === 'manual' || args === 'yolo' || args === 'auto'
         ? undefined

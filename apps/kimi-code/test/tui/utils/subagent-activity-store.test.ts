@@ -11,7 +11,7 @@ import { STREAMING_ARGS_PREVIEW_MAX_CHARS } from '#/tui/constant/streaming';
 import {
   SubagentActivityStore,
   type SubagentActivitySpawn,
-} from '#/tui/controllers/subagent-activity-store';
+} from '#/tui/utils/subagent-activity-store';
 
 function ev(partial: Record<string, unknown>): Event {
   return { sessionId: 's1', agentId: 'agent-1', ...partial } as unknown as Event;

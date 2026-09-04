@@ -17,6 +17,7 @@ interface MountedBlock {
 
 export class DaemonTranscriptRenderer {
   private readonly mounted = new Map<string, MountedBlock>();
+  private expanded = false;
 
   constructor(
     private readonly container: Container,
@@ -41,6 +42,17 @@ export class DaemonTranscriptRenderer {
     this.ui?.requestRender();
   }
 
+  setExpanded(expanded: boolean): void {
+    this.expanded = expanded;
+    for (const mounted of this.mounted.values()) {
+      if (mounted.kind === 'tool') {
+        (mounted.component as ToolCallComponent).setExpanded(expanded);
+      }
+    }
+    this.container.invalidate();
+    this.ui?.requestRender(true);
+  }
+
   dispose(): void {
     for (const mounted of this.mounted.values()) disposeComponent(mounted.component);
     this.mounted.clear();
@@ -59,9 +71,11 @@ export class DaemonTranscriptRenderer {
       return mounted;
     }
     if (mounted !== undefined) disposeComponent(mounted.component);
+    const component = createBlockComponent(block, this.ui, this.workDir);
+    if (block.kind === 'tool') (component as ToolCallComponent).setExpanded(this.expanded);
     const next = {
       kind: block.kind,
-      component: createBlockComponent(block, this.ui, this.workDir),
+      component,
       block,
     };
     this.mounted.set(block.id, next);

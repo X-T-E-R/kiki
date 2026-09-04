@@ -18,7 +18,6 @@ import type { SessionRow } from './components/dialogs/session-picker';
 import { CustomEditor } from './components/editor/custom-editor';
 import { DEFAULT_TUI_CONFIG } from './config';
 import { CHROME_GUTTER } from './constant/rendering';
-import type { TasksBrowserState } from './controllers/tasks-browser';
 import { currentTheme, type Theme } from './theme';
 import { setMarkdownRenderLatex } from './utils/markdown-options';
 import { createTerminalState, type TerminalState } from './utils/terminal-state';
@@ -72,7 +71,6 @@ export interface TUIState {
    * must not run in that state — they would displace the newer panel.
    */
   editorReplacementMounted: boolean;
-  tasksBrowser: TasksBrowserState | undefined;
   externalEditorRunning: boolean;
   queuedMessages: QueuedMessage[];
   /**
@@ -186,7 +184,6 @@ export function createTUIState(options: KimiTUIOptions): TUIState {
     sessionsScope: 'cwd',
     activeDialog: null,
     editorReplacementMounted: false,
-    tasksBrowser: undefined,
     externalEditorRunning: false,
     queuedMessages: [],
     queuedMessageDispatchPending: false,

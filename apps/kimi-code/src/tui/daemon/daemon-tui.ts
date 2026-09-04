@@ -1,6 +1,6 @@
 import { Text, TuiAltScreen } from '@moonshot-ai/pi-tui';
 import type { PermissionMode } from '@moonshot-ai/kimi-code-sdk';
-import type { QuestionResponse } from '@moonshot-ai/protocol';
+import type { UpdateSessionProfileRequest } from '@moonshot-ai/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { SessionController } from '@kiki/session-core/session/sessionController';
@@ -22,13 +22,18 @@ import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialo
 import { SessionPickerComponent, type SessionRow } from '#/tui/components/dialogs/session-picker';
 import { FileMentionProvider } from '#/tui/components/editor/file-mention-provider';
 import type { TuiConfig } from '#/tui/config';
+import {
+  CTRL_C_HINT,
+  CTRL_D_HINT,
+  EXIT_CONFIRM_WINDOW_MS,
+} from '#/tui/constant/kimi-tui';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
-import type {
-  ApprovalPanelData,
-  QuestionPanelData,
-  QuestionPanelResponse,
-} from '#/tui/reverse-rpc/types';
-import { adaptApprovalRequest } from '#/tui/reverse-rpc/approval/adapter';
+import { adaptApprovalRequest } from '#/tui/interactions/approval-adapter';
+import {
+  adaptQuestionRequest,
+  adaptQuestionResponse,
+} from '#/tui/interactions/question-adapter';
+import type { ApprovalPanelData, QuestionPanelResponse } from '#/tui/interactions/types';
 import { currentTheme } from '#/tui/theme';
 import { createTUIState, type TUIState } from '#/tui/tui-state';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
@@ -71,8 +76,6 @@ type SessionSummary = Awaited<ReturnType<DaemonClient['listSessions']>>['items']
 export class DaemonTUI {
   readonly state: TUIState;
   public onExit?: (exitCode?: number) => Promise<void>;
-  public exitOpenUrl: string | undefined;
-  public exitForegroundTask: ((exitCode: number) => Promise<void>) | undefined;
 
   private readonly client: DaemonClient;
   private readonly socket: DaemonSocket;
@@ -85,6 +88,10 @@ export class DaemonTUI {
   private readonly skillCommands = new Map<string, DaemonSkillCommand>();
   private readonly agentProfileCommands = new Map<string, string>();
   private focusedAgentId = 'main';
+  private pendingExit:
+    | { readonly kind: 'ctrl-c' | 'ctrl-d'; readonly timer: ReturnType<typeof setTimeout> }
+    | undefined;
+  private startupOverridesPending = true;
   private stopped = false;
 
   constructor(connection: DaemonConnection, startup: DaemonTUIStartupInput) {
@@ -151,6 +158,7 @@ export class DaemonTUI {
   private async dispose(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.clearPendingExit();
     this.focusedControllerDispose?.();
     this.focusedControllerDispose = undefined;
     this.mainControllerDispose?.();
@@ -184,20 +192,106 @@ export class DaemonTUI {
   }
 
   private installEditor(): void {
-    this.state.editor.onSubmit = (text) => {
+    const editor = this.state.editor;
+    editor.onSubmit = (text) => {
+      this.clearPendingExit();
       void this.handleInput(text).catch((error: unknown) => {
         this.showStatus(formatErrorMessage(error), 'error');
       });
     };
-    this.state.editor.onCtrlC = () => {
-      void this.stop();
+    editor.onCtrlC = () => {
+      void this.handleInterrupt('ctrl-c');
     };
-    this.state.editor.onCtrlD = () => {
-      void this.stop();
+    editor.onCtrlD = () => {
+      this.confirmExit('ctrl-d');
     };
-    this.state.editor.onInputModeChange = (mode) => {
+    editor.onEscape = () => {
+      this.clearPendingExit();
+      if (this.controller?.getState().busy === true) void this.abortActivePrompt();
+    };
+    editor.onNonEscapeInput = () => {
+      this.clearPendingExit();
+    };
+    editor.onShiftTab = () => {
+      void this.applyPlanMode(!this.state.appState.planMode).catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+    };
+    editor.onToggleToolExpand = () => {
+      const expanded = !this.state.toolOutputExpanded;
+      this.state.toolOutputExpanded = expanded;
+      this.renderer.setExpanded(expanded);
+    };
+    editor.onOpenExternalEditor = () => {
+      this.showStatus('External editor is disabled in daemon TUI.', 'error');
+    };
+    editor.onCtrlS = () => {
+      this.showStatus('Prompt steering shortcut is disabled in daemon TUI.', 'error');
+    };
+    editor.onCtrlB = () => {
+      if (this.controller?.getState().busy !== true) return false;
+      this.showStatus('Backgrounding the active turn is disabled in daemon TUI.', 'error');
+      return true;
+    };
+    editor.onInputModeChange = (mode) => {
       this.setAppState({ inputMode: mode });
     };
+    editor.onRecall = (entry) => {
+      if (entry.startsWith('!')) {
+        editor.setInputMode('bash');
+        return entry.slice(1);
+      }
+      editor.setInputMode('prompt');
+      return undefined;
+    };
+  }
+
+  private async handleInterrupt(kind: 'ctrl-c'): Promise<void> {
+    if (this.controller?.getState().busy === true) {
+      this.clearPendingExit();
+      if (this.state.editor.getText().length > 0) {
+        this.state.editor.setText('');
+        return;
+      }
+      await this.abortActivePrompt();
+      return;
+    }
+    this.confirmExit(kind);
+  }
+
+  private async abortActivePrompt(): Promise<void> {
+    try {
+      await this.controller?.abortActive();
+    } catch (error) {
+      this.showStatus(formatErrorMessage(error), 'error');
+    }
+  }
+
+  private confirmExit(kind: 'ctrl-c' | 'ctrl-d'): void {
+    if (this.pendingExit?.kind === kind) {
+      this.clearPendingExit();
+      void this.stop();
+      return;
+    }
+    if (kind === 'ctrl-c' && this.state.editor.getText().length > 0) {
+      this.state.editor.setText('');
+    }
+    this.clearPendingExit();
+    const timer = setTimeout(() => {
+      if (this.pendingExit?.timer !== timer) return;
+      this.clearPendingExit();
+      this.state.ui.requestRender();
+    }, EXIT_CONFIRM_WINDOW_MS);
+    this.pendingExit = { kind, timer };
+    this.state.footer.setTransientHint(kind === 'ctrl-c' ? CTRL_C_HINT : CTRL_D_HINT);
+    this.state.ui.requestRender();
+  }
+
+  private clearPendingExit(): void {
+    if (this.pendingExit === undefined) return;
+    clearTimeout(this.pendingExit.timer);
+    this.pendingExit = undefined;
+    this.state.footer.setTransientHint(null);
   }
 
   private setupAutocomplete(): void {
@@ -307,7 +401,39 @@ export class DaemonTUI {
     });
     await controller.open();
     this.renderSession(controller.getState());
+    await this.applyStartupOverrides(controller);
     await this.refreshSkillCommands(sessionId);
+  }
+
+  private async applyStartupOverrides(controller: SessionController): Promise<void> {
+    if (!this.startupOverridesPending) return;
+    const permissionMode: PermissionMode | undefined = this.startup.cliOptions.auto
+      ? 'auto'
+      : this.startup.cliOptions.yolo
+        ? 'yolo'
+        : undefined;
+    const agentConfig: NonNullable<UpdateSessionProfileRequest['agent_config']> = {
+      model: this.startup.cliOptions.model,
+      profile: this.startup.agentProfile,
+      thinking: this.startup.cliOptions.thinking,
+      permission_mode: permissionMode,
+      plan_mode: this.startup.cliOptions.plan ? true : undefined,
+    };
+    if (Object.values(agentConfig).some((value) => value !== undefined)) {
+      const session = await this.client.updateSessionProfile(controller.sessionId, {
+        agent_config: agentConfig,
+      });
+      controller.handleSessionRecord(session);
+      this.setAppState({
+        model: agentConfig.model ?? session.agent_config.model ?? this.state.appState.model,
+        agentProfile: session.agent_config.profile ?? this.state.appState.agentProfile,
+        thinkingEffort: agentConfig.thinking ?? this.state.appState.thinkingEffort,
+        permissionMode:
+          session.agent_config.permission_mode ?? this.state.appState.permissionMode,
+        planMode: session.agent_config.plan_mode ?? this.state.appState.planMode,
+      });
+    }
+    this.startupOverridesPending = false;
   }
 
   private renderSession(view: SessionViewState): void {
@@ -315,6 +441,7 @@ export class DaemonTUI {
     this.setAppState({
       sessionId: view.sessionId,
       model: view.model ?? this.state.appState.model,
+      agentProfile: view.profile ?? this.state.appState.agentProfile,
       permissionMode: view.permissionMode ?? this.state.appState.permissionMode,
       planMode: view.planMode,
       swarmMode: view.swarmMode,
@@ -348,16 +475,16 @@ export class DaemonTUI {
     await this.sendPrompt(raw);
   }
 
-  private async sendPrompt(
-    text: string,
-    profile = this.state.appState.agentProfile,
-  ): Promise<void> {
+  private async sendPrompt(text: string, profile?: string): Promise<void> {
     const controller = await this.ensureSession();
     await controller.sendPrompt({
       text,
       profile,
-      model: this.state.appState.model === '' ? undefined : this.state.appState.model,
-      thinking: this.state.appState.thinkingEffort,
+      model:
+        profile === undefined && this.state.appState.model !== ''
+          ? this.state.appState.model
+          : undefined,
+      thinking: profile === undefined ? this.state.appState.thinkingEffort : undefined,
       permissionMode: this.state.appState.permissionMode,
       planMode: this.state.appState.planMode,
       swarmMode: this.state.appState.swarmMode,
@@ -431,6 +558,12 @@ export class DaemonTUI {
           this.state.appState.permissionMode === 'auto' ? 'manual' : 'auto',
         );
         return;
+      case 'plan':
+        await this.applyPlanMode(!this.state.appState.planMode);
+        return;
+      case 'swarm':
+        await this.applySwarmMode(!this.state.appState.swarmMode);
+        return;
       case 'agents': {
         const controller = await this.ensureSession();
         const ids = Object.keys(controller.getForest()?.byId ?? { main: true });
@@ -441,11 +574,18 @@ export class DaemonTUI {
         await this.openAgentTranscript(args === '' ? 'main' : args);
         return;
       case 'effort':
-        if (args === '') {
-          this.showStatus(`Thinking effort: ${this.state.appState.thinkingEffort}`);
-        } else {
-          await this.applyThinking(args);
-        }
+        if (args === '') await this.showThinkingPicker();
+        else await this.applyThinking(args);
+        return;
+      case 'title':
+        if (args === '') this.showStatus(this.state.appState.sessionTitle ?? 'Untitled session');
+        else await this.applyTitle(args);
+        return;
+      case 'status':
+        this.showSessionStatus();
+        return;
+      case 'usage':
+        this.showUsage();
         return;
       case 'help':
         this.showStatus(daemonCommandHelp());
@@ -472,6 +612,82 @@ export class DaemonTUI {
     const session = await this.client.setThinking(controller.sessionId, thinking);
     controller.handleSessionRecord(session);
     this.setAppState({ thinkingEffort: thinking });
+  }
+
+  private async applyPlanMode(planMode: boolean): Promise<void> {
+    const controller = await this.ensureSession();
+    const session = await this.client.setPlanMode(controller.sessionId, planMode);
+    controller.handleSessionRecord(session);
+    this.setAppState({ planMode });
+  }
+
+  private async applySwarmMode(swarmMode: boolean): Promise<void> {
+    const controller = await this.ensureSession();
+    const session = await this.client.setSwarmMode(controller.sessionId, swarmMode);
+    controller.handleSessionRecord(session);
+    this.setAppState({ swarmMode });
+  }
+
+  private async applyTitle(title: string): Promise<void> {
+    const controller = await this.ensureSession();
+    const session = await this.client.setTitle(controller.sessionId, title);
+    controller.handleSessionRecord(session);
+    this.setAppState({ sessionTitle: session.title });
+  }
+
+  private showSessionStatus(): void {
+    const state = this.state.appState;
+    this.showStatus(
+      [
+        `Session: ${state.sessionId === '' ? 'not started' : state.sessionId}`,
+        `Model: ${state.model === '' ? 'not selected' : state.model}`,
+        `Profile: ${state.agentProfile ?? 'default'}`,
+        `Thinking: ${state.thinkingEffort}`,
+        `Permission: ${state.permissionMode}`,
+        `Plan: ${state.planMode ? 'on' : 'off'}`,
+        `Swarm: ${state.swarmMode ? 'on' : 'off'}`,
+      ].join('\n'),
+    );
+  }
+
+  private showUsage(): void {
+    const state = this.state.appState;
+    const maximum = state.maxContextTokens;
+    const percent = maximum > 0 ? Math.round((state.contextTokens / maximum) * 100) : 0;
+    this.showStatus(`Context: ${String(state.contextTokens)} / ${String(maximum)} tokens (${String(percent)}%)`);
+  }
+
+  private async showThinkingPicker(): Promise<void> {
+    const models = await this.client.listModels();
+    const model = models.items.find((item) => item.model === this.state.appState.model);
+    if (model === undefined) throw new Error('Select a model before choosing thinking effort.');
+    const supported = model.support_efforts ?? [];
+    const efforts = [
+      'off',
+      ...(supported.length > 0
+        ? supported
+        : model.capabilities?.includes('thinking') === true
+          ? ['on']
+          : []),
+    ];
+    if (!efforts.includes(this.state.appState.thinkingEffort)) {
+      efforts.push(this.state.appState.thinkingEffort);
+    }
+    const picker = new ChoicePickerComponent({
+      title: 'Select thinking effort',
+      options: efforts.map((effort) => ({ value: effort, label: effort })),
+      currentValue: this.state.appState.thinkingEffort,
+      onSelect: (effort) => {
+        this.restoreEditor();
+        void this.applyThinking(effort).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(picker);
   }
 
   private async showModelPicker(): Promise<void> {
@@ -506,13 +722,19 @@ export class DaemonTUI {
     const controller = await this.ensureSession();
     const session = await this.client.setProfile(controller.sessionId, profile);
     controller.handleSessionRecord(session);
-    this.setAppState({ agentProfile: profile });
+    this.setAppState({
+      agentProfile: session.agent_config.profile ?? profile,
+      model: session.agent_config.model,
+      permissionMode: session.agent_config.permission_mode ?? this.state.appState.permissionMode,
+      planMode: session.agent_config.plan_mode ?? this.state.appState.planMode,
+      swarmMode: session.agent_config.swarm_mode ?? this.state.appState.swarmMode,
+    });
   }
 
   private async showAgentPicker(): Promise<void> {
     const profiles = await this.client.listAgentProfiles();
     const picker = new ChoicePickerComponent({
-      title: 'Select the agent profile for new sessions',
+      title: 'Select agent profile',
       options: profiles.items
         .filter((item) => !item.disabled)
         .map((item) => ({
@@ -591,7 +813,9 @@ export class DaemonTUI {
       scope: 'all',
       onSelect: (row) => {
         this.restoreEditor();
-        void this.openSession(row.id);
+        void this.openSession(row.id).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
       },
       onCancel: () => {
         this.restoreEditor();
@@ -653,7 +877,7 @@ export class DaemonTUI {
 
   private showQuestion(block: QuestionBlock): void {
     const dialog = new QuestionDialogComponent(
-      { data: questionPanelData(block) },
+      { data: adaptQuestionRequest(block) },
       (response) => {
         void this.respondQuestion(block, response).catch((error: unknown) => {
           this.showStatus(formatErrorMessage(error), 'error');
@@ -671,7 +895,7 @@ export class DaemonTUI {
       response.answers.length === 0
         ? this.client.dismissQuestion(this.controller!.sessionId, block.request.question_id)
         : this.client.resolveQuestion(this.controller!.sessionId, block.request.question_id, {
-            answers: questionAnswersFromPanel(block, response),
+            answers: adaptQuestionResponse(block, response),
             method: response.method,
           }),
     );
@@ -749,58 +973,6 @@ function approvalPanelData(block: ApprovalBlock): ApprovalPanelData {
   } as Parameters<typeof adaptApprovalRequest>[0]);
 }
 
-function questionPanelData(block: QuestionBlock): QuestionPanelData {
-  return {
-    id: block.request.question_id,
-    tool_call_id: block.request.tool_call_id ?? block.request.question_id,
-    questions: block.request.questions.map((question) => ({
-      question: question.question,
-      header: question.header,
-      body: question.body,
-      multi_select: question.multi_select ?? false,
-      other_label: question.other_label,
-      other_description: question.other_description,
-      options: question.options.map((option) => ({
-        label: option.label,
-        description: option.description,
-      })),
-    })),
-  };
-}
-
-export function questionAnswersFromPanel(
-  block: QuestionBlock,
-  response: QuestionPanelResponse,
-): QuestionResponse['answers'] {
-  const answers: QuestionResponse['answers'] = {};
-  for (const [index, question] of block.request.questions.entries()) {
-    const answer = response.answers[index];
-    if (answer === undefined || answer === '') {
-      answers[question.id] = { kind: 'skipped' };
-      continue;
-    }
-    if (question.multi_select === true) {
-      const values = answer.split(', ');
-      const optionIds = question.options
-        .filter((option) => values.includes(option.label))
-        .map((option) => option.id);
-      const other = values.filter(
-        (value) => !question.options.some((option) => option.label === value),
-      );
-      answers[question.id] =
-        other.length > 0
-          ? { kind: 'multi_with_other', option_ids: optionIds, other_text: other.join(', ') }
-          : { kind: 'multi', option_ids: optionIds };
-      continue;
-    }
-    const option = question.options.find((candidate) => candidate.label === answer);
-    answers[question.id] =
-      option === undefined
-        ? { kind: 'other', text: answer }
-        : { kind: 'single', option_id: option.id };
-  }
-  return answers;
-}
 
 function sessionRow(session: SessionSummary): SessionRow {
   return {
@@ -826,7 +998,7 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       additionalDirs: [...(input.additionalDirs ?? [])],
       sessionId: '',
       permissionMode,
-      planMode: false,
+      planMode: input.cliOptions.plan,
       agentProfile: input.agentProfile,
       agentFiles: input.cliOptions.agentFiles,
       inputMode: 'prompt',
@@ -859,7 +1031,7 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       continueLast: input.cliOptions.continue,
       yolo: input.cliOptions.yolo,
       auto: input.cliOptions.auto,
-      plan: false,
+      plan: input.cliOptions.plan,
       model: input.cliOptions.model,
       thinking: input.cliOptions.thinking,
       agentProfile: input.agentProfile,

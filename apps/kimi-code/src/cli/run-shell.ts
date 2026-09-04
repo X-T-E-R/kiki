@@ -1,11 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 
-import {
-  createKimiHarness,
-  flushDiagnosticLogsSync,
-  log,
-  type KimiHarnessOptions,
-} from '@moonshot-ai/kimi-code-sdk';
+import { flushDiagnosticLogsSync, log } from '@moonshot-ai/kimi-code-sdk';
 
 import { CLI_UI_MODE } from '#/constant/app';
 import type { TuiConfig } from '#/tui/config';
@@ -14,16 +9,13 @@ import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { DaemonTUI } from '#/tui/daemon/daemon-tui';
 import { discoverDaemon, ensureDaemon, resolveDaemonHome } from '#/tui/daemon/discovery';
 import { runWorkspaceTrustGate } from '#/tui/daemon/workspace-trust';
-import { KimiTUI } from '#/tui/index';
 import { startupTrace } from '#/utils/startup-trace';
 import { currentTheme, getColorPalette } from '#/tui/theme';
-import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
 import { restoreTerminalModes } from '#/utils/terminal-restore';
 import { resolveCommandPath } from '#/utils/process/resolve-command';
 
 import type { CLIOptions } from './options';
 import { resolveAgentProfileSelection } from './agent-selection';
-import { createKimiCodeHostIdentity } from './version';
 
 export async function runShell(opts: CLIOptions, version: string): Promise<void> {
   let tuiConfig: TuiConfig;
@@ -41,12 +33,6 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   currentTheme.setPalette(palette);
 
   const workDir = process.cwd();
-  const harnessOptions: KimiHarnessOptions = {
-    identity: createKimiCodeHostIdentity(version),
-    skillDirs: opts.skillsDirs,
-  };
-  const harness = createKimiHarness(harnessOptions);
-  startupTrace('harness:created');
   log.info('kimi-code starting', {
     version,
     uiMode: CLI_UI_MODE,
@@ -55,57 +41,26 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     workDir,
   });
 
-  await harness.ensureConfigFile();
-  const config = await harness.getConfig();
-  startupTrace('config:loaded');
-  const useDaemonTui = isTuiDaemonEnabled(config.experimental);
-  let tui: KimiTUI | DaemonTUI;
-  let closeOnStartFailure: () => Promise<void>;
-  if (useDaemonTui) {
-    await harness.close();
-    const homeDir = resolveDaemonHome();
-    if (!(await runWorkspaceTrustGate({ homeDir, workDir }))) return;
-    const agentProfile = await resolveAgentProfileSelection(opts, workDir);
-    const connection =
-      (await discoverDaemon(homeDir, workDir)) ??
-      (await ensureDaemon({ homeDir, workspacePath: workDir }));
-    startupTrace('daemon:connected');
-    const daemonTui = new DaemonTUI(connection, {
-      cliOptions: { ...opts, plan: false },
-      agentProfile,
-      additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
-      tuiConfig,
-      version,
-      workDir,
-      startupNotice: daemonStartupNotice(configWarning, opts.plan),
-    });
-    tui = daemonTui;
-    closeOnStartFailure = () => daemonTui.close();
-  } else {
-    // Resolve --agent/--agent-file once for the startup session; validateOptions
-    // has already rejected them alongside --session/--continue.
-    const agentProfile = await resolveAgentProfileSelection(opts, workDir);
-    tui = new KimiTUI(harness, {
-      cliOptions: opts,
-      agentProfile,
-      additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
-      tuiConfig,
-      version,
-      workDir,
-      startupNotice: configWarning,
-      // Constant since the v1 engine was removed. The TUI still branches on it in
-      // ~20 places; those branches are dead and get deleted with the flag itself.
-      engineV2: true,
-    });
-    closeOnStartFailure = () => harness.close();
-  }
+  const homeDir = resolveDaemonHome();
+  if (!(await runWorkspaceTrustGate({ homeDir, workDir }))) return;
+  const agentProfile = await resolveAgentProfileSelection(opts, workDir);
+  const connection =
+    (await discoverDaemon(homeDir, workDir)) ??
+    (await ensureDaemon({ homeDir, workspacePath: workDir }));
+  startupTrace('daemon:connected');
+  const tui = new DaemonTUI(connection, {
+    cliOptions: opts,
+    agentProfile,
+    additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
+    tuiConfig,
+    version,
+    workDir,
+    startupNotice: configWarning,
+  });
 
   let savedStty: string | undefined;
-  // stty runs before tui.start() reaches the workspace trust gate, so it must
-  // never be resolved by name through PATH: a `.` or empty PATH segment would
-  // let an untrusted checkout plant an `stty` executable and run it pre-trust.
-  // resolveCommandPath returns an absolute path and refuses hits inside the
-  // cwd; when it cannot resolve stty, skip the save/restore entirely — it is
+  // Resolve stty to an absolute PATH hit so a workspace binary cannot shadow
+  // the system command. When it cannot be resolved, skip save/restore — it is
   // best-effort terminal hygiene, not required for startup.
   // stty is also POSIX-only, so skip it on Windows instead of relying on the
   // catch below.
@@ -131,7 +86,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     spawnSync(sttyPath, args, { stdio: ['inherit', 'ignore', 'ignore'] });
   };
 
-  // If we crash without going through KimiTUI.stop(), the terminal is left in
+  // If we crash without going through DaemonTUI.stop(), the terminal is left in
   // raw mode with a hidden cursor and XON/XOFF flow control disabled. Restore
   // both before exiting so the user's shell is usable afterwards.
   const emergencyExit = (exitCode: number): void => {
@@ -181,21 +136,11 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     if (sessionId !== '' && hasContent) {
       hints.push(`${gutter}To resume this session: kimi -r ${sessionId}`);
     }
-    if (tui.exitOpenUrl !== undefined) {
-      hints.push(`${gutter}open ${toTerminalHyperlink(tui.exitOpenUrl, tui.exitOpenUrl)}`);
-    }
     if (hints.length > 0) {
       process.stderr.write(`\n${hints.join('\n')}\n`);
     }
     removeCrashHandlers();
     restoreStty();
-    if (tui.exitForegroundTask !== undefined) {
-      // `/web` starting a new server: the TUI has shut down cleanly; hand the
-      // terminal to the foreground server instead of exiting. The task runs
-      // until the server stops (Ctrl+C), then this process exits.
-      await tui.exitForegroundTask(exitCode);
-      return;
-    }
     process.exit(exitCode);
   };
   try {
@@ -204,40 +149,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     startupTrace('tui.start:end');
   } catch (error) {
     removeCrashHandlers();
-    await closeOnStartFailure();
+    await tui.close();
     throw error;
   }
-}
-
-const TUI_DAEMON_ENV = 'KIMI_CODE_EXPERIMENTAL_TUI_DAEMON';
-const EXPERIMENTAL_MASTER_ENV = 'KIMI_CODE_EXPERIMENTAL_FLAG';
-
-export function isTuiDaemonEnabled(
-  experimental: Readonly<Record<string, boolean>> | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  const override = parseBooleanEnv(env[TUI_DAEMON_ENV]);
-  if (override !== undefined) return override;
-  const configured = experimental?.['tui_daemon'];
-  if (configured !== undefined) return configured;
-  return parseBooleanEnv(env[EXPERIMENTAL_MASTER_ENV]) === true;
-}
-
-function parseBooleanEnv(value: string | undefined): boolean | undefined {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === undefined || normalized === '') return undefined;
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
-  return undefined;
-}
-
-function daemonStartupNotice(configWarning: string | undefined, planIgnored: boolean): string {
-  const notice =
-    'Experimental daemon TUI is enabled. Unsupported: settings/config, experiments, rename, authentication, exports, tasks, goals, plugins, plan/theme/editor changes, MCP/status/usage, undo, and web. Run /help for the complete list. Set KIMI_CODE_EXPERIMENTAL_TUI_DAEMON=0 and remove experimental.tui_daemon from config to return to the default TUI.';
-  const planNotice = planIgnored
-    ? '\nThe --plan option was ignored because plan mode is disabled in daemon TUI.'
-    : '';
-  return configWarning === undefined
-    ? `${notice}${planNotice}`
-    : `${configWarning}\n${notice}${planNotice}`;
 }

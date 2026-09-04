@@ -27,11 +27,14 @@ function driver(plan = false) {
     },
   );
   created.push(tui);
+  const controllerState = { busy: false, blocks: [], activePromptId: undefined };
   const controller = {
     sessionId: 'session-1',
     sendPrompt: vi.fn(),
+    abortActive: vi.fn(),
     handleSessionRecord: vi.fn(),
     getForest: vi.fn(() => undefined),
+    getState: vi.fn(() => controllerState),
     resync: vi.fn(),
   };
   const internal = tui as unknown as {
@@ -50,6 +53,10 @@ function driver(plan = false) {
       setPermission: ReturnType<typeof vi.fn>;
       setProfile: ReturnType<typeof vi.fn>;
       setThinking: ReturnType<typeof vi.fn>;
+      setPlanMode: ReturnType<typeof vi.fn>;
+      setSwarmMode: ReturnType<typeof vi.fn>;
+      setTitle: ReturnType<typeof vi.fn>;
+      updateSessionProfile: ReturnType<typeof vi.fn>;
       resolveApproval: ReturnType<typeof vi.fn>;
       resolveQuestion: ReturnType<typeof vi.fn>;
       dismissQuestion: ReturnType<typeof vi.fn>;
@@ -57,6 +64,7 @@ function driver(plan = false) {
     };
     handleInput(text: string): Promise<void>;
     handleSlash(text: string): Promise<void>;
+    handleInterrupt(kind: 'ctrl-c'): Promise<void>;
     refreshAgentCommands(): Promise<void>;
     refreshSkillCommands(sessionId: string): Promise<void>;
     respondApproval(block: unknown, response: unknown): Promise<void>;
@@ -91,13 +99,20 @@ function driver(plan = false) {
   internal.client.activateSkill = vi.fn();
   internal.client.setModel = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.setPermission = vi.fn(async () => ({ id: 'session-1' }));
-  internal.client.setProfile = vi.fn(async () => ({ id: 'session-1' }));
+  internal.client.setProfile = vi.fn(async (_sessionId, profile) => ({
+    id: 'session-1',
+    agent_config: { model: 'profile-model', profile },
+  }));
   internal.client.setThinking = vi.fn(async () => ({ id: 'session-1' }));
+  internal.client.setPlanMode = vi.fn(async () => ({ id: 'session-1' }));
+  internal.client.setSwarmMode = vi.fn(async () => ({ id: 'session-1' }));
+  internal.client.setTitle = vi.fn(async (_sessionId, title) => ({ id: 'session-1', title }));
+  internal.client.updateSessionProfile = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.resolveApproval = vi.fn();
   internal.client.resolveQuestion = vi.fn();
   internal.client.dismissQuestion = vi.fn();
   internal.showStatus = vi.fn();
-  return { tui, internal, controller };
+  return { tui, internal, controller, controllerState };
 }
 
 afterEach(async () => {
@@ -121,14 +136,14 @@ describe('DaemonTUI commands', () => {
     );
   });
 
-  it('ignores plan mode in daemon startup and prompt submissions', async () => {
+  it('preserves plan mode in startup and prompt submissions', async () => {
     const { tui, internal, controller } = driver(true);
 
     await internal.handleInput('hello');
 
-    expect(tui.state.appState.planMode).toBe(false);
+    expect(tui.state.appState.planMode).toBe(true);
     expect(controller.sendPrompt).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'hello', planMode: false }),
+      expect.objectContaining({ text: 'hello', planMode: true }),
     );
   });
 
@@ -144,6 +159,32 @@ describe('DaemonTUI commands', () => {
     expect(internal.client.setPermission).toHaveBeenNthCalledWith(2, 'session-1', 'auto');
     expect(tui.state.appState.agentProfile).toBe('reviewer');
     expect(tui.state.appState.permissionMode).toBe('auto');
+  });
+
+  it('applies plan, swarm, and title session actions through REST', async () => {
+    const { tui, internal } = driver();
+
+    await internal.handleSlash('/plan');
+    await internal.handleSlash('/swarm');
+    await internal.handleSlash('/title Release session');
+
+    expect(internal.client.setPlanMode).toHaveBeenCalledWith('session-1', true);
+    expect(internal.client.setSwarmMode).toHaveBeenCalledWith('session-1', true);
+    expect(internal.client.setTitle).toHaveBeenCalledWith('session-1', 'Release session');
+    expect(tui.state.appState).toMatchObject({
+      planMode: true,
+      swarmMode: true,
+      sessionTitle: 'Release session',
+    });
+  });
+
+  it('aborts an active prompt instead of exiting on Ctrl-C', async () => {
+    const { internal, controller, controllerState } = driver();
+    controllerState.busy = true;
+
+    await internal.handleInterrupt('ctrl-c');
+
+    expect(controller.abortActive).toHaveBeenCalledOnce();
   });
 
   it('normalizes aliases, reports disabled commands, and rejects unknown slash input', async () => {
@@ -211,9 +252,15 @@ describe('DaemonTUI commands', () => {
       'ReviewSkill',
       'staged  \t changes',
     );
-    expect(controller.sendPrompt).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'inspect  \t tests', profile: 'Reviewer' }),
-    );
+    expect(controller.sendPrompt).toHaveBeenCalledWith({
+      text: 'inspect  \t tests',
+      profile: 'Reviewer',
+      model: undefined,
+      thinking: undefined,
+      permissionMode: 'manual',
+      planMode: false,
+      swarmMode: false,
+    });
   });
 
   it('keeps interaction response failures inside the TUI', async () => {

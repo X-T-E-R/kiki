@@ -1,9 +1,5 @@
 /**
- * Reverse RPC view-layer types.
- *
- * These types are the contract between the UI layer and reverse RPC
- * controllers, not SDK event payloads. Approval and question adapters convert
- * core payloads into these shapes for panel components.
+ * View-layer contracts shared by daemon interaction adapters and dialogs.
  */
 
 import type { QuestionAnswerMethod } from '@moonshot-ai/kimi-code-sdk';

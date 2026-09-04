@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { adaptApprovalRequest, adaptPanelResponse } from '#/tui/reverse-rpc/approval/adapter';
+import { adaptApprovalRequest } from '#/tui/interactions/approval-adapter';
 
 describe('approval adapter', () => {
   it('adapts generic command displays into shell blocks with approval choices', () => {
@@ -301,21 +301,6 @@ describe('approval adapter', () => {
       },
     ]);
   });
-
-  it('maps approved-for-session responses into core approval payloads', () => {
-    expect(
-      adaptPanelResponse({
-        response: 'approved_for_session',
-        feedback: 'looks good',
-        selected_label: 'Approve for this session',
-      }),
-    ).toEqual({
-      decision: 'approved',
-      scope: 'session',
-      feedback: 'looks good',
-      selectedLabel: 'Approve for this session',
-    });
-  });
 });
 
 describe('external permission options (ACP harness)', () => {
@@ -387,24 +372,5 @@ describe('external permission options (ACP harness)', () => {
       expect(adapted.choices).toEqual([{ label: 'Cancel', response: 'cancelled' }]);
       expect(adapted.description).toContain('cancel');
     }
-  });
-
-  it('threads selected_option_id into the engine response as selectedOptionId', () => {
-    expect(
-      adaptPanelResponse({ response: 'approved', selected_option_id: 'opt-always' }),
-    ).toEqual({
-      decision: 'approved',
-      feedback: undefined,
-      selectedLabel: undefined,
-      selectedOptionId: 'opt-always',
-    });
-  });
-
-  it('leaves legacy responses untouched when no option id is present', () => {
-    expect(adaptPanelResponse({ response: 'rejected' })).toEqual({
-      decision: 'rejected',
-      feedback: undefined,
-      selectedLabel: undefined,
-    });
   });
 });

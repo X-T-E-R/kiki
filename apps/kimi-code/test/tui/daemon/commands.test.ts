@@ -14,6 +14,7 @@ describe('daemon command registry', () => {
     ['?', 'help'],
     ['q', 'exit'],
     ['thinking', 'effort'],
+    ['rename', 'title'],
   ])('normalizes supported alias /%s to /%s', (alias, canonical) => {
     const resolved = resolveDaemonCommand(alias, '');
 
@@ -23,7 +24,6 @@ describe('daemon command registry', () => {
   it.each([
     ['config', 'settings'],
     ['experimental', 'experiments'],
-    ['rename', 'title'],
     ['disconnect', 'logout'],
     ['export', 'export-md'],
   ])('normalizes disabled alias /%s to /%s', (alias, canonical) => {

@@ -149,6 +149,18 @@ export class DaemonClient implements SessionTransport {
     return this.updateSessionProfile(sessionId, { agent_config: { thinking } });
   }
 
+  setPlanMode(sessionId: string, planMode: boolean): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { agent_config: { plan_mode: planMode } });
+  }
+
+  setSwarmMode(sessionId: string, swarmMode: boolean): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { agent_config: { swarm_mode: swarmMode } });
+  }
+
+  setTitle(sessionId: string, title: string): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { title });
+  }
+
   runShellCommand(sessionId: string, command: string) {
     return this.klient.session(sessionId).agent('main').runShellCommand({ command });
   }
