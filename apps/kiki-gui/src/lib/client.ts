@@ -7,6 +7,7 @@
  * can widen the accepted-code set per request.
  */
 
+import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@moonshot-ai/protocol';
 import type {
   ActivateSkillRequest,
   ActivateSkillResult,
@@ -43,6 +44,8 @@ import type {
   NamedAgentRoute as ProtocolNamedAgentRoute,
   NamedAgentSpawnConstraints as ProtocolNamedAgentSpawnConstraints,
   NamedAgentSubagentLease as ProtocolNamedAgentSubagentLease,
+  NbSearchCapabilities,
+  NbSearchTestStatus,
   OAuthFlowSnapshot,
   OAuthFlowStart,
   OAuthLoginQuery,
@@ -228,6 +231,12 @@ export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & RuntimeConfi
   readonly subagent?: NonNullable<ConfigResponse['subagent']> & {
     readonly denyModels?: string[];
   };
+  /**
+   * Canonical nb_search patch object (snake_case subtree preserved verbatim
+   * by kap-server's key conversion). Not in the shared protocol schema yet;
+   * the Search & retrieval leaf owns its structured editing.
+   */
+  readonly nb_search?: Record<string, unknown>;
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -326,6 +335,8 @@ export type KikiConfigPatch = Omit<
   'subagent' | 'replace_domains' | 'request_identity'
 > & RuntimeConfigPatch & {
   readonly request_identity?: RequestIdentityPolicyWire | null;
+  /** Full-domain nb_search replace body; always paired with replace_domains. */
+  readonly nb_search?: Record<string, unknown>;
   readonly subagent?: NonNullable<PatchConfigRequest['subagent']> & {
     readonly deny_models?: string[];
   };
@@ -1171,6 +1182,16 @@ export class KikiClient {
 
   async getConfig(): Promise<KikiConfigResponse> {
     return parseKikiConfigResponse(await this.request<unknown>('GET', '/config'));
+  }
+
+  /** `GET /nb-search/capabilities` — secret-free provider/lane/pipeline descriptors. */
+  async getNbSearchCapabilities(): Promise<NbSearchCapabilities> {
+    return nbSearchCapabilitiesSchema.parse(await this.request<unknown>('GET', '/nb-search/capabilities'));
+  }
+
+  /** `GET /nb-search/test` — on-demand readiness check; callers pass a signal so the panel can cancel. */
+  async testNbSearch(signal?: AbortSignal): Promise<NbSearchTestStatus> {
+    return nbSearchTestStatusSchema.parse(await this.request<unknown>('GET', '/nb-search/test', { signal }));
   }
 
   listNamedAgentProfiles(): Promise<ListNamedAgentProfilesResponse> {

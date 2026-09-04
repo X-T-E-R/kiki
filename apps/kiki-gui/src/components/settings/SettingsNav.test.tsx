@@ -82,10 +82,11 @@ describe('SettingsNav grouped tree', () => {
     // entry; its tabs live inside the page, not in the nav tree.
     const leaves = [...aiGroup.querySelectorAll('button')].map((button) => button.textContent);
     expect(leaves).toEqual(['Models & providers']);
-    // The extensions group carries the batch-3 split leaves plus Plugins.
+    // The extensions group carries the batch-3 split leaves plus Plugins and
+    // the Search & retrieval leaf (nb-search providers/lanes).
     const extensionsGroup = groups[3]!;
     expect([...extensionsGroup.querySelectorAll('button')].map((button) => button.textContent))
-      .toEqual(['Skills', 'MCP', 'Plugins', 'Tools & hooks']);
+      .toEqual(['Skills', 'MCP', 'Plugins', 'Tools & hooks', 'Search & retrieval']);
     // About & updates sits outside every group as a clickable top-level leaf.
     const aboutLeaf = container.querySelector('[data-settings-nav-ungrouped="about"]');
     expect(aboutLeaf).not.toBeNull();

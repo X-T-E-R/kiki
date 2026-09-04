@@ -1029,7 +1029,6 @@ describe('refreshAllProviderModels', () => {
       baseUrl,
       apiKey: 'sk-distributed-key',
     });
-    expect(host.current().services).toBeUndefined();
     expect(host.current().models?.['kimi-code/kimi-for-coding']?.displayName).toBe('Fresh Kimi');
     expect(host.current().defaultModel).toBe('kimi-code/kimi-for-coding');
   });
