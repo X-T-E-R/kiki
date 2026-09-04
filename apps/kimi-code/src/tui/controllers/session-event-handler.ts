@@ -14,6 +14,7 @@ import type {
   GoalChange,
   GoalUpdatedEvent,
   HookResultEvent,
+  KimiHarness,
   Session,
   SessionMetaUpdatedEvent,
   SkillActivatedEvent,
@@ -70,6 +71,7 @@ import {
   selectMcpStartupStatusRows,
 } from '../utils/mcp-server-status';
 import { openUrl } from '#/utils/open-url';
+import { pluginMarketplaceConfigSource } from '#/utils/plugin-marketplace';
 import { currentTheme } from '#/tui/theme';
 import type { ColorToken } from '#/tui/theme';
 import { errorReportHintLine } from '../constant/feedback';
@@ -96,6 +98,7 @@ export interface SessionEventHost {
   session: Session | undefined;
   aborted: boolean;
   sessionEventUnsubscribe: (() => void) | undefined;
+  readonly harness: Pick<KimiHarness, 'getConfig'>;
   readonly streamingUI: StreamingUIController;
 
   requireSession(): Session;
@@ -145,6 +148,8 @@ export class SessionEventHandler {
       pluginUpdateNotifier ??
       new PluginUpdateNotifier({
         getSession: () => this.host.session,
+        getConfigSource: async () =>
+          pluginMarketplaceConfigSource(await this.host.harness.getConfig()),
         workDir: host.state.appState.workDir,
         notify: (message) => {
           this.host.showStatus(message, 'warning');

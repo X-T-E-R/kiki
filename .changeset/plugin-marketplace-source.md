@@ -1,6 +1,7 @@
 ---
 "@moonshot-ai/agent-core-v2": patch
 "@moonshot-ai/kap-server": patch
+"@moonshot-ai/kimi-code": patch
 ---
 
-Make the plugin marketplace catalog URL configurable (`[plugins] marketplace_url`, env, or server option). An empty value means the REST marketplace route reports unconfigured and does not fetch a remote catalog.
+Load the plugin marketplace only from an explicitly configured catalog source.

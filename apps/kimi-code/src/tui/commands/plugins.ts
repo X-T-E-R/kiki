@@ -35,8 +35,13 @@ import {
   isOfficialPluginInstall,
   isOfficialPluginSource,
 } from '../utils/plugin-source-label';
-import { KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV, QUOTA_CONSUMING_PLUGIN_IDS } from '#/constant/app';
-import { loadPluginMarketplace, type PluginMarketplaceEntry } from '#/utils/plugin-marketplace';
+import { QUOTA_CONSUMING_PLUGIN_IDS } from '#/constant/app';
+import {
+  isDefaultPluginMarketplaceSource,
+  loadPluginMarketplace,
+  pluginMarketplaceConfigSource,
+  type PluginMarketplaceEntry,
+} from '#/utils/plugin-marketplace';
 import { openUrl } from '#/utils/open-url';
 import type { SlashCommandHost } from './dispatch';
 
@@ -267,11 +272,19 @@ async function showPluginsPicker(
     logCapabilityStatus(capability, installedIds.has(capability.pluginId ?? capability.id));
   }
 
+  const configSource =
+    options?.marketplaceSource === undefined
+      ? pluginMarketplaceConfigSource(await host.harness.getConfig())
+      : undefined;
+  const catalogIsDefault = isDefaultPluginMarketplaceSource(
+    options?.marketplaceSource,
+    configSource,
+  );
   const panel = new PluginsPanelComponent({
     installed: plugins,
     installedIds,
     capabilities,
-    catalogIsDefault: isDefaultMarketplaceCatalog(options?.marketplaceSource),
+    catalogIsDefault,
     initialTab: options?.initialTab,
     selectedId: options?.selectedId,
     pluginHint: options?.pluginHint,
@@ -279,7 +292,7 @@ async function showPluginsPicker(
       // Each branch of the handler either mounts the next view or restores the
       // editor itself, so do not pre-restore here — that would flash the editor
       // for in-place actions like toggling a plugin.
-      void handlePluginsPanelSelection(host, panel, selection).catch((error: unknown) => {
+      void handlePluginsPanelSelection(host, panel, selection, catalogIsDefault).catch((error: unknown) => {
         host.showError(`/plugins failed: ${formatErrorMessage(error)}`);
       });
     },
@@ -291,7 +304,13 @@ async function showPluginsPicker(
     // keep working even when the marketplace is unreachable (badges simply stay
     // hidden until data arrives).
     onRequestMarketplace: () => {
-      void loadMarketplaceCatalog(host, panel, options?.marketplaceSource, capabilities);
+      void loadMarketplaceCatalog(
+        host,
+        panel,
+        options?.marketplaceSource,
+        configSource,
+        capabilities,
+      );
     },
   });
   host.mountEditorReplacement(panel);
@@ -302,7 +321,13 @@ async function showPluginsPicker(
   // over `panel`.
   if (options?.initialTab !== 'custom') {
     panel.setMarketplaceLoading();
-    void loadMarketplaceCatalog(host, panel, options?.marketplaceSource, capabilities);
+    void loadMarketplaceCatalog(
+      host,
+      panel,
+      options?.marketplaceSource,
+      configSource,
+      capabilities,
+    );
   }
 }
 
@@ -325,32 +350,27 @@ function capabilityMarketplaceEntry(capability: CapabilityStatus): PluginMarketp
 }
 
 /**
- * Injection is part of the DEFAULT catalog experience only: any explicit
- * replacement (the slash-command source or a user-set env override) opts out
- * wholesale. The dev marketplace server started by scripts/dev.mjs serves
- * this repo's own catalog and marks itself, so it still counts as default.
+ * Injection is part of the default catalog experience only: any explicit
+ * replacement (slash-command source, env, or config) opts out wholesale. The
+ * dev marketplace server serves this repo's catalog and marks itself, so it
+ * still counts as default.
  */
-function isDefaultMarketplaceCatalog(
-  source: string | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (source !== undefined) return false;
-  if (env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV] === undefined) return true;
-  return env['KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] === '1';
-}
+const isDefaultMarketplaceCatalog = isDefaultPluginMarketplaceSource;
 
 async function loadMarketplaceCatalog(
   host: SlashCommandHost,
   panel: PluginsPanelComponent,
   source: string | undefined,
+  configSource: string | undefined,
   capabilities: readonly CapabilityStatus[],
 ): Promise<void> {
   try {
     const marketplace = await loadPluginMarketplace({
       workDir: host.state.appState.workDir,
       source,
+      configSource,
       builtInEntries:
-        host.engineV2 && isDefaultMarketplaceCatalog(source)
+        host.engineV2 && isDefaultMarketplaceCatalog(source, configSource)
           ? capabilities.map(capabilityMarketplaceEntry)
           : undefined,
     });
@@ -645,6 +665,7 @@ async function handlePluginsPanelSelection(
   host: SlashCommandHost,
   panel: PluginsPanelComponent,
   selection: PluginsPanelSelection,
+  catalogIsDefault: boolean,
 ): Promise<void> {
   switch (selection.kind) {
     case 'toggle': {
@@ -686,7 +707,8 @@ async function handlePluginsPanelSelection(
         panel,
         selection.entry.source,
         selection.entry.displayName,
-        isOfficialPluginSource(selection.entry.source),
+        (catalogIsDefault && selection.entry.tier === 'official') ||
+          isOfficialPluginSource(selection.entry.source),
       );
       return;
     case 'install-source':

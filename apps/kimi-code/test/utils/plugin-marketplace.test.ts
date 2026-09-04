@@ -1,17 +1,19 @@
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV } from '#/constant/app';
 import {
-  KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV,
-  kimiCodePluginMarketplaceUrl,
-} from '#/constant/app';
-import { computeUpdateStatus, loadPluginMarketplace } from '#/utils/plugin-marketplace';
+  BUILT_IN_PLUGIN_MARKETPLACE_SOURCE,
+  LOCAL_DEV_PLUGIN_MARKETPLACE_SOURCE,
+  computeUpdateStatus,
+  loadPluginMarketplace,
+  pluginMarketplaceConfigSource,
+} from '#/utils/plugin-marketplace';
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const REPO_ROOT = resolve(import.meta.dirname, '../../../..');
 
 describe('computeUpdateStatus', () => {
   it('reports not-installed when the plugin is absent', () => {
@@ -62,6 +64,20 @@ describe('computeUpdateStatus', () => {
 });
 
 describe('loadPluginMarketplace', () => {
+  it('uses a stable non-remote identity for the built-in-only catalog', () => {
+    expect(BUILT_IN_PLUGIN_MARKETPLACE_SOURCE).toBe('builtin:kimi-code-capabilities');
+    expect(BUILT_IN_PLUGIN_MARKETPLACE_SOURCE).not.toMatch(/^https?:/);
+  });
+
+  it('reads the marketplace source from the raw plugins config section', () => {
+    expect(
+      pluginMarketplaceConfigSource({
+        raw: { plugins: { marketplace_url: ' https://config.test/marketplace.json ' } },
+      }),
+    ).toBe(' https://config.test/marketplace.json ');
+    expect(pluginMarketplaceConfigSource({ raw: { plugins: {} } })).toBeUndefined();
+  });
+
   it('loads a local marketplace file and resolves relative plugin sources', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
     const file = join(dir, 'marketplace.json');
@@ -230,58 +246,24 @@ describe('loadPluginMarketplace', () => {
     );
   });
 
-  it('loads the default CDN marketplace with injectable fetch', async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          plugins: [
-            {
-              id: 'kimi-datasource',
-              displayName: 'Kimi Datasource',
-              source: './official/kimi-datasource.zip',
-            },
-          ],
-        }),
-    })) as unknown as typeof fetch;
-
-    const marketplace = await loadPluginMarketplace({
-      workDir: '/tmp/work',
-      source: kimiCodePluginMarketplaceUrl(),
-      fetchImpl,
-    });
-
-    expect(fetchImpl).toHaveBeenCalledWith(kimiCodePluginMarketplaceUrl());
-    expect(marketplace.plugins[0]).toEqual(
-      expect.objectContaining({
-        id: 'kimi-datasource',
-        displayName: 'Kimi Datasource',
-        source: new URL(
-          './official/kimi-datasource.zip',
-          kimiCodePluginMarketplaceUrl(),
-        ).toString(),
-      }),
-    );
-  });
-
-  it('falls back to the source checkout marketplace when the default CDN cannot be fetched', async () => {
+  it('loads the source-checkout catalog without any network fetch when no source is configured', async () => {
     const previous = process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
     delete process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
     const fetchImpl = vi.fn(async () => {
-      throw new Error('fetch failed');
+      throw new Error('network fetch is forbidden');
     }) as unknown as typeof fetch;
 
     try {
-      const marketplace = await loadPluginMarketplace({ workDir: '/tmp/work', fetchImpl });
+      const marketplace = await loadPluginMarketplace({
+        workDir: '/tmp/work',
+        fetchImpl,
+        builtInEntries,
+      });
 
-      expect(fetchImpl).toHaveBeenCalledWith(kimiCodePluginMarketplaceUrl());
-      expect(marketplace.source).toBe(join(REPO_ROOT, 'plugins/marketplace.json'));
-      expect(marketplace.plugins).toContainEqual(
-        expect.objectContaining({
-          id: 'superpowers',
-          source: 'https://github.com/obra/superpowers',
-        }),
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(marketplace.source).toBe(LOCAL_DEV_PLUGIN_MARKETPLACE_SOURCE);
+      expect(marketplace.plugins.map((entry) => entry.id)).toEqual(
+        expect.arrayContaining(['superpowers', 'kimi-datasource', 'kimi-cu', 'kimi-webbridge']),
       );
     } finally {
       if (previous === undefined) {
@@ -292,16 +274,80 @@ describe('loadPluginMarketplace', () => {
     }
   });
 
-  it('does not use the source checkout fallback for explicit marketplace sources', async () => {
+  it('resolves explicit option, env, and config sources in precedence order', async () => {
+    const previous = process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
+    const optionSource = 'https://option.test/marketplace.json';
+    const envSource = 'https://env.test/marketplace.json';
+    const configSource = 'https://config.test/marketplace.json';
+    const fetchMock = vi.fn(async (input: string | URL) => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          plugins: [
+            {
+              id: new URL(String(input)).hostname,
+              version: '1.0.0',
+              source: './plugin.zip',
+            },
+          ],
+        }),
+    }));
+    const fetchImpl = fetchMock as unknown as typeof fetch;
+    process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV] = envSource;
+
+    try {
+      const fromOption = await loadPluginMarketplace({
+        workDir: '/tmp/work',
+        source: optionSource,
+        configSource,
+        fetchImpl,
+      });
+      expect(fromOption.source).toBe(optionSource);
+      expect(fromOption.plugins[0]?.id).toBe('option.test');
+
+      const fromEnv = await loadPluginMarketplace({
+        workDir: '/tmp/work',
+        configSource,
+        fetchImpl,
+      });
+      expect(fromEnv.source).toBe(envSource);
+      expect(fromEnv.plugins[0]?.id).toBe('env.test');
+
+      delete process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
+      const fromConfig = await loadPluginMarketplace({
+        workDir: '/tmp/work',
+        configSource,
+        fetchImpl,
+      });
+      expect(fromConfig.source).toBe(configSource);
+      expect(fromConfig.plugins[0]?.id).toBe('config.test');
+      expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+        optionSource,
+        envSource,
+        configSource,
+      ]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
+      } else {
+        process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV] = previous;
+      }
+    }
+  });
+
+  it('does not use the source-checkout catalog for an explicit marketplace source', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error('fetch failed');
     }) as unknown as typeof fetch;
 
-    await expect(loadPluginMarketplace({
-      workDir: '/tmp/work',
-      source: kimiCodePluginMarketplaceUrl(),
-      fetchImpl,
-    })).rejects.toThrow(/fetch failed/);
+    await expect(
+      loadPluginMarketplace({
+        workDir: '/tmp/work',
+        source: 'https://example.test/marketplace.json',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/fetch failed/);
   });
 
   it('keeps the built-in entries when the catalog is unreachable', async () => {
@@ -364,7 +410,7 @@ describe('loadPluginMarketplace', () => {
     });
 
     it('does not derive a version from a non-GitHub URL', async () => {
-      const entry = await loadEntry('https://code.kimi.com/kimi-code/plugins/curated/superpowers.zip');
+      const entry = await loadEntry('https://example.test/plugins/curated/superpowers.zip');
       expect(entry.version).toBeUndefined();
     });
 
