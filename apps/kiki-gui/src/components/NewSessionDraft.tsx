@@ -251,14 +251,18 @@ export function useNewSessionDraft({
 
   useEffect(() => {
     const items = agentProfilesQuery.data?.items;
-    if (agentProfileCatalogMode.mode === 'workspace' && items === undefined) return;
+    if (
+      agentProfileCatalogMode.mode === 'workspace'
+      && !agentProfilesQuery.isError
+      && (agentProfilesQuery.isLoading || agentProfilesQuery.isPending)
+    ) return;
     if (
       agentProfileCatalogMode.mode === 'disabled'
       && cwd.trim() === ''
       && workspacesQuery.data === undefined
     ) return;
 
-    const profiles = items ?? [];
+    const profiles = agentProfilesQuery.isError ? [] : items ?? [];
     const validatingInitialProfile = initialProfile !== undefined && !initialProfileValidated;
     const requestedProfile = validatingInitialProfile ? initialProfile : agentProfile;
     const nextProfile = profiles.find((item) =>
@@ -281,6 +285,9 @@ export function useNewSessionDraft({
     agentProfile,
     agentProfileCatalogMode,
     agentProfilesQuery.data,
+    agentProfilesQuery.isError,
+    agentProfilesQuery.isLoading,
+    agentProfilesQuery.isPending,
     cwd,
     initialProfile,
     initialProfileValidated,
@@ -301,7 +308,8 @@ export function useNewSessionDraft({
         workspacesQuery.data === undefined
         || (
           agentProfileCatalogMode.mode === 'workspace'
-          && agentProfilesQuery.data === undefined
+          && !agentProfilesQuery.isError
+          && (agentProfilesQuery.isLoading || agentProfilesQuery.isPending)
         )
       )
     );
