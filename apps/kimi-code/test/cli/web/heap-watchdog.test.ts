@@ -80,6 +80,51 @@ describe('resolveHeapWatchdogPolicy', () => {
       32_768 * MB,
     );
     expect(highMemory?.rssThresholdBytes).toBe(5120 * MB);
+
+    const emptyHeapOverride = resolveHeapWatchdogPolicy(
+      { [DESKTOP_BUNDLED_ENV]: '1', [HEAP_RESTART_ENV]: '' },
+      8192 * MB,
+      8192 * MB,
+    );
+    expect(emptyHeapOverride).toMatchObject({
+      heapThresholdBytes: 6144 * MB,
+      rssThresholdBytes: 3072 * MB,
+      externalThresholdBytes: 1536 * MB,
+    });
+  });
+
+  it('disables a bundled watchdog when the only explicit heap override is 0', () => {
+    expect(
+      resolveHeapWatchdogPolicy(
+        { [DESKTOP_BUNDLED_ENV]: '1', [HEAP_RESTART_ENV]: '0' },
+        8192 * MB,
+        16_384 * MB,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('disables a bundled watchdog when the only explicit heap override is invalid', () => {
+    expect(
+      resolveHeapWatchdogPolicy(
+        { [DESKTOP_BUNDLED_ENV]: '1', [HEAP_RESTART_ENV]: 'lots' },
+        8192 * MB,
+        16_384 * MB,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('keeps a positive explicit heap override isolated from bundled defaults', () => {
+    expect(
+      resolveHeapWatchdogPolicy(
+        { [DESKTOP_BUNDLED_ENV]: '1', [HEAP_RESTART_ENV]: '3000' },
+        8192 * MB,
+        16_384 * MB,
+      ),
+    ).toMatchObject({
+      heapThresholdBytes: 3000 * MB,
+      rssThresholdBytes: 0,
+      externalThresholdBytes: 0,
+    });
   });
 
   it('honors per-metric overrides on any host and lets 0 disable each metric', () => {

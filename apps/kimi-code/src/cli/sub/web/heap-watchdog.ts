@@ -58,21 +58,23 @@ export function resolveHeapWatchdogPolicy(
   totalMemory: number = totalmem(),
 ): HeapWatchdogPolicy | undefined {
   const bundled = env[DESKTOP_BUNDLED_ENV] === '1';
+  const heapOverride = env[HEAP_RESTART_ENV];
+  const useBundledDefaults = bundled && (heapOverride === undefined || heapOverride === '');
   const defaultHeapThreshold =
-    bundled && Number.isFinite(heapSizeLimit) && heapSizeLimit > 0
+    useBundledDefaults && Number.isFinite(heapSizeLimit) && heapSizeLimit > 0
       ? Math.floor(heapSizeLimit * DEFAULT_HEAP_LIMIT_FRACTION)
       : 0;
-  const defaultRssThreshold = bundled
+  const defaultRssThreshold = useBundledDefaults
     ? Math.min(
         DEFAULT_RSS_MAX_BYTES,
         Math.max(DEFAULT_RSS_MIN_BYTES, Math.floor(totalMemory * DEFAULT_RSS_MEMORY_FRACTION)),
       )
     : 0;
-  const heapThresholdBytes = thresholdBytes(env[HEAP_RESTART_ENV], defaultHeapThreshold);
+  const heapThresholdBytes = thresholdBytes(heapOverride, defaultHeapThreshold);
   const rssThresholdBytes = thresholdBytes(env[RSS_RESTART_ENV], defaultRssThreshold);
   const externalThresholdBytes = thresholdBytes(
     env[EXTERNAL_RESTART_ENV],
-    bundled ? DEFAULT_EXTERNAL_BYTES : 0,
+    useBundledDefaults ? DEFAULT_EXTERNAL_BYTES : 0,
   );
 
   if (heapThresholdBytes === 0 && rssThresholdBytes === 0 && externalThresholdBytes === 0) {
