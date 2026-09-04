@@ -34,6 +34,7 @@ import { IWireService } from '#/wire/wire';
 
 interface HarnessOptions {
   readonly models?: readonly string[];
+  readonly modelReasoningEfforts?: readonly string[];
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly priorThreadId?: string;
@@ -209,7 +210,12 @@ function createHarness(options: HarnessOptions = {}) {
       const models = [...(options.models ?? [options.modelAlias ?? 'gpt-test'])];
       modelLists.push(models);
       return {
-        data: models.map((id) => ({ id })),
+        data: models.map((id) => ({
+          id,
+          supportedReasoningEfforts: options.modelReasoningEfforts?.map((reasoningEffort) => ({
+            reasoningEffort,
+          })),
+        })),
         nextCursor: null,
       };
     },
@@ -347,6 +353,7 @@ describe('Codex app-server external executor', () => {
     const harness = createHarness({
       modelAlias: 'vendor-short',
       thinkingEffort: 'xhigh',
+      modelReasoningEfforts: ['low', 'high', 'xhigh'],
     });
 
     const handle = await harness.session.run(
@@ -361,6 +368,24 @@ describe('Codex app-server external executor', () => {
       threadId: 'thread-new',
       effort: 'xhigh',
     });
+    await harness.session.shutdown();
+  });
+
+  it('rejects an explicitly unsupported Codex effort before thread and turn start', async () => {
+    const harness = createHarness({
+      modelAlias: 'gpt-test',
+      thinkingEffort: 'xhigh',
+      modelReasoningEfforts: ['low', 'high'],
+    });
+
+    await expect(harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    )).rejects.toThrow(/thinking effort "xhigh" is not advertised/);
+
+    expect(harness.starts).toEqual([]);
+    expect(harness.resumes).toEqual([]);
+    expect(harness.prompts).toEqual([]);
     await harness.session.shutdown();
   });
 

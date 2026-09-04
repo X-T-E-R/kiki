@@ -1284,6 +1284,7 @@ export interface AgentStateSnapshot {
   'externalExecutor': /* ExternalExecutorState — packages/agent-core-v2/src/agent/execution/externalExecutorOps.ts */ {
     readonly executorId?: string;
     readonly descriptorRevision?: string;
+    readonly bindingFingerprint?: string;
     readonly sessionRef?: {
       readonly executorId: string;
       readonly version: number;
