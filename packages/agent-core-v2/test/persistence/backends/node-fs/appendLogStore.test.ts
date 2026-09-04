@@ -89,6 +89,31 @@ describe('AppendLogStore', () => {
     expect(spy.count).toBe(1);
   });
 
+  it('flushes one log without waiting for other logs', async () => {
+    const blockedKey = 'other.jsonl';
+    const original = storage.append.bind(storage);
+    let releaseBlocked!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releaseBlocked = resolve;
+    });
+    storage.append = async (scope, key, data, options) => {
+      if (key === blockedKey) await blocked;
+      return original(scope, key, data, options);
+    };
+    const firstOwner = record.acquire(SCOPE, KEY);
+    const blockedOwner = record.acquire(SCOPE, blockedKey);
+    record.append(SCOPE, KEY, { n: 1 });
+    record.append(SCOPE, blockedKey, { n: 2 });
+
+    await record.flush(SCOPE, KEY);
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }]);
+
+    releaseBlocked();
+    await record.flush();
+    firstOwner.dispose();
+    blockedOwner.dispose();
+  });
+
   it('later flush reports an ambiguous auto-flush failure without retrying the batch', async () => {
     const failure = new Error('append failed after commit');
     let markAppendStarted!: () => void;

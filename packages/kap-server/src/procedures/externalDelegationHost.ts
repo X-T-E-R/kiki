@@ -242,6 +242,7 @@ function publicDispatch(value: ExternalDispatchView): Omit<ExternalDispatchView,
     startedAt: value.startedAt,
     endedAt: value.endedAt,
     continuationOf: value.continuationOf,
+    activity: value.activity,
     usage: value.usage,
     errorCode: value.errorCode,
   };

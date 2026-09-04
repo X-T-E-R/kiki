@@ -217,7 +217,7 @@ export class WireService extends Service implements IWireService {
     const persistError = this.persistError;
     this.persistError = undefined;
     if (persistError !== undefined) throw persistError;
-    await this.log.flush();
+    await this.log.flush(this.wireScope, AGENT_WIRE_RECORD_KEY);
   }
 
   private reportSkippedRecord(type: string | undefined, index: number, malformed = false): void {

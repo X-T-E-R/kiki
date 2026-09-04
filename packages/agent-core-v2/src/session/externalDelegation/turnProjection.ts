@@ -16,10 +16,29 @@ interface SequencedItem {
   readonly item: ExternalTranscriptL1Item;
 }
 
+type Mutable<T> = T extends unknown ? { -readonly [K in keyof T]: T[K] } : never;
+type TranscriptFrame = ExternalTranscriptStep['frames'][number];
+type MutableFrame = Mutable<TranscriptFrame>;
+type MutableStep = Omit<Mutable<ExternalTranscriptStep>, 'frames'> & { frames: MutableFrame[] };
+type MutableTurn = Omit<Mutable<ExternalTranscriptTurn>, 'steps'> & { steps: MutableStep[] };
+type MutableToolFrame = Extract<MutableFrame, { kind: 'tool' }>;
+
 export class AgentTurnProjection {
   private nextSeq = 1;
   private readonly events: ExternalTurnEventView[] = [];
   private readonly items: SequencedItem[] = [];
+  private readonly itemIndexes = new Map<string, number>();
+  private readonly turns = new Map<string, MutableTurn>();
+  private readonly steps = new Map<string, MutableStep>();
+  private readonly frames = new Map<string, MutableFrame>();
+  private readonly frameIndexes = new Map<
+    string,
+    { readonly step: MutableStep; readonly index: number }
+  >();
+  private readonly tools = new Map<
+    string,
+    { readonly turn: MutableTurn; readonly step: MutableStep; readonly frame: MutableToolFrame }
+  >();
   private readonly watermarks: { readonly time: number; readonly cursor: number }[] = [];
   private readonly turnEnds = new Map<number, number>();
   private reliableTimes = true;
@@ -255,36 +274,37 @@ export class AgentTurnProjection {
   private upsertTurn(event: ProjectedEvent): void {
     const turnId = turnIdOf(event);
     const existing = this.turn(turnId);
-    const turn: ExternalTranscriptTurn = {
+    if (existing !== undefined) {
+      existing.ordinal = readNumber(event, 'turnId') ?? existing.ordinal;
+      existing.state = 'running';
+      existing.origin = event['origin'] ?? existing.origin;
+      existing.prompt = readString(event, 'prompt') ?? existing.prompt;
+      existing.startedAt = iso(event.time);
+      this.touchItem(turnId);
+      return;
+    }
+    const turn: MutableTurn = {
       kind: 'turn',
       turnId,
-      ordinal: readNumber(event, 'turnId') ?? existing?.ordinal ?? 0,
+      ordinal: readNumber(event, 'turnId') ?? 0,
       state: 'running',
-      origin: event['origin'] ?? existing?.origin ?? { kind: 'other' },
-      prompt: readString(event, 'prompt') ?? existing?.prompt,
-      steps: existing?.steps ?? [],
+      origin: event['origin'] ?? { kind: 'other' },
+      prompt: readString(event, 'prompt'),
+      steps: [],
       startedAt: iso(event.time),
-      endedAt: existing?.endedAt,
-      usage: existing?.usage,
     };
+    this.turns.set(turnId, turn);
     this.putItem(turnId, turn);
   }
 
   private endTurn(event: ProjectedEvent): void {
     const turnId = turnIdOf(event);
-    const existing = this.turn(turnId);
-    if (existing === undefined) return;
+    const turn = this.turn(turnId);
+    if (turn === undefined) return;
     const reason = readString(event, 'reason');
-    this.putItem(turnId, {
-      ...existing,
-      state:
-        reason === 'completed'
-          ? 'completed'
-          : reason === 'cancelled'
-            ? 'cancelled'
-            : 'failed',
-      endedAt: iso(event.time),
-    });
+    turn.state = reason === 'completed' ? 'completed' : reason === 'cancelled' ? 'cancelled' : 'failed';
+    turn.endedAt = iso(event.time);
+    this.touchItem(turnId);
     this.turnEnds.set(turnNumber(event), this.cursor);
   }
 
@@ -293,36 +313,39 @@ export class AgentTurnProjection {
     const turn = this.turn(turnId);
     if (turn === undefined) return;
     const stepId = stepIdOf(event);
-    const existing = turn.steps.find((step) => step.stepId === stepId);
-    const step: ExternalTranscriptStep = {
+    const existing = this.steps.get(stepKey(turnId, stepId));
+    if (existing !== undefined) {
+      existing.ordinal = readNumber(event, 'step') ?? existing.ordinal;
+      existing.state = 'running';
+      existing.startedAt = iso(event.time);
+      this.touchItem(turnId);
+      return;
+    }
+    const step: MutableStep = {
       kind: 'step',
       stepId,
       turnId,
-      ordinal: readNumber(event, 'step') ?? existing?.ordinal ?? 0,
+      ordinal: readNumber(event, 'step') ?? 0,
       state: 'running',
-      frames: existing?.frames ?? [],
+      frames: [],
       startedAt: iso(event.time),
-      endedAt: existing?.endedAt,
-      usage: existing?.usage,
     };
-    this.putItem(turnId, { ...turn, steps: replaceStep(turn.steps, step) });
+    turn.steps.push(step);
+    this.steps.set(stepKey(turnId, stepId), step);
+    this.touchItem(turnId);
   }
 
   private endStep(event: ProjectedEvent): void {
     const turnId = turnIdOf(event);
     const turn = this.turn(turnId);
     if (turn === undefined) return;
-    const stepId = stepIdOf(event);
-    const existing = turn.steps.find((step) => step.stepId === stepId);
-    if (existing === undefined) return;
+    const step = this.steps.get(stepKey(turnId, stepIdOf(event)));
+    if (step === undefined) return;
     const usage = usageOf(event['usage']);
-    const step: ExternalTranscriptStep = {
-      ...existing,
-      state: event.type === 'turn.step.completed' ? 'completed' : 'interrupted',
-      endedAt: iso(event.time),
-      usage: usage ?? existing.usage,
-    };
-    this.putItem(turnId, { ...turn, steps: replaceStep(turn.steps, step) });
+    step.state = event.type === 'turn.step.completed' ? 'completed' : 'interrupted';
+    step.endedAt = iso(event.time);
+    step.usage = usage ?? step.usage;
+    this.touchItem(turnId);
     if (usage !== undefined) {
       this.emit({
         type: 'usage',
@@ -343,20 +366,20 @@ export class AgentTurnProjection {
     const partId = readString(event, 'partId') ?? readString(event, 'uuid') ?? `${kind}-${step.frames.length}`;
     const frameId = `${step.stepId}.${partId}`;
     const delta = readString(event, 'delta') ?? '';
-    const frame = step.frames.find((candidate) => candidate.frameId === frameId);
-    const nextFrame = kind === 'text'
+    const existing = this.frames.get(frameKey(turnId, frameId));
+    const frame: MutableFrame = kind === 'text'
       ? {
-          kind: 'text' as const,
+          kind: 'text',
           frameId,
-          role: 'assistant' as const,
-          text: `${frame?.kind === 'text' ? frame.text : ''}${delta}`,
+          role: 'assistant',
+          text: `${existing?.kind === 'text' ? existing.text : ''}${delta}`,
         }
       : {
-          kind: 'thinking' as const,
+          kind: 'thinking',
           frameId,
-          text: `${frame?.kind === 'thinking' ? frame.text : ''}${delta}`,
+          text: `${existing?.kind === 'thinking' ? existing.text : ''}${delta}`,
         };
-    this.replaceFrame(turnId, step, nextFrame);
+    this.setFrame(turnId, step, frame);
     this.emit(
       kind === 'text'
         ? { type: 'message.delta', role: 'assistant', messageId: partId, content: { type: 'text', text: delta } }
@@ -367,11 +390,12 @@ export class AgentTurnProjection {
 
   private startTool(event: ProjectedEvent): void {
     const turnId = turnIdOf(event);
+    const turn = this.turn(turnId);
     const step = this.requireStep(turnId, event);
-    if (step === undefined) return;
+    if (turn === undefined || step === undefined) return;
     const toolCallId = readString(event, 'toolCallId') ?? '';
     const title = readString(event, 'description') ?? readString(event, 'name') ?? toolCallId;
-    this.replaceFrame(turnId, step, {
+    const frame: MutableToolFrame = {
       kind: 'tool',
       frameId: `${step.stepId}.${toolCallId}`,
       toolCallId,
@@ -380,22 +404,22 @@ export class AgentTurnProjection {
       input: event['args'],
       display: event['display'],
       startedAt: iso(event.time),
-    });
+    };
+    this.setFrame(turnId, step, frame);
+    this.tools.set(toolCallId, { turn, step, frame });
     this.emit({ type: 'tool.call', toolCallId, title, status: 'running', rawInput: event['args'] }, event.time);
   }
 
   private updateTool(event: ProjectedEvent, terminal: boolean): void {
     const toolCallId = readString(event, 'toolCallId') ?? '';
-    const hit = this.tool(toolCallId);
+    const hit = this.tools.get(toolCallId);
     if (hit !== undefined) {
       const output = terminal ? event['output'] : event['update'];
-      this.replaceFrame(hit.turn.turnId, hit.step, {
-        ...hit.frame,
-        state: terminal ? (event['isError'] === true ? 'error' : 'done') : 'running',
-        output: terminal ? output : hit.frame.output,
-        progress: terminal ? hit.frame.progress : event['update'],
-        endedAt: terminal ? iso(event.time) : hit.frame.endedAt,
-      });
+      hit.frame.state = terminal ? (event['isError'] === true ? 'error' : 'done') : 'running';
+      hit.frame.output = terminal ? output : hit.frame.output;
+      hit.frame.progress = terminal ? hit.frame.progress : event['update'];
+      hit.frame.endedAt = terminal ? iso(event.time) : hit.frame.endedAt;
+      this.touchItem(hit.turn.turnId);
     }
     this.emit({
       type: 'tool.update',
@@ -405,16 +429,16 @@ export class AgentTurnProjection {
     }, event.time);
   }
 
-  private requireStep(turnId: string, event: ProjectedEvent): ExternalTranscriptStep | undefined {
+  private requireStep(turnId: string, event: ProjectedEvent): MutableStep | undefined {
     const turn = this.turn(turnId);
     if (turn === undefined) return undefined;
     const explicitStepId = readString(event, 'stepId');
-    let step = explicitStepId === undefined
+    const existing = explicitStepId === undefined
       ? turn.steps.at(-1)
-      : turn.steps.find((candidate) => candidate.stepId === explicitStepId);
-    if (step !== undefined) return step;
+      : this.steps.get(stepKey(turnId, explicitStepId));
+    if (existing !== undefined) return existing;
     const stepId = stepIdOf(event);
-    step = {
+    const step: MutableStep = {
       kind: 'step',
       stepId,
       turnId,
@@ -423,55 +447,43 @@ export class AgentTurnProjection {
       frames: [],
       startedAt: iso(event.time),
     };
-    this.putItem(turnId, { ...turn, steps: [...turn.steps, step] });
+    turn.steps.push(step);
+    this.steps.set(stepKey(turnId, stepId), step);
+    this.touchItem(turnId);
     return step;
   }
 
-  private replaceFrame(
-    turnId: string,
-    step: ExternalTranscriptStep,
-    frame: ExternalTranscriptStep['frames'][number],
-  ): void {
-    const turn = this.turn(turnId);
-    if (turn === undefined) return;
-    const nextStep = {
-      ...step,
-      frames: replaceBy(step.frames, frame, (candidate) => candidate.frameId),
-    };
-    this.putItem(turnId, { ...turn, steps: replaceStep(turn.steps, nextStep) });
-  }
-
-  private turn(turnId: string): ExternalTranscriptTurn | undefined {
-    const entry = this.items.find((candidate) => itemId(candidate.item) === turnId);
-    return entry?.item.kind === 'turn' ? entry.item : undefined;
-  }
-
-  private tool(toolCallId: string): {
-    readonly turn: ExternalTranscriptTurn;
-    readonly step: ExternalTranscriptStep;
-    readonly frame: Extract<ExternalTranscriptStep['frames'][number], { readonly kind: 'tool' }>;
-  } | undefined {
-    for (const entry of this.items) {
-      if (entry.item.kind !== 'turn') continue;
-      for (const step of entry.item.steps) {
-        const frame = step.frames.find(
-          (candidate): candidate is Extract<typeof candidate, { readonly kind: 'tool' }> =>
-            candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
-        );
-        if (frame !== undefined) return { turn: entry.item, step, frame };
-      }
+  private setFrame(turnId: string, step: MutableStep, frame: MutableFrame): void {
+    const key = frameKey(turnId, frame.frameId);
+    const existing = this.frameIndexes.get(key);
+    if (existing === undefined) {
+      this.frameIndexes.set(key, { step, index: step.frames.length });
+      step.frames.push(frame);
+    } else {
+      existing.step.frames[existing.index] = frame;
     }
-    return undefined;
+    this.frames.set(key, frame);
+    this.touchItem(turnId);
+  }
+
+  private turn(turnId: string): MutableTurn | undefined {
+    return this.turns.get(turnId);
   }
 
   private putItem(id: string, item: ExternalTranscriptL1Item): void {
-    const existing = this.items.findIndex((entry) => itemId(entry.item) === id);
+    const existing = this.itemIndexes.get(id);
     const seq = this.nextSeq++;
-    if (existing === -1) {
+    if (existing === undefined) {
+      this.itemIndexes.set(id, this.items.length);
       this.items.push({ seq, item });
       return;
     }
     this.items[existing] = { seq, item };
+  }
+
+  private touchItem(id: string): void {
+    const index = this.itemIndexes.get(id)!;
+    this.items[index] = { seq: this.nextSeq++, item: this.items[index]!.item };
   }
 
   private emit(event: NormalizedExecutorEvent, at: number): void {
@@ -497,26 +509,16 @@ function stepIdOf(event: ProjectedEvent): string {
   return readString(event, 'stepId') ?? `${turnIdOf(event)}.s${readNumber(event, 'step') ?? 0}`;
 }
 
+function stepKey(turnId: string, stepId: string): string {
+  return `${turnId}\0${stepId}`;
+}
+
+function frameKey(turnId: string, frameId: string): string {
+  return `${turnId}\0${frameId}`;
+}
+
 function iso(value: number): string {
   return new Date(value).toISOString();
-}
-
-function itemId(item: ExternalTranscriptL1Item): string {
-  return item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId;
-}
-
-function replaceStep(
-  steps: readonly ExternalTranscriptStep[],
-  step: ExternalTranscriptStep,
-): readonly ExternalTranscriptStep[] {
-  return replaceBy(steps, step, (candidate) => candidate.stepId);
-}
-
-function replaceBy<T>(items: readonly T[], item: T, key: (value: T) => string): readonly T[] {
-  const id = key(item);
-  const index = items.findIndex((candidate) => key(candidate) === id);
-  if (index === -1) return [...items, item];
-  return items.map((candidate, candidateIndex) => candidateIndex === index ? item : candidate);
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

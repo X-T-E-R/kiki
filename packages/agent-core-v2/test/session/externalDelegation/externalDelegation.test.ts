@@ -15,6 +15,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { AgentActivityUpdated, IAgentActivityView, type AgentActivityState } from '#/agent/activityView/activityView';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -103,7 +104,17 @@ describe('SessionExternalDelegationService', () => {
   let messagesByKey: Map<string, AgentMessageAcceptance>;
   let wireRecords: Map<string, WireRecord[]>;
   let journalReads: Map<string, number>;
+  let activeJournalReads: Map<string, number>;
+  let maxConcurrentJournalReads: Map<string, number>;
   let journalYield: (() => Promise<void>) | undefined;
+  let makeHandle: (
+    id: string,
+    profileName: string,
+    modelAlias?: string,
+    thinkingLevel?: string,
+    profileDefinitionId?: string,
+    executorId?: string,
+  ) => IAgentScopeHandle;
   let nextTurnIds: Map<string, number>;
   let fakeExecutorApprovalResponses: unknown[];
   let permissionModes: Map<string, PermissionMode>;
@@ -132,6 +143,8 @@ describe('SessionExternalDelegationService', () => {
     messagesByKey = new Map();
     wireRecords = new Map();
     journalReads = new Map();
+    activeJournalReads = new Map();
+    maxConcurrentJournalReads = new Map();
     journalYield = undefined;
     nextTurnIds = new Map();
     fakeExecutorApprovalResponses = [];
@@ -218,7 +231,7 @@ describe('SessionExternalDelegationService', () => {
       list: () => [profile],
     });
 
-    const makeHandle = (
+    makeHandle = (
       id: string,
       profileName: string,
       modelAlias = 'model',
@@ -245,8 +258,14 @@ describe('SessionExternalDelegationService', () => {
       agent.set(IEventBus, {
         _serviceBrand: undefined,
         publish: (event) => wireEvents.fire(event),
-        subscribe: ((handler: (event: Event2<unknown>) => void) =>
-          wireEvents.event(handler)) as IEventBus['subscribe'],
+        subscribe: ((eventClassOrHandler: unknown, handler?: (event: Event2<unknown>) => void) =>
+          wireEvents.event((event) => {
+            if (handler === undefined) {
+              (eventClassOrHandler as (value: Event2<unknown>) => void)(event);
+            } else if (event instanceof (eventClassOrHandler as new (...args: never[]) => Event2<unknown>)) {
+              handler(event);
+            }
+          })) as IEventBus['subscribe'],
       });
       agent.set(IWireService, {
         _serviceBrand: undefined,
@@ -255,9 +274,16 @@ describe('SessionExternalDelegationService', () => {
         readJournal: () => {
           journalReads.set(id, (journalReads.get(id) ?? 0) + 1);
           return (async function* () {
-            for (const record of wireRecords.get(id)!) {
-              await journalYield?.();
-              yield record;
+            const active = (activeJournalReads.get(id) ?? 0) + 1;
+            activeJournalReads.set(id, active);
+            maxConcurrentJournalReads.set(id, Math.max(maxConcurrentJournalReads.get(id) ?? 0, active));
+            try {
+              for (const record of wireRecords.get(id)!) {
+                await journalYield?.();
+                yield record;
+              }
+            } finally {
+              activeJournalReads.set(id, active - 1);
             }
           })();
         },
@@ -301,10 +327,20 @@ describe('SessionExternalDelegationService', () => {
         isAvailable: () => true,
         acquire: () => ({ runtime, dispose: () => {}, track: () => {} }),
       } as unknown as IAgentRuntimeService);
+      agent.stub(IAgentActivityView, {
+        state: (): AgentActivityState => ({ lifecycle: 'ready', background: [] }),
+      });
       agent.stub(IAgentContextMemoryService, { get: () => [] });
       agent.stub(IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) });
       agent.stub(IAgentExecutionService, { status: () => ({ state: 'idle' }) });
-      return { id, accessor: agent } as unknown as IAgentScopeHandle;
+      return {
+        id,
+        accessor: agent,
+        dispose: () => {
+          wireEvents.fire(new AgentActivityUpdated({ lifecycle: 'disposed', background: [] }));
+          agent.dispose();
+        },
+      } as unknown as IAgentScopeHandle;
     };
     handles.set('main', makeHandle('main', 'agent'));
     ix.stub(IAgentLifecycleService, {
@@ -1212,6 +1248,40 @@ describe('SessionExternalDelegationService', () => {
     expect(events.items.map((event) => event.type)).toContain('queued');
   });
 
+  it('reads active tool activity without rebuilding the journal', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'activity_reader',
+      profileName: 'coder',
+      message: 'work',
+    });
+    const child = handles.get('external-child')!;
+    vi.spyOn(child.accessor.get(IAgentActivityView), 'state').mockReturnValue({
+      lifecycle: 'ready',
+      turn: {
+        turnId: 1,
+        origin: { kind: 'user' },
+        phase: 'tool_call',
+        step: 1,
+        ending: false,
+        pendingApprovals: [],
+        activeToolCalls: [{ toolCallId: 'call-1', name: 'Read', since: 1 }],
+        since: 1,
+      },
+      background: [],
+    });
+    const readsBefore = journalReads.get('external-child');
+
+    await expect(service.status({ authority, dispatchId: dispatch.dispatchId })).resolves.toMatchObject({
+      activity: {
+        activeToolCalls: [{ toolCallId: 'call-1', name: 'Read', since: 1 }],
+      },
+    });
+    expect(journalReads.get('external-child')).toBe(readsBefore);
+  });
+
   it('uses one durable cursor for live updates, rebuilds, and item watermarks', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
@@ -1350,6 +1420,97 @@ describe('SessionExternalDelegationService', () => {
     expect(repeated.items).toEqual(turnEvents.items);
   });
 
+  it('rebinds projection state when a released agent id is rematerialized', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'rebound_reader',
+      profileName: 'coder',
+      message: 'work',
+    });
+    const oldHandle = handles.get('external-child')!;
+    wireRecords.get('external-child')!.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'old work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'old answer' },
+        },
+      },
+    );
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+    })).resolves.toMatchObject({ items: [{ kind: 'turn', turnId: 't1' }] });
+
+    oldHandle.dispose();
+    const replacement = makeHandle('external-child', 'coder');
+    handles.set('external-child', replacement);
+    wireRecords.get('external-child')!.push(
+      {
+        type: 'turn.prompt',
+        time: 4,
+        turnId: 2,
+        input: [{ type: 'text', text: 'new work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 5,
+        event: { type: 'step.begin', uuid: 's2', turnId: '2', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 6,
+        event: {
+          type: 'content.part',
+          stepUuid: 's2',
+          turnId: '2',
+          step: 1,
+          uuid: 'm2',
+          part: { type: 'text', text: 'new answer' },
+        },
+      },
+    );
+
+    const items = await service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+    });
+    expect(items.items).toMatchObject([{ kind: 'turn', turnId: 't2' }]);
+    expect(items.items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ turnId: 't1' }),
+    ]));
+    await expect(service.events({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'turn',
+    })).resolves.toMatchObject({
+      items: [expect.objectContaining({ event: expect.objectContaining({ type: 'message.delta' }) })],
+    });
+    expect(journalReads.get('external-child')).toBe(3);
+  });
+
   it('isolates concurrent journal rebuild readers', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
@@ -1396,7 +1557,7 @@ describe('SessionExternalDelegationService', () => {
     expect(journalReads.get('main')).toBe(2);
   });
 
-  it('rebuilds terminal bounds instead of sharing an older generation', async () => {
+  it('coalesces concurrent generations into one rebuild and returns the latest snapshot', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
     const records = wireRecords.get('main')!;
@@ -1451,9 +1612,9 @@ describe('SessionExternalDelegationService', () => {
       dispatchId: dispatch.dispatchId,
       detail: 'items',
     });
-    await vi.waitFor(() => {
-      expect(journalReads.get('main')).toBe(3);
-    });
+    await Promise.resolve();
+    expect(journalReads.get('main')).toBe(2);
+    expect(maxConcurrentJournalReads.get('main')).toBe(1);
     releaseRebuild();
 
     await expect(terminalReader).resolves.toMatchObject({
@@ -1463,6 +1624,7 @@ describe('SessionExternalDelegationService', () => {
       items: [{ kind: 'turn', turnId: 't1', state: 'completed' }],
     });
     expect(journalReads.get('main')).toBe(3);
+    expect(maxConcurrentJournalReads.get('main')).toBe(1);
   });
 
   it('freezes each dispatch slice across later runs and journal rebuilds', async () => {

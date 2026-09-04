@@ -9,6 +9,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerKikiMcpHttp } from '../src/mcp/http';
+import { followWaitProgress } from '../src/mcp/server';
 import {
   createCompositeSeatResolver,
   createEnvSeatResolver,
@@ -66,6 +67,68 @@ describe('Kiki MCP HTTP transport', () => {
       binding: { sessionId: 'session-operator' },
     });
     expect(listed.structuredContent).not.toHaveProperty('dispatchables');
+  });
+
+  it('polls active dispatch activity without reading turn-detail events', async () => {
+    let finishWait!: (value: Awaited<ReturnType<SeatKlient['wait']>>) => void;
+    const waitResult = new Promise<Awaited<ReturnType<SeatKlient['wait']>>>((resolve) => {
+      finishWait = resolve;
+    });
+    const events = vi.fn();
+    const status = vi.fn(async () => {
+      queueMicrotask(() => finishWait({
+        waitStatus: 'completed',
+        waitedMs: 1,
+        dispatch: {
+          dispatchId: 'dispatch_one',
+          target: 'named',
+          taskName: 'child_one',
+          status: 'completed',
+          createdAt: 1,
+        },
+        completedDuringWait: [],
+        interactions: [],
+      }));
+      return {
+        dispatchId: 'dispatch_one',
+        target: 'named' as const,
+        taskName: 'child_one',
+        status: 'running' as const,
+        createdAt: 1,
+        activity: {
+          activeToolCalls: [{ toolCallId: 'call_one', name: 'Read', since: 1 }],
+        },
+      };
+    });
+    const notifications: unknown[] = [];
+    const klient = {
+      wait: vi.fn(() => waitResult),
+      status,
+      events,
+    } as unknown as SeatKlient;
+
+    await expect(followWaitProgress(
+      klient,
+      { dispatchId: 'dispatch_one' },
+      {
+        signal: new AbortController().signal,
+        _meta: { progressToken: 'progress_one' },
+        sendNotification: async (notification) => {
+          notifications.push(notification);
+        },
+      },
+      1,
+    )).resolves.toMatchObject({ waitStatus: 'completed' });
+    expect(status).toHaveBeenCalled();
+    expect(events).not.toHaveBeenCalled();
+    expect(notifications).toEqual([{
+      method: 'notifications/progress',
+      params: {
+        progressToken: 'progress_one',
+        progress: 1,
+        message: 'Delegation running tool: Read.',
+      },
+    }]);
   });
 
   it('rejects a wrong bearer with HTTP 401 code/msg', async () => {
