@@ -17,6 +17,7 @@ import {
   type SubagentHandle,
 } from '#/agent/tools/agent/subagent-task';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
+import { QuestionBackgroundTask } from '#/agent/tools/ask-user-question/question-background-task';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IEventBus } from '#/app/event/eventBus';
 import type { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
@@ -140,6 +141,22 @@ function persistedAgent(
     status: 'completed',
     agentId: 'agent-session-id',
     profile: 'coder',
+    ...overrides,
+  };
+}
+
+function persistedQuestion(
+  overrides: Partial<Extract<AgentTaskInfo, { kind: 'question' }>> = {},
+): Extract<AgentTaskInfo, { kind: 'question' }> {
+  return {
+    taskId: 'question-done0000',
+    kind: 'question',
+    description: 'Which database?',
+    questionCount: 1,
+    toolCallId: 'call-question',
+    startedAt: 1_700_000_000,
+    endedAt: 1_700_000_010,
+    status: 'completed',
     ...overrides,
   };
 }
@@ -487,6 +504,113 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).not.toContain('final subagent summary');
   });
 
+  it('inlines a short completed question answer in its notification', async () => {
+    const { agent, ctx, manager } = createAgentTaskService();
+    ctx.mockNextResponse({ type: 'text', text: 'notification ack' });
+    const turnEnd = ctx.untilTurnEnd();
+    const answer = JSON.stringify({ answers: { 'Which database?': 'Postgres' } });
+    const taskId = manager.registerTask(
+      new QuestionBackgroundTask(
+        async () => ({ isError: false, output: answer }),
+        'Which database?',
+        { questionCount: 1, toolCallId: 'call-question' },
+      ),
+      { detached: true },
+    );
+
+    await manager.wait(taskId);
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await turnEnd;
+
+    const text = notificationMessageFor(agent, taskId).content[0]!.text;
+    expect(text).toContain('Title: Background question answered');
+    expect(text).toContain('The user answered "Which database?".');
+    expect(text).toContain(`<answer>\n${answer}\n</answer>`);
+    expect(text).not.toContain('<output-file');
+    expect(text).not.toContain('<output-preview');
+  });
+
+  it('inlines a dismissed question result with dismissed notification text', async () => {
+    const { agent, ctx, manager } = createAgentTaskService();
+    ctx.mockNextResponse({ type: 'text', text: 'notification ack' });
+    const turnEnd = ctx.untilTurnEnd();
+    const dismissed = JSON.stringify({
+      answers: {},
+      note: 'User dismissed the question without answering.',
+    });
+    const taskId = manager.registerTask(
+      new QuestionBackgroundTask(
+        async () => ({ isError: false, output: dismissed }),
+        'Which database?',
+        { questionCount: 1, toolCallId: 'call-question' },
+      ),
+      { detached: true },
+    );
+
+    await manager.wait(taskId);
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await turnEnd;
+
+    const text = notificationMessageFor(agent, taskId).content[0]!.text;
+    expect(text).toContain('Title: Background question dismissed');
+    expect(text).toContain('The user dismissed "Which database?" without answering.');
+    expect(text).toContain(`<answer>\n${dismissed}\n</answer>`);
+    expect(text).not.toContain('<output-file');
+  });
+
+  it('uses the output file pointer when a question result exceeds the inline limit', async () => {
+    const { agent, ctx, manager } = createAgentTaskService();
+    ctx.mockNextResponse({ type: 'text', text: 'notification ack' });
+    const turnEnd = ctx.untilTurnEnd();
+    const answer = JSON.stringify({ answers: { details: 'x'.repeat(16_000) } });
+    const taskId = manager.registerTask(
+      new QuestionBackgroundTask(
+        async () => ({ isError: false, output: answer }),
+        'Provide details?',
+        { questionCount: 1, toolCallId: 'call-question-long' },
+      ),
+      { detached: true },
+    );
+
+    await manager.wait(taskId);
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await turnEnd;
+
+    const text = notificationMessageFor(agent, taskId).content[0]!.text;
+    expect(text).toContain('Title: Background question completed');
+    expect(text).toContain('<output-file');
+    expect(text).not.toContain('<answer>');
+    expect(text).not.toContain('"details"');
+  });
+
+  it('reports a question tool error as failed without an answer block', async () => {
+    const { agent, ctx, manager } = createAgentTaskService();
+    ctx.mockNextResponse({ type: 'text', text: 'notification ack' });
+    const turnEnd = ctx.untilTurnEnd();
+    const taskId = manager.registerTask(
+      new QuestionBackgroundTask(
+        async () => ({ isError: true, output: 'Client does not support questions' }),
+        'Which database?',
+        { questionCount: 1, toolCallId: 'call-question-error' },
+      ),
+      { detached: true },
+    );
+
+    await manager.wait(taskId);
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await turnEnd;
+
+    expect(manager.getTask(taskId)).toMatchObject({
+      status: 'failed',
+      stopReason: 'Client does not support questions',
+    });
+    const text = notificationMessageFor(agent, taskId).content[0]!.text;
+    expect(text).toContain('Title: Background question failed');
+    expect(text).toContain('Which database? failed. Reason: Client does not support questions');
+    expect(text).not.toContain('<answer>');
+    expect(text).not.toContain('<output-file');
+  });
+
   it('enqueues completed process task notifications into the turn flow', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
     const taskId = registerProcess(manager, immediateProcess(0), 'echo ok', 'shell task');
@@ -653,6 +777,40 @@ describe('AgentTaskService — notification delivery', () => {
       expect(text).not.toContain('restored shell output');
       expect(text).toContain('<output-file');
       expect(text).toContain(persistence.taskOutputFile('bash-done0000'));
+    } finally {
+      await cleanupSessionDir(sessionDir, fixture);
+    }
+  });
+
+  it('restores a completed question notification once with its short answer inline', async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-question-replay-'));
+    let fixture: TaskServiceFixture | undefined;
+    try {
+      const answer = JSON.stringify({ answers: { 'Which database?': 'SQLite' } });
+      const persistence = createAgentTaskPersistence(sessionDir);
+      await persistence.writeTask(persistedQuestion());
+      await persistence.appendTaskOutput('question-done0000', answer);
+      fixture = createAgentTaskService({ sessionDir });
+      const { agent, manager } = fixture;
+
+      await manager.loadFromDisk();
+      await manager.reconcile();
+      await manager.reconcile();
+
+      await vi.waitFor(() => {
+        expect(agent.context.appendUserMessage).toHaveBeenCalledTimes(1);
+      });
+      const message = firstAppendedContextMessage(agent);
+      expect(message.origin).toEqual({
+        kind: 'task',
+        taskId: 'question-done0000',
+        status: 'completed',
+        notificationId: 'task:question-done0000:completed',
+      });
+      const text = message.content[0]!.text;
+      expect(text).toContain('Title: Background question answered');
+      expect(text).toContain(`<answer>\n${answer}\n</answer>`);
+      expect(text).not.toContain('<output-file');
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }

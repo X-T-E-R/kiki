@@ -43,7 +43,11 @@ function makeTool(
   options: {
     readonly request?: (
       req: QuestionRequest,
-      requestOptions?: { readonly signal?: AbortSignal },
+      requestOptions?: {
+        readonly signal?: AbortSignal;
+        readonly agentId?: string;
+        readonly detached?: boolean;
+      },
     ) => Promise<QuestionResult>;
   } = {},
 ): {
@@ -205,7 +209,7 @@ describe('AskUserQuestionTool', () => {
           },
         ],
       },
-      { signal, agentId: 'main' },
+      { signal, agentId: 'main', detached: false },
     );
     expect(telemetryTrack).toHaveBeenCalledWith('question_answered', {
       answered: 1,
@@ -241,7 +245,7 @@ describe('AskUserQuestionTool', () => {
           }),
         ],
       }),
-      { signal, agentId: 'main' },
+      { signal, agentId: 'main', detached: false },
     );
   });
 
@@ -434,6 +438,59 @@ describe('AskUserQuestionTool', () => {
 
       expect(outputs).toEqual([JSON.stringify({ answers: { Postgres: true } })]);
       expect(settlements).toEqual([{ status: 'completed' }]);
+    });
+
+    it('detaches only the background question from the asking turn', async () => {
+      const { tool, request, lastRegisteredTask } = makeTool();
+      await executeTool(tool, {
+        turnId: 4,
+        toolCallId: 'call_bg_detached',
+        args: { ...input(), background: true },
+        signal,
+      });
+
+      await lastRegisteredTask()!.start(makeSink().sink);
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({ turnId: 4, toolCallId: 'call_bg_detached' }),
+        expect.objectContaining({ detached: true }),
+      );
+
+      await executeTool(tool, {
+        turnId: 5,
+        toolCallId: 'call_fg_attached',
+        args: input(),
+        signal,
+      });
+      expect(request).toHaveBeenLastCalledWith(
+        expect.objectContaining({ turnId: 5, toolCallId: 'call_fg_attached' }),
+        expect.objectContaining({ detached: false }),
+      );
+    });
+
+    it('settles failed without completed output when the question tool returns an error', async () => {
+      const { tool, lastRegisteredTask } = makeTool({
+        request: async () => {
+          throw new Error2(CoreErrors.codes.NOT_IMPLEMENTED, 'Client does not support questions');
+        },
+      });
+      await executeTool(tool, {
+        turnId: 0,
+        toolCallId: 'call_bg_unsupported',
+        args: { ...input(), background: true },
+        signal,
+      });
+
+      const { sink, outputs, settlements } = makeSink();
+      await lastRegisteredTask()!.start(sink);
+
+      expect(outputs).toEqual([]);
+      expect(settlements).toEqual([
+        {
+          status: 'failed',
+          stopReason:
+            'The connected client does not support interactive questions. Do NOT call this tool again. Ask the user directly in your text response instead.',
+        },
+      ]);
     });
 
     it('settles killed when the background task is aborted', async () => {
