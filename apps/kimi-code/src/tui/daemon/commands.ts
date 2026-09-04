@@ -17,6 +17,19 @@ export type DaemonCommandName =
   | 'title'
   | 'status'
   | 'usage'
+  | 'compact'
+  | 'tasks'
+  | 'fork'
+  | 'plugins'
+  | 'provider'
+  | 'reload'
+  | 'login'
+  | 'logout'
+  | 'mcp'
+  | 'goal'
+  | 'settings'
+  | 'undo'
+  | 'attach'
   | 'help'
   | 'version';
 
@@ -67,33 +80,33 @@ const SUPPORTED_COMMANDS = [
   command('title', ['rename'], 'Set or show session title', 'optional-rest', '[title]'),
   command('status', [], 'Show current session and runtime status', 'none'),
   command('usage', [], 'Show session token usage', 'none'),
+  command('compact', [], 'Compact the conversation context', 'optional-rest', '[instruction]'),
+  command('tasks', ['task'], 'Browse background tasks', 'optional-rest', '[stop|output] [task-id]'),
+  command('fork', [], 'Fork the current session', 'optional-rest', '[title]'),
+  command('plugins', [], 'Manage plugins', 'optional-rest', '[marketplace|install|enable|disable|remove|reload]'),
+  command('provider', ['providers'], 'Manage AI providers', 'optional-rest', '[add|remove|refresh]'),
+  command('reload', [], 'Reload daemon configuration and plugins', 'none'),
+  command('login', [], 'Authenticate a provider', 'optional-one', '[provider]'),
+  command('logout', ['disconnect'], 'Log out of a configured provider', 'optional-one', '[provider]'),
+  command('mcp', [], 'Show MCP server status', 'none'),
+  command('goal', [], 'Start or manage an autonomous goal', 'optional-rest', '[objective|pause|resume|cancel]'),
+  command('settings', ['config'], 'Inspect or update daemon configuration', 'optional-rest', '[domain] [json]'),
+  command('undo', [], 'Withdraw the last prompt', 'none'),
+  command('attach', [], 'Attach a local file to the next prompt', 'optional-rest', '<path>'),
   command('help', ['h', '?'], 'Show daemon TUI command support', 'none'),
   command('version', [], 'Show version information', 'none'),
 ] as const satisfies readonly DaemonCommandDefinition[];
 
 const DISABLED_COMMANDS = [
-  disabled('settings', ['config'], 'Open TUI settings'),
   disabled('experiments', ['experimental'], 'Manage experimental features'),
-  disabled('logout', ['disconnect'], 'Log out of a configured provider'),
   disabled('export-md', ['export'], 'Export current session as a Markdown file'),
-  disabled('add-dir', [], 'Add or list an additional workspace directory'),
   disabled('btw', [], 'Ask a forked side agent a question'),
-  disabled('compact', [], 'Compact the conversation context'),
   disabled('copy', [], 'Copy the last assistant message to the clipboard'),
   disabled('editor', [], 'Set the external editor'),
   disabled('export-debug-zip', [], 'Export current session as a debug ZIP archive'),
-  disabled('fork', [], 'Fork the current session'),
-  disabled('goal', [], 'Start or manage an autonomous goal'),
   disabled('init', [], 'Analyze the codebase and generate AGENTS.md'),
-  disabled('login', [], 'Authenticate a provider'),
-  disabled('mcp', [], 'Show MCP server status'),
-  disabled('plugins', [], 'Manage plugins'),
-  disabled('provider', ['providers'], 'Manage AI providers'),
-  disabled('reload', [], 'Reload session configuration'),
   disabled('reload-tui', [], 'Reload TUI preferences'),
-  disabled('tasks', ['task'], 'Browse background tasks'),
   disabled('theme', [], 'Set the terminal UI theme'),
-  disabled('undo', [], 'Withdraw the last prompt'),
   disabled('web', [], 'Open the current session in the Web UI'),
 ] as const satisfies readonly DaemonCommandDefinition[];
 

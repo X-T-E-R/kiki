@@ -1,85 +1,71 @@
 ---
 name: write-tui
-description: Use when writing or modifying the kimi-code terminal UI in apps/kimi-code/src/tui — components, dialogs/selectors, slash commands, themes, streaming render, or the KimiTUI controllers. Covers the architecture, where new features go, test placement, the theme system mechanics, and the dialog interaction/visual spec (DESIGN.md).
+description: Use when writing or modifying the daemon-backed kimi-code terminal UI in apps/kimi-code/src/tui.
 ---
 
 # Write TUI (apps/kimi-code)
 
-The terminal UI lives in `apps/kimi-code/src/tui`. Before writing TUI code, read `apps/kimi-code/AGENTS.md` for the always-on **map, module boundaries, and hard constraints** (printable-key decoding, no chalk named colors, etc.). This skill is the **how-to**: architecture orientation, feature routing, test placement, theme mechanics, and the dialog spec.
+The interactive terminal UI is daemon-backed. Before changing it, read `apps/kimi-code/AGENTS.md`. For list dialogs, selectors, input boxes, and toggle/status lists, also read [DESIGN.md](./DESIGN.md); its keyboard, width, color, and layout rules are normative.
 
-For any list dialog, selector, input box, or status/toggle list, the interaction and visual rules are normative — see **[DESIGN.md](./DESIGN.md)** in this folder and follow its self-check list before submitting.
+## Interactive architecture
 
-## Architecture
+The startup chain is:
 
-`KimiTUI` is a **coordinator** that wires state, layout, session, and dialogs together and delegates heavy logic to controllers.
+`src/main.ts` → `src/cli/commands.ts` → `src/cli/run-shell.ts` → workspace trust → daemon attach-or-spawn → `src/tui/daemon/daemon-tui.ts`
 
-- `src/tui/kimi-tui.ts` — the `KimiTUI` coordinator. Holds `state`, owns startup/shutdown order, layout/editor wiring, user-input entry, sending/queueing, session lifecycle, and the slash-command handler dispatch. It should **not** accumulate event-routing or rendering logic — those live in controllers.
-- `src/tui/tui-state.ts` — `TUIState`, `createTUIState`, `createInitialAppState`. The single global UI state shape. Before adding a new global field, decide whether it truly belongs here vs. local component state.
-- `src/tui/controllers/` — the independently-testable responsibilities. Each controller owns one slice:
-  - `session-event-handler.ts` — routes SDK session events (`handleEvent` dispatch + the per-event `handleXxx`). Concrete event handling goes here, not in `KimiTUI`.
-  - `streaming-ui.ts` — streaming render: assistant delta, thinking, tool call / result, compaction, subagent, background agent, transcript aggregation.
-  - `session-replay.ts` — resume/replay orchestration; drives replay records through the same live render hooks. Stateless replay parsing/limiting/projection helpers belong in `src/tui/utils/message-replay.ts`.
-  - `tasks-browser.ts` — the tasks browser controller.
-  - `editor-keyboard.ts` — editor keyboard handling, exit shortcuts, external editor, clipboard image.
-  - `auth-flow.ts` — login/auth orchestration (`refreshConfigAfterLogin`, etc.).
-- `src/tui/commands/` — slash-command declaration, parsing, ordering, and dynamic skill-command generation. Parsing and types only; execution is dispatched from `KimiTUI`'s slash-command handler section, and complex execution sinks into `utils` or focused components.
-- `src/tui/components/` — pi-tui components by UI type: `chrome/` (footer, todo, welcome, loader, device code), `dialogs/` (selectors, approval/question panels, settings popups that replace the editor), `editor/` (input box + mention provider), `media/` (image, diff, code highlight), `messages/` (transcript blocks + tool-renderers), `panes/` (activity, queue).
-- `src/tui/reverse-rpc/` — adapts SDK approval/question callbacks into UI panel data and the user's choice back into an SDK response.
-- `src/tui/theme/` — themes, color tokens, style helpers, pi-tui markdown theme, terminal-background detection. The single source of truth for color.
-- `src/tui/utils/` — TUI-only utilities (need `TUIState` or a component). App-wide, UI-independent helpers go in `src/utils/`.
+There is no legacy `KimiTUI` runtime path or experimental selector.
 
-When a controller or `KimiTUI` section keeps growing, split pure functions, state projections, and presentation components into the matching directory rather than expanding the file.
+- `src/cli/run-shell.ts` owns trust ordering, daemon connection setup, process/signal cleanup, and terminal restoration. It must not contain session interaction logic.
+- `src/tui/daemon/daemon-tui.ts` is the coordinator. It wires `TUIState`, editor callbacks, `SessionController`, daemon commands, dialogs, session navigation, and lifecycle cleanup.
+- `src/tui/daemon/client.ts` implements the `SessionTransport` boundary and the small REST adapters not already represented by the public Klient facade.
+- `src/tui/daemon/socket.ts` adapts daemon WebSocket frames to the session-core socket contract.
+- `src/tui/daemon/transcript-renderer.ts` projects session-core transcript blocks onto shared TUI message/media components.
+- `src/tui/daemon/commands.ts` is the interactive slash-command source of truth. Every catalog command is explicitly `supported` or `disabled`; `/help` and autocomplete are generated from the same table.
+- `src/tui/interactions/` owns neutral approval/question dialog types and request/response adapters.
+- `src/tui/tui-state.ts` constructs shared terminal, layout, editor, footer, todo, and container state.
+- `src/tui/components/`, `theme/`, `constant/`, and `utils/` remain reusable presentation and rendering layers.
 
-## Where new features go
+## Core boundaries
 
-The feature type decides the landing spot:
+- Session snapshots, transcript ordering, reconnect/resync, prompt submission, abort, history rewrites, agent forest state, todos, tasks, usage, and retry state come from `@kiki/session-core`.
+- Prefer `@moonshot-ai/klient` facades for daemon capabilities: `global.*`, `session(id).*`, and `session(id).agent(id).*`.
+- Add a REST adapter to `daemon/client.ts` only when an existing public REST contract has no Klient facade. Do not add raw service/procedure escape hatches.
+- Components do not call Klient, REST, the SDK, or session-core controllers. They receive view data and callbacks.
+- Commands without a real daemon contract stay disabled. Unknown slash input must never fall through as a prompt; discovered Skill and profile commands are the only dynamic exceptions.
 
-- **CLI arguments** → `src/cli/commands.ts` / `src/cli/options.ts`, passed into the TUI via `src/cli/run-shell.ts`. The CLI never operates on the session directly.
-- **CLI subcommands** → `src/cli/sub/`, non-interactive only; reach core via `@moonshot-ai/kimi-code-sdk`.
-- **Slash commands** → declare/parse/type under `src/tui/commands/`; add the execution entry in `KimiTUI`'s slash-command handler section; sink complex logic into `utils` or a focused component.
-- **Skill-derived commands** → hook into `buildSkillSlashCommands` / the skill command map; do not hard-code a single skill.
-- **Transcript message types** → define the shape in `src/tui/types.ts`, add/extend a `components/messages/` component, register the renderer in the transcript builder.
-- **Tool-result display** → extend `components/messages/tool-renderers/registry.ts` and the renderer; do not stack branches inside `ToolCallComponent`.
-- **Popup / selector** → `components/dialogs/`, mounted via `mountEditorReplacement`; follow [DESIGN.md](./DESIGN.md). If triggered by an SDK callback, check whether `reverse-rpc/` needs an adapter/controller/handler.
-- **SDK event handling** → add the dispatch in `session-event-handler.ts`'s `handleEvent`, then the matching `handleXxx`.
-- **Streaming render** → `controllers/streaming-ui.ts`.
-- **Session start / resume behavior** → the session-management section of `KimiTUI`; replay behavior → `controllers/session-replay.ts`, reusing live render paths.
-- **Status bar / activity / queue** → `chrome/footer`, `panes/activity`, `panes/queue`, and the matching `updateXxx`.
-- **Configuration option** → read/write + schema in `src/tui/config.ts`, then the settings UI; persist through `saveTuiConfig` (a component never writes the config file itself).
-- **Constants** → shared CLI/TUI non-copy constants in `src/constant/`; TUI-only non-copy constants in `src/tui/constant/`. Component-local copy, option labels, help text, dialog titles/footers stay next to their component — do not centralize copy into a global module.
-- **General capability** → no TUI-state dependency → `src/utils/`; depends on TUI state or a component → `src/tui/utils/`.
+## Feature routing
 
-## Test placement
+- CLI startup flags and trust/lifecycle behavior → `src/cli/run-shell.ts`, then pass data into `DaemonTUI`.
+- Interactive slash declarations, aliases, help status, and argument validation → `src/tui/daemon/commands.ts`.
+- Command execution and session coordination → `DaemonTUI`; move pure parsing/projection helpers into `daemon/` or `utils/`.
+- Session/transcript behavior → use or extend session-core contracts first.
+- Approval/question adaptation → `src/tui/interactions/`; presentation remains under `components/dialogs/`.
+- Transcript block rendering → `src/tui/daemon/transcript-renderer.ts`, reusing `components/messages/` and `components/media/`.
+- Session list pagination/search/scope → `SessionPickerComponent` plus daemon keyset pages; do not truncate backend pagination at the first page.
+- Skill commands → session skill catalog and real `activateSkill` / `promptWithSkills` contracts. Inline skill tokens must not be sent as plain prompts.
+- Attachments → daemon file uploads and real prompt content parts. Keep placeholder expansion deterministic and render structured media from session-core blocks.
+- Footer/todo/activity/task state → project session-core `SessionViewState`; do not reconstruct parallel state from ad hoc events.
+- Agent navigation → session-core forest/roster plus focused-agent transcript subscriptions.
+- New selector/dialog → `components/dialogs/`, mounted with the coordinator’s editor-replacement helpers, following `DESIGN.md`.
 
-- Component behavior tests sit next to the component's existing tests (`test/tui/components/...`).
-- Command parsing tests → `test/tui/commands/`.
-- reverse-rpc tests → `test/tui/reverse-rpc/`.
-- Pure utility tests → next to the corresponding utils tests.
-- Do not create a generic `some-feature.test.ts` just to land a small feature; extend the nearest existing test file.
+## Keyboard rules
 
-## Theme system mechanics
+- Printable characters must be decoded with `printableChar()` before comparison; function/control keys use `matchesKey()` and `Key.*`.
+- Preserve editor-native history, empty Up/Down, paste buffering, and text paste behavior unless a real coordinator action consumes the callback.
+- Ctrl-C interrupts active work before exit confirmation; Ctrl-D exits only through the confirmed shutdown path.
+- Ctrl-O toggles tool output, Ctrl-T toggles overflowing todos, Ctrl+- invokes the real undo contract, and Shift-Tab toggles plan mode.
+- A bound callback must either perform its advertised operation or display an explicit disabled result.
 
-Themes are managed centrally under `src/tui/theme/`:
+## Theme and dialog mechanics
 
-- `colors.ts` — semantic tokens: `ColorPalette`, `darkColors`, `lightColors`.
-- `styles.ts` — common chalk helpers built on top of `ColorPalette`.
-- `pi-tui-theme.ts` — the markdown/pi-tui theme config.
-- `terminal-background.ts` — terminal background detection used by auto resolution.
-- `bundle.ts` — packs `colors`, `styles`, `markdownTheme` into a `KimiTUIThemeBundle`.
-- `index.ts` / `detect.ts` — theme type and auto/dark/light resolution.
+Themes remain centralized under `src/tui/theme/`. Use semantic palette tokens, never chalk named colors, and do not cache styled functions at module scope. Keep `ColorPalette`, built-in palettes, schema, and required mirrors synchronized when changing tokens.
 
-> **Keep the color-token set in sync.** `ColorPalette` in `colors.ts` is the source of truth for color tokens. When you add, rename, or remove one, update its mirrors in the same change: the custom-theme JSON schema (`apps/kimi-code/src/tui/theme/theme-schema.json`), the token tables in the custom-theme docs (`docs/en/customization/themes.md` and `docs/zh/customization/themes.md`), and the token table in the `custom-theme` built-in skill (`packages/agent-core/src/skill/builtin/custom-theme.md`).
+All selectors and dialogs must follow `DESIGN.md`: `SearchableList`, `SELECT_POINTER`, `CURRENT_MARK`, two-border layout, width truncation, Kitty-safe printable keys, and deterministic render/input tests.
 
-Apply / switch flow:
+## Test placement and verification
 
-- UI entry: `ThemeSelectorComponent` → `handleThemeCommand` → `applyThemeChoice`.
-- The real apply step is `KimiTUI.applyTheme`: it updates `state.theme`, `state.appState.theme`, and notifies components to refresh their palette.
-- Persist the choice through `saveTuiConfig` — a component must not write the config file itself.
-
-> The **hard color rules** (no chalk named colors, contrast ratios, no module-top-level cached styled functions, add a `ColorPalette` token before inventing a color) are normative and guard-enforced — they live in `apps/kimi-code/AGENTS.md`. This skill only covers the mechanics.
-
-## Before you submit
-
-- Run lint / format / test on the files you changed.
-- For any dialog/selector/input/toggle list, walk the self-check list at the end of [DESIGN.md](./DESIGN.md).
-- Keep `printableChar()` for printable-key comparisons (CI guard) and `chalk.hex(colors.<token>)` for color (CI guard).
+- Daemon coordinator, commands, client, socket, pagination, attachments, transcript state, and lifecycle tests → `test/tui/daemon/`.
+- Interaction adapter tests → `test/tui/interactions/`.
+- Component tests remain under `test/tui/components/`.
+- Run focused daemon/run-shell tests, `@moonshot-ai/kimi-code` and `@kiki/session-core` typechecks, remaining TUI tests, printable-key/color guards, and `git diff --check`.
+- Real TTY behavior may remain a stated manual residual; do not replace it with a fake terminal assertion that does not exercise the contract.

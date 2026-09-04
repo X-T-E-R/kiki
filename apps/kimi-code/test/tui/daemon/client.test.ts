@@ -53,49 +53,45 @@ describe('DaemonClient', () => {
     expect(fake.agent.runShellCommand).toHaveBeenCalledWith({ command: 'pwd' });
   });
 
-  it('lists daemon sessions through authenticated kap-server REST', async () => {
+  it('lists daemon sessions through the klient keyset facade', async () => {
     const fake = fakeKlient();
-    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
-      json: async () => ({
-        code: 0,
-        msg: 'ok',
-        data: {
-          items: [
-            {
-              id: 'session-1',
-              title: 'Example',
-              last_prompt: 'Hello',
-              metadata: { cwd: 'C:\\repo' },
-              updated_at: '2026-01-02T00:00:00.000Z',
-            },
-          ],
-          has_more: false,
-        },
-      }),
-    }) as Response);
-    const client = new DaemonClient({
-      url: 'http://127.0.0.1:57580',
-      token: 'secret',
-      fetch: fetch as typeof globalThis.fetch,
-      klient: fake.klient as never,
-    });
-
-    await expect(client.listSessions(25)).resolves.toEqual({
+    fake.sessions.list.mockResolvedValue({
       items: [
         {
           id: 'session-1',
           title: 'Example',
           lastPrompt: 'Hello',
           cwd: 'C:\\repo',
-          updatedAt: Date.parse('2026-01-02T00:00:00.000Z'),
-          custom: { cwd: 'C:\\repo' },
+          updatedAt: 123,
+          custom: { source: 'test' },
         },
       ],
-      has_more: false,
+      nextCursor: 'session-0',
     });
-    expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
-      'http://127.0.0.1:57580/api/v1/sessions?page_size=25',
-    );
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580',
+      token: 'secret',
+      klient: fake.klient as never,
+    });
+
+    await expect(client.listSessions(25, 'session-2')).resolves.toEqual({
+      items: [
+        {
+          id: 'session-1',
+          title: 'Example',
+          lastPrompt: 'Hello',
+          cwd: 'C:\\repo',
+          updatedAt: 123,
+          custom: { source: 'test' },
+        },
+      ],
+      nextCursor: 'session-0',
+    });
+    expect(fake.sessions.list).toHaveBeenCalledWith({
+      limit: 25,
+      before: 'session-2',
+      includeArchived: false,
+    });
   });
 
   it('uses REST model, agent profile, and session profile endpoints', async () => {

@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
@@ -7,19 +9,28 @@ import { DaemonTUI } from '#/tui/daemon/daemon-tui';
 
 const created: DaemonTUI[] = [];
 
-function driver(plan = false) {
+function driver(
+  plan = false,
+  sources: {
+    readonly agentFiles?: readonly string[];
+    readonly skillsDirs?: readonly string[];
+    readonly continue?: boolean;
+    readonly session?: string;
+  } = {},
+) {
   const tui = new DaemonTUI(
     { url: 'http://127.0.0.1:57580', token: 'secret' },
     {
       cliOptions: {
-        session: undefined,
-        continue: false,
+        session: sources.session,
+        continue: sources.continue ?? false,
         yolo: false,
         auto: false,
         plan,
         model: 'model-a',
         thinking: 'off',
-        agentFiles: [],
+        agentFiles: sources.agentFiles ?? [],
+        skillsDirs: sources.skillsDirs ?? [],
       },
       tuiConfig: DEFAULT_TUI_CONFIG,
       version: '1.0.0',
@@ -32,6 +43,7 @@ function driver(plan = false) {
     sessionId: 'session-1',
     sendPrompt: vi.fn(),
     abortActive: vi.fn(),
+    close: vi.fn(),
     handleSessionRecord: vi.fn(),
     getForest: vi.fn(() => undefined),
     getState: vi.fn(() => controllerState),
@@ -45,7 +57,11 @@ function driver(plan = false) {
     >;
     agentProfileCommands: Map<string, string>;
     client: {
+      klient: Record<string, unknown>;
       listModels: ReturnType<typeof vi.fn>;
+      listSessions: ReturnType<typeof vi.fn>;
+      createSession: ReturnType<typeof vi.fn>;
+      undoSession: ReturnType<typeof vi.fn>;
       listAgentProfiles: ReturnType<typeof vi.fn>;
       listSkills: ReturnType<typeof vi.fn>;
       activateSkill: ReturnType<typeof vi.fn>;
@@ -65,6 +81,10 @@ function driver(plan = false) {
     handleInput(text: string): Promise<void>;
     handleSlash(text: string): Promise<void>;
     handleInterrupt(kind: 'ctrl-c'): Promise<void>;
+    openSession(sessionId: string): Promise<void>;
+    configureExplicitSources(): Promise<void>;
+    initializeSession(): Promise<void>;
+    renderSession(view: unknown): void;
     refreshAgentCommands(): Promise<void>;
     refreshSkillCommands(sessionId: string): Promise<void>;
     respondApproval(block: unknown, response: unknown): Promise<void>;
@@ -72,6 +92,64 @@ function driver(plan = false) {
     showStatus: ReturnType<typeof vi.fn>;
   };
   internal.controller = controller;
+  const agentFacade = {
+    promptWithSkills: vi.fn(),
+    compact: vi.fn(async () => true),
+    getTasks: vi.fn(async () => []),
+    stopTask: vi.fn(),
+    getTaskOutput: vi.fn(async () => 'task output'),
+    getUsage: vi.fn(async () => ({ total: {} })),
+    getMcpServers: vi.fn(async () => []),
+  };
+  const sessionFacade = {
+    agent: vi.fn(() => agentFacade),
+    fork: vi.fn(async () => ({ id: 'fork-1' })),
+    agents: vi.fn(async () => ({})),
+  };
+  const configFacade = {
+    get: vi.fn(async () => undefined),
+    getAll: vi.fn(async () => ({})),
+    replace: vi.fn(),
+    replaceSections: vi.fn(),
+    reload: vi.fn(),
+  };
+  const pluginsFacade = {
+    list: vi.fn(async () => []),
+    install: vi.fn(),
+    setEnabled: vi.fn(),
+    remove: vi.fn(),
+    reload: vi.fn(),
+  };
+  const providerFacade = {
+    listProviders: vi.fn(async () => []),
+    addProvider: vi.fn(),
+    removeProvider: vi.fn(),
+    refreshProviders: vi.fn(),
+  };
+  const authFacade = {
+    startLogin: vi.fn(async () => ({
+      flow_id: 'flow-1',
+      provider: 'example',
+      status: 'authenticated',
+    })),
+    logout: vi.fn(async () => ({ logged_out: true, provider: 'example' })),
+  };
+  const filesFacade = { save: vi.fn(async () => ({ id: 'file-1' })) };
+  const klientClose = vi.fn();
+  internal.client.klient = {
+    close: klientClose,
+    session: vi.fn(() => sessionFacade),
+    global: {
+      config: configFacade,
+      plugins: pluginsFacade,
+      kosong: providerFacade,
+      auth: authFacade,
+      files: filesFacade,
+    },
+  };
+  internal.client.listSessions = vi.fn(async () => ({ items: [], nextCursor: undefined }));
+  internal.client.createSession = vi.fn(async () => ({ id: 'session-created' }));
+  internal.client.undoSession = vi.fn();
   internal.client.listModels = vi.fn(async () => ({
     items: [
       {
@@ -112,7 +190,20 @@ function driver(plan = false) {
   internal.client.resolveQuestion = vi.fn();
   internal.client.dismissQuestion = vi.fn();
   internal.showStatus = vi.fn();
-  return { tui, internal, controller, controllerState };
+  return {
+    tui,
+    internal,
+    controller,
+    controllerState,
+    agentFacade,
+    sessionFacade,
+    configFacade,
+    pluginsFacade,
+    providerFacade,
+    authFacade,
+    filesFacade,
+    klientClose,
+  };
 }
 
 afterEach(async () => {
@@ -178,6 +269,80 @@ describe('DaemonTUI commands', () => {
     });
   });
 
+  it('routes daemon-backed session and management commands through real facades', async () => {
+    const {
+      internal,
+      controller,
+      agentFacade,
+      sessionFacade,
+      configFacade,
+      pluginsFacade,
+      providerFacade,
+      authFacade,
+    } = driver();
+    const openSession = vi.fn();
+    internal.openSession = openSession;
+    const marketplacePath = resolve(process.cwd(), '../../plugins/marketplace.json');
+
+    await internal.handleSlash('/compact keep decisions');
+    await internal.handleSlash('/tasks stop task-1');
+    await internal.handleSlash('/fork Review copy');
+    await internal.handleSlash(`/plugins marketplace ${marketplacePath}`);
+    await internal.handleSlash('/plugins install C:\\plugins\\local');
+    await internal.handleSlash('/provider add example {"type":"openai_legacy","baseUrl":"https://example.test"}');
+    await internal.handleSlash('/reload');
+    await internal.handleSlash('/login example');
+    await internal.handleSlash('/logout example');
+    await internal.handleSlash('/mcp');
+    await internal.handleSlash('/goal Ship the daemon TUI');
+    await internal.handleSlash('/settings thinking {"enabled":true}');
+    await internal.handleSlash('/undo');
+
+    expect(agentFacade.compact).toHaveBeenCalledWith({ instruction: 'keep decisions' });
+    expect(agentFacade.stopTask).toHaveBeenCalledWith({ taskId: 'task-1' });
+    expect(sessionFacade.fork).toHaveBeenCalledWith({ title: 'Review copy' });
+    expect(openSession).toHaveBeenCalledWith('fork-1');
+    expect(pluginsFacade.install).toHaveBeenCalledWith('C:\\plugins\\local');
+    expect(providerFacade.addProvider).toHaveBeenCalledWith(
+      'example',
+      expect.objectContaining({ baseUrl: 'https://example.test' }),
+    );
+    expect(configFacade.reload).toHaveBeenCalled();
+    expect(authFacade.startLogin).toHaveBeenCalledWith('example');
+    expect(authFacade.logout).toHaveBeenCalledWith('example');
+    expect(agentFacade.getMcpServers).toHaveBeenCalledOnce();
+    expect(controller.sendPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ goalObjective: 'Ship the daemon TUI' }),
+    );
+    expect(configFacade.replace).toHaveBeenCalledWith({
+      domain: 'thinking',
+      value: { enabled: true },
+    });
+    expect(internal.client.undoSession).toHaveBeenCalledWith('session-1');
+    expect(controller.resync).toHaveBeenCalled();
+  });
+
+  it('uploads local files and sends real file content parts', async () => {
+    const { tui, internal, controller, filesFacade } = driver();
+    const path = resolve(process.cwd(), 'package.json');
+
+    await internal.handleSlash(`/attach ${path}`);
+    const draft = tui.state.editor.getText();
+    await internal.handleInput(`inspect ${draft}`);
+
+    expect(filesFacade.save).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: 'package.json', mimeType: 'application/json' }),
+    );
+    expect(draft).toContain('[file #1 package.json]');
+    expect(controller.sendPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.arrayContaining([
+          expect.objectContaining({ type: 'file', file_id: 'file-1', name: 'package.json' }),
+        ]),
+      }),
+    );
+  });
+
   it('aborts an active prompt instead of exiting on Ctrl-C', async () => {
     const { internal, controller, controllerState } = driver();
     controllerState.busy = true;
@@ -187,12 +352,75 @@ describe('DaemonTUI commands', () => {
     expect(controller.abortActive).toHaveBeenCalledOnce();
   });
 
+  it('always stops the UI when daemon close fails', async () => {
+    const { tui, klientClose } = driver();
+    klientClose.mockRejectedValue(new Error('close failed'));
+    const stop = vi.spyOn(tui.state.ui, 'stop');
+
+    await expect(tui.close()).rejects.toThrow('close failed');
+    klientClose.mockResolvedValue(undefined);
+
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('projects retry, todo, task, and context state into TUI chrome', () => {
+    const { tui, internal } = driver();
+    internal.renderSession({
+      sessionId: 'session-1',
+      session: undefined,
+      blocks: [],
+      model: 'model-a',
+      profile: undefined,
+      permissionMode: 'manual',
+      planMode: false,
+      swarmMode: false,
+      thinkingEffort: 'off',
+      contextTokens: 10,
+      maxContextTokens: 100,
+      busy: true,
+      turnRetry: { failedAttempt: 1, maxAttempts: 3, delayMs: 500 },
+      todos: Array.from({ length: 6 }, (_, index) => ({
+        title: `Todo ${String(index)}`,
+        status: index === 0 ? 'in_progress' : 'pending',
+      })),
+      tasks: [
+        { kind: 'bash', status: 'running' },
+        { kind: 'subagent', status: 'running' },
+      ],
+      resyncing: false,
+      resyncFailed: false,
+      resyncAttempt: 0,
+      goal: null,
+    });
+
+    expect(tui.state.appState.contextUsage).toBe(0.1);
+    expect(tui.state.appState.stepRetry).toMatchObject({ nextAttempt: 2, delayMs: 500 });
+    expect(tui.state.todoPanel.hasOverflow()).toBe(true);
+    expect(tui.state.editor.onToggleTodoExpand?.()).toBe(true);
+    expect(internal.showStatus).toHaveBeenCalledWith(
+      expect.stringContaining('Retrying attempt'),
+      'normal',
+    );
+    expect(tui.state.footer.render(120).join('\n')).toContain('task');
+  });
+
+  it('binds image paste, todo expansion, undo, and built-in history callbacks', () => {
+    const { tui } = driver();
+
+    expect(tui.state.editor.onPasteImage).toBeTypeOf('function');
+    expect(tui.state.editor.onToggleTodoExpand).toBeTypeOf('function');
+    expect(tui.state.editor.onUndo).toBeTypeOf('function');
+    expect(tui.state.editor.onRecall).toBeTypeOf('function');
+    expect(tui.state.editor.onTextPaste).toBeTypeOf('function');
+  });
+
   it('normalizes aliases, reports disabled commands, and rejects unknown slash input', async () => {
-    const { tui, internal, controller } = driver();
+    const { tui, internal, controller, configFacade } = driver();
 
     await internal.handleSlash('/thinking high');
     await internal.handleSlash('/h');
     await internal.handleSlash('/config');
+    await internal.handleSlash('/experimental');
     await internal.handleSlash('/custom value');
 
     expect(internal.client.setThinking).toHaveBeenCalledWith('session-1', 'high');
@@ -200,8 +428,9 @@ describe('DaemonTUI commands', () => {
     expect(internal.showStatus).toHaveBeenCalledWith(
       expect.stringContaining('Supported:'),
     );
+    expect(configFacade.getAll).toHaveBeenCalledOnce();
     expect(internal.showStatus).toHaveBeenCalledWith(
-      'Command is disabled in daemon TUI: /settings',
+      'Command is disabled in daemon TUI: /experiments',
       'error',
     );
     expect(internal.showStatus).toHaveBeenCalledWith(
@@ -261,6 +490,77 @@ describe('DaemonTUI commands', () => {
       planMode: false,
       swarmMode: false,
     });
+  });
+
+  it('submits inline skills through the bundled prompt contract', async () => {
+    const { internal, controller, agentFacade } = driver();
+    internal.skillCommands.set('skill:reviewskill', {
+      commandName: 'skill:ReviewSkill',
+      name: 'ReviewSkill',
+      description: 'Review changes',
+    });
+
+    await internal.handleInput('Please /skill:ReviewSkill inspect this change');
+
+    expect(agentFacade.promptWithSkills).toHaveBeenCalledWith({
+      input: [{ type: 'text', text: 'Please /skill:ReviewSkill inspect this change' }],
+      skills: [{ name: 'ReviewSkill' }],
+    });
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+    expect(controller.resync).toHaveBeenCalledOnce();
+  });
+
+  it('registers explicit skill and agent sources before creating the first session', async () => {
+    const { internal, configFacade } = driver(false, {
+      skillsDirs: ['skills'],
+      agentFiles: ['reviewer.md'],
+    });
+    internal.client.listSkills.mockResolvedValue({
+      skills: [{ name: 'CustomSkill', description: 'Custom', source: 'extra' }],
+    });
+    const openSession = vi.fn(async () => internal.refreshSkillCommands('session-created'));
+    internal.openSession = openSession;
+
+    await internal.configureExplicitSources();
+    await internal.initializeSession();
+
+    expect(configFacade.replaceSections).toHaveBeenCalledWith({
+      sections: {
+        extraSkillDirs: [expect.stringMatching(/repo[\\/]skills$/u)],
+        extraAgentDirs: [expect.stringMatching(/repo$/u)],
+      },
+    });
+    expect(configFacade.reload).toHaveBeenCalled();
+    expect(internal.client.createSession).toHaveBeenCalledWith({
+      workDir: 'C:\\repo',
+      additionalDirs: undefined,
+    });
+    expect(openSession).toHaveBeenCalledWith('session-created');
+    expect(internal.skillCommands.get('skill:customskill')).toMatchObject({
+      name: 'CustomSkill',
+    });
+  });
+
+  it('pages continue lookup until the current workspace is found', async () => {
+    const { internal } = driver(false, { continue: true });
+    const openSession = vi.fn();
+    internal.openSession = openSession;
+    internal.client.listSessions
+      .mockResolvedValueOnce({
+        items: [{ id: 'other', cwd: 'C:\\other' }],
+        nextCursor: 'other',
+      })
+      .mockResolvedValueOnce({
+        items: [{ id: 'match', cwd: 'C:\\repo' }],
+        nextCursor: undefined,
+      });
+
+    await internal.initializeSession();
+
+    expect(internal.client.listSessions).toHaveBeenNthCalledWith(1, 50, undefined);
+    expect(internal.client.listSessions).toHaveBeenNthCalledWith(2, 50, 'other');
+    expect(openSession).toHaveBeenCalledWith('match');
+    expect(internal.client.createSession).not.toHaveBeenCalled();
   });
 
   it('keeps interaction response failures inside the TUI', async () => {

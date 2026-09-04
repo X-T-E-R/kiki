@@ -51,7 +51,7 @@ Main directories:
 ## TUI Coding Conventions
 
 - Do not over-encapsulate, especially for one- or two-line functions — do not introduce a two-layer wrapper, just inline.
-- Functions with no state / UI side effects do not belong as private methods on the `KimiTUI` class; put them in external utils.
+- Functions with no state / UI side effects do not belong as private methods on `DaemonTUI`; put them in external utils.
 - Constants must live in the corresponding `constant` directory; they must not be scattered through component or logic code.
 - Inside `handleInput(data)`, when comparing a printable character (letter, digit, space, punctuation), it is **forbidden** to write literal comparisons such as `data === 'q'`. With the Kitty keyboard protocol enabled in terminals like VSCode, these keys are sent as CSI-u sequences (e.g. `\x1b[113u`), and a bare comparison will never match. Decode with `printableChar(data)` from `src/tui/utils/printable-key.ts` first, then compare; function keys continue to use `matchesKey(data, Key.*)`; control characters (codepoint < 32) may still be compared against the raw `data`. `test/tui/printable-key-guard.test.ts` enforces this in CI.
 
@@ -69,7 +69,7 @@ The theme apply/switch mechanics live in the `write-tui` skill. The following ru
 
 ## General Coding Requirements
 
-- The startup path before the workspace trust gate (`KimiTUI.start()` -> `maybeRunWorkspaceTrustPrompt()`) must not spawn child processes by bare command name — on Windows, cmd.exe / CreateProcess resolve them from the current directory first, so a binary planted in an untrusted workspace would run before the user confirms trust. When an external command is unavoidable, resolve it with `resolveCommandPath` from `src/utils/process/resolve-command.ts`, which returns an absolute PATH hit and refuses matches inside the cwd.
+- `runShell()` must complete `runWorkspaceTrustGate()` before daemon discovery/spawn, explicit skill or agent source registration, TUI startup, or any workspace-derived child process. Pre-trust external commands must be resolved with `resolveCommandPath` from `src/utils/process/resolve-command.ts`, which returns an absolute PATH hit and refuses matches inside the cwd.
 - For optional object properties, pass `undefined` directly — do not use conditional spread.
 - Optional object properties do not need to additionally allow `undefined` in the type.
 - Internal methods with only a single parameter should not be turned into options objects just for stylistic uniformity.

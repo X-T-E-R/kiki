@@ -1,5 +1,6 @@
 import { Container, Text, type Component, type TUI } from '@moonshot-ai/pi-tui';
 
+import type { MediaRef } from '@kiki/session-core/composer/media';
 import type { Block, ToolBlock } from '@kiki/session-core/session/transcript/types';
 
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
@@ -86,12 +87,9 @@ export class DaemonTranscriptRenderer {
 export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): Component {
   switch (block.kind) {
     case 'user':
-      return new UserMessageComponent(block.text);
-    case 'assistant': {
-      const component = new AssistantMessageComponent();
-      component.updateContent(block.text, { transient: block.streaming });
-      return component;
-    }
+      return new DaemonUserMessageComponent(block.text, block.media);
+    case 'assistant':
+      return new DaemonAssistantMessageComponent(block.text, block.streaming, block.media);
     case 'thinking':
       return new ThinkingComponent(block.text, true, block.streaming ? 'live' : 'finalized', ui);
     case 'tool':
@@ -132,8 +130,46 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
   }
 }
 
+class DaemonUserMessageComponent extends Container {
+  constructor(text: string, media: readonly MediaRef[] | undefined) {
+    super();
+    this.addChild(new UserMessageComponent(text));
+    addMediaLabels(this, media);
+  }
+}
+
+class DaemonAssistantMessageComponent extends Container {
+  private readonly message = new AssistantMessageComponent();
+
+  constructor(text: string, streaming: boolean, media: readonly MediaRef[] | undefined) {
+    super();
+    this.message.updateContent(text, { transient: streaming });
+    this.addChild(this.message);
+    addMediaLabels(this, media);
+  }
+
+  updateContent(text: string, options: { readonly transient: boolean }): void {
+    this.message.updateContent(text, options);
+  }
+}
+
+function addMediaLabels(container: Container, media: readonly MediaRef[] | undefined): void {
+  for (const item of media ?? []) {
+    const urlLabel = item.url?.startsWith('data:') === true ? (item.mime ?? 'inline') : item.url;
+    const label = item.name ?? item.path ?? item.fileId ?? urlLabel ?? item.kind;
+    container.addChild(new Text(currentTheme.fg('accent', `[${item.kind}: ${label}]`), 2, 0));
+  }
+}
+
 function requiresReplacement(previous: Block, next: Block): boolean {
   if (previous === next) return false;
+  if (
+    (previous.kind === 'user' || previous.kind === 'assistant') &&
+    previous.kind === next.kind &&
+    mediaKey(previous.media) !== mediaKey(next.media)
+  ) {
+    return true;
+  }
   return (
     next.kind === 'subagent' ||
     next.kind === 'subagent-event' ||
@@ -143,10 +179,14 @@ function requiresReplacement(previous: Block, next: Block): boolean {
   );
 }
 
+function mediaKey(media: readonly MediaRef[] | undefined): string {
+  return JSON.stringify(media ?? []);
+}
+
 function updateMountedBlock(component: Component, block: Block): void {
   switch (block.kind) {
     case 'assistant':
-      (component as AssistantMessageComponent).updateContent(block.text, {
+      (component as DaemonAssistantMessageComponent).updateContent(block.text, {
         transient: block.streaming,
       });
       return;
@@ -163,7 +203,16 @@ function updateMountedBlock(component: Component, block: Block): void {
       if (result !== undefined) tool.setResult(result);
       return;
     }
-    default:
+    case 'user':
+    case 'subagent':
+    case 'subagent-event':
+    case 'approval':
+    case 'question':
+    case 'shell':
+    case 'skill':
+    case 'system':
+    case 'system-reminder':
+    case 'notice':
       return;
   }
 }

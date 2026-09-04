@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { runShell } from '#/cli/run-shell';
+import { isTerminalOutputError, runShell } from '#/cli/run-shell';
 
 const mocks = vi.hoisted(() => ({
   order: [] as string[],
@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   daemonConstructor: vi.fn(),
   tuiStart: vi.fn(),
   tuiClose: vi.fn(),
+  tuiStop: vi.fn(),
+  restoreTerminalModes: vi.fn(),
 }));
 
 vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
@@ -72,6 +74,7 @@ vi.mock('../../src/tui/daemon/daemon-tui', () => ({
     };
 
     close = mocks.tuiClose;
+    stop = mocks.tuiStop;
     getCurrentSessionId = () => '';
     hasSessionContent = () => false;
   },
@@ -89,7 +92,9 @@ vi.mock('../../src/utils/process/resolve-command', () => ({
 }));
 
 vi.mock('../../src/utils/startup-trace', () => ({ startupTrace: vi.fn() }));
-vi.mock('../../src/utils/terminal-restore', () => ({ restoreTerminalModes: vi.fn() }));
+vi.mock('../../src/utils/terminal-restore', () => ({
+  restoreTerminalModes: mocks.restoreTerminalModes,
+}));
 
 const options = {
   session: undefined,
@@ -116,10 +121,17 @@ describe('runShell daemon startup', () => {
     mocks.ensure.mockResolvedValue({ url: 'http://127.0.0.1:57580', token: 'token' });
     mocks.tuiStart.mockResolvedValue(undefined);
     mocks.tuiClose.mockResolvedValue(undefined);
+    mocks.tuiStop.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('classifies EIO and EPIPE as terminal output shutdown errors', () => {
+    expect(isTerminalOutputError(Object.assign(new Error('closed'), { code: 'EIO' }))).toBe(true);
+    expect(isTerminalOutputError(Object.assign(new Error('pipe'), { code: 'EPIPE' }))).toBe(true);
+    expect(isTerminalOutputError(Object.assign(new Error('other'), { code: 'EINVAL' }))).toBe(false);
   });
 
   it('always attaches the interactive shell to DaemonTUI', async () => {
@@ -164,11 +176,30 @@ describe('runShell daemon startup', () => {
     expect(mocks.daemonConstructor).not.toHaveBeenCalled();
   });
 
-  it('closes the daemon client when TUI startup fails', async () => {
+  it('preserves the startup error when close also fails and restores terminal modes', async () => {
     mocks.tuiStart.mockRejectedValue(new Error('startup failed'));
+    mocks.tuiClose.mockRejectedValue(new Error('close failed'));
 
     await expect(runShell(options, '1.0.0')).rejects.toThrow('startup failed');
 
     expect(mocks.tuiClose).toHaveBeenCalledOnce();
+    expect(mocks.restoreTerminalModes).toHaveBeenCalledOnce();
+  });
+
+  it('routes SIGTERM and POSIX SIGHUP through TUI stop', async () => {
+    const priorTerm = new Set(process.listeners('SIGTERM'));
+    const priorHup = new Set(process.listeners('SIGHUP'));
+    await runShell(options, '1.0.0');
+    const term = process.listeners('SIGTERM').find((listener) => !priorTerm.has(listener));
+    expect(term).toBeDefined();
+    term!('SIGTERM');
+    await Promise.resolve();
+    expect(mocks.tuiStop).toHaveBeenCalledOnce();
+    process.off('SIGTERM', term!);
+    if (process.platform !== 'win32') {
+      const hup = process.listeners('SIGHUP').find((listener) => !priorHup.has(listener));
+      expect(hup).toBeDefined();
+      process.off('SIGHUP', hup!);
+    }
   });
 });

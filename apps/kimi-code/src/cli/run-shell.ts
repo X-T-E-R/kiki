@@ -118,13 +118,53 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     }
     emergencyExit(1);
   };
+  let terminating = false;
+  const stopAfterSignal = async (): Promise<void> => {
+    try {
+      await tui.stop();
+    } catch (error) {
+      try {
+        log.error('signal shutdown failed, restoring terminal and exiting', {
+          error: String(error),
+        });
+      } finally {
+        emergencyExit(1);
+      }
+    }
+  };
+  const onTerminationSignal = (): void => {
+    if (terminating) return;
+    terminating = true;
+    void stopAfterSignal();
+  };
+  const closeAfterOutputError = async (): Promise<void> => {
+    try {
+      await tui.close();
+    } catch (closeError) {
+      log.error('TUI close failed after output stream error', { error: String(closeError) });
+    } finally {
+      emergencyExit(0);
+    }
+  };
+  const onOutputError = (error: NodeJS.ErrnoException): void => {
+    if (!isTerminalOutputError(error)) throw error;
+    if (terminating) return;
+    terminating = true;
+    void closeAfterOutputError();
+  };
   process.on('uncaughtException', onUncaughtException);
   process.on('unhandledRejection', onUnhandledRejection);
-  // Remove the crash handlers once the TUI exits cleanly so repeated runShell()
-  // calls in the same process (e.g. tests) don't accumulate process listeners.
-  const removeCrashHandlers = (): void => {
+  process.once('SIGTERM', onTerminationSignal);
+  if (process.platform !== 'win32') process.once('SIGHUP', onTerminationSignal);
+  process.stdout.on('error', onOutputError);
+  process.stderr.on('error', onOutputError);
+  const removeHandlers = (): void => {
     process.off('uncaughtException', onUncaughtException);
     process.off('unhandledRejection', onUnhandledRejection);
+    process.off('SIGTERM', onTerminationSignal);
+    if (process.platform !== 'win32') process.off('SIGHUP', onTerminationSignal);
+    process.stdout.off('error', onOutputError);
+    process.stderr.off('error', onOutputError);
   };
 
   tui.onExit = async (exitCode = 0) => {
@@ -139,7 +179,8 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     if (hints.length > 0) {
       process.stderr.write(`\n${hints.join('\n')}\n`);
     }
-    removeCrashHandlers();
+    removeHandlers();
+    restoreTerminalModes();
     restoreStty();
     process.exit(exitCode);
   };
@@ -148,8 +189,23 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     await tui.start();
     startupTrace('tui.start:end');
   } catch (error) {
-    removeCrashHandlers();
-    await tui.close();
+    removeHandlers();
+    try {
+      await tui.close();
+    } catch (closeError) {
+      try {
+        log.error('TUI close failed after startup error', { error: String(closeError) });
+      } catch {
+        /* preserve the startup error */
+      }
+    } finally {
+      restoreTerminalModes();
+      restoreStty();
+    }
     throw error;
   }
+}
+
+export function isTerminalOutputError(error: NodeJS.ErrnoException): boolean {
+  return error.code === 'EIO' || error.code === 'EPIPE';
 }

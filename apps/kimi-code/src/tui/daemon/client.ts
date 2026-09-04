@@ -5,7 +5,6 @@ import type {
   ApprovalResolveResult,
   ListModelsResponse,
   ListNamedAgentProfilesResponse,
-  PageResponse,
   PromptAbortResponse,
   PromptReplaceRequest,
   PromptReplaceResult,
@@ -47,11 +46,16 @@ export interface DaemonClientOptions extends DaemonConnection {
 
 export interface DaemonSessionSummary {
   readonly id: string;
-  readonly title: string;
+  readonly title: string | undefined;
   readonly lastPrompt: string | undefined;
   readonly cwd: string;
   readonly updatedAt: number;
   readonly custom: Readonly<Record<string, unknown>>;
+}
+
+export interface DaemonSessionPage {
+  readonly items: readonly DaemonSessionSummary[];
+  readonly nextCursor: string | undefined;
 }
 
 export class DaemonClient implements SessionTransport {
@@ -73,20 +77,18 @@ export class DaemonClient implements SessionTransport {
       });
   }
 
-  async listSessions(limit = 100): Promise<PageResponse<DaemonSessionSummary>> {
-    const page = await this.request<PageResponse<Session>>('GET', '/sessions', undefined, {
-      page_size: limit,
-    });
+  async listSessions(limit = 50, before?: string): Promise<DaemonSessionPage> {
+    const page = await this.klient.global.sessions.list({ limit, before, includeArchived: false });
     return {
       items: page.items.map((session) => ({
         id: session.id,
         title: session.title,
-        lastPrompt: session.last_prompt,
-        cwd: session.metadata.cwd,
-        updatedAt: Date.parse(session.updated_at),
-        custom: session.metadata,
+        lastPrompt: session.lastPrompt,
+        cwd: session.cwd ?? '',
+        updatedAt: session.updatedAt,
+        custom: session.custom ?? {},
       })),
-      has_more: page.has_more,
+      nextCursor: page.nextCursor,
     };
   }
 
@@ -243,6 +245,10 @@ export class DaemonClient implements SessionTransport {
 
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session> {
     return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}:fork`, body);
+  }
+
+  undoSession(sessionId: string): Promise<unknown> {
+    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}:undo`, { count: 1 });
   }
 
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse> {

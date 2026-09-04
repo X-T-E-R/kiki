@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DAEMON_COMMANDS,
   daemonAutocompleteCommands,
   daemonCommandHelp,
   parseDaemonSlashInput,
@@ -15,6 +16,8 @@ describe('daemon command registry', () => {
     ['q', 'exit'],
     ['thinking', 'effort'],
     ['rename', 'title'],
+    ['config', 'settings'],
+    ['disconnect', 'logout'],
   ])('normalizes supported alias /%s to /%s', (alias, canonical) => {
     const resolved = resolveDaemonCommand(alias, '');
 
@@ -22,9 +25,7 @@ describe('daemon command registry', () => {
   });
 
   it.each([
-    ['config', 'settings'],
     ['experimental', 'experiments'],
-    ['disconnect', 'logout'],
     ['export', 'export-md'],
   ])('normalizes disabled alias /%s to /%s', (alias, canonical) => {
     expect(resolveDaemonCommand(alias, '')).toMatchObject({
@@ -74,7 +75,7 @@ describe('daemon command registry', () => {
         expect.objectContaining({
           name: 'settings',
           aliases: ['config'],
-          description: expect.stringContaining('disabled'),
+          description: expect.stringContaining('supported'),
         }),
         expect.objectContaining({ name: 'skill:ReviewSkill', description: 'Review changes' }),
         expect.objectContaining({ name: 'Reviewer', argumentHint: '<prompt>' }),
@@ -82,5 +83,26 @@ describe('daemon command registry', () => {
     );
     expect(daemonCommandHelp()).toContain('Supported:');
     expect(daemonCommandHelp()).toContain('Disabled:');
+  });
+
+  it('keeps the required daemon parity commands supported', () => {
+    const statuses = new Map(DAEMON_COMMANDS.map((command) => [command.name, command.status]));
+    for (const name of [
+      'compact',
+      'tasks',
+      'fork',
+      'plugins',
+      'provider',
+      'reload',
+      'login',
+      'logout',
+      'mcp',
+      'goal',
+      'settings',
+      'undo',
+    ]) {
+      expect(statuses.get(name), name).toBe('supported');
+    }
+    expect([...statuses.values()].filter((status) => status === 'supported').length).toBeGreaterThan(29);
   });
 });

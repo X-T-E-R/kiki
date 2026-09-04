@@ -101,6 +101,29 @@ describe('DaemonTranscriptRenderer', () => {
     expect(output).toContain('Which option?');
   });
 
+  it('renders structured media on user and assistant blocks', () => {
+    const output = render([
+      {
+        kind: 'user',
+        id: 'user-media',
+        text: 'See attachment',
+        media: [{ kind: 'image', fileId: 'image-1' }],
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        kind: 'assistant',
+        id: 'assistant-media',
+        text: 'Generated file',
+        media: [{ kind: 'file', fileId: 'file-1', name: 'result.txt' }],
+        streaming: false,
+        createdAt: '2026-01-01T00:00:01.000Z',
+      },
+    ]);
+
+    expect(output).toContain('[image: image-1]');
+    expect(output).toContain('[file: result.txt]');
+  });
+
   it('updates streaming assistant and running tool components in place', () => {
     const container = new Container();
     const renderer = new DaemonTranscriptRenderer(container);
