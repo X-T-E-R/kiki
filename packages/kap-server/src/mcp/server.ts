@@ -30,7 +30,6 @@ const EXTERNAL_FAILURE_CATEGORIES = new Set([
 
 export interface KikiMcpConfig {
   readonly endpoint: string;
-  readonly token: string;
   readonly delegationToken: string;
   readonly sessionId: string;
   readonly workspacePath?: string;
@@ -136,7 +135,6 @@ export function kikiMcpConfigFromEnv(env: NodeJS.ProcessEnv): KikiMcpConfig {
   const parsed = z
     .object({
       KIKI_KAP_ENDPOINT: z.string().url(),
-      KIKI_KAP_TOKEN: z.string().min(1),
       KIKI_DELEGATION_TOKEN: z.string().min(1),
       KIKI_SESSION_ID: z.string().min(1),
       KIKI_WORKSPACE_PATH: z.string().min(1).refine(isAbsolute),
@@ -144,7 +142,6 @@ export function kikiMcpConfigFromEnv(env: NodeJS.ProcessEnv): KikiMcpConfig {
     .parse(env);
   return {
     endpoint: parsed.KIKI_KAP_ENDPOINT.replace(/\/$/u, ''),
-    token: parsed.KIKI_KAP_TOKEN,
     delegationToken: parsed.KIKI_DELEGATION_TOKEN,
     sessionId: parsed.KIKI_SESSION_ID,
     workspacePath: parsed.KIKI_WORKSPACE_PATH,

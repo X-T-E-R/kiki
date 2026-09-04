@@ -6,7 +6,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { SeatKlient } from '@moonshot-ai/klient/procedures';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerKikiMcpHttp } from '../src/mcp/http';
 import {
@@ -129,6 +129,67 @@ describe('Kiki MCP HTTP transport', () => {
     });
     expect(seen).toEqual(expect.arrayContaining(['session-a', 'session-b']));
     expect(new Set(seen)).toEqual(new Set(['session-a', 'session-b']));
+  });
+
+  it('closes factory-created clients once on session DELETE', async () => {
+    const closed: string[] = [];
+    const { url } = await listenMcp({
+      resolver: createEnvSeatResolver({
+        seatId: 'seat-operator',
+        principalId: 'principal-operator',
+        sessionId: 'session-operator',
+        delegationToken: 'DELEGATION_SECRET',
+      }),
+      onKlientClose: (sessionId) => closed.push(sessionId),
+    });
+    const { transport } = await connect(url, 'DELEGATION_SECRET');
+
+    await transport.terminateSession();
+    await vi.waitFor(() => expect(closed).toEqual(['session-operator']));
+  });
+
+  it('closes factory-created clients when initialization does not complete', async () => {
+    const closed: string[] = [];
+    const { url } = await listenMcp({
+      resolver: createEnvSeatResolver({
+        seatId: 'seat-operator',
+        principalId: 'principal-operator',
+        sessionId: 'session-operator',
+        delegationToken: 'DELEGATION_SECRET',
+      }),
+      onKlientClose: (sessionId) => closed.push(sessionId),
+    });
+
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer DELEGATION_SECRET',
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+
+    await vi.waitFor(() => expect(closed).toEqual(['session-operator']));
+  });
+
+  it('closes every factory-created client once on app close', async () => {
+    const closed: string[] = [];
+    const mounted = await listenMcp({
+      resolver: createEnvSeatResolver({
+        seatId: 'seat-operator',
+        principalId: 'principal-operator',
+        sessionId: 'session-operator',
+        delegationToken: 'DELEGATION_SECRET',
+      }),
+      onKlientClose: (sessionId) => closed.push(sessionId),
+    });
+    await connect(mounted.url, 'DELEGATION_SECRET');
+
+    await mounted.app.close();
+    await mounted.app.close();
+
+    expect(closed).toEqual(['session-operator']);
   });
 });
 
@@ -319,7 +380,8 @@ async function listenMcp(opts: {
   readonly resolver: SeatResolver;
   readonly workspaceBySession?: Readonly<Record<string, string>>;
   readonly onCall?: (sessionId: string) => void;
-}): Promise<{ url: string }> {
+  readonly onKlientClose?: (sessionId: string) => void;
+}): Promise<{ url: string; app: FastifyInstance }> {
   const app: FastifyInstance = Fastify({ logger: false });
   registerKikiMcpHttp(app, {
     seatResolver: opts.resolver,
@@ -329,16 +391,20 @@ async function listenMcp(opts: {
       seat.sessionId,
       opts.workspaceBySession?.[seat.sessionId],
       opts.onCall,
+      opts.onKlientClose,
     ),
   });
   await app.listen({ host: '127.0.0.1', port: 0 });
   close.push(() => app.close());
   const address = app.server.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
-  return { url: `http://127.0.0.1:${String(port)}/mcp` };
+  return { url: `http://127.0.0.1:${String(port)}/mcp`, app };
 }
 
-async function connect(url: string, token: string): Promise<{ client: Client }> {
+async function connect(url: string, token: string): Promise<{
+  client: Client;
+  transport: StreamableHTTPClientTransport;
+}> {
   const transport = new StreamableHTTPClientTransport(new URL(url), {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
   });
@@ -348,7 +414,7 @@ async function connect(url: string, token: string): Promise<{ client: Client }> 
     await client.close();
     await transport.close();
   });
-  return { client };
+  return { client, transport };
 }
 
 function fakeSeatKlient(
@@ -357,6 +423,7 @@ function fakeSeatKlient(
   sessionId: string,
   workspacePath: string | undefined,
   onCall: ((sessionId: string) => void) | undefined,
+  onKlientClose: ((sessionId: string) => void) | undefined,
 ): SeatKlient {
   const binding = { version: 1 as const, seatId, principalId, sessionId, workspacePath };
   return {
@@ -385,6 +452,9 @@ function fakeSeatKlient(
         } as never;
       }
       throw new Error(`Unexpected procedure ${name}`);
+    },
+    async close() {
+      onKlientClose?.(sessionId);
     },
   } as unknown as SeatKlient;
 }

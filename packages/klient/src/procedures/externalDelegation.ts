@@ -193,15 +193,105 @@ const eventsInputSchema = pageInputSchema
 const transcriptInputSchema = pageInputSchema
   .extend({ detail: z.enum(['text', 'items']).optional() })
   .strict();
-const interactionSchema = z
-  .object({
-    interactionId: z.string(),
-    kind: z.enum(['approval', 'question']),
-    taskName: z.string(),
-    payload: z.unknown(),
-    createdAt: z.number(),
-  })
-  .strict();
+const toolInputDisplaySchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('command'),
+    command: z.string(),
+    cwd: z.string().optional(),
+    description: z.string().optional(),
+    language: z.literal('bash').optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('file_io'),
+    operation: z.enum(['read', 'write', 'edit', 'glob', 'grep']),
+    path: z.string(),
+    detail: z.string().optional(),
+    content: z.string().optional(),
+    before: z.string().optional(),
+    after: z.string().optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('diff'),
+    path: z.string(),
+    before: z.string(),
+    after: z.string(),
+    hunks: z.number().optional(),
+  }).strict(),
+  z.object({ kind: z.literal('search'), query: z.string(), scope: z.string().optional() }).strict(),
+  z.object({ kind: z.literal('url_fetch'), url: z.string(), method: z.string().optional() }).strict(),
+  z.object({
+    kind: z.literal('agent_call'),
+    agent_name: z.string(),
+    prompt: z.string(),
+    background: z.boolean().optional(),
+  }).strict(),
+  z.object({ kind: z.literal('skill_call'), skill_name: z.string(), args: z.string().optional() }).strict(),
+  z.object({
+    kind: z.literal('todo_list'),
+    items: z.array(z.object({ title: z.string(), status: z.string() }).strict()),
+  }).strict(),
+  z.object({
+    kind: z.literal('task'),
+    task_id: z.string(),
+    status: z.string(),
+    description: z.string(),
+    task_kind: z.string().optional(),
+  }).strict(),
+  z.object({ kind: z.literal('task_stop'), task_id: z.string(), task_description: z.string() }).strict(),
+  z.object({
+    kind: z.literal('plan_review'),
+    plan: z.string(),
+    path: z.string().optional(),
+    options: z.array(z.object({ label: z.string(), description: z.string() }).strict()).optional(),
+  }).strict(),
+  z.object({ kind: z.literal('plan_enter') }).strict(),
+  z.object({
+    kind: z.literal('goal_start'),
+    objective: z.string(),
+    completionCriterion: z.string().optional(),
+    mode: z.enum(['manual', 'yolo']),
+  }).strict(),
+  z.object({
+    kind: z.literal('external_permission'),
+    summary: z.string(),
+    detail: z.unknown().optional(),
+    options: z.array(z.object({
+      id: z.string(),
+      label: z.string(),
+      kind: z.string(),
+      changes: z.array(z.unknown()).optional(),
+    }).strict()),
+  }).strict(),
+  z.object({ kind: z.literal('generic'), summary: z.string(), detail: z.unknown().optional() }).strict(),
+]);
+const approvalPayloadSchema = z.object({
+  toolName: z.string(),
+  action: z.string(),
+  display: toolInputDisplaySchema,
+}).strict();
+const questionOptionSchema = z.object({
+  label: z.string(),
+  description: z.string().optional(),
+}).strict();
+const questionItemSchema = z.object({
+  question: z.string(),
+  header: z.string().optional(),
+  body: z.string().optional(),
+  options: z.array(questionOptionSchema),
+  multiSelect: z.boolean().optional(),
+  otherLabel: z.string().optional(),
+  otherDescription: z.string().optional(),
+}).strict();
+const questionPayloadSchema = z.object({ questions: z.array(questionItemSchema) }).strict();
+const interactionBaseSchema = z.object({
+  interactionId: z.string(),
+  taskName: z.string(),
+  createdAt: z.number(),
+});
+const interactionSchema = z.discriminatedUnion('kind', [
+  interactionBaseSchema.extend({ kind: z.literal('approval'), payload: approvalPayloadSchema }).strict(),
+  interactionBaseSchema.extend({ kind: z.literal('question'), payload: questionPayloadSchema }).strict(),
+]);
 const interactionPageSchema = z
   .object({ items: z.array(interactionSchema), nextCursor: z.number().optional() })
   .strict();
@@ -353,12 +443,83 @@ const transcriptStepSchema = z.object({
     inputCacheCreation: z.number(),
   }).strict().optional(),
 }).strict();
+const bundledSkillActivationSchema = z.object({
+  activationId: z.string(),
+  skillName: z.string(),
+  skillArgs: z.string().optional(),
+  skillType: z.string().optional(),
+  skillPath: z.string().optional(),
+  skillSource: z.enum(['project', 'user', 'extra', 'builtin']).optional(),
+}).strict();
+const threadRefSchema = z.object({
+  hostId: z.string(),
+  workspaceId: z.string(),
+  sessionId: z.string(),
+}).strict();
+export const publicPromptOriginSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('user'), skillActivations: z.array(bundledSkillActivationSchema).optional() }).strict(),
+  z.object({
+    kind: z.literal('skill_activation'),
+    activationId: z.string(),
+    skillName: z.string(),
+    skillArgs: z.string().optional(),
+    trigger: z.enum(['user-slash', 'model-tool', 'nested-skill']),
+    skillType: z.string().optional(),
+    skillPath: z.string().optional(),
+    skillSource: z.enum(['project', 'user', 'extra', 'builtin']).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('plugin_command'),
+    activationId: z.string(),
+    pluginId: z.string(),
+    commandName: z.string(),
+    commandArgs: z.string().optional(),
+    trigger: z.literal('user-slash'),
+  }).strict(),
+  z.object({
+    kind: z.literal('injection'),
+    variant: z.string(),
+    ownerPromptId: z.string().optional(),
+    disclosure: z.unknown().optional(),
+  }).strict(),
+  z.object({ kind: z.literal('shell_command'), phase: z.enum(['input', 'output']), isError: z.boolean().optional() }).strict(),
+  z.object({ kind: z.literal('compaction_summary') }).strict(),
+  z.object({ kind: z.literal('system_trigger'), name: z.string() }).strict(),
+  z.object({
+    kind: z.literal('task'),
+    taskId: z.string(),
+    status: z.enum(['running', 'completed', 'failed', 'timed_out', 'killed', 'lost']),
+    notificationId: z.string(),
+  }).strict(),
+  z.object({
+    kind: z.literal('cron_job'),
+    jobId: z.string(),
+    cron: z.string(),
+    recurring: z.boolean(),
+    coalescedCount: z.number(),
+    stale: z.boolean(),
+  }).strict(),
+  z.object({ kind: z.literal('cron_missed'), count: z.number() }).strict(),
+  z.object({ kind: z.literal('hook_result'), event: z.string(), blocked: z.boolean().optional() }).strict(),
+  z.object({ kind: z.literal('retry'), trigger: z.string().optional() }).strict(),
+  z.object({
+    kind: z.literal('peer_thread'),
+    source: threadRefSchema,
+    messageId: z.string(),
+    acceptedAt: z.number(),
+  }).strict(),
+  z.object({
+    kind: z.literal('agent_message'),
+    messageId: z.string(),
+    senderTaskName: z.string(),
+  }).strict(),
+]);
 const transcriptTurnSchema = z.object({
   kind: z.literal('turn'),
   turnId: z.string(),
   ordinal: z.number(),
   state: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled']),
-  origin: z.unknown(),
+  origin: publicPromptOriginSchema,
   prompt: z.string().optional(),
   steps: z.array(transcriptStepSchema),
   startedAt: z.string().optional(),

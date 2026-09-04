@@ -151,7 +151,11 @@ describe('external delegation procedures', () => {
           turnId: 'turn-1',
           ordinal: 0,
           state: 'completed',
-          origin: { source: 'external' },
+          origin: {
+            kind: 'agent_message',
+            messageId: 'message-1',
+            senderTaskName: 'researcher',
+          },
           prompt: 'inspect',
           steps: [{
             kind: 'step',
@@ -199,6 +203,18 @@ describe('external delegation procedures', () => {
 
     expect(schema.safeParse(textPage).success).toBe(true);
     expect(schema.safeParse(itemsPage).success).toBe(true);
+    expect(schema.safeParse({
+      ...itemsPage,
+      items: [{
+        ...itemsPage.items[0],
+        origin: {
+          kind: 'agent_message',
+          messageId: 'message-1',
+          senderAgentId: 'agent-internal',
+          senderTaskName: 'researcher',
+        },
+      }],
+    }).success).toBe(false);
     expect(schema.safeParse({ cursor: 0, items: [{ kind: 'turn' }] }).success).toBe(false);
     expect(schema.safeParse({ cursor: 0, items: [{ kind: 'unknown' }] }).success).toBe(false);
   });

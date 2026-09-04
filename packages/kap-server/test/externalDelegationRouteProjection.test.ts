@@ -204,7 +204,19 @@ describe('external delegation route projection', () => {
       payloadConflict: false,
     });
     service.interactions.mockResolvedValue({
-      items: [{ interactionId: 'approval-1', kind: 'approval', taskName: 'probe', payload: {}, createdAt: 1 }],
+      items: [{
+        interactionId: 'approval-1',
+        kind: 'approval',
+        taskName: 'probe',
+        payload: {
+          sessionId: 'session-operator',
+          agentId: 'agent-internal',
+          toolName: 'Inspect',
+          action: 'inspect files',
+          display: { kind: 'generic', summary: 'Inspect files' },
+        },
+        createdAt: 1,
+      }],
     });
     service.respond.mockResolvedValue({ interactionId: 'approval-1', status: 'resolved' });
 

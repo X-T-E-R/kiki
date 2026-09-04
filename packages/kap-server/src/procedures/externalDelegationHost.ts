@@ -17,6 +17,9 @@ import {
   type ISessionExternalDelegationService as ExternalDelegationService,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
+import type { PromptOrigin } from '@moonshot-ai/agent-core-v2/agent/contextMemory/types';
+import type { ApprovalRequest } from '@moonshot-ai/agent-core-v2/session/approval/approval';
+import type { QuestionRequest } from '@moonshot-ai/agent-core-v2/session/question/question';
 import {
   delegationProcedure,
   type DelegationProcedureInput,
@@ -256,13 +259,46 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function publicInteraction(value: ExternalInteractionView): ExternalInteractionView {
+function publicInteraction(value: ExternalInteractionView) {
+  return value.kind === 'approval'
+    ? {
+        interactionId: value.interactionId,
+        kind: value.kind,
+        taskName: value.taskName,
+        payload: publicApprovalRequest(value.payload as ApprovalRequest),
+        createdAt: value.createdAt,
+      }
+    : {
+        interactionId: value.interactionId,
+        kind: value.kind,
+        taskName: value.taskName,
+        payload: publicQuestionRequest(value.payload as QuestionRequest),
+        createdAt: value.createdAt,
+      };
+}
+
+function publicApprovalRequest(request: ApprovalRequest) {
   return {
-    interactionId: value.interactionId,
-    kind: value.kind,
-    taskName: value.taskName,
-    payload: value.payload,
-    createdAt: value.createdAt,
+    toolName: request.toolName,
+    action: request.action,
+    display: request.display,
+  };
+}
+
+function publicQuestionRequest(request: QuestionRequest) {
+  return {
+    questions: request.questions.map((question) => ({
+      question: question.question,
+      header: question.header,
+      body: question.body,
+      options: question.options.map((option) => ({
+        label: option.label,
+        description: option.description,
+      })),
+      multiSelect: question.multiSelect,
+      otherLabel: question.otherLabel,
+      otherDescription: question.otherDescription,
+    })),
   };
 }
 
@@ -397,19 +433,98 @@ function publicTranscriptItem(item: ExternalTranscriptL1Item): ExternalTranscrip
   }
 }
 
-function publicTranscriptTurn(turn: ExternalTranscriptTurn): ExternalTranscriptTurn {
+function publicTranscriptTurn(turn: ExternalTranscriptTurn) {
   return {
     kind: turn.kind,
     turnId: turn.turnId,
     ordinal: turn.ordinal,
     state: turn.state,
-    origin: turn.origin,
+    origin: publicPromptOrigin(turn.origin as PromptOrigin),
     prompt: turn.prompt,
     steps: turn.steps.map(publicTranscriptStep),
     startedAt: turn.startedAt,
     endedAt: turn.endedAt,
     usage: turn.usage,
   };
+}
+
+function publicPromptOrigin(origin: PromptOrigin) {
+  switch (origin.kind) {
+    case 'user':
+      return { kind: origin.kind, skillActivations: origin.skillActivations };
+    case 'skill_activation':
+      return {
+        kind: origin.kind,
+        activationId: origin.activationId,
+        skillName: origin.skillName,
+        skillArgs: origin.skillArgs,
+        trigger: origin.trigger,
+        skillType: origin.skillType,
+        skillPath: origin.skillPath,
+        skillSource: origin.skillSource,
+      };
+    case 'plugin_command':
+      return {
+        kind: origin.kind,
+        activationId: origin.activationId,
+        pluginId: origin.pluginId,
+        commandName: origin.commandName,
+        commandArgs: origin.commandArgs,
+        trigger: origin.trigger,
+      };
+    case 'injection':
+      return {
+        kind: origin.kind,
+        variant: origin.variant,
+        ownerPromptId: origin.ownerPromptId,
+        disclosure: origin.disclosure,
+      };
+    case 'shell_command':
+      return { kind: origin.kind, phase: origin.phase, isError: origin.isError };
+    case 'compaction_summary':
+      return { kind: origin.kind };
+    case 'system_trigger':
+      return { kind: origin.kind, name: origin.name };
+    case 'task':
+      return {
+        kind: origin.kind,
+        taskId: origin.taskId,
+        status: origin.status,
+        notificationId: origin.notificationId,
+      };
+    case 'cron_job':
+      return {
+        kind: origin.kind,
+        jobId: origin.jobId,
+        cron: origin.cron,
+        recurring: origin.recurring,
+        coalescedCount: origin.coalescedCount,
+        stale: origin.stale,
+      };
+    case 'cron_missed':
+      return { kind: origin.kind, count: origin.count };
+    case 'hook_result':
+      return { kind: origin.kind, event: origin.event, blocked: origin.blocked };
+    case 'retry':
+      return { kind: origin.kind, trigger: origin.trigger };
+    case 'peer_thread':
+      return {
+        kind: origin.kind,
+        source: {
+          hostId: origin.source.hostId,
+          workspaceId: origin.source.workspaceId,
+          sessionId: origin.source.sessionId,
+        },
+        messageId: origin.messageId,
+        acceptedAt: origin.acceptedAt,
+      };
+    case 'agent_message':
+      return {
+        kind: origin.kind,
+        messageId: origin.messageId,
+        senderTaskName: origin.senderTaskName,
+      };
+  }
 }
 
 function publicTranscriptStep(step: ExternalTranscriptStep): ExternalTranscriptStep {

@@ -23,8 +23,10 @@ export interface KikiMcpHttpHandle {
 
 interface McpHttpSession {
   readonly seat: McpSeat;
+  readonly klient: SeatKlient;
   readonly transport: StreamableHTTPServerTransport;
   readonly server: ReturnType<typeof createKikiMcpServer>;
+  closePromise?: Promise<void>;
 }
 
 const UNAUTHORIZED = { code: 'unauthorized', msg: 'MCP seat authentication failed.' };
@@ -35,6 +37,7 @@ export function registerKikiMcpHttp(
   options: RegisterKikiMcpHttpOptions,
 ): KikiMcpHttpHandle {
   const sessions = new Map<string, McpHttpSession>();
+  const owned = new Set<McpHttpSession>();
 
   const drop = (sessionId: string): McpHttpSession | undefined => {
     const session = sessions.get(sessionId);
@@ -42,14 +45,24 @@ export function registerKikiMcpHttp(
     sessions.delete(sessionId);
     return session;
   };
-
+  const closeSession = (session: McpHttpSession, closeTransport: boolean): Promise<void> => {
+    session.closePromise ??= (async () => {
+      owned.delete(session);
+      try {
+        await session.server.close();
+      } finally {
+        try {
+          await session.klient.close();
+        } finally {
+          if (closeTransport) await session.transport.close();
+        }
+      }
+    })();
+    return session.closePromise;
+  };
   const closeAll = async (): Promise<void> => {
-    const closing = [...sessions.entries()].map(async ([sessionId, session]) => {
-      sessions.delete(sessionId);
-      await session.server.close();
-      await session.transport.close();
-    });
-    await Promise.all(closing);
+    sessions.clear();
+    await Promise.all([...owned].map((session) => closeSession(session, true)));
   };
 
   app.route({
@@ -85,19 +98,25 @@ export function registerKikiMcpHttp(
         onsessionclosed: (sessionId) => {
           const closed = drop(sessionId);
           if (closed === undefined) return;
-          void closed.server.close();
+          void closeSession(closed, false);
         },
       });
-      const server = createKikiMcpServer(await options.resolveKlient(seat), options.serverOptions);
-      session = { seat, transport, server };
-      await server.connect(transport);
-      await dispatch(transport, req, reply);
-      if (transport.sessionId === undefined) {
-        await server.close();
-        await transport.close();
-        return;
+      const klient = await options.resolveKlient(seat);
+      const server = createKikiMcpServer(klient, options.serverOptions);
+      session = { seat, klient, transport, server };
+      owned.add(session);
+      try {
+        await server.connect(transport);
+        await dispatch(transport, req, reply);
+        if (transport.sessionId === undefined) {
+          await closeSession(session, true);
+          return;
+        }
+        sessions.set(transport.sessionId, session);
+      } catch (error) {
+        await closeSession(session, true);
+        throw error;
       }
-      sessions.set(transport.sessionId, session);
     },
   });
 

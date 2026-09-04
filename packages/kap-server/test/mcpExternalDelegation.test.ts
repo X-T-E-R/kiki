@@ -181,7 +181,6 @@ describe('Kiki external delegation MCP projector', () => {
     });
     const server = createKikiMcpServer({
       endpoint: 'http://127.0.0.1:58627',
-      token: 'DAEMON_SECRET',
       delegationToken: 'DELEGATION_SECRET',
       sessionId: 'session-operator',
       workspacePath: '/example/workspace',
@@ -257,7 +256,6 @@ describe('Kiki external delegation MCP projector', () => {
     }));
     const ownedServer = createKikiMcpServer({
       endpoint: 'http://127.0.0.1:58627',
-      token: 'DAEMON_SECRET',
       delegationToken: 'DELEGATION_SECRET',
       sessionId: 'session-operator',
       workspacePath: '/example/workspace',
@@ -276,11 +274,22 @@ describe('Kiki external delegation MCP projector', () => {
     await ownedClient.close();
   });
 
-  it('keeps the interaction ownership code aligned and validates stdio bindings', () => {
+  it('keeps the interaction ownership code aligned and ignores legacy daemon credentials', () => {
     expect(EXTERNAL_INTERACTION_NOT_OWNED_CODE).toBe(CORE_INTERACTION_NOT_OWNED_CODE);
+    expect(kikiMcpConfigFromEnv({
+      KIKI_KAP_ENDPOINT: 'http://127.0.0.1:58627',
+      KIKI_KAP_TOKEN: 'LEGACY_DAEMON_SECRET',
+      KIKI_DELEGATION_TOKEN: 'DELEGATION_SECRET',
+      KIKI_SESSION_ID: 'session-operator',
+      KIKI_WORKSPACE_PATH: '/example/workspace',
+    })).toEqual({
+      endpoint: 'http://127.0.0.1:58627',
+      delegationToken: 'DELEGATION_SECRET',
+      sessionId: 'session-operator',
+      workspacePath: '/example/workspace',
+    });
     expect(() => kikiMcpConfigFromEnv({
       KIKI_KAP_ENDPOINT: 'http://127.0.0.1:58627',
-      KIKI_KAP_TOKEN: 'DAEMON_SECRET',
       KIKI_DELEGATION_TOKEN: 'DELEGATION_SECRET',
       KIKI_SESSION_ID: 'session-operator',
       KIKI_WORKSPACE_PATH: 'relative/path',

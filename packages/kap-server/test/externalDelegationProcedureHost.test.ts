@@ -87,38 +87,53 @@ describe('ExternalDelegationProcedureHost', () => {
     }));
   });
 
-  it('projects host-owned identities without rewriting opaque customer payloads', async () => {
+  it('projects real approval, question, and prompt origins without rewriting opaque display content', async () => {
     const host = new ExternalDelegationProcedureHost({} as never);
     service.interactions.mockResolvedValue({
       items: [{
         interactionId: 'interaction-1',
         kind: 'approval',
         taskName: 'probe',
-        payload: { agentId: 'customer-interaction', agent_id: 'customer-interaction-snake' },
+        payload: {
+          id: 'approval-internal',
+          sessionId: 'session-internal',
+          agentId: 'agent-internal',
+          turnId: 41,
+          toolCallId: 'tool-internal',
+          toolName: 'Inspect',
+          action: 'inspect files',
+          display: {
+            kind: 'generic',
+            summary: 'Inspect files',
+            detail: { agentId: 'customer-display', sessionId: 'customer-session' },
+          },
+        },
         createdAt: 1,
-        agentId: 'internal-interaction',
-        agent_id: 'internal-interaction-snake',
-        agentID: 'internal-interaction-id',
-        AgentId: 'internal-interaction-case',
       }],
     });
     service.wait.mockResolvedValue({
       waitStatus: 'completed',
       waitedMs: 1,
-      dispatch: {
-        ...dispatchView,
-        agent_id: 'internal-wait-snake',
-        agentID: 'internal-wait-id',
-        AgentId: 'internal-wait-case',
-      },
       completedDuringWait: [],
       interactions: [{
         interactionId: 'interaction-2',
         kind: 'question',
         taskName: 'probe',
-        payload: { agentId: 'customer-wait' },
+        payload: {
+          id: 'question-internal',
+          turnId: 42,
+          toolCallId: 'question-tool-internal',
+          questions: [{
+            question: 'Continue?',
+            header: 'Decision',
+            body: 'Choose one.',
+            options: [{ label: 'Yes', description: 'Continue.' }],
+            multiSelect: false,
+            otherLabel: 'Custom',
+            otherDescription: 'Enter a custom answer.',
+          }],
+        },
         createdAt: 2,
-        agentId: 'internal-wait-interaction',
       }],
     });
     service.events.mockResolvedValue({
@@ -126,15 +141,13 @@ describe('ExternalDelegationProcedureHost', () => {
         seq: 1,
         dispatchId: 'dispatch-1',
         at: 1,
-        agentId: 'internal-event-item',
+        agentId: 'event-agent-internal',
         event: {
           type: 'tool.call',
           toolCallId: 'tool-1',
           title: 'Inspect',
           rawInput: { agentId: 'customer-event', agent_id: 'customer-event-snake' },
-          agent_id: 'internal-event-snake',
-          agentID: 'internal-event-id',
-          AgentId: 'internal-event-case',
+          agent_id: 'event-agent-snake-internal',
         },
       }],
     });
@@ -145,14 +158,18 @@ describe('ExternalDelegationProcedureHost', () => {
         turnId: 'turn-1',
         ordinal: 0,
         state: 'completed',
-        origin: { agentId: 'customer-origin' },
+        origin: {
+          kind: 'agent_message',
+          messageId: 'message-1',
+          senderAgentId: 'sender-agent-internal',
+          senderTaskName: 'researcher',
+        },
         steps: [{
           kind: 'step',
           stepId: 'step-1',
           turnId: 'turn-1',
           ordinal: 0,
           state: 'completed',
-          agent_id: 'internal-step',
           frames: [{
             kind: 'tool',
             frameId: 'frame-1',
@@ -161,12 +178,10 @@ describe('ExternalDelegationProcedureHost', () => {
             state: 'done',
             input: { agentId: 'customer-input' },
             output: { agent_id: 'customer-output' },
-            display: { agentID: 'customer-display' },
+            display: { agentID: 'customer-frame-display' },
             progress: { AgentId: 'customer-progress' },
-            agentId: 'internal-frame',
           }],
         }],
-        agentID: 'internal-turn',
       }],
     });
 
@@ -177,41 +192,53 @@ describe('ExternalDelegationProcedureHost', () => {
     const combined = JSON.stringify({ interactions, waited, events, transcript });
 
     for (const secret of [
-      'internal-interaction',
-      'internal-interaction-snake',
-      'internal-interaction-id',
-      'internal-interaction-case',
-      'agent-secret',
-      'internal-wait-snake',
-      'internal-wait-id',
-      'internal-wait-case',
-      'internal-wait-interaction',
-      'internal-event-item',
-      'internal-event-snake',
-      'internal-event-id',
-      'internal-event-case',
-      'internal-step',
-      'internal-frame',
-      'internal-turn',
+      'approval-internal',
+      'session-internal',
+      'agent-internal',
+      'tool-internal',
+      'question-internal',
+      'question-tool-internal',
+      'event-agent-internal',
+      'event-agent-snake-internal',
+      'sender-agent-internal',
     ]) {
       expect(combined).not.toContain(secret);
     }
     expect(interactions.items[0]?.payload).toEqual({
-      agentId: 'customer-interaction',
-      agent_id: 'customer-interaction-snake',
+      toolName: 'Inspect',
+      action: 'inspect files',
+      display: {
+        kind: 'generic',
+        summary: 'Inspect files',
+        detail: { agentId: 'customer-display', sessionId: 'customer-session' },
+      },
     });
-    expect(waited.interactions[0]?.payload).toEqual({ agentId: 'customer-wait' });
+    expect(waited.interactions[0]?.payload).toEqual({
+      questions: [{
+        question: 'Continue?',
+        header: 'Decision',
+        body: 'Choose one.',
+        options: [{ label: 'Yes', description: 'Continue.' }],
+        multiSelect: false,
+        otherLabel: 'Custom',
+        otherDescription: 'Enter a custom answer.',
+      }],
+    });
     expect(events.items[0]).toMatchObject({
       event: { rawInput: { agentId: 'customer-event', agent_id: 'customer-event-snake' } },
     });
     expect(transcript).toMatchObject({
       items: [{
-        origin: { agentId: 'customer-origin' },
+        origin: {
+          kind: 'agent_message',
+          messageId: 'message-1',
+          senderTaskName: 'researcher',
+        },
         steps: [{
           frames: [{
             input: { agentId: 'customer-input' },
             output: { agent_id: 'customer-output' },
-            display: { agentID: 'customer-display' },
+            display: { agentID: 'customer-frame-display' },
             progress: { AgentId: 'customer-progress' },
           }],
         }],
