@@ -2,8 +2,19 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  KIKI_CLI_PRINCIPAL,
+  KIKI_EXIT,
+  projectDelegationCommands,
+  registerDelegationCommands,
+  runDelegationCommand,
+  type DelegationProcedureEntry,
+  type DelegationRuntimeDependencies,
+  type SeatKlientLike,
+} from '../../src/kiki/delegation';
 import { doctor } from '../../src/kiki/doctor';
 import { resolveKikiHome } from '../../src/kiki/home';
 import { mcpCommandConfig, upsertMcpServer } from '../../src/kiki/install';
@@ -105,3 +116,345 @@ describe('kiki command helpers', () => {
     expect(names.filter((name) => name.startsWith('mcp.json.bak.'))).toHaveLength(1);
   });
 });
+
+const procedureNames = [
+  'profiles',
+  'list',
+  'dispatch',
+  'continue',
+  'send',
+  'interactions',
+  'respond',
+  'status',
+  'wait',
+  'result',
+  'events',
+  'transcript',
+  'cancel',
+] as const;
+
+const fakeProcedureTable = procedureNames.map((name): DelegationProcedureEntry => ({
+  name,
+  mcp: {
+    description: name,
+    input: {
+      schema: { parse: (value) => value },
+      decode: (value) => decodeWireInput(name, value),
+    },
+  },
+}));
+
+describe('kiki delegation CLI', () => {
+  it('projects and registers the thirteen delegation commands from one table', () => {
+    const projected = projectDelegationCommands(fakeProcedureTable);
+    const program = new Command();
+    registerDelegationCommands(program, fakeProcedureTable);
+
+    expect(projected.map((entry) => entry.command.split(/[ <[]/u)[0])).toEqual([
+      'agents',
+      'list',
+      'dispatch',
+      'continue',
+      'send',
+      'interactions',
+      'respond',
+      'status',
+      'wait',
+      'result',
+      'events',
+      'transcript',
+      'cancel',
+    ]);
+    expect(program.commands.map((command) => command.name())).toEqual(projected.map((entry) => entry.command.split(/[ <[]/u)[0]));
+  });
+
+  it('executes Commander positionals and options through the generic projection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-commander-test-'));
+    roots.push(root);
+    const workspace = join(root, 'workspace');
+    await writeFile(workspace, '');
+    const calls: { name: string; input: unknown }[] = [];
+    const harness = runtimeHarness(workspace, calls, {
+      dispatch: [{ dispatchId: 'dispatch-1', status: 'queued' }],
+    });
+    const program = new Command();
+    registerDelegationCommands(program, fakeProcedureTable, harness.dependencies);
+
+    await program.parseAsync([
+      'node',
+      'kiki',
+      'dispatch',
+      '--profile',
+      'explore',
+      '--name',
+      'mapper',
+      '--dispatch-key',
+      'explicit-key',
+      '--workspace',
+      workspace,
+      '--json',
+      'inspect this',
+    ]);
+
+    expect(calls).toEqual([{ name: 'dispatch', input: {
+      target: 'named',
+      taskName: 'mapper',
+      profileName: 'explore',
+      modelAlias: undefined,
+      thinkingEffort: undefined,
+      dispatchKey: 'explicit-key',
+      message: 'inspect this',
+    } }]);
+  });
+
+  it('maps positionals and options through the procedure codec into canonical input', () => {
+    const commands = projectDelegationCommands(fakeProcedureTable);
+    const dispatch = commands.find((entry) => entry.procedure.name === 'dispatch')!;
+    const respond = commands.find((entry) => entry.procedure.name === 'respond')!;
+
+    expect(dispatch.canonicalInput(['inspect this'], {
+      profile: 'explore',
+      name: 'mapper',
+      model: 'grok-4.6',
+      thinking: 'max',
+      dispatchKey: 'dispatch-key',
+    })).toEqual({
+      target: 'named',
+      profileName: 'explore',
+      taskName: 'mapper',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'max',
+      dispatchKey: 'dispatch-key',
+      message: 'inspect this',
+    });
+    expect(respond.canonicalInput(['approval-1'], {
+      approve: true,
+      selectedOptionId: 'allow',
+    })).toEqual({
+      interactionId: 'approval-1',
+      kind: 'approval',
+      response: { decision: 'approved', selectedOptionId: 'allow' },
+    });
+    expect(respond.canonicalInput(['question-1'], {
+      answer: { Continue: 'Yes', Confirm: true },
+      method: 'enter',
+    })).toEqual({
+      interactionId: 'question-1',
+      kind: 'question',
+      response: { answers: { Continue: 'Yes', Confirm: true }, method: 'enter' },
+    });
+  });
+
+  it('composes dispatch, wait, and result while surfacing manual interaction status', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-delegation-test-'));
+    roots.push(root);
+    const workspace = join(root, 'workspace');
+    await writeFile(workspace, '');
+    const calls: { name: string; input: unknown }[] = [];
+    const outputs: Record<string, unknown[]> = {
+      dispatch: [{ dispatchId: 'dispatch-1', status: 'running' }],
+      wait: [
+        { waitStatus: 'interaction_pending', interactions: [{ interactionId: 'approval-1' }] },
+        { waitStatus: 'completed', dispatch: { dispatchId: 'dispatch-1', status: 'completed' } },
+      ],
+      respond: [{ interactionId: 'approval-1', status: 'resolved' }],
+      result: [{ dispatch: { dispatchId: 'dispatch-1', status: 'completed' }, text: 'done' }],
+    };
+    const harness = runtimeHarness(workspace, calls, outputs);
+
+    expect(await runDelegationCommand('dispatch', ['inspect'], {
+      workspace,
+      profile: 'explore',
+      name: 'worker',
+      wait: true,
+      json: true,
+    }, harness.dependencies)).toBe(KIKI_EXIT.interactionPending);
+    expect(await runDelegationCommand('respond', ['approval-1'], {
+      workspace,
+      approve: true,
+      json: true,
+    }, harness.dependencies)).toBe(KIKI_EXIT.success);
+    expect(await runDelegationCommand('wait', ['dispatch-1'], {
+      workspace,
+      timeout: 45,
+      json: true,
+    }, harness.dependencies)).toBe(KIKI_EXIT.success);
+    expect(await runDelegationCommand('result', ['dispatch-1'], {
+      workspace,
+      json: true,
+    }, harness.dependencies)).toBe(KIKI_EXIT.success);
+
+    expect(calls.map((call) => call.name)).toEqual(['dispatch', 'wait', 'respond', 'wait', 'result']);
+    expect(calls[0]!.input).toEqual(expect.objectContaining({ dispatchKey: expect.any(String) }));
+    expect(calls[3]!.input).toEqual({ dispatchId: 'dispatch-1', timeoutMs: 45_000 });
+    expect(harness.closed()).toBe(4);
+  });
+
+  it('follows event cursors as JSONL and returns stable terminal exit codes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-events-test-'));
+    roots.push(root);
+    const workspace = join(root, 'workspace');
+    await writeFile(workspace, '');
+    const calls: { name: string; input: unknown }[] = [];
+    const harness = runtimeHarness(workspace, calls, {
+      events: [{ items: [{ seq: 1, type: 'started' }, { seq: 2, type: 'completed' }], nextCursor: 3 }],
+      status: [{ dispatchId: 'dispatch-1', status: 'completed' }],
+    });
+
+    expect(await runDelegationCommand('events', ['dispatch-1'], {
+      workspace,
+      cursor: 1,
+      follow: true,
+      interval: 1,
+      json: true,
+    }, harness.dependencies)).toBe(KIKI_EXIT.success);
+    expect(harness.stdout()).toBe('{"seq":1,"type":"started"}\n{"seq":2,"type":"completed"}\n');
+    expect(calls).toEqual([
+      { name: 'events', input: { dispatchId: 'dispatch-1', cursor: 1 } },
+      { name: 'status', input: { dispatchId: 'dispatch-1' } },
+    ]);
+
+    for (const [status, code] of [
+      ['timed_out', KIKI_EXIT.timedOut],
+      ['interaction_pending', KIKI_EXIT.interactionPending],
+    ] as const) {
+      const waitHarness = runtimeHarness(workspace, [], { wait: [{ waitStatus: status }] });
+      expect(await runDelegationCommand('wait', ['dispatch-1'], { workspace }, waitHarness.dependencies)).toBe(code);
+    }
+    const invalid = runtimeHarness(workspace, [], {});
+    expect(await runDelegationCommand('respond', ['approval-1'], { workspace }, invalid.dependencies)).toBe(KIKI_EXIT.usage);
+    const failed = runtimeHarness(workspace, [], { status: [{ dispatchId: 'dispatch-1', status: 'failed' }] });
+    expect(await runDelegationCommand('status', ['dispatch-1'], { workspace }, failed.dependencies)).toBe(KIKI_EXIT.failure);
+    const cancelled = runtimeHarness(workspace, [], { status: [{ dispatchId: 'dispatch-1', status: 'cancelled' }] });
+    expect(await runDelegationCommand('status', ['dispatch-1'], { workspace }, cancelled.dependencies)).toBe(KIKI_EXIT.notFound);
+  });
+
+  it('resolves home/workspace, reuses the CLI seat identity, and never prints tokens', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-seat-reuse-test-'));
+    roots.push(root);
+    const workspace = join(root, 'workspace');
+    await writeFile(workspace, '');
+    const home = join(root, 'home');
+    const calls: { name: string; input: unknown }[] = [];
+    const harness = runtimeHarness(workspace, calls, {
+      list: [
+        { token: 'DELEGATION_SECRET', children: [] },
+        { authorization: 'Bearer DELEGATION_SECRET', children: [] },
+      ],
+    });
+
+    await runDelegationCommand('list', [], { home, workspace, json: true }, harness.dependencies);
+    await runDelegationCommand('list', [], { home, workspace, json: true }, harness.dependencies);
+
+    expect(harness.ensure).toHaveBeenCalledTimes(2);
+    expect(harness.ensure).toHaveBeenCalledWith({ homeDir: home, workspace });
+    expect(harness.createSeat).toHaveBeenCalledTimes(2);
+    expect(harness.createSeat).toHaveBeenCalledWith(expect.anything(), {
+      workspace,
+      principal: KIKI_CLI_PRINCIPAL,
+    });
+    expect(harness.createClient).toHaveBeenCalledWith({
+      endpoint: 'http://127.0.0.1:58627',
+      token: 'DELEGATION_SECRET',
+    });
+    expect(harness.stdout()).not.toContain('DELEGATION_SECRET');
+    expect(harness.stdout()).toContain('[redacted]');
+  });
+});
+
+function runtimeHarness(
+  workspace: string,
+  calls: { name: string; input: unknown }[],
+  outputs: Record<string, unknown[]>,
+): {
+  dependencies: DelegationRuntimeDependencies;
+  ensure: ReturnType<typeof vi.fn>;
+  createSeat: ReturnType<typeof vi.fn>;
+  createClient: ReturnType<typeof vi.fn>;
+  stdout(): string;
+  closed(): number;
+} {
+  let stdout = '';
+  let closed = 0;
+  const ensure = vi.fn(async () => ({ url: 'http://127.0.0.1:58627', token: 'server-token', serverId: 'server' }));
+  const createSeat = vi.fn(async () => ({
+    seatId: 'seat-1',
+    sessionId: 'session-1',
+    delegationToken: 'DELEGATION_SECRET',
+    principal: KIKI_CLI_PRINCIPAL,
+    workspace,
+    mode: 'manual',
+  }));
+  const client: SeatKlientLike = {
+    call: async (name, input) => {
+      calls.push({ name, input });
+      const queue = outputs[name];
+      if (queue === undefined || queue.length === 0) throw new Error(`Missing fake output for ${name}`);
+      return queue.shift();
+    },
+    close: async () => {
+      closed += 1;
+    },
+  };
+  const createClient = vi.fn(() => client);
+  return {
+    dependencies: {
+      ensureServer: ensure as never,
+      createSeat: createSeat as never,
+      createSeatKlient: createClient,
+      loadProcedures: async () => ({ delegationProcedureTable: fakeProcedureTable }),
+      stdout: { write: (value) => { stdout += String(value); return true; } },
+      stderr: { write: () => true },
+      sleep: async () => {},
+    },
+    ensure,
+    createSeat,
+    createClient,
+    stdout: () => stdout,
+    closed: () => closed,
+  };
+}
+
+function decodeWireInput(name: string, value: never): unknown {
+  const wire = value as Record<string, unknown>;
+  if (name === 'dispatch') return {
+    target: wire['target'],
+    taskName: wire['task_name'],
+    profileName: wire['profile_name'],
+    modelAlias: wire['model_alias'],
+    thinkingEffort: wire['thinking_effort'],
+    dispatchKey: wire['dispatch_key'] ?? crypto.randomUUID(),
+    message: wire['message'],
+  };
+  if (name === 'continue') return {
+    dispatchId: wire['dispatch_id'],
+    dispatchKey: wire['dispatch_key'] ?? crypto.randomUUID(),
+    message: wire['message'],
+  };
+  if (name === 'send') return {
+    taskName: wire['task_name'],
+    message: wire['message'],
+    idempotencyKey: wire['idempotency_key'] ?? crypto.randomUUID(),
+  };
+  if (name === 'respond') {
+    const response = wire['response'] as Record<string, unknown>;
+    return wire['kind'] === 'approval'
+      ? {
+          interactionId: wire['interaction_id'],
+          kind: 'approval',
+          response: {
+            decision: response['decision'],
+            feedback: response['feedback'],
+            selectedLabel: response['selected_label'],
+            selectedOptionId: response['selected_option_id'],
+          },
+        }
+      : { interactionId: wire['interaction_id'], kind: 'question', response };
+  }
+  return Object.fromEntries(Object.entries(wire).map(([key, item]) => [
+    name === 'wait' && key === 'timeout_s'
+      ? 'timeoutMs'
+      : key.replaceAll(/_([a-z])/gu, (_match, letter: string) => letter.toUpperCase()),
+    name === 'wait' && key === 'timeout_s' ? Number(item) * 1_000 : item,
+  ]));
+}
