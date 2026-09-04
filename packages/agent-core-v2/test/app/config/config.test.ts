@@ -695,6 +695,13 @@ describe('nb_search config section', () => {
     await expect(
       config.set(NB_SEARCH_SECTION, {
         provider_instances: {
+          unknown: { provider_id: 'unknown-provider', enabled: true, options: {} },
+        },
+      }),
+    ).rejects.toThrow('Invalid nb_search configuration');
+    await expect(
+      config.set(NB_SEARCH_SECTION, {
+        provider_instances: {
           'openai-compatible.default': { options: { api_key: 'secret-value' } },
         },
       }),

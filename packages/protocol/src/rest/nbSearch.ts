@@ -288,7 +288,8 @@ export interface NbSearchProviderOptionDescriptor {
 
 export interface UnknownNbSearchProviderOption {
   readonly provider_instance_id: string;
-  readonly option_key: string;
+  readonly provider_id?: string;
+  readonly option_key?: string;
 }
 
 export interface NbSearchProviderOptionsConfig {
@@ -307,15 +308,24 @@ export function findUnknownNbSearchProviderOptions(
   );
   const issues: UnknownNbSearchProviderOption[] = [];
   for (const [instanceId, instance] of Object.entries(config.provider_instances ?? {})) {
-    if (instance === null || instance.options === null || instance.options === undefined) continue;
+    if (instance === null) continue;
     const inferredProviderId = instanceId.endsWith('.default')
       ? instanceId.slice(0, -'.default'.length)
       : undefined;
     const providerId = instance.provider_id ?? inferredProviderId;
     const allowed = providerId === undefined ? undefined : allowedByProvider.get(providerId);
+    if (allowed === undefined) {
+      issues.push({ provider_instance_id: instanceId, provider_id: providerId });
+      continue;
+    }
+    if (instance.options === null || instance.options === undefined) continue;
     for (const optionKey of Object.keys(instance.options)) {
-      if (allowed?.has(optionKey) !== true) {
-        issues.push({ provider_instance_id: instanceId, option_key: optionKey });
+      if (!allowed.has(optionKey)) {
+        issues.push({
+          provider_instance_id: instanceId,
+          provider_id: providerId,
+          option_key: optionKey,
+        });
       }
     }
   }

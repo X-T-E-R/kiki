@@ -135,7 +135,13 @@ import { join } from 'node:path';
 
 import type { AgentContextData, ExperimentalFeatureState } from '@moonshot-ai/agent-core-v2';
 
-import { ensureConfigFile, HookDefSchema, readConfigFile, validateConfigPatch } from '#/config';
+import {
+  ensureConfigFile,
+  HookDefSchema,
+  mergeConfigPatch,
+  readConfigFile,
+  validateConfigPatch,
+} from '#/config';
 import { ErrorCodes, isKimiErrorCode, KimiError, type KimiErrorCode } from '#/errors';
 import { getRootLogger, type DiagnosticLogHost } from '#/logging';
 import type { BeginGlobalMcpServerAuthResult } from '#/protocol';
@@ -759,6 +765,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
     // does not model every constraint the SDK's config contract states; gate the
     // whole patch first so an invalid one is rejected before any write.
     validateConfigPatch(patch);
+    mergeConfigPatch(await this.getConfig(), patch);
     for (const [domain, domainPatch] of Object.entries(patch)) {
       if (domainPatch === undefined) continue;
       await this.klient.global.config.set({ domain, patch: domainPatch });

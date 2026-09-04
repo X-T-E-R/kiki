@@ -23,7 +23,9 @@ export const NbSearchConfigSchema = z.custom<CanonicalConfigPatch>(
       if (unknownOptions.length > 0) {
         const issue = unknownOptions[0]!;
         throw new Error(
-          `provider_instances.${issue.provider_instance_id}.options.${issue.option_key} is not supported`,
+          issue.option_key === undefined
+            ? `provider_instances.${issue.provider_instance_id}.provider_id is not registered`
+            : `provider_instances.${issue.provider_instance_id}.options.${issue.option_key} is not supported`,
         );
       }
       createNbSearchRuntime({ env: process.env, config });

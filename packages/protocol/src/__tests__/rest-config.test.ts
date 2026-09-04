@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { configResponseSchema, patchConfigRequestSchema } from '../rest/config';
-import { nbSearchCapabilitiesSchema, nbSearchConfigPatchSchema } from '../rest/nbSearch';
+import {
+  findUnknownNbSearchProviderOptions,
+  nbSearchCapabilitiesSchema,
+  nbSearchConfigPatchSchema,
+} from '../rest/nbSearch';
 
 describe('config REST protocol', () => {
   it('omits the retired telemetry patch field', () => {
@@ -101,5 +105,16 @@ describe('nb-search REST protocol', () => {
   it('rejects unknown canonical config fields', () => {
     expect(nbSearchConfigPatchSchema.safeParse({ defaults: { search_lane: 'context7.docs' } }).success).toBe(true);
     expect(nbSearchConfigPatchSchema.safeParse({ api_key: 'secret-value' }).success).toBe(false);
+  });
+
+  it('reports an unknown provider even when it has no options', () => {
+    expect(findUnknownNbSearchProviderOptions({
+      provider_instances: {
+        unknown: { provider_id: 'unknown-provider' },
+      },
+    }, [{ provider_id: 'exa', option_keys: ['search_path'] }])).toEqual([{
+      provider_instance_id: 'unknown',
+      provider_id: 'unknown-provider',
+    }]);
   });
 });
