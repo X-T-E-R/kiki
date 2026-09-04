@@ -104,6 +104,9 @@ importers:
       '@kiki/session-core':
         specifier: workspace:^
         version: link:../../packages/session-core
+      '@moonshot-ai/klient':
+        specifier: workspace:^
+        version: link:../../packages/klient
       '@moonshot-ai/protocol':
         specifier: workspace:^
         version: link:../../packages/protocol

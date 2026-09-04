@@ -14,6 +14,9 @@
     "vite.config.ts",
     "../../packages/session-core/src",
     "../../packages/protocol/src",
-    "../../packages/transcript/src"
+    "../../packages/transcript/src",
+    "../../packages/agent-core-v2/src/agent/tools/agent/subagent-task.ts",
+    "../../packages/agent-core-v2/src/agent/tools/ask-user-question/question-background-task.ts",
+    "../../packages/agent-core-v2/src/agent/tools/os/bash/process-task.ts"
   ]
 }
