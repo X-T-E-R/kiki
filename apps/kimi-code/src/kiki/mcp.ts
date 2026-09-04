@@ -24,7 +24,6 @@ export function registerMcpCommand(program: Command): void {
       });
       await runKikiMcpStdio({
         endpoint: connection.url,
-        token: connection.token,
         delegationToken: seat.delegationToken,
         sessionId: seat.sessionId,
         workspacePath: seat.workspace,

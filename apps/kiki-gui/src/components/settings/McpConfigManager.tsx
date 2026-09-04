@@ -4,6 +4,7 @@ import { Link, useLocation } from 'react-router-dom';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { mcpConfigFromDraft, type McpEditorDraft } from '@kiki/session-core/settings';
+import type { GlobalMcpServerConfig } from '@moonshot-ai/klient';
 import type {
   McpManagedServer,
   McpManagedServerConfig,
@@ -48,6 +49,21 @@ function mcpDraft(entry?: McpManagedServer): McpEditorDraft {
   };
 }
 
+function klientMcpServer(config: McpServerConfig, name: string): GlobalMcpServerConfig {
+  const enabledTools = config.enabledTools === undefined ? undefined : [...config.enabledTools];
+  const disabledTools = config.disabledTools === undefined ? undefined : [...config.disabledTools];
+  if (config.transport === 'stdio') {
+    return {
+      ...config,
+      name,
+      args: config.args === undefined ? undefined : [...config.args],
+      enabledTools,
+      disabledTools,
+    };
+  }
+  return { ...config, name, enabledTools, disabledTools };
+}
+
 export function McpConfigManager({
   cwd,
   entries,
@@ -61,7 +77,7 @@ export function McpConfigManager({
   error: unknown;
   onEcho: (servers: readonly McpManagedServer[]) => void;
 }) {
-  const { client } = useConnection();
+  const { klient } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const location = useLocation();
@@ -99,12 +115,13 @@ export function McpConfigManager({
       const original = draft.original;
       // A rename cannot be expressed as one write: add the new identity first,
       // then drop the old one so a mid-flight failure never loses the entry.
+      const server = klientMcpServer(config, name);
       let echoed = original === undefined || original.name !== name
-        ? await client.addManagedMcpServer({ ...config, name }, scope)
-        : await client.updateManagedMcpServer(name, config, scope);
+        ? await klient.global.mcp.add({ server, cwd: scope })
+        : await klient.global.mcp.update({ server, cwd: scope });
       onEcho(echoed);
       if (original !== undefined && original.name !== name) {
-        echoed = await client.removeManagedMcpServer(original.name, scope);
+        echoed = await klient.global.mcp.remove({ name: original.name, cwd: scope });
         onEcho(echoed);
       }
       setDraft(null);
@@ -130,7 +147,7 @@ export function McpConfigManager({
       const config = draftConfig();
       if (config === null) return;
       // Probes the draft as typed — nothing has to be saved first.
-      const result = await client.testManagedMcpServer({ server: { ...config, name }, cwd: scope });
+      const result = await klient.global.mcp.test({ server: klientMcpServer(config, name), cwd: scope });
       setFeedback(
         result.success
           ? { tone: 'success', text: t('st.mcp.testOk', { output: result.output }) }
@@ -150,7 +167,7 @@ export function McpConfigManager({
     setFeedback(null);
     setPendingDelete(null);
     try {
-      const echoed = await client.removeManagedMcpServer(entry.name, scope);
+      const echoed = await klient.global.mcp.remove({ name: entry.name, cwd: scope });
       onEcho(echoed);
       if (draft?.original?.name === entry.name) setDraft(null);
       setFeedback({ tone: 'success', text: t('st.mcp.deleted') });

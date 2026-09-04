@@ -3,20 +3,11 @@ import {
   type AgentTask,
   type AgentTaskInfoBase,
   type AgentTaskSink,
+  type QuestionTaskInfo,
 } from '#/agent/task/types';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 
-export interface QuestionTaskInfo extends AgentTaskInfoBase {
-  readonly kind: 'question';
-  readonly questionCount: number;
-  readonly toolCallId?: string;
-}
-
-declare module '#/agent/task/types' {
-  interface AgentTaskInfoByKind {
-    readonly question: QuestionTaskInfo;
-  }
-}
+export type { QuestionTaskInfo } from '#/agent/task/types';
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

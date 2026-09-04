@@ -577,7 +577,7 @@ function renderTsFields(
   const dict: SketchDict = {};
   let count = 0;
   for (const [name, f] of fields) {
-    if (count >= 8) {
+    if (count >= 32) {
       dict[MORE_KEY] = '…';
       break;
     }
@@ -598,11 +598,15 @@ function findTsTypeDef(name: string, file: string): string | undefined {
   const typeRe = new RegExp(`(?:export\\s+)?type\\s+${name}(?:<[^>;=]*>)?\\s*=\\s*`);
   const m = typeRe.exec(source);
   if (m !== null) return readExpression(source, m.index + m[0].length).trim();
-  const ifaceRe = new RegExp(`(?:export\\s+)?interface\\s+${name}(?:<[^>]*>)?(?:\\s+extends[^{]+)?\\s*\\{`);
+  const ifaceRe = new RegExp(`(?:export\\s+)?interface\\s+${name}(?:<[^>]*>)?(?:\\s+extends\\s+([^{]+))?\\s*\\{`);
   const im = ifaceRe.exec(source);
   if (im !== null) {
     const body = objectBody(source, im.index + im[0].length - 1);
-    if (body !== undefined) return `{ ${body} }`;
+    if (body !== undefined) {
+      const own = `{ ${body} }`;
+      const bases = im[1]?.trim();
+      return bases === undefined || bases.length === 0 ? own : `${bases} & ${own}`;
+    }
   }
   return undefined;
 }
@@ -712,11 +716,52 @@ function summarizeTsTypeExpr(
       return renderTsFields(splitTsTypeFields(body), file, budget, charBudget, depth);
     }
   }
+  const indexed = /^([$\w]+)\[([$\w]+)\]$/.exec(text);
+  if (indexed?.[1] !== undefined && indexed[2] !== undefined) {
+    const summary = summarizeTsIndexedAccess(indexed[1], indexed[2], file, budget);
+    if (summary !== undefined) return summary;
+  }
   if (/^[$\w]+$/.test(text)) {
     const summary = summarizeTsType(text, file, budget);
     if (summary !== undefined) return summary;
   }
   return truncate(text, 80);
+}
+
+function summarizeTsIndexedAccess(
+  objectName: string,
+  indexName: string,
+  file: string,
+  budget: Budget,
+): Sketch | undefined {
+  if (!spend(budget)) return undefined;
+  const objectDef = findTsTypeDef(objectName, file);
+  if (objectDef === undefined || !objectDef.startsWith('{')) return undefined;
+  const body = objectBody(objectDef, 0);
+  if (body === undefined) return undefined;
+  const fields = splitTsTypeFields(body);
+  const indexDef = findTsTypeDef(indexName, file);
+  const keys = indexDef?.trim() === `keyof ${objectName}`
+    ? [...fields.keys()]
+    : splitTopLevel(indexDef ?? indexName, ['|'])
+        .map((member) => /^['"]([^'"]+)['"]$/.exec(member.trim())?.[1])
+        .filter((key): key is string => key !== undefined);
+  const members = keys.flatMap((key) => {
+    const field = fields.get(key);
+    return field === undefined ? [] : [field.type];
+  });
+  if (members.length === 0) return undefined;
+  return members
+    .map((member) => {
+      const definition = findTsTypeDef(member, file);
+      return stringifySketch(summarizeTsTypeExpr(
+        definition ?? member,
+        file,
+        TS_BUDGET(),
+        16384,
+      ));
+    })
+    .join(' | ');
 }
 
 function summarizeTsType(name: string, fromFile: string, budget: Budget): Sketch | undefined {
@@ -760,7 +805,11 @@ function friendlyZodExpr(expr: string, ownerFile: string, depth = 0): Sketch {
     if (typeof summary !== 'string' && !Array.isArray(summary)) {
       return { [TYPE_KEY]: typeName, ...summary };
     }
-    return truncate(`${typeName} = ${stringifySketch(summary)}`, 1024);
+    const importSource = findImportSource(ownerFile, typeName);
+    const typeFile = importSource === undefined ? ownerFile : resolveModuleFile(ownerFile, importSource);
+    const definition = typeFile === undefined ? undefined : findTsTypeDef(typeName, typeFile);
+    const limit = definition !== undefined && /^[$\w]+\[[$\w]+\]$/.test(definition) ? 16384 : 1024;
+    return truncate(`${typeName} = ${stringifySketch(summary)}`, limit);
   }
   if (/^z\.string\(\)(?:\.\w+\([^)]*\))*$/.test(text)) return 'string';
   if (/^z\.number\(\)(?:\.\w+\([^)]*\))*$/.test(text)) {

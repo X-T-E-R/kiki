@@ -26,6 +26,8 @@ import {
   type ReactNode,
 } from 'react';
 
+import type { Klient } from '@moonshot-ai/klient';
+import { createKlient } from '@moonshot-ai/klient/http';
 import type { MetaResponse } from '@moonshot-ai/protocol';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 
@@ -90,6 +92,7 @@ export function handleGlobalConnectionFrame(
 interface ConnectionValue {
   readonly config: ConnectionConfig;
   readonly client: KikiClient;
+  readonly klient: Klient;
   readonly socket: KikiSocket;
   readonly meta: MetaResponse;
   readonly wsStatus: WsStatus;
@@ -318,16 +321,22 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     void host.connection.cancelStartup?.().catch(() => undefined);
   }, [host, t]);
 
+  const endpoint = config?.url.trim().replace(/\/+$/, '') ?? null;
+  const token = config?.token.trim() ?? null;
   const client = useMemo(
-    () =>
-      config === null
-        ? null
-        : new KikiClient({
-            baseUrl: config.url.trim().replace(/\/+$/, ''),
-            token: config.token.trim(),
-          }),
-    [config],
+    () => endpoint === null || token === null ? null : new KikiClient({ baseUrl: endpoint, token }),
+    [endpoint, token],
   );
+  const [klient, setKlient] = useState<Klient | null>(null);
+
+  useEffect(() => {
+    if (endpoint === null || token === null) return;
+    const instance = createKlient({ endpoint, token });
+    setKlient(instance);
+    return () => {
+      void instance.close();
+    };
+  }, [endpoint, token]);
 
   // Validate the config against /meta before entering the app.
   useEffect(() => {
@@ -500,9 +509,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<ConnectionValue | null>(() => {
-    if (config === null || client === null || socket === null || meta === null) return null;
-    return { config, client, socket, meta, wsStatus, disconnect, applyConnection };
-  }, [config, client, socket, meta, wsStatus, disconnect, applyConnection]);
+    if (config === null || client === null || klient === null || socket === null || meta === null) return null;
+    return { config, client, klient, socket, meta, wsStatus, disconnect, applyConnection };
+  }, [config, client, klient, socket, meta, wsStatus, disconnect, applyConnection]);
 
   const connectErrorText =
     connectError === null

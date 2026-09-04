@@ -1747,7 +1747,7 @@ export interface AgentStateSnapshot {
   'stepRetry.lastFailedDriverId': string | undefined;
   // src/agent/task/taskOps.ts
   // replayable · durable — folds: TaskStarted, TaskTerminated
-  'task': /* TaskModelState — packages/agent-core-v2/src/agent/task/taskOps.ts */ Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/tools/agent/subagent-task.ts */ {
+  'task': /* TaskModelState — packages/agent-core-v2/src/agent/task/taskOps.ts */ Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'agent';
     readonly agentId?: string;
     readonly profile?: string;
@@ -1765,7 +1765,7 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
-  } | /* QuestionTaskInfo — packages/agent-core-v2/src/agent/tools/ask-user-question/question-background-task.ts */ {
+  } | /* QuestionTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'question';
     readonly questionCount: number;
     readonly toolCallId?: string;
@@ -1778,7 +1778,7 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
-  } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/tools/os/bash/process-task.ts */ {
+  } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'process';
     readonly command: string;
     readonly pid: number;
@@ -1796,7 +1796,7 @@ export interface AgentStateSnapshot {
   // src/agent/task/taskService.ts
   'task.activeTaskReminderPending': boolean;
   'task.deliveredNotificationKeys': Set<string>;
-  'task.ghosts': Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/tools/agent/subagent-task.ts */ {
+  'task.ghosts': Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'agent';
     readonly agentId?: string;
     readonly profile?: string;
@@ -1814,7 +1814,7 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
-  } | /* QuestionTaskInfo — packages/agent-core-v2/src/agent/tools/ask-user-question/question-background-task.ts */ {
+  } | /* QuestionTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'question';
     readonly questionCount: number;
     readonly toolCallId?: string;
@@ -1827,7 +1827,7 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
-  } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/tools/os/bash/process-task.ts */ {
+  } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'process';
     readonly command: string;
     readonly pid: number;

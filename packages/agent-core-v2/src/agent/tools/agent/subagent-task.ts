@@ -5,6 +5,7 @@ import {
   type AgentTask,
   type AgentTaskInfoBase,
   type AgentTaskSink,
+  type SubagentTaskInfo,
 } from '#/agent/task/types';
 
 type SubagentCompletion = {
@@ -22,22 +23,7 @@ export type SubagentHandle = {
   readonly completion: Promise<SubagentCompletion>;
 };
 
-export interface SubagentTaskInfo extends AgentTaskInfoBase {
-  readonly kind: 'agent';
-  readonly agentId?: string;
-  readonly profile?: string;
-  readonly parentToolCallId?: string;
-  readonly model?: string;
-  readonly thinkingEffort?: string;
-  readonly collaborationTaskName?: string;
-  readonly collaborationAgentType?: string;
-}
-
-declare module '#/agent/task/types' {
-  interface AgentTaskInfoByKind {
-    readonly agent: SubagentTaskInfo;
-  }
-}
+export type { SubagentTaskInfo } from '#/agent/task/types';
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

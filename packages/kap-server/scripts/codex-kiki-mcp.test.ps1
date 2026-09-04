@@ -412,14 +412,15 @@ try {
         }
         connection = [pscustomobject]@{
           endpoint = 'http://127.0.0.1:1'
-          kapToken = 'token'
           delegationToken = 'delegation'
           sessionId = 'session_job'
           workspacePath = 'C:\job-workspace'
         }
       }
     }
+    $env:KIKI_KAP_TOKEN = 'legacy-daemon-token'
     $ownerExit = Invoke-KikiMcpLauncher 'C:\ignored'
+    $ownerKapToken = $env:KIKI_KAP_TOKEN
     $ownerCalls = @($script:recycleCalls)
     $script:recycleCalls = @()
     $script:fakeStarted = $null
@@ -441,6 +442,7 @@ try {
       ownerKey = [string]$ownerCalls[0].key
       ownerStatePid = [int]$ownerCalls[0].statePid
       ownerStatePath = [string]$ownerCalls[0].statePath
+      ownerKapToken = [string]$ownerKapToken
       attachedExit = [int]$attachedExit
       attachedRecycleCount = $attachedCalls.Count
       launcherThrew = $launcherThrew
@@ -455,6 +457,7 @@ try {
   Assert-True ($recycle.ownerKey -ceq 'job-owner-key') 'the recycle call did not receive the workspace binding'
   Assert-True ($recycle.ownerStatePid -eq 4242) 'the recycle call did not receive the recorded runtime state'
   Assert-True ($recycle.ownerStatePath -like '*runtime-state.json') 'the recycle call did not receive the state path'
+  Assert-True ([string]::IsNullOrEmpty([string]$recycle.ownerKapToken)) 'the launcher passed the legacy daemon token into the MCP runtime'
   Assert-True ($recycle.attachedExit -eq 7) 'the attached launcher did not propagate the MCP process exit code'
   Assert-True ($recycle.attachedRecycleCount -eq 0) 'an attached launcher recycled a KAP it did not start'
   Assert-True ($recycle.launcherThrew -eq $true) 'a broken Node invocation did not surface its failure'

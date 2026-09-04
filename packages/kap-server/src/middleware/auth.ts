@@ -16,6 +16,7 @@ const BEARER_PREFIX = 'Bearer ';
 
 export interface AuthHookOptions {
   readonly isBypassed?: (req: FastifyRequest) => boolean;
+  readonly bypassSeatDelegation?: boolean;
   readonly limiter?: Pick<AuthFailureLimiter, 'recordFailure' | 'isBanned'>;
   /**
    * Unified credential validator. Defaults to `authTokenService.isValid`
@@ -34,7 +35,7 @@ function decodeRequestPath(rawUrl: string): string | null {
   }
 }
 
-function defaultIsBypassed(req: FastifyRequest): boolean {
+function defaultIsBypassed(req: FastifyRequest, bypassSeatDelegation: boolean): boolean {
   if (req.method === 'OPTIONS') {
     return true;
   }
@@ -46,6 +47,9 @@ function defaultIsBypassed(req: FastifyRequest): boolean {
     return true;
   }
   if (path === '/mcp') {
+    return true;
+  }
+  if (bypassSeatDelegation && path.startsWith('/api/klient/delegation/')) {
     return true;
   }
   const isApi = path.startsWith('/api/');
@@ -65,7 +69,7 @@ export function createAuthHook(
   authTokenService: IAuthTokenService,
   opts?: AuthHookOptions,
 ): (req: FastifyRequest, reply: FastifyReply) => Promise<FastifyReply | void> {
-  const isBypassed = opts?.isBypassed ?? defaultIsBypassed;
+  const isBypassed = opts?.isBypassed ?? ((req) => defaultIsBypassed(req, opts?.bypassSeatDelegation === true));
   const validateCredential: CredentialValidator =
     opts?.validateCredential ?? ((candidate) => authTokenService.isValid(candidate));
 

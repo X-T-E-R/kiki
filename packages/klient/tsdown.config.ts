@@ -4,6 +4,8 @@ export default defineConfig({
   entry: [
     './src/index.ts',
     './src/host.ts',
+    './src/procedures/index.ts',
+    './src/procedures/http.ts',
     './src/transports/http/index.ts',
     './src/transports/ipc/index.ts',
     './src/transports/memory/index.ts',

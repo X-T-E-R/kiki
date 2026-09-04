@@ -710,7 +710,7 @@ interface TaskNotifiedPayload {
 interface TaskStartedPayload {
   _name: 'task.started';
   /** AgentTaskInfo */
-  info: AgentTaskInfoByKind[AgentTaskKind];
+  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'question', questionCount: number, toolCallId?: string };
 }
 
 /**
@@ -720,7 +720,7 @@ interface TaskStartedPayload {
 interface TaskTerminatedPayload {
   _name: 'task.terminated';
   /** AgentTaskInfo */
-  info: AgentTaskInfoByKind[AgentTaskKind];
+  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'question', questionCount: number, toolCallId?: string };
   outputTail?: string;
 }
 

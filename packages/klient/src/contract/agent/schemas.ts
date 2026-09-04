@@ -221,6 +221,8 @@ export const agentTaskInfoSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
+export type AgentTaskInfo = z.infer<typeof agentTaskInfoSchema>;
+
 export const stopTaskPayloadSchema = z.object({
   taskId: z.string(),
   reason: z.string().optional(),

@@ -92,10 +92,14 @@ describe('ExternalDelegationSeatManager', () => {
     expect(listed).toHaveLength(1);
     expect(listed[0]).not.toHaveProperty('delegationToken');
     expect(await manager.resolve(first.sessionId, first.delegationToken)).toEqual({
+      seatId: first.seatId,
       principalId: 'cursor',
       sessionId: first.sessionId,
+      workspacePath: workspace,
     });
     expect(await manager.resolveBearer(first.delegationToken)).toEqual({
+      seatId: first.seatId,
+      principalId: 'cursor',
       sessionId: first.sessionId,
       delegationToken: first.delegationToken,
       workspacePath: workspace,

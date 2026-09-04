@@ -29,6 +29,14 @@
       "types": "./src/host.ts",
       "default": "./src/host.ts"
     },
+    "./procedures": {
+      "types": "./src/procedures/index.ts",
+      "default": "./src/procedures/index.ts"
+    },
+    "./procedures/http": {
+      "types": "./src/procedures/http.ts",
+      "default": "./src/procedures/http.ts"
+    },
     "./package.json": {
       "types": "./package.json",
       "default": "./package.json"
