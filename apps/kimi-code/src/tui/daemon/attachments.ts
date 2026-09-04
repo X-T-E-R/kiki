@@ -19,6 +19,9 @@ export interface PreparedDaemonPrompt {
     | { readonly type: 'video_url'; readonly videoUrl: { readonly url: string } }
   >;
   readonly hasFileAttachment: boolean;
+  readonly imageAttachmentIds: readonly number[];
+  readonly fileAttachmentIds: readonly number[];
+  readonly uploadIds: readonly string[];
 }
 
 const ATTACHMENT_PATTERN =
@@ -34,6 +37,9 @@ export async function prepareDaemonPrompt(
   let cursor = 0;
   let matched = false;
   let hasFileAttachment = false;
+  const imageAttachmentIds: number[] = [];
+  const fileAttachmentIds: number[] = [];
+  const uploadIds: string[] = [];
   ATTACHMENT_PATTERN.lastIndex = 0;
   for (let match = ATTACHMENT_PATTERN.exec(text); match !== null; match = ATTACHMENT_PATTERN.exec(text)) {
     const before = text.slice(cursor, match.index);
@@ -57,6 +63,8 @@ export async function prepareDaemonPrompt(
           content.push({ type: 'video', source });
           engineContent.push({ type: 'video_url', videoUrl: { url } });
         }
+        imageAttachmentIds.push(mediaId);
+        uploadIds.push(attachment.fileId);
         matched = true;
       }
     } else if (fileId !== undefined) {
@@ -71,6 +79,8 @@ export async function prepareDaemonPrompt(
           media_type: attachment.mediaType,
           size: attachment.size,
         });
+        fileAttachmentIds.push(fileId);
+        uploadIds.push(attachment.fileId);
         hasFileAttachment = true;
         matched = true;
       }
@@ -78,7 +88,9 @@ export async function prepareDaemonPrompt(
     cursor = match.index + match[0].length;
   }
   pushText(content, engineContent, text.slice(cursor));
-  return matched ? { content, engineContent, hasFileAttachment } : undefined;
+  return matched
+    ? { content, engineContent, hasFileAttachment, imageAttachmentIds, fileAttachmentIds, uploadIds }
+    : undefined;
 }
 
 function pushText(

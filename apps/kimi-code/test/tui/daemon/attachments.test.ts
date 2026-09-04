@@ -22,6 +22,9 @@ describe('daemon prompt attachments', () => {
         { type: 'text', text: ' now' },
       ],
       hasFileAttachment: false,
+      imageAttachmentIds: [image.id],
+      fileAttachmentIds: [],
+      uploadIds: ['img-1'],
     });
   });
 

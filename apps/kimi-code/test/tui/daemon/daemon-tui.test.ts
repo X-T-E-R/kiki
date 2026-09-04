@@ -38,7 +38,12 @@ function driver(
     },
   );
   created.push(tui);
-  const controllerState = { busy: false, blocks: [], activePromptId: undefined };
+  const controllerState = {
+    busy: false,
+    blocks: [],
+    activePromptId: undefined,
+    goal: null as null | { status: 'active' | 'paused' | 'blocked' | 'complete' },
+  };
   const controller = {
     sessionId: 'session-1',
     sendPrompt: vi.fn(),
@@ -61,6 +66,7 @@ function driver(
       listModels: ReturnType<typeof vi.fn>;
       listSessions: ReturnType<typeof vi.fn>;
       createSession: ReturnType<typeof vi.fn>;
+      getGoal: ReturnType<typeof vi.fn>;
       undoSession: ReturnType<typeof vi.fn>;
       listAgentProfiles: ReturnType<typeof vi.fn>;
       listSkills: ReturnType<typeof vi.fn>;
@@ -73,6 +79,7 @@ function driver(
       setSwarmMode: ReturnType<typeof vi.fn>;
       setTitle: ReturnType<typeof vi.fn>;
       updateSessionProfile: ReturnType<typeof vi.fn>;
+      updateSessionSourceOverlay: ReturnType<typeof vi.fn>;
       resolveApproval: ReturnType<typeof vi.fn>;
       resolveQuestion: ReturnType<typeof vi.fn>;
       dismissQuestion: ReturnType<typeof vi.fn>;
@@ -82,11 +89,12 @@ function driver(
     handleSlash(text: string): Promise<void>;
     handleInterrupt(kind: 'ctrl-c'): Promise<void>;
     openSession(sessionId: string): Promise<void>;
-    configureExplicitSources(): Promise<void>;
+    configureExplicitSources(sessionId: string): Promise<void>;
     initializeSession(): Promise<void>;
     renderSession(view: unknown): void;
     refreshAgentCommands(): Promise<void>;
     refreshSkillCommands(sessionId: string): Promise<void>;
+    showSessionPicker(scope?: 'cwd' | 'all'): Promise<void>;
     respondApproval(block: unknown, response: unknown): Promise<void>;
     respondQuestion(block: unknown, response: unknown): Promise<void>;
     showStatus: ReturnType<typeof vi.fn>;
@@ -94,6 +102,7 @@ function driver(
   internal.controller = controller;
   const agentFacade = {
     promptWithSkills: vi.fn(),
+    steer: vi.fn(),
     compact: vi.fn(async () => true),
     getTasks: vi.fn(async () => []),
     stopTask: vi.fn(),
@@ -134,7 +143,13 @@ function driver(
     })),
     logout: vi.fn(async () => ({ logged_out: true, provider: 'example' })),
   };
-  const filesFacade = { save: vi.fn(async () => ({ id: 'file-1' })) };
+  const filesFacade = {
+    save: vi.fn(async () => ({ id: 'file-1' })),
+    delete: vi.fn(),
+  };
+  const flagsFacade = {
+    list: vi.fn(async () => [{ id: 'example-flag', enabled: true, source: 'config' }]),
+  };
   const klientClose = vi.fn();
   internal.client.klient = {
     close: klientClose,
@@ -145,10 +160,12 @@ function driver(
       kosong: providerFacade,
       auth: authFacade,
       files: filesFacade,
+      flags: flagsFacade,
     },
   };
   internal.client.listSessions = vi.fn(async () => ({ items: [], nextCursor: undefined }));
   internal.client.createSession = vi.fn(async () => ({ id: 'session-created' }));
+  internal.client.getGoal = vi.fn(async () => ({ goal: null }));
   internal.client.undoSession = vi.fn();
   internal.client.listModels = vi.fn(async () => ({
     items: [
@@ -186,6 +203,7 @@ function driver(
   internal.client.setSwarmMode = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.setTitle = vi.fn(async (_sessionId, title) => ({ id: 'session-1', title }));
   internal.client.updateSessionProfile = vi.fn(async () => ({ id: 'session-1' }));
+  internal.client.updateSessionSourceOverlay = vi.fn(async () => ({ profiles: 0, skills: 0 }));
   internal.client.resolveApproval = vi.fn();
   internal.client.resolveQuestion = vi.fn();
   internal.client.dismissQuestion = vi.fn();
@@ -207,6 +225,7 @@ function driver(
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const tui of created.splice(0)) {
     tui.state.footer.dispose();
     await (tui as unknown as { client: { close(): Promise<void> } }).client.close();
@@ -289,7 +308,7 @@ describe('DaemonTUI commands', () => {
     await internal.handleSlash('/fork Review copy');
     await internal.handleSlash(`/plugins marketplace ${marketplacePath}`);
     await internal.handleSlash('/plugins install C:\\plugins\\local');
-    await internal.handleSlash('/provider add example {"type":"openai_legacy","baseUrl":"https://example.test"}');
+    await internal.handleSlash('/provider add example {"type":"openai_legacy","baseUrl":"https://example.test","auth":{"method":"oauth"}}');
     await internal.handleSlash('/reload');
     await internal.handleSlash('/login example');
     await internal.handleSlash('/logout example');
@@ -311,15 +330,81 @@ describe('DaemonTUI commands', () => {
     expect(authFacade.startLogin).toHaveBeenCalledWith('example');
     expect(authFacade.logout).toHaveBeenCalledWith('example');
     expect(agentFacade.getMcpServers).toHaveBeenCalledOnce();
-    expect(controller.sendPrompt).toHaveBeenCalledWith(
-      expect.objectContaining({ goalObjective: 'Ship the daemon TUI' }),
-    );
+    expect(internal.client.updateSessionProfile).toHaveBeenCalledWith('session-1', {
+      agent_config: { goal_objective: 'Ship the daemon TUI' },
+    });
     expect(configFacade.replace).toHaveBeenCalledWith({
       domain: 'thinking',
       value: { enabled: true },
     });
     expect(internal.client.undoSession).toHaveBeenCalledWith('session-1');
     expect(controller.resync).toHaveBeenCalled();
+  });
+
+  it('redacts settings output and rejects plaintext provider secrets', async () => {
+    const { internal, configFacade, providerFacade } = driver();
+    configFacade.getAll.mockResolvedValue({
+      provider: {
+        apiKey: 'settings-secret',
+        headers: { Authorization: 'Bearer settings-token' },
+      },
+      nested: { enabled: true },
+    });
+
+    await internal.handleSlash('/settings');
+    const rendered = String(internal.showStatus.mock.calls.at(-1)?.[0]);
+    expect(rendered).not.toContain('settings-secret');
+    expect(rendered).not.toContain('settings-token');
+    expect(rendered).toContain('[redacted]');
+    await expect(
+      internal.handleSlash('/settings provider {"apiKey":"plaintext"}'),
+    ).rejects.toThrow('sensitive field');
+    expect(configFacade.replace).not.toHaveBeenCalled();
+
+    await expect(
+      internal.handleSlash('/provider add unsafe {"type":"openai_legacy","auth":{"method":"api-key","apiKey":"plaintext"}}'),
+    ).rejects.toThrow('environment reference');
+    expect(providerFacade.addProvider).not.toHaveBeenCalled();
+  });
+
+  it('resolves provider API keys only from environment references', async () => {
+    const { internal, providerFacade } = driver();
+    vi.stubEnv('DAEMON_TUI_PROVIDER_KEY', 'resolved-secret');
+
+    await internal.handleSlash('/provider add safe {"type":"openai_legacy","auth":{"method":"api-key","apiKey":"$DAEMON_TUI_PROVIDER_KEY"}}');
+
+    expect(providerFacade.addProvider).toHaveBeenCalledWith('safe', {
+      type: 'openai_legacy',
+      auth: { method: 'api-key', apiKey: 'resolved-secret' },
+    });
+  });
+
+  it('replaces an existing goal through cancel then create profile updates', async () => {
+    const { internal, controller } = driver();
+    internal.client.getGoal.mockResolvedValue({ goal: { status: 'active' } });
+
+    await internal.handleSlash('/goal replace Finish the release');
+
+    expect(internal.client.getGoal).toHaveBeenCalledWith('session-1');
+    expect(internal.client.updateSessionProfile.mock.calls).toEqual([
+      ['session-1', { agent_config: { goal_control: 'cancel' } }],
+      ['session-1', { agent_config: { goal_objective: 'Finish the release' } }],
+    ]);
+    expect(controller.handleSessionRecord).toHaveBeenCalledTimes(2);
+    expect(controller.resync).toHaveBeenCalledTimes(2);
+  });
+
+  it('steers ordinary input into an active goal', async () => {
+    const { internal, controller, controllerState, agentFacade } = driver();
+    controllerState.goal = { status: 'active' };
+
+    await internal.handleInput('Use the focused regression test');
+
+    expect(agentFacade.steer).toHaveBeenCalledWith({
+      input: [{ type: 'text', text: 'Use the focused regression test' }],
+    });
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+    expect(controller.resync).toHaveBeenCalledOnce();
   });
 
   it('uploads local files and sends real file content parts', async () => {
@@ -341,6 +426,19 @@ describe('DaemonTUI commands', () => {
         ]),
       }),
     );
+    expect(filesFacade.delete).toHaveBeenCalledWith('file-1');
+  });
+
+  it('retains staged attachments after a failed send so the draft can retry', async () => {
+    const { tui, internal, controller, filesFacade } = driver();
+    const path = resolve(process.cwd(), 'package.json');
+    controller.sendPrompt.mockRejectedValue(new Error('send failed'));
+
+    await internal.handleSlash(`/attach ${path}`);
+    const draft = tui.state.editor.getText();
+    await expect(internal.handleInput(`inspect ${draft}`)).rejects.toThrow('send failed');
+
+    expect(filesFacade.delete).not.toHaveBeenCalled();
   });
 
   it('aborts an active prompt instead of exiting on Ctrl-C', async () => {
@@ -414,7 +512,7 @@ describe('DaemonTUI commands', () => {
     expect(tui.state.editor.onTextPaste).toBeTypeOf('function');
   });
 
-  it('normalizes aliases, reports disabled commands, and rejects unknown slash input', async () => {
+  it('normalizes aliases, runs experiments, and rejects unknown slash input', async () => {
     const { tui, internal, controller, configFacade } = driver();
 
     await internal.handleSlash('/thinking high');
@@ -430,8 +528,7 @@ describe('DaemonTUI commands', () => {
     );
     expect(configFacade.getAll).toHaveBeenCalledOnce();
     expect(internal.showStatus).toHaveBeenCalledWith(
-      'Command is disabled in daemon TUI: /experiments',
-      'error',
+      expect.stringContaining('example-flag'),
     );
     expect(internal.showStatus).toHaveBeenCalledWith(
       'Unknown daemon TUI command: /custom',
@@ -510,35 +607,34 @@ describe('DaemonTUI commands', () => {
     expect(controller.resync).toHaveBeenCalledOnce();
   });
 
-  it('registers explicit skill and agent sources before creating the first session', async () => {
-    const { internal, configFacade } = driver(false, {
+  it('registers and releases explicit sources as a client-owned session overlay', async () => {
+    const { tui, internal } = driver(false, {
       skillsDirs: ['skills'],
       agentFiles: ['reviewer.md'],
     });
-    internal.client.listSkills.mockResolvedValue({
-      skills: [{ name: 'CustomSkill', description: 'Custom', source: 'extra' }],
-    });
-    const openSession = vi.fn(async () => internal.refreshSkillCommands('session-created'));
-    internal.openSession = openSession;
 
-    await internal.configureExplicitSources();
-    await internal.initializeSession();
+    await internal.configureExplicitSources('session-created');
+    await tui.close();
 
-    expect(configFacade.replaceSections).toHaveBeenCalledWith({
-      sections: {
-        extraSkillDirs: [expect.stringMatching(/repo[\\/]skills$/u)],
-        extraAgentDirs: [expect.stringMatching(/repo$/u)],
-      },
-    });
-    expect(configFacade.reload).toHaveBeenCalled();
-    expect(internal.client.createSession).toHaveBeenCalledWith({
-      workDir: 'C:\\repo',
-      additionalDirs: undefined,
-    });
-    expect(openSession).toHaveBeenCalledWith('session-created');
-    expect(internal.skillCommands.get('skill:customskill')).toMatchObject({
-      name: 'CustomSkill',
-    });
+    const ownerId = internal.client.updateSessionSourceOverlay.mock.calls[0]?.[1].owner_id;
+    expect(internal.client.updateSessionSourceOverlay.mock.calls).toEqual([
+      [
+        'session-created',
+        {
+          owner_id: ownerId,
+          agent_files: ['reviewer.md'],
+          skill_dirs: ['skills'],
+        },
+      ],
+      [
+        'session-created',
+        {
+          owner_id: ownerId,
+          agent_files: [],
+          skill_dirs: [],
+        },
+      ],
+    ]);
   });
 
   it('pages continue lookup until the current workspace is found', async () => {
@@ -561,6 +657,24 @@ describe('DaemonTUI commands', () => {
     expect(internal.client.listSessions).toHaveBeenNthCalledWith(2, 50, 'other');
     expect(openSession).toHaveBeenCalledWith('match');
     expect(internal.client.createSession).not.toHaveBeenCalled();
+  });
+
+  it('automatically pages the cwd session picker until a matching row is found', async () => {
+    const { internal } = driver();
+    internal.client.listSessions
+      .mockResolvedValueOnce({
+        items: [{ id: 'other', cwd: 'C:\\other' }],
+        nextCursor: 'other',
+      })
+      .mockResolvedValueOnce({
+        items: [{ id: 'match', cwd: 'C:\\repo' }],
+        nextCursor: undefined,
+      });
+
+    await internal.showSessionPicker('cwd');
+
+    expect(internal.client.listSessions).toHaveBeenNthCalledWith(1, 50);
+    expect(internal.client.listSessions).toHaveBeenNthCalledWith(2, 50, 'other');
   });
 
   it('keeps interaction response failures inside the TUI', async () => {

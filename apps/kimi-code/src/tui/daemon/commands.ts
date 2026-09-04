@@ -30,6 +30,13 @@ export type DaemonCommandName =
   | 'settings'
   | 'undo'
   | 'attach'
+  | 'experiments'
+  | 'export-md'
+  | 'btw'
+  | 'copy'
+  | 'editor'
+  | 'init'
+  | 'theme'
   | 'help'
   | 'version';
 
@@ -93,20 +100,20 @@ const SUPPORTED_COMMANDS = [
   command('settings', ['config'], 'Inspect or update daemon configuration', 'optional-rest', '[domain] [json]'),
   command('undo', [], 'Withdraw the last prompt', 'none'),
   command('attach', [], 'Attach a local file to the next prompt', 'optional-rest', '<path>'),
+  command('experiments', ['experimental'], 'Manage experimental features', 'none'),
+  command('export-md', ['export'], 'Export current session as a Markdown file', 'optional-rest', '[path]'),
+  command('btw', [], 'Ask a forked side agent a question', 'optional-rest', '<question>'),
+  command('copy', [], 'Copy the last assistant message to the clipboard', 'none'),
+  command('editor', [], 'Set the external editor', 'optional-rest', '[command]'),
+  command('init', [], 'Analyze the codebase and generate AGENTS.md', 'none'),
+  command('theme', [], 'Set the terminal UI theme', 'optional-one', '[dark|light|auto]'),
   command('help', ['h', '?'], 'Show daemon TUI command support', 'none'),
   command('version', [], 'Show version information', 'none'),
 ] as const satisfies readonly DaemonCommandDefinition[];
 
 const DISABLED_COMMANDS = [
-  disabled('experiments', ['experimental'], 'Manage experimental features'),
-  disabled('export-md', ['export'], 'Export current session as a Markdown file'),
-  disabled('btw', [], 'Ask a forked side agent a question'),
-  disabled('copy', [], 'Copy the last assistant message to the clipboard'),
-  disabled('editor', [], 'Set the external editor'),
   disabled('export-debug-zip', [], 'Export current session as a debug ZIP archive'),
-  disabled('init', [], 'Analyze the codebase and generate AGENTS.md'),
   disabled('reload-tui', [], 'Reload TUI preferences'),
-  disabled('theme', [], 'Set the terminal UI theme'),
   disabled('web', [], 'Open the current session in the Web UI'),
 ] as const satisfies readonly DaemonCommandDefinition[];
 

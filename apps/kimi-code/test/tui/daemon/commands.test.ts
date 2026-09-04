@@ -18,20 +18,12 @@ describe('daemon command registry', () => {
     ['rename', 'title'],
     ['config', 'settings'],
     ['disconnect', 'logout'],
+    ['experimental', 'experiments'],
+    ['export', 'export-md'],
   ])('normalizes supported alias /%s to /%s', (alias, canonical) => {
     const resolved = resolveDaemonCommand(alias, '');
 
     expect(resolved).toMatchObject({ name: canonical, invokedAs: alias });
-  });
-
-  it.each([
-    ['experimental', 'experiments'],
-    ['export', 'export-md'],
-  ])('normalizes disabled alias /%s to /%s', (alias, canonical) => {
-    expect(resolveDaemonCommand(alias, '')).toMatchObject({
-      name: canonical,
-      status: 'disabled',
-    });
   });
 
   it('validates command arguments before dispatch', () => {

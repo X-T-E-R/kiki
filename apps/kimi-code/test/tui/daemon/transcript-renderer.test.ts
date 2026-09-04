@@ -3,7 +3,8 @@ import type { Block } from '@kiki/session-core/session/transcript/types';
 import { describe, expect, it } from 'vitest';
 
 import { adaptQuestionResponse } from '#/tui/interactions/question-adapter';
-import { DaemonTranscriptRenderer } from '#/tui/daemon/transcript-renderer';
+import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
+import { createBlockComponent, DaemonTranscriptRenderer } from '#/tui/daemon/transcript-renderer';
 
 function strip(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '').replaceAll(/\u001B\]133;[ABC]\u0007/g, '');
@@ -122,6 +123,22 @@ describe('DaemonTranscriptRenderer', () => {
 
     expect(output).toContain('[image: image-1]');
     expect(output).toContain('[file: result.txt]');
+  });
+
+  it('mounts the real image component for inline image media', () => {
+    const component = createBlockComponent({
+      kind: 'user',
+      id: 'user-inline-image',
+      text: 'See image',
+      media: [{
+        kind: 'image',
+        url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        mime: 'image/png',
+      }],
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }) as Container;
+
+    expect(component.children.some((child) => child instanceof ImageThumbnail)).toBe(true);
   });
 
   it('updates streaming assistant and running tool components in place', () => {

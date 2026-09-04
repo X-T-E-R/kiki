@@ -1,6 +1,8 @@
 import {
   ErrorCodes,
   DEFAULT_AGENT_PROFILE_NAME,
+  AGENT_PROFILE_SOURCE_PRIORITY,
+  SKILL_SOURCE_PRIORITY,
   IAgentActivityView,
   IAgentContextMemoryService,
   IAgentProfileService,
@@ -11,12 +13,16 @@ import {
   IAgentUsageService,
   IAuthSummaryService,
   ISessionActivityView,
+  ISessionAgentProfileCatalog,
+  SessionAgentProfileCatalogService,
   ISessionBtwService,
   ISessionContext,
   ISessionHistoryMutationService,
   ISessionIndex,
   ISessionMetadata,
   ISessionLegacyService,
+  ISessionSkillCatalog,
+  SessionSkillCatalogService,
   ISessionTitleService,
   IEventService,
   SessionCreated,
@@ -189,6 +195,16 @@ const sessionActionRequestSchema = z.preprocess(
 );
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
+
+const sessionSourceOverlaySchema = z.strictObject({
+  owner_id: z.string().min(1),
+  agent_files: z.array(z.string().min(1)).default([]),
+  skill_dirs: z.array(z.string().min(1)).default([]),
+});
+const sessionSourceOverlayResponseSchema = z.object({
+  profiles: z.number().int().nonnegative(),
+  skills: z.number().int().nonnegative(),
+});
 
 export function registerSessionsRoutes(
   app: SessionRouteHost,
@@ -1014,6 +1030,79 @@ export function registerSessionsRoutes(
     statusRoute.path,
     statusRoute.options,
     statusRoute.handler as Parameters<SessionRouteHost['get']>[2],
+  );
+
+  const sourceOverlayRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/sessions/{session_id}/source-overlay',
+      params: sessionIdParamSchema,
+      body: sessionSourceOverlaySchema,
+      success: { data: sessionSourceOverlayResponseSchema },
+      errors: {
+        [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
+        [ErrorCode.SESSION_NOT_FOUND]: {},
+      },
+      description: 'Replace one owner source overlay for a live session',
+      tags: ['sessions'],
+    },
+    async (req, reply) => {
+      try {
+        const { session_id } = req.params;
+        const session = await resumeSessionById(core.accessor, session_id);
+        if (session === undefined) {
+          reply.send(
+            errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
+          );
+          return;
+        }
+        const program = await programForSession(core.accessor, session_id);
+        if (program === undefined) {
+          reply.send(
+            errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
+          );
+          return;
+        }
+        const sourceId = `session-source:${req.body.owner_id}`;
+        const profiles = session.accessor.get(ISessionAgentProfileCatalog) as SessionAgentProfileCatalogService;
+        const skills = session.accessor.get(ISessionSkillCatalog) as SessionSkillCatalogService;
+        if (req.body.agent_files.length === 0 && req.body.skill_dirs.length === 0) {
+          profiles.removeContribution(sourceId);
+          skills.remove(sourceId);
+          reply.send(okEnvelope({ profiles: 0, skills: 0 }, req.id));
+          return;
+        }
+        const contributions = await program.loadSessionSourceContributions({
+          agentFiles: req.body.agent_files,
+          skillDirs: req.body.skill_dirs,
+        });
+        if (req.body.agent_files.length === 0) profiles.removeContribution(sourceId);
+        else {
+          profiles.setContribution(
+            sourceId,
+            contributions.profiles,
+            AGENT_PROFILE_SOURCE_PRIORITY.explicit,
+          );
+        }
+        if (req.body.skill_dirs.length === 0) skills.remove(sourceId);
+        else {
+          skills.set(sourceId, contributions.skills, {
+            priority: SKILL_SOURCE_PRIORITY.workspace + 1,
+          });
+        }
+        reply.send(okEnvelope({
+          profiles: contributions.profiles.profiles.length,
+          skills: contributions.skills.skills.length,
+        }, req.id));
+      } catch (error) {
+        sendMappedError(reply, req, error);
+      }
+    },
+  );
+  app.post(
+    sourceOverlayRoute.path,
+    sourceOverlayRoute.options,
+    sourceOverlayRoute.handler as Parameters<SessionRouteHost['post']>[2],
   );
 
   const goalRoute = defineRoute(

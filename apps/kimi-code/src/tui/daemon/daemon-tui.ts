@@ -1,9 +1,9 @@
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { basename, dirname, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { basename, resolve } from 'node:path';
 
 import { Text, TuiAltScreen } from '@moonshot-ai/pi-tui';
-import { resolveAgentPath, type PermissionMode } from '@moonshot-ai/kimi-code-sdk';
+import type { PermissionMode } from '@moonshot-ai/kimi-code-sdk';
 import type { UpdateSessionProfileRequest } from '@moonshot-ai/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
@@ -38,21 +38,25 @@ import {
   adaptQuestionResponse,
 } from '#/tui/interactions/question-adapter';
 import type { ApprovalPanelData, QuestionPanelResponse } from '#/tui/interactions/types';
-import { currentTheme } from '#/tui/theme';
+import { currentTheme, getColorPalette } from '#/tui/theme';
 import { createTUIState, type TUIState } from '#/tui/tui-state';
 import { parseGoalCommand } from '#/tui/commands/goal-parse';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
 import { formatErrorMessage } from '#/tui/utils/event-payload';
+import { buildExportMarkdown } from '#/tui/utils/export-markdown';
 import { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 import { extractInlineSkillActivations } from '#/tui/utils/inline-skill-tokens';
 import { readClipboardMedia } from '#/utils/clipboard/clipboard-image';
+import { clipboard } from '#/utils/clipboard/clipboard-native';
 import { parseImageMeta } from '#/utils/image/image-mime';
 import { openUrl } from '#/utils/open-url';
 import { loadPluginMarketplace } from '#/utils/plugin-marketplace';
+import { editInExternalEditor, resolveEditorCommand } from '#/utils/process/external-editor';
 
 import {
   prepareDaemonPrompt,
   type DaemonFileAttachment,
+  type PreparedDaemonPrompt,
 } from './attachments';
 import { DaemonClient } from './client';
 import {
@@ -112,7 +116,8 @@ export class DaemonTUI {
     | undefined;
   private startupOverridesPending = true;
   private todoExpanded = false;
-  private restoreExplicitConfig: (() => Promise<void>) | undefined;
+  private readonly sourceOverlayOwnerId = randomUUID();
+  private sourceOverlaySessionId: string | undefined;
   private stopped = false;
 
   constructor(connection: DaemonConnection, startup: DaemonTUIStartupInput) {
@@ -156,7 +161,6 @@ export class DaemonTUI {
     this.state.todoPanelContainer.addChild(this.state.todoPanel);
     this.mountFooter();
     if (this.startup.startupNotice !== undefined) this.showStatus(this.startup.startupNotice);
-    await this.configureExplicitSources();
     await this.refreshAgentCommands();
     await this.initializeSession();
   }
@@ -204,8 +208,8 @@ export class DaemonTUI {
     await cleanup(() => {
       this.socket.close();
     });
-    await cleanup(() => this.restoreExplicitConfig?.());
-    this.restoreExplicitConfig = undefined;
+    await cleanup(() => this.clearAttachments());
+    await cleanup(() => this.releaseExplicitSources());
     await cleanup(() => this.client.close());
     await cleanup(() => {
       this.state.footer.dispose();
@@ -268,7 +272,19 @@ export class DaemonTUI {
       this.renderer.setExpanded(expanded);
     };
     editor.onOpenExternalEditor = () => {
-      this.showStatus('External editor is disabled in daemon TUI.', 'error');
+      const command = resolveEditorCommand(this.state.appState.editorCommand);
+      if (command === undefined) {
+        this.showStatus('No external editor is configured.', 'error');
+        return;
+      }
+      void editInExternalEditor(editor.getText(), command)
+        .then((text) => {
+          if (text !== undefined) editor.setText(text);
+          this.state.ui.requestRender(true);
+        })
+        .catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
     };
     editor.onCtrlS = () => {
       this.showStatus('Prompt steering shortcut is disabled in daemon TUI.', 'error');
@@ -301,8 +317,26 @@ export class DaemonTUI {
         return true;
       }
     };
+    let historyBrowseMode: 'prompt' | 'bash' | undefined;
+    const updateHistoryFilter = () => {
+      const mode = historyBrowseMode ?? editor.inputMode;
+      editor.setHistoryFilter(
+        mode === 'bash' ? (entry) => entry.startsWith('!') : (entry) => !entry.startsWith('!'),
+      );
+    };
     editor.onInputModeChange = (mode) => {
       this.setAppState({ inputMode: mode });
+      if (historyBrowseMode === undefined) updateHistoryFilter();
+    };
+    editor.onHistoryDraftSave = () => {
+      historyBrowseMode = editor.inputMode;
+      updateHistoryFilter();
+      return historyBrowseMode;
+    };
+    editor.onHistoryDraftRestore = (mode) => {
+      historyBrowseMode = undefined;
+      editor.setInputMode(mode as 'prompt' | 'bash');
+      updateHistoryFilter();
     };
     editor.onRecall = (entry) => {
       if (entry.startsWith('!')) {
@@ -312,6 +346,7 @@ export class DaemonTUI {
       editor.setInputMode('prompt');
       return undefined;
     };
+    updateHistoryFilter();
   }
 
   private async handleClipboardPaste(): Promise<boolean> {
@@ -320,37 +355,59 @@ export class DaemonTUI {
     if (media.kind === 'image') {
       const dimensions = parseImageMeta(media.bytes);
       if (dimensions === null) return false;
-      const upload = await this.client.klient.global.files.save({
-        data: media.bytes,
-        filename: `clipboard.${imageExtension(media.mimeType)}`,
-        mimeType: media.mimeType,
-      });
       const attachment = this.imageAttachments.addImage(
         media.bytes,
         media.mimeType,
         dimensions.width,
         dimensions.height,
-        undefined,
-        upload.id,
       );
       this.state.editor.insertTextAtCursor?.(`${attachment.placeholder} `);
       this.state.ui.requestRender();
+      attachment.pending = this.client.klient.global.files
+        .save({
+          data: media.bytes,
+          filename: `clipboard.${imageExtension(media.mimeType)}`,
+          mimeType: media.mimeType,
+        })
+        .then(async (upload) => {
+          const completed = this.imageAttachments.completeImage(attachment, {
+            bytes: media.bytes,
+            mime: media.mimeType,
+            width: dimensions.width,
+            height: dimensions.height,
+            fileId: upload.id,
+          });
+          if (completed === undefined) await this.client.klient.global.files.delete(upload.id);
+        })
+        .catch((error: unknown) => {
+          attachment.pending = undefined;
+          this.showStatus(`Attachment upload failed: ${formatErrorMessage(error)}`, 'error');
+        });
       return true;
     }
-    const bytes = await readFile(media.sourcePath);
-    const upload = await this.client.klient.global.files.save({
-      data: bytes,
-      filename: media.filename,
-      mimeType: media.mimeType,
-    });
     const attachment = this.imageAttachments.addVideo(
       media.mimeType,
       media.sourcePath,
       media.filename,
     );
-    this.imageAttachments.completeVideo(attachment, { fileId: upload.id });
     this.state.editor.insertTextAtCursor?.(`${attachment.placeholder} `);
     this.state.ui.requestRender();
+    attachment.pending = readFile(media.sourcePath)
+      .then((data) =>
+        this.client.klient.global.files.save({
+          data,
+          filename: media.filename,
+          mimeType: media.mimeType,
+        }),
+      )
+      .then(async (upload) => {
+        const completed = this.imageAttachments.completeVideo(attachment, { fileId: upload.id });
+        if (completed === undefined) await this.client.klient.global.files.delete(upload.id);
+      })
+      .catch((error: unknown) => {
+        attachment.pending = undefined;
+        this.showStatus(`Attachment upload failed: ${formatErrorMessage(error)}`, 'error');
+      });
     return true;
   }
 
@@ -402,35 +459,30 @@ export class DaemonTUI {
     this.state.footer.setTransientHint(null);
   }
 
-  private async configureExplicitSources(): Promise<void> {
-    const skillDirs = this.startup.cliOptions.skillsDirs.map((path) =>
-      resolve(this.startup.workDir, path),
-    );
-    const agentDirs = this.startup.cliOptions.agentFiles.map((path) =>
-      dirname(resolveAgentPath(path, this.startup.workDir, homedir())),
-    );
-    if (skillDirs.length === 0 && agentDirs.length === 0) return;
-    const config = this.client.klient.global.config;
-    const [previousSkillDirs, previousAgentDirs] = await Promise.all([
-      config.get<readonly string[]>('extraSkillDirs'),
-      config.get<readonly string[]>('extraAgentDirs'),
-    ]);
-    this.restoreExplicitConfig = async () => {
-      await config.replaceSections({
-        sections: {
-          extraSkillDirs: previousSkillDirs,
-          extraAgentDirs: previousAgentDirs,
-        },
-      });
-      await config.reload();
-    };
-    await config.replaceSections({
-      sections: {
-        extraSkillDirs: uniquePaths([...(previousSkillDirs ?? []), ...skillDirs]),
-        extraAgentDirs: uniquePaths([...(previousAgentDirs ?? []), ...agentDirs]),
-      },
+  private async configureExplicitSources(sessionId: string): Promise<void> {
+    const agentFiles = this.startup.cliOptions.agentFiles;
+    const skillDirs = this.startup.cliOptions.skillsDirs;
+    if (agentFiles.length === 0 && skillDirs.length === 0) return;
+    if (this.sourceOverlaySessionId !== undefined && this.sourceOverlaySessionId !== sessionId) {
+      await this.releaseExplicitSources();
+    }
+    await this.client.updateSessionSourceOverlay(sessionId, {
+      owner_id: this.sourceOverlayOwnerId,
+      agent_files: agentFiles,
+      skill_dirs: skillDirs,
     });
-    await config.reload();
+    this.sourceOverlaySessionId = sessionId;
+  }
+
+  private async releaseExplicitSources(): Promise<void> {
+    if (this.sourceOverlaySessionId === undefined) return;
+    const sessionId = this.sourceOverlaySessionId;
+    this.sourceOverlaySessionId = undefined;
+    await this.client.updateSessionSourceOverlay(sessionId, {
+      owner_id: this.sourceOverlayOwnerId,
+      agent_files: [],
+      skill_dirs: [],
+    });
   }
 
   private setupAutocomplete(): void {
@@ -536,6 +588,10 @@ export class DaemonTUI {
   }
 
   private async openSession(sessionId: string): Promise<void> {
+    if (this.controller !== undefined && this.controller.sessionId !== sessionId) {
+      await this.clearAttachments();
+      this.state.editor.setText('');
+    }
     this.focusedControllerDispose?.();
     this.focusedControllerDispose = undefined;
     this.mainControllerDispose?.();
@@ -548,6 +604,7 @@ export class DaemonTUI {
     });
     await controller.open();
     this.renderSession(controller.getState());
+    await this.configureExplicitSources(sessionId);
     await this.applyStartupOverrides(controller);
     await this.refreshSkillCommands(sessionId);
     await this.refreshAgentCommands();
@@ -674,38 +731,76 @@ export class DaemonTUI {
   private async sendPrompt(text: string, profile?: string): Promise<void> {
     const controller = await this.ensureSession();
     const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments);
-    if (profile === undefined) {
-      const skillMap = new Map<string, string>();
-      for (const skill of this.skillCommands.values()) {
-        skillMap.set(skill.commandName, skill.name);
-        skillMap.set(skill.name, skill.name);
-      }
-      const inlineSkills = extractInlineSkillActivations(text, skillMap);
-      if (inlineSkills.length > 0) {
-        if (prepared?.hasFileAttachment === true) {
-          throw new Error('File attachments cannot be combined with inline skills.');
+    let sent = false;
+    try {
+      if (profile === undefined) {
+        const skillMap = new Map<string, string>();
+        for (const skill of this.skillCommands.values()) {
+          skillMap.set(skill.commandName, skill.name);
+          skillMap.set(skill.name, skill.name);
         }
-        await this.client.klient.session(controller.sessionId).agent('main').promptWithSkills({
-          input: prepared?.engineContent ?? [{ type: 'text', text }],
-          skills: inlineSkills.map((skill) => ({ name: skill.skillName })),
-        });
-        await controller.resync();
-        return;
+        const inlineSkills = extractInlineSkillActivations(text, skillMap);
+        if (inlineSkills.length > 0) {
+          if (prepared?.hasFileAttachment === true) {
+            throw new Error('File attachments cannot be combined with inline skills.');
+          }
+          await this.client.klient.session(controller.sessionId).agent('main').promptWithSkills({
+            input: prepared?.engineContent ?? [{ type: 'text', text }],
+            skills: inlineSkills.map((skill) => ({ name: skill.skillName })),
+          });
+          sent = true;
+          await controller.resync();
+          return;
+        }
+        if (controller.getState().goal?.status === 'active') {
+          if (prepared?.hasFileAttachment === true) {
+            throw new Error('File attachments cannot be steered into an active goal.');
+          }
+          await this.client.klient.session(controller.sessionId).agent('main').steer({
+            input: prepared?.engineContent ?? [{ type: 'text', text }],
+          });
+          sent = true;
+          await controller.resync();
+          return;
+        }
       }
+      await controller.sendPrompt({
+        text,
+        content: prepared?.content,
+        profile,
+        model:
+          profile === undefined && this.state.appState.model !== ''
+            ? this.state.appState.model
+            : undefined,
+        thinking: profile === undefined ? this.state.appState.thinkingEffort : undefined,
+        permissionMode: this.state.appState.permissionMode,
+        planMode: this.state.appState.planMode,
+        swarmMode: this.state.appState.swarmMode,
+      });
+      sent = true;
+    } finally {
+      if (sent && prepared !== undefined) await this.releasePreparedAttachments(prepared);
     }
-    await controller.sendPrompt({
-      text,
-      content: prepared?.content,
-      profile,
-      model:
-        profile === undefined && this.state.appState.model !== ''
-          ? this.state.appState.model
-          : undefined,
-      thinking: profile === undefined ? this.state.appState.thinkingEffort : undefined,
-      permissionMode: this.state.appState.permissionMode,
-      planMode: this.state.appState.planMode,
-      swarmMode: this.state.appState.swarmMode,
-    });
+  }
+
+  private async releasePreparedAttachments(prepared: PreparedDaemonPrompt): Promise<void> {
+    for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
+    for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
+    await Promise.allSettled(
+      prepared.uploadIds.map((fileId) => this.client.klient.global.files.delete(fileId)),
+    );
+  }
+
+  private async clearAttachments(): Promise<void> {
+    const uploadIds = [
+      ...this.imageAttachments.clear(),
+      ...[...this.fileAttachments.values()].map((attachment) => attachment.fileId),
+    ];
+    this.fileAttachments.clear();
+    this.nextFileAttachmentId = 1;
+    await Promise.allSettled(
+      uploadIds.map((fileId) => this.client.klient.global.files.delete(fileId)),
+    );
   }
 
   private async handleSlash(text: string): Promise<void> {
@@ -839,6 +934,27 @@ export class DaemonTUI {
         return;
       case 'attach':
         await this.attachFile(args);
+        return;
+      case 'experiments':
+        await this.showExperiments();
+        return;
+      case 'export-md':
+        await this.exportMarkdown(args);
+        return;
+      case 'btw':
+        await this.askBtw(args);
+        return;
+      case 'copy':
+        await this.copyLastAssistantMessage();
+        return;
+      case 'editor':
+        this.configureEditor(args);
+        return;
+      case 'init':
+        await this.activateInitSkill();
+        return;
+      case 'theme':
+        await this.applyTheme(args);
         return;
       case 'help':
         this.showStatus(daemonCommandHelp());
@@ -1037,7 +1153,7 @@ export class DaemonTUI {
       if (id === '' || json === '') {
         throw new Error('/provider add requires an id and JSON configuration.');
       }
-      await providers.addProvider(id, JSON.parse(json) as never);
+      await providers.addProvider(id, parseProviderInput(json) as never);
     } else {
       throw new Error('Use /provider add|remove|refresh.');
     }
@@ -1083,46 +1199,52 @@ export class DaemonTUI {
   private async handleGoalCommand(args: string): Promise<void> {
     const parsed = parseGoalCommand(args);
     if (parsed.kind === 'error') throw new Error(parsed.message);
-    if (parsed.kind === 'status') {
-      this.showStatus(JSON.stringify(this.controller?.getState().goal ?? null, undefined, 2));
-      return;
-    }
     if (parsed.kind === 'next-add' || parsed.kind === 'next-manage') {
       throw new Error('Goal queue management is not available in daemon TUI.');
     }
     const controller = await this.ensureSession();
-    const common = {
-      permissionMode: this.state.appState.permissionMode,
-      planMode: this.state.appState.planMode,
-      swarmMode: this.state.appState.swarmMode,
-    };
-    if (parsed.kind === 'create') {
-      await controller.sendPrompt({
-        ...common,
-        text: parsed.objective,
-        goalObjective: parsed.objective,
-      });
+    if (parsed.kind === 'status') {
+      this.showStatus(JSON.stringify((await this.client.getGoal(controller.sessionId)).goal, undefined, 2));
       return;
     }
-    await controller.sendPrompt({
-      ...common,
-      text: `Goal ${parsed.kind}`,
-      goalControl: parsed.kind,
+    if (parsed.kind === 'create') {
+      if (parsed.replace && (await this.client.getGoal(controller.sessionId)).goal !== null) {
+        await this.applyGoalConfig(controller, { goal_control: 'cancel' });
+      }
+      await this.applyGoalConfig(controller, { goal_objective: parsed.objective });
+      return;
+    }
+    await this.applyGoalConfig(controller, { goal_control: parsed.kind });
+  }
+
+  private async applyGoalConfig(
+    controller: SessionController,
+    agentConfig: Pick<
+      NonNullable<UpdateSessionProfileRequest['agent_config']>,
+      'goal_objective' | 'goal_control'
+    >,
+  ): Promise<void> {
+    const session = await this.client.updateSessionProfile(controller.sessionId, {
+      agent_config: agentConfig,
     });
+    controller.handleSessionRecord(session);
+    await controller.resync();
   }
 
   private async handleSettingsCommand(args: string): Promise<void> {
     const config = this.client.klient.global.config;
     const [domain, json] = splitFirst(args);
     if (domain === '') {
-      this.showStatus(JSON.stringify(await config.getAll(), undefined, 2));
+      this.showStatus(JSON.stringify(redactSensitive(await config.getAll()), undefined, 2));
       return;
     }
     if (json === '') {
-      this.showStatus(JSON.stringify(await config.get(domain), undefined, 2));
+      this.showStatus(JSON.stringify(redactSensitive(await config.get(domain)), undefined, 2));
       return;
     }
-    await config.replace({ domain, value: JSON.parse(json) });
+    const value = JSON.parse(json) as unknown;
+    rejectSensitiveConfigWrite(value, []);
+    await config.replace({ domain, value });
     await config.reload();
     this.showStatus(`Updated daemon config domain ${domain}.`);
   }
@@ -1156,6 +1278,82 @@ export class DaemonTUI {
     this.fileAttachments.set(id, attachment);
     this.state.editor.insertTextAtCursor?.(`${attachment.placeholder} `);
     this.state.ui.requestRender();
+  }
+
+  private async showExperiments(): Promise<void> {
+    const flags = await this.client.klient.global.flags.list();
+    this.showStatus(
+      flags.map((flag) => `${flag.enabled ? 'on' : 'off'} · ${flag.id} · ${flag.source}`).join('\n')
+        || 'No experimental features registered.',
+    );
+  }
+
+  private async exportMarkdown(path: string): Promise<void> {
+    const controller = await this.ensureSession();
+    const history = controller.getState().blocks.flatMap((block) => {
+      if (block.kind !== 'user' && block.kind !== 'assistant') return [];
+      return [{
+        role: block.kind,
+        content: [{ type: 'text', text: block.text }],
+        toolCalls: [],
+      }];
+    });
+    const outputPath = resolve(
+      this.startup.workDir,
+      path === '' ? `kimi-session-${controller.sessionId}.md` : path,
+    );
+    await writeFile(outputPath, buildExportMarkdown({
+      sessionId: controller.sessionId,
+      workDir: this.startup.workDir,
+      history: history as never,
+      tokenCount: this.state.appState.contextTokens,
+      now: new Date(),
+    }), 'utf8');
+    this.showStatus(outputPath);
+  }
+
+  private async askBtw(question: string): Promise<void> {
+    if (question === '') throw new Error('/btw requires a question.');
+    const controller = await this.ensureSession();
+    const child = await this.client.klient.session(controller.sessionId).fork({ title: 'BTW' });
+    await this.client.klient.session(child.id).agent('main').prompt({
+      input: [{ type: 'text', text: question }],
+    });
+    this.showStatus(`Started side session ${child.id}.`);
+  }
+
+  private async copyLastAssistantMessage(): Promise<void> {
+    if (clipboard?.setText === undefined) throw new Error('Clipboard access is unavailable.');
+    const message = this.controller?.getState().blocks.findLast(
+      (block) => block.kind === 'assistant' && !block.streaming,
+    );
+    if (message?.kind !== 'assistant') throw new Error('No completed assistant message to copy.');
+    await clipboard.setText(message.text);
+    this.showStatus('Copied the last assistant message.');
+  }
+
+  private configureEditor(command: string): void {
+    if (command === '') {
+      this.showStatus(resolveEditorCommand(this.state.appState.editorCommand) ?? 'No external editor configured.');
+      return;
+    }
+    this.setAppState({ editorCommand: command });
+  }
+
+  private async activateInitSkill(): Promise<void> {
+    const controller = await this.ensureSession();
+    await this.client.activateSkill(controller.sessionId, 'init');
+  }
+
+  private async applyTheme(theme: string): Promise<void> {
+    if (theme === '') {
+      this.showStatus(this.state.appState.theme);
+      return;
+    }
+    const palette = await getColorPalette(theme as AppState['theme']);
+    currentTheme.setPalette(palette);
+    this.setAppState({ theme: theme as AppState['theme'] });
+    this.state.ui.requestRender(true);
   }
 
   private async showThinkingPicker(): Promise<void> {
@@ -1348,8 +1546,16 @@ export class DaemonTUI {
       items
         .filter((session) => scope === 'all' || samePath(session.cwd, this.startup.workDir))
         .map(sessionRow);
+    const initialRows = visibleRows(page.items);
+    if (scope === 'cwd') {
+      while (initialRows.length === 0 && nextCursor !== undefined) {
+        page = await this.client.listSessions(50, nextCursor);
+        nextCursor = page.nextCursor;
+        initialRows.push(...visibleRows(page.items));
+      }
+    }
     const picker = new SessionPickerComponent({
-      sessions: visibleRows(page.items),
+      sessions: initialRows,
       loading: false,
       currentSessionId: this.controller?.sessionId ?? '',
       scope,
@@ -1580,8 +1786,77 @@ function samePath(left: string, right: string): boolean {
   return normalizedPath(left) === normalizedPath(right);
 }
 
-function uniquePaths(paths: readonly string[]): string[] {
-  return [...new Map(paths.map((path) => [normalizedPath(path), path])).values()];
+const SENSITIVE_CONFIG_KEY = /(?:api[-_]?key|token|secret|password|authorization|headers|env)/iu;
+const PROVIDER_ENV_REFERENCE = /^\$([A-Z_][A-Z0-9_]*)$/u;
+
+function redactSensitive(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [
+      key,
+      SENSITIVE_CONFIG_KEY.test(key) ? '[redacted]' : redactSensitive(child),
+    ]),
+  );
+}
+
+function rejectSensitiveConfigWrite(value: unknown, path: readonly string[]): void {
+  if (Array.isArray(value)) {
+    for (const child of value) rejectSensitiveConfigWrite(child, path);
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    const nextPath = [...path, key];
+    if (SENSITIVE_CONFIG_KEY.test(key)) {
+      throw new Error(`Settings cannot write sensitive field ${nextPath.join('.')}.`);
+    }
+    rejectSensitiveConfigWrite(child, nextPath);
+  }
+}
+
+function parseProviderInput(json: string): Record<string, unknown> {
+  const parsed = JSON.parse(json) as unknown;
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Provider configuration must be a JSON object.');
+  }
+  const input = structuredClone(parsed) as Record<string, unknown>;
+  const auth = input['auth'];
+  if (auth === null || typeof auth !== 'object' || Array.isArray(auth)) {
+    throw new Error('Provider configuration requires auth.');
+  }
+  const providerAuth = auth as Record<string, unknown>;
+  if (providerAuth['method'] === 'api-key') {
+    const match = typeof providerAuth['apiKey'] === 'string'
+      ? PROVIDER_ENV_REFERENCE.exec(providerAuth['apiKey'])
+      : null;
+    if (match === null) {
+      throw new Error('Provider API keys must use an environment reference such as $KIMI_API_KEY.');
+    }
+    const value = process.env[match[1]!];
+    if (value === undefined) throw new Error(`Provider API key environment variable ${match[1]} is not set.`);
+    providerAuth['apiKey'] = value;
+  } else if (providerAuth['method'] !== 'oauth') {
+    throw new Error('Provider auth method must be api-key or oauth.');
+  }
+  rejectSensitiveProviderFields(input, []);
+  return input;
+}
+
+function rejectSensitiveProviderFields(value: unknown, path: readonly string[]): void {
+  if (Array.isArray(value)) {
+    for (const child of value) rejectSensitiveProviderFields(child, path);
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    const nextPath = [...path, key];
+    const isResolvedApiKey = nextPath.length === 2 && nextPath[0] === 'auth' && key === 'apiKey';
+    if (!isResolvedApiKey && SENSITIVE_CONFIG_KEY.test(key)) {
+      throw new Error(`Provider configuration cannot include plaintext ${nextPath.join('.')}.`);
+    }
+    rejectSensitiveProviderFields(child, nextPath);
+  }
 }
 
 function imageExtension(mime: string): string {

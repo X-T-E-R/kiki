@@ -186,6 +186,27 @@ describe('runShell daemon startup', () => {
     expect(mocks.restoreTerminalModes).toHaveBeenCalledOnce();
   });
 
+  it('uses hangup semantics for terminal output errors even when close fails', async () => {
+    const prior = new Set(process.stdout.listeners('error'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    mocks.tuiClose.mockRejectedValue(new Error('close failed'));
+    await runShell(options, '1.0.0');
+    const listener = process.stdout.listeners('error').find(
+      (candidate) => !prior.has(candidate),
+    ) as ((error: Error) => void) | undefined;
+    expect(listener).toBeDefined();
+
+    listener!(Object.assign(new Error('closed'), { code: 'EPIPE' }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.tuiClose).toHaveBeenCalledOnce();
+    expect(mocks.restoreTerminalModes).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(129);
+    process.stdout.off('error', listener!);
+    exit.mockRestore();
+  });
+
   it('routes SIGTERM and POSIX SIGHUP through TUI stop', async () => {
     const priorTerm = new Set(process.listeners('SIGTERM'));
     const priorHup = new Set(process.listeners('SIGHUP'));
@@ -194,12 +215,26 @@ describe('runShell daemon startup', () => {
     expect(term).toBeDefined();
     term!('SIGTERM');
     await Promise.resolve();
-    expect(mocks.tuiStop).toHaveBeenCalledOnce();
+    expect(mocks.tuiStop).toHaveBeenCalledWith(143);
     process.off('SIGTERM', term!);
     if (process.platform !== 'win32') {
       const hup = process.listeners('SIGHUP').find((listener) => !priorHup.has(listener));
       expect(hup).toBeDefined();
       process.off('SIGHUP', hup!);
     }
+  });
+
+  it.skipIf(process.platform === 'win32')('uses the POSIX SIGHUP exit code', async () => {
+    const priorTerm = new Set(process.listeners('SIGTERM'));
+    const priorHup = new Set(process.listeners('SIGHUP'));
+    await runShell(options, '1.0.0');
+    const term = process.listeners('SIGTERM').find((listener) => !priorTerm.has(listener));
+    const hup = process.listeners('SIGHUP').find((listener) => !priorHup.has(listener));
+    expect(hup).toBeDefined();
+    hup!('SIGHUP');
+    await Promise.resolve();
+    expect(mocks.tuiStop).toHaveBeenCalledWith(129);
+    if (term !== undefined) process.off('SIGTERM', term);
+    process.off('SIGHUP', hup!);
   });
 });

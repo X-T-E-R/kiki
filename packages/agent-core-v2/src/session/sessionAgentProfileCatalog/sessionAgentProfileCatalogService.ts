@@ -25,8 +25,7 @@ import { Emitter, type Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
-import { BugIndicatingError } from '#/errors';
-import { Error2, ErrorCodes } from '#/errors';
+import { BugIndicatingError, Error2, ErrorCodes } from '#/errors';
 import type {
   AgentProfile,
   AgentProfileRouteCatalogEntry,
@@ -74,6 +73,7 @@ export class SessionAgentProfileCatalogService
   private routes = new Map<string, ResolvedAgentProfileRoute>();
   private routeDiagnosticsValue: AgentProfileRouteDiagnostic[] = [];
   private snapshotValue: AgentProfileCatalogSnapshot | undefined;
+  private readonly contributions = new Map<string, AgentProfileRegistration>();
   private readonly readyPromise: Promise<void>;
   private readonly onDidChangeEmitter = this._register(new Emitter<string>());
   readonly onDidChange: Event<string> = this.onDidChangeEmitter.event;
@@ -223,6 +223,18 @@ export class SessionAgentProfileCatalogService
     return this.inspections.get(name);
   }
 
+  setContribution(id: string, contribution: AgentProfileRegistration['contribution'], priority: number): void {
+    this.contributions.set(id, { sourceId: id, priority, contribution });
+    this.reproject();
+    this.onDidChangeEmitter.fire(id);
+  }
+
+  removeContribution(id: string): void {
+    if (!this.contributions.delete(id)) return;
+    this.reproject();
+    this.onDidChangeEmitter.fire(id);
+  }
+
   async load(): Promise<void> {
     await this.ready;
   }
@@ -235,9 +247,12 @@ export class SessionAgentProfileCatalogService
 
   private relevantEntries(): AgentProfileRegistration[] {
     const key = this.seed.workspaceKey;
-    return this.registry
-      .entries()
-      .filter((e) => e.workspaceKey === undefined || e.workspaceKey === key);
+    return [
+      ...this.registry
+        .entries()
+        .filter((e) => e.workspaceKey === undefined || e.workspaceKey === key),
+      ...this.contributions.values(),
+    ];
   }
 
   private disabledBuiltinProfileNames(): ReadonlySet<string> {

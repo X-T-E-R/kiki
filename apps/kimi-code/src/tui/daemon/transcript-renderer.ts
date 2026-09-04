@@ -3,12 +3,15 @@ import { Container, Text, type Component, type TUI } from '@moonshot-ai/pi-tui';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import type { Block, ToolBlock } from '@kiki/session-core/session/transcript/types';
 
+import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
 import { ThinkingComponent } from '#/tui/components/messages/thinking';
 import { ToolCallComponent } from '#/tui/components/messages/tool-call';
 import { UserMessageComponent } from '#/tui/components/messages/user-message';
 import { currentTheme } from '#/tui/theme';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
+import type { ImageAttachment } from '#/tui/utils/image-attachment-store';
+import { parseImageMeta } from '#/utils/image/image-mime';
 
 interface MountedBlock {
   readonly kind: Block['kind'];
@@ -155,10 +158,33 @@ class DaemonAssistantMessageComponent extends Container {
 
 function addMediaLabels(container: Container, media: readonly MediaRef[] | undefined): void {
   for (const item of media ?? []) {
+    const thumbnail = item.kind === 'image' ? imageThumbnail(item) : undefined;
+    if (thumbnail !== undefined) {
+      container.addChild(thumbnail);
+      continue;
+    }
     const urlLabel = item.url?.startsWith('data:') === true ? (item.mime ?? 'inline') : item.url;
     const label = item.name ?? item.path ?? item.fileId ?? urlLabel ?? item.kind;
     container.addChild(new Text(currentTheme.fg('accent', `[${item.kind}: ${label}]`), 2, 0));
   }
+}
+
+function imageThumbnail(item: MediaRef): ImageThumbnail | undefined {
+  const match = /^data:([^;,]+);base64,(.+)$/su.exec(item.url ?? '');
+  if (match === null) return undefined;
+  const bytes = Buffer.from(match[2]!, 'base64');
+  const dimensions = parseImageMeta(bytes);
+  if (dimensions === null) return undefined;
+  const attachment: ImageAttachment = {
+    id: 0,
+    kind: 'image',
+    bytes,
+    mime: match[1]!,
+    width: dimensions.width,
+    height: dimensions.height,
+    placeholder: `[image (${String(dimensions.width)}×${String(dimensions.height)})]`,
+  };
+  return new ImageThumbnail(attachment);
 }
 
 function requiresReplacement(previous: Block, next: Block): boolean {

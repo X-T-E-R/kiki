@@ -119,31 +119,33 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     emergencyExit(1);
   };
   let terminating = false;
-  const stopAfterSignal = async (): Promise<void> => {
+  const stopAfterSignal = async (exitCode: number): Promise<void> => {
     try {
-      await tui.stop();
+      await tui.stop(exitCode);
     } catch (error) {
       try {
         log.error('signal shutdown failed, restoring terminal and exiting', {
           error: String(error),
         });
       } finally {
-        emergencyExit(1);
+        emergencyExit(exitCode);
       }
     }
   };
-  const onTerminationSignal = (): void => {
+  const onTerminationSignal = (exitCode: number): (() => void) => () => {
     if (terminating) return;
     terminating = true;
-    void stopAfterSignal();
+    void stopAfterSignal(exitCode);
   };
+  const onSigterm = onTerminationSignal(143);
+  const onSighup = onTerminationSignal(129);
   const closeAfterOutputError = async (): Promise<void> => {
     try {
       await tui.close();
     } catch (closeError) {
       log.error('TUI close failed after output stream error', { error: String(closeError) });
     } finally {
-      emergencyExit(0);
+      emergencyExit(129);
     }
   };
   const onOutputError = (error: NodeJS.ErrnoException): void => {
@@ -154,15 +156,15 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   };
   process.on('uncaughtException', onUncaughtException);
   process.on('unhandledRejection', onUnhandledRejection);
-  process.once('SIGTERM', onTerminationSignal);
-  if (process.platform !== 'win32') process.once('SIGHUP', onTerminationSignal);
+  process.once('SIGTERM', onSigterm);
+  if (process.platform !== 'win32') process.once('SIGHUP', onSighup);
   process.stdout.on('error', onOutputError);
   process.stderr.on('error', onOutputError);
   const removeHandlers = (): void => {
     process.off('uncaughtException', onUncaughtException);
     process.off('unhandledRejection', onUnhandledRejection);
-    process.off('SIGTERM', onTerminationSignal);
-    if (process.platform !== 'win32') process.off('SIGHUP', onTerminationSignal);
+    process.off('SIGTERM', onSigterm);
+    if (process.platform !== 'win32') process.off('SIGHUP', onSighup);
     process.stdout.off('error', onOutputError);
     process.stderr.off('error', onOutputError);
   };

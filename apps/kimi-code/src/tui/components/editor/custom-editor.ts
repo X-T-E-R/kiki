@@ -483,8 +483,9 @@ export class CustomEditor extends Editor {
       return;
     }
 
-    if (matchesKey(normalized, Key.ctrl('-'))) {
-      this.onUndo?.();
+    if (matchesKey(normalized, Key.ctrl('-')) && this.onUndo !== undefined) {
+      this.onUndo();
+      return;
     }
 
     // Exit bash mode: Backspace/Escape on an empty `!` prompt returns to prompt

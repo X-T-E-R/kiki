@@ -1,4 +1,7 @@
 import { Emitter, type Event } from '#/_base/event';
+import type { AgentProfileContribution } from '#/app/agentProfileCatalog/agentProfileContribution';
+import { configuredRoots } from '#/app/skillCatalog/skillRoots';
+import type { SkillContribution } from '#/app/skillCatalog/skillSource';
 import { UserFileSkillSource } from '#/app/skillCatalog/userFileSkillSource';
 import { FileProjectLocalConfigService } from '#/persistence/backends/node-fs/projectLocalConfigService';
 import type { RuntimeBinding, RuntimeLease } from '#/runtime/runtime';
@@ -28,7 +31,10 @@ import { AgentProfileWriterService } from '#/workspace/workspaceAgentProfileLoad
 import type { IExtraAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoader';
 import { ExtraAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoaderService';
 import type { IExplicitAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoader';
-import { ExplicitAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoaderService';
+import {
+  ExplicitAgentProfileLoaderService,
+  loadExplicitAgentProfileContribution,
+} from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoaderService';
 import type { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
 import { PluginAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
 import type { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
@@ -98,6 +104,7 @@ interface ProgramGeneration {
   readonly mcp: IWorkspaceMcpService;
   readonly trust: IWorkspaceTrust;
   readonly skills: IWorkspaceSkillCatalog;
+  readonly skillDiscovery: RuntimeSkillDiscovery;
   readonly agentProfiles: IWorkspaceAgentProfileLoader;
   readonly agentProfileWriter: IAgentProfileWriter;
   readonly userAgentProfiles: IUserAgentProfileLoader;
@@ -156,6 +163,34 @@ export class Program {
   get agentProfiles(): IWorkspaceAgentProfileLoader { return this.requireGeneration().agentProfiles; }
   get agentProfileWriter(): IAgentProfileWriter { return this.requireGeneration().agentProfileWriter; }
   get sessionControllerGeneration(): string { return this.requireGeneration().id; }
+
+  async loadSessionSourceContributions(input: {
+    readonly agentFiles: readonly string[];
+    readonly skillDirs: readonly string[];
+  }): Promise<{ readonly profiles: AgentProfileContribution; readonly skills: SkillContribution }> {
+    const generation = this.requireGeneration();
+    const runtimeFs = generation.lease.runtime.fs!;
+    const [profiles, skills] = await Promise.all([
+      loadExplicitAgentProfileContribution({
+        files: input.agentFiles,
+        cwd: this.context.cwd,
+        osHomeDir: this.dependencies.bootstrap.osHomeDir,
+        fs: runtimeFs,
+        log: this.dependencies.log,
+        user: generation.userAgentProfiles,
+        executors: this.dependencies.agentExecutors,
+      }),
+      generation.skillDiscovery.discover(
+        await configuredRoots(
+          input.skillDirs,
+          this.context.cwd,
+          this.dependencies.bootstrap.osHomeDir,
+          'extra',
+        ),
+      ),
+    ]);
+    return { profiles, skills };
+  }
 
   createSessionController(): SessionLifecycleService {
     const generation = this.requireGeneration();
@@ -323,6 +358,7 @@ export class Program {
         mcp,
         trust,
         skills,
+        skillDiscovery,
         agentProfiles,
         agentProfileWriter,
         userAgentProfiles,

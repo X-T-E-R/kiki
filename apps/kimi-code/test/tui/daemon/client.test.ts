@@ -140,6 +140,59 @@ describe('DaemonClient', () => {
     ]);
   });
 
+  it('loads the active goal through authenticated kap-server REST', async () => {
+    const fake = fakeKlient();
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
+      json: async () => ({ code: 0, msg: 'ok', data: { goal: null } }),
+    }) as Response);
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580/',
+      token: 'secret',
+      fetch: fetch as typeof globalThis.fetch,
+      klient: fake.klient as never,
+    });
+
+    await expect(client.getGoal('session 1')).resolves.toEqual({ goal: null });
+    expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
+      'http://127.0.0.1:57580/api/v1/sessions/session%201/goal',
+    );
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'Bearer secret',
+      },
+    });
+  });
+
+  it('updates a session-owned source overlay through kap-server REST', async () => {
+    const fake = fakeKlient();
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
+      json: async () => ({ code: 0, msg: 'ok', data: { profiles: 1, skills: 2 } }),
+    }) as Response);
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580/',
+      token: 'secret',
+      fetch: fetch as typeof globalThis.fetch,
+      klient: fake.klient as never,
+    });
+    const body = {
+      owner_id: 'owner-1',
+      agent_files: ['reviewer.md'],
+      skill_dirs: ['skills'],
+    };
+
+    await expect(client.updateSessionSourceOverlay('session 1', body)).resolves.toEqual({
+      profiles: 1,
+      skills: 2,
+    });
+    expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
+      'http://127.0.0.1:57580/api/v1/sessions/session%201/source-overlay',
+    );
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' });
+    expect(jsonRequestBody(fetch.mock.calls[0]?.[1])).toEqual(body);
+  });
+
   it('loads transcript snapshots through authenticated kap-server REST', async () => {
     const fake = fakeKlient();
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({

@@ -3,6 +3,7 @@ import { createKlient } from '@moonshot-ai/klient/http';
 import type {
   ApprovalResolveRequest,
   ApprovalResolveResult,
+  GoalSnapshot,
   ListModelsResponse,
   ListNamedAgentProfilesResponse,
   PromptAbortResponse,
@@ -179,6 +180,21 @@ export class DaemonClient implements SessionTransport {
 
   getSession(sessionId: string): Promise<Session> {
     return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  getGoal(sessionId: string): Promise<{ readonly goal: GoalSnapshot | null }> {
+    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/goal`);
+  }
+
+  updateSessionSourceOverlay(
+    sessionId: string,
+    body: {
+      readonly owner_id: string;
+      readonly agent_files: readonly string[];
+      readonly skill_dirs: readonly string[];
+    },
+  ): Promise<{ readonly profiles: number; readonly skills: number }> {
+    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}/source-overlay`, body);
   }
 
   getAgentTranscript(
