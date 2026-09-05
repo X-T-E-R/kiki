@@ -398,6 +398,23 @@ describe('TaskListTool', () => {
 });
 
 describe('TaskOutputTool', () => {
+  it('describes purposeful snapshots without redirecting idle root to foreground waiting', async () => {
+    const ctx = createTestAgent();
+    try {
+      const tool = ctx.get(IAgentToolRegistryService).resolve('TaskOutput');
+      expect(tool).toBeDefined();
+      expect(tool!.description).toContain('always non-blocking');
+      expect(tool!.description).toContain('specific progress check');
+      expect(tool!.description).toContain('end the current turn normally');
+      expect(tool!.description).toContain('when root is idle');
+      expect(tool!.description).toContain('background shell commands or environments without automatic continuation');
+      expect(tool!.description).toContain('subagent still handles its own dependencies');
+      expect(tool!.description).not.toContain('run that task in the foreground instead');
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
   it('has name and accepts the current schema', () => {
     const tool = new TaskOutputTool(new FakeTaskService());
 
@@ -747,6 +764,24 @@ describe('TaskStopTool', () => {
 });
 
 describe('TaskWait tool', () => {
+  it('reserves synchronous waiting while distinguishing root turns from subagent completion', async () => {
+    const ctx = createTestAgent();
+    try {
+      const tool = ctx.get(ITaskWaitTool);
+      expect(tool.description).toContain('interactive main agent (root)');
+      expect(tool.description).toContain('end the current turn normally');
+      expect(tool.description).toContain('Completion starts a follow-up turn when root is idle');
+      expect(tool.description).toContain('TaskOutput or AgentList polling, sleep, or timed loops');
+      expect(tool.description).toContain('subagent must handle its own outstanding dependencies');
+      expect(tool.description).toContain('If automatic notification is unavailable');
+      expect(tool.description).not.toContain('To wait longer, call TaskWait again');
+      expect(TaskWaitInputSchema.shape.timeout.description).toContain('explicit same-turn wait');
+      expect(TaskWaitInputSchema.shape.timeout.description).toContain('do not automatically repeat');
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
   function waitTelemetry(): { records: TelemetryRecord[]; telemetry: ReturnType<typeof recordingTelemetry> } {
     const records: TelemetryRecord[] = [];
     return { records, telemetry: recordingTelemetry(records) };
@@ -922,6 +957,10 @@ describe('TaskWait tool', () => {
     expect(result.isError ?? false).toBe(false);
     expect(output).toContain('wait_status: timed_out');
     expect(output).toContain('not an error');
+    expect(output).toContain('end the turn normally');
+    expect(output).toContain('when root is idle');
+    expect(output).toContain('subagent must handle its dependencies');
+    expect(output).not.toContain('Call TaskWait again to keep waiting');
     expect(output).toContain('[still_running]');
     expect(output).toContain('bash-running9');
     expect(tasks.waitDeliveries).toEqual([]);

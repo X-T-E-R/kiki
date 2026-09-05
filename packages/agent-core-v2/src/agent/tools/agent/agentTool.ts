@@ -530,7 +530,7 @@ function formatBackgroundAgentResult(
     `description: ${description}`,
     '',
     allowBackground
-      ? `next_step: The completion arrives automatically in a later turn — do NOT wait, poll, or call TaskOutput on it; continue with other work or hand back to the user. (If you have nothing to do until it finishes, run such tasks in the foreground next time.)`
+      ? `next_step: Completion is delivered automatically. An interactive main agent (root) should continue independent work or end the current turn normally when none remains; completion starts a follow-up turn when root is idle, without another user prompt. Do not keep root's turn open with TaskWait, TaskOutput or AgentList polling, sleep, or timed loops, or choose foreground execution merely because the next step depends on the result. Reserve synchronous waiting for a genuine same-turn requirement. A subagent must handle its own dependencies before returning its final result to its parent.`
       : 'next_step: The completion arrives automatically in a later turn.',
     `resume_hint: To continue or recover this same subagent later, call AgentRun(resume="${handle.agentId}", prompt="..."). The parameter is agent_id ("${handle.agentId}"), NOT task_id ("${taskId}") or source_id from a later <notification>. Recovery cases: a later <notification type="task.lost" | "task.failed" | "task.killed"> for this subagent — its conversation history is preserved across session restarts and resume will pick it up.`,
   ].join('\n');

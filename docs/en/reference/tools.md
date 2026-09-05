@@ -119,7 +119,9 @@ Collaboration tools handle inter-Agent coordination, user interaction, and Skill
 
 ## Background Tasks
 
-Background task tools manage tasks started via `Bash`, `AgentRun`, or `AskUserQuestion`. When a task reaches a terminal state, its status and saved output path are automatically delivered back to the Agent; use `TaskOutput` to check progress early, or `TaskWait` to wait for a result inside the current turn.
+Background task tools manage tasks started via `Bash`, `AgentRun`, or `AskUserQuestion`. When a task reaches a terminal state, its status and saved output path are automatically delivered back to the Agent. For background subagents with automatic completion notification, the interactive main agent (root) continues independent work or ends its current turn normally; completion starts a follow-up turn when root is idle, without another user prompt. Ending the turn leaves the task running and the session open, and does not mark the overall task complete.
+
+Root should not keep a turn open just to await that result with `TaskWait`, `TaskOutput` or `AgentList` polling, sleep, or timed loops. Use `TaskOutput` for a specific progress check and `TaskWait` for a genuine same-turn synchronization requirement. If automatic notification is unavailable, choose whether to wait based on the task's actual needs. Subagents still handle their own dependencies before returning a final result to their parent.
 
 | Tool | Default Approval | Description |
 | --- | --- | --- |
@@ -134,7 +136,7 @@ Background task tools manage tasks started via `Bash`, `AgentRun`, or `AskUserQu
 
 **`TaskStop`** accepts a `task_id` and optional `reason` (defaults to `Stopped by TaskStop`). Safe to call on tasks that are already in a terminal state.
 
-**`TaskWait`** suspends the current turn until a background task finishes or the timeout elapses. Parameters: `timeout` (required, in seconds, max 600) and optional `task_id`. Without `task_id`, the wait ends as soon as any background task that was running at call time finishes; when no background tasks are running, it returns immediately. A timeout is not an error — the result lists the tasks still running, and the Agent can wait again or do other work meanwhile. A task whose result was reported by `TaskWait` does not also produce an automatic completion notification.
+**`TaskWait`** suspends the current turn for an explicit synchronous wait until a background task finishes or the timeout elapses. Parameters: `timeout` (required, in seconds, from 1 to 600) and optional `task_id`. Without `task_id`, the wait ends as soon as any background task that was running at call time finishes; when no background tasks are running, it returns immediately. A timeout is not an error: the result lists the tasks still running without stopping them. Reassess the same-turn requirement instead of automatically repeating the wait. A task whose result was reported by `TaskWait` does not also produce an automatic completion notification.
 
 ## Scheduled Tasks
 

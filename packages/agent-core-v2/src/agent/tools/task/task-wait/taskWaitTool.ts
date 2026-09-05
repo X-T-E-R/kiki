@@ -245,7 +245,7 @@ export class TaskWaitTool implements ITaskWaitTool {
         waitedMs: Date.now() - startedAt,
         timeoutMs,
       }),
-      'The wait ended before the task finished — a timeout is not an error. Call TaskWait again to keep waiting, or continue with other work; completion also arrives via automatic notification.',
+      'The wait ended before the task finished; a timeout is not an error and the task is still running. Reassess any same-turn synchronization requirement rather than automatically repeating TaskWait. For an interactive main agent (root) with automatic subagent completion notification, continue independent work or end the turn normally; completion starts a follow-up turn when root is idle. A subagent must handle its dependencies before returning its final result to its parent.',
     ];
     const running = this.tasks.list(true);
     if (running.length > 0) {

@@ -13,7 +13,7 @@ export const TaskWaitInputSchema = z.object({
     .positive()
     .max(TASK_WAIT_MAX_TIMEOUT_S)
     .describe(
-      `Maximum time to wait, in seconds (1-${String(TASK_WAIT_MAX_TIMEOUT_S)}). A timeout is not an error: the tool returns the tasks that are still running, and you can call it again to keep waiting.`,
+      `Maximum time for an explicit same-turn wait, in seconds (1-${String(TASK_WAIT_MAX_TIMEOUT_S)}). A timeout returns still-running tasks without stopping them; do not automatically repeat the wait.`,
     ),
   task_id: z
     .string()
