@@ -1,6 +1,9 @@
+import { readFile, writeFile } from 'node:fs/promises';
+import { basename, resolve } from 'node:path';
+
 import { Text, TuiAltScreen } from '@moonshot-ai/pi-tui';
 import type { PermissionMode } from '@moonshot-ai/kimi-code-sdk';
-import type { QuestionResponse } from '@moonshot-ai/protocol';
+import type { PromptStatus, UpdateSessionProfileRequest } from '@moonshot-ai/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { SessionController } from '@kiki/session-core/session/sessionController';
@@ -22,18 +25,47 @@ import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialo
 import { SessionPickerComponent, type SessionRow } from '#/tui/components/dialogs/session-picker';
 import { FileMentionProvider } from '#/tui/components/editor/file-mention-provider';
 import type { TuiConfig } from '#/tui/config';
+import {
+  CTRL_C_HINT,
+  CTRL_D_HINT,
+  EXIT_CONFIRM_WINDOW_MS,
+} from '#/tui/constant/kimi-tui';
+import {
+  MEDIA_SETTLEMENT_RETRY_BASE_MS,
+  MEDIA_SETTLEMENT_RETRY_MAX_MS,
+  MEDIA_STAGING_TTL_SECONDS,
+} from '#/tui/constant/media';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
-import type {
-  ApprovalPanelData,
-  QuestionPanelData,
-  QuestionPanelResponse,
-} from '#/tui/reverse-rpc/types';
-import { adaptApprovalRequest } from '#/tui/reverse-rpc/approval/adapter';
-import { currentTheme } from '#/tui/theme';
+import { adaptApprovalRequest } from '#/tui/interactions/approval-adapter';
+import {
+  adaptQuestionRequest,
+  adaptQuestionResponse,
+} from '#/tui/interactions/question-adapter';
+import type { ApprovalPanelData, QuestionPanelResponse } from '#/tui/interactions/types';
+import { currentTheme, getColorPalette } from '#/tui/theme';
 import { createTUIState, type TUIState } from '#/tui/tui-state';
+import { parseGoalCommand } from '#/tui/commands/goal-parse';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
 import { formatErrorMessage } from '#/tui/utils/event-payload';
+import { buildExportMarkdown } from '#/tui/utils/export-markdown';
+import {
+  ImageAttachmentStore,
+  type MediaAttachment,
+} from '#/tui/utils/image-attachment-store';
+import { extractInlineSkillActivations } from '#/tui/utils/inline-skill-tokens';
+import { readClipboardMedia } from '#/utils/clipboard/clipboard-image';
+import { clipboard } from '#/utils/clipboard/clipboard-native';
+import { parseImageMeta } from '#/utils/image/image-mime';
+import { openUrl } from '#/utils/open-url';
+import { loadPluginMarketplace } from '#/utils/plugin-marketplace';
+import { editInExternalEditor, resolveEditorCommand } from '#/utils/process/external-editor';
 
+import { projectAttachmentSettlement } from './attachment-settlement';
+import {
+  prepareDaemonPrompt,
+  type DaemonFileAttachment,
+  type PreparedDaemonPrompt,
+} from './attachments';
 import { DaemonClient } from './client';
 import {
   daemonAutocompleteCommands,
@@ -57,6 +89,7 @@ export interface DaemonTUIStartupInput {
     readonly model?: string;
     readonly thinking?: string;
     readonly agentFiles: readonly string[];
+    readonly skillsDirs: readonly string[];
   };
   readonly agentProfile?: string;
   readonly additionalDirs?: readonly string[];
@@ -68,11 +101,34 @@ export interface DaemonTUIStartupInput {
 
 type SessionSummary = Awaited<ReturnType<DaemonClient['listSessions']>>['items'][number];
 
+interface AttachmentSettlementLease {
+  readonly sessionId: string;
+  readonly promptId?: string;
+  readonly turnId?: string;
+  readonly promptState?: PromptStatus;
+  readonly uploadIds: Set<string>;
+  readonly deadlineAt: number;
+  deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  deleteRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  deleteFailures: number;
+  settled: boolean;
+  releasing: boolean;
+}
+
+interface AttachmentControllerLease {
+  readonly dispose: () => void;
+  readonly deadlineTimer: ReturnType<typeof setTimeout>;
+}
+
+interface InvalidUploadCleanup {
+  failures: number;
+  retryTimer: ReturnType<typeof setTimeout> | undefined;
+  inFlight: Promise<unknown> | undefined;
+}
+
 export class DaemonTUI {
   readonly state: TUIState;
   public onExit?: (exitCode?: number) => Promise<void>;
-  public exitOpenUrl: string | undefined;
-  public exitForegroundTask: ((exitCode: number) => Promise<void>) | undefined;
 
   private readonly client: DaemonClient;
   private readonly socket: DaemonSocket;
@@ -84,7 +140,26 @@ export class DaemonTUI {
   private activeInteractionId: string | undefined;
   private readonly skillCommands = new Map<string, DaemonSkillCommand>();
   private readonly agentProfileCommands = new Map<string, string>();
+  private readonly imageAttachments = new ImageAttachmentStore();
+  private readonly fileAttachments = new Map<number, DaemonFileAttachment>();
+  private nextFileAttachmentId = 1;
   private focusedAgentId = 'main';
+  private pendingExit:
+    | { readonly kind: 'ctrl-c' | 'ctrl-d'; readonly timer: ReturnType<typeof setTimeout> }
+    | undefined;
+  private startupOverridesPending = true;
+  private todoExpanded = false;
+  private sourceOverlayLeaseId: string | undefined;
+  private sourceOverlayLeaseExpiresAt: number | undefined;
+  private sourceOverlayHeartbeat: ReturnType<typeof setTimeout> | undefined;
+  private sourceOverlaySessionId: string | undefined;
+  private sourceOverlayReattachPending = false;
+  private sourceOverlayHeartbeatFailures = 0;
+  private readonly attachmentSettlementLeases = new Map<string, AttachmentSettlementLease>();
+  private readonly attachmentControllerLeases = new Map<SessionController, AttachmentControllerLease>();
+  private readonly attachmentRefreshes = new WeakMap<object, Promise<void>>();
+  private readonly invalidUploadCleanups = new Map<string, InvalidUploadCleanup>();
+  private readonly sideControllers = new Set<SessionController>();
   private stopped = false;
 
   constructor(connection: DaemonConnection, startup: DaemonTUIStartupInput) {
@@ -95,16 +170,24 @@ export class DaemonTUI {
       ...connection,
       events: {
         onStatus: (status) => {
-          if (status === 'closed') this.controller?.handleWsDrop();
+          if (status !== 'closed') return;
+          this.controller?.handleWsDrop();
+          for (const controller of this.sideControllers) controller.handleWsDrop();
         },
-        onFrame: (frame) => this.controller?.handleFrame(frame),
-        onTranscript: (event, generation) => this.controller?.handleTranscript(event, generation),
-        onResyncRequired: (payload) => this.controller?.handleResyncRequired(payload),
+        onFrame: (frame) =>
+          (frame.session_id === undefined ? this.controller : this.controllerFor(frame.session_id))
+            ?.handleFrame(frame),
+        onTranscript: (event, generation) =>
+          this.controllerFor(event.session_id)?.handleTranscript(event, generation),
+        onResyncRequired: (payload) =>
+          this.controllerFor(payload.session_id)?.handleResyncRequired(payload),
         onSubscribeAck: (_accepted, rejected, reconnected, generation) => {
-          if (rejected.includes(this.controller?.sessionId ?? '')) {
-            this.controller?.handleSubscribeRejected(generation);
-          } else if (reconnected) {
+          for (const sessionId of rejected) {
+            this.controllerFor(sessionId)?.handleSubscribeRejected(generation);
+          }
+          if (reconnected) {
             this.controller?.handleReconnectAck();
+            for (const controller of this.sideControllers) controller.handleReconnectAck();
           }
         },
       },
@@ -119,12 +202,18 @@ export class DaemonTUI {
     this.setupAutocomplete();
   }
 
+  private controllerFor(sessionId: string): SessionController | undefined {
+    if (this.controller?.sessionId === sessionId) return this.controller;
+    return [...this.sideControllers].find((controller) => controller.sessionId === sessionId);
+  }
+
   async start(): Promise<void> {
     this.state.ui.start();
     this.socket.connect();
     this.state.transcriptContainer.addChild(new WelcomeComponent(this.state.appState));
     this.state.editorContainer.addChild(this.state.editor);
     this.state.ui.setFocus(this.state.editor);
+    this.state.todoPanelContainer.addChild(this.state.todoPanel);
     this.mountFooter();
     if (this.startup.startupNotice !== undefined) this.showStatus(this.startup.startupNotice);
     await this.refreshAgentCommands();
@@ -151,18 +240,59 @@ export class DaemonTUI {
   private async dispose(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    this.focusedControllerDispose?.();
+    let failure: Error | undefined;
+    const cleanup = async (operation: () => void | Promise<void>): Promise<void> => {
+      try {
+        await operation();
+      } catch (error) {
+        failure ??= error instanceof Error ? error : new Error(String(error));
+      }
+    };
+    await cleanup(() => {
+      this.clearPendingExit();
+    });
+    await cleanup(() => this.focusedControllerDispose?.());
     this.focusedControllerDispose = undefined;
-    this.mainControllerDispose?.();
+    await cleanup(() => this.mainControllerDispose?.());
     this.mainControllerDispose = undefined;
-    this.controller?.close();
+    await cleanup(() => this.controller?.close());
     this.controller = undefined;
-    this.renderer.dispose();
-    this.socket.close();
-    await this.client.close();
-    this.state.footer.dispose();
-    await this.state.terminal.drainInput();
-    this.state.ui.stop();
+    await cleanup(() => {
+      for (const lease of this.attachmentControllerLeases.values()) {
+        lease.dispose();
+        clearTimeout(lease.deadlineTimer);
+      }
+      this.attachmentControllerLeases.clear();
+    });
+    await cleanup(() => {
+      for (const controller of this.sideControllers) controller.close();
+      this.sideControllers.clear();
+    });
+    await cleanup(() => {
+      this.renderer.dispose();
+    });
+    await cleanup(() => {
+      this.socket.close();
+    });
+    await cleanup(() => this.clearAttachments());
+    await cleanup(() => this.releaseSettledAttachmentLeases());
+    await cleanup(() => {
+      this.clearAttachmentSettlementTimers();
+    });
+    await cleanup(() => this.disposeInvalidUploadCleanups());
+    await cleanup(() => this.releaseExplicitSources());
+    await cleanup(() => {
+      this.clearSourceOverlayHeartbeat();
+    });
+    await cleanup(() => this.client.close());
+    await cleanup(() => {
+      this.state.footer.dispose();
+    });
+    await cleanup(() => this.state.terminal.drainInput());
+    await cleanup(() => {
+      this.state.ui.stop();
+    });
+    if (failure !== undefined) throw failure;
   }
 
   private buildLayout(): void {
@@ -170,6 +300,7 @@ export class DaemonTUI {
     this.state.ui.clear();
     this.state.ui.addChild(this.state.transcriptContainer);
     this.state.ui.addChild(this.state.activityContainer);
+    this.state.ui.addChild(this.state.todoPanelContainer);
     this.state.ui.addChild(this.state.editorContainer);
   }
 
@@ -184,20 +315,311 @@ export class DaemonTUI {
   }
 
   private installEditor(): void {
-    this.state.editor.onSubmit = (text) => {
+    const editor = this.state.editor;
+    editor.onSubmit = (text) => {
+      this.clearPendingExit();
       void this.handleInput(text).catch((error: unknown) => {
         this.showStatus(formatErrorMessage(error), 'error');
       });
     };
-    this.state.editor.onCtrlC = () => {
-      void this.stop();
+    editor.onCtrlC = () => {
+      void this.handleInterrupt('ctrl-c');
     };
-    this.state.editor.onCtrlD = () => {
-      void this.stop();
+    editor.onCtrlD = () => {
+      this.confirmExit('ctrl-d');
     };
-    this.state.editor.onInputModeChange = (mode) => {
+    editor.onEscape = () => {
+      this.clearPendingExit();
+      if (this.controller?.getState().busy === true) void this.abortActivePrompt();
+    };
+    editor.onNonEscapeInput = () => {
+      this.clearPendingExit();
+    };
+    editor.onShiftTab = () => {
+      void this.applyPlanMode(!this.state.appState.planMode).catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+    };
+    editor.onToggleToolExpand = () => {
+      const expanded = !this.state.toolOutputExpanded;
+      this.state.toolOutputExpanded = expanded;
+      this.renderer.setExpanded(expanded);
+    };
+    editor.onOpenExternalEditor = () => {
+      const command = resolveEditorCommand(this.state.appState.editorCommand);
+      if (command === undefined) {
+        this.showStatus('No external editor is configured.', 'error');
+        return;
+      }
+      void editInExternalEditor(editor.getText(), command)
+        .then((text) => {
+          if (text !== undefined) editor.setText(text);
+          this.state.ui.requestRender(true);
+        })
+        .catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+    };
+    editor.onCtrlS = () => {
+      this.showStatus('Prompt steering shortcut is disabled in daemon TUI.', 'error');
+    };
+    editor.onCtrlB = () => {
+      if (this.controller?.getState().busy !== true) return false;
+      this.showStatus('Backgrounding the active turn is disabled in daemon TUI.', 'error');
+      return true;
+    };
+    editor.onToggleTodoExpand = () => {
+      if (!this.state.todoPanel.hasOverflow()) return false;
+      this.todoExpanded = !this.todoExpanded;
+      this.state.todoPanel.setExpanded(this.todoExpanded);
+      this.state.ui.requestRender(true);
+      return true;
+    };
+    editor.onUndo = () => {
+      void this.undoLastTurn().catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+    };
+    editor.onTextPaste = () => {
+      this.clearPendingExit();
+    };
+    editor.onPasteImage = async () => {
+      try {
+        return await this.handleClipboardPaste();
+      } catch (error) {
+        this.showStatus(`Attachment upload failed: ${formatErrorMessage(error)}`, 'error');
+        return true;
+      }
+    };
+    let historyBrowseMode: 'prompt' | 'bash' | undefined;
+    const updateHistoryFilter = () => {
+      const mode = historyBrowseMode ?? editor.inputMode;
+      editor.setHistoryFilter(
+        mode === 'bash' ? (entry) => entry.startsWith('!') : (entry) => !entry.startsWith('!'),
+      );
+    };
+    editor.onInputModeChange = (mode) => {
       this.setAppState({ inputMode: mode });
+      if (historyBrowseMode === undefined) updateHistoryFilter();
     };
+    editor.onHistoryDraftSave = () => {
+      historyBrowseMode = editor.inputMode;
+      updateHistoryFilter();
+      return historyBrowseMode;
+    };
+    editor.onHistoryDraftRestore = (mode) => {
+      historyBrowseMode = undefined;
+      editor.setInputMode(mode as 'prompt' | 'bash');
+      updateHistoryFilter();
+    };
+    editor.onRecall = (entry) => {
+      if (entry.startsWith('!')) {
+        editor.setInputMode('bash');
+        return entry.slice(1);
+      }
+      editor.setInputMode('prompt');
+      return undefined;
+    };
+    updateHistoryFilter();
+  }
+
+  private async handleClipboardPaste(): Promise<boolean> {
+    const media = await readClipboardMedia();
+    if (media === null) return false;
+    if (media.kind === 'image') {
+      const dimensions = parseImageMeta(media.bytes);
+      if (dimensions === null) return false;
+      const attachment = this.imageAttachments.addImage(
+        media.bytes,
+        media.mimeType,
+        dimensions.width,
+        dimensions.height,
+      );
+      this.state.editor.insertTextAtCursor?.(`${attachment.placeholder} `);
+      this.state.ui.requestRender();
+      attachment.pending = this.client.klient.global.files
+        .save({
+          data: media.bytes,
+          filename: `clipboard.${imageExtension(media.mimeType)}`,
+          mimeType: media.mimeType,
+          expiresInSec: MEDIA_STAGING_TTL_SECONDS,
+        })
+        .then(async (upload) => {
+          const fileExpiresAt = parseUploadExpiry(upload);
+          if (fileExpiresAt === undefined) {
+            await this.ownInvalidUpload(upload.id);
+            throw new Error('Attachment upload did not include an expiry.');
+          }
+          const completed = this.imageAttachments.completeImage(attachment, {
+            bytes: media.bytes,
+            mime: media.mimeType,
+            width: dimensions.width,
+            height: dimensions.height,
+            fileId: upload.id,
+            fileExpiresAt,
+          });
+          if (completed === undefined) await this.client.klient.global.files.delete(upload.id);
+        })
+        .catch((error: unknown) => {
+          attachment.pending = undefined;
+          this.showStatus(`Attachment upload failed: ${formatErrorMessage(error)}`, 'error');
+        });
+      return true;
+    }
+    const attachment = this.imageAttachments.addVideo(
+      media.mimeType,
+      media.sourcePath,
+      media.filename,
+    );
+    this.state.editor.insertTextAtCursor?.(`${attachment.placeholder} `);
+    this.state.ui.requestRender();
+    attachment.pending = readFile(media.sourcePath)
+      .then((data) =>
+        this.client.klient.global.files.save({
+          data,
+          filename: media.filename,
+          mimeType: media.mimeType,
+          expiresInSec: MEDIA_STAGING_TTL_SECONDS,
+        }),
+      )
+      .then(async (upload) => {
+        const fileExpiresAt = parseUploadExpiry(upload);
+        if (fileExpiresAt === undefined) {
+          await this.ownInvalidUpload(upload.id);
+          throw new Error('Attachment upload did not include an expiry.');
+        }
+        const completed = this.imageAttachments.completeVideo(attachment, {
+          fileId: upload.id,
+          fileExpiresAt,
+        });
+        if (completed === undefined) await this.client.klient.global.files.delete(upload.id);
+      })
+      .catch((error: unknown) => {
+        attachment.pending = undefined;
+        this.showStatus(`Attachment upload failed: ${formatErrorMessage(error)}`, 'error');
+      });
+    return true;
+  }
+
+  private async handleInterrupt(kind: 'ctrl-c'): Promise<void> {
+    if (this.controller?.getState().busy === true) {
+      this.clearPendingExit();
+      if (this.state.editor.getText().length > 0) {
+        this.state.editor.setText('');
+        return;
+      }
+      await this.abortActivePrompt();
+      return;
+    }
+    this.confirmExit(kind);
+  }
+
+  private async abortActivePrompt(): Promise<void> {
+    try {
+      await this.controller?.abortActive();
+    } catch (error) {
+      this.showStatus(formatErrorMessage(error), 'error');
+    }
+  }
+
+  private confirmExit(kind: 'ctrl-c' | 'ctrl-d'): void {
+    if (this.pendingExit?.kind === kind) {
+      this.clearPendingExit();
+      void this.stop();
+      return;
+    }
+    if (kind === 'ctrl-c' && this.state.editor.getText().length > 0) {
+      this.state.editor.setText('');
+    }
+    this.clearPendingExit();
+    const timer = setTimeout(() => {
+      if (this.pendingExit?.timer !== timer) return;
+      this.clearPendingExit();
+      this.state.ui.requestRender();
+    }, EXIT_CONFIRM_WINDOW_MS);
+    this.pendingExit = { kind, timer };
+    this.state.footer.setTransientHint(kind === 'ctrl-c' ? CTRL_C_HINT : CTRL_D_HINT);
+    this.state.ui.requestRender();
+  }
+
+  private clearPendingExit(): void {
+    if (this.pendingExit === undefined) return;
+    clearTimeout(this.pendingExit.timer);
+    this.pendingExit = undefined;
+    this.state.footer.setTransientHint(null);
+  }
+
+  private async configureExplicitSources(sessionId: string): Promise<void> {
+    const agentFiles = this.startup.cliOptions.agentFiles;
+    const skillDirs = this.startup.cliOptions.skillsDirs;
+    if (agentFiles.length === 0 && skillDirs.length === 0) return;
+    if (this.sourceOverlaySessionId !== undefined && this.sourceOverlaySessionId !== sessionId) {
+      await this.releaseExplicitSources();
+    }
+    const leaseId = await this.ensureSourceOverlayLease();
+    await this.client.updateSessionSourceOverlay(sessionId, {
+      lease_id: leaseId,
+      agent_files: agentFiles,
+      skill_dirs: skillDirs,
+    });
+    this.sourceOverlaySessionId = sessionId;
+  }
+
+  private async ensureSourceOverlayLease(): Promise<string> {
+    const previousLeaseId = this.sourceOverlayLeaseId;
+    const lease = await this.client.renewServerLease(previousLeaseId);
+    this.sourceOverlayLeaseId = lease.lease_id;
+    this.sourceOverlayLeaseExpiresAt = lease.expires_at;
+    if (previousLeaseId !== undefined && lease.lease_id !== previousLeaseId) {
+      this.sourceOverlayReattachPending = this.sourceOverlaySessionId !== undefined;
+    }
+    if (this.sourceOverlayReattachPending && this.sourceOverlaySessionId !== undefined) {
+      await this.client.updateSessionSourceOverlay(this.sourceOverlaySessionId, {
+        lease_id: lease.lease_id,
+        agent_files: this.startup.cliOptions.agentFiles,
+        skill_dirs: this.startup.cliOptions.skillsDirs,
+      });
+      this.sourceOverlayReattachPending = false;
+    }
+    this.sourceOverlayHeartbeatFailures = 0;
+    this.scheduleSourceOverlayHeartbeat();
+    return lease.lease_id;
+  }
+
+  private scheduleSourceOverlayHeartbeat(retry = false): void {
+    this.clearSourceOverlayHeartbeat();
+    const expiresAt = this.sourceOverlayLeaseExpiresAt;
+    if (expiresAt === undefined) return;
+    const delay = retry
+      ? Math.min(10_000, 250 * 2 ** Math.min(this.sourceOverlayHeartbeatFailures - 1, 6))
+      : Math.max(25, Math.floor((expiresAt - Date.now()) / 2));
+    this.sourceOverlayHeartbeat = setTimeout(() => {
+      this.sourceOverlayHeartbeat = undefined;
+      void this.ensureSourceOverlayLease().catch((error: unknown) => {
+        this.sourceOverlayHeartbeatFailures += 1;
+        this.showStatus(`Source overlay lease renewal failed: ${formatErrorMessage(error)}`, 'error');
+        this.scheduleSourceOverlayHeartbeat(true);
+      });
+    }, delay);
+    this.sourceOverlayHeartbeat.unref();
+  }
+
+  private clearSourceOverlayHeartbeat(): void {
+    if (this.sourceOverlayHeartbeat === undefined) return;
+    clearTimeout(this.sourceOverlayHeartbeat);
+    this.sourceOverlayHeartbeat = undefined;
+  }
+
+  private async releaseExplicitSources(): Promise<void> {
+    const sessionId = this.sourceOverlaySessionId;
+    const leaseId = this.sourceOverlayLeaseId;
+    if (sessionId === undefined || leaseId === undefined) return;
+    await this.client.updateSessionSourceOverlay(sessionId, {
+      lease_id: leaseId,
+      agent_files: [],
+      skill_dirs: [],
+    });
+    this.sourceOverlaySessionId = undefined;
   }
 
   private setupAutocomplete(): void {
@@ -270,14 +692,22 @@ export class DaemonTUI {
       await this.openSession(sessionFlag);
       return;
     }
-    if (!this.startup.cliOptions.continue) return;
-    const sessions = await this.client.listSessions();
-    const existing = sessions.items.find((item) => item.cwd === this.startup.workDir);
-    if (existing === undefined) {
+    if (!this.startup.cliOptions.continue) {
       await this.createSession();
-    } else {
-      await this.openSession(existing.id);
+      return;
     }
+    let before: string | undefined;
+    for (;;) {
+      const page = await this.client.listSessions(50, before);
+      const existing = page.items.find((item) => samePath(item.cwd, this.startup.workDir));
+      if (existing !== undefined) {
+        await this.openSession(existing.id);
+        return;
+      }
+      if (page.nextCursor === undefined) break;
+      before = page.nextCursor;
+    }
+    await this.createSession();
   }
 
   private async ensureSession(): Promise<SessionController> {
@@ -295,10 +725,24 @@ export class DaemonTUI {
   }
 
   private async openSession(sessionId: string): Promise<void> {
+    const previous = this.controller;
+    if (previous !== undefined && previous.sessionId !== sessionId) {
+      await this.clearAttachments();
+      this.state.editor.setText('');
+    }
     this.focusedControllerDispose?.();
     this.focusedControllerDispose = undefined;
     this.mainControllerDispose?.();
-    this.controller?.close();
+    if (
+      previous !== undefined &&
+      previous.sessionId !== sessionId &&
+      this.hasUnsettledAttachmentLeases(previous.sessionId)
+    ) {
+      this.retainAttachmentSettlementController(previous);
+    } else {
+      previous?.close();
+    }
+    this.releaseAttachmentSettlementController(sessionId);
     this.focusedAgentId = 'main';
     const controller = new SessionController(this.client, this.socket, sessionId);
     this.controller = controller;
@@ -307,14 +751,50 @@ export class DaemonTUI {
     });
     await controller.open();
     this.renderSession(controller.getState());
+    await this.configureExplicitSources(sessionId);
+    await this.applyStartupOverrides(controller);
     await this.refreshSkillCommands(sessionId);
+    await this.refreshAgentCommands();
+  }
+
+  private async applyStartupOverrides(controller: SessionController): Promise<void> {
+    if (!this.startupOverridesPending) return;
+    const permissionMode: PermissionMode | undefined = this.startup.cliOptions.auto
+      ? 'auto'
+      : this.startup.cliOptions.yolo
+        ? 'yolo'
+        : undefined;
+    const agentConfig: NonNullable<UpdateSessionProfileRequest['agent_config']> = {
+      model: this.startup.cliOptions.model,
+      profile: this.startup.agentProfile,
+      thinking: this.startup.cliOptions.thinking,
+      permission_mode: permissionMode,
+      plan_mode: this.startup.cliOptions.plan ? true : undefined,
+    };
+    if (Object.values(agentConfig).some((value) => value !== undefined)) {
+      const session = await this.client.updateSessionProfile(controller.sessionId, {
+        agent_config: agentConfig,
+      });
+      controller.handleSessionRecord(session);
+      this.setAppState({
+        model: agentConfig.model ?? session.agent_config.model ?? this.state.appState.model,
+        agentProfile: session.agent_config.profile ?? this.state.appState.agentProfile,
+        thinkingEffort: agentConfig.thinking ?? this.state.appState.thinkingEffort,
+        permissionMode:
+          session.agent_config.permission_mode ?? this.state.appState.permissionMode,
+        planMode: session.agent_config.plan_mode ?? this.state.appState.planMode,
+      });
+    }
+    this.startupOverridesPending = false;
   }
 
   private renderSession(view: SessionViewState): void {
+    this.settleAttachmentLeases(view);
     if (this.focusedAgentId === 'main') this.renderer.sync(view.blocks);
     this.setAppState({
       sessionId: view.sessionId,
       model: view.model ?? this.state.appState.model,
+      agentProfile: view.profile ?? this.state.appState.agentProfile,
       permissionMode: view.permissionMode ?? this.state.appState.permissionMode,
       planMode: view.planMode,
       swarmMode: view.swarmMode,
@@ -326,10 +806,58 @@ export class DaemonTUI {
           ? view.contextTokens / view.maxContextTokens
           : 0,
       streamingPhase: view.busy ? 'waiting' : 'idle',
+      stepRetry:
+        view.turnRetry === undefined
+          ? null
+          : {
+              nextAttempt: view.turnRetry.failedAttempt + 1,
+              maxAttempts: view.turnRetry.maxAttempts,
+              delayMs: view.turnRetry.delayMs,
+              errorName: view.turnRetry.errorName ?? 'Error',
+              errorMessage: '',
+              statusCode: view.turnRetry.statusCode,
+              phase: 'backoff',
+            },
       sessionTitle: view.session?.title ?? null,
       goal: view.goal,
     });
+    this.state.todoPanel.setTodos(
+      view.todos.map((todo) => ({
+        title: todo.title,
+        status:
+          todo.status === 'in_progress' || todo.status === 'done' ? todo.status : 'pending',
+      })),
+    );
+    this.state.footer.setBackgroundCounts({
+      bashTasks: view.tasks.filter((task) => task.kind === 'bash' && task.status === 'running').length,
+      agentTasks: view.tasks.filter(
+        (task) => task.kind === 'subagent' && task.status === 'running',
+      ).length,
+    });
+    this.renderActivityState(view);
     this.syncInteractionBlocks(view.blocks);
+  }
+
+  private renderActivityState(view: SessionViewState): void {
+    let message: string | undefined;
+    let tone: 'normal' | 'error' = 'normal';
+    if (view.resyncFailed) {
+      message = 'Session resync failed. Run /reload to retry.';
+      tone = 'error';
+    } else if (view.resyncing) {
+      message = `Resyncing session (attempt ${String(view.resyncAttempt)})…`;
+    } else if (view.turnRetry !== undefined) {
+      message = `Retrying attempt ${String(view.turnRetry.failedAttempt + 1)}/${String(view.turnRetry.maxAttempts)} in ${String(view.turnRetry.delayMs)}ms`;
+    } else if (view.busy) {
+      const runningTasks = view.tasks.filter((task) => task.status === 'running').length;
+      message = runningTasks > 0 ? `Working · ${String(runningTasks)} tasks running` : 'Working…';
+    }
+    if (message === undefined) {
+      this.state.activityContainer.clear();
+      this.state.ui.requestRender();
+      return;
+    }
+    this.showStatus(message, tone);
   }
 
   private async handleInput(raw: string): Promise<void> {
@@ -348,20 +876,434 @@ export class DaemonTUI {
     await this.sendPrompt(raw);
   }
 
-  private async sendPrompt(
-    text: string,
-    profile = this.state.appState.agentProfile,
-  ): Promise<void> {
+  private async sendPrompt(text: string, profile?: string): Promise<void> {
     const controller = await this.ensureSession();
-    await controller.sendPrompt({
+    const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments, {
+      refreshMedia: (attachment) => this.refreshMediaAttachment(attachment),
+      refreshFile: (attachment) => this.refreshFileAttachment(attachment),
+    });
+    if (profile === undefined) {
+      const skillMap = new Map<string, string>();
+      for (const skill of this.skillCommands.values()) {
+        skillMap.set(skill.commandName, skill.name);
+        skillMap.set(skill.name, skill.name);
+      }
+      const inlineSkills = extractInlineSkillActivations(text, skillMap);
+      if (inlineSkills.length > 0) {
+        if (prepared?.hasFileAttachment === true) {
+          throw new Error('File attachments cannot be combined with inline skills.');
+        }
+        const result = await this.client.klient
+          .session(controller.sessionId)
+          .agent('main')
+          .promptWithSkills({
+            input: prepared?.engineContent ?? [{ type: 'text', text }],
+            skills: inlineSkills.map((skill) => ({ name: skill.skillName })),
+          });
+        if (prepared !== undefined) {
+          this.handoffPreparedMedia(prepared, controller, {
+            promptId: result.prompt_id,
+            turnId: result.turn_id,
+            promptState: result.state,
+          });
+        }
+        await controller.resync();
+        return;
+      }
+      if (controller.getState().goal?.status === 'active') {
+        if (prepared?.hasFileAttachment === true) {
+          throw new Error('File attachments cannot be steered into an active goal.');
+        }
+        const result = await this.client.klient.session(controller.sessionId).agent('main').steer({
+          input: prepared?.engineContent ?? [{ type: 'text', text }],
+        });
+        if (result === undefined || result === null) {
+          await controller.resync();
+          if (prepared !== undefined) {
+            const view = controller.getState();
+            if (view.busy || view.goal?.status === 'active') {
+              this.handoffPreparedMediaToExpiry(prepared);
+            } else {
+              await this.releasePreparedMedia(prepared);
+            }
+          }
+          return;
+        }
+        if (prepared !== undefined) {
+          this.handoffPreparedMedia(prepared, controller, { turnId: result.turn_id });
+        }
+        await controller.resync();
+        return;
+      }
+    }
+    const result = await controller.sendPrompt({
       text,
+      content: prepared?.content,
       profile,
-      model: this.state.appState.model === '' ? undefined : this.state.appState.model,
-      thinking: this.state.appState.thinkingEffort,
+      model:
+        profile === undefined && this.state.appState.model !== ''
+          ? this.state.appState.model
+          : undefined,
+      thinking: profile === undefined ? this.state.appState.thinkingEffort : undefined,
       permissionMode: this.state.appState.permissionMode,
       planMode: this.state.appState.planMode,
       swarmMode: this.state.appState.swarmMode,
     });
+    if (prepared !== undefined) {
+      this.handoffPreparedMedia(prepared, controller, {
+        promptId: result.prompt_id,
+        promptState: result.status,
+      });
+      await controller.resync();
+    }
+  }
+
+  private refreshMediaAttachment(attachment: MediaAttachment): Promise<void> {
+    return this.refreshAttachmentOnce(attachment, () => this.performMediaAttachmentRefresh(attachment));
+  }
+
+  private async performMediaAttachmentRefresh(attachment: MediaAttachment): Promise<void> {
+    const previousFileId = attachment.fileId;
+    attachment.fileId = undefined;
+    attachment.fileExpiresAt = undefined;
+    try {
+      const data = attachment.kind === 'image' ? attachment.bytes : await readFile(attachment.sourcePath);
+      const upload = await this.client.klient.global.files.save({
+        data,
+        filename:
+          attachment.kind === 'image'
+            ? `clipboard.${imageExtension(attachment.mime)}`
+            : attachment.filename,
+        mimeType: attachment.mime,
+        expiresInSec: MEDIA_STAGING_TTL_SECONDS,
+      });
+      const expiresAt = parseUploadExpiry(upload);
+      if (expiresAt === undefined) {
+        await this.ownInvalidUpload(upload.id);
+        throw new Error('The refreshed upload did not include an expiry.');
+      }
+      attachment.fileId = upload.id;
+      attachment.fileExpiresAt = expiresAt;
+      if (previousFileId !== undefined && previousFileId !== upload.id) {
+        await this.client.klient.global.files.delete(previousFileId).catch(() => undefined);
+      }
+    } catch (error) {
+      throw new Error(
+        `Attachment refresh failed for ${attachment.placeholder}: ${formatErrorMessage(error)} Try again.`,
+        { cause: error },
+      );
+    }
+  }
+
+  private refreshFileAttachment(attachment: DaemonFileAttachment): Promise<void> {
+    return this.refreshAttachmentOnce(attachment, () => this.performFileAttachmentRefresh(attachment));
+  }
+
+  private async performFileAttachmentRefresh(attachment: DaemonFileAttachment): Promise<void> {
+    const previousFileId = attachment.fileId;
+    attachment.fileId = undefined;
+    attachment.expiresAt = undefined;
+    try {
+      const data = await readFile(attachment.sourcePath);
+      const upload = await this.client.klient.global.files.save({
+        data,
+        filename: attachment.name,
+        mimeType: attachment.mediaType,
+        expiresInSec: MEDIA_STAGING_TTL_SECONDS,
+      });
+      const expiresAt = parseUploadExpiry(upload);
+      if (expiresAt === undefined) {
+        await this.ownInvalidUpload(upload.id);
+        throw new Error('The refreshed upload did not include an expiry.');
+      }
+      attachment.fileId = upload.id;
+      attachment.expiresAt = expiresAt;
+      attachment.size = data.byteLength;
+      if (previousFileId !== undefined && previousFileId !== upload.id) {
+        await this.client.klient.global.files.delete(previousFileId).catch(() => undefined);
+      }
+    } catch (error) {
+      throw new Error(
+        `Attachment refresh failed for ${attachment.placeholder}: ${formatErrorMessage(error)} Try again.`,
+        { cause: error },
+      );
+    }
+  }
+
+  private refreshAttachmentOnce(attachment: object, refresh: () => Promise<void>): Promise<void> {
+    const existing = this.attachmentRefreshes.get(attachment);
+    if (existing !== undefined) return existing;
+    const pending = refresh().finally(() => {
+      this.attachmentRefreshes.delete(attachment);
+    });
+    this.attachmentRefreshes.set(attachment, pending);
+    return pending;
+  }
+
+  private async ownInvalidUpload(fileId: string): Promise<void> {
+    let cleanup = this.invalidUploadCleanups.get(fileId);
+    if (cleanup === undefined) {
+      cleanup = { failures: 0, retryTimer: undefined, inFlight: undefined };
+      this.invalidUploadCleanups.set(fileId, cleanup);
+    }
+    await this.attemptInvalidUploadCleanup(fileId, cleanup, true);
+  }
+
+  private attemptInvalidUploadCleanup(
+    fileId: string,
+    cleanup: InvalidUploadCleanup,
+    scheduleRetry: boolean,
+  ): Promise<unknown> {
+    if (cleanup.inFlight !== undefined) return cleanup.inFlight;
+    if (cleanup.retryTimer !== undefined) {
+      clearTimeout(cleanup.retryTimer);
+      cleanup.retryTimer = undefined;
+    }
+    const inFlight = this.client.klient.global.files
+      .delete(fileId)
+      .then(() => {
+        this.invalidUploadCleanups.delete(fileId);
+        return undefined;
+      })
+      .catch((error: unknown) => {
+        cleanup.failures += 1;
+        if (scheduleRetry && !this.stopped) {
+          cleanup.retryTimer = setTimeout(() => {
+            cleanup.retryTimer = undefined;
+            void this.attemptInvalidUploadCleanup(fileId, cleanup, true);
+          }, mediaDeleteRetryDelay(cleanup.failures));
+          cleanup.retryTimer.unref();
+        }
+        return error;
+      })
+      .finally(() => {
+        cleanup.inFlight = undefined;
+      });
+    cleanup.inFlight = inFlight;
+    return inFlight;
+  }
+
+  private async disposeInvalidUploadCleanups(): Promise<void> {
+    for (const cleanup of this.invalidUploadCleanups.values()) {
+      if (cleanup.retryTimer !== undefined) {
+        clearTimeout(cleanup.retryTimer);
+        cleanup.retryTimer = undefined;
+      }
+    }
+    await Promise.all(
+      [...this.invalidUploadCleanups.values()].flatMap((cleanup) =>
+        cleanup.inFlight === undefined ? [] : [cleanup.inFlight],
+      ),
+    );
+    const errors = (
+      await Promise.all(
+        [...this.invalidUploadCleanups].map(([fileId, cleanup]) =>
+          this.attemptInvalidUploadCleanup(fileId, cleanup, false),
+        ),
+      )
+    ).filter((error) => error !== undefined);
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Failed to clean up invalid attachment uploads');
+    }
+  }
+
+  private handoffPreparedMedia(
+    prepared: PreparedDaemonPrompt,
+    controller: SessionController,
+    identity: {
+      readonly promptId?: string;
+      readonly turnId?: number;
+      readonly promptState?: PromptStatus;
+    },
+  ): void {
+    const uploadIds = [...prepared.mediaUploadIds, ...prepared.fileUploadIds];
+    if (uploadIds.length === 0) return;
+    for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
+    for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
+    const turnId = identity.turnId === undefined ? undefined : String(identity.turnId);
+    const key = identity.promptId === undefined
+      ? `turn:${controller.sessionId}:${turnId}`
+      : `prompt:${controller.sessionId}:${identity.promptId}`;
+    const deadlineAt = Math.min(
+      Date.now() + MEDIA_STAGING_TTL_SECONDS * 1_000,
+      ...prepared.uploadExpiresAt,
+    );
+    const lease: AttachmentSettlementLease = {
+      sessionId: controller.sessionId,
+      promptId: identity.promptId,
+      turnId,
+      promptState: identity.promptState,
+      uploadIds: new Set(uploadIds),
+      deadlineAt,
+      deadlineTimer: undefined,
+      deleteRetryTimer: undefined,
+      deleteFailures: 0,
+      settled: false,
+      releasing: false,
+    };
+    lease.deadlineTimer = setTimeout(() => {
+      this.expireAttachmentSettlementLease(key, lease);
+    }, Math.max(0, deadlineAt - Date.now()));
+    lease.deadlineTimer.unref();
+    this.attachmentSettlementLeases.set(key, lease);
+    this.settleAttachmentLeases(controller.getState());
+  }
+
+  private handoffPreparedMediaToExpiry(prepared: PreparedDaemonPrompt): void {
+    for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
+    for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
+  }
+
+  private async releasePreparedMedia(prepared: PreparedDaemonPrompt): Promise<void> {
+    for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
+    for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
+    await Promise.allSettled(
+      [...prepared.mediaUploadIds, ...prepared.fileUploadIds].map((fileId) =>
+        this.client.klient.global.files.delete(fileId),
+      ),
+    );
+  }
+
+  private hasUnsettledAttachmentLeases(sessionId: string): boolean {
+    return [...this.attachmentSettlementLeases.values()].some(
+      (lease) => lease.sessionId === sessionId && !lease.settled,
+    );
+  }
+
+  private retainAttachmentSettlementController(controller: SessionController): void {
+    this.sideControllers.add(controller);
+    const dispose = controller.subscribe(() => {
+      this.settleAttachmentLeases(controller.getState());
+    });
+    const deadlineAt = Math.min(
+      ...[...this.attachmentSettlementLeases.values()]
+        .filter((lease) => lease.sessionId === controller.sessionId && !lease.settled)
+        .map((lease) => lease.deadlineAt),
+    );
+    const deadlineTimer = setTimeout(() => {
+      this.releaseAttachmentSettlementController(controller.sessionId);
+    }, Math.max(0, deadlineAt - Date.now()));
+    deadlineTimer.unref();
+    this.attachmentControllerLeases.set(controller, { dispose, deadlineTimer });
+  }
+
+  private releaseAttachmentSettlementController(sessionId: string): void {
+    for (const [controller, lease] of this.attachmentControllerLeases) {
+      if (controller.sessionId !== sessionId) continue;
+      lease.dispose();
+      clearTimeout(lease.deadlineTimer);
+      controller.close();
+      this.attachmentControllerLeases.delete(controller);
+      this.sideControllers.delete(controller);
+    }
+  }
+
+  private settleAttachmentLeases(view: SessionViewState): void {
+    for (const [key, lease] of this.attachmentSettlementLeases) {
+      if (lease.sessionId !== view.sessionId || lease.settled) continue;
+      const projection = projectAttachmentSettlement(
+        {
+          promptId: lease.promptId,
+          turnId: lease.turnId,
+          promptState: lease.promptState,
+        },
+        view,
+      );
+      if (projection !== 'terminal') continue;
+      lease.settled = true;
+      void this.releaseAttachmentSettlementLease(key, lease);
+    }
+    if (!this.hasUnsettledAttachmentLeases(view.sessionId)) {
+      this.releaseAttachmentSettlementController(view.sessionId);
+    }
+  }
+
+  private async releaseAttachmentSettlementLease(
+    key: string,
+    lease: AttachmentSettlementLease,
+  ): Promise<void> {
+    if (lease.releasing || !lease.settled) return;
+    if (Date.now() >= lease.deadlineAt) {
+      this.expireAttachmentSettlementLease(key, lease);
+      return;
+    }
+    if (lease.deleteRetryTimer !== undefined) {
+      clearTimeout(lease.deleteRetryTimer);
+      lease.deleteRetryTimer = undefined;
+    }
+    lease.releasing = true;
+    const uploadIds = [...lease.uploadIds];
+    const results = await Promise.allSettled(
+      uploadIds.map((fileId) => this.client.klient.global.files.delete(fileId)),
+    );
+    for (const [index, result] of results.entries()) {
+      if (result.status === 'fulfilled') lease.uploadIds.delete(uploadIds[index]!);
+    }
+    lease.releasing = false;
+    if (this.attachmentSettlementLeases.get(key) !== lease) return;
+    if (lease.uploadIds.size === 0) {
+      this.completeAttachmentSettlementLease(key, lease);
+      return;
+    }
+    if (this.stopped || Date.now() >= lease.deadlineAt) {
+      this.expireAttachmentSettlementLease(key, lease);
+      return;
+    }
+    lease.deleteFailures += 1;
+    const retryDelay = Math.min(
+      mediaDeleteRetryDelay(lease.deleteFailures),
+      lease.deadlineAt - Date.now(),
+    );
+    lease.deleteRetryTimer = setTimeout(() => {
+      lease.deleteRetryTimer = undefined;
+      void this.releaseAttachmentSettlementLease(key, lease);
+    }, retryDelay);
+    lease.deleteRetryTimer.unref();
+  }
+
+  private completeAttachmentSettlementLease(
+    key: string,
+    lease: AttachmentSettlementLease,
+  ): void {
+    if (lease.deadlineTimer !== undefined) clearTimeout(lease.deadlineTimer);
+    if (lease.deleteRetryTimer !== undefined) clearTimeout(lease.deleteRetryTimer);
+    this.attachmentSettlementLeases.delete(key);
+  }
+
+  private expireAttachmentSettlementLease(key: string, lease: AttachmentSettlementLease): void {
+    this.completeAttachmentSettlementLease(key, lease);
+    if (!this.hasUnsettledAttachmentLeases(lease.sessionId)) {
+      this.releaseAttachmentSettlementController(lease.sessionId);
+    }
+  }
+
+  private async releaseSettledAttachmentLeases(): Promise<void> {
+    await Promise.all(
+      [...this.attachmentSettlementLeases]
+        .filter(([, lease]) => lease.settled)
+        .map(([key, lease]) => this.releaseAttachmentSettlementLease(key, lease)),
+    );
+  }
+
+  private clearAttachmentSettlementTimers(): void {
+    for (const lease of this.attachmentSettlementLeases.values()) {
+      if (lease.deadlineTimer !== undefined) clearTimeout(lease.deadlineTimer);
+      if (lease.deleteRetryTimer !== undefined) clearTimeout(lease.deleteRetryTimer);
+    }
+  }
+
+  private async clearAttachments(): Promise<void> {
+    const uploadIds = [
+      ...this.imageAttachments.clear(),
+      ...[...this.fileAttachments.values()].flatMap((attachment) =>
+        attachment.fileId === undefined ? [] : [attachment.fileId],
+      ),
+    ];
+    this.fileAttachments.clear();
+    this.nextFileAttachmentId = 1;
+    await Promise.allSettled(
+      uploadIds.map((fileId) => this.client.klient.global.files.delete(fileId)),
+    );
   }
 
   private async handleSlash(text: string): Promise<void> {
@@ -431,21 +1373,91 @@ export class DaemonTUI {
           this.state.appState.permissionMode === 'auto' ? 'manual' : 'auto',
         );
         return;
-      case 'agents': {
-        const controller = await this.ensureSession();
-        const ids = Object.keys(controller.getForest()?.byId ?? { main: true });
-        this.showStatus(ids.join('  '));
+      case 'plan':
+        await this.applyPlanMode(!this.state.appState.planMode);
         return;
-      }
+      case 'swarm':
+        await this.applySwarmMode(!this.state.appState.swarmMode);
+        return;
+      case 'agents':
+        await this.showAgentRoster();
+        return;
       case 'agent-transcript':
         await this.openAgentTranscript(args === '' ? 'main' : args);
         return;
       case 'effort':
-        if (args === '') {
-          this.showStatus(`Thinking effort: ${this.state.appState.thinkingEffort}`);
-        } else {
-          await this.applyThinking(args);
-        }
+        if (args === '') await this.showThinkingPicker();
+        else await this.applyThinking(args);
+        return;
+      case 'title':
+        if (args === '') this.showStatus(this.state.appState.sessionTitle ?? 'Untitled session');
+        else await this.applyTitle(args);
+        return;
+      case 'status':
+        this.showSessionStatus();
+        return;
+      case 'usage':
+        await this.showUsage();
+        return;
+      case 'compact':
+        await this.compactSession(args);
+        return;
+      case 'tasks':
+        await this.handleTasksCommand(args);
+        return;
+      case 'fork':
+        await this.forkCurrentSession(args);
+        return;
+      case 'plugins':
+        await this.handlePluginsCommand(args);
+        return;
+      case 'provider':
+        await this.handleProviderCommand(args);
+        return;
+      case 'reload':
+        await this.reloadDaemonState();
+        return;
+      case 'login':
+        await this.login(args === '' ? undefined : args);
+        return;
+      case 'logout':
+        await this.logout(args === '' ? undefined : args);
+        return;
+      case 'mcp':
+        await this.showMcpStatus();
+        return;
+      case 'goal':
+        await this.handleGoalCommand(args);
+        return;
+      case 'settings':
+        await this.handleSettingsCommand(args);
+        return;
+      case 'undo':
+        await this.undoLastTurn();
+        return;
+      case 'attach':
+        await this.attachFile(args);
+        return;
+      case 'experiments':
+        await this.showExperiments();
+        return;
+      case 'export-view':
+        await this.exportMarkdown(args);
+        return;
+      case 'btw':
+        await this.askBtw(args);
+        return;
+      case 'copy':
+        await this.copyLastAssistantMessage();
+        return;
+      case 'editor':
+        this.configureEditor(args);
+        return;
+      case 'init':
+        await this.activateInitSkill();
+        return;
+      case 'theme':
+        await this.applyTheme(args);
         return;
       case 'help':
         this.showStatus(daemonCommandHelp());
@@ -472,6 +1484,462 @@ export class DaemonTUI {
     const session = await this.client.setThinking(controller.sessionId, thinking);
     controller.handleSessionRecord(session);
     this.setAppState({ thinkingEffort: thinking });
+  }
+
+  private async applyPlanMode(planMode: boolean): Promise<void> {
+    const controller = await this.ensureSession();
+    const session = await this.client.setPlanMode(controller.sessionId, planMode);
+    controller.handleSessionRecord(session);
+    this.setAppState({ planMode });
+  }
+
+  private async applySwarmMode(swarmMode: boolean): Promise<void> {
+    const controller = await this.ensureSession();
+    const session = await this.client.setSwarmMode(controller.sessionId, swarmMode);
+    controller.handleSessionRecord(session);
+    this.setAppState({ swarmMode });
+  }
+
+  private async applyTitle(title: string): Promise<void> {
+    const controller = await this.ensureSession();
+    const session = await this.client.setTitle(controller.sessionId, title);
+    controller.handleSessionRecord(session);
+    this.setAppState({ sessionTitle: session.title });
+  }
+
+  private showSessionStatus(): void {
+    const state = this.state.appState;
+    this.showStatus(
+      [
+        `Session: ${state.sessionId === '' ? 'not started' : state.sessionId}`,
+        `Model: ${state.model === '' ? 'not selected' : state.model}`,
+        `Profile: ${state.agentProfile ?? 'default'}`,
+        `Thinking: ${state.thinkingEffort}`,
+        `Permission: ${state.permissionMode}`,
+        `Plan: ${state.planMode ? 'on' : 'off'}`,
+        `Swarm: ${state.swarmMode ? 'on' : 'off'}`,
+      ].join('\n'),
+    );
+  }
+
+  private async showUsage(): Promise<void> {
+    const controller = await this.ensureSession();
+    const usage = await this.client.klient.session(controller.sessionId).agent('main').getUsage();
+    this.showStatus(JSON.stringify(usage, undefined, 2));
+  }
+
+  private async compactSession(instruction: string): Promise<void> {
+    const controller = await this.ensureSession();
+    const started = await this.client.klient
+      .session(controller.sessionId)
+      .agent('main')
+      .compact(instruction === '' ? undefined : { instruction });
+    this.showStatus(started ? 'Context compaction started.' : 'Context compaction is already running.');
+  }
+
+  private async handleTasksCommand(args: string): Promise<void> {
+    const controller = await this.ensureSession();
+    const agent = this.client.klient.session(controller.sessionId).agent('main');
+    const [action, taskId] = splitFirst(args);
+    if (action === 'stop') {
+      if (taskId === '') throw new Error('/tasks stop requires a task id.');
+      await agent.stopTask({ taskId });
+      await controller.resync();
+      return;
+    }
+    if (action === 'output') {
+      if (taskId === '') throw new Error('/tasks output requires a task id.');
+      this.showStatus(await agent.getTaskOutput({ taskId, tail: 20_000 }));
+      return;
+    }
+    if (args !== '') {
+      this.showStatus(await agent.getTaskOutput({ taskId: args, tail: 20_000 }));
+      return;
+    }
+    const tasks = await agent.getTasks({ activeOnly: false, limit: 100 });
+    const picker = new ChoicePickerComponent({
+      title: 'Background tasks',
+      options: tasks.map((task) => ({
+        value: task.taskId,
+        label: task.description,
+        description: `${task.status} · ${task.taskId}`,
+      })),
+      onSelect: (id) => {
+        this.restoreEditor();
+        void agent
+          .getTaskOutput({ taskId: id, tail: 20_000 })
+          .then((output) => {
+            this.showStatus(output);
+          })
+          .catch((error: unknown) => {
+            this.showStatus(formatErrorMessage(error), 'error');
+          });
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(picker);
+  }
+
+  private async forkCurrentSession(title: string): Promise<void> {
+    const controller = await this.ensureSession();
+    const fork = await this.client.klient
+      .session(controller.sessionId)
+      .fork(title === '' ? undefined : { title });
+    this.showStatus(`Session forked: ${fork.id}`);
+  }
+
+  private async handlePluginsCommand(args: string): Promise<void> {
+    const plugins = this.client.klient.global.plugins;
+    const [action, rest] = splitFirst(args);
+    if (action === '') {
+      const items = await plugins.list();
+      this.showStatus(
+        items
+          .map((item) => `${item.id} · ${item.enabled ? 'enabled' : 'disabled'} · ${item.state}`)
+          .join('\n') || 'No plugins installed.',
+      );
+      return;
+    }
+    if (action === 'marketplace') {
+      const pluginConfig = await this.client.klient.global.config.get<{
+        readonly marketplace_url?: string;
+      }>('plugins');
+      const marketplace = await loadPluginMarketplace({
+        workDir: this.startup.workDir,
+        source: rest === '' ? undefined : rest,
+        configSource: pluginConfig?.marketplace_url,
+      });
+      this.showStatus(
+        [
+          `Source: ${marketplace.source}`,
+          ...marketplace.plugins.map((item) => item.displayName),
+        ].join('\n'),
+      );
+      return;
+    }
+    if (action === 'install') {
+      if (rest === '') throw new Error('/plugins install requires an explicit source.');
+      await plugins.install(rest);
+    } else if (action === 'enable' || action === 'disable') {
+      if (rest === '') throw new Error(`/plugins ${action} requires a plugin id.`);
+      await plugins.setEnabled({ id: rest, enabled: action === 'enable' });
+    } else if (action === 'remove') {
+      if (rest === '') throw new Error('/plugins remove requires a plugin id.');
+      await plugins.remove(rest);
+    } else if (action === 'reload') {
+      await plugins.reload();
+    } else {
+      throw new Error('Use /plugins marketplace|install|enable|disable|remove|reload.');
+    }
+    await this.reloadDaemonState();
+  }
+
+  private async handleProviderCommand(args: string): Promise<void> {
+    const providers = this.client.klient.global.kosong;
+    const [action, rest] = splitFirst(args);
+    if (action === '') {
+      const items = await providers.listProviders();
+      this.showStatus(
+        items.map((item) => `${item.id} · ${item.status}`).join('\n') || 'No providers configured.',
+      );
+      return;
+    }
+    if (action === 'remove') {
+      if (rest === '') throw new Error('/provider remove requires a provider id.');
+      await providers.removeProvider(rest);
+    } else if (action === 'refresh') {
+      await providers.refreshProviders();
+    } else if (action === 'add') {
+      const [id, json] = splitFirst(rest);
+      if (id === '' || json === '') {
+        throw new Error('/provider add requires an id and JSON configuration.');
+      }
+      await providers.addProvider(id, parseProviderInput(json) as never);
+    } else {
+      throw new Error('Use /provider add|remove|refresh.');
+    }
+    await this.refreshAgentCommands();
+  }
+
+  private async reloadDaemonState(): Promise<void> {
+    await this.client.klient.global.config.reload();
+    await this.client.klient.global.plugins.reload();
+    await this.controller?.resync();
+    await this.refreshAgentCommands();
+    if (this.controller !== undefined) await this.refreshSkillCommands(this.controller.sessionId);
+  }
+
+  private async login(provider: string | undefined): Promise<void> {
+    const flow = await this.client.klient.global.auth.startLogin(provider);
+    if (flow.status === 'authenticated') {
+      this.showStatus(`Authenticated with ${flow.provider}.`);
+      return;
+    }
+    openUrl(flow.verification_uri_complete);
+    this.showStatus(
+      `Open ${flow.verification_uri} and enter code ${flow.user_code}. Run /reload after authentication completes.`,
+    );
+  }
+
+  private async logout(provider: string | undefined): Promise<void> {
+    const result = await this.client.klient.global.auth.logout(provider);
+    this.showStatus(`Logged out from ${result.provider}.`);
+  }
+
+  private async showMcpStatus(): Promise<void> {
+    const controller = await this.ensureSession();
+    const servers = await this.client.klient
+      .session(controller.sessionId)
+      .agent('main')
+      .getMcpServers();
+    this.showStatus(
+      servers.map((server) => `${server.name} · ${server.status}`).join('\n') || 'No MCP servers configured.',
+    );
+  }
+
+  private async handleGoalCommand(args: string): Promise<void> {
+    const parsed = parseGoalCommand(args);
+    if (parsed.kind === 'error') throw new Error(parsed.message);
+    if (parsed.kind === 'next-add' || parsed.kind === 'next-manage') {
+      throw new Error('Goal queue management is not available in daemon TUI.');
+    }
+    const controller = await this.ensureSession();
+    if (parsed.kind === 'status') {
+      this.showStatus(JSON.stringify(await this.client.getGoal(controller.sessionId), undefined, 2));
+      return;
+    }
+    if (parsed.kind === 'create') {
+      if (parsed.replace && (await this.client.getGoal(controller.sessionId)) !== null) {
+        await this.applyGoalConfig(controller, { goal_control: 'cancel' });
+      }
+      await this.applyGoalConfig(controller, { goal_objective: parsed.objective });
+      return;
+    }
+    await this.applyGoalConfig(controller, { goal_control: parsed.kind });
+  }
+
+  private async applyGoalConfig(
+    controller: SessionController,
+    agentConfig: Pick<
+      NonNullable<UpdateSessionProfileRequest['agent_config']>,
+      'goal_objective' | 'goal_control'
+    >,
+  ): Promise<void> {
+    const session = await this.client.updateSessionProfile(controller.sessionId, {
+      agent_config: agentConfig,
+    });
+    controller.handleSessionRecord(session);
+    await controller.resync();
+  }
+
+  private async handleSettingsCommand(args: string): Promise<void> {
+    const config = this.client.klient.global.config;
+    const [domain, json] = splitFirst(args);
+    if (domain === '') {
+      this.showStatus(JSON.stringify(redactSensitive(await config.getAll()), undefined, 2));
+      return;
+    }
+    if (json === '') {
+      this.showStatus(JSON.stringify(redactSensitive(await config.get(domain)), undefined, 2));
+      return;
+    }
+    const value = JSON.parse(json) as unknown;
+    rejectSensitiveConfigWrite(value, []);
+    await config.replace({ domain, value });
+    await config.reload();
+    this.showStatus(`Updated daemon config domain ${domain}.`);
+  }
+
+  private async undoLastTurn(): Promise<void> {
+    const controller = await this.ensureSession();
+    await this.client.undoSession(controller.sessionId);
+    await controller.resync({ rewrite: true });
+  }
+
+  private async attachFile(path: string): Promise<void> {
+    if (path === '') throw new Error('/attach requires a file path.');
+    const absolutePath = resolve(this.startup.workDir, path);
+    const data = await readFile(absolutePath);
+    const name = basename(absolutePath);
+    const mediaType = fileMediaType(name);
+    const upload = await this.client.klient.global.files.save({
+      data,
+      filename: name,
+      mimeType: mediaType,
+      expiresInSec: MEDIA_STAGING_TTL_SECONDS,
+    });
+    const expiresAt = parseUploadExpiry(upload);
+    if (expiresAt === undefined) {
+      await this.ownInvalidUpload(upload.id);
+      throw new Error('Attachment upload did not include an expiry.');
+    }
+    const id = this.nextFileAttachmentId++;
+    const attachment: DaemonFileAttachment = {
+      id,
+      fileId: upload.id,
+      expiresAt,
+      sourcePath: absolutePath,
+      name,
+      mediaType,
+      size: data.byteLength,
+      placeholder: `[file #${String(id)} ${name}]`,
+    };
+    this.fileAttachments.set(id, attachment);
+    this.state.editor.insertTextAtCursor?.(`${attachment.placeholder} `);
+    this.state.ui.requestRender();
+  }
+
+  private async showExperiments(): Promise<void> {
+    const flags = await this.client.klient.global.flags.list();
+    this.showStatus(
+      flags.map((flag) => `${flag.enabled ? 'on' : 'off'} · ${flag.id} · ${flag.source}`).join('\n')
+        || 'No experimental features registered.',
+    );
+  }
+
+  private async exportMarkdown(path: string): Promise<void> {
+    const controller = await this.ensureSession();
+    const outputPath = resolve(
+      this.startup.workDir,
+      path === '' ? `kimi-session-${controller.sessionId}.md` : path,
+    );
+    await writeFile(
+      outputPath,
+      buildLoadedTranscriptMarkdown({
+        sessionId: controller.sessionId,
+        workDir: this.startup.workDir,
+        blocks: controller.getState().blocks,
+        tokenCount: this.state.appState.contextTokens,
+        now: new Date(),
+      }),
+      'utf8',
+    );
+    this.showStatus(outputPath);
+  }
+
+  private async askBtw(question: string): Promise<void> {
+    if (question === '') throw new Error('/btw requires a question.');
+    const controller = await this.ensureSession();
+    const child = await this.client.klient.session(controller.sessionId).fork({ title: 'BTW' });
+    const side = new SessionController(this.client, this.socket, child.id);
+    this.sideControllers.add(side);
+    await side.open();
+    let turnId: string | undefined;
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        unsubscribe();
+        side.close();
+        this.sideControllers.delete(side);
+      };
+      const finish = () => {
+        const view = side.getState();
+        if (turnId === undefined || view.turnTail?.turnId !== turnId) return;
+        const answer = view.blocks.findLast(
+          (block) => block.kind === 'assistant' && block.turnId === turnId && !block.streaming,
+        );
+        const failure = view.blocks.findLast(
+          (block) => block.kind === 'notice' && block.tone === 'danger',
+        );
+        this.showStatus(
+          answer?.kind === 'assistant'
+            ? answer.text
+            : failure?.kind === 'notice'
+              ? failure.text
+              : `Side session ${child.id} ended without an answer.`,
+          answer?.kind === 'assistant' ? 'normal' : 'error',
+        );
+        cleanup();
+        resolve();
+      };
+      const unsubscribe = side.subscribe(finish);
+      void this.client.klient
+        .session(child.id)
+        .agent('main')
+        .prompt({ input: [{ type: 'text', text: question }] })
+        .then((result) => {
+          if (result === undefined || result === null) {
+            this.showStatus(`Side session ${child.id} did not start.`, 'error');
+            cleanup();
+            resolve();
+            return;
+          }
+          turnId = String(result.turn_id);
+          finish();
+        })
+        .catch((error: unknown) => {
+          cleanup();
+          reject(error);
+        });
+    });
+  }
+
+  private async copyLastAssistantMessage(): Promise<void> {
+    if (clipboard?.setText === undefined) throw new Error('Clipboard access is unavailable.');
+    const message = this.controller?.getState().blocks.findLast(
+      (block) => block.kind === 'assistant' && !block.streaming,
+    );
+    if (message?.kind !== 'assistant') throw new Error('No completed assistant message to copy.');
+    await clipboard.setText(message.text);
+    this.showStatus('Copied the last assistant message.');
+  }
+
+  private configureEditor(command: string): void {
+    if (command === '') {
+      this.showStatus(resolveEditorCommand(this.state.appState.editorCommand) ?? 'No external editor configured.');
+      return;
+    }
+    this.setAppState({ editorCommand: command });
+  }
+
+  private async activateInitSkill(): Promise<void> {
+    const controller = await this.ensureSession();
+    await this.client.activateSkill(controller.sessionId, 'init');
+  }
+
+  private async applyTheme(theme: string): Promise<void> {
+    if (theme === '') {
+      this.showStatus(this.state.appState.theme);
+      return;
+    }
+    const palette = await getColorPalette(theme as AppState['theme']);
+    currentTheme.setPalette(palette);
+    this.setAppState({ theme: theme as AppState['theme'] });
+    this.state.ui.requestRender(true);
+  }
+
+  private async showThinkingPicker(): Promise<void> {
+    const models = await this.client.listModels();
+    const model = models.items.find((item) => item.model === this.state.appState.model);
+    if (model === undefined) throw new Error('Select a model before choosing thinking effort.');
+    const supported = model.support_efforts ?? [];
+    const efforts = [
+      'off',
+      ...(supported.length > 0
+        ? supported
+        : model.capabilities?.includes('thinking') === true
+          ? ['on']
+          : []),
+    ];
+    if (!efforts.includes(this.state.appState.thinkingEffort)) {
+      efforts.push(this.state.appState.thinkingEffort);
+    }
+    const picker = new ChoicePickerComponent({
+      title: 'Select thinking effort',
+      options: efforts.map((effort) => ({ value: effort, label: effort })),
+      currentValue: this.state.appState.thinkingEffort,
+      onSelect: (effort) => {
+        this.restoreEditor();
+        void this.applyThinking(effort).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(picker);
   }
 
   private async showModelPicker(): Promise<void> {
@@ -506,13 +1974,19 @@ export class DaemonTUI {
     const controller = await this.ensureSession();
     const session = await this.client.setProfile(controller.sessionId, profile);
     controller.handleSessionRecord(session);
-    this.setAppState({ agentProfile: profile });
+    this.setAppState({
+      agentProfile: session.agent_config.profile ?? profile,
+      model: session.agent_config.model,
+      permissionMode: session.agent_config.permission_mode ?? this.state.appState.permissionMode,
+      planMode: session.agent_config.plan_mode ?? this.state.appState.planMode,
+      swarmMode: session.agent_config.swarm_mode ?? this.state.appState.swarmMode,
+    });
   }
 
   private async showAgentPicker(): Promise<void> {
     const profiles = await this.client.listAgentProfiles();
     const picker = new ChoicePickerComponent({
-      title: 'Select the agent profile for new sessions',
+      title: 'Select agent profile',
       options: profiles.items
         .filter((item) => !item.disabled)
         .map((item) => ({
@@ -564,6 +2038,39 @@ export class DaemonTUI {
     this.mountEditorReplacement(picker);
   }
 
+  private async showAgentRoster(): Promise<void> {
+    const controller = await this.ensureSession();
+    const roster = await this.client.klient.session(controller.sessionId).agents();
+    const forest = controller.getForest();
+    const ids = new Set(['main', ...Object.keys(roster), ...Object.keys(forest?.byId ?? {})]);
+    const picker = new ChoicePickerComponent({
+      title: 'Agent transcripts',
+      options: [...ids].map((agentId) => {
+        const meta = roster[agentId];
+        const node = forest?.byId[agentId];
+        return {
+          value: agentId,
+          label: node?.label ?? node?.name ?? meta?.userLabel ?? meta?.displayName ?? agentId,
+          description: [node?.status, node?.model ?? meta?.model, agentId]
+            .filter((value): value is string => value !== undefined)
+            .join(' · '),
+        };
+      }),
+      currentValue: this.focusedAgentId,
+      searchable: true,
+      onSelect: (agentId) => {
+        this.restoreEditor();
+        void this.openAgentTranscript(agentId).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(picker);
+  }
+
   private async openAgentTranscript(agentId: string): Promise<void> {
     const controller = await this.ensureSession();
     this.focusedControllerDispose?.();
@@ -581,17 +2088,37 @@ export class DaemonTUI {
     render();
   }
 
-  private async showSessionPicker(): Promise<void> {
-    const page = await this.client.listSessions();
-    const rows = page.items.map(sessionRow);
+  private async showSessionPicker(
+    scope: 'cwd' | 'all' = this.state.sessionsScope,
+    initialSelectedSessionId?: string,
+  ): Promise<void> {
+    this.state.sessionsScope = scope;
+    let page = await this.client.listSessions(50);
+    let nextCursor = page.nextCursor;
+    const visibleRows = (items: readonly SessionSummary[]) =>
+      items
+        .filter((session) => scope === 'all' || samePath(session.cwd, this.startup.workDir))
+        .map(sessionRow);
+    const initialRows = visibleRows(page.items);
+    if (scope === 'cwd') {
+      while (initialRows.length === 0 && nextCursor !== undefined) {
+        page = await this.client.listSessions(50, nextCursor);
+        nextCursor = page.nextCursor;
+        initialRows.push(...visibleRows(page.items));
+      }
+    }
     const picker = new SessionPickerComponent({
-      sessions: rows,
+      sessions: initialRows,
       loading: false,
       currentSessionId: this.controller?.sessionId ?? '',
-      scope: 'all',
+      scope,
+      initialSelectedSessionId,
+      hasMore: nextCursor !== undefined,
       onSelect: (row) => {
         this.restoreEditor();
-        void this.openSession(row.id);
+        void this.openSession(row.id).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
       },
       onCancel: () => {
         this.restoreEditor();
@@ -602,7 +2129,41 @@ export class DaemonTUI {
       onCtrlD: () => {
         void this.stop();
       },
+      onToggleScope: (selectedSessionId) => {
+        void this.showSessionPicker(scope === 'all' ? 'cwd' : 'all', selectedSessionId).catch(
+          (error: unknown) => {
+            this.showStatus(formatErrorMessage(error), 'error');
+          },
+        );
+      },
+      onLoadMore: () => {
+        void loadMore(false);
+      },
+      onSearchDrain: () => {
+        void loadMore(true);
+      },
     });
+    let loading = false;
+    const loadMore = async (drain: boolean): Promise<void> => {
+      if (loading || nextCursor === undefined) return;
+      loading = true;
+      picker.setPaging(true, true);
+      try {
+        for (;;) {
+          page = await this.client.listSessions(50, nextCursor);
+          nextCursor = page.nextCursor;
+          const appended = visibleRows(page.items);
+          picker.appendSessions(appended);
+          if (nextCursor === undefined || (!drain && appended.length > 0)) break;
+        }
+      } catch (error) {
+        this.showStatus(formatErrorMessage(error), 'error');
+      } finally {
+        loading = false;
+        picker.setPaging(nextCursor !== undefined, false);
+        this.state.ui.requestRender();
+      }
+    };
     this.mountEditorReplacement(picker);
   }
 
@@ -653,7 +2214,7 @@ export class DaemonTUI {
 
   private showQuestion(block: QuestionBlock): void {
     const dialog = new QuestionDialogComponent(
-      { data: questionPanelData(block) },
+      { data: adaptQuestionRequest(block) },
       (response) => {
         void this.respondQuestion(block, response).catch((error: unknown) => {
           this.showStatus(formatErrorMessage(error), 'error');
@@ -671,7 +2232,7 @@ export class DaemonTUI {
       response.answers.length === 0
         ? this.client.dismissQuestion(this.controller!.sessionId, block.request.question_id)
         : this.client.resolveQuestion(this.controller!.sessionId, block.request.question_id, {
-            answers: questionAnswersFromPanel(block, response),
+            answers: adaptQuestionResponse(block, response),
             method: response.method,
           }),
     );
@@ -728,6 +2289,33 @@ export class DaemonTUI {
   }
 }
 
+export function buildLoadedTranscriptMarkdown(input: {
+  readonly sessionId: string;
+  readonly workDir: string;
+  readonly blocks: readonly Block[];
+  readonly tokenCount: number;
+  readonly now: Date;
+}): string {
+  const history = input.blocks.flatMap((block) => {
+    if (block.kind !== 'user' && block.kind !== 'assistant') return [];
+    return [{
+      role: block.kind,
+      content: [{ type: 'text', text: block.text }],
+      toolCalls: [],
+    }];
+  });
+  return buildExportMarkdown({
+    sessionId: input.sessionId,
+    workDir: input.workDir,
+    history: history as never,
+    tokenCount: input.tokenCount,
+    now: input.now,
+  }).replace(
+    '# Kimi Session Export',
+    '# Kimi Loaded Transcript View\n\n> Includes only loaded user and assistant text. Tools, media, and other blocks are omitted.',
+  );
+}
+
 function isSettledInteractionError(error: unknown): boolean {
   return (
     error instanceof ApiError &&
@@ -749,58 +2337,6 @@ function approvalPanelData(block: ApprovalBlock): ApprovalPanelData {
   } as Parameters<typeof adaptApprovalRequest>[0]);
 }
 
-function questionPanelData(block: QuestionBlock): QuestionPanelData {
-  return {
-    id: block.request.question_id,
-    tool_call_id: block.request.tool_call_id ?? block.request.question_id,
-    questions: block.request.questions.map((question) => ({
-      question: question.question,
-      header: question.header,
-      body: question.body,
-      multi_select: question.multi_select ?? false,
-      other_label: question.other_label,
-      other_description: question.other_description,
-      options: question.options.map((option) => ({
-        label: option.label,
-        description: option.description,
-      })),
-    })),
-  };
-}
-
-export function questionAnswersFromPanel(
-  block: QuestionBlock,
-  response: QuestionPanelResponse,
-): QuestionResponse['answers'] {
-  const answers: QuestionResponse['answers'] = {};
-  for (const [index, question] of block.request.questions.entries()) {
-    const answer = response.answers[index];
-    if (answer === undefined || answer === '') {
-      answers[question.id] = { kind: 'skipped' };
-      continue;
-    }
-    if (question.multi_select === true) {
-      const values = answer.split(', ');
-      const optionIds = question.options
-        .filter((option) => values.includes(option.label))
-        .map((option) => option.id);
-      const other = values.filter(
-        (value) => !question.options.some((option) => option.label === value),
-      );
-      answers[question.id] =
-        other.length > 0
-          ? { kind: 'multi_with_other', option_ids: optionIds, other_text: other.join(', ') }
-          : { kind: 'multi', option_ids: optionIds };
-      continue;
-    }
-    const option = question.options.find((candidate) => candidate.label === answer);
-    answers[question.id] =
-      option === undefined
-        ? { kind: 'other', text: answer }
-        : { kind: 'single', option_id: option.id };
-  }
-  return answers;
-}
 
 function sessionRow(session: SessionSummary): SessionRow {
   return {
@@ -811,6 +2347,149 @@ function sessionRow(session: SessionSummary): SessionRow {
     updated_at: session.updatedAt,
     metadata: session.custom,
   };
+}
+
+function splitFirst(value: string): readonly [string, string] {
+  const trimmed = value.trim();
+  const boundary = trimmed.search(/\s/u);
+  return boundary === -1
+    ? [trimmed, '']
+    : [trimmed.slice(0, boundary), trimmed.slice(boundary).trim()];
+}
+
+function normalizedPath(value: string): string {
+  const normalized = resolve(value).replaceAll('\\', '/').replace(/\/$/u, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function samePath(left: string, right: string): boolean {
+  return normalizedPath(left) === normalizedPath(right);
+}
+
+const SENSITIVE_CONFIG_KEY = /(?:api[-_]?key|token|secret|password|authorization|headers|env)/iu;
+const PROVIDER_ENV_REFERENCE = /^\$([A-Z_][A-Z0-9_]*)$/u;
+
+function redactSensitive(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [
+      key,
+      SENSITIVE_CONFIG_KEY.test(key) ? '[redacted]' : redactSensitive(child),
+    ]),
+  );
+}
+
+function rejectSensitiveConfigWrite(value: unknown, path: readonly string[]): void {
+  if (Array.isArray(value)) {
+    for (const child of value) rejectSensitiveConfigWrite(child, path);
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    const nextPath = [...path, key];
+    if (SENSITIVE_CONFIG_KEY.test(key)) {
+      throw new Error(`Settings cannot write sensitive field ${nextPath.join('.')}.`);
+    }
+    rejectSensitiveConfigWrite(child, nextPath);
+  }
+}
+
+function parseProviderInput(json: string): Record<string, unknown> {
+  const parsed = JSON.parse(json) as unknown;
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Provider configuration must be a JSON object.');
+  }
+  const input = structuredClone(parsed) as Record<string, unknown>;
+  const auth = input['auth'];
+  if (auth === null || typeof auth !== 'object' || Array.isArray(auth)) {
+    throw new Error('Provider configuration requires auth.');
+  }
+  const providerAuth = auth as Record<string, unknown>;
+  if (providerAuth['method'] === 'api-key') {
+    const match = typeof providerAuth['apiKey'] === 'string'
+      ? PROVIDER_ENV_REFERENCE.exec(providerAuth['apiKey'])
+      : null;
+    if (match === null) {
+      throw new Error('Provider API keys must use an environment reference such as $KIMI_API_KEY.');
+    }
+    const value = process.env[match[1]!];
+    if (value === undefined) throw new Error(`Provider API key environment variable ${match[1]} is not set.`);
+    providerAuth['apiKey'] = value;
+  } else if (providerAuth['method'] !== 'oauth') {
+    throw new Error('Provider auth method must be api-key or oauth.');
+  }
+  rejectSensitiveProviderFields(input, []);
+  return input;
+}
+
+function rejectSensitiveProviderFields(value: unknown, path: readonly string[]): void {
+  if (Array.isArray(value)) {
+    for (const child of value) rejectSensitiveProviderFields(child, path);
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    const nextPath = [...path, key];
+    const isResolvedApiKey = nextPath.length === 2 && nextPath[0] === 'auth' && key === 'apiKey';
+    if (!isResolvedApiKey && SENSITIVE_CONFIG_KEY.test(key)) {
+      throw new Error(`Provider configuration cannot include plaintext ${nextPath.join('.')}.`);
+    }
+    rejectSensitiveProviderFields(child, nextPath);
+  }
+}
+
+function mediaDeleteRetryDelay(failures: number): number {
+  return Math.min(
+    MEDIA_SETTLEMENT_RETRY_MAX_MS,
+    MEDIA_SETTLEMENT_RETRY_BASE_MS * 2 ** Math.min(failures - 1, 6),
+  );
+}
+
+function parseUploadExpiry(upload: { readonly expires_at?: string }): number | undefined {
+  if (upload.expires_at === undefined) return undefined;
+  const expiresAt = Date.parse(upload.expires_at);
+  return Number.isFinite(expiresAt) ? expiresAt : undefined;
+}
+
+function imageExtension(mime: string): string {
+  switch (mime) {
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/gif':
+      return 'gif';
+    case 'image/webp':
+      return 'webp';
+    default:
+      return 'png';
+  }
+}
+
+function fileMediaType(name: string): string {
+  const extension = name.toLowerCase().split('.').at(-1);
+  if (extension === undefined) return 'application/octet-stream';
+  switch (extension) {
+    case 'json':
+      return 'application/json';
+    case 'md':
+      return 'text/markdown';
+    case 'txt':
+    case 'log':
+      return 'text/plain';
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'pdf':
+      return 'application/pdf';
+    default:
+      return 'application/octet-stream';
+  }
 }
 
 function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
@@ -826,7 +2505,7 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       additionalDirs: [...(input.additionalDirs ?? [])],
       sessionId: '',
       permissionMode,
-      planMode: false,
+      planMode: input.cliOptions.plan,
       agentProfile: input.agentProfile,
       agentFiles: input.cliOptions.agentFiles,
       inputMode: 'prompt',
@@ -859,7 +2538,7 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       continueLast: input.cliOptions.continue,
       yolo: input.cliOptions.yolo,
       auto: input.cliOptions.auto,
-      plan: false,
+      plan: input.cliOptions.plan,
       model: input.cliOptions.model,
       thinking: input.cliOptions.thinking,
       agentProfile: input.agentProfile,

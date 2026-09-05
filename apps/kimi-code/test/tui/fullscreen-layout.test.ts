@@ -17,8 +17,8 @@ import { StatusMessageComponent } from '#/tui/components/messages/status-message
 import { UserMessageComponent } from '#/tui/components/messages/user-message';
 import { ActivityPaneComponent } from '#/tui/components/panes/activity-pane';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
-import { createTUIState, type KimiTUIOptions } from '#/tui/kimi-tui';
-import type { AppState } from '#/tui/types';
+import { createTUIState } from '#/tui/tui-state';
+import type { AppState, KimiTUIOptions } from '#/tui/types';
 
 const WIDTH = 120;
 const HEIGHT = 30;

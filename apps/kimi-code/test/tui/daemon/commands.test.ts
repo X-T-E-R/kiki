@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DAEMON_COMMANDS,
   daemonAutocompleteCommands,
   daemonCommandHelp,
   parseDaemonSlashInput,
@@ -14,23 +15,15 @@ describe('daemon command registry', () => {
     ['?', 'help'],
     ['q', 'exit'],
     ['thinking', 'effort'],
+    ['rename', 'title'],
+    ['config', 'settings'],
+    ['disconnect', 'logout'],
+    ['experimental', 'experiments'],
+    ['export', 'export-view'],
   ])('normalizes supported alias /%s to /%s', (alias, canonical) => {
     const resolved = resolveDaemonCommand(alias, '');
 
     expect(resolved).toMatchObject({ name: canonical, invokedAs: alias });
-  });
-
-  it.each([
-    ['config', 'settings'],
-    ['experimental', 'experiments'],
-    ['rename', 'title'],
-    ['disconnect', 'logout'],
-    ['export', 'export-md'],
-  ])('normalizes disabled alias /%s to /%s', (alias, canonical) => {
-    expect(resolveDaemonCommand(alias, '')).toMatchObject({
-      name: canonical,
-      status: 'disabled',
-    });
   });
 
   it('validates command arguments before dispatch', () => {
@@ -74,13 +67,42 @@ describe('daemon command registry', () => {
         expect.objectContaining({
           name: 'settings',
           aliases: ['config'],
-          description: expect.stringContaining('disabled'),
+          description: expect.stringContaining('supported'),
+        }),
+        expect.objectContaining({
+          name: 'export-view',
+          description: '[supported in daemon TUI] Export loaded user and assistant text as Markdown',
         }),
         expect.objectContaining({ name: 'skill:ReviewSkill', description: 'Review changes' }),
         expect.objectContaining({ name: 'Reviewer', argumentHint: '<prompt>' }),
       ]),
     );
     expect(daemonCommandHelp()).toContain('Supported:');
+    expect(daemonCommandHelp()).toContain('Export loaded user and assistant text as Markdown');
     expect(daemonCommandHelp()).toContain('Disabled:');
+  });
+
+  it('keeps the required daemon parity commands supported', () => {
+    const statuses = new Map(DAEMON_COMMANDS.map((command) => [command.name, command.status]));
+    for (const name of [
+      'compact',
+      'tasks',
+      'fork',
+      'plugins',
+      'provider',
+      'reload',
+      'login',
+      'logout',
+      'mcp',
+      'goal',
+      'settings',
+      'undo',
+    ]) {
+      expect(statuses.get(name), name).toBe('supported');
+    }
+    for (const name of ['add-dir', 'export-md', 'export-debug-zip', 'reload-tui', 'web']) {
+      expect(statuses.get(name), name).toBe('disabled');
+    }
+    expect([...statuses.values()].filter((status) => status === 'supported').length).toBeGreaterThan(29);
   });
 });

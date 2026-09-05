@@ -152,6 +152,7 @@ export async function registerApiV1Routes(
         core,
         opts.broadcaster,
         opts.onWorkspaceServed,
+        opts.leaseRegistry,
       );
       registerRuntimeRoutes(apiV1 as unknown as Parameters<typeof registerRuntimeRoutes>[0], core);
       registerSessionExportRoute(

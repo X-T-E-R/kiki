@@ -48,36 +48,58 @@ export class ExplicitAgentProfileLoaderService
   }
 
   protected async load(): Promise<AgentProfileContribution> {
-    const definitions: AgentFileDefinition[] = [];
-    for (const file of this.bootstrap.args.agentFiles ?? []) {
-      const lexicalPath = resolveAgentPath(file, this.workspace.cwd, this.bootstrap.osHomeDir);
-      const filePath = (await this.fs.realpath(lexicalPath)).replaceAll('\\', '/');
-      definitions.push(
-        parseAgentFileText({
-          path: filePath,
-          source: 'explicit',
-          text: await this.fs.readText(filePath),
-          definitionId: agentProfileDefinitionId(filePath),
-          contributionRoot: (await this.fs.realpath(dirname(filePath))).replaceAll('\\', '/'),
-          warn: (message) => this.log.warn(message),
-        }),
-      );
-    }
-    const graph = await resolveAgentSourceGraph(this.fs, definitions, (message, error) => {
-      this.log.warn(message, error);
+    return loadExplicitAgentProfileContribution({
+      files: this.bootstrap.args.agentFiles ?? [],
+      cwd: this.workspace.cwd,
+      osHomeDir: this.bootstrap.osHomeDir,
+      fs: this.fs,
+      log: this.log,
+      user: this.user,
+      executors: this.executors,
     });
-    return profilesFromDiscovery(
-      {
-        agents: definitions,
-        routes: [],
-        skipped: [],
-        scannedRoots: definitions.map((definition) => definition.contributionRoot),
-        ...graph,
-      },
-      (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
-      (context) => this.user.getBuiltinDefault().renderSystemPrompt(context),
-      { registry: this.executors, allowExternal: true },
+  }
+}
+
+export async function loadExplicitAgentProfileContribution(input: {
+  readonly files: readonly string[];
+  readonly cwd: string;
+  readonly osHomeDir: string;
+  readonly fs: IHostFileSystem;
+  readonly log: ILogService;
+  readonly user: IUserAgentProfileLoader;
+  readonly executors: IAgentExecutorRegistry;
+}): Promise<AgentProfileContribution> {
+  const definitions: AgentFileDefinition[] = [];
+  for (const file of input.files) {
+    const lexicalPath = resolveAgentPath(file, input.cwd, input.osHomeDir);
+    const filePath = (await input.fs.realpath(lexicalPath)).replaceAll('\\', '/');
+    definitions.push(
+      parseAgentFileText({
+        path: filePath,
+        source: 'explicit',
+        text: await input.fs.readText(filePath),
+        definitionId: agentProfileDefinitionId(filePath),
+        contributionRoot: (await input.fs.realpath(dirname(filePath))).replaceAll('\\', '/'),
+        warn: (message) => {
+          input.log.warn(message);
+        },
+      }),
     );
   }
+  const graph = await resolveAgentSourceGraph(input.fs, definitions, (message, error) => {
+    input.log.warn(message, error);
+  });
+  return profilesFromDiscovery(
+    {
+      agents: definitions,
+      routes: [],
+      skipped: [],
+      scannedRoots: definitions.map((definition) => definition.contributionRoot),
+      ...graph,
+    },
+    (context) => input.user.getDefaultProfile().renderSystemPrompt(context),
+    (context) => input.user.getBuiltinDefault().renderSystemPrompt(context),
+    { registry: input.executors, allowExternal: true },
+  );
 }
 

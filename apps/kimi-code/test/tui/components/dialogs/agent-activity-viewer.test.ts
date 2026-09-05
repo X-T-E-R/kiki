@@ -3,7 +3,7 @@ import type { BackgroundTaskInfo } from '@moonshot-ai/kimi-code-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AgentActivityViewer, formatSubagentActivityPreview } from '#/tui/components/dialogs/agent-activity-viewer';
-import type { SubagentActivityRecord } from '#/tui/controllers/subagent-activity-store';
+import type { SubagentActivityRecord } from '#/tui/utils/subagent-activity-store';
 
 const ANSI_SGR = /\[[0-9;]*m/g;
 function strip(text: string): string {

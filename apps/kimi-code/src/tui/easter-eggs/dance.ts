@@ -1,14 +1,3 @@
-/**
- * `/dance` easter egg — everything it needs lives in this one file: the
- * rainbow text coloring, the animation state machine, and the command handler.
- * Removing the feature is "delete this file + its import sites".
- *
- * It is deliberately NOT registered in BUILTIN_SLASH_COMMANDS, so it stays out
- * of `/help` and autocomplete; `executeSlashCommand` calls the handler as a
- * fallback after builtin/skill resolution, so a real command or a same-named
- * skill always wins.
- */
-
 import chalk from 'chalk';
 import { truncateToWidth, visibleWidth } from '@moonshot-ai/pi-tui';
 
@@ -217,23 +206,11 @@ export class RainbowDance implements RainbowDanceController {
   }
 }
 
-/**
- * Handle `/dance`:
- *   /dance       flow for a few seconds, then fade back to the default colors
- *   /dance on    flow, then freeze into a static rainbow that stays on
- *   /dance off   turn the rainbow off
- *
- * Returns true when it claimed the input.
- */
 export function tryHandleDanceCommand(host: SlashCommandHost, parsed: ParsedSlashInput): boolean {
   if (parsed.name !== 'dance') return false;
   if (currentDanceController === undefined) return false;
 
-  // The status line dims the whole message, which buried the command in the
-  // hint. Paint just the command in the brand color (bold) so it reads as a
-  // command; chalk nesting resumes the dim run right after it.
   const cmd = (text: string): string => currentTheme.boldFg('primary', text);
-
   const sub = parsed.args.trim().toLowerCase();
   if (sub === 'off') {
     currentDanceController.stop();

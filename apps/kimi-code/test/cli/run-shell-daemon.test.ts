@@ -1,18 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isTuiDaemonEnabled, runShell } from '#/cli/run-shell';
+import { isTerminalOutputError, isTuiDaemonEnabled, runShell } from '#/cli/run-shell';
+
+const uncaughtExceptionListeners = new Set(process.listeners('uncaughtException'));
+const unhandledRejectionListeners = new Set(process.listeners('unhandledRejection'));
+const sigtermListeners = new Set(process.listeners('SIGTERM'));
+const sighupListeners = new Set(process.listeners('SIGHUP'));
+const stdoutErrorListeners = new Set(
+  process.stdout.listeners('error') as Array<(error: Error) => void>,
+);
+const stderrErrorListeners = new Set(
+  process.stderr.listeners('error') as Array<(error: Error) => void>,
+);
 
 const mocks = vi.hoisted(() => ({
   order: [] as string[],
-  harnessClose: vi.fn(),
-  harnessGetConfig: vi.fn(),
   trust: vi.fn(),
   discover: vi.fn(),
   ensure: vi.fn(),
-  legacyConstructor: vi.fn(),
+  harnessEnsureConfigFile: vi.fn(),
+  harnessGetConfig: vi.fn(),
+  harnessClose: vi.fn(),
   daemonConstructor: vi.fn(),
+  legacyConstructor: vi.fn(),
   tuiStart: vi.fn(),
   tuiClose: vi.fn(),
+  tuiStop: vi.fn(),
+  restoreTerminalModes: vi.fn(),
 }));
 
 vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
@@ -20,7 +34,7 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
   return {
     ...actual,
     createKimiHarness: vi.fn(() => ({
-      ensureConfigFile: vi.fn(),
+      ensureConfigFile: mocks.harnessEnsureConfigFile,
       getConfig: mocks.harnessGetConfig,
       close: mocks.harnessClose,
     })),
@@ -65,32 +79,9 @@ vi.mock('../../src/tui/daemon/discovery', () => ({
   },
 }));
 
-vi.mock('../../src/tui/index', () => ({
-  KimiTUI: class KimiTUI {
-    onExit?: (exitCode?: number) => Promise<void>;
-    readonly exitOpenUrl = undefined;
-    readonly exitForegroundTask = undefined;
-
-    constructor(...args: unknown[]) {
-      mocks.order.push('legacy');
-      mocks.legacyConstructor(...args);
-    }
-
-    start = async () => {
-      mocks.order.push('start');
-      await mocks.tuiStart();
-    };
-
-    getCurrentSessionId = () => '';
-    hasSessionContent = () => false;
-  },
-}));
-
 vi.mock('../../src/tui/daemon/daemon-tui', () => ({
   DaemonTUI: class DaemonTUI {
     onExit?: (exitCode?: number) => Promise<void>;
-    readonly exitOpenUrl = undefined;
-    readonly exitForegroundTask = undefined;
 
     constructor(...args: unknown[]) {
       mocks.order.push('daemon');
@@ -103,6 +94,27 @@ vi.mock('../../src/tui/daemon/daemon-tui', () => ({
     };
 
     close = mocks.tuiClose;
+    stop = mocks.tuiStop;
+    getCurrentSessionId = () => '';
+    hasSessionContent = () => false;
+  },
+}));
+
+vi.mock('../../src/tui/index', () => ({
+  KimiTUI: class KimiTUI {
+    onExit?: (exitCode?: number) => Promise<void>;
+
+    constructor(...args: unknown[]) {
+      mocks.order.push('legacy');
+      mocks.legacyConstructor(...args);
+    }
+
+    start = async () => {
+      mocks.order.push('start');
+      await mocks.tuiStart();
+    };
+
+    stop = mocks.tuiStop;
     getCurrentSessionId = () => '';
     hasSessionContent = () => false;
   },
@@ -120,8 +132,9 @@ vi.mock('../../src/utils/process/resolve-command', () => ({
 }));
 
 vi.mock('../../src/utils/startup-trace', () => ({ startupTrace: vi.fn() }));
-vi.mock('../../src/utils/terminal-hyperlink', () => ({ toTerminalHyperlink: vi.fn() }));
-vi.mock('../../src/utils/terminal-restore', () => ({ restoreTerminalModes: vi.fn() }));
+vi.mock('../../src/utils/terminal-restore', () => ({
+  restoreTerminalModes: mocks.restoreTerminalModes,
+}));
 
 const options = {
   session: undefined,
@@ -139,67 +152,87 @@ const options = {
   addDirs: [],
 };
 
-describe('runShell daemon experiment', () => {
+describe('runShell daemon startup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.order.length = 0;
-    mocks.harnessGetConfig.mockResolvedValue({ providers: {} });
-    mocks.harnessClose.mockImplementation(async () => {
-      mocks.order.push('harness-close');
-    });
     mocks.trust.mockResolvedValue(true);
     mocks.discover.mockResolvedValue({ url: 'http://127.0.0.1:57580', token: 'token' });
     mocks.ensure.mockResolvedValue({ url: 'http://127.0.0.1:57580', token: 'token' });
+    mocks.harnessGetConfig.mockResolvedValue({ providers: {}, defaultModel: 'k2' });
+    mocks.harnessClose.mockResolvedValue(undefined);
     mocks.tuiStart.mockResolvedValue(undefined);
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '0');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
+    mocks.tuiClose.mockResolvedValue(undefined);
+    mocks.tuiStop.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
+    for (const listener of process.listeners('uncaughtException')) {
+      if (!uncaughtExceptionListeners.has(listener)) process.off('uncaughtException', listener);
+    }
+    for (const listener of process.listeners('unhandledRejection')) {
+      if (!unhandledRejectionListeners.has(listener)) process.off('unhandledRejection', listener);
+    }
+    for (const listener of process.listeners('SIGTERM')) {
+      if (!sigtermListeners.has(listener)) process.off('SIGTERM', listener);
+    }
+    for (const listener of process.listeners('SIGHUP')) {
+      if (!sighupListeners.has(listener)) process.off('SIGHUP', listener);
+    }
+    for (const listener of process.stdout.listeners('error') as Array<(error: Error) => void>) {
+      if (!stdoutErrorListeners.has(listener)) process.stdout.off('error', listener);
+    }
+    for (const listener of process.stderr.listeners('error') as Array<(error: Error) => void>) {
+      if (!stderrErrorListeners.has(listener)) process.stderr.off('error', listener);
+    }
     vi.unstubAllEnvs();
   });
 
-  it('keeps the legacy KimiTUI as the default path', async () => {
+  it('classifies EIO and EPIPE as terminal output shutdown errors', () => {
+    expect(isTerminalOutputError(Object.assign(new Error('closed'), { code: 'EIO' }))).toBe(true);
+    expect(isTerminalOutputError(Object.assign(new Error('pipe'), { code: 'EPIPE' }))).toBe(true);
+    expect(isTerminalOutputError(Object.assign(new Error('other'), { code: 'EINVAL' }))).toBe(false);
+  });
+
+  it('attaches the interactive shell to DaemonTUI by default', async () => {
+    await runShell(options, '1.0.0');
+
+    expect(mocks.order).toEqual(['trust', 'agent', 'discover', 'daemon', 'start']);
+    expect(mocks.daemonConstructor.mock.calls[0]?.[1]).toMatchObject({
+      cliOptions: options,
+      workDir: process.cwd(),
+    });
+  });
+
+  it('uses the legacy TUI when the daemon override is disabled', async () => {
+    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '0');
+
     await runShell(options, '1.0.0');
 
     expect(mocks.order).toEqual(['agent', 'legacy', 'start']);
     expect(mocks.legacyConstructor).toHaveBeenCalledOnce();
-    expect(mocks.daemonConstructor).not.toHaveBeenCalled();
     expect(mocks.trust).not.toHaveBeenCalled();
+    expect(mocks.daemonConstructor).not.toHaveBeenCalled();
   });
 
-  it('gates daemon startup behind the per-feature flag and trust check', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '1');
-
-    await runShell(options, '1.0.0');
-
-    expect(mocks.order).toEqual([
-      'harness-close',
-      'trust',
-      'agent',
-      'discover',
-      'daemon',
-      'start',
-    ]);
-    expect(mocks.trust).toHaveBeenCalledWith({ homeDir: 'C:\\home', workDir: process.cwd() });
-    expect(mocks.daemonConstructor.mock.calls[0]?.[1]).toMatchObject({
-      startupNotice: expect.stringContaining('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON'),
-    });
+  it('honors config and explicit environment precedence', () => {
+    expect(isTuiDaemonEnabled({ tui_daemon: false }, {})).toBe(false);
+    expect(isTuiDaemonEnabled({ tui_daemon: false }, { KIMI_CODE_EXPERIMENTAL_TUI_DAEMON: '1' })).toBe(
+      true,
+    );
+    expect(isTuiDaemonEnabled(undefined, { KIMI_CODE_EXPERIMENTAL_FLAG: '0' })).toBe(false);
+    expect(isTuiDaemonEnabled(undefined, {})).toBe(true);
   });
 
-  it('ignores --plan only on the experimental daemon path and reports it', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '1');
-
+  it('passes plan mode through to the daemon TUI', async () => {
     await runShell({ ...options, plan: true }, '1.0.0');
 
     expect(mocks.daemonConstructor.mock.calls[0]?.[1]).toMatchObject({
-      cliOptions: { plan: false },
-      startupNotice: expect.stringContaining('--plan option was ignored'),
+      cliOptions: { plan: true },
     });
   });
 
-  it('uses the shared-home ensure entry when no daemon is already reachable', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '1');
+  it('spawns the shared daemon when discovery misses', async () => {
     mocks.discover.mockResolvedValue(null);
 
     await runShell(options, '1.0.0');
@@ -208,34 +241,78 @@ describe('runShell daemon experiment', () => {
       homeDir: 'C:\\home',
       workspacePath: process.cwd(),
     });
-    expect(mocks.order).toContain('ensure');
+    expect(mocks.order).toEqual(['trust', 'agent', 'discover', 'ensure', 'daemon', 'start']);
   });
 
   it('does not discover or start a daemon when trust is declined', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '1');
     mocks.trust.mockResolvedValue(false);
 
     await runShell(options, '1.0.0');
 
-    expect(mocks.order).toEqual(['harness-close', 'trust']);
+    expect(mocks.order).toEqual(['trust']);
     expect(mocks.discover).not.toHaveBeenCalled();
     expect(mocks.daemonConstructor).not.toHaveBeenCalled();
   });
 
-  it('matches experimental precedence: flag env, config, master env, default', () => {
-    expect(isTuiDaemonEnabled(undefined, {})).toBe(false);
-    expect(isTuiDaemonEnabled(undefined, { KIMI_CODE_EXPERIMENTAL_FLAG: '1' })).toBe(true);
-    expect(
-      isTuiDaemonEnabled(
-        { tui_daemon: false },
-        { KIMI_CODE_EXPERIMENTAL_FLAG: '1' },
-      ),
-    ).toBe(false);
-    expect(
-      isTuiDaemonEnabled(
-        { tui_daemon: true },
-        { KIMI_CODE_EXPERIMENTAL_TUI_DAEMON: '0', KIMI_CODE_EXPERIMENTAL_FLAG: '1' },
-      ),
-    ).toBe(false);
+  it('preserves the startup error when close also fails and restores terminal modes', async () => {
+    mocks.tuiStart.mockRejectedValue(new Error('startup failed'));
+    mocks.tuiClose.mockRejectedValue(new Error('close failed'));
+
+    await expect(runShell(options, '1.0.0')).rejects.toThrow('startup failed');
+
+    expect(mocks.tuiClose).toHaveBeenCalledOnce();
+    expect(mocks.restoreTerminalModes).toHaveBeenCalledOnce();
+  });
+
+  it('uses hangup semantics for terminal output errors even when close fails', async () => {
+    const prior = new Set(process.stdout.listeners('error'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    mocks.tuiClose.mockRejectedValue(new Error('close failed'));
+    await runShell(options, '1.0.0');
+    const listener = process.stdout.listeners('error').find(
+      (candidate) => !prior.has(candidate),
+    ) as ((error: Error) => void) | undefined;
+    expect(listener).toBeDefined();
+
+    listener!(Object.assign(new Error('closed'), { code: 'EPIPE' }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.tuiClose).toHaveBeenCalledOnce();
+    expect(mocks.restoreTerminalModes).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(129);
+    process.stdout.off('error', listener!);
+    exit.mockRestore();
+  });
+
+  it('routes SIGTERM and POSIX SIGHUP through TUI stop', async () => {
+    const priorTerm = new Set(process.listeners('SIGTERM'));
+    const priorHup = new Set(process.listeners('SIGHUP'));
+    await runShell(options, '1.0.0');
+    const term = process.listeners('SIGTERM').find((listener) => !priorTerm.has(listener));
+    expect(term).toBeDefined();
+    term!('SIGTERM');
+    await Promise.resolve();
+    expect(mocks.tuiStop).toHaveBeenCalledWith(143);
+    process.off('SIGTERM', term!);
+    if (process.platform !== 'win32') {
+      const hup = process.listeners('SIGHUP').find((listener) => !priorHup.has(listener));
+      expect(hup).toBeDefined();
+      process.off('SIGHUP', hup!);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('uses the POSIX SIGHUP exit code', async () => {
+    const priorTerm = new Set(process.listeners('SIGTERM'));
+    const priorHup = new Set(process.listeners('SIGHUP'));
+    await runShell(options, '1.0.0');
+    const term = process.listeners('SIGTERM').find((listener) => !priorTerm.has(listener));
+    const hup = process.listeners('SIGHUP').find((listener) => !priorHup.has(listener));
+    expect(hup).toBeDefined();
+    hup!('SIGHUP');
+    await Promise.resolve();
+    expect(mocks.tuiStop).toHaveBeenCalledWith(129);
+    if (term !== undefined) process.off('SIGTERM', term);
+    process.off('SIGHUP', hup!);
   });
 });

@@ -11,14 +11,15 @@ import {
 import { clipboard } from '#/utils/clipboard/clipboard-native';
 import { openUrl } from '#/utils/open-url';
 
-import { FooterComponent } from './components/chrome/footer';import { GutterContainer } from './components/chrome/gutter-container';
+import { FooterComponent } from './components/chrome/footer';
+import { GutterContainer } from './components/chrome/gutter-container';
 import type { MoonLoader, SpinnerStyle } from './components/chrome/moon-loader';
 import { TodoPanelComponent } from './components/chrome/todo-panel';
 import type { SessionRow } from './components/dialogs/session-picker';
 import { CustomEditor } from './components/editor/custom-editor';
 import { DEFAULT_TUI_CONFIG } from './config';
-import { CHROME_GUTTER } from './constant/rendering';
 import type { TasksBrowserState } from './controllers/tasks-browser';
+import { CHROME_GUTTER } from './constant/rendering';
 import { currentTheme, type Theme } from './theme';
 import { setMarkdownRenderLatex } from './utils/markdown-options';
 import { createTerminalState, type TerminalState } from './utils/terminal-state';
@@ -72,7 +73,6 @@ export interface TUIState {
    * must not run in that state — they would displace the newer panel.
    */
   editorReplacementMounted: boolean;
-  tasksBrowser: TasksBrowserState | undefined;
   externalEditorRunning: boolean;
   queuedMessages: QueuedMessage[];
   /**
@@ -82,6 +82,7 @@ export interface TUIState {
    * this flag to avoid starting a goal ahead of the user's earlier message.
    */
   queuedMessageDispatchPending: boolean;
+  tasksBrowser: TasksBrowserState | undefined;
   swarmModeEntry: 'manual' | 'task' | undefined;
 }
 
@@ -186,10 +187,10 @@ export function createTUIState(options: KimiTUIOptions): TUIState {
     sessionsScope: 'cwd',
     activeDialog: null,
     editorReplacementMounted: false,
-    tasksBrowser: undefined,
     externalEditorRunning: false,
     queuedMessages: [],
     queuedMessageDispatchPending: false,
+    tasksBrowser: undefined,
     swarmModeEntry: undefined,
   };
 }

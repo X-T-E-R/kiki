@@ -54,7 +54,6 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     platform: `${process.platform}/${process.arch}`,
     workDir,
   });
-
   await harness.ensureConfigFile();
   const config = await harness.getConfig();
   startupTrace('config:loaded');
@@ -71,19 +70,17 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
       (await ensureDaemon({ homeDir, workspacePath: workDir }));
     startupTrace('daemon:connected');
     const daemonTui = new DaemonTUI(connection, {
-      cliOptions: { ...opts, plan: false },
+      cliOptions: opts,
       agentProfile,
       additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
       tuiConfig,
       version,
       workDir,
-      startupNotice: daemonStartupNotice(configWarning, opts.plan),
+      startupNotice: configWarning,
     });
     tui = daemonTui;
     closeOnStartFailure = () => daemonTui.close();
   } else {
-    // Resolve --agent/--agent-file once for the startup session; validateOptions
-    // has already rejected them alongside --session/--continue.
     const agentProfile = await resolveAgentProfileSelection(opts, workDir);
     tui = new KimiTUI(harness, {
       cliOptions: opts,
@@ -93,19 +90,14 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
       version,
       workDir,
       startupNotice: configWarning,
-      // Constant since the v1 engine was removed. The TUI still branches on it in
-      // ~20 places; those branches are dead and get deleted with the flag itself.
       engineV2: true,
     });
     closeOnStartFailure = () => harness.close();
   }
 
   let savedStty: string | undefined;
-  // stty runs before tui.start() reaches the workspace trust gate, so it must
-  // never be resolved by name through PATH: a `.` or empty PATH segment would
-  // let an untrusted checkout plant an `stty` executable and run it pre-trust.
-  // resolveCommandPath returns an absolute path and refuses hits inside the
-  // cwd; when it cannot resolve stty, skip the save/restore entirely — it is
+  // Resolve stty to an absolute PATH hit so a workspace binary cannot shadow
+  // the system command. When it cannot be resolved, skip save/restore — it is
   // best-effort terminal hygiene, not required for startup.
   // stty is also POSIX-only, so skip it on Windows instead of relying on the
   // catch below.
@@ -131,7 +123,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     spawnSync(sttyPath, args, { stdio: ['inherit', 'ignore', 'ignore'] });
   };
 
-  // If we crash without going through KimiTUI.stop(), the terminal is left in
+  // If we crash without going through DaemonTUI.stop(), the terminal is left in
   // raw mode with a hidden cursor and XON/XOFF flow control disabled. Restore
   // both before exiting so the user's shell is usable afterwards.
   const emergencyExit = (exitCode: number): void => {
@@ -163,13 +155,56 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     }
     emergencyExit(1);
   };
+  let terminating = false;
+  const stopAfterSignal = async (exitCode: number): Promise<void> => {
+    try {
+      await tui.stop(exitCode);
+    } catch (error) {
+      try {
+        log.error('signal shutdown failed, restoring terminal and exiting', {
+          error: String(error),
+        });
+      } finally {
+        emergencyExit(exitCode);
+      }
+    }
+  };
+  const onTerminationSignal = (exitCode: number): (() => void) => () => {
+    if (terminating) return;
+    terminating = true;
+    void stopAfterSignal(exitCode);
+  };
+  const onSigterm = onTerminationSignal(143);
+  const onSighup = onTerminationSignal(129);
+  const closeAfterOutputError = async (): Promise<void> => {
+    try {
+      if ('close' in tui) await tui.close();
+      else await harness.close();
+    } catch (closeError) {
+      log.error('TUI close failed after output stream error', { error: String(closeError) });
+    } finally {
+      emergencyExit(129);
+    }
+  };
+  const onOutputError = (error: NodeJS.ErrnoException): void => {
+    if (!isTerminalOutputError(error)) throw error;
+    if (terminating) return;
+    terminating = true;
+    void closeAfterOutputError();
+  };
   process.on('uncaughtException', onUncaughtException);
   process.on('unhandledRejection', onUnhandledRejection);
-  // Remove the crash handlers once the TUI exits cleanly so repeated runShell()
-  // calls in the same process (e.g. tests) don't accumulate process listeners.
-  const removeCrashHandlers = (): void => {
+  process.once('SIGTERM', onSigterm);
+  if (process.platform !== 'win32') process.once('SIGHUP', onSighup);
+  process.stdout.on('error', onOutputError);
+  process.stderr.on('error', onOutputError);
+  const removeHandlers = (): void => {
     process.off('uncaughtException', onUncaughtException);
     process.off('unhandledRejection', onUnhandledRejection);
+    process.off('SIGTERM', onSigterm);
+    if (process.platform !== 'win32') process.off('SIGHUP', onSighup);
+    process.stdout.off('error', onOutputError);
+    process.stderr.off('error', onOutputError);
   };
 
   tui.onExit = async (exitCode = 0) => {
@@ -181,18 +216,16 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     if (sessionId !== '' && hasContent) {
       hints.push(`${gutter}To resume this session: kimi -r ${sessionId}`);
     }
-    if (tui.exitOpenUrl !== undefined) {
+    if ('exitOpenUrl' in tui && tui.exitOpenUrl !== undefined) {
       hints.push(`${gutter}open ${toTerminalHyperlink(tui.exitOpenUrl, tui.exitOpenUrl)}`);
     }
     if (hints.length > 0) {
       process.stderr.write(`\n${hints.join('\n')}\n`);
     }
-    removeCrashHandlers();
+    removeHandlers();
+    restoreTerminalModes();
     restoreStty();
-    if (tui.exitForegroundTask !== undefined) {
-      // `/web` starting a new server: the TUI has shut down cleanly; hand the
-      // terminal to the foreground server instead of exiting. The task runs
-      // until the server stops (Ctrl+C), then this process exits.
+    if ('exitForegroundTask' in tui && tui.exitForegroundTask !== undefined) {
       await tui.exitForegroundTask(exitCode);
       return;
     }
@@ -203,8 +236,19 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     await tui.start();
     startupTrace('tui.start:end');
   } catch (error) {
-    removeCrashHandlers();
-    await closeOnStartFailure();
+    removeHandlers();
+    try {
+      await closeOnStartFailure();
+    } catch (closeError) {
+      try {
+        log.error('TUI close failed after startup error', { error: String(closeError) });
+      } catch {
+        /* preserve the startup error */
+      }
+    } finally {
+      restoreTerminalModes();
+      restoreStty();
+    }
     throw error;
   }
 }
@@ -220,7 +264,8 @@ export function isTuiDaemonEnabled(
   if (override !== undefined) return override;
   const configured = experimental?.['tui_daemon'];
   if (configured !== undefined) return configured;
-  return parseBooleanEnv(env[EXPERIMENTAL_MASTER_ENV]) === true;
+  const master = parseBooleanEnv(env[EXPERIMENTAL_MASTER_ENV]);
+  return master ?? true;
 }
 
 function parseBooleanEnv(value: string | undefined): boolean | undefined {
@@ -231,13 +276,6 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
-function daemonStartupNotice(configWarning: string | undefined, planIgnored: boolean): string {
-  const notice =
-    'Experimental daemon TUI is enabled. Unsupported: settings/config, experiments, rename, authentication, exports, tasks, goals, plugins, plan/theme/editor changes, MCP/status/usage, undo, and web. Run /help for the complete list. Set KIMI_CODE_EXPERIMENTAL_TUI_DAEMON=0 and remove experimental.tui_daemon from config to return to the default TUI.';
-  const planNotice = planIgnored
-    ? '\nThe --plan option was ignored because plan mode is disabled in daemon TUI.'
-    : '';
-  return configWarning === undefined
-    ? `${notice}${planNotice}`
-    : `${configWarning}\n${notice}${planNotice}`;
+export function isTerminalOutputError(error: NodeJS.ErrnoException): boolean {
+  return error.code === 'EIO' || error.code === 'EPIPE';
 }

@@ -25,8 +25,10 @@ import {
   IEventService,
   ISessionIndex,
   ISessionIndexMirror,
+  ISessionAgentProfileCatalog,
   ISessionManager,
   ISessionMetadata,
+  ISessionSkillCatalog,
   ISessionToolPolicy,
   IWorkspaceService,
   MAIN_AGENT_ID,
@@ -1256,6 +1258,122 @@ describe('server-v2 /api/v1/sessions', () => {
     );
     expect(after.body.data?.objective).toBe('fix all lint warnings');
     expect(after.body.data?.status).toBe('active');
+
+    await postJson(`/api/v1/sessions/${id}/profile`, {
+      agent_config: { goal_control: 'pause' },
+    });
+    const paused = await getJson<{ status: string } | null>(`/api/v1/sessions/${id}/goal`);
+    expect(paused.body.data?.status).toBe('paused');
+
+    await postJson(`/api/v1/sessions/${id}/profile`, {
+      agent_config: { goal_control: 'cancel' },
+    });
+    const cancelled = await getJson<unknown>(`/api/v1/sessions/${id}/goal`);
+    expect(cancelled.body.data).toBeNull();
+  });
+
+  it('isolates explicit source overlays by active lease and releases them independently', async () => {
+    const cwd = home as string;
+    const overlayRoot = join(cwd, 'session-overlays');
+    const skillsA = join(overlayRoot, 'skills-a');
+    const skillsB = join(overlayRoot, 'skills-b');
+    await mkdir(join(skillsA, 'skill-a'), { recursive: true });
+    await mkdir(join(skillsB, 'skill-b'), { recursive: true });
+    const agentA = join(overlayRoot, 'agent-a.md');
+    const agentB = join(overlayRoot, 'agent-b.md');
+    await writeFile(agentA, '---\nname: overlay-agent-a\ndescription: owner a\n---\n\nOwner A.\n');
+    await writeFile(agentB, '---\nname: overlay-agent-b\ndescription: owner b\n---\n\nOwner B.\n');
+    await writeFile(
+      join(skillsA, 'skill-a', 'SKILL.md'),
+      '---\nname: overlay-skill-a\ndescription: owner a\n---\n\nOwner A.\n',
+    );
+    await writeFile(
+      join(skillsB, 'skill-b', 'SKILL.md'),
+      '---\nname: overlay-skill-b\ndescription: owner b\n---\n\nOwner B.\n',
+    );
+    const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
+    const id = created.body.data.id;
+    const unauthorized = await postJson<null>(`/api/v1/sessions/${id}/source-overlay`, {
+      lease_id: 'arbitrary-owner',
+      agent_files: [agentA],
+      skill_dirs: [skillsA],
+    });
+    expect(unauthorized.body.code).toBe(40001);
+
+    const leases: string[] = [];
+    for (const [agent, skills] of [
+      [agentA, skillsA],
+      [agentB, skillsB],
+    ] as const) {
+      const lease = await postJson<{ lease_id: string }>('/api/v1/leases', {});
+      leases.push(lease.body.data.lease_id);
+      const response = await postJson<{ profiles: number; skills: number }>(
+        `/api/v1/sessions/${id}/source-overlay`,
+        { lease_id: lease.body.data.lease_id, agent_files: [agent], skill_dirs: [skills] },
+      );
+      expect(response.body.code, JSON.stringify(response.body)).toBe(0);
+    }
+
+    const session = getLiveSessionById((server as RunningServer).core.accessor, id);
+    if (session === undefined) throw new Error('expected a live session');
+    const profiles = session.accessor.get(ISessionAgentProfileCatalog);
+    const skills = session.accessor.get(ISessionSkillCatalog);
+    expect(profiles.get('overlay-agent-a')).toBeDefined();
+    expect(profiles.get('overlay-agent-b')).toBeDefined();
+    expect((await skills.list()).map((skill) => skill.name)).toEqual(
+      expect.arrayContaining(['overlay-skill-a', 'overlay-skill-b']),
+    );
+
+    await postJson(`/api/v1/sessions/${id}/source-overlay`, {
+      lease_id: leases[0],
+      agent_files: [],
+      skill_dirs: [],
+    });
+    expect(profiles.get('overlay-agent-a')).toBeUndefined();
+    expect(profiles.get('overlay-agent-b')).toBeDefined();
+    expect((await skills.list()).map((skill) => skill.name)).not.toContain('overlay-skill-a');
+    expect((await skills.list()).map((skill) => skill.name)).toContain('overlay-skill-b');
+
+    await (server as RunningServer).core.accessor.get(ISessionManager).close(id);
+    expect(profiles.get('overlay-agent-b')).toBeUndefined();
+    expect((await skills.list()).map((skill) => skill.name)).not.toContain('overlay-skill-b');
+  });
+
+  it('removes a session source overlay when its owner lease expires', async () => {
+    await (server as RunningServer).close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+      leaseTtlMs: 300,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const agentFile = join(home as string, 'leased-agent.md');
+    await writeFile(
+      agentFile,
+      '---\nname: leased-agent\ndescription: leased\n---\n\nLeased.\n',
+    );
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const lease = await postJson<{ lease_id: string }>('/api/v1/leases', {});
+    await postJson(`/api/v1/sessions/${created.body.data.id}/source-overlay`, {
+      lease_id: lease.body.data.lease_id,
+      agent_files: [agentFile],
+      skill_dirs: [],
+    });
+    const session = getLiveSessionById(
+      (server as RunningServer).core.accessor,
+      created.body.data.id,
+    );
+    if (session === undefined) throw new Error('expected a live session');
+    const profiles = session.accessor.get(ISessionAgentProfileCatalog);
+    expect(profiles.get('leased-agent')).toBeDefined();
+
+    await vi.waitFor(() => expect(profiles.get('leased-agent')).toBeUndefined(), { timeout: 2_000 });
   });
 
   it('starts one continuation when the Web profile resumes a blocked goal', async () => {

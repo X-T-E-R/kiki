@@ -30,7 +30,7 @@ import { STATUS_BULLET } from '#/tui/constant/symbols';
 import type {
   SubagentActivityRecord,
   SubToolCallActivity,
-} from '#/tui/controllers/subagent-activity-store';
+} from '#/tui/utils/subagent-activity-store';
 import { currentTheme } from '#/tui/theme';
 import type { ToolCallBlockData } from '#/tui/types';
 import { printableChar } from '#/tui/utils/printable-key';

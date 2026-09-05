@@ -1,13 +1,17 @@
 import { Container, Text, type Component, type TUI } from '@moonshot-ai/pi-tui';
 
+import type { MediaRef } from '@kiki/session-core/composer/media';
 import type { Block, ToolBlock } from '@kiki/session-core/session/transcript/types';
 
+import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
 import { ThinkingComponent } from '#/tui/components/messages/thinking';
 import { ToolCallComponent } from '#/tui/components/messages/tool-call';
 import { UserMessageComponent } from '#/tui/components/messages/user-message';
 import { currentTheme } from '#/tui/theme';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
+import type { ImageAttachment } from '#/tui/utils/image-attachment-store';
+import { parseImageMeta } from '#/utils/image/image-mime';
 
 interface MountedBlock {
   readonly kind: Block['kind'];
@@ -17,6 +21,7 @@ interface MountedBlock {
 
 export class DaemonTranscriptRenderer {
   private readonly mounted = new Map<string, MountedBlock>();
+  private expanded = false;
 
   constructor(
     private readonly container: Container,
@@ -41,6 +46,17 @@ export class DaemonTranscriptRenderer {
     this.ui?.requestRender();
   }
 
+  setExpanded(expanded: boolean): void {
+    this.expanded = expanded;
+    for (const mounted of this.mounted.values()) {
+      if (mounted.kind === 'tool') {
+        (mounted.component as ToolCallComponent).setExpanded(expanded);
+      }
+    }
+    this.container.invalidate();
+    this.ui?.requestRender(true);
+  }
+
   dispose(): void {
     for (const mounted of this.mounted.values()) disposeComponent(mounted.component);
     this.mounted.clear();
@@ -59,9 +75,11 @@ export class DaemonTranscriptRenderer {
       return mounted;
     }
     if (mounted !== undefined) disposeComponent(mounted.component);
+    const component = createBlockComponent(block, this.ui, this.workDir);
+    if (block.kind === 'tool') (component as ToolCallComponent).setExpanded(this.expanded);
     const next = {
       kind: block.kind,
-      component: createBlockComponent(block, this.ui, this.workDir),
+      component,
       block,
     };
     this.mounted.set(block.id, next);
@@ -72,12 +90,9 @@ export class DaemonTranscriptRenderer {
 export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): Component {
   switch (block.kind) {
     case 'user':
-      return new UserMessageComponent(block.text);
-    case 'assistant': {
-      const component = new AssistantMessageComponent();
-      component.updateContent(block.text, { transient: block.streaming });
-      return component;
-    }
+      return new DaemonUserMessageComponent(block.text, block.media);
+    case 'assistant':
+      return new DaemonAssistantMessageComponent(block.text, block.streaming, block.media);
     case 'thinking':
       return new ThinkingComponent(block.text, true, block.streaming ? 'live' : 'finalized', ui);
     case 'tool':
@@ -118,8 +133,69 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
   }
 }
 
+class DaemonUserMessageComponent extends Container {
+  constructor(text: string, media: readonly MediaRef[] | undefined) {
+    super();
+    this.addChild(new UserMessageComponent(text));
+    addMediaLabels(this, media);
+  }
+}
+
+class DaemonAssistantMessageComponent extends Container {
+  private readonly message = new AssistantMessageComponent();
+
+  constructor(text: string, streaming: boolean, media: readonly MediaRef[] | undefined) {
+    super();
+    this.message.updateContent(text, { transient: streaming });
+    this.addChild(this.message);
+    addMediaLabels(this, media);
+  }
+
+  updateContent(text: string, options: { readonly transient: boolean }): void {
+    this.message.updateContent(text, options);
+  }
+}
+
+function addMediaLabels(container: Container, media: readonly MediaRef[] | undefined): void {
+  for (const item of media ?? []) {
+    const thumbnail = item.kind === 'image' ? imageThumbnail(item) : undefined;
+    if (thumbnail !== undefined) {
+      container.addChild(thumbnail);
+      continue;
+    }
+    const urlLabel = item.url?.startsWith('data:') === true ? (item.mime ?? 'inline') : item.url;
+    const label = item.name ?? item.path ?? item.fileId ?? urlLabel ?? item.kind;
+    container.addChild(new Text(currentTheme.fg('accent', `[${item.kind}: ${label}]`), 2, 0));
+  }
+}
+
+function imageThumbnail(item: MediaRef): ImageThumbnail | undefined {
+  const match = /^data:([^;,]+);base64,(.+)$/su.exec(item.url ?? '');
+  if (match === null) return undefined;
+  const bytes = Buffer.from(match[2]!, 'base64');
+  const dimensions = parseImageMeta(bytes);
+  if (dimensions === null) return undefined;
+  const attachment: ImageAttachment = {
+    id: 0,
+    kind: 'image',
+    bytes,
+    mime: match[1]!,
+    width: dimensions.width,
+    height: dimensions.height,
+    placeholder: `[image (${String(dimensions.width)}×${String(dimensions.height)})]`,
+  };
+  return new ImageThumbnail(attachment);
+}
+
 function requiresReplacement(previous: Block, next: Block): boolean {
   if (previous === next) return false;
+  if (
+    (previous.kind === 'user' || previous.kind === 'assistant') &&
+    previous.kind === next.kind &&
+    mediaKey(previous.media) !== mediaKey(next.media)
+  ) {
+    return true;
+  }
   return (
     next.kind === 'subagent' ||
     next.kind === 'subagent-event' ||
@@ -129,10 +205,14 @@ function requiresReplacement(previous: Block, next: Block): boolean {
   );
 }
 
+function mediaKey(media: readonly MediaRef[] | undefined): string {
+  return JSON.stringify(media ?? []);
+}
+
 function updateMountedBlock(component: Component, block: Block): void {
   switch (block.kind) {
     case 'assistant':
-      (component as AssistantMessageComponent).updateContent(block.text, {
+      (component as DaemonAssistantMessageComponent).updateContent(block.text, {
         transient: block.streaming,
       });
       return;
@@ -149,7 +229,16 @@ function updateMountedBlock(component: Component, block: Block): void {
       if (result !== undefined) tool.setResult(result);
       return;
     }
-    default:
+    case 'user':
+    case 'subagent':
+    case 'subagent-event':
+    case 'approval':
+    case 'question':
+    case 'shell':
+    case 'skill':
+    case 'system':
+    case 'system-reminder':
+    case 'notice':
       return;
   }
 }

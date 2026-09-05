@@ -53,49 +53,45 @@ describe('DaemonClient', () => {
     expect(fake.agent.runShellCommand).toHaveBeenCalledWith({ command: 'pwd' });
   });
 
-  it('lists daemon sessions through authenticated kap-server REST', async () => {
+  it('lists daemon sessions through the klient keyset facade', async () => {
     const fake = fakeKlient();
-    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
-      json: async () => ({
-        code: 0,
-        msg: 'ok',
-        data: {
-          items: [
-            {
-              id: 'session-1',
-              title: 'Example',
-              last_prompt: 'Hello',
-              metadata: { cwd: 'C:\\repo' },
-              updated_at: '2026-01-02T00:00:00.000Z',
-            },
-          ],
-          has_more: false,
-        },
-      }),
-    }) as Response);
-    const client = new DaemonClient({
-      url: 'http://127.0.0.1:57580',
-      token: 'secret',
-      fetch: fetch as typeof globalThis.fetch,
-      klient: fake.klient as never,
-    });
-
-    await expect(client.listSessions(25)).resolves.toEqual({
+    fake.sessions.list.mockResolvedValue({
       items: [
         {
           id: 'session-1',
           title: 'Example',
           lastPrompt: 'Hello',
           cwd: 'C:\\repo',
-          updatedAt: Date.parse('2026-01-02T00:00:00.000Z'),
-          custom: { cwd: 'C:\\repo' },
+          updatedAt: 123,
+          custom: { source: 'test' },
         },
       ],
-      has_more: false,
+      nextCursor: 'session-0',
     });
-    expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
-      'http://127.0.0.1:57580/api/v1/sessions?page_size=25',
-    );
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580',
+      token: 'secret',
+      klient: fake.klient as never,
+    });
+
+    await expect(client.listSessions(25, 'session-2')).resolves.toEqual({
+      items: [
+        {
+          id: 'session-1',
+          title: 'Example',
+          lastPrompt: 'Hello',
+          cwd: 'C:\\repo',
+          updatedAt: 123,
+          custom: { source: 'test' },
+        },
+      ],
+      nextCursor: 'session-0',
+    });
+    expect(fake.sessions.list).toHaveBeenCalledWith({
+      limit: 25,
+      before: 'session-2',
+      includeArchived: false,
+    });
   });
 
   it('uses REST model, agent profile, and session profile endpoints', async () => {
@@ -142,6 +138,101 @@ describe('DaemonClient', () => {
       { agent_config: { profile: 'reviewer' } },
       { agent_config: { thinking: 'high' } },
     ]);
+  });
+
+  it('loads the active goal through the real kap-server envelope shape', async () => {
+    const fake = fakeKlient();
+    const goal = {
+      goalId: 'goal-1',
+      objective: 'Ship the release',
+      status: 'active' as const,
+      turnsUsed: 1,
+      tokensUsed: 12,
+      wallClockMs: 25,
+      budget: {
+        tokenBudget: null,
+        turnBudget: null,
+        wallClockBudgetMs: null,
+        remainingTokens: null,
+        remainingTurns: null,
+        remainingWallClockMs: null,
+        tokenBudgetReached: false,
+        turnBudgetReached: false,
+        wallClockBudgetReached: false,
+        overBudget: false,
+      },
+    };
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
+      json: async () => ({ code: 0, msg: 'ok', data: goal }),
+    }) as Response);
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580/',
+      token: 'secret',
+      fetch: fetch as typeof globalThis.fetch,
+      klient: fake.klient as never,
+    });
+
+    await expect(client.getGoal('session 1')).resolves.toEqual(goal);
+    expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
+      'http://127.0.0.1:57580/api/v1/sessions/session%201/goal',
+    );
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'Bearer secret',
+      },
+    });
+  });
+
+  it('creates and renews server leases through kap-server REST', async () => {
+    const fake = fakeKlient();
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
+      json: async () => ({
+        code: 0,
+        msg: 'ok',
+        data: { lease_id: 'lease-1', expires_at: 1234 },
+      }),
+    }) as Response);
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580/',
+      token: 'secret',
+      fetch: fetch as typeof globalThis.fetch,
+      klient: fake.klient as never,
+    });
+
+    await client.renewServerLease('lease-1');
+
+    expect(requestUrl(fetch.mock.calls[0]![0])).toBe('http://127.0.0.1:57580/api/v1/leases');
+    expect(jsonRequestBody(fetch.mock.calls[0]?.[1])).toEqual({ lease_id: 'lease-1' });
+  });
+
+  it('updates a session-owned source overlay through kap-server REST', async () => {
+    const fake = fakeKlient();
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
+      json: async () => ({ code: 0, msg: 'ok', data: { profiles: 1, skills: 2 } }),
+    }) as Response);
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580/',
+      token: 'secret',
+      fetch: fetch as typeof globalThis.fetch,
+      klient: fake.klient as never,
+    });
+    const body = {
+      lease_id: 'lease-1',
+      agent_files: ['reviewer.md'],
+      skill_dirs: ['skills'],
+    };
+
+    await expect(client.updateSessionSourceOverlay('session 1', body)).resolves.toEqual({
+      profiles: 1,
+      skills: 2,
+    });
+    expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
+      'http://127.0.0.1:57580/api/v1/sessions/session%201/source-overlay',
+    );
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' });
+    expect(jsonRequestBody(fetch.mock.calls[0]?.[1])).toEqual(body);
   });
 
   it('loads transcript snapshots through authenticated kap-server REST', async () => {

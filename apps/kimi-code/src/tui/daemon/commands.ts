@@ -9,13 +9,38 @@ export type DaemonCommandName =
   | 'permission'
   | 'yolo'
   | 'auto'
+  | 'plan'
+  | 'swarm'
   | 'agents'
   | 'agent-transcript'
   | 'effort'
+  | 'title'
+  | 'status'
+  | 'usage'
+  | 'compact'
+  | 'tasks'
+  | 'fork'
+  | 'plugins'
+  | 'provider'
+  | 'reload'
+  | 'login'
+  | 'logout'
+  | 'mcp'
+  | 'goal'
+  | 'settings'
+  | 'undo'
+  | 'attach'
+  | 'experiments'
+  | 'export-view'
+  | 'btw'
+  | 'copy'
+  | 'editor'
+  | 'init'
+  | 'theme'
   | 'help'
   | 'version';
 
-type DaemonCommandArgument = 'none' | 'optional-one' | 'permission';
+type DaemonCommandArgument = 'none' | 'optional-one' | 'optional-rest' | 'permission';
 
 export interface DaemonCommandDefinition {
   readonly name: string;
@@ -45,6 +70,8 @@ export interface DaemonSlashInput {
   readonly args: string;
 }
 
+const EXPORT_VIEW_DESCRIPTION = 'Export loaded user and assistant text as Markdown';
+
 const SUPPORTED_COMMANDS = [
   command('exit', ['quit', 'q'], 'Exit the application', 'none'),
   command('sessions', ['resume'], 'Browse and resume sessions', 'none'),
@@ -54,41 +81,43 @@ const SUPPORTED_COMMANDS = [
   command('permission', [], 'Select permission mode', 'permission', '[manual|yolo|auto]'),
   command('yolo', ['yes'], 'Toggle YOLO mode', 'none'),
   command('auto', [], 'Toggle Auto mode', 'none'),
+  command('plan', [], 'Toggle plan mode', 'none'),
+  command('swarm', [], 'Toggle swarm mode', 'none'),
   command('agents', [], 'List agents in the current session', 'none'),
   command('agent-transcript', [], 'Show an agent transcript', 'optional-one', '[agent-id]'),
   command('effort', ['thinking'], 'Switch thinking effort', 'optional-one', '[effort]'),
+  command('title', ['rename'], 'Set or show session title', 'optional-rest', '[title]'),
+  command('status', [], 'Show current session and runtime status', 'none'),
+  command('usage', [], 'Show session token usage', 'none'),
+  command('compact', [], 'Compact the conversation context', 'optional-rest', '[instruction]'),
+  command('tasks', ['task'], 'Browse background tasks', 'optional-rest', '[stop|output] [task-id]'),
+  command('fork', [], 'Fork the current session', 'optional-rest', '[title]'),
+  command('plugins', [], 'Manage plugins', 'optional-rest', '[marketplace|install|enable|disable|remove|reload]'),
+  command('provider', ['providers'], 'Manage AI providers', 'optional-rest', '[add|remove|refresh]'),
+  command('reload', [], 'Reload daemon configuration and plugins', 'none'),
+  command('login', [], 'Authenticate a provider', 'optional-one', '[provider]'),
+  command('logout', ['disconnect'], 'Log out of a configured provider', 'optional-one', '[provider]'),
+  command('mcp', [], 'Show MCP server status', 'none'),
+  command('goal', [], 'Start or manage an autonomous goal', 'optional-rest', '[objective|pause|resume|cancel]'),
+  command('settings', ['config'], 'Inspect or update daemon configuration', 'optional-rest', '[domain] [json]'),
+  command('undo', [], 'Withdraw the last prompt', 'none'),
+  command('attach', [], 'Attach a local file to the next prompt', 'optional-rest', '<path>'),
+  command('experiments', ['experimental'], 'List experimental features (read-only)', 'none'),
+  command('export-view', ['export'], EXPORT_VIEW_DESCRIPTION, 'optional-rest', '[path]'),
+  command('btw', [], 'Ask a forked side agent a question', 'optional-rest', '<question>'),
+  command('copy', [], 'Copy the last assistant message to the clipboard', 'none'),
+  command('editor', [], 'Set the external editor for this TUI session', 'optional-rest', '[command]'),
+  command('init', [], 'Analyze the codebase and generate AGENTS.md', 'none'),
+  command('theme', [], 'Set the theme for this TUI session', 'optional-one', '[dark|light|auto]'),
   command('help', ['h', '?'], 'Show daemon TUI command support', 'none'),
   command('version', [], 'Show version information', 'none'),
 ] as const satisfies readonly DaemonCommandDefinition[];
 
 const DISABLED_COMMANDS = [
-  disabled('settings', ['config'], 'Open TUI settings'),
-  disabled('experiments', ['experimental'], 'Manage experimental features'),
-  disabled('title', ['rename'], 'Set or show session title'),
-  disabled('logout', ['disconnect'], 'Log out of a configured provider'),
-  disabled('export-md', ['export'], 'Export current session as a Markdown file'),
-  disabled('add-dir', [], 'Add or list an additional workspace directory'),
-  disabled('btw', [], 'Ask a forked side agent a question'),
-  disabled('compact', [], 'Compact the conversation context'),
-  disabled('copy', [], 'Copy the last assistant message to the clipboard'),
-  disabled('editor', [], 'Set the external editor'),
+  disabled('add-dir', [], 'Add a directory to the current workspace'),
+  disabled('export-md', [], 'Export the complete session as Markdown'),
   disabled('export-debug-zip', [], 'Export current session as a debug ZIP archive'),
-  disabled('fork', [], 'Fork the current session'),
-  disabled('goal', [], 'Start or manage an autonomous goal'),
-  disabled('init', [], 'Analyze the codebase and generate AGENTS.md'),
-  disabled('login', [], 'Authenticate a provider'),
-  disabled('mcp', [], 'Show MCP server status'),
-  disabled('plan', [], 'Toggle plan mode'),
-  disabled('plugins', [], 'Manage plugins'),
-  disabled('provider', ['providers'], 'Manage AI providers'),
-  disabled('reload', [], 'Reload session configuration'),
   disabled('reload-tui', [], 'Reload TUI preferences'),
-  disabled('status', [], 'Show current session and runtime status'),
-  disabled('swarm', [], 'Toggle swarm mode'),
-  disabled('tasks', ['task'], 'Browse background tasks'),
-  disabled('theme', [], 'Set the terminal UI theme'),
-  disabled('undo', [], 'Withdraw the last prompt'),
-  disabled('usage', [], 'Show session token usage'),
   disabled('web', [], 'Open the current session in the Web UI'),
 ] as const satisfies readonly DaemonCommandDefinition[];
 
@@ -138,6 +167,8 @@ export function validateDaemonCommandArgs(command: ResolvedDaemonCommand): strin
       return args === '' || !/\s/u.test(args)
         ? undefined
         : `/${command.invokedAs} accepts at most one argument.`;
+    case 'optional-rest':
+      return undefined;
     case 'permission':
       return args === '' || args === 'manual' || args === 'yolo' || args === 'auto'
         ? undefined
@@ -175,7 +206,7 @@ export function daemonAutocompleteCommands(
 export function daemonCommandHelp(): string {
   const supported = SUPPORTED_COMMANDS.map(formatCommand).join(', ');
   const disabled = DISABLED_COMMANDS.map(formatCommand).join(', ');
-  return `Daemon TUI commands\nSupported: ${supported}\nDisabled: ${disabled}`;
+  return `Daemon TUI commands\nSupported: ${supported}\n${EXPORT_VIEW_DESCRIPTION}\nDisabled: ${disabled}`;
 }
 
 function command(

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { TUIState } from "#/tui/kimi-tui";
+import type { TUIState } from "#/tui/tui-state";
 import { darkColors, lightColors } from "#/tui/theme/colors";
 import { getBuiltInPalette } from "#/tui/theme";
 import {

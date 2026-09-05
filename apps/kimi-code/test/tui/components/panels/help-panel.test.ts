@@ -1,9 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import type { KimiSlashCommand } from '#/tui/commands/index';
-import { HelpPanelComponent } from '#/tui/components/dialogs/help-panel';
+import { HelpPanelComponent, type HelpPanelCommand } from '#/tui/components/dialogs/help-panel';
 
-function cmd(name: string, description: string, aliases: string[] = []): KimiSlashCommand {
+function cmd(name: string, description: string, aliases: string[] = []): HelpPanelCommand {
   return {
     name,
     aliases,

@@ -3,9 +3,9 @@ import { createKlient } from '@moonshot-ai/klient/http';
 import type {
   ApprovalResolveRequest,
   ApprovalResolveResult,
+  GoalSnapshot,
   ListModelsResponse,
   ListNamedAgentProfilesResponse,
-  PageResponse,
   PromptAbortResponse,
   PromptReplaceRequest,
   PromptReplaceResult,
@@ -47,11 +47,16 @@ export interface DaemonClientOptions extends DaemonConnection {
 
 export interface DaemonSessionSummary {
   readonly id: string;
-  readonly title: string;
+  readonly title: string | undefined;
   readonly lastPrompt: string | undefined;
   readonly cwd: string;
   readonly updatedAt: number;
   readonly custom: Readonly<Record<string, unknown>>;
+}
+
+export interface DaemonSessionPage {
+  readonly items: readonly DaemonSessionSummary[];
+  readonly nextCursor: string | undefined;
 }
 
 export class DaemonClient implements SessionTransport {
@@ -73,20 +78,18 @@ export class DaemonClient implements SessionTransport {
       });
   }
 
-  async listSessions(limit = 100): Promise<PageResponse<DaemonSessionSummary>> {
-    const page = await this.request<PageResponse<Session>>('GET', '/sessions', undefined, {
-      page_size: limit,
-    });
+  async listSessions(limit = 50, before?: string): Promise<DaemonSessionPage> {
+    const page = await this.klient.global.sessions.list({ limit, before, includeArchived: false });
     return {
       items: page.items.map((session) => ({
         id: session.id,
         title: session.title,
-        lastPrompt: session.last_prompt,
-        cwd: session.metadata.cwd,
-        updatedAt: Date.parse(session.updated_at),
-        custom: session.metadata,
+        lastPrompt: session.lastPrompt,
+        cwd: session.cwd ?? '',
+        updatedAt: session.updatedAt,
+        custom: session.custom ?? {},
       })),
-      has_more: page.has_more,
+      nextCursor: page.nextCursor,
     };
   }
 
@@ -149,6 +152,18 @@ export class DaemonClient implements SessionTransport {
     return this.updateSessionProfile(sessionId, { agent_config: { thinking } });
   }
 
+  setPlanMode(sessionId: string, planMode: boolean): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { agent_config: { plan_mode: planMode } });
+  }
+
+  setSwarmMode(sessionId: string, swarmMode: boolean): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { agent_config: { swarm_mode: swarmMode } });
+  }
+
+  setTitle(sessionId: string, title: string): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { title });
+  }
+
   runShellCommand(sessionId: string, command: string) {
     return this.klient.session(sessionId).agent('main').runShellCommand({ command });
   }
@@ -165,6 +180,28 @@ export class DaemonClient implements SessionTransport {
 
   getSession(sessionId: string): Promise<Session> {
     return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  getGoal(sessionId: string): Promise<GoalSnapshot | null> {
+    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/goal`);
+  }
+
+  renewServerLease(leaseId?: string): Promise<{
+    readonly lease_id: string;
+    readonly expires_at: number;
+  }> {
+    return this.request('POST', '/leases', { lease_id: leaseId });
+  }
+
+  updateSessionSourceOverlay(
+    sessionId: string,
+    body: {
+      readonly lease_id: string;
+      readonly agent_files: readonly string[];
+      readonly skill_dirs: readonly string[];
+    },
+  ): Promise<{ readonly profiles: number; readonly skills: number }> {
+    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}/source-overlay`, body);
   }
 
   getAgentTranscript(
@@ -231,6 +268,10 @@ export class DaemonClient implements SessionTransport {
 
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session> {
     return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}:fork`, body);
+  }
+
+  undoSession(sessionId: string): Promise<unknown> {
+    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}:undo`, { count: 1 });
   }
 
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse> {

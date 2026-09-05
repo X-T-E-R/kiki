@@ -9,10 +9,7 @@ import {
   RainbowDance,
   rainbowText,
   setRainbowDance,
-  tryHandleDanceCommand,
 } from '#/tui/easter-eggs/dance';
-import type { SlashCommandHost } from '#/tui/commands/dispatch';
-import { darkColors } from '#/tui/theme/colors';
 
 const TRUECOLOR_PATTERN = /\[38;2;(\d+);(\d+);(\d+)m/g;
 
@@ -166,12 +163,9 @@ describe('installRainbowDance', () => {
     vi.useFakeTimers();
     const requestRender = vi.fn();
     const dispose = installRainbowDance(requestRender);
-    const host = {
-      showStatus: vi.fn(),
-      state: { theme: { palette: darkColors } },
-    } as unknown as SlashCommandHost;
+    const dance = getRainbowDanceView() as RainbowDance;
 
-    tryHandleDanceCommand(host, { name: 'dance', args: 'on' });
+    dance.start({ hold: true });
     vi.advanceTimersByTime(DANCE_FRAME_MS * 2);
     expect(requestRender).toHaveBeenCalled();
 
@@ -181,84 +175,5 @@ describe('installRainbowDance', () => {
     expect(getRainbowDanceView()).toBeUndefined();
     vi.advanceTimersByTime(DANCE_FLOW_MS + DANCE_FRAME_MS * 10);
     expect(requestRender).not.toHaveBeenCalled();
-  });
-});
-
-interface DanceCall {
-  fn: 'start' | 'stop';
-  hold?: boolean;
-}
-
-function makeHost(): { host: SlashCommandHost; calls: DanceCall[]; status: string[] } {
-  const calls: DanceCall[] = [];
-  const status: string[] = [];
-  const rainbowDance = {
-    colored: false,
-    phase: 0,
-    start: (opts: { hold: boolean }) => calls.push({ fn: 'start', hold: opts.hold }),
-    stop: () => calls.push({ fn: 'stop' }),
-    dispose: () => {},
-  };
-  setRainbowDance(rainbowDance);
-  const host = {
-    showStatus: (msg: string) => status.push(msg),
-    state: { theme: { palette: darkColors } },
-  } as unknown as SlashCommandHost;
-  return { host, calls, status };
-}
-
-describe('tryHandleDanceCommand', () => {
-  let host: SlashCommandHost;
-  let calls: DanceCall[];
-  let status: string[];
-
-  beforeEach(() => {
-    ({ host, calls, status } = makeHost());
-  });
-
-  afterEach(() => {
-    setRainbowDance(undefined);
-  });
-
-  it('claims /dance, flowing then fading, and hints at /dance on', () => {
-    const handled = tryHandleDanceCommand(host, { name: 'dance', args: '' });
-
-    expect(handled).toBe(true);
-    expect(calls).toEqual([{ fn: 'start', hold: false }]);
-    expect(status.join(' ')).toContain('/dance on');
-  });
-
-  it('holds the rainbow for /dance on and hints at /dance off', () => {
-    const handled = tryHandleDanceCommand(host, { name: 'dance', args: 'on' });
-
-    expect(handled).toBe(true);
-    expect(calls).toEqual([{ fn: 'start', hold: true }]);
-    expect(status.join(' ')).toContain('/dance off');
-  });
-
-  it('turns the rainbow off for /dance off', () => {
-    const handled = tryHandleDanceCommand(host, { name: 'dance', args: 'off' });
-
-    expect(handled).toBe(true);
-    expect(calls).toEqual([{ fn: 'stop' }]);
-  });
-
-  it('ignores case and surrounding whitespace in the sub-command', () => {
-    tryHandleDanceCommand(host, { name: 'dance', args: '  ON  ' });
-
-    expect(calls).toEqual([{ fn: 'start', hold: true }]);
-  });
-
-  it('treats an unknown sub-command as a one-off dance', () => {
-    tryHandleDanceCommand(host, { name: 'dance', args: 'wiggle' });
-
-    expect(calls).toEqual([{ fn: 'start', hold: false }]);
-  });
-
-  it('does not claim other commands, so they fall through normally', () => {
-    const handled = tryHandleDanceCommand(host, { name: 'help', args: '' });
-
-    expect(handled).toBe(false);
-    expect(calls).toEqual([]);
   });
 });
