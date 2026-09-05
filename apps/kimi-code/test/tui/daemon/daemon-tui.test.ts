@@ -607,6 +607,38 @@ describe('DaemonTUI commands', () => {
     }
   });
 
+  it('rejects and cleans initial uploads that do not prove an expiry', async () => {
+    const { internal, filesFacade } = driver();
+    const readClipboardMedia = vi.spyOn(clipboardImage, 'readClipboardMedia');
+    readClipboardMedia.mockResolvedValueOnce({
+      kind: 'image',
+      bytes: new Uint8Array(
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+          'base64',
+        ),
+      ),
+      mimeType: 'image/png',
+    });
+    filesFacade.save.mockResolvedValueOnce({ id: 'expiry-less-image' } as never);
+
+    try {
+      await internal.handleClipboardPaste();
+      await internal.imageAttachments.get(1)?.pending;
+    } finally {
+      readClipboardMedia.mockRestore();
+    }
+
+    expect(internal.imageAttachments.get(1)?.fileId).toBeUndefined();
+    expect(filesFacade.delete).toHaveBeenCalledWith('expiry-less-image');
+
+    filesFacade.save.mockResolvedValueOnce({ id: 'expiry-less-file' } as never);
+    await expect(
+      internal.handleSlash(`/attach ${resolve(process.cwd(), 'package.json')}`),
+    ).rejects.toThrow('Attachment upload did not include an expiry');
+    expect(filesFacade.delete).toHaveBeenCalledWith('expiry-less-file');
+  });
+
   it('uploads local files and sends real file content parts', async () => {
     const { tui, internal, controller, controllerState, filesFacade } = driver();
     const path = resolve(process.cwd(), 'package.json');

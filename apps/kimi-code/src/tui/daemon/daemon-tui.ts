@@ -151,6 +151,7 @@ export class DaemonTUI {
   private sourceOverlayHeartbeatFailures = 0;
   private readonly attachmentSettlementLeases = new Map<string, AttachmentSettlementLease>();
   private readonly attachmentControllerLeases = new Map<SessionController, AttachmentControllerLease>();
+  private readonly attachmentRefreshes = new WeakMap<object, Promise<void>>();
   private readonly sideControllers = new Set<SessionController>();
   private stopped = false;
 
@@ -436,13 +437,18 @@ export class DaemonTUI {
           expiresInSec: MEDIA_STAGING_TTL_SECONDS,
         })
         .then(async (upload) => {
+          const fileExpiresAt = parseUploadExpiry(upload);
+          if (fileExpiresAt === undefined) {
+            await this.client.klient.global.files.delete(upload.id);
+            throw new Error('Attachment upload did not include an expiry.');
+          }
           const completed = this.imageAttachments.completeImage(attachment, {
             bytes: media.bytes,
             mime: media.mimeType,
             width: dimensions.width,
             height: dimensions.height,
             fileId: upload.id,
-            fileExpiresAt: parseUploadExpiry(upload),
+            fileExpiresAt,
           });
           if (completed === undefined) await this.client.klient.global.files.delete(upload.id);
         })
@@ -469,9 +475,14 @@ export class DaemonTUI {
         }),
       )
       .then(async (upload) => {
+        const fileExpiresAt = parseUploadExpiry(upload);
+        if (fileExpiresAt === undefined) {
+          await this.client.klient.global.files.delete(upload.id);
+          throw new Error('Attachment upload did not include an expiry.');
+        }
         const completed = this.imageAttachments.completeVideo(attachment, {
           fileId: upload.id,
-          fileExpiresAt: parseUploadExpiry(upload),
+          fileExpiresAt,
         });
         if (completed === undefined) await this.client.klient.global.files.delete(upload.id);
       })
@@ -939,7 +950,11 @@ export class DaemonTUI {
     }
   }
 
-  private async refreshMediaAttachment(attachment: MediaAttachment): Promise<void> {
+  private refreshMediaAttachment(attachment: MediaAttachment): Promise<void> {
+    return this.refreshAttachmentOnce(attachment, () => this.performMediaAttachmentRefresh(attachment));
+  }
+
+  private async performMediaAttachmentRefresh(attachment: MediaAttachment): Promise<void> {
     const previousFileId = attachment.fileId;
     attachment.fileId = undefined;
     attachment.fileExpiresAt = undefined;
@@ -972,7 +987,11 @@ export class DaemonTUI {
     }
   }
 
-  private async refreshFileAttachment(attachment: DaemonFileAttachment): Promise<void> {
+  private refreshFileAttachment(attachment: DaemonFileAttachment): Promise<void> {
+    return this.refreshAttachmentOnce(attachment, () => this.performFileAttachmentRefresh(attachment));
+  }
+
+  private async performFileAttachmentRefresh(attachment: DaemonFileAttachment): Promise<void> {
     const previousFileId = attachment.fileId;
     attachment.fileId = undefined;
     attachment.expiresAt = undefined;
@@ -1001,6 +1020,16 @@ export class DaemonTUI {
         { cause: error },
       );
     }
+  }
+
+  private refreshAttachmentOnce(attachment: object, refresh: () => Promise<void>): Promise<void> {
+    const existing = this.attachmentRefreshes.get(attachment);
+    if (existing !== undefined) return existing;
+    const pending = refresh().finally(() => {
+      this.attachmentRefreshes.delete(attachment);
+    });
+    this.attachmentRefreshes.set(attachment, pending);
+    return pending;
   }
 
   private handoffPreparedMedia(
@@ -1667,11 +1696,16 @@ export class DaemonTUI {
       mimeType: mediaType,
       expiresInSec: MEDIA_STAGING_TTL_SECONDS,
     });
+    const expiresAt = parseUploadExpiry(upload);
+    if (expiresAt === undefined) {
+      await this.client.klient.global.files.delete(upload.id);
+      throw new Error('Attachment upload did not include an expiry.');
+    }
     const id = this.nextFileAttachmentId++;
     const attachment: DaemonFileAttachment = {
       id,
       fileId: upload.id,
-      expiresAt: parseUploadExpiry(upload),
+      expiresAt,
       sourcePath: absolutePath,
       name,
       mediaType,

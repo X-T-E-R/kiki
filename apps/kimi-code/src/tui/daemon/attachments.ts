@@ -40,96 +40,175 @@ export interface PreparedDaemonPrompt {
 const ATTACHMENT_PATTERN =
   /\[(image|video) #(\d+) (?:(?:\(\d+×\d+\))|[^\]]+)\]|\[file #(\d+) ([^\]]+)\]/gu;
 
+interface MediaSelection {
+  readonly kind: 'media';
+  readonly attachment: MediaAttachment;
+}
+
+interface FileSelection {
+  readonly kind: 'file';
+  readonly attachment: DaemonFileAttachment;
+}
+
+type AttachmentSelection = MediaSelection | FileSelection;
+type PromptSegment = { readonly kind: 'text'; readonly text: string } | AttachmentSelection;
+
 export async function prepareDaemonPrompt(
   text: string,
   images: ImageAttachmentStore,
   files: ReadonlyMap<number, DaemonFileAttachment>,
   refresher: DaemonAttachmentRefresher,
-  now = Date.now(),
+  clock: () => number = Date.now,
 ): Promise<PreparedDaemonPrompt | undefined> {
-  const content: MessageContent[] = [];
-  const engineContent: PreparedDaemonPrompt['engineContent'][number][] = [];
+  const segments: PromptSegment[] = [];
+  const selections = new Map<string, AttachmentSelection>();
   let cursor = 0;
-  let matched = false;
-  let hasFileAttachment = false;
-  const imageAttachmentIds: number[] = [];
-  const fileAttachmentIds: number[] = [];
-  const mediaUploadIds: string[] = [];
-  const fileUploadIds: string[] = [];
-  const uploadExpiresAt: number[] = [];
   ATTACHMENT_PATTERN.lastIndex = 0;
   for (let match = ATTACHMENT_PATTERN.exec(text); match !== null; match = ATTACHMENT_PATTERN.exec(text)) {
-    const before = text.slice(cursor, match.index);
-    pushText(content, engineContent, before);
+    pushSegmentText(segments, text.slice(cursor, match.index));
     const mediaKind = match[1];
     const mediaId = match[2] === undefined ? undefined : Number.parseInt(match[2], 10);
     const fileId = match[3] === undefined ? undefined : Number.parseInt(match[3], 10);
     if (mediaKind !== undefined && mediaId !== undefined) {
       const attachment = images.get(mediaId);
       if (attachment === undefined || attachment.kind !== mediaKind) {
-        pushText(content, engineContent, match[0]);
+        pushSegmentText(segments, match[0]);
       } else {
-        await attachment.pending;
-        if (!isFresh(attachment.fileExpiresAt, now)) await refresher.refreshMedia(attachment);
-        if (attachment.fileId === undefined || !isFresh(attachment.fileExpiresAt, now)) {
-          throw new Error(`Attachment could not be refreshed: ${attachment.placeholder}. Try again.`);
-        }
-        const source = { kind: 'file' as const, file_id: attachment.fileId };
-        const url = `kimi-file://${attachment.fileId}`;
-        if (attachment.kind === 'image') {
-          content.push({ type: 'image', source });
-          engineContent.push({ type: 'image_url', imageUrl: { url } });
-        } else {
-          content.push({ type: 'video', source });
-          engineContent.push({ type: 'video_url', videoUrl: { url } });
-        }
-        imageAttachmentIds.push(mediaId);
-        mediaUploadIds.push(attachment.fileId);
-        uploadExpiresAt.push(attachment.fileExpiresAt);
-        matched = true;
+        const selection: MediaSelection = { kind: 'media', attachment };
+        selections.set(`media:${String(mediaId)}`, selection);
+        segments.push(selection);
       }
     } else if (fileId !== undefined) {
       const attachment = files.get(fileId);
       if (attachment === undefined) {
-        pushText(content, engineContent, match[0]);
+        pushSegmentText(segments, match[0]);
       } else {
-        if (!isFresh(attachment.expiresAt, now)) await refresher.refreshFile(attachment);
-        if (attachment.fileId === undefined || !isFresh(attachment.expiresAt, now)) {
-          throw new Error(`Attachment could not be refreshed: ${attachment.placeholder}. Try again.`);
-        }
-        content.push({
-          type: 'file',
-          file_id: attachment.fileId,
-          name: attachment.name,
-          media_type: attachment.mediaType,
-          size: attachment.size,
-        });
-        fileAttachmentIds.push(fileId);
-        fileUploadIds.push(attachment.fileId);
-        uploadExpiresAt.push(attachment.expiresAt);
-        hasFileAttachment = true;
-        matched = true;
+        const selection: FileSelection = { kind: 'file', attachment };
+        selections.set(`file:${String(fileId)}`, selection);
+        segments.push(selection);
       }
     }
     cursor = match.index + match[0].length;
   }
-  pushText(content, engineContent, text.slice(cursor));
-  return matched
-    ? {
-        content,
-        engineContent,
-        hasFileAttachment,
-        imageAttachmentIds,
-        fileAttachmentIds,
-        mediaUploadIds,
-        fileUploadIds,
-        uploadExpiresAt,
-      }
-    : undefined;
+  pushSegmentText(segments, text.slice(cursor));
+  if (selections.size === 0) return undefined;
+
+  await Promise.all(
+    [...selections.values()].flatMap((selection) =>
+      selection.kind === 'media' && selection.attachment.pending !== undefined
+        ? [selection.attachment.pending]
+        : [],
+    ),
+  );
+
+  const maxRounds = Math.min(6, selections.size + 2);
+  for (let round = 0; round < maxRounds; round += 1) {
+    const validationTime = clock();
+    const stale = [...selections.values()].filter(
+      (selection) => !isFresh(selectionExpiry(selection), validationTime),
+    );
+    if (stale.length === 0) return buildPreparedPrompt(segments, selections);
+    await Promise.all(stale.map((selection) => refreshSelection(selection, refresher)));
+  }
+
+  const finalTime = clock();
+  const stale = [...selections.values()].filter(
+    (selection) => !isFresh(selectionExpiry(selection), finalTime),
+  );
+  if (stale.length === 0) return buildPreparedPrompt(segments, selections);
+  throw new Error(
+    `Attachment freshness did not stabilize: ${stale.map(selectionPlaceholder).join(', ')}. Try again.`,
+  );
+}
+
+function buildPreparedPrompt(
+  segments: readonly PromptSegment[],
+  selections: ReadonlyMap<string, AttachmentSelection>,
+): PreparedDaemonPrompt {
+  const content: MessageContent[] = [];
+  const engineContent: PreparedDaemonPrompt['engineContent'][number][] = [];
+  for (const segment of segments) {
+    if (segment.kind === 'text') {
+      pushText(content, engineContent, segment.text);
+      continue;
+    }
+    if (segment.kind === 'file') {
+      const attachment = segment.attachment;
+      content.push({
+        type: 'file',
+        file_id: attachment.fileId!,
+        name: attachment.name,
+        media_type: attachment.mediaType,
+        size: attachment.size,
+      });
+      continue;
+    }
+    const attachment = segment.attachment;
+    const fileId = attachment.fileId!;
+    const source = { kind: 'file' as const, file_id: fileId };
+    const url = `kimi-file://${fileId}`;
+    if (attachment.kind === 'image') {
+      content.push({ type: 'image', source });
+      engineContent.push({ type: 'image_url', imageUrl: { url } });
+    } else {
+      content.push({ type: 'video', source });
+      engineContent.push({ type: 'video_url', videoUrl: { url } });
+    }
+  }
+
+  const imageAttachmentIds: number[] = [];
+  const fileAttachmentIds: number[] = [];
+  const mediaUploadIds: string[] = [];
+  const fileUploadIds: string[] = [];
+  const uploadExpiresAt: number[] = [];
+  for (const selection of selections.values()) {
+    if (selection.kind === 'media') {
+      imageAttachmentIds.push(selection.attachment.id);
+      mediaUploadIds.push(selection.attachment.fileId!);
+      uploadExpiresAt.push(selection.attachment.fileExpiresAt!);
+    } else {
+      fileAttachmentIds.push(selection.attachment.id);
+      fileUploadIds.push(selection.attachment.fileId!);
+      uploadExpiresAt.push(selection.attachment.expiresAt!);
+    }
+  }
+  return {
+    content,
+    engineContent,
+    hasFileAttachment: fileAttachmentIds.length > 0,
+    imageAttachmentIds,
+    fileAttachmentIds,
+    mediaUploadIds,
+    fileUploadIds,
+    uploadExpiresAt,
+  };
+}
+
+function refreshSelection(
+  selection: AttachmentSelection,
+  refresher: DaemonAttachmentRefresher,
+): Promise<void> {
+  return selection.kind === 'media'
+    ? refresher.refreshMedia(selection.attachment)
+    : refresher.refreshFile(selection.attachment);
+}
+
+function selectionExpiry(selection: AttachmentSelection): number | undefined {
+  return selection.kind === 'media'
+    ? selection.attachment.fileExpiresAt
+    : selection.attachment.expiresAt;
+}
+
+function selectionPlaceholder(selection: AttachmentSelection): string {
+  return selection.attachment.placeholder;
 }
 
 function isFresh(expiresAt: number | undefined, now: number): expiresAt is number {
   return expiresAt !== undefined && expiresAt - now > MEDIA_FILE_REF_MIN_REMAINING_MS;
+}
+
+function pushSegmentText(segments: PromptSegment[], text: string): void {
+  if (text !== '') segments.push({ kind: 'text', text });
 }
 
 function pushText(
