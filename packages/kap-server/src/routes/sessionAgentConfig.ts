@@ -1,4 +1,5 @@
 import {
+  DEFAULT_AGENT_PROFILE_NAME,
   ErrorCodes,
   Error2,
   IAgentGoalService,
@@ -33,7 +34,8 @@ export async function applySessionAgentConfig(
 
   const profile = agent.accessor.get(IAgentProfileService);
   let thinkingConsumed = false;
-  if (agentConfig.profile !== undefined && profile.data().profileName !== agentConfig.profile) {
+  const currentProfile = profile.data().profileName ?? DEFAULT_AGENT_PROFILE_NAME;
+  if (agentConfig.profile !== undefined && currentProfile !== agentConfig.profile) {
     try {
       const current = profile.data();
       const requestedModel = agentConfig.model === '' ? undefined : agentConfig.model;

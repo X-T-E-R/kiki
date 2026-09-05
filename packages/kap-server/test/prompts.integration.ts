@@ -796,6 +796,7 @@ describe('server-v2 /api/v1 prompts', () => {
       home as string,
       PROMPT_TOML
         .replace('http://127.0.0.1:9999', `http://127.0.0.1:${String(address.port)}/v1`)
+        .replaceAll('max_context_size = 1000', 'max_context_size = 100000')
         .replaceAll('capabilities = ["thinking"]', 'capabilities = ["thinking", "image_in"]'),
     );
     server = await startServer({
