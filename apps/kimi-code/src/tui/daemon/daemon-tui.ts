@@ -120,6 +120,12 @@ interface AttachmentControllerLease {
   readonly deadlineTimer: ReturnType<typeof setTimeout>;
 }
 
+interface InvalidUploadCleanup {
+  failures: number;
+  retryTimer: ReturnType<typeof setTimeout> | undefined;
+  inFlight: Promise<unknown> | undefined;
+}
+
 export class DaemonTUI {
   readonly state: TUIState;
   public onExit?: (exitCode?: number) => Promise<void>;
@@ -152,6 +158,7 @@ export class DaemonTUI {
   private readonly attachmentSettlementLeases = new Map<string, AttachmentSettlementLease>();
   private readonly attachmentControllerLeases = new Map<SessionController, AttachmentControllerLease>();
   private readonly attachmentRefreshes = new WeakMap<object, Promise<void>>();
+  private readonly invalidUploadCleanups = new Map<string, InvalidUploadCleanup>();
   private readonly sideControllers = new Set<SessionController>();
   private stopped = false;
 
@@ -272,6 +279,7 @@ export class DaemonTUI {
     await cleanup(() => {
       this.clearAttachmentSettlementTimers();
     });
+    await cleanup(() => this.disposeInvalidUploadCleanups());
     await cleanup(() => this.releaseExplicitSources());
     await cleanup(() => {
       this.clearSourceOverlayHeartbeat();
@@ -439,7 +447,7 @@ export class DaemonTUI {
         .then(async (upload) => {
           const fileExpiresAt = parseUploadExpiry(upload);
           if (fileExpiresAt === undefined) {
-            await this.client.klient.global.files.delete(upload.id);
+            await this.ownInvalidUpload(upload.id);
             throw new Error('Attachment upload did not include an expiry.');
           }
           const completed = this.imageAttachments.completeImage(attachment, {
@@ -477,7 +485,7 @@ export class DaemonTUI {
       .then(async (upload) => {
         const fileExpiresAt = parseUploadExpiry(upload);
         if (fileExpiresAt === undefined) {
-          await this.client.klient.global.files.delete(upload.id);
+          await this.ownInvalidUpload(upload.id);
           throw new Error('Attachment upload did not include an expiry.');
         }
         const completed = this.imageAttachments.completeVideo(attachment, {
@@ -971,7 +979,7 @@ export class DaemonTUI {
       });
       const expiresAt = parseUploadExpiry(upload);
       if (expiresAt === undefined) {
-        await this.client.klient.global.files.delete(upload.id).catch(() => undefined);
+        await this.ownInvalidUpload(upload.id);
         throw new Error('The refreshed upload did not include an expiry.');
       }
       attachment.fileId = upload.id;
@@ -1005,7 +1013,7 @@ export class DaemonTUI {
       });
       const expiresAt = parseUploadExpiry(upload);
       if (expiresAt === undefined) {
-        await this.client.klient.global.files.delete(upload.id).catch(() => undefined);
+        await this.ownInvalidUpload(upload.id);
         throw new Error('The refreshed upload did not include an expiry.');
       }
       attachment.fileId = upload.id;
@@ -1030,6 +1038,73 @@ export class DaemonTUI {
     });
     this.attachmentRefreshes.set(attachment, pending);
     return pending;
+  }
+
+  private async ownInvalidUpload(fileId: string): Promise<void> {
+    let cleanup = this.invalidUploadCleanups.get(fileId);
+    if (cleanup === undefined) {
+      cleanup = { failures: 0, retryTimer: undefined, inFlight: undefined };
+      this.invalidUploadCleanups.set(fileId, cleanup);
+    }
+    await this.attemptInvalidUploadCleanup(fileId, cleanup, true);
+  }
+
+  private attemptInvalidUploadCleanup(
+    fileId: string,
+    cleanup: InvalidUploadCleanup,
+    scheduleRetry: boolean,
+  ): Promise<unknown> {
+    if (cleanup.inFlight !== undefined) return cleanup.inFlight;
+    if (cleanup.retryTimer !== undefined) {
+      clearTimeout(cleanup.retryTimer);
+      cleanup.retryTimer = undefined;
+    }
+    const inFlight = this.client.klient.global.files
+      .delete(fileId)
+      .then(() => {
+        this.invalidUploadCleanups.delete(fileId);
+        return undefined;
+      })
+      .catch((error: unknown) => {
+        cleanup.failures += 1;
+        if (scheduleRetry && !this.stopped) {
+          cleanup.retryTimer = setTimeout(() => {
+            cleanup.retryTimer = undefined;
+            void this.attemptInvalidUploadCleanup(fileId, cleanup, true);
+          }, mediaDeleteRetryDelay(cleanup.failures));
+          cleanup.retryTimer.unref();
+        }
+        return error;
+      })
+      .finally(() => {
+        cleanup.inFlight = undefined;
+      });
+    cleanup.inFlight = inFlight;
+    return inFlight;
+  }
+
+  private async disposeInvalidUploadCleanups(): Promise<void> {
+    for (const cleanup of this.invalidUploadCleanups.values()) {
+      if (cleanup.retryTimer !== undefined) {
+        clearTimeout(cleanup.retryTimer);
+        cleanup.retryTimer = undefined;
+      }
+    }
+    await Promise.all(
+      [...this.invalidUploadCleanups.values()].flatMap((cleanup) =>
+        cleanup.inFlight === undefined ? [] : [cleanup.inFlight],
+      ),
+    );
+    const errors = (
+      await Promise.all(
+        [...this.invalidUploadCleanups].map(([fileId, cleanup]) =>
+          this.attemptInvalidUploadCleanup(fileId, cleanup, false),
+        ),
+      )
+    ).filter((error) => error !== undefined);
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Failed to clean up invalid attachment uploads');
+    }
   }
 
   private handoffPreparedMedia(
@@ -1176,8 +1251,7 @@ export class DaemonTUI {
     }
     lease.deleteFailures += 1;
     const retryDelay = Math.min(
-      MEDIA_SETTLEMENT_RETRY_MAX_MS,
-      MEDIA_SETTLEMENT_RETRY_BASE_MS * 2 ** Math.min(lease.deleteFailures - 1, 6),
+      mediaDeleteRetryDelay(lease.deleteFailures),
       lease.deadlineAt - Date.now(),
     );
     lease.deleteRetryTimer = setTimeout(() => {
@@ -1698,7 +1772,7 @@ export class DaemonTUI {
     });
     const expiresAt = parseUploadExpiry(upload);
     if (expiresAt === undefined) {
-      await this.client.klient.global.files.delete(upload.id);
+      await this.ownInvalidUpload(upload.id);
       throw new Error('Attachment upload did not include an expiry.');
     }
     const id = this.nextFileAttachmentId++;
@@ -2363,6 +2437,13 @@ function rejectSensitiveProviderFields(value: unknown, path: readonly string[]):
     }
     rejectSensitiveProviderFields(child, nextPath);
   }
+}
+
+function mediaDeleteRetryDelay(failures: number): number {
+  return Math.min(
+    MEDIA_SETTLEMENT_RETRY_MAX_MS,
+    MEDIA_SETTLEMENT_RETRY_BASE_MS * 2 ** Math.min(failures - 1, 6),
+  );
 }
 
 function parseUploadExpiry(upload: { readonly expires_at?: string }): number | undefined {

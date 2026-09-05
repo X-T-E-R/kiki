@@ -94,6 +94,7 @@ function driver(
     imageAttachments: ImageAttachmentStore;
     fileAttachments: Map<number, DaemonFileAttachment>;
     attachmentSettlementLeases: Map<string, { deadlineAt: number }>;
+    invalidUploadCleanups: Map<string, unknown>;
     skillCommands: Map<
       string,
       { commandName: string; name: string; description: string }
@@ -126,6 +127,7 @@ function driver(
     };
     handleInput(text: string): Promise<void>;
     handleClipboardPaste(): Promise<boolean>;
+    ownInvalidUpload(fileId: string): Promise<void>;
     handleSlash(text: string): Promise<void>;
     handleInterrupt(kind: 'ctrl-c'): Promise<void>;
     openSession(sessionId: string): Promise<void>;
@@ -607,7 +609,27 @@ describe('DaemonTUI commands', () => {
     }
   });
 
-  it('rejects and cleans initial uploads that do not prove an expiry', async () => {
+  it('deduplicates concurrent cleanup ownership for the same invalid upload id', async () => {
+    const { internal, filesFacade } = driver();
+    let resolveDelete!: () => void;
+    filesFacade.delete.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+
+    const first = internal.ownInvalidUpload('shared-invalid-upload');
+    const second = internal.ownInvalidUpload('shared-invalid-upload');
+    expect(filesFacade.delete).toHaveBeenCalledOnce();
+    expect(internal.invalidUploadCleanups.size).toBe(1);
+
+    resolveDelete();
+    await Promise.all([first, second]);
+    expect(internal.invalidUploadCleanups.size).toBe(0);
+  });
+
+  it('owns and retries expiry-less initial image cleanup until deletion succeeds', async () => {
+    vi.useFakeTimers();
     const { internal, filesFacade } = driver();
     const readClipboardMedia = vi.spyOn(clipboardImage, 'readClipboardMedia');
     readClipboardMedia.mockResolvedValueOnce({
@@ -621,22 +643,85 @@ describe('DaemonTUI commands', () => {
       mimeType: 'image/png',
     });
     filesFacade.save.mockResolvedValueOnce({ id: 'expiry-less-image' } as never);
+    filesFacade.delete.mockRejectedValueOnce(new Error('delete failed'));
 
     try {
       await internal.handleClipboardPaste();
       await internal.imageAttachments.get(1)?.pending;
+      expect(internal.invalidUploadCleanups.has('expiry-less-image')).toBe(true);
+      expect(filesFacade.delete).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(filesFacade.delete).toHaveBeenCalledTimes(2);
+      expect(internal.invalidUploadCleanups.has('expiry-less-image')).toBe(false);
     } finally {
       readClipboardMedia.mockRestore();
+      vi.useRealTimers();
     }
+  });
 
-    expect(internal.imageAttachments.get(1)?.fileId).toBeUndefined();
-    expect(filesFacade.delete).toHaveBeenCalledWith('expiry-less-image');
+  it('owns and retries expiry-less initial video cleanup until deletion succeeds', async () => {
+    vi.useFakeTimers();
+    const { internal, filesFacade } = driver();
+    const readClipboardMedia = vi.spyOn(clipboardImage, 'readClipboardMedia');
+    readClipboardMedia.mockResolvedValueOnce({
+      kind: 'video',
+      mimeType: 'video/mp4',
+      filename: 'sample.mp4',
+      sourcePath: resolve(process.cwd(), 'package.json'),
+    });
+    filesFacade.save.mockResolvedValueOnce({ id: 'expiry-less-video' } as never);
+    filesFacade.delete.mockRejectedValueOnce(new Error('delete failed'));
 
-    filesFacade.save.mockResolvedValueOnce({ id: 'expiry-less-file' } as never);
+    try {
+      await internal.handleClipboardPaste();
+      await internal.imageAttachments.get(1)?.pending;
+      expect(internal.invalidUploadCleanups.has('expiry-less-video')).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(filesFacade.delete).toHaveBeenCalledTimes(2);
+      expect(internal.invalidUploadCleanups.has('expiry-less-video')).toBe(false);
+    } finally {
+      readClipboardMedia.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('owns and retries expiry-less ordinary file cleanup until deletion succeeds', async () => {
+    vi.useFakeTimers();
+    try {
+      const { internal, filesFacade } = driver();
+      filesFacade.save.mockResolvedValueOnce({ id: 'expiry-less-file' } as never);
+      filesFacade.delete.mockRejectedValueOnce(new Error('delete failed'));
+
+      await expect(
+        internal.handleSlash(`/attach ${resolve(process.cwd(), 'package.json')}`),
+      ).rejects.toThrow('Attachment upload did not include an expiry');
+      expect(internal.invalidUploadCleanups.has('expiry-less-file')).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(filesFacade.delete).toHaveBeenCalledTimes(2);
+      expect(internal.invalidUploadCleanups.has('expiry-less-file')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries persistent invalid-upload cleanup during dispose and reports failure', async () => {
+    const { tui, internal, filesFacade, klientClose } = driver();
+    filesFacade.save.mockResolvedValueOnce({ id: 'persistent-invalid-upload' } as never);
+    filesFacade.delete.mockRejectedValue(new Error('delete unavailable'));
+
     await expect(
       internal.handleSlash(`/attach ${resolve(process.cwd(), 'package.json')}`),
     ).rejects.toThrow('Attachment upload did not include an expiry');
-    expect(filesFacade.delete).toHaveBeenCalledWith('expiry-less-file');
+    expect(internal.invalidUploadCleanups.has('persistent-invalid-upload')).toBe(true);
+
+    await expect(tui.close()).rejects.toThrow('Failed to clean up invalid attachment uploads');
+
+    expect(filesFacade.delete).toHaveBeenCalledTimes(2);
+    expect(internal.invalidUploadCleanups.has('persistent-invalid-upload')).toBe(true);
+    expect(klientClose).toHaveBeenCalledOnce();
   });
 
   it('uploads local files and sends real file content parts', async () => {
@@ -735,6 +820,36 @@ describe('DaemonTUI commands', () => {
       }),
     );
     expect([...internal.attachmentSettlementLeases.values()][0]?.deadlineAt).toBe(refreshedExpiry);
+  });
+
+  it('keeps ownership when refresh cleanup initially fails, then retries deletion', async () => {
+    vi.useFakeTimers();
+    try {
+      const { internal, controller, filesFacade } = driver();
+      const image = internal.imageAttachments.addImage(
+        new Uint8Array([1, 2, 3]),
+        'image/png',
+        1,
+        1,
+        undefined,
+        'expired-image-upload',
+        Date.now() - 1,
+      );
+      filesFacade.save.mockResolvedValueOnce({ id: 'expiry-less-refresh' } as never);
+      filesFacade.delete.mockRejectedValueOnce(new Error('delete failed'));
+
+      await expect(internal.handleInput(`inspect ${image.placeholder}`)).rejects.toThrow(
+        'The refreshed upload did not include an expiry',
+      );
+      expect(controller.sendPrompt).not.toHaveBeenCalled();
+      expect(internal.invalidUploadCleanups.has('expiry-less-refresh')).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(filesFacade.delete).toHaveBeenCalledTimes(2);
+      expect(internal.invalidUploadCleanups.has('expiry-less-refresh')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refreshes an expired video from its retained source path', async () => {
