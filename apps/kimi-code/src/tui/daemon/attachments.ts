@@ -1,14 +1,25 @@
 import type { MessageContent } from '@moonshot-ai/protocol';
 
-import type { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
+import { MEDIA_FILE_REF_MIN_REMAINING_MS } from '#/tui/constant/media';
+import type {
+  ImageAttachmentStore,
+  MediaAttachment,
+} from '#/tui/utils/image-attachment-store';
 
 export interface DaemonFileAttachment {
   readonly id: number;
-  readonly fileId: string;
+  fileId: string | undefined;
+  expiresAt: number | undefined;
+  readonly sourcePath: string;
   readonly name: string;
   readonly mediaType: string;
-  readonly size: number;
+  size: number;
   readonly placeholder: string;
+}
+
+export interface DaemonAttachmentRefresher {
+  refreshMedia(attachment: MediaAttachment): Promise<void>;
+  refreshFile(attachment: DaemonFileAttachment): Promise<void>;
 }
 
 export interface PreparedDaemonPrompt {
@@ -23,6 +34,7 @@ export interface PreparedDaemonPrompt {
   readonly fileAttachmentIds: readonly number[];
   readonly mediaUploadIds: readonly string[];
   readonly fileUploadIds: readonly string[];
+  readonly uploadExpiresAt: readonly number[];
 }
 
 const ATTACHMENT_PATTERN =
@@ -32,6 +44,8 @@ export async function prepareDaemonPrompt(
   text: string,
   images: ImageAttachmentStore,
   files: ReadonlyMap<number, DaemonFileAttachment>,
+  refresher: DaemonAttachmentRefresher,
+  now = Date.now(),
 ): Promise<PreparedDaemonPrompt | undefined> {
   const content: MessageContent[] = [];
   const engineContent: PreparedDaemonPrompt['engineContent'][number][] = [];
@@ -42,6 +56,7 @@ export async function prepareDaemonPrompt(
   const fileAttachmentIds: number[] = [];
   const mediaUploadIds: string[] = [];
   const fileUploadIds: string[] = [];
+  const uploadExpiresAt: number[] = [];
   ATTACHMENT_PATTERN.lastIndex = 0;
   for (let match = ATTACHMENT_PATTERN.exec(text); match !== null; match = ATTACHMENT_PATTERN.exec(text)) {
     const before = text.slice(cursor, match.index);
@@ -55,7 +70,10 @@ export async function prepareDaemonPrompt(
         pushText(content, engineContent, match[0]);
       } else {
         await attachment.pending;
-        if (attachment.fileId === undefined) throw new Error(`Attachment upload failed: ${attachment.placeholder}`);
+        if (!isFresh(attachment.fileExpiresAt, now)) await refresher.refreshMedia(attachment);
+        if (attachment.fileId === undefined || !isFresh(attachment.fileExpiresAt, now)) {
+          throw new Error(`Attachment could not be refreshed: ${attachment.placeholder}. Try again.`);
+        }
         const source = { kind: 'file' as const, file_id: attachment.fileId };
         const url = `kimi-file://${attachment.fileId}`;
         if (attachment.kind === 'image') {
@@ -67,6 +85,7 @@ export async function prepareDaemonPrompt(
         }
         imageAttachmentIds.push(mediaId);
         mediaUploadIds.push(attachment.fileId);
+        uploadExpiresAt.push(attachment.fileExpiresAt);
         matched = true;
       }
     } else if (fileId !== undefined) {
@@ -74,6 +93,10 @@ export async function prepareDaemonPrompt(
       if (attachment === undefined) {
         pushText(content, engineContent, match[0]);
       } else {
+        if (!isFresh(attachment.expiresAt, now)) await refresher.refreshFile(attachment);
+        if (attachment.fileId === undefined || !isFresh(attachment.expiresAt, now)) {
+          throw new Error(`Attachment could not be refreshed: ${attachment.placeholder}. Try again.`);
+        }
         content.push({
           type: 'file',
           file_id: attachment.fileId,
@@ -83,6 +106,7 @@ export async function prepareDaemonPrompt(
         });
         fileAttachmentIds.push(fileId);
         fileUploadIds.push(attachment.fileId);
+        uploadExpiresAt.push(attachment.expiresAt);
         hasFileAttachment = true;
         matched = true;
       }
@@ -99,8 +123,13 @@ export async function prepareDaemonPrompt(
         fileAttachmentIds,
         mediaUploadIds,
         fileUploadIds,
+        uploadExpiresAt,
       }
     : undefined;
+}
+
+function isFresh(expiresAt: number | undefined, now: number): expiresAt is number {
+  return expiresAt !== undefined && expiresAt - now > MEDIA_FILE_REF_MIN_REMAINING_MS;
 }
 
 function pushText(

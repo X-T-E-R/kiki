@@ -6,11 +6,24 @@ import { SessionController } from '@kiki/session-core/session/sessionController'
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 import { DEFAULT_TUI_CONFIG } from '#/tui/config';
-import { MEDIA_STAGING_TTL_SECONDS } from '#/tui/constant/media';
+import {
+  MEDIA_FILE_REF_MIN_REMAINING_MS,
+  MEDIA_STAGING_TTL_SECONDS,
+} from '#/tui/constant/media';
+import type { DaemonFileAttachment } from '#/tui/daemon/attachments';
 import { buildLoadedTranscriptMarkdown, DaemonTUI } from '#/tui/daemon/daemon-tui';
 import type { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
+import * as clipboardImage from '#/utils/clipboard/clipboard-image';
 
 const created: DaemonTUI[] = [];
+
+function freshUploadExpiry(): number {
+  return Date.now() + MEDIA_STAGING_TTL_SECONDS * 1_000;
+}
+
+function uploadMeta(id: string, expiresAt: number): { id: string; expires_at: string } {
+  return { id, expires_at: new Date(expiresAt).toISOString() };
+}
 
 function driver(
   plan = false,
@@ -79,6 +92,8 @@ function driver(
     startupOverridesPending: boolean;
     sideControllers: Set<SessionController>;
     imageAttachments: ImageAttachmentStore;
+    fileAttachments: Map<number, DaemonFileAttachment>;
+    attachmentSettlementLeases: Map<string, { deadlineAt: number }>;
     skillCommands: Map<
       string,
       { commandName: string; name: string; description: string }
@@ -110,6 +125,7 @@ function driver(
       close(): Promise<void>;
     };
     handleInput(text: string): Promise<void>;
+    handleClipboardPaste(): Promise<boolean>;
     handleSlash(text: string): Promise<void>;
     handleInterrupt(kind: 'ctrl-c'): Promise<void>;
     openSession(sessionId: string): Promise<void>;
@@ -126,6 +142,19 @@ function driver(
     showStatus: ReturnType<typeof vi.fn>;
   };
   internal.controller = controller;
+  const addImage = internal.imageAttachments.addImage.bind(internal.imageAttachments);
+  vi.spyOn(internal.imageAttachments, 'addImage').mockImplementation(
+    (bytes, mime, width, height, original, fileId, fileExpiresAt) =>
+      addImage(
+        bytes,
+        mime,
+        width,
+        height,
+        original,
+        fileId,
+        fileExpiresAt ?? (fileId === undefined ? undefined : freshUploadExpiry()),
+      ),
+  );
   const agentFacade = {
     prompt: vi.fn(),
     promptWithSkills: vi.fn(),
@@ -171,8 +200,11 @@ function driver(
     logout: vi.fn(async () => ({ logged_out: true, provider: 'example' })),
   };
   const filesFacade = {
-    save: vi.fn(async () => ({ id: 'file-1' })),
-    delete: vi.fn(),
+    save: vi.fn(async () => ({
+      id: 'file-1',
+      expires_at: new Date(Date.now() + MEDIA_STAGING_TTL_SECONDS * 1_000).toISOString(),
+    })),
+    delete: vi.fn(async () => {}),
   };
   const flagsFacade = {
     list: vi.fn(async () => [{ id: 'example-flag', enabled: true, source: 'config' }]),
@@ -537,11 +569,52 @@ describe('DaemonTUI commands', () => {
     },
   );
 
+  it('records server upload expiry for pasted images and videos', async () => {
+    const { internal, filesFacade } = driver();
+    const readClipboardMedia = vi.spyOn(clipboardImage, 'readClipboardMedia');
+    const imageExpiry = Date.now() + 10 * 60_000;
+    const videoExpiry = Date.now() + 20 * 60_000;
+    const imageBytes = new Uint8Array(
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64',
+      ),
+    );
+    readClipboardMedia.mockResolvedValueOnce({
+      kind: 'image',
+      bytes: imageBytes,
+      mimeType: 'image/png',
+    });
+    filesFacade.save.mockResolvedValueOnce(uploadMeta('pasted-image-upload', imageExpiry));
+
+    try {
+      await internal.handleClipboardPaste();
+      await internal.imageAttachments.get(1)?.pending;
+      expect(internal.imageAttachments.get(1)?.fileExpiresAt).toBe(imageExpiry);
+
+      readClipboardMedia.mockResolvedValueOnce({
+        kind: 'video',
+        mimeType: 'video/mp4',
+        filename: 'sample.mp4',
+        sourcePath: resolve(process.cwd(), 'package.json'),
+      });
+      filesFacade.save.mockResolvedValueOnce(uploadMeta('pasted-video-upload', videoExpiry));
+      await internal.handleClipboardPaste();
+      await internal.imageAttachments.get(2)?.pending;
+      expect(internal.imageAttachments.get(2)?.fileExpiresAt).toBe(videoExpiry);
+    } finally {
+      readClipboardMedia.mockRestore();
+    }
+  });
+
   it('uploads local files and sends real file content parts', async () => {
-    const { tui, internal, controller, filesFacade } = driver();
+    const { tui, internal, controller, controllerState, filesFacade } = driver();
     const path = resolve(process.cwd(), 'package.json');
+    const uploadExpiry = freshUploadExpiry();
+    filesFacade.save.mockResolvedValueOnce(uploadMeta('file-1', uploadExpiry));
 
     await internal.handleSlash(`/attach ${path}`);
+    expect(internal.fileAttachments.get(1)?.expiresAt).toBe(uploadExpiry);
     const draft = tui.state.editor.getText();
     await internal.handleInput(`inspect ${draft}`);
 
@@ -560,7 +633,129 @@ describe('DaemonTUI commands', () => {
         ]),
       }),
     );
+    expect(filesFacade.delete).not.toHaveBeenCalledWith('file-1');
+
+    controllerState.blocks = [{ kind: 'user', promptId: 'prompt-1' }];
+    internal.settleAttachmentLeases(controllerState);
+    await vi.waitFor(() => {
+      expect(filesFacade.delete).toHaveBeenCalledWith('file-1');
+    });
+  });
+
+  it('refreshes an expired file from its retained source path', async () => {
+    const { tui, internal, controller, filesFacade } = driver();
+    const path = resolve(process.cwd(), 'package.json');
+    await internal.handleSlash(`/attach ${path}`);
+    const attachment = internal.fileAttachments.get(1)!;
+    attachment.expiresAt = Date.now() - 1;
+    const refreshedExpiry = Date.now() + 20 * 60_000;
+    filesFacade.save.mockResolvedValueOnce(uploadMeta('fresh-file-upload', refreshedExpiry));
+
+    await internal.handleInput(`inspect ${tui.state.editor.getText()}`);
+
+    expect(controller.sendPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.arrayContaining([
+          expect.objectContaining({ type: 'file', file_id: 'fresh-file-upload' }),
+        ]),
+      }),
+    );
     expect(filesFacade.delete).toHaveBeenCalledWith('file-1');
+    expect([...internal.attachmentSettlementLeases.values()][0]?.deadlineAt).toBe(refreshedExpiry);
+  });
+
+  it('retains an expired image draft after refresh failure and retries with a new upload', async () => {
+    const { internal, controller, filesFacade } = driver();
+    const image = internal.imageAttachments.addImage(
+      new Uint8Array([1, 2, 3]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'expired-image-upload',
+      Date.now() - 1,
+    );
+    filesFacade.save.mockRejectedValueOnce(new Error('refresh unavailable'));
+
+    await expect(internal.handleInput(`inspect ${image.placeholder}`)).rejects.toThrow(
+      'Attachment refresh failed',
+    );
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+    expect(internal.imageAttachments.get(image.id)).toBe(image);
+    expect(image.fileId).toBeUndefined();
+
+    const refreshedExpiry = Date.now() + 10 * 60_000;
+    filesFacade.save.mockResolvedValueOnce(uploadMeta('fresh-image-upload', refreshedExpiry));
+    await internal.handleInput(`inspect ${image.placeholder}`);
+
+    expect(controller.sendPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.arrayContaining([
+          { type: 'image', source: { kind: 'file', file_id: 'fresh-image-upload' } },
+        ]),
+      }),
+    );
+    expect(controller.sendPrompt).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.arrayContaining([
+          { type: 'image', source: { kind: 'file', file_id: 'expired-image-upload' } },
+        ]),
+      }),
+    );
+    expect([...internal.attachmentSettlementLeases.values()][0]?.deadlineAt).toBe(refreshedExpiry);
+  });
+
+  it('refreshes an expired video from its retained source path', async () => {
+    const { internal, controller, filesFacade } = driver();
+    const sourcePath = resolve(process.cwd(), 'package.json');
+    const video = internal.imageAttachments.addVideo('video/mp4', sourcePath, 'sample.mp4');
+    video.fileId = 'expired-video-upload';
+    video.fileExpiresAt = Date.now() - 1;
+    const refreshedExpiry = Date.now() + 15 * 60_000;
+    filesFacade.save.mockResolvedValueOnce(uploadMeta('fresh-video-upload', refreshedExpiry));
+
+    await internal.handleInput(`inspect ${video.placeholder}`);
+
+    expect(filesFacade.save).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: 'sample.mp4', mimeType: 'video/mp4' }),
+    );
+    expect(controller.sendPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.arrayContaining([
+          { type: 'video', source: { kind: 'file', file_id: 'fresh-video-upload' } },
+        ]),
+      }),
+    );
+    expect(filesFacade.delete).toHaveBeenCalledWith('expired-video-upload');
+    expect([...internal.attachmentSettlementLeases.values()][0]?.deadlineAt).toBe(refreshedExpiry);
+  });
+
+  it('caps a multi-attachment settlement at the earliest real upload expiry', async () => {
+    const { internal } = driver();
+    const earliestExpiry = Date.now() + 5 * 60_000;
+    const laterExpiry = Date.now() + 10 * 60_000;
+    const first = internal.imageAttachments.addImage(
+      new Uint8Array([1]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'first-image-upload',
+      earliestExpiry,
+    );
+    const second = internal.imageAttachments.addImage(
+      new Uint8Array([2]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'second-image-upload',
+      laterExpiry,
+    );
+
+    await internal.handleInput(`compare ${first.placeholder} ${second.placeholder}`);
+
+    expect([...internal.attachmentSettlementLeases.values()][0]?.deadlineAt).toBe(earliestExpiry);
   });
 
   it('keeps uploaded media until the accepted prompt settles', async () => {
@@ -930,6 +1125,50 @@ describe('DaemonTUI commands', () => {
     });
     expect(controller.sendPrompt).not.toHaveBeenCalled();
     expect(controller.resync).toHaveBeenCalledOnce();
+  });
+
+  it('refreshes a near-expiry image before submitting a queued inline-skill prompt', async () => {
+    const { internal, agentFacade, filesFacade } = driver();
+    internal.skillCommands.set('skill:reviewskill', {
+      commandName: 'skill:ReviewSkill',
+      name: 'ReviewSkill',
+      description: 'Review changes',
+    });
+    agentFacade.promptWithSkills.mockResolvedValue({
+      prompt_id: 'queued-skill-prompt',
+      created_at: '2026-01-01T00:00:00.000Z',
+      state: 'queued',
+    });
+    const uploadTime = Date.now();
+    const oldExpiry = uploadTime + MEDIA_STAGING_TTL_SECONDS * 1_000;
+    const image = internal.imageAttachments.addImage(
+      new Uint8Array([1, 2, 3]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'aging-image-upload',
+      oldExpiry,
+    );
+    const submitTime = oldExpiry - MEDIA_FILE_REF_MIN_REMAINING_MS;
+    const refreshedExpiry = submitTime + MEDIA_STAGING_TTL_SECONDS * 1_000;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(submitTime);
+    filesFacade.save.mockResolvedValueOnce(uploadMeta('queued-fresh-image', refreshedExpiry));
+
+    try {
+      await internal.handleInput(`Please /skill:ReviewSkill inspect ${image.placeholder}`);
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(agentFacade.promptWithSkills).toHaveBeenCalledWith({
+      input: expect.arrayContaining([
+        { type: 'image_url', imageUrl: { url: 'kimi-file://queued-fresh-image' } },
+      ]),
+      skills: [{ name: 'ReviewSkill' }],
+    });
+    expect(filesFacade.delete).toHaveBeenCalledWith('aging-image-upload');
+    expect([...internal.attachmentSettlementLeases.values()][0]?.deadlineAt).toBe(refreshedExpiry);
   });
 
   it('keeps queued inline-skill media through a failed resync until terminal projection', async () => {

@@ -48,7 +48,10 @@ import { parseGoalCommand } from '#/tui/commands/goal-parse';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
 import { formatErrorMessage } from '#/tui/utils/event-payload';
 import { buildExportMarkdown } from '#/tui/utils/export-markdown';
-import { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
+import {
+  ImageAttachmentStore,
+  type MediaAttachment,
+} from '#/tui/utils/image-attachment-store';
 import { extractInlineSkillActivations } from '#/tui/utils/inline-skill-tokens';
 import { readClipboardMedia } from '#/utils/clipboard/clipboard-image';
 import { clipboard } from '#/utils/clipboard/clipboard-native';
@@ -439,6 +442,7 @@ export class DaemonTUI {
             width: dimensions.width,
             height: dimensions.height,
             fileId: upload.id,
+            fileExpiresAt: parseUploadExpiry(upload),
           });
           if (completed === undefined) await this.client.klient.global.files.delete(upload.id);
         })
@@ -465,7 +469,10 @@ export class DaemonTUI {
         }),
       )
       .then(async (upload) => {
-        const completed = this.imageAttachments.completeVideo(attachment, { fileId: upload.id });
+        const completed = this.imageAttachments.completeVideo(attachment, {
+          fileId: upload.id,
+          fileExpiresAt: parseUploadExpiry(upload),
+        });
         if (completed === undefined) await this.client.klient.global.files.delete(upload.id);
       })
       .catch((error: unknown) => {
@@ -852,7 +859,10 @@ export class DaemonTUI {
 
   private async sendPrompt(text: string, profile?: string): Promise<void> {
     const controller = await this.ensureSession();
-    const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments);
+    const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments, {
+      refreshMedia: (attachment) => this.refreshMediaAttachment(attachment),
+      refreshFile: (attachment) => this.refreshFileAttachment(attachment),
+    });
     if (profile === undefined) {
       const skillMap = new Map<string, string>();
       for (const skill of this.skillCommands.values()) {
@@ -921,12 +931,75 @@ export class DaemonTUI {
       swarmMode: this.state.appState.swarmMode,
     });
     if (prepared !== undefined) {
-      await this.releasePreparedFileAttachments(prepared);
       this.handoffPreparedMedia(prepared, controller, {
         promptId: result.prompt_id,
         promptState: result.status,
       });
       await controller.resync();
+    }
+  }
+
+  private async refreshMediaAttachment(attachment: MediaAttachment): Promise<void> {
+    const previousFileId = attachment.fileId;
+    attachment.fileId = undefined;
+    attachment.fileExpiresAt = undefined;
+    try {
+      const data = attachment.kind === 'image' ? attachment.bytes : await readFile(attachment.sourcePath);
+      const upload = await this.client.klient.global.files.save({
+        data,
+        filename:
+          attachment.kind === 'image'
+            ? `clipboard.${imageExtension(attachment.mime)}`
+            : attachment.filename,
+        mimeType: attachment.mime,
+        expiresInSec: MEDIA_STAGING_TTL_SECONDS,
+      });
+      const expiresAt = parseUploadExpiry(upload);
+      if (expiresAt === undefined) {
+        await this.client.klient.global.files.delete(upload.id).catch(() => undefined);
+        throw new Error('The refreshed upload did not include an expiry.');
+      }
+      attachment.fileId = upload.id;
+      attachment.fileExpiresAt = expiresAt;
+      if (previousFileId !== undefined && previousFileId !== upload.id) {
+        await this.client.klient.global.files.delete(previousFileId).catch(() => undefined);
+      }
+    } catch (error) {
+      throw new Error(
+        `Attachment refresh failed for ${attachment.placeholder}: ${formatErrorMessage(error)} Try again.`,
+        { cause: error },
+      );
+    }
+  }
+
+  private async refreshFileAttachment(attachment: DaemonFileAttachment): Promise<void> {
+    const previousFileId = attachment.fileId;
+    attachment.fileId = undefined;
+    attachment.expiresAt = undefined;
+    try {
+      const data = await readFile(attachment.sourcePath);
+      const upload = await this.client.klient.global.files.save({
+        data,
+        filename: attachment.name,
+        mimeType: attachment.mediaType,
+        expiresInSec: MEDIA_STAGING_TTL_SECONDS,
+      });
+      const expiresAt = parseUploadExpiry(upload);
+      if (expiresAt === undefined) {
+        await this.client.klient.global.files.delete(upload.id).catch(() => undefined);
+        throw new Error('The refreshed upload did not include an expiry.');
+      }
+      attachment.fileId = upload.id;
+      attachment.expiresAt = expiresAt;
+      attachment.size = data.byteLength;
+      if (previousFileId !== undefined && previousFileId !== upload.id) {
+        await this.client.klient.global.files.delete(previousFileId).catch(() => undefined);
+      }
+    } catch (error) {
+      throw new Error(
+        `Attachment refresh failed for ${attachment.placeholder}: ${formatErrorMessage(error)} Try again.`,
+        { cause: error },
+      );
     }
   }
 
@@ -939,19 +1012,24 @@ export class DaemonTUI {
       readonly promptState?: PromptStatus;
     },
   ): void {
-    if (prepared.mediaUploadIds.length === 0) return;
+    const uploadIds = [...prepared.mediaUploadIds, ...prepared.fileUploadIds];
+    if (uploadIds.length === 0) return;
     for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
+    for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
     const turnId = identity.turnId === undefined ? undefined : String(identity.turnId);
     const key = identity.promptId === undefined
       ? `turn:${controller.sessionId}:${turnId}`
       : `prompt:${controller.sessionId}:${identity.promptId}`;
-    const deadlineAt = Date.now() + MEDIA_STAGING_TTL_SECONDS * 1_000;
+    const deadlineAt = Math.min(
+      Date.now() + MEDIA_STAGING_TTL_SECONDS * 1_000,
+      ...prepared.uploadExpiresAt,
+    );
     const lease: AttachmentSettlementLease = {
       sessionId: controller.sessionId,
       promptId: identity.promptId,
       turnId,
       promptState: identity.promptState,
-      uploadIds: new Set(prepared.mediaUploadIds),
+      uploadIds: new Set(uploadIds),
       deadlineAt,
       deadlineTimer: undefined,
       deleteRetryTimer: undefined,
@@ -961,7 +1039,7 @@ export class DaemonTUI {
     };
     lease.deadlineTimer = setTimeout(() => {
       this.expireAttachmentSettlementLease(key, lease);
-    }, MEDIA_STAGING_TTL_SECONDS * 1_000);
+    }, Math.max(0, deadlineAt - Date.now()));
     lease.deadlineTimer.unref();
     this.attachmentSettlementLeases.set(key, lease);
     this.settleAttachmentLeases(controller.getState());
@@ -969,6 +1047,7 @@ export class DaemonTUI {
 
   private handoffPreparedMediaToExpiry(prepared: PreparedDaemonPrompt): void {
     for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
+    for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
   }
 
   private async releasePreparedMedia(prepared: PreparedDaemonPrompt): Promise<void> {
@@ -1110,17 +1189,12 @@ export class DaemonTUI {
     }
   }
 
-  private async releasePreparedFileAttachments(prepared: PreparedDaemonPrompt): Promise<void> {
-    for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
-    await Promise.allSettled(
-      prepared.fileUploadIds.map((fileId) => this.client.klient.global.files.delete(fileId)),
-    );
-  }
-
   private async clearAttachments(): Promise<void> {
     const uploadIds = [
       ...this.imageAttachments.clear(),
-      ...[...this.fileAttachments.values()].map((attachment) => attachment.fileId),
+      ...[...this.fileAttachments.values()].flatMap((attachment) =>
+        attachment.fileId === undefined ? [] : [attachment.fileId],
+      ),
     ];
     this.fileAttachments.clear();
     this.nextFileAttachmentId = 1;
@@ -1597,6 +1671,8 @@ export class DaemonTUI {
     const attachment: DaemonFileAttachment = {
       id,
       fileId: upload.id,
+      expiresAt: parseUploadExpiry(upload),
+      sourcePath: absolutePath,
       name,
       mediaType,
       size: data.byteLength,
@@ -2253,6 +2329,12 @@ function rejectSensitiveProviderFields(value: unknown, path: readonly string[]):
     }
     rejectSensitiveProviderFields(child, nextPath);
   }
+}
+
+function parseUploadExpiry(upload: { readonly expires_at?: string }): number | undefined {
+  if (upload.expires_at === undefined) return undefined;
+  const expiresAt = Date.parse(upload.expires_at);
+  return Number.isFinite(expiresAt) ? expiresAt : undefined;
 }
 
 function imageExtension(mime: string): string {
