@@ -12,7 +12,7 @@ export const LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV =
   'KIMI_LOOP_COMPACTION_SOFT_CONTEXT_SIZE';
 /** Deprecated former name of {@link LOOP_MAX_ATTEMPTS_PER_STEP_ENV}. */
 export const LOOP_MAX_RETRIES_PER_STEP_ENV = 'KIMI_LOOP_MAX_RETRIES_PER_STEP';
-export const DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE = 256_000;
+export const DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE = 0;
 
 export const LoopControlSchema = z.object({
   maxStepsPerTurn: z.number().int().min(0).optional(),

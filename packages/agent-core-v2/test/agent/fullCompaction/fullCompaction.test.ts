@@ -2099,11 +2099,11 @@ describe('FullCompaction', () => {
     }
   });
 
-  it('triggers auto compaction when pending tokens cross the default soft context cap', async () => {
+  it('triggers auto compaction when pending tokens cross an explicit soft context cap', async () => {
     const ctx = testAgent({
       initialConfig: {
         providers: {},
-        loopControl: { reservedContextSize: 0 },
+        loopControl: { reservedContextSize: 0, compactionSoftContextSize: 256_000 },
       },
     });
     ctx.configure({

@@ -198,8 +198,21 @@ describe('DefaultCompactionStrategy', () => {
 });
 
 describe('RuntimeCompactionStrategy', () => {
-  it('triggers and blocks at the default absolute soft cap for a 700k window', () => {
+  it('uses the default 85% ratio threshold for a 700k window', () => {
     const strategy = runtimeCompactionStrategy({ maxSize: 700_000, reservedContextSize: 0 });
+
+    expect(strategy.shouldCompact(594_999)).toBe(false);
+    expect(strategy.shouldBlock(594_999)).toBe(false);
+    expect(strategy.shouldCompact(595_000)).toBe(true);
+    expect(strategy.shouldBlock(595_000)).toBe(true);
+  });
+
+  it('honors an explicit absolute cap', () => {
+    const strategy = runtimeCompactionStrategy({
+      maxSize: 700_000,
+      reservedContextSize: 0,
+      compactionSoftContextSize: 256_000,
+    });
 
     expect(strategy.shouldCompact(255_999)).toBe(false);
     expect(strategy.shouldBlock(255_999)).toBe(false);
@@ -216,19 +229,6 @@ describe('RuntimeCompactionStrategy', () => {
     expect(strategy.shouldBlock(78_000)).toBe(true);
   });
 
-  it('disables the absolute cap when configured as zero', () => {
-    const strategy = runtimeCompactionStrategy({
-      maxSize: 700_000,
-      reservedContextSize: 0,
-      compactionSoftContextSize: 0,
-    });
-
-    expect(strategy.shouldCompact(594_999)).toBe(false);
-    expect(strategy.shouldBlock(594_999)).toBe(false);
-    expect(strategy.shouldCompact(595_000)).toBe(true);
-    expect(strategy.shouldBlock(595_000)).toBe(true);
-  });
-
   it('honors a larger explicit absolute cap', () => {
     const strategy = runtimeCompactionStrategy({
       maxSize: 700_000,
@@ -242,7 +242,7 @@ describe('RuntimeCompactionStrategy', () => {
     expect(strategy.shouldBlock(512_000)).toBe(true);
   });
 
-  it('uses the effective auto window for recent-tail selection without limiting manual compaction', () => {
+  it('uses an explicit auto window for recent-tail selection without limiting manual compaction', () => {
     const messages = [
       ...Array.from({ length: 7 }, (_, i) => textMessage('assistant', `old ${i}`)),
       ...Array.from({ length: 3 }, (_, i) => textMessage('assistant', `recent ${i}`)),
@@ -251,7 +251,10 @@ describe('RuntimeCompactionStrategy', () => {
       message.content[0]?.type === 'text' && message.content[0].text.startsWith('recent')
         ? 100_000
         : 20_000;
-    const capped = runtimeCompactionStrategy({ maxSize: 2_000_000 }, estimate);
+    const capped = runtimeCompactionStrategy(
+      { maxSize: 2_000_000, compactionSoftContextSize: 256_000 },
+      estimate,
+    );
     const disabled = runtimeCompactionStrategy(
       { maxSize: 2_000_000, compactionSoftContextSize: 0 },
       estimate,

@@ -2,4 +2,4 @@
 "@moonshot-ai/kimi-code": patch
 ---
 
-Compact oversized contexts earlier in long conversations.
+Add an optional absolute context limit for automatic compaction.

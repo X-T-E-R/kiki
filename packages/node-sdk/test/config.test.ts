@@ -451,7 +451,7 @@ describe('KimiHarness config API', () => {
       defaultPlanMode: false,
       mergeAllAvailableSkills: true,
       extraSkillDirs: [],
-      loopControl: { compactionSoftContextSize: 256_000 },
+      loopControl: { compactionSoftContextSize: 0 },
       background: {},
       subagent: { timeoutMs: 7_200_000 },
       mcp: {},
