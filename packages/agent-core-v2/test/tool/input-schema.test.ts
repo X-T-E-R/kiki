@@ -74,4 +74,55 @@ describe('tool input JSON Schema', () => {
       }),
     ).not.toBeNull();
   });
+
+  it('declares an object root for discriminated tool actions without losing branch validation', () => {
+    const actions = z.discriminatedUnion('action', [
+      z.object({ action: z.literal('list') }).strict(),
+      z.object({ action: z.literal('show'), id: z.string() }).strict(),
+    ]);
+    const projected = z.toJSONSchema(actions, { target: 'draft-7', io: 'input' });
+    expect(projected.type).toBeUndefined();
+    expect(projected.oneOf).toHaveLength(2);
+
+    const schema = toInputJsonSchema(actions);
+    expect(schema['type']).toBe('object');
+    expect(schema['oneOf']).toEqual(projected.oneOf);
+    const validator = compileToolArgsValidator(schema);
+
+    expect(validateToolArgs(validator, { action: 'list' })).toBeNull();
+    expect(validateToolArgs(validator, { action: 'show', id: 'example' })).toBeNull();
+    expect(validateToolArgs(validator, { action: 'show' })).not.toBeNull();
+    expect(validateToolArgs(validator, { action: 'list', id: 'example' })).not.toBeNull();
+    expect(validateToolArgs(validator, { action: 'unknown' })).not.toBeNull();
+    expect(validateToolArgs(validator, [])).not.toBeNull();
+    expect(validateToolArgs(validator, null)).not.toBeNull();
+  });
+
+  it('declares an object root for an ordinary union of tool argument objects', () => {
+    const schema = toInputJsonSchema(z.union([
+      z.object({ path: z.string() }).strict(),
+      z.object({ id: z.number() }).strict(),
+    ]));
+
+    expect(schema['type']).toBe('object');
+    expect(schema['anyOf']).toHaveLength(2);
+    const validator = compileToolArgsValidator(schema);
+    expect(validateToolArgs(validator, { path: 'example.txt' })).toBeNull();
+    expect(validateToolArgs(validator, { id: 1 })).toBeNull();
+    expect(validateToolArgs(validator, { id: 'wrong-type' })).not.toBeNull();
+  });
+
+  it('completes the root after the finalizer adds composite constraints', () => {
+    const schema = toInputJsonSchema(z.object({}), (root) => {
+      delete root['type'];
+      delete root['properties'];
+      delete root['additionalProperties'];
+      root['allOf'] = [{ type: 'object', properties: { id: { type: 'string' } }, required: ['id'] }];
+    });
+
+    expect(schema['type']).toBe('object');
+    const validator = compileToolArgsValidator(schema);
+    expect(validateToolArgs(validator, { id: 'example' })).toBeNull();
+    expect(validateToolArgs(validator, {})).not.toBeNull();
+  });
 });

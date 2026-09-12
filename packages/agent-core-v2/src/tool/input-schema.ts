@@ -15,7 +15,20 @@ export function toInputJsonSchema(
   // Attach tool-specific AJV constraints after closing ordinary object nodes
   // so conditional object probes keep their intended open semantics.
   finalize?.(jsonSchema);
+  ensureObjectRoot(jsonSchema);
   return jsonSchema;
+}
+
+const ROOT_COMPOSITE_KEYWORDS = ['oneOf', 'anyOf', 'allOf'] as const;
+
+export function ensureObjectRoot(schema: Record<string, unknown>): void {
+  if (schema['type'] !== undefined) return;
+  if (typeof schema['$ref'] === 'string') return;
+  const composite = ROOT_COMPOSITE_KEYWORDS.some((keyword) =>
+    Array.isArray(schema[keyword]),
+  );
+  if (!composite && schema['properties'] === undefined) return;
+  schema['type'] = 'object';
 }
 
 function closeObjectNodes(value: unknown): void {
