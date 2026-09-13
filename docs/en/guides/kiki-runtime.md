@@ -1,135 +1,120 @@
 # Kiki runtime boundary
 
-Run `kimi` to use the command-line or terminal interface. **Kiki** names the downstream additions in this repository; it is not a separate executable, and it does not replace the existing Kimi Code CLI documentation.
+`kiki` is the product's CLI entry point. It starts the daemon-backed terminal interface, runs non-interactive `-p` requests, and exposes daemon, seat, and MCP integration commands. The package does not install a second `kimi` executable. See [the command reference](../reference/kiki-command.md) for startup and migration.
 
-This guide shows which runtime surfaces come from the upstream Kimi Code baseline, which areas Kiki adapts, and which features exist only in Kiki. Use the classification before deciding where to configure a feature, report a regression, or resolve an upstream-sync conflict.
+This guide distinguishes inherited implementation from Kiki-owned integration. A package name or a passing source check is not a claim that a corresponding npm package or desktop release has been published.
 
 ## Read the boundary
 
-The classification describes the origin and maintenance boundary of a surface, not its quality or release status:
+These labels describe origin and maintenance responsibility, not release readiness:
 
-- **Inherited**: the public behavior or contract comes from the upstream Kimi Code baseline and remains the default reference.
-- **Adapted**: an upstream subsystem still supplies the main contract, but Kiki changes a defined integration area inside it.
-- **Kiki-only**: the package, tool, or behavior was added after the Kiki fork point (the upstream commit used as the comparison start) and has no upstream Kimi Code baseline at that point.
+- **Inherited**: implementation or contracts originate in the upstream Kimi Code baseline.
+- **Adapted**: Kiki changes an inherited subsystem's integration or supported behavior.
+- **Kiki-only**: a surface was added after the fork point and had no counterpart at that comparison point.
 
-| Surface | Classification | What the label means here |
+| Surface | Classification | Current boundary |
 | --- | --- | --- |
-| Kimi Code CLI, TUI (terminal user interface), and the `kimi` command | Inherited | Installation, login, sessions, configuration, and ordinary command behavior continue to use the existing Kimi Code CLI docs. |
-| `kap-server`, `@kiki/protocol`, and the session, configuration, and authentication contracts they expose | Inherited | Kiki clients consume these contracts instead of defining a separate server or protocol family. |
-| Model-binding areas in `agent-core-v2` | Adapted | Kiki extends selected upstream agent-engine paths while preserving their existing session and task lifecycles. |
-| Explicit model-alias and thinking-effort binding for newly spawned subagents | Kiki-only | Only the symbolic-selector path is disabled by default; the explicit binding itself is stable and always available. Tool parameters use `model_alias` and `effort`; Agent files still use `thinking_effort`. |
-| Per-model prompt conditioning via [`[models."<alias>".cognition]`](../configuration/config-files.md#model-cognition) | Kiki-only | Overlay, steering, and anchor prompt files attach to a model alias rather than an agent profile. The repository ships no default text for them; every file is read from the data root at runtime, and an undeclared field injects nothing. |
-| Direct-child tools `AgentRun`, `AgentSwarm`, `AgentList`, and `AgentSend` | Kiki-only | Always on the main `agent` profile. They launch or resume children, fan out item-based work, list direct children, and queue mailbox messages. |
-| Local peer-thread communication | Kiki-only | Main Agents can list, read, message, and wait on existing sessions across local workspaces; REST and Klient provide target-only external-client sends without peer attribution. |
-| Standalone `@kiki/gui` package | Kiki-only | The GUI is a downstream client of the inherited server and protocol surfaces. Some components adapt separately attributed donor material, so those components are classified as adapted within the Kiki-only package. |
+| CLI, TUI (terminal user interface), and executable identity | Adapted | The command is `kiki`; interactive sessions attach to the shared daemon instead of creating an independent terminal runtime. |
+| `kap-server`, `@kiki/protocol`, and engine session/configuration/authentication contracts | Inherited and adapted | Existing server contracts remain in use; Kiki adds unified client wiring without creating another engine. |
+| Model-binding areas in `agent-core-v2` | Adapted | Kiki owns the downstream model/effort binding and dispatch integration. |
+| Explicit model alias and thinking effort for subagents | Kiki-only | Tool parameters use `model_alias` and `effort`; agent files use `thinking_effort`. |
+| Per-model [prompt conditioning](../configuration/config-files.md#model-cognition) | Kiki-only | Overlay, steering, and anchor files attach to a model alias. No default file text is shipped or injected for undeclared fields. |
+| `AgentRun`, `AgentList`, and `AgentSend` | Kiki-only | Direct-child launch/resume, discovery, and mailbox operations. |
+| Local peer-thread communication | Kiki-only | Agents can coordinate local sessions; external REST/Klient callers send target-only messages without peer attribution. |
+| `@kiki/gui` and shared `@kiki/session-core` client integration | Kiki-only and adapted | GUI and terminal session views consume the shared client contracts. Donor-derived GUI material retains its specific attribution. |
 
-The repository fork point used for this guide is `437a1b8`. The hash is a comparison anchor, not a claim that later upstream changes are already present.
+The comparison anchor is `437a1b8`. It does not imply that all later upstream changes are present.
 
 ## Choose the command and runtime
 
-Every surface runs the same engine, `agent-core-v2`. There is no engine switch: the historical v1 engine was removed from this fork, along with `KIMI_CODE_LEGACY_FLAG`.
+All surfaces use `agent-core-v2`; the historical v1 engine is not an alternative runtime.
 
-| Invocation or setting | Runtime behavior |
+| Invocation | Runtime behavior |
 | --- | --- |
-| `kimi` or `kimi -p` | Uses the inherited CLI/TUI surface on `agent-core-v2`. |
-| `kimi web` | Starts `kap-server`, also on `agent-core-v2`. |
-| `@kiki/gui` | Exists as a separate private workspace package that connects as a client. It does not install a `kiki` command or replace the TUI. |
+| `kiki` | Attach to or start the shared daemon, then open the TUI. Startup failures are reported; there is no legacy local-TUI fallback. |
+| `kiki -p "prompt"` | Run through the shared Klient facade in an SDK-hosted in-memory engine, without opening the TUI or attaching to a daemon. It waits for the submitted prompt's terminal result and then applies the configured background-task policy. |
+| `kiki serve --ensure --workspace . --json` | Reuse a healthy shared daemon or start one. |
+| `kiki serve --stop` | Stop the shared daemon through its supported lifecycle command. |
+| `kiki web` | Compatibility foreground REST/WebSocket/web-UI command; it does not attach to the shared daemon. |
+| `@kiki/gui` | Browser/desktop client of the shared engine and server. The GUI workspace package does not install another CLI. |
 
-`KIMI_CODE_EXPERIMENTAL_FLAG=1` enables registered experiments inside the engine. It does not turn the executable into Kiki. For the complete switch reference, use [Environment variables](../configuration/env-vars.md#runtime-switches); for command syntax, use the [`kimi` command reference](../reference/kimi-command.md).
+`KIKI_EXPERIMENTAL_FLAG=1` enables registered experiments; it is not an engine or product selector. See [environment variables](../configuration/env-vars.md#runtime-switches).
 
 ## Enable Kiki-only agent features
 
-The model-selector feature below remains experimental and off by default.
+Explicit model and effort binding and the direct-child tools are separate from experimental feature selection. Use the owning feature's switch when you need an experiment; the master switch enables all registered experiments and is broader than a single opt-in.
 
-| Feature | Enable with | Additional boundary |
-| --- | --- | --- |
-| All registered experiments | `KIMI_CODE_EXPERIMENTAL_FLAG=1` | This is a broad master gate, not a runtime or product selector. |
-
-[Agents and subagents](../customization/agents.md) documents the binding precedence, lifecycle, and child-agent tools. [Configuration files](../configuration/config-files.md#subagent) documents the `[subagent]` timeout and denylist.
+[Agents and subagents](../customization/agents.md) documents binding precedence and lifecycle. [Configuration files](../configuration/config-files.md#subagent) documents subagent timeout and denylist settings.
 
 ## Integrate peer-thread communication
 
-Peer-thread communication is disabled by default. Set [`[thread_communication] enabled = true`](../configuration/config-files.md#thread-communication) to opt in. Once enabled, it coordinates existing sessions on this host, including sessions in different workspaces; every thread reference includes the host, workspace, and session identity, and cross-host sends are rejected. Only main Agents receive the four built-in thread tools, but local clients can use the same contract directly. Sending to a cold target can resume that session and consume model quota.
+Peer-thread communication defaults off. Set [`[thread_communication] enabled = true`](../configuration/config-files.md#thread-communication) to opt in. References include host, workspace, and session identity; cross-host sends are rejected. Only main agents receive the four built-in thread tools. Sending to a cold session may resume it and consume model quota.
 
-The REST/Klient surface below is served by `kimi web`.
-
-The REST surface is available under `/api/v1` when the Kimi server is running:
+The server exposes these routes under `/api`:
 
 | Operation | Route |
 | --- | --- |
-| List threads | `GET /api/v1/threads` |
-| Read completed turns | `POST /api/v1/threads:read` |
-| Send a message | `POST /api/v1/threads:send` |
-| Wait for activity | `POST /api/v1/threads:wait` |
-| Read a workspace override | `GET /api/v1/workspaces/{workspace_id}/thread-communication` |
-| Set a workspace override | `PUT /api/v1/workspaces/{workspace_id}/thread-communication` |
-| Clear a workspace override | `DELETE /api/v1/workspaces/{workspace_id}/thread-communication` |
+| List threads | `GET /api/threads` |
+| Read completed turns | `POST /api/threads:read` |
+| Send a message | `POST /api/threads:send` |
+| Wait for activity | `POST /api/threads:wait` |
+| Read a workspace override | `GET /api/workspaces/{workspace_id}/thread-communication` |
+| Set a workspace override | `PUT /api/workspaces/{workspace_id}/thread-communication` |
+| Clear a workspace override | `DELETE /api/workspaces/{workspace_id}/thread-communication` |
 
-`POST /api/v1/threads:send` accepts exactly `target`, `content`, and `idempotency_key`. It rejects the legacy `source` field and records the delivered turn as user-origin input; a REST client cannot claim a source thread. Use `GET /openapi.json` for the complete request and response schemas. `GET /api/v1/meta` advertises support as `capabilities.thread_communication: true`.
+`POST /api/threads:send` accepts `target`, `content`, and `idempotency_key`. It rejects `source` and records user-origin input. `GET /openapi.json` provides schemas; `GET /api/meta` advertises `capabilities.thread_communication: true`.
 
-Klient exposes the corresponding methods under `global.threads`: `hostId`, `list`, `read`, `send`, `wait`, `getWorkspaceOverride`, `setWorkspaceOverride`, `clearWorkspaceOverride`, and `isWorkspaceEnabled`. Call `global.threads.send({ target, content, idempotencyKey })`.
+Klient exposes `global.threads.hostId`, `list`, `read`, `send`, `wait`, `getWorkspaceOverride`, `setWorkspaceOverride`, `clearWorkspaceOverride`, and `isWorkspaceEnabled`. Send with `global.threads.send({ target, content, idempotencyKey })`. Extra lower-level transport fields cannot create peer attribution; true peer sends use the source agent's `ThreadSend` tool, which derives the source identity itself.
 
-The strict Klient facade does not accept `source`, and extra source data sent through a lower-level transport cannot create peer provenance. Like REST, Klient sends are recorded as user-origin input. To record true peer attribution, the source session's main Agent must call `send_message_to_thread`, which derives that source from its current session rather than client-supplied data.
-
-Workspace overrides persist across restarts. Clearing one returns the workspace to the effective global setting; an enabled override cannot bypass a globally disabled `[thread_communication]` section.
+Workspace overrides persist across restarts. Clearing one restores the global setting; an enabled override cannot bypass a globally disabled section.
 
 ## Separate the GUI, server, and clients
 
-Kiki does not introduce a second backend stack. `@kiki/gui` calls the inherited `kap-server` REST and WebSocket surfaces (the request/response API and live update channel) and uses types from `@kiki/protocol`; the existing TUI and other clients continue to use their established Kimi Code paths.
+GUI and TUI session views consume the Klient session-view/command contract through shared session-core integration. The daemon owns engine execution. Existing general REST routes, terminal/global WebSocket traffic, and the non-interactive SDK path still exist; unified session wiring does not mean every historical transport or SDK entry has been removed.
 
-| Boundary | Owner in this repository | Consequence |
-| --- | --- | --- |
-| CLI/TUI command surface | Upstream Kimi Code baseline | Keep `kimi` behavior and the existing user docs as the default contract. |
-| Server, protocol, session, configuration, and authentication surface | Upstream Kimi Code baseline | A Kiki client change should adapt to this contract unless the contract itself is deliberately reclassified. |
-| Agent-engine integration delta | Kiki maintainers | Kiki owns model/effort binding and child-agent regressions introduced by the downstream delta. |
-| `@kiki/gui` client, state, and presentation | Kiki maintainers | The package is a private repository workspace surface; its presence is not a public release or production-readiness claim. |
+Kiki maintainers own the downstream CLI identity, client integration, home resolution, and migration contracts. Upstream remains the provenance of inherited implementation, not an instruction to restore the old executable or a second live home.
 
-The GUI package records adapted material from codeg, AionUi, grok-build, and LiveAgent in `apps/kiki-gui/ATTRIBUTION.md`. That file assigns provenance to specific adapted behavior and lists known dependency licenses; it explicitly does not assign a donor license to an entire target file or establish a complete distribution-notice set.
+`apps/kiki-gui/ATTRIBUTION.md` records adapted material from codeg, AionUi, grok-build, and LiveAgent. It assigns provenance to specific behavior and lists known licenses; it does not assign one donor license to an entire target file or establish a complete distribution-notice set.
 
-## Keep Kiki data and Kimi OAuth separate
+## Use one runtime home
 
-The desktop app keeps Kiki-owned data under `KIKI_HOME` (by default `~/.kiki`). Its configuration is always `KIKI_HOME/config.toml`; selecting a Kimi Home never replaces that file with Kimi Code's full configuration.
+Runtime configuration, sessions, and OAuth credentials use `KIKI_HOME`, defaulting to `~/.kiki`. Supported explicit `--home` options take precedence. The legacy `KIMI_CODE_HOME` setting is not a startup fallback. Real Kimi provider/OAuth identifiers and endpoints remain unchanged; product home naming does not rename the provider protocol.
 
-Kimi OAuth is intentionally shared. The selected Kimi Home may be the default Kimi Code Home or a custom absolute path, and Kiki login, logout, and refresh directly use `<Kimi Home>/credentials/kimi-code.json`, `<Kimi Home>/device_id`, and `<Kimi Home>/oauth/`. Those actions therefore affect the same Kimi Code login; Kiki never copies OAuth credentials into `KIKI_HOME`.
+The desktop compatibility-home setting selects a migration source only. Login, logout, and token refresh no longer operate on a separately selected legacy home. Use [explicit configuration migration](../reference/kiki-command.md#migration-from-kimi) or sign in again before depending on legacy credentials.
 
-The Settings card provides a repeatable one-way model-configuration import from the selected Kimi Home. It imports only `providers`, `models`, `services`, `default_model`, `default_provider`, and `thinking`. The three map categories merge by key: source entries replace matching aliases while Kiki-only aliases remain. The other categories replace the Kiki value only when they exist in the source. OAuth credential files are never copied; imported provider and service entries may retain references to the credentials already shared from the selected Kimi Home. All other Kiki config sections and comments attached to untouched entries remain unchanged, and repeating the same import is a no-op. The desktop action stops and restarts only Kiki's owned backend. For headless maintenance, stop that backend first, then run from `apps/kiki-gui`:
+`kiki migrate-config` copies supported configuration, credentials, device identity, and authored resources without overwriting existing Kiki files or removing the source. `--workspace <directory>` migrates project `local.toml`, `AGENTS.md`, `mcp.json`, and authored resource trees into `.kiki`. Root `AGENTS.md` and standard `.mcp.json` stay in place with their existing semantics. Project-local MCP remains relative to the selected working directory, not an implicit merge of every ancestor's product MCP file.
+
+The desktop's separate model-category import copies only `providers`, `models`, `services`, `default_model`, `default_provider`, and `thinking`. Map categories merge by key, source entries win on matching aliases, and untouched categories/comments remain. This operation does not copy credentials: imported authentication references may require full migration or a new login. Repeating unchanged input is a no-op. For headless use, stop the owned backend first and run from `apps/kiki-gui`:
 
 ```sh
-pnpm desktop:import-kimi-config
+pnpm desktop:import-kimi-config --source-home <absolute-path> --target-home <absolute-path>
 ```
 
-Pass `--source-home <absolute-path>` and `--target-home <absolute-path>` to override the default Homes. The command prints only status, paths, and category names; it does not read or move OAuth, Sessions, or Skills.
-
-Sessions and User Skills use the selected Kimi Home only as a migration source. A Sessions move stops Kiki's owned backend, recalculates the plan, then renames only `workspaces.json` and `sessions/`; if the second rename fails after the catalog moved, Kiki immediately renames the catalog back and reports a partial move if that compensation also fails. User Skills copy keeps the source and does not overwrite an occupied Kiki target. Copy migrations stop and restart only Kiki's owned backend; they do not stop or lock external Kimi Code processes, so close those processes before migrating.
+The command reports status, paths, and category names without copying OAuth, sessions, or skills. Desktop session moves and skill copies remain separate operations: a session move transfers `workspaces.json` and `sessions/` with compensation on partial failure; skill copying preserves the source and occupied targets. These operations stop/restart only Kiki's owned backend, not external Kimi Code processes. Close external processes before migrating their data.
 
 ## Sync from upstream
 
-The configured upstream is `MoonshotAI/kimi-code`, with `437a1b8` as this guide's comparison anchor. Upstream sync is a deliberate Git and integration operation; nothing in the Kiki name, feature flags, or GUI automatically imports later upstream changes.
+The upstream baseline is `MoonshotAI/kimi-code`; Kiki's own repository is `X-T-E-R/kiki`. Sync requires an explicit review and selected port, never an automatic consequence of a product name or feature flag.
 
-When reviewing an upstream update:
-
-1. Keep inherited command, server, protocol, session, configuration, and authentication contracts aligned with the upstream change.
-2. Reapply or repair adapted agent-engine deltas at their integration seams rather than treating the full engine as Kiki-only.
-3. Preserve Kiki-only behavior only where it still composes with the updated inherited contract.
-4. Recheck GUI attribution when adapted donor material or the shipped dependency graph changes.
-
-This order keeps upstream fixes distinguishable from downstream behavior and makes ownership clear when a regression crosses the boundary.
+1. Evaluate inherited fixes against current Kiki contracts; do not restore retired entry points or home fallbacks.
+2. Integrate accepted changes at their owning engine/server boundaries.
+3. Preserve Kiki-owned dispatch and client behavior with targeted regression checks.
+4. Recheck attribution when adapted material or the shipped dependency graph changes.
 
 ## Source map
 
-The following repository paths back the classifications in this guide:
-
-- **Command surface**: `apps/kimi-code/package.json`
-- **Inherited server and protocol**: `packages/kap-server/`, `packages/protocol/`, `packages/node-sdk/`, and `packages/oauth/`
-- **Adapted model-binding areas**: `packages/agent-core-v2/src/session/subagent/`
-- **Kiki-only per-model prompt conditioning**: `packages/agent-core-v2/src/agent/cognition/`, `packages/agent-core-v2/src/features/modelSteering/`, and the `cognition` schema in `packages/agent-core-v2/src/app/kosongConfig/configSection.ts`
-- **Kiki-only child-agent tools**: `packages/agent-core-v2/src/agent/tools/agent/`, `packages/agent-core-v2/src/agent/tools/agent-list/`, and `packages/agent-core-v2/src/agent/tools/agent-send/`
-- **Kiki-only peer-thread core and transport**: `packages/agent-core-v2/src/app/threadCommunication/`, `packages/kap-server/src/routes/threads.ts`, and `packages/klient/src/contract/global/threads.ts`
-- **Kiki-only GUI and its donor boundary**: `apps/kiki-gui/package.json`, `apps/kiki-gui/src/lib/client.ts`, and `apps/kiki-gui/ATTRIBUTION.md`
+- **Command and daemon startup**: `apps/kimi-code/src/cli/commands.ts`, `apps/kimi-code/src/kiki/`, and `apps/kimi-code/package.json`
+- **Server and client contracts**: `packages/kap-server/`, `packages/protocol/`, `packages/klient/`, and `packages/session-core/`
+- **SDK execution**: `packages/node-sdk/`
+- **Home resolution and explicit migration**: `packages/oauth/src/home.ts`
+- **Model/effort binding and child execution**: `packages/agent-core-v2/src/session/subagent/` and `packages/agent-core-v2/src/session/dispatch/`
+- **Prompt conditioning**: `packages/agent-core-v2/src/agent/cognition/`, `packages/agent-core-v2/src/features/modelSteering/`, and `packages/agent-core-v2/src/app/kosongConfig/configSection.ts`
+- **Peer threads**: `packages/agent-core-v2/src/app/threadCommunication/`, `packages/kap-server/src/routes/threads.ts`, and `packages/klient/src/contract/global/threads.ts`
+- **GUI provenance**: `apps/kiki-gui/ATTRIBUTION.md`
 
 ## Next steps
 
-- [Getting started](./getting-started.md) — install and run the inherited `kimi` command.
-- [Agents and subagents](../customization/agents.md) — configure model binding and use the child-agent tools.
-- [Environment variables](../configuration/env-vars.md#runtime-switches) — compare engine selection and experimental feature gates.
-- [`kimi` command reference](../reference/kimi-command.md) — look up the current executable, flags, and subcommands.
+- [Getting started](./getting-started.md) — choose a release or local source build.
+- [Agents and subagents](../customization/agents.md) — configure bindings and child-agent tools.
+- [Environment variables](../configuration/env-vars.md#runtime-switches) — configure runtime settings and experiments.
+- [`kiki` command reference](../reference/kiki-command.md) — daemon, inbound integration, and explicit migration.

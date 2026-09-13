@@ -1,6 +1,6 @@
 # `kiki` command
 
-The `kiki` command manages the shared local daemon used by external callers such as Cursor, Claude Code, and Codex to call Kiki (inbound). It does not configure the external executors or harnesses that Kiki uses to run subagents (outbound).
+`kiki` is the unified CLI entry: interactive terminal sessions, non-interactive `-p` execution, and shared-daemon management use the same command. Its seat and MCP subcommands let external callers such as Cursor, Claude Code, and Codex call Kiki (inbound); they do not configure the external executors that Kiki uses to run subagents (outbound).
 
 ## Start or reuse the daemon
 
@@ -12,7 +12,7 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-Kiki resolves its home directory in this order: `--home`, `KIKI_HOME`, the compatible `KIMI_CODE_HOME` setting, then `~/.kiki`. The daemon uses one bearer token from `<home>/server.token`. `--idle-exit` defaults to `30m`; active client leases and running dispatches keep the daemon alive. Client leases are renewed through `POST /api/v1/leases`.
+Kiki resolves its home directory in this order: an explicit `--home` where supported, `KIKI_HOME`, then `~/.kiki`. Runtime startup does not read the legacy `KIMI_CODE_HOME` setting. The daemon uses one bearer token from `<home>/server.token`. `--idle-exit` defaults to `30m`; active client leases and running dispatches keep the daemon alive. Client leases are renewed through `POST /api/leases`.
 
 ## Manage external-caller seats
 
@@ -61,4 +61,14 @@ The report checks daemon reachability, the token-file path and permissions, the 
 
 ## Migration from `kimi`
 
-The existing `kimi` command remains the interactive CLI and TUI entry point. Use [`kimi`](./kimi-command.md) for interactive sessions and use `kiki` for daemon, seat, and external-caller integration workflows.
+The installed entry point is now `kiki`: run it without a subcommand for the daemon-backed TUI, or use `kiki -p "prompt"` for the existing non-interactive memory path. Daemon, seat, and inbound integration commands are available from the same entry point. The `kimi` bin is no longer installed; update your command launchers.
+
+Run `kiki migrate-config --json` to copy legacy configuration into `KIKI_HOME` or `~/.kiki`. The source is `--from <directory>`, otherwise the legacy `KIMI_CODE_HOME` setting, otherwise `~/.kimi-code`. Only this explicit migration reads that legacy environment variable. Use `--home <directory>` to select the destination. Migration never runs as a side effect of resolving a home path.
+
+Home migration copies `config.toml`, `mcp.json`, `tui.toml`, `SYSTEM.md`, `AGENTS.md`, `region`, the stable OAuth `device_id`, provider credential JSON files, and the `agents`, `commands`, `skills`, and `themes` trees with their relative resource files. File contents are not printed. Existing destination files win as whole files; no field-level merging occurs. The source remains untouched. Sessions, daemon tokens, registries/locks, caches, and logs are excluded. Absolute references inside authored files are not rewritten: keep the source until you have checked those references and any session history you still need.
+
+For each project, run `kiki migrate-config --workspace <directory> --json` to copy `local.toml`, `AGENTS.md`, `mcp.json`, and those authored trees from `.kimi-code` into `.kiki`. This option cannot be combined with `--from` or `--home`. Root `AGENTS.md` and standard `.mcp.json` stay untouched with their existing semantics and precedence. Product-local MCP still belongs to the chosen working directory; migrate a nested directory separately if it has its own legacy MCP config. Runtime discovery uses only the new product paths; an unmigrated legacy local config produces a migration instruction instead of being loaded silently.
+
+After a filesystem failure, correct the reported issue and rerun the same command; previously copied files are preserved. Symbolic links are rejected rather than followed. Unknown source entries that have no destination counterpart produce `incomplete`, list their names, and return exit code `2` without a completion marker. Review and migrate those assets explicitly, then retry. Completion is recorded in `.kiki-config-migration-v2.json` only after the selected files are handled and no unknown entries remain; the earlier `.kiki-home-migration.json` marker does not prevent this asset-complete migration.
+
+The desktop's compatibility home selects a read-only migration source, not a second runtime or OAuth home. Its model-category import does not copy credentials: use the full `migrate-config` operation or sign in again before relying on imported authentication references.

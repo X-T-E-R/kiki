@@ -1,6 +1,6 @@
 # Plugins
 
-Plugins package reusable Kimi Code CLI capabilities into installable units — they can add [Agent Skills](./skills.md), custom [agents](./agents.md), automatically load a specified Skill at session start, contribute system-prompt instructions, and declare MCP servers to provide real tool capabilities. They are ideal for sharing workflows with a team, connecting to external services, or installing extensions from the [official plugins](#official-plugins).
+Plugins package reusable Kiki capabilities into installable units — they can add [Agent Skills](./skills.md), custom [agents](./agents.md), automatically load a specified Skill at session start, contribute system-prompt instructions, and declare MCP servers to provide real tool capabilities. They are ideal for sharing workflows with a team, connecting to external services, or installing extensions from the [official plugins](#official-plugins).
 
 ## Installation and Management
 
@@ -54,13 +54,13 @@ Network requests only go through `github.com` redirects and `codeload.github.com
 ### Notes
 
 - Plugin changes apply after `/reload` or in new sessions. After installing, enabling/disabling, or removing a plugin, run `/reload` or `/new`; the current session will not update.
-- Local installations are copied to `$KIMI_CODE_HOME/plugins/managed/<id>/`, and the CLI always runs from this managed copy. Editing the original source directory after installation has no effect; you must reinstall.
+- Local installations are copied to `$KIKI_HOME/plugins/managed/<id>/`, and the CLI always runs from this managed copy. Editing the original source directory after installation has no effect; you must reinstall.
 - Removing a plugin only deletes the installation record; the managed copy and original source files remain on disk.
 - Plugins are currently installed per-user and apply to all projects; project-level installation scope is not yet supported.
 
 ### Custom marketplace JSON
 
-Pass a marketplace JSON path or URL to `/plugins marketplace <source>`, set [`KIMI_CODE_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md), or configure `[plugins] marketplace_url` in `config.toml`. The order is command source, environment variable, then config; without any source, Kimi Code CLI does not fetch a remote catalog and still shows built-in capabilities. Each entry in the `plugins` array needs an `id` and a `source` (local path, zip URL, or GitHub URL):
+Pass a marketplace JSON path or URL to `/plugins marketplace <source>`, set [`KIKI_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md), or configure `[plugins] marketplace_url` in `config.toml`. The order is command source, environment variable, then config; without any source, Kiki does not fetch a remote catalog and still shows built-in capabilities. Each entry in the `plugins` array needs an `id` and a `source` (local path, zip URL, or GitHub URL):
 
 ```json
 {
@@ -99,13 +99,13 @@ Official plugins do not update automatically — when an update is available, yo
 
 ### Kimi Datasource <Badge type="tip" text="v3.3.0" />
 
-Kimi Datasource is the official Kimi Code data plugin, letting you query financial market data, macroeconomic indicators, corporate registration records, academic literature, and Chinese laws and regulations in natural language — no manual API calls or data accounts required.
+Kimi Datasource is the official Kiki data plugin, letting you query financial market data, macroeconomic indicators, corporate registration records, academic literature, and Chinese laws and regulations in natural language — no manual API calls or data accounts required.
 
 You must first complete OAuth login with a Kimi Code account via `/login`; data queries consume your Kimi Code plan quota.
 
 #### How to use
 
-1. Describe your need in natural language, and Kimi Code will automatically invoke the data capabilities
+1. Describe your need in natural language, and Kiki will automatically invoke the data capabilities
 2. Explicitly trigger the data query skill with `/skill:kimi-datasource`
 
 #### What you can do
@@ -186,7 +186,7 @@ Kimi Computer Use lets AI operate your desktop apps directly, clicking, dragging
 The first time you use Kimi Computer Use after installation, it shows an authorization window — just follow the prompts:
 
 1. Click **Authorize** next to **Accessibility** and **Screen Recording**, and enable both permissions in System Settings — the former lets it perform clicks, typing, and scrolling; the latter lets it read screen content and locate UI elements
-2. Turn on the **Kimi Code** switch under "Connect local agents", then restart Kimi Code for it to take effect
+2. Turn on the **Kiki** switch under "Connect local agents", then restart Kiki for it to take effect
 
 <div style="max-width: 380px; margin: 0 auto;">
 
@@ -196,7 +196,7 @@ The first time you use Kimi Computer Use after installation, it shows an authori
 
 #### Notes for the Windows version
 
-The Windows version (WinCU) installs differently from the macOS one: run `/plugins install https://cdn.kimi.com/kimi-computer-use-windows/latest/kimi-cu-win-plugin.zip` in Kimi Code, then restart after installation. A few things to know before using it:
+The Windows version (WinCU) installs differently from the macOS one: run `/plugins install https://cdn.kimi.com/kimi-computer-use-windows/latest/kimi-cu-win-plugin.zip` in Kiki, then restart after installation. A few things to know before using it:
 
 - **It may briefly take over your mouse and keyboard**: Unlike the macOS version, the Windows version cannot reliably inject input in the background; it may briefly activate the target window and use your real mouse and keyboard while performing actions
 - **System requirements**: Windows 10 version 1903 (Build 18362) or later, or Windows 11, x64; a real interactive desktop session is required, and Windows Server needs Desktop Experience
@@ -232,7 +232,7 @@ Example:
 {
   "name": "kimi-finance",
   "version": "1.0.0",
-  "description": "Finance data and analysis workflows for Kimi Code CLI",
+  "description": "Finance data and analysis workflows for Kiki",
   "skills": "./skills/",
   "systemPromptPath": "./SYSTEM.md",
   "sessionStart": {
@@ -275,7 +275,7 @@ Use `systemPrompt` for a short inline instruction, or `systemPromptPath` to keep
 }
 ```
 
-System-prompt contributions take effect on every surface: the interactive TUI, `kimi -p`, and `kimi web`.
+System-prompt contributions take effect on every surface: the interactive TUI, `kiki -p`, and `kiki web`.
 
 Each field — the inline `systemPrompt` and the `systemPromptPath` file — is limited to 32 KB (UTF-8 bytes): oversized content is ignored and reported in the plugin diagnostics. Across all enabled plugins, one prompt build injects at most 64 KB of instructions; contributions beyond the budget are skipped with a warning, including a single plugin whose inline text and file together exceed that budget.
 
@@ -359,7 +359,7 @@ my-plugin/
       SKILL.md
 ```
 
-`sessionStart.skill` loads a plugin Skill into the main Agent at session start, making it suitable for initialization instructions, workflow rules, or mapping terminology from other tools to Kimi Code CLI. It only injects text; it does not execute code.
+`sessionStart.skill` loads a plugin Skill into the main Agent at session start, making it suitable for initialization instructions, workflow rules, or mapping terminology from other tools to Kiki. It only injects text; it does not execute code.
 
 Regardless of how a Skill is loaded (`sessionStart.skill`, `/skill:<name>`, or automatic model invocation), `skillInstructions` appears alongside that plugin's Skill.
 
@@ -438,7 +438,7 @@ Plugin hooks reuse the same mechanism as global hooks — see [Hooks](./hooks.md
 
 - A plugin's hooks are active only while the plugin is **enabled**; disabling the plugin stops its hooks.
 - Each hook runs with its working directory set to the plugin root, so `command` can use `./` paths inside the plugin.
-- The hook process receives two extra environment variables: `KIMI_CODE_HOME` and `KIMI_PLUGIN_ROOT` (the plugin root directory).
+- The hook process receives two extra environment variables: `KIKI_HOME` and `KIMI_PLUGIN_ROOT` (the plugin root directory).
 
 Installing a plugin never runs its hooks by itself — they only fire when their matching event occurs while the plugin is enabled.
 

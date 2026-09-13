@@ -1,7 +1,7 @@
 ---
 layout: home
 hero:
-  name: Kimi Code CLI
+  name: Kiki CLI
   text: The Starting Point for Next-Gen Agents
   actions:
     - theme: brand
@@ -9,5 +9,5 @@ hero:
       link: guides/getting-started
     - theme: alt
       text: GitHub
-      link: https://github.com/MoonshotAI/kimi-code
+      link: https://github.com/X-T-E-R/kiki
 ---

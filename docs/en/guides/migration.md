@@ -1,40 +1,52 @@
 # Migrating from kimi-cli
 
 ::: info
-Kimi Code CLI has gone through a major version upgrade — moving from Python/uv to Node.js, bringing a simpler install experience, faster startup, and a redesigned terminal UI. The legacy version will gradually be phased out, so we recommend upgrading as soon as possible.
+This page describes the migration path from the historical Python/uv `kimi-cli` installation. The current executable is `kiki`, and its runtime never auto-detects or silently migrates a legacy home.
 :::
 
-If you are migrating from the legacy version, follow the steps below — a single command migrates your config, MCP servers, and session history to the new version.
+If you still have a legacy `kimi-cli` home or an older Kimi Code home, migrate it explicitly with `kiki migrate-config`. The source is read only for that operation; normal `kiki` startup uses only `KIKI_HOME` or `~/.kiki`.
 
-## What's new
+## Current migration contract
 
-- **No more Python / uv**: Rebuilt on Node.js — no Python environment needed, simpler to install
-- **Native binary, works out of the box**: Faster startup, lighter footprint
-- **Redesigned terminal UI**: Smoother, more responsive experience
-- **Full data migration**: Config, MCP servers, and session history all carry over seamlessly
+- The installed executable is `kiki`; the old `kimi` bin is not installed.
+- Running `kiki` without a subcommand starts the daemon-backed TUI. Use `kiki -p "prompt"` for the SDK-backed non-interactive memory path.
+- Legacy home and project paths are migration sources only. Runtime discovery does not fall back to them.
+- The desktop compatibility home is also a read-only migration source, not a second runtime or OAuth home.
 
-## How to migrate
+## Migrate a home
 
-There are two ways to migrate.
-
-The **first time you run `kimi`** after installing kimi-code, it automatically checks whether kimi-cli data exists under `~/.kimi/`. If it finds any, a migration prompt appears, and you can choose to migrate now, do it later, or never be asked again.
-
-You can also **run it manually at any time**:
+Run the explicit home migration command:
 
 ```sh
-kimi migrate
+kiki migrate-config --json
 ```
 
-You can choose whether to migrate chat sessions as well. If you don't need the history yet, pick **Config only**; otherwise pick **Config + N sessions** to bring everything across in one go. A summary is printed at the end.
+By default, the command copies from `~/.kimi-code` into `KIKI_HOME` or `~/.kiki`. To select a different source or destination, pass them explicitly:
 
-## What happens during migration
+```sh
+kiki migrate-config --from /path/to/legacy-home --home /path/to/kiki-home --json
+```
 
-**What gets migrated**: configuration (`config.toml`), MCP server configuration, input history, and whichever chat sessions you chose to migrate.
+If your historical `kimi-cli` data is still under `~/.kimi/`, pass `--from ~/.kimi`; it is not guessed during normal startup. `KIMI_CODE_HOME` is accepted only as the source for this explicit migration command.
 
-**What does not get migrated**: OAuth login credentials and MCP service authorizations are not copied, so you will need to run `/login` again and re-authorize MCP servers after migrating. kimi-cli plugins are also out of scope.
+For a project, copy the legacy `.kimi-code` local configuration and authored trees into `.kiki`:
+
+```sh
+kiki migrate-config --workspace /path/to/project --json
+```
+
+The `--workspace` form cannot be combined with `--from` or `--home`.
+
+## What gets copied
+
+The home migration can copy `config.toml`, `mcp.json`, `tui.toml`, `SYSTEM.md`, `region`, the stable OAuth `device_id`, provider credential JSON files, and the `agents`, `commands`, `skills`, and `themes` trees with their relative resource files. Existing destination files win as whole files; no field-level merge occurs. File contents are not printed.
+
+The project migration copies the legacy `.kimi-code/local.toml` and the authored project trees into `.kiki`. Runtime discovery uses only the new `.kiki` paths after migration.
+
+## What stays behind
+
+Sessions, daemon tokens, registries and locks, caches, and logs are excluded. Absolute references inside authored files are not rewritten, so keep the source until you have checked those references and any session history you still need. A desktop model-category import does not copy credentials; use the full `migrate-config` operation or sign in again before relying on imported authentication references.
 
 ::: tip
-Migration **never modifies or deletes** any of the old data under `~/.kimi/`. kimi-cli keeps working as before, and the two do not interfere with each other. Migration can also be run repeatedly — sessions that have already been migrated are not imported again.
+Migration never modifies or deletes the source. Existing destination files are preserved, and you can rerun the same command after correcting a filesystem error. Symbolic links are rejected rather than followed. If unknown source entries remain, the command reports `incomplete`, lists them, and exits with code `2`; review those assets and retry before treating the migration as complete.
 :::
-
-After migration, sessions imported from kimi-cli are tagged with `[imported]` in the session picker so you can tell them apart from new ones.

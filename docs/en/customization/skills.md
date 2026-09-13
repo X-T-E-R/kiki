@@ -1,8 +1,32 @@
 # Agent Skills
 
-Agent Skills are a lightweight mechanism for extending model capabilities in Kimi Code CLI. A Skill is a Markdown document with YAML frontmatter that describes a specialized area of knowledge or a workflow — for example, a project's code style guidelines, a PR review process, or a commit message format.
+Agent Skills are a lightweight mechanism for extending model capabilities in Kiki. A Skill is a Markdown document with YAML frontmatter that describes a specialized area of knowledge or a workflow — for example, a project's code style guidelines, a PR review process, or a commit message format.
 
 Compared to pasting the same instructions into a prompt every time, Skills offer the advantage of keeping content in a file, enabling reuse across projects and teams, allowing instant loading via a slash command, and letting the model invoke them automatically when needed.
+
+## Custom prompt commands
+
+Use a Markdown command when you want `/name arguments` to load your own prompt only after you explicitly send it. Commands reuse the Skill catalog and parameter expansion, but their descriptions are not offered to the model for automatic Skill invocation.
+
+Create `.kiki/commands/brainstorm.md` in your project root:
+
+```markdown
+---
+description: Discuss possible approaches before choosing one
+argument-hint: "<topic>"
+---
+Discuss several approaches to $ARGUMENTS and explain their trade-offs.
+Ask about important missing requirements. Keep this a discussion; do not
+create documents or modify files unless I ask you to.
+```
+
+In the GUI or terminal, type `/`, select `brainstorm`, add a topic, then send `/brainstorm a simpler settings menu`. Selecting the entry only fills the draft; sending loads the body once with your arguments and attachments. This is an example, not an installed or mandatory brainstorming workflow.
+
+The YAML frontmatter is optional. Without it, the filename supplies the name and the first non-empty body line supplies the menu description. Optional `name`, `description`, and `argument-hint` customize those fields; names cannot contain whitespace, `/`, `\\`, or `:`. The [body placeholders](#body-placeholders) also work in commands. If there is no argument placeholder, arguments are appended to the body. Values inserted as arguments are not expanded again.
+
+Command locations are the active application data directory's `commands/*.md` for user-wide commands and `.kiki/commands/*.md` at the project root. Only direct Markdown children are commands. Project commands take precedence over user commands of the same name. The legacy `.kimi-code/commands/` tree is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`. Explicit Skill-directory overrides retain their existing replacement behavior. Edits are watched; reopen the GUI slash menu or run `/reload` in the terminal to refresh the menu.
+
+Built-in shortcuts keep their bare names: `/plan` still controls Plan mode. A colliding catalog entry is shown as `/skill:plan`; a command colliding with an existing Skill is shown as `/command:name`. Use the name shown in the menu. Commands are user prompts, not system prompts or executable scripts: they do not grant permissions, switch modes, or turn a flowchart into a workflow engine. Review command files from unfamiliar repositories before sending them.
 
 ## Creating a Skill
 
@@ -63,16 +87,16 @@ Positional arguments support single and double quoting, so in `/skill:commit "fi
 
 ## Skill Locations
 
-Kimi Code CLI scans four tiers by scope; more specific scopes take higher priority: **Project > User > Extra > Built-in**
+Kiki scans four tiers by scope; more specific scopes take higher priority: **Project > User > Extra > Built-in**
 
 **User level** (applies to all projects):
-- `$KIMI_CODE_HOME/skills/` (default: `~/.kimi-code/skills/`)
+- `$KIKI_HOME/skills/` (default: `~/.kiki/skills/`)
 - `~/.agents/skills/`
 
-The Kimi-specific user Skill directory moves with `KIMI_CODE_HOME`, so isolated data roots also get isolated Kimi-specific Skills. The generic `~/.agents/skills/` directory stays under the real OS home so it can be shared across tools.
+The Kiki-specific user Skill directory moves with `KIKI_HOME`, so isolated data roots also get isolated Kiki-specific Skills. The generic `~/.agents/skills/` directory stays under the real OS home so it can be shared across tools.
 
 **Project level** (project root = the nearest directory containing `.git`, searching upward from the working directory):
-- `.kimi-code/skills/`
+- `.kiki/skills/`
 - `.agents/skills/`
 
 **Extra directories**: Declared via `extra_skill_dirs` at the top level of `config.toml`:
@@ -81,7 +105,7 @@ The Kimi-specific user Skill directory moves with `KIMI_CODE_HOME`, so isolated 
 extra_skill_dirs = ["~/team-skills", ".agents/team-skills"]
 ```
 
-**Built-in Skills** are distributed with the CLI and have the lowest priority. They provide out-of-the-box workflows for common tasks — for example, configuring MCP servers, customizing the TUI theme, and editing config files. See [Built-in skill commands](../reference/slash-commands.md#built-in-skill-commands) for the full list. Those describing Kimi Code itself can be turned off with the top-level [`builtin_product_skills`](../configuration/config-files.md#top-level-fields) field.
+**Built-in Skills** are distributed with the CLI and have the lowest priority. They provide out-of-the-box workflows for common tasks — for example, configuring MCP servers, customizing the TUI theme, and editing config files. See [Built-in skill commands](../reference/slash-commands.md#built-in-skill-commands) for the full list. Those describing Kiki Code itself can be turned off with the top-level [`builtin_product_skills`](../configuration/config-files.md#top-level-fields) field.
 
 ## Invoking a Skill
 
@@ -122,7 +146,7 @@ Please review the PR the user specified: $pr_ref
    - Noteworthy positives
 ```
 
-Save this as `$KIMI_CODE_HOME/skills/review-pr/SKILL.md` (or `~/.kimi-code/skills/review-pr/SKILL.md` when `KIMI_CODE_HOME` is unset), place the checklist at `references/checklist.md` in the same directory, and after starting a new session you can invoke it with `/skill:review-pr #1234`, where `#1234` is expanded into `$pr_ref`.
+Save this as `$KIKI_HOME/skills/review-pr/SKILL.md` (or `~/.kiki/skills/review-pr/SKILL.md` when `KIKI_HOME` is unset), place the checklist at `references/checklist.md` in the same directory, and after starting a new session you can invoke it with `/skill:review-pr #1234`, where `#1234` is expanded into `$pr_ref`.
 
 ## Next steps
 

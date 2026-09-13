@@ -1,15 +1,15 @@
-# `kimi acp` Subcommand
+# `kiki acp` Subcommand
 
-`kimi acp` switches Kimi Code CLI to **ACP (Agent Client Protocol)** mode: it communicates with an ACP client (such as Zed, JetBrains AI Chat, etc.) via JSON-RPC over stdin/stdout, letting the IDE directly drive kimi's sessions, prompts, and tool calls.
+`kiki acp` switches Kiki to **ACP (Agent Client Protocol)** mode: it communicates with an ACP client (such as Zed, JetBrains AI Chat, etc.) via JSON-RPC over stdin/stdout, letting the IDE directly drive kiki's sessions, prompts, and tool calls.
 
 ```sh
-kimi acp
+kiki acp
 ```
 
-Once started, the command prints no banner and immediately waits for the ACP client to send an `initialize` request on stdin. Logs are written to stderr (as well as the diagnostic log under `~/.kimi-code/logs/`), so the ACP channel itself stays clean.
+Once started, the command prints no banner and immediately waits for the ACP client to send an `initialize` request on stdin. Logs are written to stderr (as well as the diagnostic log under `~/.kiki/logs/`), so the ACP channel itself stays clean.
 
 ::: tip Who calls this?
-You typically do not need to run `kimi acp` manually — this command is the subprocess entry point for IDEs. For IDE-side configuration, see [Using in IDEs](../guides/ides.md).
+You typically do not need to run `kiki acp` manually — this command is the subprocess entry point for IDEs. For IDE-side configuration, see [Using in IDEs](../guides/ides.md).
 :::
 
 ## Capability Matrix
@@ -36,7 +36,7 @@ The spec divides methods into a **stable** surface and an evolving **unstable** 
 
 | Method | Implemented | Description |
 | --- | --- | --- |
-| `initialize` | Yes | Version negotiation; returns `agentInfo: { name: 'Kimi Code CLI', version }`, capability matrix, and `authMethods` |
+| `initialize` | Yes | Version negotiation; returns `agentInfo: { name: 'Kiki', version }`, capability matrix, and `authMethods` |
 | `authenticate` | Yes | Validates `method_id='login'`; returns `authRequired (-32000)` if token is missing, `invalidParams (-32602)` for unknown ID |
 | `session/new` | Yes | Accepts `cwd` / `mcpServers`; returns `configOptions[]` |
 | `session/load` | Yes | Restores a session from disk and replays history via `session/update` |
@@ -72,12 +72,12 @@ All methods not listed above return `methodNotFound`.
 
 When an ACP client provides `mcpServers` in `session/new` or `session/load`, the adapter layer performs the following conversions:
 
-- `http` → kimi's `transport: 'http'` configuration
-- `stdio` → kimi's `transport: 'stdio'` configuration
-- `sse` → kimi's `transport: 'sse'` configuration
+- `http` → kiki's `transport: 'http'` configuration
+- `stdio` → kiki's `transport: 'stdio'` configuration
+- `sse` → kiki's `transport: 'sse'` configuration
 - `acp` → discarded with a warn log entry
 
 ## Next steps
 
 - [Using in IDEs](../guides/ides.md) — Zed / JetBrains configuration steps and troubleshooting
-- [`kimi` Command Reference](./kimi-command.md) — Complete subcommand list
+- [`kiki` Command Reference](./kimi-command.md) — Complete subcommand list

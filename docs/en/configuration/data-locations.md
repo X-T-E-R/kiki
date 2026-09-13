@@ -1,37 +1,37 @@
 # Data locations
 
-Kimi Code CLI stores all runtime data — the config file, session history, login credentials, and diagnostic logs — under `~/.kimi-code/`. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
+Kiki stores all runtime data — the config file, session history, login credentials, and diagnostic logs — under `~/.kiki/`. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
 
 ## Data root directory
 
-The default data root is `~/.kimi-code/`. The actual path varies by platform:
+The default data root is `~/.kiki/`. The actual path varies by platform:
 
-- macOS: `/Users/<name>/.kimi-code`
-- Linux: `/home/<name>/.kimi-code`
-- Windows: `C:\Users\<name>\.kimi-code`
+- macOS: `/Users/<name>/.kiki`
+- Linux: `/home/<name>/.kiki`
+- Windows: `C:\Users\<name>\.kiki`
 
-If you need to move the data directory elsewhere (for example, to isolate configs for different projects with independent environments), set `KIMI_CODE_HOME`:
+If you need to move the data directory elsewhere (for example, to isolate configs for different projects with independent environments), set `KIKI_HOME`:
 
 ```sh
-export KIMI_CODE_HOME="$HOME/.config/kimi-code"
+export KIKI_HOME="$HOME/.config/kiki"
 ```
 
-Once set, **all** Kimi Code data — config, sessions, logs, OAuth credentials, Kimi-specific user Skills, global `AGENTS.md`, and more — lands under the new path. For the full reference on `KIMI_CODE_HOME`, see [Environment variables](./env-vars.md).
+Once set, **all** Kiki Code data — config, sessions, logs, OAuth credentials, Kiki-specific user Skills, global `AGENTS.md`, and more — lands under the new path. For the full reference on `KIKI_HOME`, see [Environment variables](./env-vars.md).
 
 ::: tip Note
 
-**Generic `.agents` resources** stay under the real OS home so they can be shared across tools. For example, user-level generic Skills remain at `~/.agents/skills/`, while Kimi-specific user Skills move with `KIMI_CODE_HOME` as `$KIMI_CODE_HOME/skills/`.
+**Generic `.agents` resources** stay under the real OS home so they can be shared across tools. For example, user-level generic Skills remain at `~/.agents/skills/`, while Kiki-specific user Skills move with `KIKI_HOME` as `$KIKI_HOME/skills/`.
 :::
 
 ## Directory layout
 
 ```
-$KIMI_CODE_HOME  (default: ~/.kimi-code)
+$KIKI_HOME  (default: ~/.kiki)
 ├── config.toml             # User configuration
 ├── tui.toml                # Terminal UI preferences (including auto-update toggle)
-├── AGENTS.md               # Global Kimi-specific agent instructions (optional)
+├── AGENTS.md               # Global Kiki-specific agent instructions (optional)
 ├── mcp.json                # User-level MCP server declarations (optional)
-├── skills/                 # Kimi-specific user-level Skills (optional)
+├── skills/                 # Kiki-specific user-level Skills (optional)
 ├── plugins/
 │   ├── installed.json      # Installed plugin records and enabled state
 │   └── managed/            # Plugin copies installed from zip/local paths
@@ -57,9 +57,9 @@ Each top-level file under the data root serves a specific purpose; most are mana
 
 - **`config.toml`**: the main runtime configuration file, storing user-level settings such as providers, models, and loop control. See [Configuration files](./config-files.md).
 - **`tui.toml`**: terminal UI client preferences such as theme, editor, notifications, and status line.
-- **`AGENTS.md`**: global Kimi-specific agent instructions. This file moves with `KIMI_CODE_HOME`; generic cross-tool instructions can still live under `~/.agents/AGENTS.md`.
-- **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kimi-code/mcp.json` on startup. See [MCP](../customization/mcp.md).
-- **`skills/`**: Kimi-specific user-level Skills. This directory moves with `KIMI_CODE_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
+- **`AGENTS.md`**: global Kiki-specific agent instructions. This file moves with `KIKI_HOME`; generic cross-tool instructions can still live under `~/.agents/AGENTS.md`.
+- **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kiki/mcp.json` on startup. See [MCP](../customization/mcp.md).
+- **`skills/`**: Kiki-specific user-level Skills. This directory moves with `KIKI_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
 - **`plugins/installed.json`**: records installed plugins, each plugin's enabled state, and MCP server capability state changes made via `/plugins` or `/plugins mcp disable|enable`. Files installed from local paths or zip URLs are copied to `plugins/managed/<id>/`. See [Plugins](../customization/plugins.md).
 - **`credentials/`**: OAuth credential directory, with permissions `0o700` (directory) / `0o600` (files), readable and writable only by the current user. Managed provider credentials are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. Credentials are written using an atomic flow (tmp → fsync → rename) to prevent corruption.
 
@@ -76,7 +76,7 @@ Inside each session directory:
 - **`agents/agent-0/` etc.**: sub-Agent instance directories, each containing their own `wire.jsonl`.
 - **`logs/kimi-code.log`**: diagnostic log for this session; only present when a diagnostic event occurs.
 - **`tasks/`**: background task persistence — `tasks/<task_id>.json` stores status/pid/exit code; `tasks/<task_id>/output.log` stores output.
-- **`cron/`**: scheduled task persistence; reloaded into the scheduler when the session is resumed with `kimi --session`. See [Scheduled tasks](../reference/tools.md#scheduled-tasks).
+- **`cron/`**: scheduled task persistence; reloaded into the scheduler when the session is resumed with `kiki --session`. See [Scheduled tasks](../reference/tools.md#scheduled-tasks).
 
 ## Built-in tool cache
 
@@ -87,7 +87,7 @@ The first time the `Grep` tool needs ripgrep, the CLI can automatically download
 - **`logs/kimi-code.log`** (global): records startup, login, export, and other cross-session events.
 - **`<sessionDir>/logs/kimi-code.log`** (session-level): records diagnostic events within a single session.
 
-When reporting a bug, prefer exporting the relevant session with `kimi export` (see [kimi command](../reference/kimi-command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
+When reporting a bug, prefer exporting the relevant session with `kiki export` (see [kiki command](../reference/kimi-command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
 
 ## Input history
 
@@ -95,24 +95,24 @@ Terminal input history is saved separately per working directory, at `user-histo
 
 ## Clearing data
 
-Deleting the data root directory (`~/.kimi-code/` or the path set by `KIMI_CODE_HOME`) removes all runtime data. To clear only part of the data:
+Deleting the data root directory (`~/.kiki/` or the path set by `KIKI_HOME`) removes all runtime data. To clear only part of the data:
 
 | Goal | Action |
 | --- | --- |
-| Reset configuration | Delete `~/.kimi-code/config.toml` |
-| Reset terminal UI preferences | Delete `~/.kimi-code/tui.toml` |
-| Clear all sessions | Delete `~/.kimi-code/sessions/` and `session_index.jsonl` |
-| Clear diagnostic logs | Delete `~/.kimi-code/logs/` |
-| Clear input history | Delete `~/.kimi-code/user-history/` |
-| Force re-download of managed `rg` and `fd` | Delete `~/.kimi-code/bin/` |
+| Reset configuration | Delete `~/.kiki/config.toml` |
+| Reset terminal UI preferences | Delete `~/.kiki/tui.toml` |
+| Clear all sessions | Delete `~/.kiki/sessions/` and `session_index.jsonl` |
+| Clear diagnostic logs | Delete `~/.kiki/logs/` |
+| Clear input history | Delete `~/.kiki/user-history/` |
+| Force re-download of managed `rg` and `fd` | Delete `~/.kiki/bin/` |
 | Clear provider OAuth login state | Run `/logout`, or delete the corresponding `credentials/<name>.json` |
 | Clear MCP server OAuth login state | Delete `credentials/mcp/` (`/logout` does not clear MCP credentials) |
-| Remove user-level MCP declarations | Delete `$KIMI_CODE_HOME/mcp.json` (default `~/.kimi-code/mcp.json`) |
-| Clear global Kimi-specific agent instructions | Delete `$KIMI_CODE_HOME/AGENTS.md` (default `~/.kimi-code/AGENTS.md`) |
-| Clear plugin install records | Delete `$KIMI_CODE_HOME/plugins/` (local plugin source directories are not affected) |
-| Clear Kimi-specific user-level Skills | Delete `$KIMI_CODE_HOME/skills/` (default `~/.kimi-code/skills/`) |
+| Remove user-level MCP declarations | Delete `$KIKI_HOME/mcp.json` (default `~/.kiki/mcp.json`) |
+| Clear global Kiki-specific agent instructions | Delete `$KIKI_HOME/AGENTS.md` (default `~/.kiki/AGENTS.md`) |
+| Clear plugin install records | Delete `$KIKI_HOME/plugins/` (local plugin source directories are not affected) |
+| Clear Kiki-specific user-level Skills | Delete `$KIKI_HOME/skills/` (default `~/.kiki/skills/`) |
 
 ## Next steps
 
 - [Configuration files](./config-files.md) — full reference for `config.toml` fields
-- [Environment variables](./env-vars.md) — detailed usage of `KIMI_CODE_HOME` and related path variables
+- [Environment variables](./env-vars.md) — detailed usage of `KIKI_HOME` and related path variables

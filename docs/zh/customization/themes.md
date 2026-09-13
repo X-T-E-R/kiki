@@ -1,6 +1,6 @@
 # 自定义主题
 
-Kimi Code CLI 可以使用内置配色，也可以使用自定义 JSON 主题文件。自定义文件放在主题目录下，会和内置选项一起出现在 `/theme` 里。
+Kiki CLI 可以使用内置配色，也可以使用自定义 JSON 主题文件。自定义文件放在主题目录下，会和内置选项一起出现在 `/theme` 里。
 
 ## 内置颜色 token
 
@@ -30,7 +30,7 @@ Kimi Code CLI 可以使用内置配色，也可以使用自定义 JSON 主题文
 
 ## 使用 custom-theme skill
 
-你不需要手写 JSON。运行内置 `/custom-theme [附加文本]` skill 命令进入自定义主题流程；这个 skill 可以帮你选颜色，把文件写到 `~/.kimi-code/themes/`，校验十六进制色值，并告诉你如何应用。
+你不需要手写 JSON。运行内置 `/custom-theme [附加文本]` skill 命令进入自定义主题流程；这个 skill 可以帮你选颜色，把文件写到 `~/.kiki/themes/`，校验十六进制色值，并告诉你如何应用。
 
 调用示例：
 
@@ -44,8 +44,8 @@ Kimi Code CLI 可以使用内置配色，也可以使用自定义 JSON 主题文
 
 在主题目录下新建一个 `.json` 文件即可。主题目录是：
 
-- `~/.kimi-code/themes/`
-- 如果设置了 `KIMI_CODE_HOME` 环境变量，则是 `$KIMI_CODE_HOME/themes/`
+- `~/.kiki/themes/`
+- 如果设置了 `KIKI_HOME` 环境变量，则是 `$KIKI_HOME/themes/`
 
 目录不存在就自己建一个。**文件名就是主题名**：`ember.json` 会在 `/theme` 里显示为 `Custom: ember`。
 
@@ -88,7 +88,7 @@ Kimi Code CLI 可以使用内置配色，也可以使用自定义 JSON 主题文
 2. **`tui.toml`**：把 `theme` 设成你的主题名：
 
    ```toml
-   # ~/.kimi-code/tui.toml
+   # ~/.kiki/tui.toml
    theme = "ember"
    ```
 

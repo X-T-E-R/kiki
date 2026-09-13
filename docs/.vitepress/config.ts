@@ -19,8 +19,8 @@ const mermaidOptimizeDeps = [
 
 const config = withMermaid(defineConfig({
   base,
-  title: 'Kimi Code CLI Docs',
-  description: 'Kimi Code CLI Documentation',
+  title: 'Kiki CLI Docs',
+  description: 'Kiki CLI Documentation',
 
   head: [
     ['link', { rel: 'icon', type: 'image/x-icon', href: `${base}favicon.ico` }],
@@ -34,8 +34,8 @@ const config = withMermaid(defineConfig({
       label: '简体中文',
       lang: 'zh-CN',
       link: '/zh/',
-      title: 'Kimi Code CLI 文档',
-      description: 'Kimi Code CLI 用户文档',
+      title: 'Kiki CLI 文档',
+      description: 'Kiki CLI 用户文档',
       themeConfig: {
         nav: [
           { text: '指南', link: '/zh/guides/getting-started', activeMatch: '/zh/guides/' },
@@ -93,9 +93,9 @@ const config = withMermaid(defineConfig({
             {
               text: '参考手册',
               items: [
-                { text: 'kimi 命令', link: '/zh/reference/kimi-command' },
-                { text: 'kiki 命令', link: '/zh/reference/kiki-command' },
-                { text: 'kimi acp 子命令', link: '/zh/reference/kimi-acp' },
+                { text: 'CLI 命令与参数', link: '/zh/reference/kimi-command' },
+                { text: 'daemon、席位与迁移', link: '/zh/reference/kiki-command' },
+                { text: 'kiki acp 子命令', link: '/zh/reference/kimi-acp' },
                 { text: '服务 API', link: '/zh/reference/server-api' },
                 { text: '内置工具', link: '/zh/reference/tools' },
                 { text: '斜杠命令', link: '/zh/reference/slash-commands' },
@@ -118,8 +118,8 @@ const config = withMermaid(defineConfig({
       label: 'English',
       lang: 'en-US',
       link: '/en/',
-      title: 'Kimi Code CLI Docs',
-      description: 'Kimi Code CLI User Documentation',
+      title: 'Kiki CLI Docs',
+      description: 'Kiki CLI User Documentation',
       themeConfig: {
         nav: [
           { text: 'Guides', link: '/en/guides/getting-started', activeMatch: '/en/guides/' },
@@ -177,9 +177,9 @@ const config = withMermaid(defineConfig({
             {
               text: 'Reference',
               items: [
-                { text: 'kimi Command', link: '/en/reference/kimi-command' },
-                { text: 'kiki Command', link: '/en/reference/kiki-command' },
-                { text: 'kimi acp Subcommand', link: '/en/reference/kimi-acp' },
+                { text: 'CLI commands and options', link: '/en/reference/kimi-command' },
+                { text: 'Daemon, seats, and migration', link: '/en/reference/kiki-command' },
+                { text: 'kiki acp subcommand', link: '/en/reference/kimi-acp' },
                 { text: 'Server API', link: '/en/reference/server-api' },
                 { text: 'Built-in Tools', link: '/en/reference/tools' },
                 { text: 'Slash Commands', link: '/en/reference/slash-commands' },

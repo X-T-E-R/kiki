@@ -26,13 +26,13 @@ Home 目录同时也是 server 文件存储的根。会话元数据、wire 记�
 
 ### GUI 侧会话
 
-GUI 连接到一个 `kap-server` instance，只能看到该 server home 目录下保存的会话。本地 GUI 开发会在 `KIMI_CODE_HOME` 下发现 server；该变量未设置时回退到 `~/.kimi-code`，并读取这个 home 的 instance registry 与 bearer token。
+GUI 连接到一个 `kap-server` instance，只能看到该 server home 目录下保存的会话。本地 GUI 开发会在 `KIKI_HOME` 下发现 server；该变量未设置时回退到 `~/.kiki`，并读取这个 home 的 instance registry 与 bearer token。
 
 GUI 是该 server 的客户端。它不会扫描任意 Kimi home，也不会合并其他 server 的会话索引。
 
 ### Codex 外部委派
 
-Codex MCP launcher 为每个 workspace 预配一份带签名的 workspace binding。每份 binding 都包含专用 `kap-home` 目录，launcher 启动该 workspace 的 KAP 进程时，会把 `KIMI_CODE_HOME` 设置为这个目录。
+Codex MCP launcher 为每个 workspace 预配一份带签名的 workspace binding。每份 binding 都包含专用 `kap-home` 目录，launcher 启动该 workspace 的 KAP 进程时，会把 `KIKI_HOME` 设置为这个目录。
 
 专用 server 可以读取另一条固定的配置路径和 Agent profile home，但它的可写会话状态、server token、instance registry、device ID 与委派 Session 仍全部位于 binding 的 `kap-home` 下。Launcher 还会校验进程、端口、Session、workspace、模型绑定和权限记录是否与已签名 workspace binding 一致。
 
@@ -71,7 +71,7 @@ Codex MCP launcher 为每个 workspace 预配一份带签名的 workspace bindin
 
 以下做法会破坏当前边界，不能作为捷径：
 
-- 让两个 server 指向同一个可写 `KIMI_CODE_HOME`。
+- 让两个 server 指向同一个可写 `KIKI_HOME`。
 - 在 home 之间复制或同步 `sessions/`、thread mailbox 数据、`server.token` 或 `device_id`。
 - 把外部 `ThreadRef` 的 `hostId` 改写为本地值。
 - 给现有 REST 或 Klient send 契约加入由客户端控制的 `source` 字段。
@@ -146,5 +146,5 @@ Bridge 设计至少包含以下内容后，才适合进入实现：
 ## 下一步
 
 - [Kiki 运行时边界](./kiki-runtime.md#集成-peer-thread-通信) — 当前本地 thread 工具、REST 路由与 Klient 表面。
-- [会话与上下文](./sessions.md#会话存储) — 单个 home 目录下的普通 Kimi Code Session 存储。
+- [会话与上下文](./sessions.md#会话存储) — 单个 home 目录下的普通 Kiki 会话存储。
 - [本地服务与 API](./server.md) — 客户端如何连接到 `kap-server` instance。

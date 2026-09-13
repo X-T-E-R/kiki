@@ -1,13 +1,13 @@
 # 会话与上下文
 
-Kimi Code CLI 把每次对话持久化为一个「会话」，保留消息历史和元数据，可以随时关闭终端后再回来继续。本页介绍如何恢复会话、管理上下文，以及导出和派生会话。
+Kiki 把每次对话持久化为一个「会话」，保留消息历史和元数据，可以随时关闭终端后再回来继续。本页介绍如何恢复会话、管理上下文，以及导出和派生会话。启用草稿持久化后，GUI 会在当前浏览器中额外保存新会话草稿和单个会话的选择，这部分与下文提到的 CLI 目录是分开的。
 
 ## 会话存储
 
-所有会话保存在 `$KIMI_CODE_HOME/sessions/` 下（默认 `~/.kimi-code/sessions/`），按工作目录分组存放：
+所有会话保存在 `$KIKI_HOME/sessions/` 下（默认 `~/.kiki/sessions/`），按工作目录分组存放：
 
 ```text
-~/.kimi-code/
+~/.kiki/
 ├── config.toml
 ├── session_index.jsonl
 └── sessions/
@@ -24,35 +24,47 @@ Kimi Code CLI 把每次对话持久化为一个「会话」，保留消息历史
 - `state.json`：会话标题、创建时间等元数据。
 - `agents/*/wire.jsonl`：Agent 事件流，用于会话恢复和回放；同时记录发给模型的请求轨迹（工具 schema、请求参数、MCP 工具清单），便于调试。
 
+GUI 的新会话选择与这个 CLI 目录分开。启用草稿持久化后，GUI 会在导航和浏览器刷新后记住已选的模型与思考强度，以及工作区、工作目录和 Agent 配置（profile）。会话继承的模型与本地模型覆盖是两回事：只修改本地思考强度不会静默替换当前会话继承的模型。设置里的「输入框 → 保留输入草稿」开关控制这些选择和每个会话的草稿文本是否写入当前浏览器；关闭后会清掉已保存的内容。关闭开关不会清掉当前页面里尚未发送的输入；刷新或重启后就不再恢复。
+
 ::: warning 注意
-`sessions/` 目录下的文件请勿手动编辑，否则可能导致会话无法正常恢复。
+`sessions/` 目录下的 CLI 文件请勿手动编辑，否则可能导致会话无法正常恢复。
 :::
+
+## 需求看板
+
+从 main agent 右侧面板底部的固定入口打开需求看板。看板使用内嵌的 Own Work 库，无需单独安装 Own Work 或 Assay。卡片组织需求及会话关联，不代表正在执行的 Agent。Todo 列表保持独立，并各自属于当前 Agent。
+
+创建或编辑卡片前，请先信任工作区。`taskBoard.storage` 控制存储位置：`auto` 复用兼容的工作区存储，否则使用 `sessions/<workspaceId>/.board`；`global` 使用 `<home>/boards`；`fixed` 接受绝对路径或相对工作区的路径。路径不会作为脚本执行。预览不会创建目录，也不会授予写入权限；请先保存配置，再在该位置创建卡片。非空且不兼容的目录会被拒绝。
+
+更改配置不会迁移旧卡。已有卡片引用保留原存储身份及修订号。若其他编辑已先保存，请重新读取卡片后再重试；编辑失败时草稿会保留。main agent 可在正常工具策略和审批规则下使用 `BoardRead`、`BoardWrite`，subagent 继续使用 TodoList。Plan 模式不能使用 `BoardWrite`。
 
 ## 启动与恢复会话
 
-每次直接运行 `kimi` 都会创建新会话。以下方式可以恢复历史会话：
+每次直接运行 `kiki` 都会创建新会话。以下方式可以恢复历史会话：
 
 **继续当前目录最近的会话：**
 
 ```sh
-kimi --continue
+kiki --continue
 ```
 
 **恢复指定会话（通过 ID）：**
 
 ```sh
-kimi --session abc123
+kiki --session abc123
 ```
 
 **交互式浏览历史会话并选择：**
 
 ```sh
-kimi --session
+kiki --session
 ```
 
 ::: warning 注意
 `--continue` 与 `--session` 互斥。
 :::
+
+在 GUI 中，已保存但不再可用的模型、Agent 配置或思考强度会保留原值，并显示诊断信息。发送前请选择有效值；GUI 不会静默替换模型或 Agent 配置。加载中或目录请求失败本身不代表已保存的选择无效。
 
 ## 在 TUI 中切换会话
 
@@ -63,9 +75,21 @@ kimi --session
 - **`/fork`**：派生当前会话（详见下文）。
 - **`/title <text>`**（别名 `/rename`）：设置会话标题方便识别；不带参数时显示当前标题。
 
+## GUI 会话恢复与活动历史
+
+会话恢复失败时，GUI 会保留已经载入的历史，并显示错误；有 request ID 时也会一并显示。同一区域有一个「立即重试」按钮，直接调用恢复操作。
+
+已解决的问题、审批、活动标记和后台任务完成通知会以紧凑单行的形式保留在时间线的原位置；连续多条会折叠为可展开的「活动历史」行，失败或取消的条目始终单独显示。时间线集中显示未完成的工作；已完成任务的输出仍可在任务历史中查找。会话视图中的文件引用可以预览、打开，或显示所在文件夹。
+
+## GUI 用量统计
+
+不带筛选条件打开「用量」时，默认查看浏览器本地时间的当天。URL 中显式指定的时间范围优先生效；先前保存的全历史视图不会覆盖这个默认值。跨过午夜或浏览器时区偏移改变时，页面会刷新日期边界。
+
+Token 用量和估算费用分别标记完整性。供应商未返回用量时，Kiki 会标为未知，而不是当作真实零用量。已知与未知记录混合时，显示已记录的小计并提示计量不完整。旧零记录若没有保存计量来源，就仍存在歧义，Kiki 不会据此反推缺失的 token。模型价格缺失影响费用估算，不会抹掉已记录的 token 数。「数据可信度」区域会将这些情况与时间范围内无记录、请求失败区分开来。
+
 ## 上下文压缩
 
-对话变长时，Kimi Code CLI 会在上下文接近窗口上限时自动压缩历史消息，释放 token 空间。也可以随时手动触发：
+对话变长时，Kiki 会在上下文接近窗口上限时自动压缩历史消息，释放 token 空间。也可以随时手动触发：
 
 ```
 /compact
@@ -87,27 +111,27 @@ kimi --session
 
 fork 后你仍停留在原会话，对话不受影响、可以直接继续；派生出的副本与原会话彼此独立，可以随时通过 `/sessions` 切换过去。已保存的 `/goal` 不会复制到派生会话。如果你想在派生会话中进行自主 goal 工作，需要在那里开始一个新 goal。
 
-fork 完成后，CLI 会打印一条可直接运行的 `kimi --resume` 命令（并自动复制到剪贴板），方便你在新终端进程中直接进入派生会话。
+fork 完成后，CLI 会打印一条可直接运行的 `kiki --resume` 命令（并自动复制到剪贴板），方便你在新终端进程中直接进入派生会话。
 
 ## 导出会话
 
-用 `kimi export` 把会话打包为 ZIP，适合分享、归档或提交问题反馈：
+用 `kiki export` 把会话打包为 ZIP，适合分享、归档或提交问题反馈：
 
 ```sh
-kimi export <sessionId>
+kiki export <sessionId>
 ```
 
 不传 `sessionId` 时导出当前目录最近的会话（有交互式确认，加 `-y` 跳过）。用 `-o` 指定输出路径：
 
 ```sh
-kimi export <sessionId> -o ~/Desktop/my-session.zip
+kiki export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
-导出包含会话目录下的所有文件，包括诊断日志。全局诊断日志（`~/.kimi-code/logs/kimi-code.log`）默认也会打包；如不需要，加 `--no-include-global-log` 排除。
+导出包含会话目录下的所有文件，包括诊断日志。全局诊断日志（`~/.kiki/logs/kimi-code.log`）默认也会打包；如不需要，加 `--no-include-global-log` 排除。
 
 也可以在 TUI 内导出，无需离开交互界面：
 
-- **`/export-debug-zip`**：产生与 `kimi export` 相同的调试 ZIP。
+- **`/export-debug-zip`**：产生与 `kiki export` 相同的调试 ZIP。
 - **`/export-md`**（别名 `/export`）：导出为人类可读的 Markdown 对话记录，适合分享或存档。可选接收路径参数；不带参数时写入工作目录下的 `kimi-export-<short-id>-<timestamp>.md`。
 
 在 web UI 中，`/export` 会把当前会话下载为诊断 ZIP。压缩包包含持久化的会话数据、诊断日志，以及记录浏览器关键事件且大小有上限、只含元数据的 `logs/kimi-web.jsonl`；提示词正文、WebSocket 内容和 console 参数不会写入这份浏览器日志。这里的 web 命令与上面的 TUI `/export` 别名行为不同。
@@ -119,4 +143,4 @@ kimi export <sessionId> -o ~/Desktop/my-session.zip
 ## 下一步
 
 - [数据路径](../configuration/data-locations.md) — 会话文件的完整目录结构说明
-- [kimi 命令](../reference/kimi-command.md) — `--continue`、`--session`、`export` 等命令的完整参数参考
+- [kiki 命令](../reference/kimi-command.md) — `--continue`、`--session`、`export` 等命令的完整参数参考

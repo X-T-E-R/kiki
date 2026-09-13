@@ -1,6 +1,6 @@
 # Plugins
 
-Plugins 把可复用的 Kimi Code CLI 能力打包成可安装单元——可以添加 [Agent Skills](./skills.md)、自定义 [Agent](./agents.md)、在会话启动时自动加载指定 Skill、提供系统提示词指令，也可以声明 MCP servers 来提供真实工具能力。适合把工作流共享给团队、连接外部服务，或从[官方插件](#官方插件)安装扩展。
+Plugins 把可复用的 Kiki 能力打包成可安装单元——可以添加 [Agent Skills](./skills.md)、自定义 [Agent](./agents.md)、在会话启动时自动加载指定 Skill、提供系统提示词指令，也可以声明 MCP servers 来提供真实工具能力。适合把工作流共享给团队、连接外部服务，或从[官方插件](#官方插件)安装扩展。
 
 ## 安装与管理
 
@@ -54,13 +54,13 @@ Plugins 把可复用的 Kimi Code CLI 能力打包成可安装单元——可以
 ### 注意事项
 
 - Plugin 变更需要通过 `/reload` 或新会话生效。安装、启用/禁用、移除后，运行 `/reload` 或 `/new`；当前会话不会更新。
-- 本地安装会被拷贝到 `$KIMI_CODE_HOME/plugins/managed/<id>/`，CLI 始终从这份托管副本运行。安装后编辑原始源目录不会生效，需重新安装。
+- 本地安装会被拷贝到 `$KIKI_HOME/plugins/managed/<id>/`，CLI 始终从这份托管副本运行。安装后编辑原始源目录不会生效，需重新安装。
 - 移除 plugin 只会删除安装记录，托管副本和原始源文件仍保留在磁盘上。
 - Plugin 目前按用户安装，对所有项目生效，暂不支持项目级安装范围。
 
 ### 自定义 marketplace JSON
 
-浏览 marketplace 时，把 JSON 路径或 URL 传给 `/plugins marketplace <source>`，设置 [`KIMI_CODE_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md)，或在 `config.toml` 中配置 `[plugins] marketplace_url`。优先级依次为命令 source、环境变量和配置；没有任何 source 时，Kimi Code CLI 不拉取远程目录，但仍显示内置产品能力。`plugins` 数组中每个条目需要 `id` 和 `source`（本地路径、zip URL 或 GitHub URL）：
+浏览 marketplace 时，把 JSON 路径或 URL 传给 `/plugins marketplace <source>`，设置 [`KIKI_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md)，或在 `config.toml` 中配置 `[plugins] marketplace_url`。优先级依次为命令 source、环境变量和配置；没有任何 source 时，Kiki 不拉取远程目录，但仍显示内置产品能力。`plugins` 数组中每个条目需要 `id` 和 `source`（本地路径、zip URL 或 GitHub URL）：
 
 ```json
 {
@@ -99,13 +99,13 @@ Kimi WebBridge 分两步安装：完成上述步骤后，还需要[安装浏览�
 
 ### Kimi Datasource <Badge type="tip" text="v3.3.0" />
 
-Kimi Datasource 是 Kimi Code 官方数据插件，让你用自然语言直接查询金融行情、宏观经济、企业工商、学术文献和中国法律法规，无需手动调用接口或申请数据账号。
+Kimi Datasource 是 Kiki 官方数据插件，让你用自然语言直接查询金融行情、宏观经济、企业工商、学术文献和中国法律法规，无需手动调用接口或申请数据账号。
 
 使用前需先通过 `/login` 完成 Kimi Code 账号 OAuth 登录，数据查询会消耗你的 Kimi Code 套餐额度。
 
 #### 使用方式
 
-1. 直接用自然语言描述你的需求，Kimi Code 会自动调用数据能力
+1. 直接用自然语言描述你的需求，Kiki 会自动调用数据能力
 2. 通过 `/skill:kimi-datasource` 明确触发数据查询 Skill
 
 #### 能做什么
@@ -188,7 +188,7 @@ Kimi Computer Use 让 AI 直接操作你的桌面应用，可以完成点击、�
 安装后首次使用时，Kimi Computer Use 会弹出授权窗口，按照提示操作即可：
 
 1. 点击**辅助功能**和**屏幕录制**右侧的**去授权**，在系统设置中开启这两项权限。前者用于执行点击、输入与滚动，后者用于读取屏幕内容、识别需要操作的位置
-2. 在**接入本地 Agent**中打开 **Kimi Code** 开关，重启 Kimi Code 后生效
+2. 在**接入本地 Agent**中打开 **Kiki** 开关，重启 Kiki 后生效
 
 <div style="max-width: 380px; margin: 0 auto;">
 
@@ -232,7 +232,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件。Manifest 可以放在以�
 {
   "name": "kimi-finance",
   "version": "1.0.0",
-  "description": "Finance data and analysis workflows for Kimi Code CLI",
+  "description": "Finance data and analysis workflows for Kiki",
   "skills": "./skills/",
   "systemPromptPath": "./SYSTEM.md",
   "sessionStart": {
@@ -275,7 +275,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件。Manifest 可以放在以�
 }
 ```
 
-系统提示词贡献在所有界面上都生效：交互式 TUI、`kimi -p` 和 `kimi web`。
+系统提示词贡献在所有界面上都生效：交互式 TUI、`kiki -p` 和 `kiki web`。
 
 `systemPrompt` 字段与 `systemPromptPath` 文件各限制为 32 KB（UTF-8 字节）：超限内容会被忽略，并显示在 plugin 的 diagnostics 中。一次提示词构建最多注入所有已启用 plugin 合计 64 KB 的指令；超出预算的贡献会被跳过并给出警告——单个 plugin 的内联文本与文件合计超过该预算时同样整体跳过。
 
@@ -359,7 +359,7 @@ my-plugin/
       SKILL.md
 ```
 
-`sessionStart.skill` 在会话启动时把一个 plugin Skill 加载到 main agent，适合放置初始化说明、工作流规则，或把其他工具中的术语映射到 Kimi Code CLI。它只注入文本，不执行代码。
+`sessionStart.skill` 在会话启动时把一个 plugin Skill 加载到 main agent，适合放置初始化说明、工作流规则，或把其他工具中的术语映射到 Kiki。它只注入文本，不执行代码。
 
 无论 Skill 通过哪种方式加载（`sessionStart.skill`、`/skill:<name>` 或模型自动调用），`skillInstructions` 都会随该 plugin 的 Skill 一起出现。
 
@@ -438,7 +438,7 @@ plugin hooks 复用与全局 hooks 相同的机制——事件列表、stdin JSO
 
 - plugin 的 hooks 仅在 plugin **启用**期间生效；禁用 plugin 后其 hooks 停止运行。
 - 每条 hook 的工作目录为 plugin 根目录，因此 `command` 可以使用 plugin 内的 `./` 路径。
-- hook 进程会额外收到两个环境变量：`KIMI_CODE_HOME` 和 `KIMI_PLUGIN_ROOT`（plugin 根目录）。
+- hook 进程会额外收到两个环境变量：`KIKI_HOME` 和 `KIMI_PLUGIN_ROOT`（plugin 根目录）。
 
 仅安装 plugin 本身不会运行其 hooks——它们只在 plugin 启用期间、匹配的事件触发时运行。
 

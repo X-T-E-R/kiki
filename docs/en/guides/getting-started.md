@@ -1,8 +1,8 @@
 # Getting started
 
-## What is Kimi Code CLI
+## What is Kiki
 
-Kimi Code CLI is an AI agent that runs in the terminal, helping you carry out software development tasks and day-to-day terminal operations — reading and modifying code, running shell commands, searching files, fetching web pages, and autonomously planning and adjusting its next steps based on feedback as it works.
+Kiki is an AI agent that runs in the terminal, helping you carry out software development tasks and day-to-day terminal operations — reading and modifying code, running shell commands, searching files, fetching web pages, and autonomously planning and adjusting its next steps based on feedback as it works.
 
 It fits scenarios such as:
 
@@ -10,76 +10,66 @@ It fits scenarios such as:
 - **Understanding a project**: exploring an unfamiliar codebase and answering questions about architecture and implementation
 - **Automating tasks**: batch-processing files, running builds and tests, chaining multiple scripts together
 
-The CLI is written in TypeScript, distributed via npm, and runs on Node.js.
+The Kiki CLI is written in TypeScript and runs on Node.js.
 
 ## Installation
 
-Two installation options are available: the official install script (recommended, no pre-installed Node.js required) and a global npm install.
+This candidate has not been published to npm, and the repository has not verified that a new registry package exists. Use a release artifact that explicitly contains the current `kiki` entry point, or run the CLI from source while developing.
 
 ::: tip Before you install
-Kimi Code CLI is a fully interactive TUI application. For the best visual experience, run it in a terminal with true-color and ligature support, such as [Kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/).
+Kiki is a fully interactive TUI application. For the best visual experience, run it in a terminal with true-color and ligature support, such as [Kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/).
 :::
 
-### Release download (recommended)
+### Release artifact
 
-Download the appropriate build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases).
+When a published build is available, use only a [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) entry whose release notes and artifact contents explicitly include the current `kiki` executable. Do not infer that a registry package is published from this source tree.
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Kimi Code CLI uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Kiki uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
 
-### npm installation
+### Development from source
 
-Requires Node.js 22.19.0 or later:
+Source development requires Node.js `24.15.0` or later and pnpm `10.33.0`. From the repository root:
 
 ```sh
 node --version
-npm install -g @kiki/cli
+pnpm --version
+pnpm install
+pnpm dev:cli -- --help
 ```
 
-Or with pnpm:
-
-```sh
-pnpm add -g @kiki/cli
-```
+The root `dev:cli` script runs `apps/kimi-code`'s `dev` script. It starts the local development marketplace server and forwards `--help` to the CLI entry point; no published package or global install is required.
 
 ## Upgrade and uninstall
 
-After installation, verify that the executable is ready:
+For a release build, verify the executable named by that release before upgrading:
 
 ```sh
-kimi --version
+kiki --version
 ```
 
-**Upgrade**: download a newer build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases), or upgrade directly via the package manager:
+**Upgrade**: follow the instructions and artifact names in the relevant [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) entry. Use an npm or pnpm upgrade only when that release explicitly documents a published package.
 
-```sh
-npm install -g @kiki/cli@latest
-```
-
-**Uninstall**: if you installed via the script, delete the `kimi` executable. If you installed via npm:
-
-```sh
-npm uninstall -g @kiki/cli
-```
+**Uninstall**: if you previously installed a published npm package, `npm uninstall -g @kiki/cli` applies only when that exact package was actually installed. For a release binary, delete the `kiki` executable; source development is removed by deleting the checkout and does not install a global command.
 
 ## First launch
 
-Move into your project directory and run `kimi` to start the interactive UI:
+Move into your project directory and run `kiki` from a release build to start the daemon-backed interactive UI:
 
 ```sh
 cd your-project
-kimi
+kiki
 ```
 
-To run a single instruction without entering the interactive UI, use `-p`:
+When developing from source, run `pnpm dev:cli` from the repository root instead. To run a single instruction without entering the interactive UI, use `-p`:
 
 ```sh
-kimi -p "Take a look at this project's directory structure"
+kiki -p "Take a look at this project's directory structure"
 ```
 
 To resume the previous session, add `-c`:
 
 ```sh
-kimi -c
+kiki -c
 ```
 
 On first launch you need to configure an API source. In the interactive UI, enter `/login` to begin the login flow:
@@ -96,18 +86,18 @@ On first launch you need to configure an API source. In the interactive UI, ente
 To sign out, enter `/logout` to clear the current credentials.
 
 ::: tip Using other AI providers
-If you want to connect Anthropic, OpenAI, Google, or other providers, edit `~/.kimi-code/config.toml` directly to configure the API key. See [Providers and models](../configuration/providers.md) for details. For the full reference of all config options, see [Configuration files](../configuration/config-files.md), [Environment variables](../configuration/env-vars.md), and [Configuration overrides](../configuration/overrides.md).
+If you want to connect Anthropic, OpenAI, Google, or other providers, edit `~/.kiki/config.toml` directly to configure the API key. See [Providers and models](../configuration/providers.md) for details. For the full reference of all config options, see [Configuration files](../configuration/config-files.md), [Environment variables](../configuration/env-vars.md), and [Configuration overrides](../configuration/overrides.md).
 :::
 
 ## Your first conversation
 
-Once logged in, describe a task in natural language. A good starting point is to let Kimi Code CLI familiarize itself with the project:
+Once logged in, describe a task in natural language. A good starting point is to let Kiki familiarize itself with the project:
 
 ```
 Take a look at this project's directory structure and briefly describe what each directory is for.
 ```
 
-Kimi Code CLI automatically calls file-reading, search, and other tools to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation. For operations that modify files or run shell commands, it asks for your confirmation before proceeding.
+Kiki automatically calls file-reading, search, and other tools to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation. For operations that modify files or run shell commands, it asks for your confirmation before proceeding.
 
 You can also describe a more concrete task directly:
 
@@ -115,7 +105,7 @@ You can also describe a more concrete task directly:
 Add a function in src/utils that converts any string to kebab-case, and add a unit test for it.
 ```
 
-Kimi Code CLI plans the steps, modifies the code, runs the tests, and tells you what it did at each step.
+Kiki plans the steps, modifies the code, runs the tests, and tells you what it did at each step.
 
 ::: tip Not sure what to do? Type `/help`
 Type `/help` at any time to open the built-in command and keyboard shortcut panel. Use `↑`/`↓` to browse and `Esc` to close. To exit, type `/exit`, press `Ctrl-C` twice, or press `Ctrl-D` with the input box empty.
@@ -149,7 +139,7 @@ For the full list, type `/help` or visit [Slash commands reference](../reference
 
 ## Where data is stored
 
-Kimi Code CLI stores its local data under `~/.kimi-code/` by default — config files, session records, logs, and the update cache. To move it elsewhere, point to a new path via the `KIMI_CODE_HOME` environment variable. For the full directory layout, see [Data locations](../configuration/data-locations.md) and [Environment variables](../configuration/env-vars.md).
+Kiki stores its local data under `~/.kiki/` by default — config files, session records, logs, and the update cache. To move it elsewhere, point to a new path via the `KIKI_HOME` environment variable. For the full directory layout, see [Data locations](../configuration/data-locations.md) and [Environment variables](../configuration/env-vars.md).
 
 ## Next steps
 

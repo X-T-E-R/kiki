@@ -1,6 +1,6 @@
 # Built-in Tools
 
-Built-in tools are the tool set provided by Kimi Code CLI alongside its core engine — no MCP server installation required. The Agent automatically selects and calls these tools based on the task at hand during each conversation; users can inspect the details of each tool call through the approval interface.
+Built-in tools are the tool set provided by Kiki alongside its core engine — no MCP server installation required. The Agent automatically selects and calls these tools based on the task at hand during each conversation; users can inspect the details of each tool call through the approval interface.
 
 Compared to MCP tools, built-in tools are managed directly by the runtime, their lifecycle is bound to the session, and no external process is required. Both follow the same unified approval mechanism: **read-only tools** (such as `Read`, `Grep`, `Glob`) are automatically allowed by default, while **write and execution tools** (such as `Write`, `Edit`, `Bash`) require user approval by default. In YOLO mode, approval for regular tool calls is skipped; Plan mode exit approval is not affected.
 
@@ -38,13 +38,13 @@ File tools handle reading, writing, and searching the local filesystem — the f
 **`Bash`** is the most permission-demanding tool and also the most general-purpose. Parameters:
 
 - `command` (required): the shell command to execute
-- `cwd`: working directory
+- `cwd`: working directory. With a local runtime and the agent's effective permission mode set to YOLO, an explicit absolute path may be outside the workspace. This does not bypass agent permission ceilings or actual remote/container isolation; manual/auto modes and relative traversal retain their workspace boundaries.
 - `timeout`: timeout in milliseconds; foreground default is 60 seconds, maximum is 5 minutes
-- `run_in_background`: whether to run as a background task; background tasks default to a 10-minute timeout (no timeout by default in print mode `kimi -p`)
+- `run_in_background`: whether to run as a background task; background tasks default to a 10-minute timeout (no timeout by default in print mode `kiki -p`)
 - `description`: background task description; required when `run_in_background=true`
 - `disable_timeout`: whether to remove the timeout limit for background tasks
 
-Foreground mode blocks the current turn until the command completes or times out, and the TUI streams stdout and stderr into the running `Bash` tool card while the command is still active. By default, a foreground command that hits its timeout is not killed — it keeps running as a background task (bounded by the 600s default background timeout); to restore kill-on-timeout, set [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) to `false` under `[background]`. The 600s background default is configurable via [`bash_task_timeout_s`](../configuration/config-files.md#background) (`0` = no timeout) and defaults to no timeout in print mode (`kimi -p`). Background mode returns a task ID immediately and automatically notifies the Agent when the task finishes. stdin is always closed — interactive commands receive EOF immediately. A two-phase termination strategy (SIGTERM → 5-second grace period → SIGKILL) ensures reliable process cleanup when a task is stopped or hits its background timeout. On Windows, Git Bash is used by default.
+Foreground mode blocks the current turn until the command completes or times out, and the TUI streams stdout and stderr into the running `Bash` tool card while the command is still active. By default, a foreground command that hits its timeout is not killed — it keeps running as a background task (bounded by the 600s default background timeout); to restore kill-on-timeout, set [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) to `false` under `[background]`. The 600s background default is configurable via [`bash_task_timeout_s`](../configuration/config-files.md#background) (`0` = no timeout) and defaults to no timeout in print mode (`kiki -p`). Background mode returns a task ID immediately and automatically notifies the Agent when the task finishes. stdin is always closed — interactive commands receive EOF immediately. A two-phase termination strategy (SIGTERM → 5-second grace period → SIGKILL) ensures reliable process cleanup when a task is stopped or hits its background timeout. On Windows, Git Bash is used by default.
 
 ## Web Tools
 
@@ -53,9 +53,69 @@ Foreground mode blocks the current turn until the command completes or times out
 | `WebSearch` | Auto-allow | Web search |
 | `FetchURL` | Auto-allow | Fetch the content of a specified URL |
 
-**`WebSearch`** accepts `query` (search terms) and uses the default lane configured in `[nb_search.defaults]`. Results lanes return ranked links; typed lanes return their schema, source lane, sources, and bounded structured data. Without `search_lane`, the tool fails closed with an unavailable error.
+### `WebSearch`
 
-**`FetchURL`** accepts a single `url` parameter and returns the page content through the nb-search default fetch chain. For HTML pages, the runtime extracts the body text rather than returning the full HTML; plain text or Markdown pages are passed through directly.
+Search the web through the configured nb-search provider. The minimal call is `{ "query": "search terms" }`, which selects `action: "run"` and lets everything else fall back to your `[nb_search]` defaults. `query` may be a single string or an array of strings.
+
+If no default `search_lane` is configured under `[nb_search.defaults]` and no `lane`, `lanes`, or `preset` is named in the call, the tool reports that no search lane is available and the search cannot run — name an available lane or preset explicitly to proceed. An explicit lane, an explicit `lanes` list, or a preset overrides the configured default; an invalid or unavailable selection fails the call rather than silently swapping in a different provider.
+
+`run` accepts these parameter groups that actually change behavior:
+
+- `lane`, `lanes`, `preset` — mutually exclusive; pick exactly one. Use `lanes` or `preset` to combine ranked sources; a typed result requires a single `lane`.
+- `freshness`, `max_results` — content filtering.
+- `timeout_ms` — per-call deadline.
+- `execution`, `idempotency_key` — see the async section below.
+
+Results are either ranked source links with snippets or typed research or documentation answers. Provider output is not independent verification — cite the actual URLs inline and use `FetchURL` when you need primary-source full text.
+
+```json
+{ "query": "kimi-code release notes" }
+```
+
+```json
+{ "query": "kimi-code architecture", "lane": "<your-configured-lane>", "execution": "sync" }
+```
+
+### `FetchURL`
+
+Fetch or extract content from a URL through the configured nb-search provider. The minimal call is `{ "url": "https://example.com" }`, the URL shorthand for `action: "run"`; do not mix shorthand `url` with the `source` form. The default fetch chain returns Markdown; HTML responses are extracted to body text, and plain text or Markdown pages are passed through.
+
+`run` accepts these parameter groups that actually change behavior:
+
+- `source` — `kind: "url"` for a remote page, `kind: "inline_text"` or `kind: "inline_bytes"` for content already in the call, or `kind: "file"` for a path inside a configured file scope.
+- `pipeline`, `representation` — override the default fetch chain.
+- `timeout_ms`, `max_content_chars` — bounds.
+- `execution`, `idempotency_key` — see the async section below.
+
+The tool reports the fetch outcome and any content truncation. Structured results distinguish the operation status from document metadata; minimal calls provide readable notices. When citing truncated or partial results, state that the content is incomplete and link the actual source URL.
+
+The URL shorthand accepts the same options as the `source` form. Inline and file content cannot be sent through egress pipelines; unsupported source/pipeline/mode combinations return an error rather than a silent substitution.
+
+```json
+{ "url": "https://example.com/docs" }
+```
+
+```json
+{ "action": "run", "source": { "kind": "url", "url": "https://example.com/long" }, "execution": "async", "idempotency_key": "fetch-long-1" }
+```
+
+#### Async runs and job-id operations
+
+Both tools share the same execution model:
+
+- Execution defaults to **sync**. Pass `execution: "async"` together with `idempotency_key` to start a background job; sync calls must not include `idempotency_key`.
+- An async call returns a job receipt — not a Kiki background task. Pass the same `idempotency_key` to retry the same submission.
+- Use the same tool with `action: "get"`, `"read"`, or `"cancel"` and the `job_id` to follow up on a job.
+- `read` returns the job's artifact chunks as `data_base64` with byte offsets and optional `page_size` / cursor pagination / `next_cursor`. These chunks are not plain-text page content; decode them with the encoding the schema reports.
+- Honor `poll_after_ms` rather than busy-polling. A completed job can still contain a partial operation result.
+
+#### `FetchURL` file sources
+
+`source.kind: "file"` requires a configured scope in `[nb_search.fetch.file_scopes]`, a path relative to that scope, and Kiki filesystem/path admission. Admission binds the canonical path and the file-object identity at call time; execution reads the same identity, so in-place updates made to the file are visible. Atomic replacement or any change to the file object is rejected — submit a new tool call for fresh approval rather than retrying the old job. Filesystems that cannot supply a usable file identity report an error. A configured scope does not grant arbitrary host-file access or bypass sensitive-file protection.
+
+```json
+{ "action": "run", "source": { "kind": "file", "scope": "<your-file-scope>", "path": "design/notes.md" } }
+```
 
 ## Plan Mode
 
@@ -64,7 +124,11 @@ Foreground mode blocks the current turn until the command completes or times out
 | `EnterPlanMode` | Auto-allow | Enter Plan mode |
 | `ExitPlanMode` | Auto-allow (requires user to confirm the plan) | Exit Plan mode and submit the plan |
 
-Plan mode is a constrained working state: once entered, `Write` and `Edit` are restricted to writing the current plan file only, and `TaskStop` is blocked entirely. All other tools (including `Bash`) are still governed by the current permission rules.
+Plan mode restricts `Write` and `Edit` to the current plan file. It also blocks `TaskStop`, `CronCreate`, `CronDelete`, `AgentSend`, and resuming existing children with `AgentRun`.
+
+New `AgentRun` calls can start research subagents using the native executor. These children can use only the built-in `Read`, `ReadMediaFile`, `Glob`, `Grep`, `WebSearch`, and `FetchURL` tools permitted by their profile and existing policies. They cannot run `Bash`, invoke MCP or user-defined tools, or delegate further work. External executors are not available for these calls. The research restriction survives Plan mode exit and session restoration; create a new child after leaving Plan mode when implementation needs write access.
+
+The parent Agent's `Bash` calls still follow the current permission rules. Entering Plan mode does not stop previously started background work and is not a system-level sandbox.
 
 **`EnterPlanMode`** accepts no parameters; upon success it returns workflow guidance and the plan file path.
 
@@ -75,49 +139,56 @@ Plan mode is a constrained working state: once entered, `Write` and `Edit` are r
 | Tool | Default Approval | Description |
 | --- | --- | --- |
 | `TodoList` | Auto-allow | Manage a task to-do list |
+| `BoardRead` | Auto-allow | Read persistent requirement cards on the workspace task board |
+| `BoardWrite` | Requires approval | Create or update a persistent requirement card on the workspace task board |
 
-**`TodoList`** maintains a visible subtask list across multi-step operations; state is stored within the Agent session. The `todos` parameter accepts an array where each item has a `title` and `status` (`pending` / `in_progress` / `done`). Omitting `todos` queries the current list; passing an empty array clears it.
+**`TodoList`** is the per-agent execution list. Main and child agents have separate lists; the tool cannot read or update another agent's list. The `todos` parameter accepts an array where each item has a `title` and `status` (`pending` / `in_progress` / `done`). Omitting `todos` queries the caller's current list; passing an empty array clears only that list. Lists are restored with their owning agent, and conversation undo rolls back only that agent's list. Reminders and compaction summaries also use the receiving agent's list. Historical shared lists remain with the main agent; earlier child lists are not reconstructed from tool messages.
+
+The task board is the persistent record of requirements that survives sessions. `BoardRead` supports `preview`, `list`, `show`, and `overview` for cards in the current workspace or other authorized workspaces. `BoardWrite` `create` always starts at `active`, so do not pass `status`; for `update`, include `status` only when changing the state. Valid states are `active`, `in_progress`, `paused`, `done`, `cancelled`, and `superseded`. `done`, `cancelled`, and `superseded` are terminal and cannot be reopened. Updates must use the card's current `revision`; after a conflict, reread the card before retrying.
+
+Cards are persistent requirements, not agent runs or the per-agent `TodoList`. Reading a card does not change it, each agent keeps an independent `TodoList`, and marking every todo `done` does not update the card. Both tools are provided to the main agent by default and gated by the `task_board` experimental flag. `BoardRead` remains available in Plan mode; `BoardWrite` is rejected before approval. Card writes follow the ordinary permission policy and do not require additional workspace trust.
+
+In Settings → Plan and Tasks, choose `auto`, `global`, or `fixed` storage. A fixed location can be an absolute path or a path relative to the workspace; scripts are not executed. Kiki ships with OwnWork, so no separate installation is needed. In `auto`, Kiki reuses existing compatible project storage when available and otherwise uses the session data area.
 
 ## Collaboration Tools
 
-Main Agents receive four peer-thread tools by default: `list_threads`, `read_thread`, `send_message_to_thread`, and `wait_threads`. They address existing sessions on the same local host through a host/workspace/session reference; tool inputs name its fields `host_id`, `workspace_id`, and `session_id`. Sub-agents do not receive these tools.
+Main Agents receive four peer-thread tools by default: `ThreadList`, `ThreadRead`, `ThreadSend`, and `ThreadWait`. They address existing sessions on the same local host through a host/workspace/session reference; tool inputs name its fields `host_id`, `workspace_id`, and `session_id`. Sub-agents do not receive these tools.
 
-- `list_threads` lists enabled, unarchived sessions newest first, optionally filtered by `workspace_id`. `limit` defaults to 50 and accepts 1–100; the result includes an opaque cursor when another page is available.
-- `read_thread` reads completed main-Agent turns without resuming a cold session. It accepts a thread reference plus an optional cursor; `limit` defaults to 20 and accepts 1–100.
-- `send_message_to_thread` durably accepts a message for another thread and records peer provenance from the current main-Agent session. Supply the target thread, non-empty `content` of at most 100,000 characters, and a non-empty `idempotency_key` of at most 256 characters; there is no source parameter, and a key may be reused only for the same message.
-- `wait_threads` waits for terminal, attention, lifecycle, or undeliverable-message activity. A call accepts 1–8 distinct threads. `timeout_ms` defaults to 30,000 and accepts 0–60,000.
+- `ThreadList` lists enabled, unarchived sessions newest first, optionally filtered by `workspace_id`. `limit` defaults to 50 and accepts 1–100; the result includes an opaque cursor when another page is available.
+- `ThreadRead` reads completed main-Agent turns without resuming a cold session. It accepts a thread reference plus an optional cursor; `limit` defaults to 20 and accepts 1–100.
+- `ThreadSend` durably accepts a message for another thread and records peer provenance from the current main-Agent session. Supply the target thread, non-empty `content` of at most 100,000 characters, and a non-empty `idempotency_key` of at most 256 characters; there is no source parameter, and a key may be reused only for the same message.
+- `ThreadWait` waits for terminal, attention, lifecycle, or undeliverable-message activity. A call accepts 1–8 distinct threads. `timeout_ms` defaults to 30,000 and accepts 0–60,000.
 
 Peer-thread communication is local to one host, can cross workspaces, and is controlled globally by [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication). A persisted per-workspace override can also disable a workspace.
 
-Only `send_message_to_thread`, called by the source thread's main Agent, records peer attribution; REST and Klient sends are target-only user-origin input. See [Agents and Sub-Agents](../customization/agents.md#peer-thread-communication).
+Only `ThreadSend`, called by the source thread's main Agent, records peer attribution; REST and Klient sends are target-only user-origin input. See [Agents and Sub-Agents](../customization/agents.md#peer-thread-communication).
 
-On Kiki desktop and the `kimi` CLI/TUI, the main `agent` profile always receives `AgentRun`, `AgentSwarm`, `AgentList`, and `AgentSend`. These tools address only the caller's direct children — by the optional `name` passed to `AgentRun`, or by agent id. They are not behind an experiment. Built-in `coder` and `explore` profiles do not receive them.
+On Kiki desktop and the `kiki` CLI/TUI, the main `agent` profile always receives `AgentRun`, `AgentList`, and `AgentSend`. These tools address only the caller's direct children — by the optional `name` passed to `AgentRun`, or by agent id. They are not behind an experiment. Built-in `coder` and `explore` profiles do not receive them. The retired `AgentSwarm` callable tool is not available for new calls; historical swarm child records remain readable.
 
-`AgentList` returns those children, including ones started with `AgentRun` or `AgentSwarm`, and never lists grandchildren. `AgentSend` queues a mailbox message without starting or interrupting a turn, so an idle child stays idle and reads the message at the beginning of its next step.
+`AgentList` returns those direct children, including retained historical swarm entries, and never lists grandchildren. `AgentSend` queues a mailbox message without starting or interrupting a turn, so an idle child stays idle and reads the message at the beginning of its next step.
 Collaboration tools handle inter-Agent coordination, user interaction, and Skill invocation.
 
 | Tool | Default Approval | Description |
 | --- | --- | --- |
 | `AgentRun` | Auto-allow | Spawn a sub-Agent to execute a subtask, or continue a direct child |
-| `AgentSwarm` | Auto-allow in swarm mode; otherwise requires approval | Launch item-based subagents or resume existing subagents |
 | `AgentList` | Auto-allow | List the caller's direct child agents |
 | `AgentSend` | Auto-allow | Queue a mailbox message for a direct child without starting a turn |
 | `AskUserQuestion` | Auto-allow | Ask the user a question to gather structured input |
 | `Skill` | Auto-allow | Invoke a registered inline Skill |
 
-**`AgentRun`** delegates a subtask to a sub-Agent. Required parameters are `prompt` and `description` (a short 3-5 word task description for UI display). Optional launch parameters include `profile` (defaults to `coder`), `background` (defaults to false), `name` (a session-unique handle of lowercase letters, digits, and underscores; `root` is reserved), `route`, and the stable `model_alias` and `effort` bindings. A new spawn binds its model from the `model_alias` parameter or the pin on the effective profile, route, or caller lease, with the parameter winning; when neither names one, the call fails with `model.not_configured` and no child is created. Effort resolves separately through tool `effort` → profile `thinking_effort` → the bound model's own default. An unknown `model_alias` is an error. `resume` continues an existing direct child by name or agent id, is mutually exclusive with `profile`, and rejects `name`, `route`, `model_alias`, and `effort` because persisted bindings are immutable. Agent tasks time out after 2 hours by default; configure the global limit through `[subagent] timeout_ms` or `KIMI_SUBAGENT_TIMEOUT_MS` (`0` disables it), and print mode defaults to no timeout. There is no per-call timeout or arbitrary provider-parameter passthrough. In foreground mode the parent waits; in background mode a task ID returns immediately and the result is delivered automatically through a later synthetic User message. The TUI groups several foreground calls from one step and shows their status and elapsed time. See [Agents and Sub-Agents](../customization/agents.md) for the complete profile and lifecycle contract.
+**`AgentRun`** delegates a subtask to a sub-Agent. Required parameters are `prompt` and `description` (a short 3-5 word task description for UI display). Optional launch parameters include `profile` (defaults to `coder`), `profile_file` (an explicit role Markdown file, absolute or workspace-relative; it is not a shared prompt template and is mutually exclusive with `profile`, `route`, and `resume`), `background` (defaults to `false`), `name` (a session-unique handle of lowercase letters, digits, and underscores; `root` is reserved), `route`, `model_alias`, `effort`, and `allow_model_change` for an explicit model change on `resume`. A new spawn binds its model from the `model_alias` parameter or the pin on the effective profile, route, or caller lease, with the parameter winning; when neither names one, the call fails with `model.not_configured` and no child is created. Effort resolves separately through tool `effort` → profile `thinking_effort` → the bound model's own default. An unknown `model_alias` is an error. `resume` continues an existing direct child by name or agent id, is mutually exclusive with `name`, `profile`, `profile_file`, and `route`. Omit `effort` to keep the saved effort, or pass it to apply on the next idle run. Omit `model_alias` to keep the saved model; changing it to a different canonical model requires `allow_model_change: true`, while an alias resolving to the same canonical model is a no-op. Caller, role, route, and executor restrictions remain enforced. An external executor that does not support changing a resumed thread binding returns an error instead of recreating the thread or executor. Agent tasks time out after 2 hours by default; configure the global limit through `[subagent] timeout_ms` or `KIMI_SUBAGENT_TIMEOUT_MS` (`0` disables it), and print mode defaults to no timeout. There is no per-call timeout or arbitrary provider-parameter passthrough. In foreground mode the parent waits; in background mode a task ID returns immediately and the result is delivered automatically through a later synthetic User message. The TUI groups several foreground calls from one step and shows their status and elapsed time. See [Agents and Sub-Agents](../customization/agents.md) for the complete profile and lifecycle contract.
 
-**`AgentSwarm`** launches new subagents from a `prompt_template` containing `{{item}}` plus an `items` array, resumes existing subagents through `resume_agent_ids`, or combines both. Required `description` labels the whole swarm. `profile` (defaults to `coder`), `model_alias`, and `effort` apply only to item-based new spawns. Resumed entries keep their persisted profile, model, and effort. A resume-only swarm rejects `route`, `model_alias`, and `effort`; `profile` may still be passed and affects only item-based spawns. Binding precedence and alias validation match `AgentRun`, including the `model.not_configured` failure when neither the dispatch nor the profile pins a model. Without `resume_agent_ids`, the tool requires at least 2 distinct item-expanded prompts; with resumes it can continue one or more existing subagents. The tool supports 128 total entries, waits for all results, and must be the only tool call in a model response. The TUI shows foreground swarm progress above the input box. In `manual` permission mode it requests approval outside active swarm mode unless a rule allows it; permission rules match only the `AgentSwarm` tool name, not argument patterns. The initial ramp starts 5 subagents, then 1 more every 700 ms; `KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY` can cap concurrent work, and an invalid value fails fast.
-
-**`AgentList`** lists direct children of the current agent. Optional `include_finished` defaults to false: the default list is running children plus children with no tracking task (`untracked`, the usual case for swarm members and foreground `AgentRun` calls). Pass `true` to include children whose latest background task has finished or failed. At most 50 entries are returned, running first; `omitted` is the count that did not fit. Each entry includes `agent_id`, optional `name` and `profile`, `status`, and `swarm_item` when the child was a swarm item.
+**`AgentList`** lists direct children of the current agent. Optional `include_finished` defaults to false. A live child that is starting, running, or cancelling stays visible as `running`, even after its previous background task has completed or timed out. A broken live executor is `errored`; otherwise status follows the latest background task, or is `untracked` when there is no task record. Pass `true` to also include finished or errored children. At most 50 entries are returned, running first; `omitted` is the count that did not fit. Each entry includes `agent_id`, optional `name` and `profile`, `status`, and `swarm_item` when a retained historical swarm child has an item label. A `running` child does not necessarily have a tracked background task or a pending completion notification; use `TaskList` to inspect tracked work.
 
 **`AgentSend`** queues a non-empty `message` for a direct child identified by `target` (a `name` from `AgentRun`, or an agent id). It does not start, steer, or interrupt a turn. If more than one direct child matches, or none do, the call fails — use `AgentList` and retry with an unambiguous value. A full mailbox means the child has too many unread queued messages; wait until it consumes some, then retry.
 
 **`AskUserQuestion`** asks the user a structured multiple-choice question — useful for disambiguation or option selection. The `questions` parameter accepts 1–4 questions; each question requires `question` (ending with `?`), `options` (2–4 choices, each with a `label` and `description`), and optional `header` (max 12 characters) and `multi_select` (defaults to false). An "Other" option is appended automatically. Setting `background` to true starts a background question task and returns a task ID immediately. When the host does not support interactive questioning, a failure message is returned and the Agent should ask the user directly in a text reply instead.
 
-**`Skill`** allows the Agent to actively invoke a registered inline-type Skill. Accepts `skill` (the Skill name) and optional `args` (additional argument text). Only `type = "inline"` Skills can be called via this tool; Skills with `disableModelInvocation: true` are rejected. Maximum nesting depth is 3 levels. See [Agent Skills](../customization/skills.md) for details.
+**`Skill`** loads instructions by registered `skill` name or explicit Markdown `path`, never both, with optional `args`. Paths may be absolute or workspace-relative and follow file-read permissions and runtime isolation. Path loading does not replace a registered skill, install plugins, or execute scripts. The file's directory remains its relative-resource root; the loaded block records the source path and arguments so same-named files remain distinguishable. Omitted type, `prompt`, and `inline` are supported; `flow` and skills with `disableModelInvocation: true` are rejected for model invocation, including path loads. Maximum nesting depth is 3 levels. See [Agent Skills](../customization/skills.md) for details.
 
 ## Background Tasks
+
+Completion notifications include small results inline. Ordinary agent and process output previews share a 16,000-byte UTF-8 budget per model step or recovery pass, measured before XML escaping. When that budget runs out, notifications explicitly mark the omitted preview and retain task identity, status, failure details, and the full-output path when available. Complete question answers keep their existing inline behavior and do not consume this pool. This limits previews, not the total notification length.
 
 Background task tools manage tasks started via `Bash`, `AgentRun`, or `AskUserQuestion`. When a task reaches a terminal state, its status and saved output path are automatically delivered back to the Agent. For background subagents with automatic completion notification, the interactive main agent (root) continues independent work or ends its current turn normally; completion starts a follow-up turn when root is idle, without another user prompt. Ending the turn leaves the task running and the session open, and does not mark the overall task complete.
 
@@ -140,7 +211,7 @@ Root should not keep a turn open just to await that result with `TaskWait`, `Tas
 
 ## Scheduled Tasks
 
-Scheduled task tools allow the Agent to re-inject a prompt into the current session at a future time — either as a one-time reminder or as a recurring cron-triggered task (periodic checks, daily reports, deployment monitoring, etc.). Schedules are bound to the session and remain active when you resume it with `kimi --session`, but are not carried into a brand-new session. A single session can hold at most 50 active scheduled tasks. Set `KIMI_DISABLE_CRON=1` to disable them entirely; see [Environment Variables](../configuration/env-vars.md#runtime-switches).
+Scheduled task tools allow the Agent to re-inject a prompt into the current session at a future time — either as a one-time reminder or as a recurring cron-triggered task (periodic checks, daily reports, deployment monitoring, etc.). Schedules are bound to the session and remain active when you resume it with `kiki --session`, but are not carried into a brand-new session. A single session can hold at most 50 active scheduled tasks. Set `KIMI_DISABLE_CRON=1` to disable them entirely; see [Environment Variables](../configuration/env-vars.md#runtime-switches).
 
 | Tool | Default Approval | Description |
 | --- | --- | --- |

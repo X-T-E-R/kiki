@@ -26,13 +26,13 @@ The supported GUI and Codex paths deliberately construct different storage and a
 
 ### GUI-side sessions
 
-The GUI connects to a `kap-server` instance and sees the sessions stored under that server's home directory. Local GUI development discovers a server under `KIMI_CODE_HOME`, falling back to `~/.kimi-code`, and reads that home's instance registry and bearer token.
+The GUI connects to a `kap-server` instance and sees the sessions stored under that server's home directory. Local GUI development discovers a server under `KIKI_HOME`, falling back to `~/.kiki`, and reads that home's instance registry and bearer token.
 
 The GUI is a client of this server. It does not scan arbitrary Kimi homes and does not merge session indexes from other servers.
 
 ### Codex external delegation
 
-The Codex MCP launcher provisions one signed workspace binding per workspace. Each binding contains a dedicated `kap-home` directory, and the launcher starts the workspace KAP process with `KIMI_CODE_HOME` set to that directory.
+The Codex MCP launcher provisions one signed workspace binding per workspace. Each binding contains a dedicated `kap-home` directory, and the launcher starts the workspace KAP process with `KIKI_HOME` set to that directory.
 
 The dedicated server may read a separately pinned configuration path and Agent-profile home, but its writable session state, server token, instance registry, device ID, and delegated Session remain rooted in the binding's `kap-home`. The launcher also verifies that the process, port, Session, workspace, model binding, and authority records match the signed workspace binding.
 
@@ -71,7 +71,7 @@ The cost of this decision is explicit: built-in thread communication cannot coor
 
 The following approaches violate the current boundary and must not be used as shortcuts:
 
-- Pointing both servers at the same writable `KIMI_CODE_HOME`.
+- Pointing both servers at the same writable `KIKI_HOME`.
 - Copying or synchronizing `sessions/`, thread mailbox data, `server.token`, or `device_id` between homes.
 - Rewriting a foreign `ThreadRef` to use the local `hostId`.
 - Adding a client-controlled `source` field to the existing REST or Klient send contract.
@@ -146,5 +146,5 @@ The current boundary is anchored in these repository paths:
 ## Next steps
 
 - [Kiki runtime boundary](./kiki-runtime.md#integrate-peer-thread-communication) — current local thread tools, REST routes, and Klient surface.
-- [Sessions and context](./sessions.md#session-storage) — ordinary Kimi Code Session storage under one home directory.
+- [Sessions and context](./sessions.md#session-storage) — ordinary Kiki session storage under one home directory.
 - [Local server and API](./server.md) — how clients connect to a `kap-server` instance.

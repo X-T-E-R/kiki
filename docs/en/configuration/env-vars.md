@@ -1,6 +1,6 @@
 # Environment variables
 
-Kimi Code CLI uses environment variables to control a small number of runtime behaviors — relocating the data directory and temporarily switching models without touching the config file.
+Kiki uses environment variables to control a small number of runtime behaviors — relocating the data directory and temporarily switching models without touching the config file.
 
 ::: warning Important: API keys are not configured here
 Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in `config.toml` under `[providers.<name>]` or the `[providers.<name>.env]` sub-table.
@@ -12,15 +12,15 @@ For background, see [Config overrides: provider credentials](./overrides.md#prov
 
 ## Core paths
 
-### `KIMI_CODE_HOME`
+### `KIKI_HOME`
 
-Overrides the data root directory; the default is `~/.kimi-code`. Once set, the config file, sessions, logs, OAuth credentials, and all other data land under the new path:
+Overrides the data root directory; the default is `~/.kiki`. Once set, the config file, sessions, logs, OAuth credentials, and all other data land under the new path:
 
 ```sh
-export KIMI_CODE_HOME="/path/to/custom/kimi-code"
+export KIKI_HOME="/path/to/custom/kiki"
 ```
 
-> Make sure the directory is writable. Multiple `kimi` instances sharing the same `KIMI_CODE_HOME` will share config and credential files.
+> Make sure the directory is writable. Multiple `kiki` instances sharing the same `KIKI_HOME` will share config and credential files.
 
 For the complete data directory structure, see [Data locations](./data-locations.md).
 
@@ -85,7 +85,7 @@ export KIMI_MODEL_API_KEY="YOUR_API_KEY"
 export KIMI_MODEL_BASE_URL="https://api.example.com/v1"
 export KIMI_MODEL_MAX_CONTEXT_SIZE="262144"
 export KIMI_MODEL_CAPABILITIES="image_in,thinking"
-kimi
+kiki
 ```
 
 Complete variable list:
@@ -112,27 +112,26 @@ Switches that control the behavior of subsystems such as background tasks and th
 
 | Variable | Purpose | Valid values |
 | --- | --- | --- |
-| `KIMI_CODE_PASSWORD` | Set a parallel auth credential for the `kimi web` local server, valid alongside the bearer token; recommended when binding the server beyond loopback — see [Local server and API](../guides/server.md#authentication) | Any non-empty string; when unset, only the token is valid |
-| `KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` | Whether to keep background tasks when the session closes; takes higher priority than `config.toml`. The default is to stop them on exit | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
-| `KIMI_CODE_BACKGROUND_MAX_RUNNING_TASKS` | Cap on concurrently running background tasks; takes higher priority than `[background] max_running_tasks` in `config.toml` (unset means no cap) | Positive integer; invalid values are ignored |
+| `KIKI_PASSWORD` | Set a parallel auth credential for the `kiki web` local server, valid alongside the bearer token; recommended when binding the server beyond loopback — see [Local server and API](../guides/server.md#authentication) | Any non-empty string; when unset, only the token is valid |
+| `KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT` | Whether to keep background tasks when the session closes; takes higher priority than `config.toml`. The default is to stop them on exit | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIKI_BACKGROUND_MAX_RUNNING_TASKS` | Cap on concurrently running background tasks; takes higher priority than `[background] max_running_tasks` in `config.toml` (unset means no cap) | Positive integer; invalid values are ignored |
 | `KIMI_IMAGE_MAX_EDGE_PX` | Longest-edge ceiling (px) for image compression; takes higher priority than `[image] max_edge_px` in `config.toml` (default `2000`) | Positive integer; invalid values are ignored |
 | `KIMI_IMAGE_READ_BYTE_BUDGET` | Per-image byte budget for model-initiated image reads (`ReadMediaFile` default reads); takes higher priority than `[image] read_byte_budget` in `config.toml` (default `262144`, i.e. 256 KB) | Positive integer; invalid values are ignored |
-| `KIMI_CODE_PLUGIN_MARKETPLACE_URL` | Set the plugin marketplace JSON loaded by `/plugins`; takes priority over `[plugins] marketplace_url` | `http://` or `https://` URL, `file://` URL, or local path; unset or blank does not load a remote catalog |
-| `KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY` | Cap how many AgentSwarm subagents run concurrently during the initial ramp; leave unset for no cap | Positive integer; invalid values fail fast |
-| `KIMI_SUBAGENT_TIMEOUT_MS` | Maximum wall-clock time (ms) a single subagent (`AgentRun` / `AgentSwarm`) may run; takes higher priority than `[subagent] timeout_ms` in `config.toml` (default `7200000`, i.e. 2 hours) | Positive integer; invalid values fall back to the config or default |
-| `KIMI_CODE_IDENTITY_NAME` | Display name the agent calls itself in the system prompt; takes higher priority than `[identity] name` in `config.toml` and is never written back to it | Any non-empty string; blank values read as unset |
-| `KIMI_CODE_IDENTITY_SLUG` | Protocol identifier for the `User-Agent` product token sent to third-party providers and the MCP client name; takes higher priority than `[identity] slug`. Derived from the name when unset | Any non-empty string; normalized to lowercase with non-alphanumeric runs folded to `-` |
-| `KIMI_CODE_BUILTIN_PRODUCT_SKILLS` | Whether the built-in skills documenting Kimi Code itself are offered to the model; takes higher priority than `builtin_product_skills` in `config.toml` (default enabled) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
-| `KIMI_CODE_TUI_FULL_SCREEN` | Enable the experimental fullscreen alternate-screen UI: scrollable transcript viewport, mouse text selection, clickable links, and Ctrl-Shift-F transcript search | `1` enables it; anything else keeps the regular inline UI |
-| `KIMI_CODE_EXPERIMENTAL_TASK_WAIT` | Whether the model is given the `TaskWait` tool, which waits for background tasks inside the current turn instead of ending it (enabled by default) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
-| `KIKI_MCP_CONFIG_PATH` | MCP config file injected by an external orchestrator and loaded read-only by the server started via `kimi web`. Must be set together with `KIKI_MCP_AGENT_PROFILE_HOME` and `KIKI_MCP_CONFIG_READ_ONLY`; an incomplete set fails startup | Absolute path |
+| `KIKI_PLUGIN_MARKETPLACE_URL` | Set the plugin marketplace JSON loaded by `/plugins`; takes priority over `[plugins] marketplace_url` | `http://` or `https://` URL, `file://` URL, or local path; unset or blank does not load a remote catalog |
+| `KIMI_SUBAGENT_TIMEOUT_MS` | Maximum wall-clock time (ms) a single subagent (`AgentRun`) may run; takes higher priority than `[subagent] timeout_ms` in `config.toml` (default `7200000`, i.e. 2 hours) | Positive integer; invalid values fall back to the config or default |
+| `KIKI_IDENTITY_NAME` | Display name the agent calls itself in the system prompt; takes higher priority than `[identity] name` in `config.toml` and is never written back to it | Any non-empty string; blank values read as unset |
+| `KIKI_IDENTITY_SLUG` | Protocol identifier for the `User-Agent` product token sent to third-party providers and the MCP client name; takes higher priority than `[identity] slug`. Derived from the name when unset | Any non-empty string; normalized to lowercase with non-alphanumeric runs folded to `-` |
+| `KIKI_BUILTIN_PRODUCT_SKILLS` | Whether the built-in skills documenting Kiki itself are offered to the model; takes higher priority than `builtin_product_skills` in `config.toml` (default enabled) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIKI_TUI_FULL_SCREEN` | Enable the experimental fullscreen alternate-screen UI: scrollable transcript viewport, mouse text selection, clickable links, and Ctrl-Shift-F transcript search | `1` enables it; anything else keeps the regular inline UI |
+| `KIKI_EXPERIMENTAL_TASK_WAIT` | Whether the model is given the `TaskWait` tool, which waits for background tasks inside the current turn instead of ending it (enabled by default) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIKI_MCP_CONFIG_PATH` | MCP config file injected by an external orchestrator and loaded read-only by the server started via `kiki web`. Must be set together with `KIKI_MCP_AGENT_PROFILE_HOME` and `KIKI_MCP_CONFIG_READ_ONLY`; an incomplete set fails startup | Absolute path |
 | `KIKI_MCP_AGENT_PROFILE_HOME` | Agent-profile root directory injected by an external orchestrator, used together with `KIKI_MCP_CONFIG_PATH`; the three `KIKI_MCP_*` catalog variables must always be set as a set | Absolute path |
 | `KIKI_MCP_CONFIG_READ_ONLY` | Read-only marker for the injected catalog; must be `1` — the server never writes back to the injected config or profiles | `1` |
-| `KIMI_MCP_STARTUP_TIMEOUT_MS` | Global default connection timeout (ms) for all MCP servers; takes higher priority than `[mcp] startup_timeout_ms` in `config.toml`, but a per-server `startupTimeoutMs` in `mcp.json` still wins (default `30000`) | Integer from `1` to `2147483647`; invalid values are ignored |
-| `KIMI_MCP_TOOL_TIMEOUT_MS` | Global default single tool-call timeout (ms) for all MCP servers; takes higher priority than `[mcp] tool_timeout_ms` in `config.toml`, but a per-server `toolTimeoutMs` in `mcp.json` still wins (default `60000`) | Integer from `1` to `2147483647`; invalid values are ignored |
+| `KIKI_MCP_STARTUP_TIMEOUT_MS` | Global default connection timeout (ms) for all MCP servers; takes higher priority than `[mcp] startup_timeout_ms` in `config.toml`, but a per-server `startupTimeoutMs` in `mcp.json` still wins (default `30000`) | Integer from `1` to `2147483647`; invalid values are ignored |
+| `KIKI_MCP_TOOL_TIMEOUT_MS` | Global default single tool-call timeout (ms) for all MCP servers; takes higher priority than `[mcp] tool_timeout_ms` in `config.toml`, but a per-server `toolTimeoutMs` in `mcp.json` still wins (default `60000`) | Integer from `1` to `2147483647`; invalid values are ignored |
 | `KIMI_LOOP_MAX_STEPS_PER_TURN` | Maximum Agent steps per turn; takes higher priority than `[loop_control] max_steps_per_turn` in `config.toml` (unset or `0` means unlimited) | Non-negative integer; invalid values are ignored |
 | `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` | Maximum total attempts for a failing step (including the initial attempt); takes higher priority than `[loop_control] max_attempts_per_step` in `config.toml` (default `10`). The deprecated `KIMI_LOOP_MAX_RETRIES_PER_STEP` is still honored with a warning when this variable is unset | Non-negative integer; invalid values are ignored |
-| `KIMI_CODE_INFINITE_RETRY` | Retry every failed LLM request indefinitely — turn steps and background operations such as compaction alike — instead of failing the task; waits use exponential backoff (capped at 32 s) and honor the server's `Retry-After` header, and aborting still cancels immediately. Intended for long-running unattended evaluations against endpoints that may fail temporarily | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIKI_INFINITE_RETRY` | Retry every failed LLM request indefinitely — turn steps and background operations such as compaction alike — instead of failing the task; waits use exponential backoff (capped at 32 s) and honor the server's `Retry-After` header, and aborting still cancels immediately. Intended for long-running unattended evaluations against endpoints that may fail temporarily | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIMI_TOKEN_COUNTING_STRATEGY` | Which context token count is reported externally (the context-size display); takes higher priority than `[token_counting] strategy` in `config.toml` (default `measured+estimated`) | `measured+estimated`, `measured`, `estimated` (case-insensitive); invalid values are ignored |
 | `NB_SEARCH_CONFIG` | Path to an nb-search canonical JSON config loaded before Kiki's `[nb_search]` patch | File path |
 | `NB_SEARCH_HOME` | nb-search runtime data directory | Directory path |
@@ -142,7 +141,7 @@ Switches that control the behavior of subsystems such as background tasks and th
 | `NB_SEARCH_EXA_API_KEY` | Credential used by the built-in `exa.default` provider instance | Non-blank string |
 | `NB_SEARCH_TAVILY_API_KEY` | Credential used by the built-in `tavily.default` provider instance | Non-blank string |
 | `NB_SEARCH_JINA_API_KEY` | Optional credential used by the built-in `jina-reader.default` fetch provider instance | Non-blank string |
-| `KIMI_CODE_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process; a per-feature `KIMI_CODE_EXPERIMENTAL_<NAME>` variable or an explicit entry in the `[experimental]` section of `config.toml` takes precedence over it | `1`, `true`, `yes`, `on` |
+| `KIKI_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process; a per-feature `KIKI_EXPERIMENTAL_<NAME>` variable or an explicit entry in the `[experimental]` section of `config.toml` takes precedence over it | `1`, `true`, `yes`, `on` |
 | `KIMI_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
 | `KIMI_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `kimi` provider only | Positive integer; `0` or negative disables clamping |
 | `KIMI_MODEL_TEMPERATURE` | Sampling temperature for every request; applies to the `kimi` provider only (global — independent of `KIMI_MODEL_NAME`) | Number, e.g. `0.3` |
@@ -151,7 +150,9 @@ Switches that control the behavior of subsystems such as background tasks and th
 | `KIMI_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Kimi's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
 | `KIMI_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
 
-`[subagent] default_model` and `default_effort` have no environment-variable equivalents. They are accepted in `config.toml` and currently unused by `AgentRun` / `AgentSwarm`.
+Subagent concurrency has no environment-variable override. Configure [`[subagent]`](./config-files.md#subagent) with `max_direct_children` and `max_total_subagents`; their defaults are `16` and `0` (unlimited), respectively.
+
+`[subagent] default_model` and `default_effort` have no environment-variable equivalents. They are accepted in `config.toml` and currently unused by `AgentRun`.
 
 ## Diagnostic logs
 
@@ -181,7 +182,7 @@ The CLI also reads several standard system variables to detect the runtime envir
 
 ## HTTP proxy
 
-Kimi Code honors the standard proxy environment variables for all outbound traffic — model API calls, MCP servers, web tools, sign-in, and update checks:
+Kiki honors the standard proxy environment variables for all outbound traffic — model API calls, MCP servers, web tools, sign-in, and update checks:
 
 - `HTTP_PROXY` / `http_proxy`: proxy for `http://` requests
 - `HTTPS_PROXY` / `https_proxy`: proxy for `https://` requests
@@ -192,10 +193,10 @@ Both HTTP(S) and SOCKS proxies are supported. A SOCKS proxy is recognized by its
 
 The proxy is applied only when one of these variables is set; otherwise connections are made directly. Loopback hosts (`localhost`, `127.0.0.1`, `::1`) always bypass the proxy, so a local server such as a localhost MCP server keeps working when a proxy is configured — add your own internal hosts to `NO_PROXY` to exempt them too.
 
-Stdio MCP servers that run as Node child processes honor `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` automatically when the child's Node version supports `NODE_USE_ENV_PROXY` (Node ≥ 22.21 or ≥ 24.5); SOCKS proxying applies to Kimi Code's own traffic only.
+Stdio MCP servers that run as Node child processes honor `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` automatically when the child's Node version supports `NODE_USE_ENV_PROXY` (Node ≥ 22.21 or ≥ 24.5); SOCKS proxying applies to Kiki's own traffic only.
 
 ## Next steps
 
 - [Config overrides](./overrides.md) — how environment variables, CLI options, and the config file interact by priority
-- [Data locations](./data-locations.md) — directory structure affected by `KIMI_CODE_HOME`
+- [Data locations](./data-locations.md) — directory structure affected by `KIKI_HOME`
 - [Providers and models](./providers.md) — full connection examples per provider type

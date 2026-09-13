@@ -1,6 +1,6 @@
 # Custom Themes
 
-Kimi Code CLI can use a built-in color scheme or a custom JSON theme file. Custom files live in the themes directory and appear in `/theme` alongside the built-in choices.
+Kiki CLI can use a built-in color scheme or a custom JSON theme file. Custom files live in the themes directory and appear in `/theme` alongside the built-in choices.
 
 ## Built-in color tokens
 
@@ -30,7 +30,7 @@ Custom themes can override the tokens below. The `dark` and `light` columns show
 
 ## Use the custom-theme skill
 
-You do not need to write the JSON by hand. Run the built-in `/custom-theme [extra text]` skill command to enter the custom-theme workflow; the skill can choose colors, write the file under `~/.kimi-code/themes/`, validate the hex values, and tell you how to apply it.
+You do not need to write the JSON by hand. Run the built-in `/custom-theme [extra text]` skill command to enter the custom-theme workflow; the skill can choose colors, write the file under `~/.kiki/themes/`, validate the hex values, and tell you how to apply it.
 
 Example invocations:
 
@@ -44,8 +44,8 @@ After activation, the skill usually asks whether you want a light or dark base, 
 
 Add a `.json` file to the themes directory:
 
-- `~/.kimi-code/themes/`
-- or `$KIMI_CODE_HOME/themes/` when the `KIMI_CODE_HOME` environment variable is set
+- `~/.kiki/themes/`
+- or `$KIKI_HOME/themes/` when the `KIKI_HOME` environment variable is set
 
 Create the directory if it does not exist. **The filename is the theme name**: `ember.json` appears in `/theme` as `Custom: ember`.
 
@@ -88,7 +88,7 @@ Two ways:
 2. **`tui.toml`**: set `theme` to your theme name:
 
    ```toml
-   # ~/.kimi-code/tui.toml
+   # ~/.kiki/tui.toml
    theme = "ember"
    ```
 

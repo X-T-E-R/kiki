@@ -1,6 +1,6 @@
 # 配置覆盖
 
-Kimi Code CLI 有三个地方可以影响运行参数：配置文件、命令行选项、环境变量。它们不是简单的"谁优先级高谁赢"——三者面向不同场景，作用范围互不相同：
+Kiki 有三个地方可以影响运行参数：配置文件、命令行选项、环境变量。它们不是简单的"谁优先级高谁赢"——三者面向不同场景，作用范围互不相同：
 
 - **配置文件** 保存长期偏好（模型、密钥、循环控制等），每次启动都生效
 - **命令行选项** 做本次启动的临时切换，退出后失效
@@ -12,7 +12,7 @@ Kimi Code CLI 有三个地方可以影响运行参数：配置文件、命令行
 
 环境变量按作用分两类，不能合并成一条线性优先级：
 
-1. **定位配置文件**：`KIMI_CODE_HOME` 决定数据根目录，配置文件路径因此变为 `$KIMI_CODE_HOME/config.toml`。这一步先于其他所有解析，不是普通参数的后备来源。
+1. **定位配置文件**：`KIKI_HOME` 决定数据根目录，配置文件路径因此变为 `$KIKI_HOME/config.toml`。这一步先于其他所有解析，不是普通参数的后备来源。
 2. **运行端点与诊断**：`KIMI_CODE_OAUTH_HOST`、`KIMI_CODE_BASE_URL`、`KIMI_LOG_LEVEL` 等在 OAuth 或日志子系统初始化时读取。完整列表见[环境变量](./env-vars.md)。
 
 ## 普通运行参数的优先级
@@ -20,15 +20,15 @@ Kimi Code CLI 有三个地方可以影响运行参数：配置文件、命令行
 对模型别名、Plan 模式、yolo 模式、Skills 目录等普通运行参数，优先级从高到低：
 
 1. **命令行选项**（`-m`、`--plan`、`--yolo` 等）：仅对本次启动生效
-2. **用户配置文件**（`~/.kimi-code/config.toml`）：保存长期偏好
+2. **用户配置文件**（`~/.kiki/config.toml`）：保存长期偏好
 
-少数环境变量明确覆盖特定配置字段，例如 `KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` 的优先级高于 `[background].keep_alive_on_exit`。这类例外在[环境变量](./env-vars.md)和[配置文件](./config-files.md)对应字段里都有标注。
+少数环境变量明确覆盖特定配置字段，例如 `KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT` 的优先级高于 `[background].keep_alive_on_exit`。这类例外在[环境变量](./env-vars.md)和[配置文件](./config-files.md)对应字段里都有标注。
 
 ::: warning
 **普通运行参数不会从 shell 环境变量取后备值。** 供应商的 `api_key` / `base_url` 只从 `config.toml`（包括 `[providers.<name>.env]` 子表）读取，不会回退到 shell 里 `export` 的变量。唯一的例外是显式的 `KIMI_MODEL_*` 通道——详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kimi-model)。
 :::
 
-目前 CLI 只读取一份用户级配置文件，没有项目级配置文件机制。需要在不同项目间隔离配置时，用 `KIMI_CODE_HOME` 指向不同的数据目录——见下文[典型场景](#典型场景)。
+CLI 从 `KIKI_HOME`（默认 `~/.kiki`）读取用户级配置，并从 `<项目根目录>/.kiki/local.toml` 读取项目级设置。旧的 `.kimi-code/local.toml` 路径不会自动加载；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。需要在不同项目间隔离配置时，用 `KIKI_HOME` 指向不同的数据目录——见下文[典型场景](#典型场景)。
 
 ## 供应商凭证
 
@@ -73,12 +73,28 @@ Kimi Code CLI 有三个地方可以影响运行参数：配置文件、命令行
 `--skills-dir` 是一次性替换，只影响本次启动。如需长期追加搜索目录，在 `config.toml` 里写 `extra_skill_dirs`（详见 [Agent Skills](../customization/skills.md)）。
 :::
 
+## 模型与 effort 解析
+
+在原生 executor 上，先确定本次派发使用的模型，再解析该模型的 thinking effort；既有 route、lease 与调用方限制仍需满足。
+
+Thinking effort 按以下顺序解析：
+
+1. 显式 `effort` 必须符合所选模型的锁定值与能力。
+2. 未显式传入时，既有 route 或 lease 锁优先。
+3. 匹配的 `model_profiles` 条目。
+4. profile 顶层的 `thinking_effort`，但仅当所选模型匹配 profile 的默认 `model_alias`。
+5. `[models."<alias>"].overrides.default_effort`。
+6. `[thinking]` 全局默认值。
+7. 模型自身的 catalog 或 capability 默认值。
+
+没有 `model_alias` 的 profile 只跳过顶层 effort 这一层，不会 fail closed；解析会继续使用下一层默认值。普通 resume 省略模型参数时保持当前绑定；alias 解析到同一规范模型时为 no-op。只修改 `effort` 时保留已保存的模型；切换到不同规范模型且省略 `effort` 时，按新模型重新解析 effort。恢复时切换到不同规范模型仍需 `allow_model_change: true`。既有参数校验以及外部 executor 自行完成的校验继续生效。
+
 ## 典型场景
 
 **隔离测试环境**——用单独的数据目录，避免污染主配置和会话：
 
 ```sh
-KIMI_CODE_HOME="$PWD/.kimi-sandbox" kimi
+KIKI_HOME="$PWD/.kiki-sandbox" kiki
 ```
 
 **一次性使用测试密钥**——由于供应商凭证只从配置文件读，把测试密钥写进 `env` 子表：
@@ -91,16 +107,16 @@ KIMI_API_KEY = "sk-test"
 **跳过审批运行批处理任务**：
 
 ```sh
-kimi --yolo -p "批量重命名以下文件..."
+kiki --yolo -p "批量重命名以下文件..."
 ```
 
 **临时进入 Plan 模式**（若想永久生效，在配置文件设 `default_plan_mode = true`）：
 
 ```sh
-kimi --plan
+kiki --plan
 ```
 
 ## 下一步
 
 - [配置文件](./config-files.md) — 所有可配置字段的完整参考
-- [环境变量](./env-vars.md) — `KIMI_CODE_HOME` 等变量的完整列表与说明
+- [环境变量](./env-vars.md) — `KIKI_HOME` 等变量的完整列表与说明

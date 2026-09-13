@@ -1,18 +1,18 @@
 # Agents and Sub-Agents
 
-Every session in Kimi Code CLI is driven by a **main Agent**. The main Agent understands the user's intent, plans steps, calls tools, and when needed dispatches **sub-agents** to handle more focused sub-tasks — for example, exploring an unfamiliar codebase, reviewing multiple implementations in parallel, or planning a large refactor without touching the main context.
+Every session in Kiki is driven by a **main Agent**. The main Agent understands the user's intent, plans steps, calls tools, and when needed dispatches **sub-agents** to handle more focused sub-tasks — for example, exploring an unfamiliar codebase, reviewing multiple implementations in parallel, or planning a large refactor without touching the main context.
 
 A sub-agent receives a task description from the main Agent, works in its own isolated context, and then returns its conclusions. It does not communicate with the user directly, and its intermediate reasoning and tool call records do not mix into the main Agent's history.
 
 ## Built-in Sub-Agents
 
-Kimi Code CLI includes three built-in sub-agents, ready to use out of the box, each aimed at a different task shape:
+Kiki includes three built-in sub-agents, ready to use out of the box, each aimed at a different task shape:
 
 - **`coder`**: The default sub-agent — a general-purpose software engineering assistant that can read and write files, execute commands, search code, and land concrete changes.
 - **`explore`**: Dedicated to codebase exploration; performs read-only operations only and does not modify any files. Ideal for quickly searching, reading, and summarizing a repository without touching files.
 - **`plan`**: Dedicated to implementation planning and architecture design; even shell commands are not available, keeping the focus on "figuring out how to do something" rather than "actually doing it."
 
-A `coder` sub-agent shares most of the main Agent's tool set: it can run shell commands in the background, maintain todo lists, enter Plan mode, invoke Agent Skills, and wait on background tasks with `TaskWait`. It does not receive `AgentRun`, `AgentSwarm`, `AgentList`, or `AgentSend`; nested dispatch requires a custom profile that lists those tools. If it finishes its turn while background tasks are still running, its run only reports completion after those tasks settle, so the parent receives the result after the underlying work has actually finished.
+A `coder` sub-agent shares most of the main Agent's tool set: it can run shell commands in the background, maintain todo lists, enter Plan mode, invoke Agent Skills, and wait on background tasks with `TaskWait`. It does not receive `AgentRun`, `AgentList`, or `AgentSend`; nested dispatch requires a custom profile that lists those tools. If it finishes its turn while background tasks are still running, its run only reports completion after those tasks settle, so the parent receives the result after the underlying work has actually finished.
 
 The top-level [`disabled_builtin_profiles`](../configuration/config-files.md#top-level-fields) setting removes named built-in profiles (`agent`, `coder`, `explore`, or `plan`) from subagent discovery and dispatch. Disabling `agent` does not prevent the main agent from starting with its default binding. A file profile that shares a name with a disabled built-in no longer needs `override: true`.
 
@@ -26,13 +26,11 @@ Sub-agents support running in the background: results are automatically returned
 
 ## Named child agents {#codex-style-collaboration-adapter}
 
-The default v2 engine (Kiki desktop and `kimi` CLI/TUI) gives the main `agent` profile four child-agent tools with no experiment flag: `AgentRun`, `AgentSwarm`, `AgentList`, and `AgentSend`. Built-in `coder` and `explore` profiles do not receive them. Each caller can list and message only the children it created directly; a grandchild or another caller's child is not a valid target.
+The default v2 engine (Kiki desktop and `kiki` CLI/TUI) gives the main `agent` profile three child-agent tools with no experiment flag: `AgentRun`, `AgentList`, and `AgentSend`. Built-in `coder` and `explore` profiles do not receive them. Each caller can list and message only the children it created directly; a grandchild or another caller's child is not a valid target. The retired `AgentSwarm` callable tool is unavailable for new calls, but historical swarm child records remain readable.
 
-`AgentRun` launches a new child or continues an existing one. Every call requires `prompt` and a short 3–5 word `description` for UI display. New launches can also set `profile` (defaults to `coder`), `route`, `name`, `background`, `model_alias`, and `effort`. Pass `name` when you expect to address the same child again; names must match `^[a-z0-9_]+$`, cannot be `root`, and stay unique for the session. To continue a direct child, set `resume` to its name or agent id and keep its persisted profile, route, model, and effort bindings.
+`AgentRun` launches a new child or continues an existing one. Every call requires `prompt` and a short 3–5 word `description` for UI display. New launches can also set `profile` (defaults to `coder`), `profile_file` (an explicit subagent role Markdown file, absolute or workspace-relative; it is a role definition, not a shared prompt template, and is mutually exclusive with `profile`, `route`, and `resume`), `route`, `name`, `background`, `model_alias`, and `effort`. The `allow_model_change` flag is meaningful only on `resume` with an explicit `model_alias`; it is required when that alias resolves to a different canonical model. Pass `name` when you expect to address the same child again; names must match `^[a-z0-9_]+$`, cannot be `root`, and stay unique for the session. To continue a direct child, set `resume` to its name or agent id; it rejects `name`, `profile`, `profile_file`, and `route`. Omit `effort` to keep the saved effort, or pass it to apply on the next idle run. Omit `model_alias` to keep the saved model; changing it to a different canonical model requires `allow_model_change: true`, while an alias resolving to the same canonical model is a no-op. Caller, role, route, and executor restrictions remain enforced. An external executor that does not support changing a resumed thread binding returns an error instead of recreating the thread or executor. A new launch binds its model from the `model_alias` parameter or the pin on the effective profile, route, or caller lease, with the parameter winning; when neither names one, the call fails with `model.not_configured` and no child is created. Effort resolves separately through tool `effort` → profile `thinking_effort` → the bound model's own default. An unknown `model_alias` is an error. To continue work in the background, set `background: true`; otherwise the parent waits for the result. Agent tasks time out after 2 hours by default; configure the global limit through `[subagent] timeout_ms` or `KIMI_SUBAGENT_TIMEOUT_MS` (`0` disables it), and print mode defaults to no timeout. There is no per-call timeout or arbitrary provider-parameter passthrough.
 
-`AgentSwarm` launches item-based children from a `prompt_template` containing `{{item}}` and an `items` array of at most 128 values. It requires `description`; new item-based launches can set `profile` (defaults to `coder`), `route`, `model_alias`, and `effort`. It can also continue direct children through `resume_agent_ids`.
-
-`AgentList` returns those direct children, including swarm members. Default `include_finished=false` lists running children and children with no tracking task; pass `true` when you need children whose latest background task has already finished or failed. At most 50 entries are returned, running first.
+`AgentList` returns direct children, including retained historical swarm entries. Default `include_finished=false` lists running children and children with no tracking task; pass `true` when you need children whose latest background task has already finished or failed. At most 50 entries are returned, running first.
 
 `AgentSend` queues a mailbox message without starting or interrupting a turn. An idle child stays idle and reads the message at the beginning of its next step. Address the child by `name` or agent id.
 
@@ -40,11 +38,11 @@ The removed v1 Codex-style collaboration adapter and its experimental flag do no
 
 ## Peer-thread communication
 
-Peer-thread communication lets the main Agent coordinate existing Kimi Code sessions on the same local host, including sessions in other workspaces. It is separate from the child-agent tools above and is disabled by default. After opting in, the four tools `list_threads`, `read_thread`, `send_message_to_thread`, and `wait_threads` appear only on a session's main Agent, not its sub-agents.
+Peer-thread communication lets the main Agent coordinate existing Kiki sessions on the same local host, including sessions in other workspaces. It is separate from the child-agent tools above and is disabled by default. After opting in, the four tools `ThreadList`, `ThreadRead`, `ThreadSend`, and `ThreadWait` appear only on a session's main Agent, not its sub-agents.
 
-A thread reference identifies a host, workspace, and session. `list_threads` returns the references needed for later calls; `read_thread` reads completed main-Agent turns without resuming a cold session; `send_message_to_thread` derives the source from the current main-Agent session and durably accepts a peer-attributed message for another thread; and `wait_threads` waits for activity from up to eight threads for at most 60 seconds. Messages cannot cross hosts.
+A thread reference identifies a host, workspace, and session. `ThreadList` returns the references needed for later calls; `ThreadRead` reads completed main-Agent turns without resuming a cold session; `ThreadSend` derives the source from the current main-Agent session and durably accepts a peer-attributed message for another thread; and `ThreadWait` waits for activity from up to eight threads for at most 60 seconds. Messages cannot cross hosts.
 
-True peer attribution requires the source thread's main Agent to call `send_message_to_thread`. REST and the `global.threads` Klient facade accept only target-addressed input and record it as user-origin, so an external client cannot claim a source thread.
+True peer attribution requires the source thread's main Agent to call `ThreadSend`. REST and the `global.threads` Klient facade accept only target-addressed input and record it as user-origin, so an external client cannot claim a source thread.
 
 Set `[thread_communication] enabled = true` in `config.toml` to opt in globally. Sending a message can resume a cold target session and consume model quota. Integrators can also persist an enable or disable override for an individual workspace; a workspace override cannot turn the feature on while the global switch is off. See the [Kiki runtime boundary](../guides/kiki-runtime.md#integrate-peer-thread-communication) for those interfaces.
 
@@ -69,18 +67,28 @@ If you need a particular type of tool to be permanently unavailable inside sub-a
 
 Beyond the three built-in sub-agents, you can define your own agents as Markdown files. Each file describes one agent: the frontmatter (YAML metadata at the top of the file) declares its name, description, and tool access, and the file body is its system prompt. Custom agents can be delegated to as sub-agents — the main Agent discovers them automatically alongside the built-in ones — or selected as the main Agent at startup.
 
+### Capability visibility
+
+The GUI's main-agent selector uses the effective profiles for the current workspace or working directory. Main profiles have `main: true`. A file overriding a built-in profile inherits its `main` value when omitted; an explicit `main: false` is preserved. `SYSTEM.md` therefore retains the default `agent` profile's main-agent status without extra frontmatter. Removing the default profile from subagent discovery does not remove its main binding or discard its effective file overrides. Other disabled profiles remain unavailable. See [Agent file format](#agent-file-format) for the field definitions.
+
+In **Settings → Agents**, select a workspace to inspect its default main profile, effective source, and subagent capabilities. File-backed profiles can be edited at their displayed source; editing common fields in a legacy `SYSTEM.md` adds frontmatter while preserving the prompt body. A selected profile that later becomes unavailable stays visible with a diagnostic so you can choose another.
+
+Open **Dispatch capabilities** in settings, next to the new-session workspace selector, or in a session's right rail to inspect subagent profiles, routes, executors, and default model and thinking-effort sources. Default configuration validity and permission to launch are shown separately. The draft panel is a planning reference, not a real-time launch check.
+
+The session panel reflects the current agent's tool directory, including [Plan mode's read-only research restriction](../reference/tools.md#plan-mode) and launch refusal reasons. It does not check external provider health. If a selected model, profile, or thinking effort becomes unavailable, choose a valid value before sending; a loading state or catalog error alone does not invalidate a saved choice.
+
 ### Agent Locations
 
-Kimi Code CLI discovers agent files by scope; more specific scopes take higher priority: **Explicit (`--agent-file`) > Project > Extra > User > Plugin > Built-in**. When two files define the same `name`, the higher-priority scope wins. Each directory is scanned recursively for `.md` files.
+Kiki discovers agent files by scope; more specific scopes take higher priority: **Explicit (`--agent-file`) > Project > Extra > User > Plugin > Built-in**. When two files define the same `name`, the higher-priority scope wins. Each directory is scanned recursively for `.md` files.
 
 **User level** (applies to all projects):
-- `$KIMI_CODE_HOME/agents/` (default: `~/.kimi-code/agents/`)
+- `$KIKI_HOME/agents/` (default: `~/.kiki/agents/`)
 - `~/.agents/agents/`
 
-The Kimi-specific user agent directory moves with `KIMI_CODE_HOME`, while the generic `~/.agents/agents/` directory stays under the real OS home so it can be shared across tools.
+The Kiki-specific user agent directory moves with `KIKI_HOME`, while the generic `~/.agents/agents/` directory stays under the real OS home so it can be shared across tools.
 
 **Project level** (project root = the nearest directory containing `.git`, searching upward from the working directory):
-- `.kimi-code/agents/`
+- `.kiki/agents/`
 - `.agents/agents/`
 
 **Extra directories**: Declared via `extra_agent_dirs` at the top level of `config.toml`:
@@ -89,14 +97,14 @@ The Kimi-specific user agent directory moves with `KIMI_CODE_HOME`, while the ge
 extra_agent_dirs = ["~/team-agents", ".agents/team-agents"]
 ```
 
-Agent Markdown files under the user, project, and `extra_agent_dirs` roots are watched for filesystem changes. After an approximately 200 ms debounce, additions, edits, and deletions reload automatically, so a running session can dispatch a newly available role without `/reload` or a CLI restart. `$KIMI_CODE_HOME/SYSTEM.md` is watched the same way. An already-created `AgentRun` tool instance keeps a frozen snapshot of its displayed role descriptions, so that list can look stale, but dispatch resolution uses the reloaded profiles immediately.
+Agent Markdown files under the user, project, and `extra_agent_dirs` roots are watched for filesystem changes. After an approximately 200 ms debounce, additions, edits, and deletions reload automatically, so a running session can dispatch a newly available role without `/reload` or a CLI restart. `$KIKI_HOME/SYSTEM.md` is watched the same way. An already-created `AgentRun` tool instance keeps a frozen snapshot of its displayed role descriptions, so that list can look stale, but dispatch resolution uses the reloaded profiles immediately.
 
 **Plugin level**: directories declared in an enabled plugin's manifest `agents` field (when omitted, the `agents/` directory under the plugin root is picked up automatically); see [Plugin Agents](./plugins.md#plugin-agents). Plugin agents outrank only the built-in agents.
 
-**Built-in agents** are distributed with the CLI and have the lowest priority. A directory-discovered file does not override a same-name built-in Agent unless its frontmatter declares `override: true`. A file loaded through `--agent-file` is treated as explicit launch intent, may override a same-name built-in Agent, outranks every directory scope, and applies to the current launch only. Separately, `$KIMI_CODE_HOME/SYSTEM.md` permanently overrides the default main agent's system prompt (it is not part of agent-file discovery); its precedence interactions are covered in the SYSTEM.md section below.
+**Built-in agents** are distributed with the CLI and have the lowest priority. A directory-discovered file does not override a same-name built-in Agent unless its frontmatter declares `override: true`. A file loaded through `--agent-file` is treated as explicit launch intent, may override a same-name built-in Agent, outranks every directory scope, and applies to the current launch only. Separately, `$KIKI_HOME/SYSTEM.md` permanently overrides the default main agent's system prompt (it is not part of agent-file discovery); its precedence interactions are covered in the SYSTEM.md section below.
 
 ::: warning Trust model
-Agent files are prompt configuration, and project-level files come from the repository itself — including repositories you have just cloned and do not trust yet. A project-scoped file can take over a built-in agent entirely: naming it `agent.md` with `override: true` replaces the **default main agent's whole system prompt**, and `coder.md` with `override: true` replaces the default sub-agent type. Unlike `AGENTS.md` content — which is injected into the prompt as reference data — an override file *is* the system prompt, and a file without a `tools` list keeps every tool. Review `.kimi-code/agents/` and `.agents/agents/` in unfamiliar repositories with the same caution you would apply to scripts, before running Kimi Code inside them.
+Agent files are prompt configuration, and project-level files come from the repository itself — including repositories you have just cloned and do not trust yet. A project-scoped file can take over a built-in agent entirely: naming it `agent.md` with `override: true` replaces the **default main agent's whole system prompt**, and `coder.md` with `override: true` replaces the default sub-agent type. Unlike `AGENTS.md` content — which is injected into the prompt as reference data — an override file *is* the system prompt, and a file without a `tools` list keeps every tool. Review `.kiki/agents/` and `.agents/agents/` in unfamiliar repositories with the same caution you would apply to scripts, before running Kiki inside them.
 :::
 
 ### Agent File Format
@@ -136,27 +144,38 @@ You are a strict code reviewer. Read the diff, then report findings grouped by s
 | `executor` | no | Executor id from `agent-executors.toml`; omit it to use the native engine. Named-child dispatch uses this binding from both in-process and external delegation surfaces. For an external delegation, harness approval requests are exposed through that root's `interactions` / `respond` operations and scoped to its own children. Example profiles live in `docs/examples/agent-profiles/external-harnesses/` |
 | `allowed_models` | no | Optional allowlist of model aliases this role may bind. YAML list or comma-separated string, same syntax as `tools`. When present and non-empty, the bound model must be a member. Comparisons use canonical model identity, so a bare alias matches a provider-qualified name. This list can only **narrow** what the machine already permits; it cannot re-permit a model listed in `[subagent].deny_models` or in this file's `deny_models`. A single-item list is the way to hard-pin a role to one alias — prefer it over a route sidecar whose only delta is a pinned model. Omit the field, or use an empty list, to impose no extra allowlist |
 | `deny_models` | no | Optional denylist of model aliases this role must not bind, same syntax as `allowed_models`. Auto-dispatch is rejected; an explicit human choice is admitted with a one-time warning. Machine `[subagent].deny_models` still rejects every path, including humans |
-| `allowed_efforts` | no | Optional allowlist of thinking efforts this role may bind, YAML list or comma-separated string. Role-level values intersect with a matching `model_profiles` entry. Auto-dispatch (`AgentRun` / `AgentSwarm`) is rejected when the resolved effort is outside the intersection; an explicit human choice is admitted with a one-time warning |
-| `model_profiles` | no | Per-alias run recipe for this role. YAML list of mappings only. Required `alias` and `when`; optional `thinking_effort`, `allowed_efforts`, `prompt_mode` (`prepend` / `append` / `wrap`), and `prompt`. `when` is shown to the parent dispatcher in the `AgentRun` tool description and is never added to the child prompt. `prompt_mode` + `prompt` compose onto this role's body before the model cognition overlay; `wrap` uses `${parent_prompt}` (or its alias `${base_prompt}`) exactly once. Entries whose alias is missing from this machine's `[models]` table are omitted from the tool description and do not apply. Duplicate aliases stay listed; overlay matching uses the first entry whose alias resolves. The deprecated `recommended_models` key is still accepted as an alias and warns at load; if both keys are present, `model_profiles` wins |
-| `service_tier` | no | Service tier requested on every LLM request this agent makes as a subagent: `auto`, `default`, `flex`, or `priority`. Only the `openai_responses` provider protocol encodes it into the request body; other protocols silently ignore it |
-| `request_params` | no | Extra request parameters as a scalar map (string/number/boolean values only), sent with every request this subagent makes. OpenAI-family providers spread them into the request body (Kimi via `extra_body`) without overriding engine-generated fields; Anthropic ignores the map; a first-class field such as `service_tier` wins on collision. Keys are sent verbatim, so a provider may reject names it does not recognize |
+| `allowed_efforts` | no | Optional allowlist of thinking efforts this role may bind, YAML list or comma-separated string. Role-level values intersect with a matching `model_profiles` entry. Auto-dispatch (`AgentRun`) is rejected when the resolved effort is outside the intersection; an explicit human choice is admitted with a one-time warning |
+| `model_profiles` | no | Per-alias run recipe for this role. YAML list of mappings only. Required `alias`; optional `when`, `thinking_effort`, `allowed_efforts`, `prompt_mode` (`prepend` / `append` / `wrap`), `prompt`, `service_tier`, `request_params`, `context_budget`, and `max_completion_tokens`. `when` is shown to the parent dispatcher in the `AgentRun` tool description and is never added to the child prompt. `prompt_mode` + `prompt` compose onto this role's body before the model cognition overlay; `wrap` uses `${parent_prompt}` (or its alias `${base_prompt}`) exactly once. Entries whose alias is missing from this machine's `[models]` table are omitted from the tool description and do not apply. Duplicate aliases stay listed; overlay matching uses the first entry whose alias resolves. The deprecated `recommended_models` key is still accepted as an alias and warns at load; if both keys are present, `model_profiles` wins |
+| `service_tier` | no | Profile default service tier: `auto`, `default`, `flex`, or `priority`. A configured `[models."<alias>"].service_tier` takes precedence on every request. Only the `openai_responses` provider protocol encodes it into the request body; other protocols silently ignore it |
+| `request_params` | no | Extra request parameters as a scalar map (string/number/boolean values only), sent with every request this subagent makes. OpenAI-family providers spread them into the request body (Kimi via `extra_body`) without overriding engine-generated fields; Anthropic ignores the map; a first-class field such as `service_tier` wins on collision. Keys are sent verbatim, so a provider may reject names it does not recognize. Typed provider parameters such as `temperature` and `top_p` belong here for the `kimi` provider; pass them only if the underlying model supports them |
+| `context_budget` | no | Token budget for this profile's context window. Declared only as a cap — must not exceed the bound model's `max_context_size`. The effective value is the minimum of every declared layer; declared limits can shrink the budget but never widen it past the model's real capacity |
+| `max_completion_tokens` | no | Per-completion output cap (token budget for a single LLM step). Declared only as a cap; the effective value is the minimum of every declared layer. Distinct from the input limit and the total context window — see [Configuration files](../configuration/config-files.md#models) |
 | `tools` | no | Allowlist of tool names such as `Read` or `Bash`; MCP tools are matched with globs such as `mcp__github__*`. Accepts a YAML list or a comma-separated string (`tools: Read, Grep`). Omit to allow all tools; a lone `*` also allows all tools; an empty list (`tools: []`) disables all tools |
 | `disallowedTools` | no | Denylist with the same syntax and matching rules, applied after `tools` |
 | `subagents` | no | Allowlist of sub-agent names this agent may delegate to, with the same syntax as `tools` (YAML list or comma-separated string). Omit the field or use a lone `*` to allow every type; use an empty list (`subagents: []`) to prohibit all subagent dispatch; otherwise the explicit names form the allowlist |
 
-`model_profiles` is a YAML list of mappings. A string, scalar, or mapping at the top level is invalid, because every entry needs a `when` trigger. Example:
+`model_profiles` is a YAML list of mappings. A string, scalar, or mapping at the top level is invalid, because every entry needs an `alias`. `when` is optional; the rest of the fields are optional too. Example:
 
 ```yaml
 model_profiles:
   - alias: fast-model
     when: Scope and acceptance checks are already named and a fast decisive pass beats waiting.
     thinking_effort: high
+    context_budget: 32000
+    max_completion_tokens: 4096
   - alias: k3-review
     when: Ordinary review work the default alias can finish on its own.
     prompt_mode: prepend
     prompt: |
       Prefer system-level and global-contract reasoning.
+    service_tier: priority
+    request_params:
+      temperature: 0.2
 ```
+
+Match `model_profiles` by canonical model identity. Resolve the model alias configuration, including its `overrides`, first; then apply model alias → top-level profile → matching `model_profiles` entry. Merge `request_params` by key and use the last explicit `service_tier`. Treat `context_budget` and `max_completion_tokens` as limits: take the smallest declared value across layers, within the model's capacity and output cap. Omitting a limit adds no restriction. Only top-level `thinking_effort` requires the selected model to match the profile's default `model_alias`; other profile parameters are not conditional on that match.
+
+The model cognition overlay (`[models."<alias>".cognition]`) is the supported way to add per-model prompt text — `model_profiles.prompt_mode` and `prompt` extend the role body itself, while the alias cognition extends the model's system prompt.
 
 `allowed_models` and `deny_models` only narrow. Machine `[subagent].deny_models` always wins, even when the role allowlists the same alias. A single-item `allowed_models` hard-pins the role; route sidecars cannot declare either field.
 
@@ -183,7 +202,7 @@ Unknown fields are ignored, so newer files stay readable by older versions. Fiel
 
 ### Named profile routes (experimental)
 
-A named route specializes an existing Agent without creating a new permission identity. Enable discovery at startup with `[experimental] agent-profile-routes = true` in `config.toml`, or set `KIMI_CODE_EXPERIMENTAL_AGENT_PROFILE_ROUTES=1`.
+A named route specializes an existing Agent without creating a new permission identity. Enable discovery at startup with `[experimental] agent-profile-routes = true` in `config.toml`, or set `KIKI_EXPERIMENTAL_AGENT_PROFILE_ROUTES=1`.
 
 Keep the base profile at `agents/<role>.md`. Put routes under `agents/.routes/<role>/<route>.md`; the canonical ID is `<role>.<route>`, with every segment in lowercase kebab-case. For example, `agents/.routes/reviewer/ui-k3.md` defines `reviewer.ui-k3`:
 
@@ -213,29 +232,31 @@ The required fields are `id`, `profile`, `description`, and `prompt_mode`. Optio
 
 If a route declares `tools`, `disallowedTools`, or `subagents`, that field replaces the base value entirely. Omit the field to inherit the base. `subagents: []` makes the route a leaf. Caller checks still use the base role, so a route cannot introduce a role the caller could not dispatch. Create and allowlist another base profile when you need a different role identity.
 
-An omitted request field inherits the base value. `service_tier: null` clears the base tier; another tier replaces it. `request_params: null` clears the base map; a mapping overlays scalar keys on it. A route-declared `model_alias` or `thinking_effort` is locked for automatic dispatch: `AgentRun` / `AgentSwarm` must omit it or repeat the same value; a conflict is rejected. A missing locked alias fails before Agent allocation and never uses the ordinary profile-alias fallback; dispatch also fails if the selected model cannot honor a locked effort exactly. In an already-bound session, an explicit human `/model` or effort change is admitted with a one-time warning; the lock stays on the snapshot.
+An omitted request field inherits the base value. `service_tier: null` clears the base tier; another tier replaces it. `request_params: null` clears the base map; a mapping overlays scalar keys on it. A route-declared `model_alias` or `thinking_effort` is locked for automatic dispatch: `AgentRun` must omit it or repeat the same value; a conflict is rejected. A missing locked alias fails before Agent allocation and never uses the ordinary profile-alias fallback; dispatch also fails if the selected model cannot honor a locked effort exactly. In an already-bound session, an explicit human `/model` or effort change is admitted with a one-time warning; the lock stays on the snapshot.
 
-When enabled, both `AgentRun` and `AgentSwarm` show compact route entries filtered through the caller's base-role allowlist. Entries contain the route ID, base role, description/usage hint, model and effort defaults, and overridden field names—never the prompt body. Pass `route: reviewer.ui-k3`; omit `profile` to derive `reviewer`, or pass that matching base explicitly. A mismatch is a coded error. There is no automatic ranking or silent fallback.
+When enabled, `AgentRun` shows compact route entries filtered through the caller's base-role allowlist. Entries contain the route ID, base role, description/usage hint, model and effort defaults, and overridden field names—never the prompt body. Pass `route: reviewer.ui-k3`; omit `profile` to derive `reviewer`, or pass that matching base explicitly. A mismatch is a coded error. There is no automatic ranking or silent fallback.
 
-Resume never reselects or switches a route. The journal stores the canonical base role and route ID with the rendered prompt, layered tool policy, denylist, subagent restriction, model/effort locks, service tier, and request parameters. Existing routed Agents therefore resume from their snapshot even if the flag is disabled or the sidecar changes, disappears, or becomes invalid; those changes affect only new dispatches. Old journals remain compatible. In a mixed `AgentSwarm` call, `route` applies only to new item-based spawns; resumed entries keep their snapshots.
+Resume never reselects or switches a route. The journal stores the canonical base role and route ID with the rendered prompt, layered tool policy, denylist, subagent restriction, model/effort locks, service tier, and request parameters. Existing routed Agents therefore resume from their snapshot even if the flag is disabled or the sidecar changes, disappears, or becomes invalid; those changes affect only new dispatches. Old journals remain compatible.
 
-A newly spawned subagent binds its model from exactly two sources: the `model_alias` tool parameter, or the `model_alias` pin on the effective profile, route, or caller lease. The dispatch wins when both are present. When neither names a model, the spawn fails with `model.not_configured` and no child is created — a subagent never runs on its caller's model, and no configured default fills the gap. Effort resolves separately and may stay unset: tool `effort` → profile `thinking_effort` → the bound model's own default. An unknown alias is an error whether it came from the dispatch or from a profile pin.
+A newly spawned subagent binds its model from exactly two sources: the `model_alias` tool parameter, or the `model_alias` pin on the effective profile, route, or caller lease. The dispatch wins when both are present. When neither names a model, the spawn fails with `model.not_configured` and no child is created — a subagent never runs on its caller's model, and no configured default fills the gap. Effort resolves separately and may stay unset: explicit `effort` on the tool call → `thinking_effort` declared on the profile, but only when the bound alias matches the profile's pinned `model_alias` (canonical identity) → the bound model's own default. An unknown alias is an error whether it came from the dispatch or from a profile pin.
 
-Resumed and retried subagents keep their persisted model and effort; passing binding fields on an `AgentRun` continue (`resume`) is rejected. A mixed `AgentSwarm` call applies them only to item-based new spawns.
+On `AgentRun` resume the saved binding is kept when you omit both `model_alias` and `effort`. A `model_alias` that resolves to the same canonical model is a no-op. Changing only `effort` applies the new value to the next idle run and keeps the saved model. Changing `model_alias` to a different canonical model requires `allow_model_change: true`; when `effort` is also omitted in that case, the target model's own default effort is re-resolved from scratch — the previous effort is not carried over. An explicit `effort` that the selected model cannot honor is rejected, while a non-strict unknown capability is passed through to the underlying protocol. Caller, role, route, and executor restrictions remain enforced; an external executor that does not support changing a resumed thread binding returns an error instead of recreating the thread or executor.
+
+Omit `model_alias` and `effort` to use the selected target's defaults when launching a new child. `AgentRun` lists configured models allowed by the caller's effective profiles, leases, routes, and model constraints. Each profile or route has its own allowed list; an alias shown for another target does not make it available to this one. Explicit overrides are checked before a child is created. To keep a role within a chosen model pool, declare `allowed_models` as well as its default `model_alias`; `model_profiles` supplies recommendations without granting access. Route tier overrides, including `service_tier: null`, do not clear a configured model-level tier.
 
 Subagent model governance compares canonical model identities after resolving `[models]` aliases. Machine `[subagent] deny_models` rejects listed models at every dispatch entry. A role file may further narrow that set with `allowed_models` and `deny_models`; those lists never widen machine permission, and a single-item `allowed_models` is the hard pin for that role. See the [configuration reference](../configuration/config-files.md#subagent) for fields and validation rules.
 
 A file with invalid content discovered in a directory is skipped with a warning and does not affect other files. A file passed explicitly via `--agent-file` must be valid — otherwise the CLI reports the error and exits.
 
 ::: warning Note
-`tools` and `disallowedTools` shape the tools shown to the model and are enforced again before execution. `subagents` works the same way: the `AgentRun` tool lists only the sub-agent types the caller may delegate to, and both `AgentRun` and `AgentSwarm` re-check the allowlist before dispatching; continuing an existing sub-agent is exempt. Permission rules remain a separate control for operations that require approval.
+`tools` and `disallowedTools` shape the tools shown to the model and are enforced again before execution. `subagents` works the same way: the `AgentRun` tool lists only the sub-agent types the caller may delegate to and re-checks the allowlist before dispatching; continuing an existing sub-agent is exempt. Permission rules remain a separate control for operations that require approval.
 :::
 
-When a custom agent runs as a dispatched sub-agent, Kimi prepends a short handoff notice: the last message is the complete deliverable for the caller. An independent host invocation (MCP / SDK) gets a different notice: there is no parent agent. Main-agent binds inject nothing. Put `${delegation_context}` in the body to place the notice; otherwise it is prepended. Set `delegation_notice: off` on the profile, or `[agents.delegation] sub = false` / `independent = false` in `config.toml`, to skip it. A configured path must exist and be non-empty, or bind fails.
+When a custom agent runs as a dispatched sub-agent, Kiki prepends a short handoff notice: the last message is the complete deliverable for the caller. An independent host invocation (MCP / SDK) gets a different notice: there is no parent agent. Main-agent binds inject nothing. Put `${delegation_context}` in the body to place the notice; otherwise it is prepended. Set `delegation_notice: off` on the profile, or `[agents.delegation] sub = false` / `independent = false` in `config.toml`, to skip it. A configured path must exist and be non-empty, or bind fails.
 
 ### Selecting the Main Agent
 
-Two CLI flags select which agent drives a new session, in both print mode (`kimi -p`) and the interactive TUI:
+Two CLI flags select which agent drives a new session, in both print mode (`kiki -p`) and the interactive TUI:
 
 - **`--agent <name>`**: Start the session with the named agent as the main Agent. The name can refer to a built-in agent or to any discovered file; an unknown name fails with an error listing the available agents.
 - **`--agent-file <path>`**: Load one agent file at the highest priority for this launch and start with it. The flag accepts exactly one file: it cannot be repeated, and it cannot be combined with `--agent`.
@@ -245,17 +266,17 @@ Both flags only apply when starting a new session — neither can be combined wi
 For example:
 
 ```sh
-kimi --agent reviewer
-kimi -p --agent reviewer "Review the changes on this branch"
+kiki --agent reviewer
+kiki -p --agent reviewer "Review the changes on this branch"
 ```
 
-The bound agent is the session's identity: it is fixed at the session's first bind and cannot be switched later. In the TUI the flags bind only the startup session; a session created later in the same process (for example via `/new`) starts with the default agent.
+These CLI flags select the startup session's profile; they do not change a resumed session. The GUI can request a main-profile switch when submitting the next prompt, subject to the current binding's constraints. A session created later in the same TUI process (for example via `/new`) starts with the default agent.
 
 For main-agent customization, reference `${parent_prompt}` or `${base_prompt}` in the body so the environment, workspace-instruction, Skill, and plugin injections already present in the effective default prompt stay in effect. `${builtin_prompt}` is the stock default even when `SYSTEM.md` exists. When you want to replace the default prompt but keep only plugin-contributed instructions, use `${plugin_sections}` instead. A body without `${parent_prompt}` / `${base_prompt}` or `${plugin_sections}` owns the entire prompt and excludes plugin instructions, which fits self-contained sub-agents.
 
 ### Overriding the main agent's system prompt with SYSTEM.md
 
-To override the default main agent permanently — without passing `--agent` or `--agent-file` on every launch — write a `$KIMI_CODE_HOME/SYSTEM.md` file (default: `~/.kimi-code/SYSTEM.md`; it moves with `KIMI_CODE_HOME`). A missing or empty file has no effect. A read failure falls back to the built-in prompt with a warning. SYSTEM.md takes effect in every launch mode, including interactive TUI sessions.
+To override the default main agent permanently — without passing `--agent` or `--agent-file` on every launch — write a `$KIKI_HOME/SYSTEM.md` file (default: `~/.kiki/SYSTEM.md`; it moves with `KIKI_HOME`). A missing or empty file has no effect. A read failure falls back to the built-in prompt with a warning. SYSTEM.md takes effect in every launch mode, including interactive TUI sessions.
 
 How the file is parsed depends on its first line:
 
@@ -285,7 +306,7 @@ Like the body of a regular agent file, SYSTEM.md is rendered as a template each 
 Unknown variables stay verbatim, a bare `$` is never special, and a variable with no context value renders as an empty string. Four pre-composed blocks — `${windows_notes}`, `${additional_dirs_section}`, `${skills_section}`, and `${plugin_sections}` — render the matching built-in prompt section, or an empty string when it does not apply. The built-in default prompt already includes `${plugin_sections}`, so do not add it again when `${base_prompt}` already expands to that prompt. The variables are enough to rebuild the skeleton of the built-in prompt, for example:
 
 ```markdown
-You are Kimi, running at ${cwd} on ${os}.
+You are Kiki, running at ${cwd} on ${os}.
 
 ${agents_md}
 
@@ -296,7 +317,7 @@ ${plugin_sections}
 
 ## Instruction Files
 
-Global Kimi-specific instructions can live at `$KIMI_CODE_HOME/AGENTS.md` (default: `~/.kimi-code/AGENTS.md`). When you relocate the data root with `KIMI_CODE_HOME`, this global instruction file moves with it. Generic cross-tool instructions can still live under `~/.agents/AGENTS.md` in the real OS home, and project-level instructions remain under the project tree, for example `.kimi-code/AGENTS.md` or `AGENTS.md`.
+Global Kiki-specific instructions can live at `$KIKI_HOME/AGENTS.md` (default: `~/.kiki/AGENTS.md`). When you relocate the data root with `KIKI_HOME`, this global instruction file moves with it. Generic cross-tool instructions can still live under `~/.agents/AGENTS.md` in the real OS home, and project-level instructions remain under the project tree, for example `.kiki/AGENTS.md` or `AGENTS.md`. The legacy `.kimi-code/AGENTS.md` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`.
 
 ## Storage Location in the Session Directory
 
