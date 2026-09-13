@@ -6,6 +6,8 @@
  */
 
 import type { ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
+import { ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
+import { IAgentPanelService } from '../agentPanelService.js';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import { IWorkspaceService } from '@kiki/agent-core-v2/app/workspace/workspace';
 import { IConfigService } from '@kiki/agent-core-v2/app/config/config';
@@ -61,6 +63,8 @@ import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTod
 export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {
   agentLifecycleService: IAgentLifecycleService,
   sessionCronService: ISessionCronService,
+  taskBoardService: ITaskBoardService,
+  agentPanelService: IAgentPanelService,
   sessionIndex: ISessionIndex,
   workspaceService: IWorkspaceService,
   configService: IConfigService,

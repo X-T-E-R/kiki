@@ -1,0 +1,33 @@
+{
+  "package": "own-work",
+  "version": "0.1.1",
+  "baseArchive": "vendor/own-work-0.1.1-kiki-dc908d2d.tgz",
+  "baseArchiveSha256": "dc908d2ddd825ac1e0f65e7c8db48005e4d1e7dc8f1c9d2e3d879d4a2a464d08",
+  "outputArchive": "vendor/own-work-0.1.1-kiki-034a4314.tgz",
+  "outputArchiveSha256": "034a4314db8cf10e792866ec7b8e7000cff38a0945c5f81549b815db9a320792",
+  "sourcePatch": "vendor/own-work-patches/in-progress/source.patch",
+  "sourcePatchSha256": "07d357310364c0e0dd308737bf9f8a9a6a4357e3538912bb30c52f2e83e50bdb",
+  "sourceReference": "C:/Programs/Meta/MetaSystem/systems/own-work/packages/own-work",
+  "sourceReferenceGitHead": "6d76363e673484ddf40ca42d5837b129cdc29663",
+  "sourceReferenceReadOnly": true,
+  "changedSourceFiles": [
+    "packages/own-work/src/task.ts",
+    "packages/own-work/src/tasks/work-item.ts",
+    "packages/own-work/src/task-command.ts"
+  ],
+  "statusSemantics": {
+    "createDefault": "active",
+    "newCanonicalStatus": "in_progress",
+    "legacyActivePreserved": true,
+    "terminalReopenRejected": true,
+    "nonterminalTransitions": ["active", "in_progress", "paused"]
+  },
+  "verification": {
+    "isolatedSmoke": "node .tmp/own-work-inprogress-r1/verify-in-progress.mjs",
+    "isolatedSmokeResult": "passed",
+    "ownWorkFocusedTests": "node ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts tests/task.test.ts tests/task-commands.test.ts tests/work-items.test.ts tests/legacy-three-tool.test.ts",
+    "ownWorkFocusedTestsResult": "43 passed, 1 skipped; 3 files passed, 1 skipped",
+    "build": "node node_modules/typescript/bin/tsc -p packages/own-work/tsconfig.build.json",
+    "buildResult": "passed"
+  }
+}

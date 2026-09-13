@@ -24,6 +24,7 @@ const usageRecordSchema = z.object({
   modelAlias: z.string().optional(),
   profileName: z.string().optional(),
   executorId: z.string().optional(),
+  usageKnown: z.boolean().optional(),
 });
 
 export class UsageRecord extends Event2<z.infer<typeof usageRecordSchema>> {

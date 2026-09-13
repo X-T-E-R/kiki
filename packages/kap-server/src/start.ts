@@ -32,6 +32,7 @@ import {
   type ScopeSeed,
 } from '@kiki/agent-core-v2';
 import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
+import { panelBoardSeeds } from './transport/klient/panelBoardSeeds';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
 import {
   createKimiDefaultHeaders,
@@ -303,7 +304,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
         replyStyleGuide: opts.hostIdentity.replyStyleGuide,
       },
     },
-    [...logSeed(logging), ...(opts.seeds ?? [])],
+    [...logSeed(logging), ...panelBoardSeeds(() => core), ...(opts.seeds ?? [])],
   );
 
   if (exposureClass !== 'loopback') {

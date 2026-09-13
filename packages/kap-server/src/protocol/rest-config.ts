@@ -1,4 +1,5 @@
 import { IdentityConfigSchema } from '@kiki/agent-core-v2/app/agentIdentity/configSection';
+import { TaskBoardConfigSchema } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import { SubagentConfigSchema } from '@kiki/agent-core-v2/session/subagent/configSection';
 import { McpSectionSchema } from '@kiki/agent-core-v2/app/mcpConfig/configSection';
 import { PluginsSectionSchema } from '@kiki/agent-core-v2/app/plugin/configSection';
@@ -149,6 +150,7 @@ export const configResponseSchema = z.object({
   plugins: PluginsSectionSchema.optional(),
   tools: ToolsConfigSchema.optional(),
   prompt: PromptConfigSchema.optional(),
+  task_board: TaskBoardConfigSchema.optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
@@ -201,6 +203,7 @@ export const patchConfigRequestSchema = z.object({
   plugins: pluginsConfigRequestSchema.optional(),
   tools: ToolsConfigSchema.optional(),
   prompt: PromptConfigPatchSchema.optional(),
+  task_board: TaskBoardConfigSchema.optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
 }).strict();
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

@@ -14,6 +14,8 @@ import {
 } from '#/agent/usage/usage';
 import { AgentUsageService } from '#/agent/usage/usageService';
 import { usageKey } from '#/agent/usage/usageOps';
+import { panelAccountingKey } from '#/agent/usage/panelAccounting';
+import { FullCompactionCancel, FullCompactionComplete } from '#/agent/fullCompaction/compactionOps';
 import type { Event2 } from '#/app/event/event2';
 import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
@@ -98,6 +100,7 @@ function createFreshHost(logKey: string): {
   });
   const freshDispatcher = registerTestEventDispatcher(freshIx);
   freshIx.get(IAgentStateService).contributeState(usageKey);
+  freshIx.get(IAgentStateService).contributeState(panelAccountingKey);
   return {
     dispatcher: freshDispatcher,
     agentState: freshIx.get(IAgentStateService),
@@ -110,6 +113,24 @@ const a2 = { inputOther: 10, output: 20, inputCacheRead: 30, inputCacheCreation:
 const b1 = { inputOther: 100, output: 200, inputCacheRead: 300, inputCacheCreation: 400 };
 
 describe('AgentUsageService (wire-backed)', () => {
+  it('retains missing accounting and only successful compactions across replay', async () => {
+    const state = ix.get(IAgentStateService);
+    expect(state.get(panelAccountingKey)).toEqual({ records: 0, incomplete: false, successfulCompactions: 0 });
+    svc.record('model-a', a1, undefined, { usageKnown: true });
+    await dispatcher.dispatch(new FullCompactionCancel({}));
+    expect(state.get(panelAccountingKey).successfulCompactions).toBe(0);
+    await dispatcher.dispatch(new FullCompactionComplete({}));
+    const zero = { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
+    svc.record('model-a', zero, undefined, { usageKnown: true });
+    expect(state.get(panelAccountingKey).incomplete).toBe(false);
+    svc.record('model-a', zero, undefined, { usageKnown: false });
+    expect(state.get(panelAccountingKey)).toEqual({ records: 3, incomplete: true, successfulCompactions: 1 });
+    const fresh = createFreshHost('panel-accounting');
+    await restoreTestEventDispatcher(fresh.dispatcher, fresh.freshLog,
+      testWireScope(SCOPE, 'panel-accounting'), await readRecords());
+    expect(fresh.agentState.get(panelAccountingKey)).toEqual(state.get(panelAccountingKey));
+  });
+
   it('accumulates usage by model', () => {
     svc.record('model-a', a1);
     svc.record('model-a', a2);
@@ -214,6 +235,7 @@ describe('AgentUsageService (wire-backed)', () => {
         modelAlias: 'model-a',
         profileName: 'coder',
         executorId: 'native',
+        usageKnown: true,
         time: expect.any(Number),
       },
     ]);
@@ -242,9 +264,17 @@ describe('AgentUsageService (wire-backed)', () => {
         modelAlias: 'model-a',
         profileName: 'coder',
         executorId: 'native',
+        usageKnown: true,
         time: expect.any(Number),
       },
     ]);
+  });
+
+  it('persists an explicitly unknown usage record', async () => {
+    svc.record('model-a', a1, undefined, { usageKnown: false });
+
+    const records = await readRecords();
+    expect(records[0]).toMatchObject({ type: 'usage.record', usageKnown: false });
   });
 
   it('replay rebuilds usage from persisted records on a fresh dispatcher (silent)', async () => {

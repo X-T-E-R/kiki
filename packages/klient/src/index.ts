@@ -37,6 +37,8 @@ export {
   type SessionHandle,
 } from './core/klient.js';
 export type { EventSubscription, KlientEvents } from './core/events/hub.js';
+export type * from './contract/board/types.js';
+export type { GlobalAgentPanelFacade } from './core/facade/global.js';
 export type { Caller, ScopedCaller, ScopedStreamCaller } from './core/facade/global.js';
 
 export type {

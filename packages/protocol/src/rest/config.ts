@@ -3,6 +3,14 @@ import { z } from 'zod';
 import { requestIdentityPolicySchema } from '../modelCatalog';
 import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from './nbSearch';
 
+export const taskBoardStorageConfigSchema = z.object({
+  storage: z.discriminatedUnion('mode', [
+    z.object({ mode: z.literal('auto') }).strict(),
+    z.object({ mode: z.literal('global') }).strict(),
+    z.object({ mode: z.literal('fixed'), path: z.string().trim().min(1).max(4096) }).strict(),
+  ]),
+}).strict();
+
 export const promptConfigSchema = z.object({
   shared: z.string().optional(),
   variables: z.record(z.string(), z.string()).optional(),
@@ -54,6 +62,7 @@ export const configResponseSchema = z.object({
   thinking: z.unknown().optional(),
   plan: planConfigResponseSchema.optional(),
   plan_mode: z.boolean().optional(),
+  task_board: taskBoardStorageConfigSchema.optional(),
   yolo: z.boolean().optional(),
   default_permission_mode: z.string().optional(),
   default_plan_mode: z.boolean().optional(),
@@ -87,6 +96,7 @@ export const patchConfigRequestSchema = z.object({
   thinking: z.unknown().optional(),
   plan: planConfigRequestSchema.optional(),
   plan_mode: z.boolean().optional(),
+  task_board: taskBoardStorageConfigSchema.optional(),
   yolo: z.boolean().optional(),
   default_permission_mode: z.string().optional(),
   default_plan_mode: z.boolean().optional(),

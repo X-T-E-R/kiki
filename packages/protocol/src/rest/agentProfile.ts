@@ -155,12 +155,75 @@ export const agentCapabilityTargetSchema = z.object({
 });
 export type AgentCapabilityTarget = z.infer<typeof agentCapabilityTargetSchema>;
 
+export const agentPanelCapabilityStateSchema = z.enum([
+  'enabled', 'disabled', 'approval-required', 'disconnected', 'unknown',
+]);
+
+export const agentPanelToolSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  source: z.string(),
+  category: z.string(),
+  state: agentPanelCapabilityStateSchema,
+  unavailable_reason: z.string().optional(),
+});
+
+export const agentPanelSkillSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  source: z.string(),
+  scope: z.enum(['workspace', 'global']),
+  path: z.string(),
+  state: agentPanelCapabilityStateSchema,
+  unavailable_reason: z.string().optional(),
+});
+
+export const agentPanelProfileSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  source: z.string().optional(),
+  source_file: z.string().optional(),
+  definition_id: z.string().optional(),
+  route: z.string().optional(),
+  model: z.string().optional(),
+  thinking_effort: z.string().optional(),
+  executor: z.string().optional(),
+  service_tier: z.string().optional(),
+  tools: z.array(z.string()).optional(),
+  disallowed_tools: z.array(z.string()).optional(),
+  execution_restriction: z.string().optional(),
+  locked_model: z.string().optional(),
+  locked_effort: z.string().optional(),
+  tool_allow_policies: z.array(z.array(z.string())).optional(),
+  spawn_constraints: namedAgentSpawnConstraintsSchema.optional(),
+});
+
+export const agentPanelMetricsSchema = z.object({
+  inputTokens: z.number().nonnegative().nullable(),
+  outputTokens: z.number().nonnegative().nullable(),
+  cacheReadTokens: z.number().nonnegative().nullable(),
+  cacheWriteTokens: z.number().nonnegative().nullable(),
+  totalTokens: z.number().nonnegative().nullable(),
+  totalCostUsd: z.number().nonnegative().nullable(),
+  contextTokens: z.number().nonnegative().nullable(),
+  contextLimit: z.number().nonnegative().nullable(),
+  compactionCount: z.number().int().nonnegative().nullable(),
+  usagePartial: z.boolean().optional(),
+  costPartial: z.boolean().optional(),
+  usageSource: z.enum(['live', 'persisted']).optional(),
+});
+export type AgentPanelMetrics = z.infer<typeof agentPanelMetricsSchema>;
+
 export const agentCapabilitiesResponseSchema = z.object({
   context: z.enum(['live', 'draft']),
   owner: z.object({ profile: z.string().optional(), agent_id: z.string().optional() }),
   available: z.boolean(),
   unavailable_reason: z.string().optional(),
   targets: z.array(agentCapabilityTargetSchema),
+  profile: agentPanelProfileSchema.optional(),
+  tools: z.array(agentPanelToolSchema).optional(),
+  skills: z.array(agentPanelSkillSchema).optional(),
+  metrics: z.record(z.string(), agentPanelMetricsSchema).optional(),
 });
 export type AgentCapabilitiesResponse = z.infer<typeof agentCapabilitiesResponseSchema>;
 export type ListNamedAgentProfilesQuery = z.infer<

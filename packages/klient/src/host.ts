@@ -1,4 +1,5 @@
 export { RPCError } from './core/errors.js';
+export { IAgentPanelService } from './transports/agentPanelService.js';
 export type { EventSourceRef, IDisposable, ScopeRef } from './core/channel.js';
 export {
   createContractDispatcher as createKlientDispatcher,

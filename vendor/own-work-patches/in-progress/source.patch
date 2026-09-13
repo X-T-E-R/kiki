@@ -1,0 +1,42 @@
+--- a/packages/own-work/src/task-command.ts
++++ b/packages/own-work/src/task-command.ts
+@@ -361,7 +361,7 @@
+     .command("status")
+     .description("Set task status")
+     .argument("<id>", "task id")
+-    .argument("<status>", "active, paused, done, cancelled, or superseded")
++    .argument("<status>", "active, in_progress, paused, done, cancelled, or superseded")
+     .option("--expected-revision <n>", "require the current revision")
+     .option("--root <target-dir>", "target workspace directory", process.cwd())
+     .option("--json", "emit JSON")
+--- a/packages/own-work/src/task.ts
++++ b/packages/own-work/src/task.ts
+@@ -68,7 +68,7 @@
+   archiveProbe = probe;
+ }
+ 
+-export const TASK_WRITE_STATUSES = ["active", "paused", "done", "cancelled", "superseded"] as const;
++export const TASK_WRITE_STATUSES = ["active", "in_progress", "paused", "done", "cancelled", "superseded"] as const;
+ export type TaskStatus = (typeof TASK_WRITE_STATUSES)[number];
+ export const TASK_RELATION_TYPES = ["contributes_to", "continues", "supersedes"] as const;
+ export type TaskRelationType = (typeof TASK_RELATION_TYPES)[number];
+@@ -367,7 +367,7 @@
+ const STATUS_ALIASES: Readonly<Record<string, TaskStatus>> = {
+   active: "active",
+   planning: "active",
+-  in_progress: "active",
++  in_progress: "in_progress",
+   review: "active",
+   open: "active",
+   paused: "paused",
+--- a/packages/own-work/src/tasks/work-item.ts
++++ b/packages/own-work/src/tasks/work-item.ts
+@@ -18,7 +18,7 @@
+   category: z.string().max(256).optional(),
+   sessionIds: links.optional(),
+   executionIds: links.optional(),
+-  status: z.enum(["active", "paused", "done", "cancelled", "superseded"]).optional(),
++  status: z.enum(["active", "in_progress", "paused", "done", "cancelled", "superseded"]).optional(),
+ }).strict().refine((value) => Object.keys(value).length > 0, "A patch must change at least one field.");
+ export type WorkItemPatch = z.infer<typeof workItemPatchSchema>;
+ 

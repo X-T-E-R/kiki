@@ -7,6 +7,8 @@
  */
 
 import type { KlientContract } from './types.js';
+import { boardContract } from './board/schemas.js';
+import { agentPanelContract } from './global/agentPanel.js';
 import { agentActivityViewContract } from './agent/activity.js';
 import {
   agentCommandContract,
@@ -61,6 +63,8 @@ export const globalContract: KlientContract = {
   sessionInitService: sessionInitContract,
   sessionTodoService: sessionTodoContract,
   // core (app scope)
+  taskBoardService: boardContract,
+  agentPanelService: agentPanelContract,
   sessionIndex: sessionsContract,
   workspaceService: workspacesContract,
   configService: configContract,

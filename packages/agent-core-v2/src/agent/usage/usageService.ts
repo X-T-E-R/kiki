@@ -14,6 +14,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { UsageRecordedContext, UsageRecordContext, UsageStatus } from './usage';
 import { IAgentUsageService } from './usage';
 import { AgentStatusUpdated } from './usageEvents';
+import { panelAccountingKey } from './panelAccounting';
 import {
   copyUsage,
   usageKey,
@@ -45,6 +46,7 @@ export class AgentUsageService extends Service implements IAgentUsageService {
   ) {
     super();
     this.states.contributeState(usageKey);
+    this.states.contributeState(panelAccountingKey);
     this.states.contributeState(usageCurrentTurnIdKey);
     this.states.contributeState(usageCurrentTurnKey);
   }
@@ -85,6 +87,7 @@ export class AgentUsageService extends Service implements IAgentUsageService {
       modelAlias: context?.modelAlias ?? profile.modelAlias,
       profileName: profile.profileName,
       executorId: context?.executorId ?? profile.executorId ?? 'native',
+      usageKnown: context?.usageKnown ?? true,
     }));
 
     const currentTurnId = source?.type === 'turn' ? source.turnId : undefined;

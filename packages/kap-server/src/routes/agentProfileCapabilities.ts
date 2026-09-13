@@ -2,6 +2,7 @@ import {
   IAgentExecutorRegistry,
   IAgentLifecycleService,
   IAgentProfileService,
+  IAgentStateService,
   IAgentToolPolicyService,
   IConfigService,
   IInstantiationService,
@@ -10,6 +11,7 @@ import {
   IProtocolAdapterRegistry,
   ISessionAgentProfileCatalog,
   ISessionAgentProfileCatalogSeed,
+  ISessionContext,
   ISessionManager,
   ISubagentTool,
   IWorkspaceInstanceManager,
@@ -23,7 +25,12 @@ import { projectSubagentCapabilities, type SubagentCapabilityCatalog } from '@ki
 import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v2/agent/toolPolicy/evaluate';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
-import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse } from '@kiki/protocol';
+import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse, AgentPanelMetrics } from '@kiki/protocol';
+import { livePanelCapabilities, panelSkills } from './agentPanelCapabilities';
+import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from './agentPanelMetrics';
+import { IModelPricingService } from '../pricing/modelPricingService';
+import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistry/toolContribution';
+import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccounting';
 
 export async function acquireWorkspaceProfileCatalog(
   core: Scope,
@@ -45,7 +52,8 @@ export async function acquireWorkspaceProfileCatalog(
     const catalog = container.createInstance(SessionAgentProfileCatalogService);
     disposeCatalog = () => { catalog.dispose(); container.dispose(); };
     await catalog.ready;
-    return { workspaceId, catalog, dispose: () => { disposeCatalog?.(); lease.dispose(); } };
+    return { workspaceId, catalog, skills: lease.instance.program.skills.catalog,
+      dispose: () => { disposeCatalog?.(); lease.dispose(); } };
   } catch (error) {
     disposeCatalog?.();
     lease.dispose();
@@ -62,15 +70,30 @@ export async function agentCapabilities(
       ?? await resumeSessionById(core.accessor, query.session_id);
     const lifecycle = session?.accessor.get(IAgentLifecycleService);
     const agent = lifecycle?.get(query.agent_id);
+    const pricing = core.accessor.get(IModelPricingService);
+    const cacheRevision = lifecycle === undefined ? '' : lifecycle.list()
+      .map((handle) => {
+        const accounting = handle.accessor.get(IAgentStateService).get(panelAccountingKey);
+        return `${handle.id}:${accounting.records > 0}:${accounting.incomplete}`;
+      })
+      .join('|');
+    const persisted = session === undefined ? {} : await readPersistedAgentPanelMetrics(
+      core,
+      session.accessor.get(ISessionContext).workspaceId,
+      query.session_id,
+      pricing,
+      cacheRevision,
+    );
     if (agent === undefined) return {
       context: 'live', owner: { agent_id: query.agent_id }, available: false,
       unavailable_reason: 'Session or agent is not live; dispatch capabilities are unavailable', targets: [],
+      metrics: persisted,
     };
     const owner = { profile: agent.accessor.get(IAgentProfileService).data().profileName, agent_id: agent.id };
+    const panel = await livePanelCapabilities(agent);
     const available = agent.accessor.get(IAgentToolPolicyService).isToolActive('AgentRun');
     const policy = session!.accessor.get(ISessionDispatchService).readLaunchPolicy(agent.id);
-    const unavailableReason = available
-      ? undefined
+    const unavailable_reason = available ? undefined
       : evaluateDispatchAdmission(policy, 'spawn').reason ?? 'AgentRun is not active for this agent';
     const input = agent.accessor.get(ISubagentTool).dispatchCatalog();
     const targets = project(agent, input).map((target) => {
@@ -78,11 +101,18 @@ export async function agentCapabilities(
       return {
         ...target,
         launch_allowed: available && admission.allowed,
-        launch_unavailable_reason: unavailableReason ?? admission.reason,
+        launch_unavailable_reason: unavailable_reason ?? admission.reason,
         execution_restriction: admission.executionRestriction,
       };
     });
-    return { context: 'live', owner, available, unavailable_reason: unavailableReason, targets };
+    const liveMetrics = Object.fromEntries(session!.accessor.get(IAgentLifecycleService).list()
+      .filter((handle) => agent.id === 'main' || handle.id === agent.id)
+      .map((handle) => [handle.id, readAgentPanelMetrics(handle, pricing)]));
+    const metrics = { ...persisted };
+    for (const [id, value] of Object.entries(liveMetrics)) {
+      metrics[id] = mergeAgentPanelMetrics(persisted[id], value);
+    }
+    return { context: 'live', owner, available, unavailable_reason, targets, ...panel, metrics };
   }
   const workspace = await acquireWorkspaceProfileCatalog(core, query);
   if (workspace === undefined) return 'workspace-not-found';
@@ -93,51 +123,73 @@ export async function agentCapabilities(
     if (profile === undefined || profile.main !== true) return 'profile-not-found';
     const policy = { profile, global: core.accessor.get(IConfigService).get<GlobalToolsPolicy>('tools') };
     const available = isToolActiveComposed(policy, 'AgentRun');
-    const unavailableReason = available ? undefined : 'AgentRun is disabled by the draft profile or global tool policy';
+    const unavailable_reason = available ? undefined : 'AgentRun is disabled by the draft profile or global tool policy';
     const input: SubagentCapabilityCatalog = {
       catalog: workspace.catalog,
-      caller: {
-        profileName: profile.name,
-        profileDefinitionId: profile.definitionId,
-        subagents: profile.subagents,
-        subagentLeases: profile.subagentLeases,
-        spawnPolicy: profile.spawnConstraints,
-      },
+      caller: { profileName: profile.name, profileDefinitionId: profile.definitionId,
+        subagents: profile.subagents, subagentLeases: profile.subagentLeases,
+        spawnPolicy: profile.spawnConstraints },
       profiles: workspace.catalog.list().filter((candidate) => candidate.main !== true),
       routes: workspace.catalog.listRoutes(),
       snapshot: workspace.catalog.snapshot(),
     };
     return {
-      context: 'draft', owner: { profile: profile.name }, available,
-      unavailable_reason: unavailableReason,
-      targets: project(core, input).map((target) => ({
-        ...target,
-        launch_allowed: available ? undefined : false,
-        launch_unavailable_reason: unavailableReason,
-      })),
+      context: 'draft', owner: { profile: profile.name }, available, unavailable_reason,
+      targets: project(core, input).map((target) => ({ ...target,
+        launch_allowed: available ? undefined : false, launch_unavailable_reason: unavailable_reason })),
+      profile: {
+        name: profile.name, description: profile.description,
+        source: workspace.catalog.inspect(profile.name)?.sourceId,
+        source_file: profile.sourcePath, definition_id: profile.definitionId,
+        model: profile.modelAlias, thinking_effort: profile.thinkingEffort, executor: profile.executor,
+        service_tier: profile.serviceTier,
+        tools: profile.tools === undefined ? undefined : [...profile.tools],
+        disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
+      },
+      tools: getAgentToolContributions().map(({ options }) => {
+        const active = isToolActiveComposed(policy, options.name, options.source);
+        return { name: options.name, source: options.source ?? 'builtin', category: options.domain ?? 'other',
+          state: active ? 'unknown' : 'disabled', unavailable_reason: active
+            ? 'Draft inventory only; runtime connection and invocation approval are not evaluated'
+            : 'Disabled by draft profile or global tool policy' };
+      }),
+      skills: panelSkills(workspace.skills.listSkills(), isToolActiveComposed(policy, 'Skill')),
     };
   } finally {
     workspace.dispose();
   }
 }
 
+function mergeAgentPanelMetrics(
+  persisted: AgentPanelMetrics | undefined,
+  live: AgentPanelMetrics,
+): AgentPanelMetrics {
+  if (persisted === undefined) return live;
+  const usePersistedUsage = live.totalTokens === null && persisted.totalTokens !== null;
+  const usePersistedCost = live.totalCostUsd === null && persisted.totalCostUsd !== null;
+  return {
+    ...live,
+    inputTokens: usePersistedUsage ? persisted.inputTokens : live.inputTokens,
+    outputTokens: usePersistedUsage ? persisted.outputTokens : live.outputTokens,
+    cacheReadTokens: usePersistedUsage ? persisted.cacheReadTokens : live.cacheReadTokens,
+    cacheWriteTokens: usePersistedUsage ? persisted.cacheWriteTokens : live.cacheWriteTokens,
+    totalTokens: usePersistedUsage ? persisted.totalTokens : live.totalTokens,
+    totalCostUsd: usePersistedCost ? persisted.totalCostUsd : live.totalCostUsd,
+    usagePartial: usePersistedUsage ? live.usagePartial || persisted.usagePartial : live.usagePartial,
+    costPartial: usePersistedCost ? live.costPartial || persisted.costPartial : live.costPartial,
+    usageSource: usePersistedUsage || usePersistedCost ? 'persisted' : live.usageSource,
+  };
+}
+
 function project(core: Pick<Scope, 'accessor'>, input: SubagentCapabilityCatalog): AgentCapabilitiesResponse['targets'] {
   return projectSubagentCapabilities(input, {
-    models: core.accessor.get(IModelService),
-    modelCatalog: core.accessor.get(IModelCatalog),
-    config: core.accessor.get(IConfigService),
-    executors: core.accessor.get(IAgentExecutorRegistry),
+    models: core.accessor.get(IModelService), modelCatalog: core.accessor.get(IModelCatalog),
+    config: core.accessor.get(IConfigService), executors: core.accessor.get(IAgentExecutorRegistry),
     protocols: core.accessor.get(IProtocolAdapterRegistry),
   }).map((target) => ({
-    profile: target.profile,
-    route: target.route,
-    description: target.description,
-    executor: target.executor,
-    model_alias: target.modelAlias,
-    model_source: target.modelSource,
-    thinking_effort: target.thinkingEffort,
-    effort_source: target.effortSource,
-    defaults_available: target.defaultsAvailable,
-    unavailable_reason: target.unavailableReason,
+    profile: target.profile, route: target.route, description: target.description, executor: target.executor,
+    model_alias: target.modelAlias, model_source: target.modelSource,
+    thinking_effort: target.thinkingEffort, effort_source: target.effortSource,
+    defaults_available: target.defaultsAvailable, unavailable_reason: target.unavailableReason,
   }));
 }

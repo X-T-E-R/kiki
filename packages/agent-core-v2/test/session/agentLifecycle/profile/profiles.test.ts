@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { getAgentProfileContributions } from '#/app/agentProfileCatalog/contribution';
+import { isToolActive } from '#/agent/toolPolicy/evaluate';
 import '#/session/agentLifecycle/profile/profiles';
 
 function profile(name: string) {
@@ -24,6 +25,12 @@ describe('builtin agent profiles', () => {
     expect(agent.tools?.some((tool) => tool.startsWith('Tower'))).toBe(false);
     expect(agent.main).toBe(true);
     expect(agent.subagents).toBeUndefined();
+  });
+
+  it.each(['BoardRead', 'BoardWrite'])('enables %s for the default profile unless explicitly disabled', (tool) => {
+    const agent = profile('agent');
+    expect(isToolActive(agent, tool)).toBe(true);
+    expect(isToolActive({ ...agent, disallowedTools: [tool] }, tool)).toBe(false);
   });
 
   it.each([

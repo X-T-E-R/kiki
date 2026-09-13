@@ -39,7 +39,7 @@
 //   forked                             goal, goalForkNotice                                                  src/agent/goal/goalOps.ts
 //   full_compaction.begin              fullCompaction                                                        src/agent/fullCompaction/compactionOps.ts
 //   full_compaction.cancel             fullCompaction                                                        src/agent/fullCompaction/compactionOps.ts
-//   full_compaction.complete           fullCompaction                                                        src/agent/fullCompaction/compactionOps.ts
+//   full_compaction.complete           fullCompaction, usage.panelAccounting                                 src/agent/fullCompaction/compactionOps.ts
 //   goal.clear                         goal, goalForkNotice                                                  src/agent/goal/goalOps.ts
 //   goal.create                        goal, goalForkNotice                                                  src/agent/goal/goalOps.ts
 //   goal.update                        goal                                                                  src/agent/goal/goalOps.ts
@@ -91,7 +91,7 @@
 //   turn.steer                         turn                                                                  src/agent/loop/turnOps.ts
 //   turn.step.interrupted              (none)                                                                src/agent/loop/turnEvents.ts
 //   turn.step.retrying                 (none)                                                                src/agent/stepRetry/stepRetryService.ts
-//   usage.record                       usage                                                                 src/agent/usage/usageOps.ts
+//   usage.record                       usage, usage.panelAccounting                                          src/agent/usage/usageOps.ts
 
 /**
  * states: profile
@@ -276,7 +276,7 @@ interface FullCompactionCancelPayload {
 }
 
 /**
- * states: fullCompaction
+ * states: fullCompaction, usage.panelAccounting
  * owner: src/agent/fullCompaction/compactionOps.ts
  */
 interface FullCompactionCompletePayload {
@@ -968,7 +968,7 @@ interface TurnStepRetryingPayload {
 }
 
 /**
- * states: usage
+ * states: usage, usage.panelAccounting
  * owner: src/agent/usage/usageOps.ts
  */
 interface UsageRecordPayload {
@@ -990,6 +990,7 @@ interface UsageRecordPayload {
   modelAlias?: string;
   profileName?: string;
   executorId?: string;
+  usageKnown?: boolean;
 }
 
 /** Record type → payload sketch. */

@@ -15,6 +15,8 @@ const AGENT_TOOLS = [
   'Grep',
   'Glob',
   'Bash',
+  'BoardRead',
+  'BoardWrite',
   'TaskList',
   'TaskOutput',
   'TaskStop',

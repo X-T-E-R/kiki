@@ -475,6 +475,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         provider: request.model.providerName,
         modelAlias: request.modelAlias,
         executorId: 'native',
+        usageKnown: usage !== undefined,
       });
       if (usage !== undefined) {
         this.tokenCounting.measured(request.messages, [message], usage);

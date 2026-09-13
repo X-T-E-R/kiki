@@ -35,6 +35,7 @@ export interface UsageRecordContext {
   readonly provider?: string;
   readonly modelAlias?: string;
   readonly executorId?: string;
+  readonly usageKnown?: boolean;
 }
 
 export interface IAgentUsageService {

@@ -24,6 +24,7 @@ import { taskKey } from '#/agent/task/taskOps';
 import { taskNotificationDeliveryKey } from '#/agent/task/taskService';
 import { tokenCountingKey } from '#/agent/tokenCounting/tokenCountingOps';
 import { usageKey } from '#/agent/usage/usageOps';
+import { panelAccountingKey } from '#/agent/usage/panelAccounting';
 import { userToolKey } from '#/agent/userTool/userToolOps';
 import { planKey } from '#/features/plan/planOps';
 import { swarmKey } from '#/features/swarm/swarmOps';
@@ -56,6 +57,7 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   taskNotificationDeliveryKey,
   tokenCountingKey,
   usageKey,
+  panelAccountingKey,
   userToolKey,
   planKey,
   swarmKey,

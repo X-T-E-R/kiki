@@ -6,6 +6,8 @@
  * code never sees service tokens, scope routing, or transport details.
  */
 
+import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse } from '@kiki/protocol';
+import type { BoardClient, BoardOverviewClient } from '../../contract/board/types.js';
 import type {
   SessionListQuery,
   SessionSummary,
@@ -372,7 +374,13 @@ export interface KlientEnvInfo {
   readonly logsDir: string;
 }
 
+export interface GlobalAgentPanelFacade {
+  read(query: AgentCapabilitiesQuery, options?: CallOptions): Promise<AgentCapabilitiesResponse>;
+}
+
 export interface GlobalFacade {
+  readonly board: BoardOverviewClient;
+  readonly agentPanel: GlobalAgentPanelFacade;
   readonly sessions: GlobalSessionsFacade;
   readonly workspaces: GlobalWorkspacesFacade;
   readonly config: GlobalConfigFacade;
@@ -449,6 +457,14 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
   };
 
   return {
+    board: {
+      read: (input) => call('taskBoardService', 'read', [input]) as ReturnType<BoardClient['read']>,
+      write: (input) => call('taskBoardService', 'write', [input]) as ReturnType<BoardClient['write']>,
+      overview: () => call('taskBoardService', 'overview', []) as ReturnType<BoardOverviewClient['overview']>,
+    },
+    agentPanel: {
+      read: (query, options) => call('agentPanelService', 'read', [query], options) as Promise<AgentCapabilitiesResponse>,
+    },
     sessions: {
       list: (query) =>
         call('sessionIndex', 'listRecent', [query]) as Promise<Page<SessionSummary>>,

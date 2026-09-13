@@ -28,6 +28,14 @@ import { questionRequestSchema } from '../question';
 import { sessionSchema } from '../session';
 import { taskSchema } from '../task';
 
+export const restContextBreakdownSchema = z.object({
+  system_tokens: z.number().int().nonnegative(),
+  tools_tokens: z.number().int().nonnegative(),
+  messages_tokens: z.number().int().nonnegative(),
+  estimated: z.literal(true),
+});
+export type RestContextBreakdown = z.infer<typeof restContextBreakdownSchema>;
+
 export const inFlightToolCallSchema = z.object({
   tool_call_id: z.string().min(1),
   name: z.string().min(1),
@@ -69,6 +77,8 @@ export type InFlightTurn = z.infer<typeof inFlightTurnSchema>;
 export const snapshotSubagentSchema = taskSchema.extend({
   subagent_phase: z.enum(['queued', 'working', 'suspended', 'completed', 'failed']).optional(),
   profile: z.string().optional(),
+  model: z.string().optional(),
+  thinking_effort: z.string().optional(),
   parent_agent_id: z.string().optional(),
   parent_tool_call_id: z.string().optional(),
   label: z.string().optional(),
@@ -97,6 +107,9 @@ export const sessionSnapshotResponseSchema = z.object({
    * for cross-version tolerance: older servers do not send it.
    */
   subagents: z.array(snapshotSubagentSchema).optional(),
+  context_tokens: z.number().int().nonnegative().optional(),
+  max_context_tokens: z.number().int().positive().optional(),
+  context_breakdown: restContextBreakdownSchema.optional(),
   pending_approvals: z.array(approvalRequestSchema),
   pending_questions: z.array(questionRequestSchema),
 });

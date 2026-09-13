@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 103 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 104 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -160,6 +160,7 @@
 //     usage                                           src/agent/usage/usageOps.ts
 //     usage.currentTurn                               src/agent/usage/usageService.ts
 //     usage.currentTurnId                             src/agent/usage/usageService.ts
+//     usage.panelAccounting                           src/agent/usage/panelAccounting.ts
 //     userTool                                        src/agent/userTool/userToolOps.ts
 
 /** App-scope keys registered into IAppStateService. */
@@ -194,6 +195,8 @@ export interface WorkspaceStateSnapshot {
           readonly type?: string;
           readonly whenToUse?: string;
           readonly disableModelInvocation?: boolean;
+          readonly promptCommand?: boolean;
+          readonly argumentHint?: string;
           readonly isSubSkill?: boolean;
           readonly safe?: boolean;
           readonly arguments?: string | readonly unknown[];
@@ -231,6 +234,8 @@ export interface WorkspaceStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -258,6 +263,8 @@ export interface WorkspaceStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -293,6 +300,8 @@ export interface WorkspaceStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -320,6 +329,8 @@ export interface WorkspaceStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -347,6 +358,8 @@ export interface WorkspaceStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -376,6 +389,8 @@ export interface WorkspaceStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -403,6 +418,8 @@ export interface WorkspaceStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -558,6 +575,8 @@ export interface SessionStateSnapshot {
           readonly type?: string;
           readonly whenToUse?: string;
           readonly disableModelInvocation?: boolean;
+          readonly promptCommand?: boolean;
+          readonly argumentHint?: string;
           readonly isSubSkill?: boolean;
           readonly safe?: boolean;
           readonly arguments?: string | readonly unknown[];
@@ -595,6 +614,8 @@ export interface SessionStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -622,6 +643,8 @@ export interface SessionStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -657,6 +680,8 @@ export interface SessionStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -684,6 +709,8 @@ export interface SessionStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -711,6 +738,8 @@ export interface SessionStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -740,6 +769,8 @@ export interface SessionStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -767,6 +798,8 @@ export interface SessionStateSnapshot {
         readonly type?: string;
         readonly whenToUse?: string;
         readonly disableModelInvocation?: boolean;
+        readonly promptCommand?: boolean;
+        readonly argumentHint?: string;
         readonly isSubSkill?: boolean;
         readonly safe?: boolean;
         readonly arguments?: string | readonly unknown[];
@@ -1894,6 +1927,7 @@ export interface AgentStateSnapshot {
       readonly sourcePath?: string;
       readonly whenToUse?: string;
       readonly override?: boolean;
+      readonly private?: boolean;
       readonly main?: boolean;
       readonly tools?: readonly string[];
       readonly toolAllowPolicies?: readonly readonly string[][];
@@ -2787,6 +2821,13 @@ export interface AgentStateSnapshot {
   'toolExecutor.toolCallDupTypes': Map<string, /* ToolCallDupType — packages/agent-core-v2/src/agent/toolExecutor/toolExecutor.ts */ 'same_step' | 'cross_step'>;
   // src/agent/toolSelect/toolSelectService.ts
   'toolSelect.pendingLoaded': Set<string>;
+  // src/agent/usage/panelAccounting.ts
+  // replayable · durable — folds: UsageRecord, FullCompactionComplete
+  'usage.panelAccounting': {
+    records: number;
+    incomplete: boolean;
+    successfulCompactions: number;
+  };
   // src/agent/usage/usageOps.ts
   // replayable · durable — folds: UsageRecord
   'usage': /* UsageModelState — packages/agent-core-v2/src/agent/usage/usageOps.ts */ {
