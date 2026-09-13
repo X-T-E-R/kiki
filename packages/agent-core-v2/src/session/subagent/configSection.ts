@@ -35,7 +35,23 @@ export const SUBAGENT_SECTION = 'subagent';
 export const SubagentConfigSchema = z.object({
   timeoutMs: z.number().int().min(0).optional(),
   denyModels: z.array(z.string()).optional(),
+  maxDirectChildren: z.number().int().min(0).optional(),
+  maxTotalSubagents: z.number().int().min(0).optional(),
 });
+
+export const DEFAULT_MAX_DIRECT_CHILDREN = 16;
+export const DEFAULT_MAX_TOTAL_SUBAGENTS = 0;
+
+export function resolveDispatchCapacityLimits(config: IConfigService): {
+  readonly maxDirectChildren: number;
+  readonly maxTotalSubagents: number;
+} {
+  const section = config.get<SubagentConfig | undefined>(SUBAGENT_SECTION);
+  return {
+    maxDirectChildren: section?.maxDirectChildren ?? DEFAULT_MAX_DIRECT_CHILDREN,
+    maxTotalSubagents: section?.maxTotalSubagents ?? DEFAULT_MAX_TOTAL_SUBAGENTS,
+  };
+}
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
 
@@ -43,8 +59,10 @@ export const DEFAULT_SUBAGENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 export const SUBAGENT_TIMEOUT_ENV = 'KIMI_SUBAGENT_TIMEOUT_MS';
 
 function parseTimeoutMsEnv(raw: string): number | undefined {
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed >= 1 ? parsed : undefined;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 export const subagentEnvBindings: EnvBindings<SubagentConfig> = envBindings(
@@ -57,7 +75,11 @@ export const subagentEnvBindings: EnvBindings<SubagentConfig> = envBindings(
 export const stripSubagentEnv = stripEnvBoundFields(subagentEnvBindings);
 
 registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
-  defaultValue: { timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS },
+  defaultValue: {
+    timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
+    maxDirectChildren: DEFAULT_MAX_DIRECT_CHILDREN,
+    maxTotalSubagents: DEFAULT_MAX_TOTAL_SUBAGENTS,
+  },
   env: subagentEnvBindings,
   stripEnv: stripSubagentEnv,
 });
@@ -216,8 +238,10 @@ export function resolveSubagentBinding(
   const source: SubagentModelSource = toolModel !== undefined ? 'tool' : 'profile';
   const thinking =
     normalized(requested.thinkingEffort) ??
-    normalized(profileRequest.thinkingEffort) ??
-    resolveRoleThinkingDefault(roleConstraints, model, models);
+    resolveRoleThinkingDefault(roleConstraints, model, models) ??
+    (profileModel !== undefined && resolveModelIdentity(profileModel, models) === resolveModelIdentity(model, models)
+      ? normalized(profileRequest.thinkingEffort)
+      : undefined);
   assertBoundModelAllowed(config, model, roleConstraints, models, thinking);
   return recordBindingMetadata({ model, thinking, displayModel: model }, { source });
 }
@@ -227,74 +251,33 @@ function normalized(value: string | undefined): string | undefined {
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
-export function buildSubagentModelDescriptions(models: IModelService): string | undefined {
-  const aliases = Object.keys(models.list());
+export function buildSubagentModelDescriptions(aliases: readonly string[]): string {
   const lines: string[] = [];
   if (aliases.length > 0) {
     lines.push(
-      `Configured model aliases (pass an exact value via model_alias): ${aliases.join(', ')}`,
+      `Model aliases available across the targets above: ${aliases.join(', ')}`,
     );
   }
   lines.push(
-    'A subagent runs on the model its profile pins, or the model_alias you pass here — never on your own model. Pass effort to override the thinking effort.',
+    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; never copy your own model or effort. Explicit overrides must satisfy the selected target\'s Allowed models, effort constraints, caller lease, and route locks. A model listed for another target does not grant permission here. Dispatch validates the final binding. If no model is bound, pass an allowed model_alias explicitly.',
   );
   return lines.join('\n');
 }
 
-export type SubagentBindingSchemaUsage = 'agent' | 'swarm';
-
-const BINDING_FIELD_NAMES = ['route', 'model_alias', 'thinking_effort'] as const;
-
 export function addSubagentBindingSchemaConstraints(
   parameters: Record<string, unknown>,
-  usage: SubagentBindingSchemaUsage,
 ): void {
   const properties = parameters['properties'];
   if (!isPlainObject(properties)) return;
-  for (const field of ['model_alias', 'thinking_effort']) {
+  for (const field of ['model_alias', 'effort', 'profile_file']) {
     const property = properties[field];
     if (isPlainObject(property)) property['pattern'] = '\\S';
   }
-
-  const constraint =
-    usage === 'agent' ? agentResumeBindingConstraint() : swarmResumeBindingConstraint();
-  const current = parameters['allOf'];
-  parameters['allOf'] = [...(Array.isArray(current) ? current : []), constraint];
-}
-
-function agentResumeBindingConstraint(): Record<string, unknown> {
-  return {
-    not: {
-      allOf: [
-        {
-          required: ['resume'],
-          properties: { resume: { type: 'string', pattern: '\\S' } },
-        },
-        anyBindingFieldPresent(),
-      ],
-    },
-  };
-}
-
-function swarmResumeBindingConstraint(): Record<string, unknown> {
-  return {
-    not: {
-      allOf: [
-        {
-          required: ['resume_agent_ids'],
-          properties: {
-            resume_agent_ids: { type: 'object', minProperties: 1 },
-            items: { type: 'array', maxItems: 0 },
-          },
-        },
-        anyBindingFieldPresent(),
-      ],
-    },
-  };
-}
-
-function anyBindingFieldPresent(): Record<string, unknown> {
-  return { anyOf: BINDING_FIELD_NAMES.map((field) => ({ required: [field] })) };
+  parameters['allOf'] = [
+    { not: { allOf: [{ required: ['resume'] }, { anyOf: ['profile', 'profile_file', 'route', 'name'].map((field) => ({ required: [field] })) }] } },
+    { not: { allOf: [{ required: ['profile_file'] }, { anyOf: ['profile', 'route'].map((field) => ({ required: [field] })) }] } },
+    { if: { required: ['allow_model_change'] }, then: { required: ['resume', 'model_alias'] } },
+  ];
 }
 
 export function normalizeSubagentBindingValue(
@@ -318,6 +301,7 @@ export function isMissingSubagentModelAlias(error: unknown, alias: string): bool
 }
 
 export function formatSubagentTimeoutDescription(ms: number): string {
+  if (ms === 0) return 'unlimited';
   if (ms % (60 * 60 * 1000) === 0) {
     const h = ms / (60 * 60 * 1000);
     return `${h} hour${h === 1 ? '' : 's'}`;

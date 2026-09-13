@@ -1,1 +1,1 @@
-Plan mode is no longer active. The read-only and plan-file-only restrictions from plan mode no longer apply. Continue with the approved plan using the normal tool and permission rules.
+Plan mode is no longer active. The read-only and plan-file-only restrictions from plan mode no longer apply. Continue with the approved plan using the normal tool and permission rules. Research-readonly children created during plan mode remain restricted for their lifetime, including on resume; create a new implementation child if writable work is needed.

@@ -7,6 +7,7 @@ import {
 import { linkAbortSignal } from '#/_base/utils/abort';
 import { IAgentProfileService, type ProfileBindingSnapshot } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { assertResearchExecutor } from '#/agent/profile/executionRestriction';
 import { IAgentStateService } from '#/agent/state/agentState';
 import {
   type AgentExecutionStatus,
@@ -18,6 +19,7 @@ import {
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
 import { createHooks } from '#/hooks';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import type {
   AgentRunHandle,
   AgentRunRequest,
@@ -53,7 +55,8 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
 
   constructor(
     @IInstantiationService instantiation: IInstantiationService,
-    @IAgentScopeContext scope: IAgentScopeContext,
+    @IAgentScopeContext private readonly scope: IAgentScopeContext,
+    @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     @IAgentStateService states: IAgentStateService,
@@ -75,6 +78,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     }
     if (this.broken !== undefined) throw this.broken;
     options.signal.throwIfAborted();
+    const release = this.dispatch.reserveExecution(this.agent.id, this.scope.parentAgentId, options.capacityReservation);
     const controller = new AbortController();
     let resolveSettled = (): void => {};
     const settled = new Promise<void>((resolve) => {
@@ -84,7 +88,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
       controller,
       unlink: linkAbortSignal(options.signal, controller),
       settled,
-      resolveSettled,
+      resolveSettled: () => { release(); resolveSettled(); },
     };
     this.runs.add(active);
     this.cancelling = false;
@@ -92,6 +96,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
       await this.hooks.onWillRun.run({ signal: controller.signal });
       controller.signal.throwIfAborted();
       const session = await this.resolveSession();
+      controller.signal.throwIfAborted();
       const handle = await session.run(request, {
         ...options,
         signal: controller.signal,
@@ -158,8 +163,10 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
   }
 
   private async resolveSession(): Promise<AgentExecutorSession> {
-    const binding = this.profile.data();
+    await this.profile.preparePromptConfiguration();
+    const binding = { ...this.profile.data(), systemPrompt: this.profile.getSystemPrompt() };
     const executorId = binding.executorId ?? 'native';
+    assertResearchExecutor(binding.executionRestriction, executorId);
     const bindingKey =
       executorId === 'native' ? 'native' : agentExecutorBindingFingerprint(binding);
     if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {

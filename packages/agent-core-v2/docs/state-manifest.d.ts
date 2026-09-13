@@ -21,7 +21,7 @@
 // expand structurally; classes render as their public instance shape. The
 // defining source file heads each group.
 //
-// External ambient types referenced but not expanded (from node_modules): Headers
+// External ambient types referenced but not expanded (from node_modules): Headers, Readable, Writable
 //
 // snapshot() returns JSON-safe deep copies of these values: Maps become plain
 // objects (or [key, value] entry arrays when a key is not string/number), Sets
@@ -1574,6 +1574,7 @@ export interface AgentStateSnapshot {
     readonly routeId?: string;
     readonly lockedModelAlias?: string;
     readonly lockedThinkingEffort?: string;
+    readonly executionRestriction?: 'research-readonly';
     readonly executorId?: string;
     readonly executorProtocol?: string;
     readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
@@ -1618,11 +1619,15 @@ export interface AgentStateSnapshot {
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly when: string;
+        readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'prepend' | 'append' | 'wrap';
         readonly prompt?: string;
+        readonly contextBudget?: number;
+        readonly maxCompletionTokens?: number;
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
       }[];
     } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
       readonly source: string;
@@ -1644,11 +1649,15 @@ export interface AgentStateSnapshot {
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly when: string;
+        readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'prepend' | 'append' | 'wrap';
         readonly prompt?: string;
+        readonly contextBudget?: number;
+        readonly maxCompletionTokens?: number;
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
       }[];
     }>>;
     readonly spawnPolicy?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
@@ -1677,11 +1686,15 @@ export interface AgentStateSnapshot {
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly when: string;
+        readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'prepend' | 'append' | 'wrap';
         readonly prompt?: string;
+        readonly contextBudget?: number;
+        readonly maxCompletionTokens?: number;
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
       }[];
     } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
       readonly source: string;
@@ -1703,12 +1716,911 @@ export interface AgentStateSnapshot {
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly when: string;
+        readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'prepend' | 'append' | 'wrap';
         readonly prompt?: string;
+        readonly contextBudget?: number;
+        readonly maxCompletionTokens?: number;
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
       }[];
+    };
+    readonly boundProfile?: /* BoundProfile — packages/agent-core-v2/src/agent/profile/boundProfile.ts */ Omit</* AgentProfile — packages/agent-core-v2/src/app/agentProfileCatalog/agentProfileCatalog.ts */ {
+      readonly promptPrefix?: (ctx: /* AgentProfilePromptPrefixContext — packages/agent-core-v2/src/app/agentProfileCatalog/agentProfileCatalog.ts */ {
+        readonly cwd: string;
+        readonly process: /* IHostProcessService — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
+          readonly _serviceBrand: undefined;
+          spawn: (command: string, args?: readonly string[], options?: /* HostProcessOptions — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
+            readonly cwd?: string;
+            readonly env?: Record<string, string>;
+            readonly shell?: boolean | string;
+            readonly detached?: boolean;
+            readonly windowsHide?: boolean;
+            readonly mergeStderr?: boolean;
+            readonly timeout?: number;
+          }) => Promise</* IHostProcess — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
+            readonly _serviceBrand: undefined;
+            readonly pid: number;
+            readonly exitCode: number | null;
+            readonly stdin: Writable;
+            readonly stdout: Readable;
+            readonly stderr: Readable;
+            wait: () => Promise<number>;
+            kill: (signal?: 'SIGABRT' | 'SIGALRM' | 'SIGBUS' | 'SIGCHLD' | 'SIGCONT' | 'SIGFPE' | 'SIGHUP' | 'SIGILL' | 'SIGINT' | 'SIGIO' | 'SIGIOT' | 'SIGKILL' | 'SIGPIPE' | 'SIGPOLL' | 'SIGPROF' | 'SIGPWR' | 'SIGQUIT' | 'SIGSEGV' | 'SIGSTKFLT' | 'SIGSTOP' | 'SIGSYS' | 'SIGTERM' | 'SIGTRAP' | 'SIGTSTP' | 'SIGTTIN' | 'SIGTTOU' | 'SIGUNUSED' | 'SIGURG' | 'SIGUSR1' | 'SIGUSR2' | 'SIGVTALRM' | 'SIGWINCH' | 'SIGXCPU' | 'SIGXFSZ' | 'SIGBREAK' | 'SIGLOST' | 'SIGINFO') => Promise<void>;
+            dispose: () => void | Promise<void>;
+          }>;
+        };
+        readonly log?: /* ILogger — packages/agent-core-v2/src/_base/log/log.ts */ {
+          error: (message: string, payload?: unknown) => void;
+          warn: (message: string, payload?: unknown) => void;
+          info: (message: string, payload?: unknown) => void;
+          debug: (message: string, payload?: unknown) => void;
+          child: (ctx: /* LogContext — packages/agent-core-v2/src/_base/log/log.ts */ {
+            [key: string]: unknown;
+          }) => /* ILogger — recursive (packages/agent-core-v2/src/_base/log/log.ts) */ unknown;
+        };
+      }) => Promise<string>;
+      readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+        readonly contextBudget?: number;
+        readonly maxCompletionTokens?: number;
+        readonly name: string;
+        readonly definitionId: string;
+        readonly contributionRoot: string;
+        readonly private: boolean;
+        readonly description: string;
+        readonly whenToUse?: string;
+        readonly override: boolean;
+        readonly main?: boolean;
+        readonly tools?: readonly string[];
+        readonly disallowedTools?: readonly string[];
+        readonly subagents?: readonly string[];
+        readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly source?: undefined;
+          readonly name: string;
+          readonly description?: string;
+          readonly whenToUse?: string;
+          readonly modelAlias?: string;
+          readonly thinkingEffort?: string;
+          readonly allowedModels?: readonly string[];
+          readonly denyModels?: readonly string[];
+          readonly allowedEfforts?: readonly string[];
+          readonly tools?: readonly string[] | null;
+          readonly disallowedTools?: readonly string[];
+          readonly subagents?: readonly string[] | null;
+          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly prompt?: string;
+          readonly delegationNotice?: 'off' | 'auto';
+          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+          readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly alias: string;
+            readonly when?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedEfforts?: readonly string[];
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly contextBudget?: number;
+            readonly maxCompletionTokens?: number;
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          }[];
+        } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly source: string;
+          readonly name: string;
+          readonly description?: string;
+          readonly whenToUse?: string;
+          readonly modelAlias?: string;
+          readonly thinkingEffort?: string;
+          readonly allowedModels?: readonly string[];
+          readonly denyModels?: readonly string[];
+          readonly allowedEfforts?: readonly string[];
+          readonly tools?: readonly string[] | null;
+          readonly disallowedTools?: readonly string[];
+          readonly subagents?: readonly string[] | null;
+          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly prompt?: string;
+          readonly delegationNotice?: 'off' | 'auto';
+          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+          readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly alias: string;
+            readonly when?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedEfforts?: readonly string[];
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly contextBudget?: number;
+            readonly maxCompletionTokens?: number;
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          }[];
+        }>>;
+        readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly allowedModels?: readonly string[];
+          readonly denyModels?: readonly string[];
+          readonly allowedEfforts?: readonly string[];
+          readonly disallowedTools?: readonly string[];
+        };
+        readonly executor?: string;
+        readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+        readonly modelAlias?: string;
+        readonly thinkingEffort?: string;
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly allowedEfforts?: readonly string[];
+        readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly alias: string;
+          readonly when?: string;
+          readonly thinkingEffort?: string;
+          readonly allowedEfforts?: readonly string[];
+          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly prompt?: string;
+          readonly contextBudget?: number;
+          readonly maxCompletionTokens?: number;
+          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        }[];
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+        readonly prompt: string;
+        readonly path: string;
+        readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
+        readonly delegationNotice?: 'off' | 'auto';
+      };
+      readonly routeDefinition?: /* AgentProfileRouteDefinition — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly id: string;
+        readonly profile: string;
+        readonly description: string;
+        readonly whenToUse?: string;
+        readonly promptMode: /* AgentProfileRoutePromptMode — packages/agent-profiles/src/agentProfile.ts */ 'prepend' | 'append' | 'wrap' | 'inherit';
+        readonly prompt: string;
+        readonly tools?: readonly string[];
+        readonly disallowedTools?: readonly string[];
+        readonly subagents?: readonly string[];
+        readonly modelAlias?: string;
+        readonly thinkingEffort?: string;
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+        readonly overriddenFields: readonly string[];
+        readonly path: string;
+      };
+      readonly name: string;
+      readonly definitionId?: string;
+      readonly routeId?: string;
+      readonly description?: string;
+      readonly sourcePath?: string;
+      readonly whenToUse?: string;
+      readonly override?: boolean;
+      readonly main?: boolean;
+      readonly tools?: readonly string[];
+      readonly toolAllowPolicies?: readonly readonly string[][];
+      readonly disallowedTools?: readonly string[];
+      readonly subagents?: readonly string[];
+      readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+        readonly source?: undefined;
+        readonly name: string;
+        readonly description?: string;
+        readonly whenToUse?: string;
+        readonly modelAlias?: string;
+        readonly thinkingEffort?: string;
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly allowedEfforts?: readonly string[];
+        readonly tools?: readonly string[] | null;
+        readonly disallowedTools?: readonly string[];
+        readonly subagents?: readonly string[] | null;
+        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly prompt?: string;
+        readonly delegationNotice?: 'off' | 'auto';
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+        readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly alias: string;
+          readonly when?: string;
+          readonly thinkingEffort?: string;
+          readonly allowedEfforts?: readonly string[];
+          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly prompt?: string;
+          readonly contextBudget?: number;
+          readonly maxCompletionTokens?: number;
+          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        }[];
+      } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+        readonly source: string;
+        readonly name: string;
+        readonly description?: string;
+        readonly whenToUse?: string;
+        readonly modelAlias?: string;
+        readonly thinkingEffort?: string;
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly allowedEfforts?: readonly string[];
+        readonly tools?: readonly string[] | null;
+        readonly disallowedTools?: readonly string[];
+        readonly subagents?: readonly string[] | null;
+        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly prompt?: string;
+        readonly delegationNotice?: 'off' | 'auto';
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+        readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly alias: string;
+          readonly when?: string;
+          readonly thinkingEffort?: string;
+          readonly allowedEfforts?: readonly string[];
+          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly prompt?: string;
+          readonly contextBudget?: number;
+          readonly maxCompletionTokens?: number;
+          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        }[];
+      }>>;
+      readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly allowedEfforts?: readonly string[];
+        readonly disallowedTools?: readonly string[];
+      };
+      readonly executor?: string;
+      readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+      readonly modelAlias?: string;
+      readonly thinkingEffort?: string;
+      readonly allowedModels?: readonly string[];
+      readonly denyModels?: readonly string[];
+      readonly allowedEfforts?: readonly string[];
+      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly alias: string;
+        readonly when?: string;
+        readonly thinkingEffort?: string;
+        readonly allowedEfforts?: readonly string[];
+        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly prompt?: string;
+        readonly contextBudget?: number;
+        readonly maxCompletionTokens?: number;
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+      }[];
+      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+      readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+      readonly systemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly cwd?: string;
+        readonly cwdListing?: string;
+        readonly agentsMd?: string;
+        readonly additionalDirsInfo?: string;
+        readonly osKind?: string;
+        readonly shellName?: string;
+        readonly shellPath?: string;
+        readonly now?: string;
+        readonly timeZone?: string;
+        readonly skills?: string;
+        readonly skillActive?: boolean;
+        readonly pluginSections?: string;
+        readonly productName?: string;
+        readonly replyStyleGuide?: string;
+        readonly promptVariables?: Readonly<Record<string, string>>;
+        [key: string]: unknown;
+      }) => string;
+      readonly renderSystemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly cwd?: string;
+        readonly cwdListing?: string;
+        readonly agentsMd?: string;
+        readonly additionalDirsInfo?: string;
+        readonly osKind?: string;
+        readonly shellName?: string;
+        readonly shellPath?: string;
+        readonly now?: string;
+        readonly timeZone?: string;
+        readonly skills?: string;
+        readonly skillActive?: boolean;
+        readonly pluginSections?: string;
+        readonly productName?: string;
+        readonly replyStyleGuide?: string;
+        readonly promptVariables?: Readonly<Record<string, string>>;
+        [key: string]: unknown;
+      }) => /* SystemPromptRenderResult — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly text: string;
+        readonly environment: /* EnvironmentDisclosureSnapshot — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly cwd: string;
+          readonly date: {
+            readonly disclosed: true;
+            readonly value: {
+              readonly localDate: string;
+              readonly timeZone: string;
+            };
+          } | {
+            readonly disclosed: false;
+          };
+        };
+      };
+      readonly summaryPolicy?: /* AgentProfileSummaryPolicy — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly minChars: number;
+        readonly continuationPrompt: string;
+        readonly retries: number;
+      };
+      readonly delegationNotice?: 'off' | 'auto';
+      readonly contextBudget?: number;
+      readonly maxCompletionTokens?: number;
+    }, 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix'> & {
+      readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
+        readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly contextBudget?: number;
+          readonly maxCompletionTokens?: number;
+          readonly name: string;
+          readonly definitionId: string;
+          readonly contributionRoot: string;
+          readonly private: boolean;
+          readonly description: string;
+          readonly whenToUse?: string;
+          readonly override: boolean;
+          readonly main?: boolean;
+          readonly tools?: readonly string[];
+          readonly disallowedTools?: readonly string[];
+          readonly subagents?: readonly string[];
+          readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly source?: undefined;
+            readonly name: string;
+            readonly description?: string;
+            readonly whenToUse?: string;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly tools?: readonly string[] | null;
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[] | null;
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly delegationNotice?: 'off' | 'auto';
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+          } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly source: string;
+            readonly name: string;
+            readonly description?: string;
+            readonly whenToUse?: string;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly tools?: readonly string[] | null;
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[] | null;
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly delegationNotice?: 'off' | 'auto';
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+          }>>;
+          readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly disallowedTools?: readonly string[];
+          };
+          readonly executor?: string;
+          readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+          readonly modelAlias?: string;
+          readonly thinkingEffort?: string;
+          readonly allowedModels?: readonly string[];
+          readonly denyModels?: readonly string[];
+          readonly allowedEfforts?: readonly string[];
+          readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly alias: string;
+            readonly when?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedEfforts?: readonly string[];
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly contextBudget?: number;
+            readonly maxCompletionTokens?: number;
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          }[];
+          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+          readonly prompt: string;
+          readonly path: string;
+          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
+          readonly delegationNotice?: 'off' | 'auto';
+        };
+        readonly callerCeiling?: Pick</* ProfileData — packages/agent-core-v2/src/agent/profile/profile.ts */ {
+          readonly executionRestriction?: 'research-readonly';
+          readonly executorId?: string;
+          readonly executorProtocol?: string;
+          readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+          readonly executorDescriptorRevision?: string;
+          readonly agentsMdPaths?: readonly string[];
+          readonly activeToolNames?: readonly string[];
+          readonly toolAllowPolicies?: readonly readonly string[][];
+          readonly disallowedTools?: readonly string[];
+          readonly subagents?: readonly string[];
+          readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly source?: undefined;
+            readonly name: string;
+            readonly description?: string;
+            readonly whenToUse?: string;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly tools?: readonly string[] | null;
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[] | null;
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly delegationNotice?: 'off' | 'auto';
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+          } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly source: string;
+            readonly name: string;
+            readonly description?: string;
+            readonly whenToUse?: string;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly tools?: readonly string[] | null;
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[] | null;
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly delegationNotice?: 'off' | 'auto';
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+          }>>;
+          readonly spawnPolicy?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly disallowedTools?: readonly string[];
+          };
+          readonly appliedLease?: /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly source?: undefined;
+            readonly name: string;
+            readonly description?: string;
+            readonly whenToUse?: string;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly tools?: readonly string[] | null;
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[] | null;
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly delegationNotice?: 'off' | 'auto';
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+          } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly source: string;
+            readonly name: string;
+            readonly description?: string;
+            readonly whenToUse?: string;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly tools?: readonly string[] | null;
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[] | null;
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly delegationNotice?: 'off' | 'auto';
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+          };
+          readonly boundProfile?: /* BoundProfile — recursive (packages/agent-core-v2/src/agent/profile/boundProfile.ts) */ unknown;
+          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
+          readonly environmentDisclosure?: /* EnvironmentDisclosureSnapshot — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly cwd: string;
+            readonly date: {
+              readonly disclosed: true;
+              readonly value: {
+                readonly localDate: string;
+                readonly timeZone: string;
+              };
+            } | {
+              readonly disclosed: false;
+            };
+          };
+          readonly renderGeneration?: number;
+          modelAlias?: string;
+          modelCapabilities: /* ModelCapability — packages/agent-core-v2/src/kosong/contract/capability.ts */ {
+            readonly image_in: boolean;
+            readonly video_in: boolean;
+            readonly audio_in: boolean;
+            readonly thinking: boolean;
+            readonly tool_use: boolean;
+            readonly max_context_tokens: number;
+            readonly max_input_tokens?: number;
+            readonly dynamically_loaded_tools?: boolean;
+          };
+          profileName?: string;
+          profileDefinitionId?: string;
+          routeId?: string;
+          readonly lockedModelAlias?: string;
+          readonly lockedThinkingEffort?: string;
+          thinkingLevel: string;
+          systemPrompt: string;
+        }, 'activeToolNames' | 'toolAllowPolicies' | 'disallowedTools' | 'subagents'>;
+        readonly scopedBindings: Readonly<Record<string, Readonly<Record<string, /* AgentFileScopedBinding — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly parentDefinitionId: string;
+          readonly alias: string;
+          readonly source: string;
+          readonly lease: /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly source: string;
+            readonly name: string;
+            readonly description?: string;
+            readonly whenToUse?: string;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly tools?: readonly string[] | null;
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[] | null;
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly delegationNotice?: 'off' | 'auto';
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+          };
+          readonly status: 'ready' | 'unavailable';
+          readonly sourceDefinitionId?: string;
+          readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+            readonly contextBudget?: number;
+            readonly maxCompletionTokens?: number;
+            readonly name: string;
+            readonly definitionId: string;
+            readonly contributionRoot: string;
+            readonly private: boolean;
+            readonly description: string;
+            readonly whenToUse?: string;
+            readonly override: boolean;
+            readonly main?: boolean;
+            readonly tools?: readonly string[];
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[];
+            readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+              readonly source?: undefined;
+              readonly name: string;
+              readonly description?: string;
+              readonly whenToUse?: string;
+              readonly modelAlias?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly allowedEfforts?: readonly string[];
+              readonly tools?: readonly string[] | null;
+              readonly disallowedTools?: readonly string[];
+              readonly subagents?: readonly string[] | null;
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly delegationNotice?: 'off' | 'auto';
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+              readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+                readonly alias: string;
+                readonly when?: string;
+                readonly thinkingEffort?: string;
+                readonly allowedEfforts?: readonly string[];
+                readonly promptMode?: 'prepend' | 'append' | 'wrap';
+                readonly prompt?: string;
+                readonly contextBudget?: number;
+                readonly maxCompletionTokens?: number;
+                readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+                readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              }[];
+            } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+              readonly source: string;
+              readonly name: string;
+              readonly description?: string;
+              readonly whenToUse?: string;
+              readonly modelAlias?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly allowedEfforts?: readonly string[];
+              readonly tools?: readonly string[] | null;
+              readonly disallowedTools?: readonly string[];
+              readonly subagents?: readonly string[] | null;
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly delegationNotice?: 'off' | 'auto';
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+              readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+                readonly alias: string;
+                readonly when?: string;
+                readonly thinkingEffort?: string;
+                readonly allowedEfforts?: readonly string[];
+                readonly promptMode?: 'prepend' | 'append' | 'wrap';
+                readonly prompt?: string;
+                readonly contextBudget?: number;
+                readonly maxCompletionTokens?: number;
+                readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+                readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              }[];
+            }>>;
+            readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly allowedEfforts?: readonly string[];
+              readonly disallowedTools?: readonly string[];
+            };
+            readonly executor?: string;
+            readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+            readonly prompt: string;
+            readonly path: string;
+            readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
+            readonly delegationNotice?: 'off' | 'auto';
+          };
+          readonly diagnostic?: /* AgentProfileDiagnostic — packages/agent-profiles/src/scopedAgentProfile.ts */ {
+            readonly code: string;
+            readonly severity: 'error' | 'warning';
+            readonly message: string;
+            readonly path?: string;
+            readonly parentDefinitionId?: string;
+            readonly alias?: string;
+            readonly source?: string;
+          };
+        }>>>>;
+        readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly contextBudget?: number;
+          readonly maxCompletionTokens?: number;
+          readonly name: string;
+          readonly definitionId: string;
+          readonly contributionRoot: string;
+          readonly private: boolean;
+          readonly description: string;
+          readonly whenToUse?: string;
+          readonly override: boolean;
+          readonly main?: boolean;
+          readonly tools?: readonly string[];
+          readonly disallowedTools?: readonly string[];
+          readonly subagents?: readonly string[];
+          readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly source?: undefined;
+            readonly name: string;
+            readonly description?: string;
+            readonly whenToUse?: string;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly tools?: readonly string[] | null;
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[] | null;
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly delegationNotice?: 'off' | 'auto';
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+          } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly source: string;
+            readonly name: string;
+            readonly description?: string;
+            readonly whenToUse?: string;
+            readonly modelAlias?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly tools?: readonly string[] | null;
+            readonly disallowedTools?: readonly string[];
+            readonly subagents?: readonly string[] | null;
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly delegationNotice?: 'off' | 'auto';
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly alias: string;
+              readonly when?: string;
+              readonly thinkingEffort?: string;
+              readonly allowedEfforts?: readonly string[];
+              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly prompt?: string;
+              readonly contextBudget?: number;
+              readonly maxCompletionTokens?: number;
+              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            }[];
+          }>>;
+          readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly allowedEfforts?: readonly string[];
+            readonly disallowedTools?: readonly string[];
+          };
+          readonly executor?: string;
+          readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+          readonly modelAlias?: string;
+          readonly thinkingEffort?: string;
+          readonly allowedModels?: readonly string[];
+          readonly denyModels?: readonly string[];
+          readonly allowedEfforts?: readonly string[];
+          readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly alias: string;
+            readonly when?: string;
+            readonly thinkingEffort?: string;
+            readonly allowedEfforts?: readonly string[];
+            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly prompt?: string;
+            readonly contextBudget?: number;
+            readonly maxCompletionTokens?: number;
+            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          }[];
+          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+          readonly prompt: string;
+          readonly path: string;
+          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
+          readonly delegationNotice?: 'off' | 'auto';
+        }>>;
+        readonly dependencyIndex: Readonly<Record<string, readonly string[]>>;
+        readonly diagnostics: readonly /* AgentProfileDiagnostic — packages/agent-profiles/src/scopedAgentProfile.ts */ {
+          readonly code: string;
+          readonly severity: 'error' | 'warning';
+          readonly message: string;
+          readonly path?: string;
+          readonly parentDefinitionId?: string;
+          readonly alias?: string;
+          readonly source?: string;
+        }[];
+      };
+      readonly promptBase?: /* BoundPromptBase — packages/agent-core-v2/src/agent/profile/boundProfile.ts */ {
+        readonly text: string;
+        readonly environment: /* EnvironmentDisclosureSnapshot — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly cwd: string;
+          readonly date: {
+            readonly disclosed: true;
+            readonly value: {
+              readonly localDate: string;
+              readonly timeZone: string;
+            };
+          } | {
+            readonly disclosed: false;
+          };
+        };
+        readonly delegationSnippet?: string;
+        readonly promptVariablesRevision?: string;
+      };
     };
     readonly toolAllowPolicies?: readonly readonly string[][];
   };

@@ -225,6 +225,10 @@ const ModelBaseSchema = z.object({
   supportEfforts: z.array(z.string()).optional(),
   defaultEffort: z.string().optional(),
   offEffort: z.string().optional(),
+  contextBudget: z.number().int().min(1).optional(),
+  maxCompletionTokens: z.number().int().min(1).optional(),
+  serviceTier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
+  requestParams: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
 export const ModelOverrideSchema = ModelBaseSchema.omit({
@@ -255,6 +259,7 @@ export const CognitionConfigSchema = z.object({
 });
 
 export const ModelRecordSchema = ModelBaseSchema.extend({
+  serviceTier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   overrides: ModelOverrideSchema.optional(),
   cognition: CognitionConfigSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),

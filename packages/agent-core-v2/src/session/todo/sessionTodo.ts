@@ -6,10 +6,11 @@ import type { TodoItem } from './todoItem';
 export interface ISessionTodoService {
   readonly _serviceBrand: undefined;
 
-  getTodos(): readonly TodoItem[];
-  setTodos(todos: readonly TodoItem[]): void;
-  clear(): void;
+  getTodos(agentId?: string): readonly TodoItem[];
+  setTodos(todos: readonly TodoItem[], agentId?: string): void;
+  clear(agentId?: string): void;
   readonly onDidChange: Event<readonly TodoItem[]>;
+  readonly onDidChangeAgent: Event<{ agentId: string; todos: readonly TodoItem[] }>;
 }
 
 export const ISessionTodoService = createDecorator<ISessionTodoService>('sessionTodoService');

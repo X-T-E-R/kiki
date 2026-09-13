@@ -1,11 +1,19 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event, IWaitUntil } from '#/_base/event';
 import type { Protocol } from '#/kosong/protocol/protocol';
+import type { ServiceTier } from '#/kosong/contract/provider';
 import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 
 import type { OAuthRef } from '../provider/provider';
 
-export interface ModelOverride {
+export interface ModelParameterDefaults {
+  contextBudget?: number;
+  maxCompletionTokens?: number;
+  serviceTier?: ServiceTier;
+  requestParams?: Record<string, string | number | boolean>;
+}
+
+export interface ModelOverride extends ModelParameterDefaults {
   maxContextSize?: number;
   maxInputSize?: number;
   maxOutputSize?: number;
@@ -29,7 +37,7 @@ export interface CognitionConfig {
   anchorScope?: 'session' | 'turn';
 }
 
-export interface ModelRecord {
+export interface ModelRecord extends ModelParameterDefaults {
   providerId?: string;
 
   baseUrl?: string;
@@ -58,6 +66,7 @@ export interface ModelRecord {
   overrides?: ModelOverride;
   cognition?: CognitionConfig;
   requestIdentity?: RequestIdentityPolicy;
+  serviceTier?: ServiceTier;
 
   [key: string]: unknown;
 }

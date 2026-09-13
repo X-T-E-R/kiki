@@ -29,6 +29,7 @@ import type { ToolCall } from '#/kosong/contract/message';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentProfileService, type ResolvedAgentProfile } from '#/agent/profile/profile';
+import { ProfileErrors } from '#/agent/profile/errors';
 import { IHostClock } from '#/os/interface/hostClock';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
@@ -56,13 +57,88 @@ import {
   agentService,
   appService,
   createTestAgent,
+  homeDirServices,
   hostEnvironmentServices,
   sessionService,
   type TestAgentContext,
 } from '../../harness';
 
 const MOCK_MODEL = 'mock-model';
+const RESUME_PROVIDER = 'resume-provider';
+const RESUME_OLD_MODEL = `${RESUME_PROVIDER}/old-model`;
+const RESUME_NEW_MODEL = `${RESUME_PROVIDER}/new-model`;
 const hostPathClass = process.platform === 'win32' ? 'win32' : 'posix';
+
+function nativeResumeOptions() {
+  return {
+    initialConfig: {
+      providers: {
+        [RESUME_PROVIDER]: {
+          type: 'kimi',
+          apiKey: 'test-key',
+          baseUrl: 'https://api.example.test/v1',
+        },
+      },
+      models: {
+        [RESUME_OLD_MODEL]: {
+          provider: RESUME_PROVIDER,
+          model: 'old-model',
+          maxContextSize: 1_000_000,
+          capabilities: ['thinking'],
+          supportEfforts: ['low', 'high'],
+        },
+        [RESUME_NEW_MODEL]: {
+          provider: RESUME_PROVIDER,
+          model: 'new-model',
+          maxContextSize: 1_000_000,
+          capabilities: ['thinking'],
+          supportEfforts: ['low', 'high'],
+        },
+      },
+    },
+  };
+}
+
+function resumeProfile(
+  overrides: Partial<Omit<AgentProfile, 'systemPrompt' | 'renderSystemPrompt'>> = {},
+): AgentProfile {
+  return normalizeAgentProfile({
+    name: 'resume-profile',
+    modelAlias: RESUME_OLD_MODEL,
+    systemPrompt: () => 'resume profile',
+    ...overrides,
+  });
+}
+
+function prepareResumeBinding(
+  profile: IAgentProfileService,
+  input: Parameters<IAgentProfileService['prepareResumeBinding']>[0],
+): Promise<() => void> {
+  return Promise.resolve().then(() => profile.prepareResumeBinding(input));
+}
+
+function missingProfileCatalog(): ISessionAgentProfileCatalog {
+  const defaultProfile = normalizeAgentProfile({
+    name: DEFAULT_AGENT_PROFILE_NAME,
+    systemPrompt: () => 'missing profile catalog',
+  });
+  return {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+    get: () => undefined,
+    getDefault: () => defaultProfile,
+    list: () => [],
+    listRoutes: () => [],
+    routeDiagnostics: () => [],
+    resolveSelection: () => {
+      throw new Error('profile catalog is empty');
+    },
+    inspect: () => undefined,
+    load: async () => {},
+    reload: async () => {},
+  };
+}
 
 function profileServices(ctx: TestAgentContext): {
   profile: IAgentProfileService;
@@ -285,6 +361,44 @@ describe('AgentProfileService.bind', () => {
   function buildContext(): { ctx: TestAgentContext; profile: IAgentProfileService } {
     ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass));
     return { ctx, profile: ctx.get(IAgentProfileService) };
+  }
+
+  function buildNativeResumeProfile(profile: AgentProfile): IAgentProfileService {
+    ctx = createTestAgent(
+      nativeResumeOptions(),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(profile)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    return ctx.get(IAgentProfileService);
+  }
+
+  async function bindNativeResumeProfile(
+    profile: AgentProfile,
+    model = RESUME_OLD_MODEL,
+    thinking = 'low',
+  ): Promise<IAgentProfileService> {
+    const service = buildNativeResumeProfile(profile);
+    await service.bind({
+      profile: profile.name,
+      model,
+      thinking,
+      delegationPosition: 'sub',
+    });
+    return service;
+  }
+
+  async function bindExternalResumeProfile(
+    profile: AgentProfile,
+    registry: IAgentExecutorRegistry,
+  ): Promise<IAgentProfileService> {
+    ctx = createTestAgent(
+      appService(IAgentExecutorRegistry, registry),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(profile)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ profile: profile.name, delegationPosition: 'sub' });
+    return service;
   }
 
   it('binds an external profile without persisting descriptor environment secrets', async () => {
@@ -568,6 +682,36 @@ describe('AgentProfileService.bind', () => {
     ).rejects.toMatchObject({ code: 'model.not_configured' });
   });
 
+  it('intersects a native explore binding with the persistent research ceiling after lease overlays and rebind', async () => {
+    const { profile: svc } = buildContext();
+    await svc.bind({
+      profile: 'explore', model: MOCK_MODEL, executionRestriction: 'research-readonly',
+      lease: { name: 'explore', tools: null },
+    });
+    const policy = ctx.get(IAgentToolPolicyService);
+    expect(svc.data().executionRestriction).toBe('research-readonly');
+    expect(policy.isToolActive('Read')).toBe(true);
+    expect(policy.isToolActive('Bash')).toBe(false);
+    expect(policy.isToolActive('Read', 'user')).toBe(false);
+    expect(policy.isToolActive('Read', 'mcp')).toBe(false);
+    await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    svc.addActiveTool('Bash');
+    expect(svc.data().executionRestriction).toBe('research-readonly');
+    expect(policy.isToolActive('Read')).toBe(true);
+    expect(policy.isToolActive('Bash')).toBe(false);
+    await ctx.expectResumeMatches();
+  });
+
+  it('rejects an external research birth before executor resolution', async () => {
+    const { profile: svc } = buildContext();
+    const resolve = vi.spyOn(ctx.get(IAgentExecutorRegistry), 'resolveExecutable');
+    await expect(svc.bind({
+      resolvedProfile: normalizeAgentProfile({ name: 'explore', executor: 'external', systemPrompt: () => '' }),
+      model: MOCK_MODEL, executionRestriction: 'research-readonly',
+    })).rejects.toThrow('native executor');
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it('binds a profile + model atomically and becomes runnable', async () => {
     const { profile: svc } = buildContext();
 
@@ -808,7 +952,7 @@ describe('AgentProfileService.bind', () => {
     await svc.bind({
       profile: DEFAULT_AGENT_PROFILE_NAME,
       model: MOCK_MODEL,
-      thinking: 'low',
+      thinking: 'on',
     });
     await ctx.get(IWireService).flush();
 
@@ -939,6 +1083,60 @@ describe('AgentProfileService.bind', () => {
     });
     expect(profile.data().profileName).toBeUndefined();
     expect(profile.data().routeId).toBeUndefined();
+  });
+
+  it.each(['main', 'sub'] as const)('applies profile tier over model defaults for %s bindings', async (delegationPosition) => {
+    const configured = normalizeAgentProfile({ name: 'tier-helper', modelAlias: 'tier-model', serviceTier: 'flex', systemPrompt: () => '' });
+    ctx = createTestAgent({ initialConfig: { models: {
+      'tier-model': { provider: 'test-provider', model: 'tier-model', maxContextSize: 1000, serviceTier: 'priority' },
+    } } }, hostEnvironmentServices(homeDir, hostPathClass),
+    sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: configured.name, delegationPosition });
+    expect(profile.resolveRequestParams().serviceTier).toBe('flex');
+    expect(profile.data().serviceTier).toBe('flex');
+    profile.applyBindingSnapshot(profile.data());
+    expect(profile.resolveRequestParams().serviceTier).toBe('flex');
+    await profile.setModel(MOCK_MODEL);
+    expect(profile.resolveRequestParams().serviceTier).toBe('flex');
+  });
+
+  it.each([['main', true], ['sub', true], ['main', false], ['sub', false]] as const)('scopes effort to the canonical model and clamps parameter budgets for %s (pinned=%s)', async (delegationPosition, pinned) => {
+    const configured = resumeProfile({
+      modelAlias: pinned ? RESUME_OLD_MODEL : undefined,
+      thinkingEffort: 'medium', contextBudget: 2000, maxCompletionTokens: 500,
+      requestParams: { temperature: 0.4 },
+      modelProfiles: [{ alias: 'new-model', contextBudget: 1200, requestParams: { top_p: 0.8 }, serviceTier: 'flex' }],
+    });
+    const options = nativeResumeOptions();
+    const models = {
+      [RESUME_OLD_MODEL]: { ...options.initialConfig.models[RESUME_OLD_MODEL], maxContextSize: 1000, maxInputSize: 800, maxOutputSize: 400, supportEfforts: ['low', 'medium', 'high'] },
+      [RESUME_NEW_MODEL]: { ...options.initialConfig.models[RESUME_NEW_MODEL], maxContextSize: 6000, supportEfforts: ['low', 'medium', 'high', 'max'], overrides: { defaultEffort: 'max', requestParams: { seed: 42, temperature: 0.2 } } },
+    };
+    ctx = createTestAgent({ initialConfig: {
+      ...options.initialConfig,
+      thinking: { effort: 'low' },
+      models,
+    } },  hostEnvironmentServices(homeDir, hostPathClass), sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: configured.name, model: RESUME_OLD_MODEL, delegationPosition });
+    expect(profile.data().thinkingLevel).toBe(pinned ? 'medium' : 'low');
+    expect(profile.resolveModelContext()).toMatchObject({ maxOutputSize: 400, modelCapabilities: { max_context_tokens: 1000, max_input_tokens: 800 } });
+    await profile.bind({ profile: configured.name, model: 'new-model', delegationPosition });
+    expect(profile.data().thinkingLevel).toBe('max');
+    expect(profile.resolveModelContext()).toMatchObject({ maxOutputSize: 500, modelCapabilities: { max_context_tokens: 1200, max_input_tokens: 1200 } });
+    expect(profile.resolveRequestParams()).toMatchObject({ sampling: { temperature: 0.4, topP: 0.8 }, requestParams: { seed: 42 }, serviceTier: 'flex' });
+    const effortOnly = await profile.prepareResumeBinding({ thinkingEffort: 'low' });
+    effortOnly();
+    expect(profile.data().thinkingLevel).toBe('low');
+    (await profile.prepareResumeBinding({ modelAlias: RESUME_NEW_MODEL }))();
+    expect(profile.data().thinkingLevel).toBe('low');
+    (await profile.prepareResumeBinding({ modelAlias: RESUME_OLD_MODEL, allowModelChange: true }))();
+    expect(profile.data().thinkingLevel).toBe(pinned ? 'medium' : 'low');
+    await profile.setModel('new-model');
+    expect(profile.data().thinkingLevel).toBe('max');
+    await profile.bind({ profile: configured.name, model: RESUME_OLD_MODEL, thinking: 'low', delegationPosition });
+    expect(profile.data().thinkingLevel).toBe('low');
   });
 
   it('restores profile request settings from the binding record without catalog resolution', async () => {
@@ -1101,7 +1299,7 @@ describe('AgentProfileService.bind', () => {
     });
     const svc = ctx.get(IAgentProfileService);
 
-    await svc.bind({ profile: first.name, model: MOCK_MODEL, thinking: 'high' });
+    await svc.bind({ profile: first.name, model: MOCK_MODEL, thinking: 'on' });
     await svc.bind({ profile: second.name });
 
     expect(svc.data().profileName).toBe(second.name);
@@ -1149,7 +1347,7 @@ describe('AgentProfileService.bind', () => {
     expect(svc.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);
   });
 
-  it('clamps an inherited unsupported thinking effort instead of rejecting the bind', async () => {
+  it('rejects an explicit unsupported effort even without strictThinking', async () => {
     ctx = createTestAgent(
       {
         initialConfig: {
@@ -1170,18 +1368,15 @@ describe('AgentProfileService.bind', () => {
       hostEnvironmentServices(homeDir, hostPathClass),
     );
     const svc = ctx.get(IAgentProfileService);
-
-    await svc.bind({
+    await expect(svc.bind({
       profile: DEFAULT_AGENT_PROFILE_NAME,
       model: 'kimi-code/kimi-for-coding',
       thinking: 'ultra',
-    });
-
-    expect(svc.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);
-    expect(svc.data().thinkingLevel).toBe('high');
+    })).rejects.toThrow(/not supported/);
+    expect(svc.data().profileName).toBeUndefined();
   });
 
-  it('keeps the persisted thinking effort on a same-name rebind', async () => {
+  it('keeps effort on ordinary resume but resolves defaults on an explicit rebind', async () => {
     ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass));
     ctx.configure({
       modelCapabilities: {
@@ -1196,10 +1391,495 @@ describe('AgentProfileService.bind', () => {
     const svc = ctx.get(IAgentProfileService);
     await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL, thinking: 'off' });
     expect(svc.data().thinkingLevel).toBe('off');
-
-    await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const apply = await svc.prepareResumeBinding({});
+    apply();
     expect(svc.data().thinkingLevel).toBe('off');
+    await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    expect(svc.data().thinkingLevel).toBe('on');
   });
+
+  it('validates a native resume change without mutation and applies both values in one update', async () => {
+    const svc = await bindNativeResumeProfile(
+      resumeProfile({ allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL] }),
+    );
+    const update = vi.spyOn(svc, 'update');
+
+    const apply = await prepareResumeBinding(svc, {
+      modelAlias: RESUME_NEW_MODEL,
+      thinkingEffort: 'high',
+      allowModelChange: true,
+    });
+
+    expect(update).not.toHaveBeenCalled();
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+    });
+
+    apply();
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      modelAlias: RESUME_NEW_MODEL,
+      thinkingLevel: 'high',
+    }));
+    await ctx.get(IWireService).flush();
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_NEW_MODEL,
+      thinkingLevel: 'high',
+    });
+  });
+
+  it('refreshes model-specific prompt overlays atomically for a confirmed native resume model change', async () => {
+    const svc = await bindNativeResumeProfile(
+      resumeProfile({
+        allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
+        modelProfiles: [
+          {
+            alias: RESUME_OLD_MODEL,
+            when: 'model-a',
+            promptMode: 'append',
+            prompt: 'MODEL_A_OVERLAY',
+          },
+          {
+            alias: RESUME_NEW_MODEL,
+            when: 'model-b',
+            promptMode: 'append',
+            prompt: 'MODEL_B_OVERLAY',
+          },
+        ],
+      }),
+    );
+    expect(svc.getSystemPrompt()).toContain('MODEL_A_OVERLAY');
+    expect(svc.getSystemPrompt()).not.toContain('MODEL_B_OVERLAY');
+    const oldPrompt = svc.getSystemPrompt();
+    const update = vi.spyOn(svc, 'update');
+
+    const apply = await prepareResumeBinding(svc, {
+      modelAlias: RESUME_NEW_MODEL,
+      thinkingEffort: 'high',
+      allowModelChange: true,
+    });
+
+    expect(update).not.toHaveBeenCalled();
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+      systemPrompt: oldPrompt,
+    });
+    expect(svc.getSystemPrompt()).toBe(oldPrompt);
+    expect(svc.data().boundProfile?.promptBase).toMatchObject({
+      text: expect.stringContaining('resume profile'),
+      environment: expect.any(Object),
+    });
+
+    apply();
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const changed = update.mock.calls[0]?.[0];
+    expect(changed).toMatchObject({
+      modelAlias: RESUME_NEW_MODEL,
+      thinkingLevel: 'high',
+      systemPrompt: expect.stringContaining('MODEL_B_OVERLAY'),
+    });
+    expect(changed?.systemPrompt).not.toContain('MODEL_A_OVERLAY');
+    await ctx.get(IWireService).flush();
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_NEW_MODEL,
+      thinkingLevel: 'high',
+    });
+    expect(svc.getSystemPrompt()).toContain('MODEL_B_OVERLAY');
+    expect(svc.getSystemPrompt()).not.toContain('MODEL_A_OVERLAY');
+  });
+
+  it('leaves native binding state unchanged when the new model cognition overlay cannot load', async () => {
+    const profile = resumeProfile({
+      allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
+    });
+    ctx = createTestAgent(
+      nativeResumeOptions(),
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(profile)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({
+      profile: profile.name,
+      model: RESUME_OLD_MODEL,
+      thinking: 'low',
+      delegationPosition: 'sub',
+    });
+    const oldPrompt = svc.getSystemPrompt();
+    const current = ctx.kimiConfig.models?.[RESUME_NEW_MODEL];
+    expect(current).toBeDefined();
+    const cognition = { overlay: 'cognition/missing-resume.md' };
+    ctx.kimiConfig = {
+      ...ctx.kimiConfig,
+      models: {
+        ...ctx.kimiConfig.models,
+        [RESUME_NEW_MODEL]: { ...current!, cognition },
+      },
+    };
+    await ctx.get(IModelService).set(RESUME_NEW_MODEL, {
+      ...current!, cognition,
+      capabilities: current?.capabilities === undefined ? undefined : [...current.capabilities],
+      supportEfforts: current?.supportEfforts === undefined ? undefined : [...current.supportEfforts],
+    });
+    const update = vi.spyOn(svc, 'update');
+
+    await expect(
+      prepareResumeBinding(svc, {
+        modelAlias: RESUME_NEW_MODEL,
+        thinkingEffort: 'high',
+        allowModelChange: true,
+      }),
+    ).rejects.toMatchObject({ code: ProfileErrors.codes.COGNITION_FILE_MISSING });
+    expect(update).not.toHaveBeenCalled();
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+      systemPrompt: oldPrompt,
+    });
+    expect(svc.getSystemPrompt()).toBe(oldPrompt);
+  });
+
+  it('uses the new model default when a confirmed native resume model change omits effort', async () => {
+    const svc = await bindNativeResumeProfile(
+      resumeProfile({ allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL] }),
+    );
+    const update = vi.spyOn(svc, 'update');
+    const apply = await prepareResumeBinding(svc, {
+      modelAlias: RESUME_NEW_MODEL,
+      allowModelChange: true,
+    });
+    apply();
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      modelAlias: RESUME_NEW_MODEL,
+      thinkingLevel: 'high',
+    }));
+    expect(svc.data()).toMatchObject({ modelAlias: RESUME_NEW_MODEL, thinkingLevel: 'high' });
+  });
+
+  it('accepts a canonical-equivalent native alias without model-change confirmation', async () => {
+    const svc = await bindNativeResumeProfile(resumeProfile());
+    const update = vi.spyOn(svc, 'update');
+    const apply = await prepareResumeBinding(svc, { modelAlias: 'old-model' });
+
+    expect(update).not.toHaveBeenCalled();
+    apply();
+
+    expect(update).not.toHaveBeenCalled();
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+    });
+  });
+
+  it('requires explicit confirmation for a different native model and names both aliases', async () => {
+    const svc = await bindNativeResumeProfile(resumeProfile());
+
+    await expect(
+      prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: false }),
+    ).rejects.toThrow(
+      new RegExp(
+        `from "${RESUME_OLD_MODEL}" to "${RESUME_NEW_MODEL}".*allow_model_change`,
+      ),
+    );
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+    });
+  });
+
+  it('rejects invalid native model and effort without changing either binding value', async () => {
+    const svc = await bindNativeResumeProfile(resumeProfile());
+
+    await expect(
+      prepareResumeBinding(svc, {
+        modelAlias: `${RESUME_PROVIDER}/missing-model`,
+        allowModelChange: true,
+      }),
+    ).rejects.toThrow(/not configured/);
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+    });
+
+    await expect(prepareResumeBinding(svc, { thinkingEffort: 'ultra' })).rejects.toThrow(/not supported/);
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+    });
+  });
+
+  it('rejects a role allowed_models violation before changing the binding', async () => {
+    const svc = await bindNativeResumeProfile(
+      resumeProfile({ allowedModels: [RESUME_OLD_MODEL] }),
+    );
+
+    await expect(
+      prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }),
+    ).rejects.toThrow(/allowed_models/);
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+    });
+  });
+
+  it('rejects a role deny_models violation before changing the binding', async () => {
+    const svc = await bindNativeResumeProfile(
+      resumeProfile({ denyModels: [RESUME_NEW_MODEL] }),
+    );
+
+    await expect(
+      prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }),
+    ).rejects.toThrow(/deny_models/);
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+    });
+  });
+
+  it('rejects a role allowed_efforts violation before changing the binding', async () => {
+    const svc = await bindNativeResumeProfile(
+      resumeProfile({ allowedEfforts: ['low'] }),
+    );
+
+    await expect(prepareResumeBinding(svc, { thinkingEffort: 'high' })).rejects.toThrow(/allowed_efforts/);
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+    });
+  });
+
+  it('rejects caller allowed_models, deny_models, and allowed_efforts before changing the binding', async () => {
+    const cases = [
+      {
+        constraints: { allowedModels: [RESUME_OLD_MODEL] },
+        input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true },
+        message: /allowed_models/,
+      },
+      {
+        constraints: { denyModels: [RESUME_NEW_MODEL] },
+        input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true },
+        message: /deny_models/,
+      },
+      {
+        constraints: { allowedEfforts: ['low'] },
+        input: { thinkingEffort: 'high' },
+        message: /allowed_efforts/,
+      },
+    ] as const;
+
+    for (const { constraints, input, message } of cases) {
+      const svc = await bindNativeResumeProfile(resumeProfile());
+
+      await expect(
+        prepareResumeBinding(svc, {
+          ...input,
+          callerConstraints: [constraints],
+        }),
+      ).rejects.toThrow(message);
+      expect(svc.data()).toMatchObject({
+        modelAlias: RESUME_OLD_MODEL,
+        thinkingLevel: 'low',
+      });
+      await ctx.dispose();
+    }
+  });
+
+  it('rejects model and effort changes against hard route locks before changing the binding', async () => {
+    ctx = createTestAgent(
+      nativeResumeOptions(),
+      sessionService(ISessionAgentProfileCatalog, routedCatalog(RESUME_OLD_MODEL, 'low')),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ route: 'reviewer.ui-k3', delegationPosition: 'sub' });
+
+    await expect(
+      prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }),
+    ).rejects.toThrow(/locked by its route/);
+    await expect(prepareResumeBinding(svc, { thinkingEffort: 'high' })).rejects.toThrow(/locked by its route/);
+    expect(svc.data()).toMatchObject({
+      modelAlias: RESUME_OLD_MODEL,
+      thinkingLevel: 'low',
+    });
+  });
+
+  it.each([
+    ['model', { modelAlias: 'external-new', allowModelChange: true }],
+    ['effort', { thinkingEffort: 'high' }],
+  ] as const)('rejects an external resume %s change without resolving another executor', async (_, input) => {
+    const registry = externalExecutorRegistry();
+    const external = normalizeAgentProfile({
+      name: 'resume-external',
+      executor: 'grok-acp',
+      modelAlias: 'external-old',
+      thinkingEffort: 'low',
+      systemPrompt: () => 'external resume',
+    });
+    const svc = await bindExternalResumeProfile(external, registry);
+    const resolveExecutable = vi.spyOn(registry, 'resolveExecutable');
+
+    await expect(prepareResumeBinding(svc, input)).rejects.toThrow(/does not support changing/);
+    expect(resolveExecutable).not.toHaveBeenCalled();
+    expect(svc.data()).toMatchObject({
+      modelAlias: 'external-old',
+      thinkingLevel: 'low',
+    });
+  });
+
+  it.each([['low', false], ['XHIGH', false], ['XHIGH', true]] as const)('MP-02 accepts an external no-op alias with effort %s (locked=%s) without resolving or replacing an executor', async (thinkingEffort, locked) => {
+    const registry = externalExecutorRegistry();
+    const external = normalizeAgentProfile({
+      name: 'resume-external-noop',
+      executor: 'grok-acp',
+      modelAlias: 'external-old',
+      thinkingEffort,
+      systemPrompt: () => 'external resume',
+    });
+    const svc = await bindExternalResumeProfile(external, registry);
+    if (locked) svc.applyBindingSnapshot({ ...svc.data(), lockedModelAlias: 'external-old', lockedThinkingEffort: thinkingEffort });
+    const resolveExecutable = vi.spyOn(registry, 'resolveExecutable');
+    const update = vi.spyOn(svc, 'update');
+
+    const apply = await prepareResumeBinding(svc, { modelAlias: 'external-old' });
+    apply();
+
+    expect(resolveExecutable).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(svc.data()).toMatchObject({
+      modelAlias: 'external-old',
+      thinkingLevel: thinkingEffort,
+    });
+  });
+
+  it('persists bound profile metadata and carries it through data and snapshots', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const bound = resumeProfile({
+      sourcePath: './profiles/resume.md',
+      allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
+      denyModels: [`${RESUME_PROVIDER}/blocked-model`],
+      allowedEfforts: ['low', 'high'],
+    });
+    ctx = createTestAgent(
+      { ...nativeResumeOptions(), persistence },
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(bound)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({
+      profile: bound.name,
+      model: RESUME_OLD_MODEL,
+      thinking: 'low',
+      delegationPosition: 'sub',
+    });
+
+    expect(svc.data().boundProfile).toMatchObject({
+      name: bound.name,
+      sourcePath: './profiles/resume.md',
+      allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
+      denyModels: [`${RESUME_PROVIDER}/blocked-model`],
+      allowedEfforts: ['low', 'high'],
+      promptBase: {
+        text: expect.stringContaining('resume profile'),
+        environment: expect.any(Object),
+      },
+    });
+    await ctx.get(IWireService).flush();
+    expect(persistence.records.find((record) => record.type === 'profile.bind')).toMatchObject({
+      boundProfile: {
+        name: bound.name,
+        sourcePath: './profiles/resume.md',
+        allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
+        denyModels: [`${RESUME_PROVIDER}/blocked-model`],
+        allowedEfforts: ['low', 'high'],
+        promptBase: {
+          text: expect.stringContaining('resume profile'),
+          environment: expect.any(Object),
+        },
+      },
+    });
+
+    const snapshot = svc.data();
+    svc.applyBindingSnapshot(snapshot);
+    await ctx.get(IWireService).flush();
+    expect(svc.data().boundProfile).toMatchObject({
+      name: bound.name,
+      sourcePath: './profiles/resume.md',
+      allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
+      denyModels: [`${RESUME_PROVIDER}/blocked-model`],
+      allowedEfforts: ['low', 'high'],
+      promptBase: {
+        text: expect.stringContaining('resume profile'),
+        environment: expect.any(Object),
+      },
+    });
+  });
+
+  it.each(['changed', 'missing'] as const)(
+    'restores bound profile constraints and sourcePath when the live catalog is %s',
+    async (catalogState) => {
+      const persistence = new InMemoryWireRecordPersistence();
+      const original = resumeProfile({
+        sourcePath: './profiles/original.md',
+        allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
+        allowedEfforts: ['low', 'high'],
+      });
+      ctx = createTestAgent(
+        { ...nativeResumeOptions(), persistence },
+        sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
+        hostEnvironmentServices(homeDir, hostPathClass),
+      );
+      const initial = ctx.get(IAgentProfileService);
+      await initial.bind({
+        profile: original.name,
+        model: RESUME_OLD_MODEL,
+        thinking: 'low',
+        delegationPosition: 'sub',
+      });
+      await ctx.get(IWireService).flush();
+      await ctx.dispose();
+
+      const liveCatalog =
+        catalogState === 'changed'
+          ? singleProfileCatalog(
+              resumeProfile({
+                sourcePath: './profiles/changed.md',
+                allowedModels: [RESUME_OLD_MODEL],
+                allowedEfforts: ['low'],
+              }),
+            )
+          : missingProfileCatalog();
+      ctx = createTestAgent(
+        { ...nativeResumeOptions(), persistence },
+        sessionService(ISessionAgentProfileCatalog, liveCatalog),
+        hostEnvironmentServices(homeDir, hostPathClass),
+      );
+      await ctx.restorePersisted();
+      const restored = ctx.get(IAgentProfileService);
+
+      expect(restored.data().boundProfile).toMatchObject({
+        name: original.name,
+        sourcePath: './profiles/original.md',
+        allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
+        allowedEfforts: ['low', 'high'],
+      });
+      const apply = await prepareResumeBinding(restored, {
+        modelAlias: RESUME_NEW_MODEL,
+        thinkingEffort: 'high',
+        allowModelChange: true,
+      });
+      apply();
+      expect(restored.data()).toMatchObject({
+        modelAlias: RESUME_NEW_MODEL,
+        thinkingLevel: 'high',
+      });
+      expect(restored.data().boundProfile?.sourcePath).toBe('./profiles/original.md');
+    },
+  );
 });
 
 describe('AgentToolPolicyService tool denylist', () => {

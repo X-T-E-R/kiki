@@ -16,6 +16,7 @@ import type {
 } from '#/agent/permissionPolicy/types';
 import { EnterPlanModeReview } from '#/features/plan/enterPlanModeReview';
 import { IAgentPlanService } from '#/features/plan/plan';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { PlanFileWriteApprovePolicy } from '#/features/plan/planFileWriteApprovePolicy';
 import { AgentPlanService } from '#/features/plan/planService';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -150,9 +151,11 @@ describe('AgentPlanService plan-guard listener', () => {
   let mode: PermissionMode;
   let agentId: string;
   let files: Map<string, string>;
+  let planReaders: Map<string, () => boolean>;
 
   beforeEach(() => {
     disposables = new DisposableStore();
+    planReaders = new Map();
     records = [];
     requests = [];
     approvalResponse = { decision: 'approved' };
@@ -182,6 +185,12 @@ describe('AgentPlanService plan-guard listener', () => {
     ix = createServices(disposables, {
       additionalServices: (reg) => {
         registerTestAgentWireServices(reg);
+        reg.definePartialInstance(ISessionDispatchService, {
+          registerPlanStateReader: (id, read) => {
+            planReaders.set(id, read);
+            return { dispose: () => { planReaders.delete(id); } };
+          },
+        });
         reg.defineInstance(
           IHostFileSystem,
           createFakeHostFs({
@@ -364,18 +373,31 @@ describe('AgentPlanService plan-guard listener', () => {
       expect(permissionRan).toBe(false);
     });
 
-    it.each(['AgentRun', 'AgentSwarm', 'AgentSend'] as const)(
-      'blocks %s while plan mode is active',
+    it.each(['AgentRun', 'AgentSend'] as const)(
+      'blocks %s continuation while plan mode is active before its executor runs',
       async (toolName) => {
         await enterPlan();
-        const decision = await run(hookContext(toolName, { args: {} }));
-
+        const execute = vi.fn();
+        const decision = await run(hookContext(toolName, { args: { resume: ' old-writable-child ' } }));
+        if (decision?.veto === undefined) execute();
+        expect(execute).not.toHaveBeenCalled();
         expect(decision?.veto?.isError).toBe(true);
         expect(decision?.veto?.output).toContain(toolName);
         expect(decision?.veto?.output).toContain('ExitPlanMode');
         expect(permissionRan).toBe(false);
       },
     );
+
+    it.each(['manual', 'auto', 'yolo'] as const)('allows new research dispatch in %s and signs only its requester', async (permissionMode) => {
+      mode = permissionMode;
+      const svc = await enterPlan();
+      expect(await run(hookContext('AgentRun', { args: { profile: 'explore' } }))).toBeUndefined();
+      expect(await run(hookContext('AgentRun', { args: { resume: '  ' } }))).toBeUndefined();
+      expect(planReaders.get('other-agent')).toBeUndefined();
+      expect(planReaders.get('main')?.()).toBe(true);
+      svc.exit();
+      expect(planReaders.get('main')?.()).toBe(false);
+    });
 
     it.each(['CronCreate', 'CronDelete'] as const)(
       'blocks %s while plan mode is active',

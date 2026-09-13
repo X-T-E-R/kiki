@@ -3,6 +3,13 @@ import { z } from 'zod';
 import { requestIdentityPolicySchema } from '../modelCatalog';
 import { nbSearchConfigPatchSchema } from './nbSearch';
 
+export const promptConfigSchema = z.object({
+  shared: z.string().optional(),
+  variables: z.record(z.string(), z.string()).optional(),
+  tools: z.record(z.string(), z.string()).optional(),
+}).strict();
+export type PromptConfig = z.infer<typeof promptConfigSchema>;
+
 export const providerConfigResponseSchema = z.object({
   type: z.string(),
   base_url: z.string().optional(),
@@ -12,7 +19,9 @@ export const providerConfigResponseSchema = z.object({
 export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema>;
 
 export const subagentConfigResponseSchema = z.object({
-  timeoutMs: z.number().optional(),
+  timeoutMs: z.number().int().nonnegative().optional(),
+  maxDirectChildren: z.number().int().nonnegative().optional(),
+  maxTotalSubagents: z.number().int().nonnegative().optional(),
 });
 
 export const agentsConfigResponseSchema = z.object({
@@ -51,6 +60,7 @@ export const configResponseSchema = z.object({
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
+  prompt: promptConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
@@ -83,12 +93,15 @@ export const patchConfigRequestSchema = z.object({
   hooks: z.array(z.unknown()).optional(),
   services: z.never().optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
+  prompt: promptConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
   background: z.unknown().optional(),
   subagent: z.object({
-    timeout_ms: z.number().optional(),
+    timeout_ms: z.number().int().nonnegative().optional(),
+    max_direct_children: z.number().int().nonnegative().optional(),
+    max_total_subagents: z.number().int().nonnegative().optional(),
   }).optional(),
   agents: z.object({
     enabled: z.boolean().optional(),

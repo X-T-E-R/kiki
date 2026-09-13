@@ -42,11 +42,19 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/v2/external-delegation/seats/{seat_id}",
+    ],
+    [
+      "DELETE",
       "/api/v2/mcp/servers/{name}",
     ],
     [
       "GET",
       "/api/v1/agents",
+    ],
+    [
+      "GET",
+      "/api/v1/agents/capabilities",
     ],
     [
       "GET",
@@ -150,6 +158,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/nb-search/capabilities",
+    ],
+    [
+      "GET",
+      "/api/v1/nb-search/test",
+    ],
+    [
+      "GET",
       "/api/v1/oauth/login",
     ],
     [
@@ -167,6 +183,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/v1/plugins",
+    ],
+    [
+      "GET",
+      "/api/v1/plugins/{plugin_id}",
     ],
     [
       "GET",
@@ -306,6 +326,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v2/external-delegation/seats",
+    ],
+    [
+      "GET",
       "/api/v2/mcp/auth-statuses",
     ],
     [
@@ -383,6 +407,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/gui/store/setItem",
+    ],
+    [
+      "POST",
+      "/api/v1/leases",
     ],
     [
       "POST",
@@ -482,6 +510,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/sessions/{session_id}/source-overlay",
+    ],
+    [
+      "POST",
       "/api/v1/sessions/{session_id}/tasks/{tail}",
     ],
     [
@@ -534,6 +566,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v2/external-delegation/seats",
+    ],
+    [
+      "POST",
       "/api/v2/mcp/auth:begin",
     ],
     [
@@ -567,6 +603,54 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v2/sessions:restore",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/cancel",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/continue",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/dispatch",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/events",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/interactions",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/list",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/respond",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/result",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/send",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/status",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/transcript",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/external-delegation/wait",
     ],
     [
       "PUT",

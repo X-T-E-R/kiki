@@ -31,7 +31,6 @@ const AGENT_TOOLS = [
   'Skill',
   'WebSearch',
   'AgentRun',
-  'AgentSwarm',
   'AgentList',
   'AgentSend',
   'FetchURL',

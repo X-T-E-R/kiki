@@ -1,6 +1,9 @@
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
 
 import { Emitter } from '#/_base/event';
+import { DispatchCapacity } from './capacity';
+import { inheritProfileFileSources } from './profileFile';
+import { evaluateDispatchAdmission, tightenDispatchLaunchPolicy, type DispatchLaunchPolicy } from './launchPolicy';
 import { abortable } from '#/_base/utils/abort';
 import { setClampedTimeout } from '#/_base/utils/timer';
 import { LifecycleScope } from '#/app/scopes';
@@ -38,6 +41,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import {
   canonicalizeSubagentBinding,
+  resolveDispatchCapacityLimits,
   resolveSubagentBinding,
 } from '#/session/subagent/configSection';
 import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
@@ -63,6 +67,22 @@ export class SessionDispatchService implements ISessionDispatchService {
   declare readonly _serviceBrand: undefined;
   private readonly delegatedRun = new Emitter<{ requesterAgentId: string; agentId: string }>();
   readonly onDidDelegateRun = this.delegatedRun.event;
+  private readonly planStateReaders = new Map<string, () => boolean>();
+
+  registerPlanStateReader(requesterAgentId: string, read: () => boolean): { dispose(): void } {
+    this.planStateReaders.set(requesterAgentId, read);
+    return { dispose: () => {
+      if (this.planStateReaders.get(requesterAgentId) === read) this.planStateReaders.delete(requesterAgentId);
+    } };
+  }
+
+  readLaunchPolicy(requesterAgentId: string): DispatchLaunchPolicy {
+    const requester = this.requireHandle(requesterAgentId, 'Requester agent');
+    return Object.freeze({
+      planActive: this.planStateReaders.get(requesterAgentId)?.() === true,
+      callerRestriction: requester.accessor.get(IAgentProfileService).data().executionRestriction,
+    });
+  }
 
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
@@ -76,9 +96,52 @@ export class SessionDispatchService implements ISessionDispatchService {
     @ILogService private readonly log: ILogService,
   ) {}
 
+  private readonly capacity = new DispatchCapacity();
+
+  reserveExecution(agentId: string, parentAgentId?: string, reservation?: import('./capacity').DispatchReservation): () => void {
+    if (agentId === 'main') return () => {};
+    const slot = reservation ?? this.capacity.reserve(parentAgentId ?? 'main', resolveDispatchCapacityLimits(this.config), agentId);
+    slot.claim(agentId);
+    return slot;
+  }
+
+  reserveTurnExecution(agentId: string, parentAgentId?: string): () => void {
+    if (agentId === 'main') return () => {};
+    return this.capacity.retain(agentId) ?? this.reserveExecution(agentId, parentAgentId);
+  }
+
   async launch(input: DispatchLaunchInput): Promise<DispatchRun> {
+    input.signal.throwIfAborted();
+    const release = this.capacity.reserve(input.requesterAgentId, resolveDispatchCapacityLimits(this.config));
+    try {
+      return this.trackCapacity(await this.launchReserved(input, release), release);
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  private trackCapacity(run: DispatchRun, release: () => void): DispatchRun {
+    void run.started.then((started) => {
+      void started.completion.then(release, release);
+    }, release);
+    return run;
+  }
+
+  private async launchReserved(input: DispatchLaunchInput, reservation: import('./capacity').DispatchReservation): Promise<DispatchRun> {
     const requester = this.requireHandle(input.requesterAgentId, 'Requester agent');
+    let policy = tightenDispatchLaunchPolicy(this.readLaunchPolicy(input.requesterAgentId), input.capturedLaunchPolicy);
+    let researchReadonly = policy.planActive;
+    const checkLaunchPolicy = (executorId?: string): void => {
+      input.signal.throwIfAborted();
+      policy = tightenDispatchLaunchPolicy(this.readLaunchPolicy(input.requesterAgentId), policy);
+      const admission = evaluateDispatchAdmission(policy, 'spawn', executorId);
+      if (!admission.allowed) throw new Error2(ErrorCodes.REQUEST_INVALID, admission.reason!);
+      researchReadonly = admission.executionRestriction === 'research-readonly';
+    };
+    checkLaunchPolicy();
     await this.profiles.ready;
+    checkLaunchPolicy();
     const requesterData =
       input.requesterProfileData ?? requester.accessor.get(IAgentProfileService).data();
     const target = resolveSubagentTarget(
@@ -87,12 +150,13 @@ export class SessionDispatchService implements ISessionDispatchService {
       {
         profileName: input.profileName,
         routeId: input.routeId,
-        snapshot: input.snapshot,
+        snapshot: inheritProfileFileSources(requesterData, this.profiles, input.snapshot),
       },
       this.models,
     );
     const selection = target.selection;
     const profile = target.effectiveProfile;
+    checkLaunchPolicy(profile.executor);
     if (input.executorPolicy === 'native' && (profile.executor ?? 'native') !== 'native') {
       throw new Error2(
         ErrorCodes.REQUEST_INVALID,
@@ -108,7 +172,8 @@ export class SessionDispatchService implements ISessionDispatchService {
         { details: { name } },
       );
     }
-    let child: IAgentScopeHandle;
+    let child: IAgentScopeHandle | undefined;
+    let retained = false;
     try {
       const requesterUserTools = requester.accessor.get(IAgentUserToolService);
       const requesterMeta = (await this.metadata.read()).agents?.[input.requesterAgentId];
@@ -124,8 +189,11 @@ export class SessionDispatchService implements ISessionDispatchService {
               input.parentTurnId,
               requesterMeta,
             );
+      checkLaunchPolicy(profile.executor);
       child = await this.lifecycle.create({
+        deferCreateEvent: true,
         binding: {
+          executionRestriction: researchReadonly ? 'research-readonly' : undefined,
           profile: selection.baseProfile.name,
           route: selection.route?.id,
           resolvedProfile: selection.baseProfile,
@@ -137,7 +205,7 @@ export class SessionDispatchService implements ISessionDispatchService {
             (input.strictThinkingFromProfile === true
               ? input.thinkingEffort !== undefined || profile.thinkingEffort !== undefined
               : undefined),
-          inheritedUserToolNames: requesterUserTools.list().map((tool) => tool.name),
+          inheritedUserToolNames: researchReadonly ? undefined : requesterUserTools.list().map((tool) => tool.name),
           lease: target.lease,
           spawnPolicy: target.spawnPolicy,
         },
@@ -156,6 +224,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         userLabel: input.userLabel,
         runtimeId: input.runtimeId ?? input.runtime.identity.runtimeId,
       });
+      reservation.bind(child.id);
       const permissionMode = child.accessor.get(IAgentPermissionModeService);
       if (input.permissionModeCeiling !== undefined) {
         permissionMode.setModeCeiling(input.permissionModeCeiling);
@@ -163,20 +232,27 @@ export class SessionDispatchService implements ISessionDispatchService {
       permissionMode.setMode(
         input.permissionMode ?? requester.accessor.get(IAgentPermissionModeService).mode,
       );
-      child.accessor.get(IAgentUserToolService).inheritUserTools(requesterUserTools);
+      if (!researchReadonly) {
+        child.accessor.get(IAgentUserToolService).inheritUserTools(requesterUserTools);
+      }
       const dispatchChild = this.childView(
         child,
         name,
         selection.route?.id ?? profile.name,
         profile,
       );
-      const prompt = await applyProfilePromptPrefix(profile, input.message, {
-        cwd: input.workDir,
-        process: input.runtime.process!,
-        log: this.log,
-      });
-      await input.onCreated?.(dispatchChild);
+      const prompt = researchReadonly
+        ? input.message
+        : await applyProfilePromptPrefix(profile, input.message, {
+            cwd: input.workDir,
+            process: input.runtime.process!,
+            log: this.log,
+          });
+      input.signal.throwIfAborted();
+      await input.onCreated?.(dispatchChild, () => { retained = true; });
       if (name !== undefined) this.names.commit(name, input.delegator);
+      retained = true;
+      this.lifecycle.commitCreate(child.id);
       if (input.delegator.kind === 'agent') {
         this.recordDelegatedRun(input.requesterAgentId, dispatchChild.agentId);
       }
@@ -187,10 +263,27 @@ export class SessionDispatchService implements ISessionDispatchService {
         started: this.runs.run(child.id, request, {
           signal: input.signal,
           onReady: input.onReady,
+          capacityReservation: reservation,
         }),
       };
     } catch (error) {
-      if (name !== undefined) this.names.release(name, input.delegator);
+      const cleanupErrors: unknown[] = [];
+      if (child !== undefined) {
+        try {
+          if (retained) this.lifecycle.commitCreate(child.id);
+          else await this.lifecycle.discard(child.id);
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      try {
+        if (name !== undefined) this.names.release(name, input.delegator);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError([error, ...cleanupErrors], 'Dispatch launch and cleanup failed', { cause: error });
+      }
       throw error;
     }
   }
@@ -265,8 +358,60 @@ export class SessionDispatchService implements ISessionDispatchService {
     requestInput: string | Extract<AgentRunRequest, { kind: 'retry' }>,
     options: DispatchRunOptions,
   ): Promise<DispatchRun> {
+    options.signal.throwIfAborted();
     this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
+    const meta = child.meta ?? (await this.metadata.read()).agents?.[child.agentId];
+    const delegator = meta === undefined ? undefined : delegatorRef(meta);
+    const owner = delegator?.kind === 'agent' ? delegator.agentId : options.requesterAgentId ?? 'main';
+    const reservation = child.agentId === 'main'
+      ? undefined
+      : this.capacity.reserve(owner, resolveDispatchCapacityLimits(this.config), child.agentId);
+    const release = reservation ?? (() => {});
+    try {
+      return this.trackCapacity(await this.runExistingReserved(child, requestInput, options, reservation), release);
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  private async runExistingReserved(
+    child: DispatchChild,
+    requestInput: string | Extract<AgentRunRequest, { kind: 'retry' }>,
+    options: DispatchRunOptions,
+    reservation?: import('./capacity').DispatchReservation,
+  ): Promise<DispatchRun> {
+    let policy = options.capturedLaunchPolicy;
+    const checkResume = (): void => {
+      if (options.requesterAgentId === undefined) return;
+      policy = tightenDispatchLaunchPolicy(this.readLaunchPolicy(options.requesterAgentId), policy);
+      const admission = evaluateDispatchAdmission(policy, 'resume');
+      if (!admission.allowed) throw new Error2(ErrorCodes.REQUEST_INVALID, admission.reason!);
+    };
+    checkResume();
+    this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
+    const childProfile = child.agent.accessor.get(IAgentProfileService);
+    const readCallerConstraints = () => {
+      const caller = options.requesterAgentId === undefined ? undefined
+        : this.requireHandle(options.requesterAgentId, 'Requester agent').accessor.get(IAgentProfileService).data();
+      const lease = caller?.subagentLeases?.[childProfile.data().profileName ?? child.profileName];
+      return [caller?.spawnPolicy, lease].filter((value) => value !== undefined);
+    };
     await options.onBeforeRun?.(child);
+    checkResume();
+    this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
+    const callerConstraints = readCallerConstraints();
+    const callerConstraintKey = JSON.stringify(callerConstraints);
+    const applyBinding = options.bindingOverride === undefined ? undefined : await childProfile.prepareResumeBinding({
+      ...options.bindingOverride, callerConstraints,
+    });
+    checkResume();
+    this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
+    options.signal.throwIfAborted();
+    if (applyBinding !== undefined && callerConstraintKey !== JSON.stringify(readCallerConstraints())) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller constraints changed during resume admission. Retry against the current caller policy.');
+    }
+    applyBinding?.();
     const request: AgentRunRequest =
       typeof requestInput === 'string'
         ? { kind: 'prompt', prompt: requestInput }
@@ -275,12 +420,13 @@ export class SessionDispatchService implements ISessionDispatchService {
       this.recordDelegatedRun(options.requesterAgentId, child.agentId);
     }
     return {
-      child,
+      child: applyBinding === undefined ? child : this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta),
       request,
       lineage: options.lineage,
       started: this.runs.run(child.agentId, request, {
         signal: options.signal,
         onReady: options.onReady,
+        capacityReservation: reservation,
       }),
     };
   }
@@ -405,7 +551,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     );
     const resolved = resolveSubagentBinding(
       this.config,
-      filled,
+      { ...filled, thinkingEffort: filled.thinkingEffort ?? selection.route?.lockedThinkingEffort },
       {
         modelAlias: selection.route?.lockedModelAlias ?? profile.modelAlias,
         thinkingEffort:

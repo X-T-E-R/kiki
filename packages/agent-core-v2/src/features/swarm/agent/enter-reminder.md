@@ -10,7 +10,7 @@ You do not need to use TodoList to record this workflow.
 
 2. After exploring, if you are convinced no subagent is needed to complete the task, tell the user why and wait for further instructions; otherwise, continue with the appropriate delegation.
 
-3. Once you have enough context, do not handle the main work yourself. Use AgentSwarm with a `prompt_template` containing the `{{item}}` placeholder and an `items` array for the requested or appropriate number of subagents, partitioning the problem so each item gives one subagent a distinct part of the work. Pass `profile` when the whole swarm should use a non-default subagent profile.
+3. Once you have enough context, do not handle the main work yourself. Use `AgentRun` once for each independent subtask, keeping each prompt focused and dispatching independent calls in parallel when the interface allows it. Pass `profile` when a subtask needs a non-default subagent profile, and pass a distinct `name` when you need to address that child again.
 
 ## Coordination
 
@@ -18,4 +18,4 @@ You do not need to use TodoList to record this workflow.
 - Avoid duplicating work across subagents.
 - Avoid assigning conflicting changes or responsibilities to different subagents.
 - Remember that subagents have your full capabilities. Do not overload their prompts with excessive detail; only describe the necessary background and each subagent's specific task.
-- Unless the user explicitly specifies a lower limit, do not try to conserve the number of agents. AgentSwarm supports up to 128 subagents and queues launches automatically, so decompose work as finely as possible while keeping subagent responsibilities non-conflicting; combine tasks only when they are genuinely inseparable. If the subagents only need to read, inspect, or report back without making changes, their scopes may overlap slightly.
+- Unless the user explicitly specifies a lower limit, do not try to conserve the number of agents. Use separate `AgentRun` calls for independent work while keeping subagent responsibilities non-conflicting; combine tasks only when they are genuinely inseparable. Respect the configured direct-child and session-tree limits. If the subagents only need to read, inspect, or report back without making changes, their scopes may overlap slightly.

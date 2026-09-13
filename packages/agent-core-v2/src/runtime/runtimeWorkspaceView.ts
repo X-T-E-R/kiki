@@ -27,13 +27,16 @@ export class RuntimeWorkspaceView {
     this.roots = [this.workDir, ...this.additionalDirs];
   }
 
-  resolve(path: string, cwd = this.workDir): string {
+  resolve(path: string, cwd = this.workDir, allowExternalAbsolutePath = false): string {
     const env = this.runtime.environment;
     const bridged = env.pathClass === 'win32' ? getShellPathBridge(env).fromShellPath(path) : path;
-    const resolved = this.runtime.path.isAbsolute(bridged)
+    const absolute = this.runtime.path.isAbsolute(bridged);
+    const resolved = absolute
       ? this.runtime.path.resolve(bridged)
       : this.runtime.path.resolve(cwd, bridged);
-    this.assertAllowed(resolved);
+    if (!(allowExternalAbsolutePath && absolute && this.runtime.workspace.supportsExternalPaths === true)) {
+      this.assertAllowed(resolved);
+    }
     return resolved;
   }
 

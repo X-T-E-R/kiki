@@ -58,6 +58,7 @@ export interface SystemPromptContext extends AgentProfileContext {
 export type ResolvedAgentProfile = AgentProfile;
 
 export interface ProfileData extends AgentConfigData {
+  readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -70,6 +71,7 @@ export interface ProfileData extends AgentConfigData {
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnPolicy?: SpawnConstraints;
   readonly appliedLease?: SubagentLease;
+  readonly boundProfile?: import('./boundProfile').BoundProfile;
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly environmentDisclosure?: EnvironmentDisclosureSnapshot;
@@ -77,6 +79,7 @@ export interface ProfileData extends AgentConfigData {
 }
 
 export type ProfileUpdateData = Partial<{
+  promptBase: import('./boundProfile').BoundPromptBase;
   modelAlias: string;
   profileName: string;
   thinkingLevel: string;
@@ -94,6 +97,7 @@ export interface ProfileBindingSnapshot {
   readonly routeId?: string;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
+  readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -112,6 +116,7 @@ export interface ProfileBindingSnapshot {
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnPolicy?: SpawnConstraints;
   readonly appliedLease?: SubagentLease;
+  readonly boundProfile?: import('./boundProfile').BoundProfile;
 }
 
 export interface ProfileServiceOptions {
@@ -139,6 +144,7 @@ export interface ProfileSetModelResult {
 }
 
 export interface BindAgentInput {
+  readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly profile?: string;
   readonly route?: string;
   readonly resolvedProfile?: AgentProfile;
@@ -162,11 +168,18 @@ export interface IAgentProfileService {
   setModel(model: string): Promise<ProfileSetModelResult>;
   setThinking(level: string): void;
   validateBinding(binding: ExecutorBinding): ExecutorValidationResult;
+  prepareResumeBinding(input: {
+    readonly modelAlias?: string;
+    readonly thinkingEffort?: string;
+    readonly allowModelChange?: boolean;
+    readonly callerConstraints?: readonly SpawnConstraints[];
+  }): Promise<() => void>;
   republishStatus(): void;
   getModel(): string;
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void;
   applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void>;
   refreshSystemPrompt(): Promise<void>;
+  preparePromptConfiguration(): Promise<boolean>;
   getAgentsMdWarning(): string | undefined;
   data(): ProfileData;
   getEffectiveThinkingLevel(): ThinkingEffort;

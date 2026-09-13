@@ -187,6 +187,8 @@ export const ErrorCode = {
   FS_WATCH_LIMIT_EXCEEDED: 42902,
   /** peer-thread list, read, wait, or message bound exceeded */
   THREAD_LIMIT_EXCEEDED: 42903,
+  /** Simultaneous subagent execution capacity is exhausted. */
+  DISPATCH_LIMIT_EXCEEDED: 42904,
 
   /** 兜底 */
   INTERNAL_ERROR: 50001,
@@ -308,6 +310,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.RATE_LIMITED]: 'rate.limited',
   [ErrorCode.FS_WATCH_LIMIT_EXCEEDED]: 'fs.watch_limit_exceeded',
   [ErrorCode.THREAD_LIMIT_EXCEEDED]: 'thread.limit_exceeded',
+  [ErrorCode.DISPATCH_LIMIT_EXCEEDED]: 'dispatch.limit_exceeded',
 
   [ErrorCode.INTERNAL_ERROR]: 'internal.error',
   [ErrorCode.PERSISTENCE_FAILURE]: 'persistence.failure',

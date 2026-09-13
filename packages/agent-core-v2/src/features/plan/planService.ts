@@ -24,6 +24,7 @@ import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { ContextUndone } from '#/agent/undo/undoService';
@@ -73,9 +74,11 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     @IAgentStateService private readonly agentState: IAgentStateService,
     @ISessionApprovalService approval: ISessionApprovalService,
     @IConfigService config: IConfigService,
+    @ISessionDispatchService dispatch: ISessionDispatchService,
   ) {
     super();
     this.agentState.contributeState(planKey);
+    this._register(dispatch.registerPlanStateReader(this.agentCtx.agentId, () => this.isActive));
 
     const planConfig = config.get<PlanConfig | undefined>(PLAN_SECTION) ?? DEFAULT_PLAN_CONFIG;
     this._planGate = planConfig.gate;
@@ -167,11 +170,15 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       return;
     }
 
-    if (toolName === 'AgentRun' || toolName === 'AgentSwarm' || toolName === 'AgentSend') {
+    const resume = (event.args as { readonly resume?: unknown }).resume;
+    if (
+      (toolName === 'AgentRun' && typeof resume === 'string' && resume.trim() !== '') ||
+      toolName === 'AgentSend'
+    ) {
       event.veto(
         denyToolExecution(
           this.toolApproval.formatDenyMessage(
-            `${toolName} is not available in plan mode. Call ExitPlanMode to exit plan mode before dispatching or messaging subagents.`,
+            `${toolName} cannot resume or message subagents in plan mode. Only new native research-readonly AgentRun children are allowed. Call ExitPlanMode first.`,
           ),
         ),
       );

@@ -22,6 +22,20 @@ describe('/api/v1/debug transport mapError', () => {
     expect(env.code).toBe(wire);
   });
 
+  it('preserves dispatch capacity rejection details across transport', () => {
+    const details = { layer: 'tree', current: 2, limit: 2, owner: 'main' };
+    const env = mapError(
+      new Error2(ErrorCodes.DISPATCH_LIMIT_EXCEEDED, 'capacity exhausted', { details }),
+      'req-capacity',
+    );
+    expect(env).toMatchObject({
+      code: 42904,
+      msg: 'capacity exhausted',
+      request_id: 'req-capacity',
+      details,
+    });
+  });
+
   it('falls back to INTERNAL_ERROR for coded errors without a wire equivalent', () => {
     const env = mapError(new Error2(ErrorCodes.OS_FS_UNKNOWN, 'boom'), 'req-1');
     expect(env.code).toBe(ErrorCode.INTERNAL_ERROR);

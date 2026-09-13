@@ -87,7 +87,9 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         }
         delete camelPatch['yolo'];
         for (const domain of Object.keys(camelPatch)) {
-          if (replaceDomains.has(domain)) {
+          if (domain === 'prompt' && replaceDomains.has(domain)) {
+            await config.replaceSections({ [domain]: camelPatch[domain] }, ConfigTarget.User);
+          } else if (replaceDomains.has(domain)) {
             await config.replace(domain, null);
             await config.replace(domain, camelPatch[domain]);
           } else {
@@ -192,7 +194,7 @@ function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       const targetKey = preserveKeys ? key : snakeToCamel(key);
-      if (!preserveKeys && key === 'nb_search') {
+      if (!preserveKeys && (key === 'nb_search' || key === 'prompt')) {
         result[targetKey] = value;
       } else {
         result[targetKey] = convertKeysSnakeToCamel(

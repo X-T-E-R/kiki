@@ -5,8 +5,8 @@
  * `IProtocolAdapterRegistry.createChatProvider`: it lazily composes exactly
  * one immutable ChatProvider per Model (on first use) and caches it for the
  * Model's lifetime; every per-turn variation arrives as `ModelRequestParams` and
- * is mapped onto `GenerateOptions` 1:1, including the profile's scalar
- * `requestParams` map.
+ * is mapped onto `GenerateOptions`, including the profile's scalar
+ * `requestParams` map. A configured model service tier is a request fallback.
  *
  * The driver itself turns per-turn input (systemPrompt / tools / messages)
  * into the `ModelRequestEvent` stream via the contract's `generate(...)`, measures
@@ -113,7 +113,7 @@ export class ModelRequesterImpl implements ModelRequester {
     const options: GenerateOptions = {
       signal,
       cacheKey: params?.cacheKey,
-      serviceTier: params?.serviceTier,
+      serviceTier: params?.serviceTier ?? this.model.serviceTier,
       headers: params?.headers,
       requestParams: stripKikiReservedRequestParams(params?.requestParams),
       sampling: params?.sampling,

@@ -1,5 +1,22 @@
-import type { AgentModelProfile } from './agentProfile';
+import type { AgentModelParameters, AgentModelProfile } from './agentProfile';
 import { renderPrompt } from './renderPrompt';
+
+export function mergeModelParameters(
+  ...layers: readonly (AgentModelParameters | undefined)[]
+): AgentModelParameters {
+  const defined = layers.filter((layer): layer is AgentModelParameters => layer !== undefined);
+  const minimum = (key: 'contextBudget' | 'maxCompletionTokens'): number | undefined => {
+    const values = defined.flatMap((layer) => layer[key] === undefined ? [] : [layer[key]!]);
+    return values.length === 0 ? undefined : Math.min(...values);
+  };
+  const requestLayers = defined.flatMap((layer) => layer.requestParams === undefined ? [] : [layer.requestParams]);
+  return {
+    contextBudget: minimum('contextBudget'),
+    maxCompletionTokens: minimum('maxCompletionTokens'),
+    serviceTier: defined.findLast((layer) => layer.serviceTier !== undefined)?.serviceTier,
+    requestParams: requestLayers.length === 0 ? undefined : Object.assign({}, ...requestLayers),
+  };
+}
 
 export function resolveModelProfileEntry(
   entries: readonly AgentModelProfile[] | undefined,
@@ -15,6 +32,24 @@ export function resolveModelProfileEntry(
     if (entryId === canonical) return entry;
   }
   return undefined;
+}
+
+export function resolveProfileThinkingDefault(
+  profile: {
+    readonly modelAlias?: string;
+    readonly thinkingEffort?: string;
+    readonly modelProfiles?: readonly AgentModelProfile[];
+  } | undefined,
+  alias: string,
+  resolveId: (id: string) => string | undefined,
+): string | undefined {
+  if (profile === undefined) return undefined;
+  const matched = resolveModelProfileEntry(profile.modelProfiles, alias, resolveId);
+  if (matched?.thinkingEffort !== undefined) return matched.thinkingEffort;
+  if (profile.modelAlias === undefined) return undefined;
+  const canonical = safeResolve(resolveId, alias) ?? alias;
+  const defaultModel = safeResolve(resolveId, profile.modelAlias) ?? profile.modelAlias;
+  return canonical === defaultModel ? profile.thinkingEffort : undefined;
 }
 
 export function applyMatchedModelProfilePrompt(

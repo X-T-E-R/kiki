@@ -33,7 +33,9 @@ export interface RuntimeWorkspaceRoots {
   readonly additionalDirs?: readonly string[];
 }
 
+/** Providers opt in to host-wide absolute paths only when no workspace mapping or resource isolation is required; callers must still authorize access. */
 export interface RuntimeWorkspaceMapper {
+  readonly supportsExternalPaths?: boolean;
   mapRoots(roots: RuntimeWorkspaceRoots): RuntimeWorkspaceRoots;
 }
 

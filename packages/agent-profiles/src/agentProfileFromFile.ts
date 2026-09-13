@@ -18,6 +18,7 @@ export function agentProfileFromFile(
     (definition.tools === undefined || definition.tools.includes('Skill')) &&
     !(definition.disallowedTools ?? []).includes('Skill');
   return normalizeAgentProfile({
+    fileDefinition: structuredClone(definition),
     name: definition.name,
     definitionId: definition.definitionId,
     description: definition.description,
@@ -40,6 +41,8 @@ export function agentProfileFromFile(
     modelProfiles: definition.modelProfiles,
     serviceTier: definition.serviceTier,
     requestParams: definition.requestParams,
+    contextBudget: definition.contextBudget,
+    maxCompletionTokens: definition.maxCompletionTokens,
     systemPromptMode: definition.systemPromptMode,
     delegationNotice: definition.delegationNotice,
     renderSystemPrompt: (context) =>

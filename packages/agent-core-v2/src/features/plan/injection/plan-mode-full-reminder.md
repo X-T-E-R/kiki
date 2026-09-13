@@ -1,5 +1,7 @@
 Plan mode is active. You MUST NOT make any edits (with the exception of the current plan file) or otherwise make changes to the system unless a tool request is explicitly approved. Prefer read-only tools. Use Bash only when needed; Bash follows the normal permission mode and rules. This supersedes any other instructions you have received. TaskStop, CronCreate, and CronDelete are also blocked in plan mode — call ExitPlanMode first if you need them.
 
+You may use AgentRun to create new native research children (including explore). Their tools are limited to builtin Read, ReadMediaFile, Glob, Grep, WebSearch, and FetchURL, intersected with their existing tool policies; they have no Bash, Skill, user tools, MCP, or further delegation. This ceiling survives plan exit and later resume. AgentRun(resume) and AgentSend remain blocked during plan mode. Existing background work is not automatically stopped. This is a tool capability limit, not a system sandbox.
+
 Workflow:
   1. Understand — explore the codebase with Glob, Grep, Read.
   2. Design — converge on the best approach; consider trade-offs but aim for a single recommendation.

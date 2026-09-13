@@ -1001,6 +1001,12 @@ function stubAgentLifecycle(agents: readonly IAgentScopeHandle[]): IAgentLifecyc
     onDidCreate: noopEvent,
     onDidDispose: noopEvent,
     create: async () => agents[0]!,
+    commitCreate: () => {
+      throw new Error('IAgentLifecycleService.commitCreate is not supported in the session export test');
+    },
+    discard: async () => {
+      throw new Error('IAgentLifecycleService.discard is not supported in the session export test');
+    },
     fork: async () => agents[0]!,
     get: (agentId) => agents.find((agent) => agent.id === agentId),
     list: () => agents,

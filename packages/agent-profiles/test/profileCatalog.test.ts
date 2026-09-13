@@ -74,6 +74,40 @@ describe('projectAgentProfileCatalog', () => {
     expect(warnings).toHaveLength(1);
   });
 
+  it.each([undefined, true, false])('inherits builtin main unless explicitly set to %s', (main) => {
+    const builtin = normalizeAgentProfile({ ...profile('agent'), main: true });
+    const override = normalizeAgentProfile({ ...profile('agent', true), main, tools: ['Read'], subagents: [] });
+    const { result } = project([
+      { sourceId: 'builtin', priority: 0, contribution: { profiles: [builtin] } },
+      { sourceId: 'workspace', priority: 10, contribution: { profiles: [override] } },
+    ]);
+    expect(result.profiles.get('agent')?.main).toBe(main ?? true);
+    expect(result.profiles.get('agent')?.tools).toEqual(['Read']);
+    expect(result.profiles.get('agent')?.subagents).toEqual([]);
+  });
+
+  it('keeps the disabled default override on the main binding surface only', () => {
+    const builtin = normalizeAgentProfile({ ...profile('agent'), main: true });
+    const override = normalizeAgentProfile({ ...profile('agent', true), tools: ['Read'] });
+    const { result } = project([
+      { sourceId: 'builtin', priority: 0, contribution: { profiles: [builtin] } },
+      { sourceId: 'user', priority: 10, contribution: { profiles: [override] } },
+    ], { disabledBuiltinProfiles: ['agent'], disabledNamedProfiles: ['agent'] });
+    expect(result.profiles.has('agent')).toBe(false);
+    expect(result.snapshot.defaultProfile).toMatchObject({ main: true, tools: ['Read'] });
+  });
+
+  it('does not make an external executor eligible as an inherited main', () => {
+    const builtin = normalizeAgentProfile({ ...profile('agent'), main: true });
+    const external = normalizeAgentProfile({ ...profile('agent', true), executor: 'example-acp' });
+    const { result, warnings } = project([
+      { sourceId: 'builtin', priority: 0, contribution: { profiles: [builtin] } },
+      { sourceId: 'user', priority: 10, contribution: { profiles: [external] } },
+    ]);
+    expect(result.profiles.get('agent')).toBe(builtin);
+    expect(warnings.join(' ')).toContain('unsupported for main');
+  });
+
   it('projects routes and reports a missing route base', () => {
     const base = profile('writer');
     const { result, warnings } = project([

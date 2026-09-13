@@ -3,7 +3,7 @@ import type { AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/ag
 export { buildProfileDescriptions } from '#/session/dispatch/profileCatalogProjection';
 
 export function buildRouteDescriptions(
-  routes: readonly AgentProfileRouteCatalogEntry[],
+  routes: readonly (AgentProfileRouteCatalogEntry & { readonly allowedModels?: readonly string[] })[],
 ): string {
   return routes
     .map((route) => {
@@ -17,6 +17,7 @@ export function buildRouteDescriptions(
       const suffix = [
         bindings.length === 0 ? undefined : bindings.join(', '),
         `overrides=${route.overriddenFields.join(',') || 'none'}`,
+        route.allowedModels === undefined ? undefined : `Allowed models: ${route.allowedModels.join(', ') || 'none'}`,
       ]
         .filter((value): value is string => value !== undefined)
         .join('; ');

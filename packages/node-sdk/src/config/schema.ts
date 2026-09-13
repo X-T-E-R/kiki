@@ -2,6 +2,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { parsePattern } from '@kiki/agent-core-v2';
+import { CognitionConfigSchema } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { HOOK_EVENT_TYPES } from '@kiki/agent-core-v2/features/externalHooks/internal/types';
 import {
   builtInProviderRegistrations,
@@ -71,6 +72,10 @@ const ModelAliasBaseSchema = z.object({
   // config.toml. The user's chosen effort is stored globally in thinking.effort.
   supportEfforts: z.array(z.string()).optional(),
   defaultEffort: z.string().optional(),
+  contextBudget: z.number().int().min(1).optional(),
+  maxCompletionTokens: z.number().int().min(1).optional(),
+  serviceTier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
+  requestParams: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   // The effort value that encodes "thinking off" on the wire for this model
   // (models.dev declares it as the "none" entry, e.g. xai grok). When set,
   // turning thinking off sends this value instead of omitting the effort
@@ -100,6 +105,7 @@ export const ModelAliasSchema = ModelAliasBaseSchema.extend({
   // User overrides for a model alias. These win over the top-level fields at
   // runtime and are preserved by provider-model refreshes.
   overrides: ModelAliasOverrideSchema.optional(),
+  cognition: CognitionConfigSchema.optional(),
 });
 
 export type ModelAlias = z.infer<typeof ModelAliasSchema>;
@@ -179,10 +185,12 @@ export type BackgroundConfig = z.infer<typeof BackgroundConfigSchema>;
 
 export const SubagentConfigSchema = z.object({
   /**
-   * Per-subagent (`Agent` / `AgentSwarm`, foreground and background) timeout
+   * Per-subagent (`AgentRun`, foreground and background) timeout
    * in milliseconds. `0` means no timeout. Defaults to 2 hours when unset.
    */
   timeoutMs: z.number().int().min(0).optional(),
+  maxDirectChildren: z.number().int().nonnegative().optional(),
+  maxTotalSubagents: z.number().int().nonnegative().optional(),
 });
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
@@ -429,7 +437,7 @@ export const KimiConfigPatchSchema = z
     permission: PermissionConfigPatchSchema.optional(),
     hooks: z.array(HookDefSchema).optional(),
     nbSearch: NbSearchConfigPatchSchema.optional(),
-    mergeAllAvailableSkills: z.boolean().optional(),
+      mergeAllAvailableSkills: z.boolean().optional(),
     extraSkillDirs: z.array(z.string()).optional(),
     extraAgentDirs: z.array(z.string()).optional(),
     loopControl: LoopControlPatchSchema.optional(),

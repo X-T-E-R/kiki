@@ -118,7 +118,7 @@ function availableAlternativeModels(
     external || isModelAliasAvailable(entry.alias)
       ? [{
           alias: entry.alias,
-          when: collapseWhitespace(entry.when),
+          when: collapseWhitespace(entry.when ?? ''),
           thinkingEffort:
             entry.thinkingEffort === undefined
               ? undefined

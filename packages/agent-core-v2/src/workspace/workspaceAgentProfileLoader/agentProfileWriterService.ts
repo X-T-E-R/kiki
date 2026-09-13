@@ -7,6 +7,8 @@
  * post-reload registry entry. Workspace-scoped.
  */
 
+import { isUpgradedSystemMd, parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
+
 import { atomicWrite } from '#/_base/utils/fs';
 import { Error2 } from '#/_base/errors/errors';
 import { CoreErrors } from '#/_base/errors/codes';
@@ -62,6 +64,7 @@ const SERVICE_TIERS = new Set(['auto', 'default', 'flex', 'priority']);
 const TOP_LEVEL_KEYS = new Set([
   'name',
   'scope',
+  'sourcePath',
   'description',
   'whenToUse',
   'modelAlias',
@@ -101,19 +104,31 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     const registration = this.registry.entries().find(
       (entry) => entry.sourceId === sourceId && entry.workspaceKey === this.workspace.workspaceId,
     );
-    const profile = registration?.contribution.profiles.find(
-      (candidate) => candidate.name === request.name,
+    const profile = registration?.contribution.profiles.findLast(
+      (candidate) => candidate.name === request.name
+        && (request.sourcePath === undefined || candidate.sourcePath === request.sourcePath),
     );
     if (registration === undefined || profile === undefined) {
+      if (request.sourcePath !== undefined) {
+        throw new Error2(AgentProfileWriteErrors.codes.PROFILE_NOT_FOUND,
+          `Agent profile "${request.name}" is not loaded from the requested source file`);
+      }
       this.throwMissingOrReadOnly(request.name, request.scope);
     }
     if (profile.sourcePath === undefined) {
       throw readOnlyError(request.name, registration.sourceId);
     }
 
+    const system = request.scope === 'user'
+      && this.userLoader.getDefaultProfile().sourcePath === profile.sourcePath;
     const staged: StagedWrite[] = [];
     const profileText = await this.fs.readText(profile.sourcePath);
     let nextProfileText = request.rawText ?? profileText;
+    if (system && request.rawText === undefined
+      && !isUpgradedSystemMd(profileText, profile.sourcePath, () => {})) {
+      const eol = preferredEol(profileText);
+      nextProfileText = `---${eol}---${eol}${profileText}`;
+    }
     if (request.description !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'description', request.description);
     }
@@ -138,16 +153,46 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     if (request.disallowedTools !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'disallowedTools', request.disallowedTools);
     }
-    const parsedProfile = parseAgentFileText({
-      path: profile.sourcePath,
-      source: FILE_SOURCE_BY_SCOPE[request.scope],
-      text: nextProfileText,
-    });
-    if (parsedProfile.name !== request.name) {
-      throw validationError([{
-        path: 'rawText',
-        message: `profile name must remain ${request.name}`,
-      }]);
+    if (system) {
+      if (nextProfileText.trim() === '') {
+        throw validationError([{ path: 'rawText', message: 'SYSTEM.md must not be empty' }]);
+      }
+      try {
+        if (nextProfileText.split(/\r?\n/, 1)[0]?.trim() === '---') {
+          parseAgentFileText({
+            path: profile.sourcePath,
+            source: 'user',
+            text: nextProfileText,
+            forceName: request.name,
+            forceOverride: true,
+            fallbackDescription: this.userLoader.getBuiltinDefault().description,
+          });
+        }
+        parseSystemMdProfile(nextProfileText, profile.sourcePath, this.userLoader.getBuiltinDefault(), () => {});
+      } catch (error) {
+        throw validationError([{ path: 'rawText', message: String(error) }]);
+      }
+    } else {
+      const parsedProfile = parseAgentFileText({
+        path: profile.sourcePath,
+        source: FILE_SOURCE_BY_SCOPE[request.scope],
+        text: nextProfileText,
+      });
+      if (parsedProfile.name !== request.name) {
+        throw validationError([{
+          path: 'rawText',
+          message: `profile name must remain ${request.name}`,
+        }]);
+      }
+      const builtin = this.registry.entries().find((entry) => entry.sourceId === 'builtin')
+        ?.contribution.profiles.find((candidate) => candidate.name === parsedProfile.name);
+      const main = parsedProfile.main ?? builtin?.main;
+      if (main === true && parsedProfile.executor !== undefined && parsedProfile.executor !== 'native') {
+        throw validationError([{
+          path: 'rawText',
+          message: `External executor "${parsedProfile.executor}" is unsupported for main agent profile "${parsedProfile.name}"`,
+        }]);
+      }
     }
     if (nextProfileText !== profileText) {
       staged.push({ path: profile.sourcePath, text: nextProfileText });
@@ -191,8 +236,8 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     const authoritative = this.registry.entries().find(
       (entry) => entry.sourceId === sourceId && entry.workspaceKey === this.workspace.workspaceId,
     );
-    const updatedProfile = authoritative?.contribution.profiles.find(
-      (candidate) => candidate.name === request.name,
+    const updatedProfile = authoritative?.contribution.profiles.findLast(
+      (candidate) => candidate.name === request.name && candidate.sourcePath === profile.sourcePath,
     );
     if (authoritative === undefined || updatedProfile === undefined) {
       throw new Error2(
@@ -254,6 +299,7 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   if (request.scope !== 'user' && request.scope !== 'project' && request.scope !== 'extra') {
     issues.push({ path: 'scope', message: 'scope must be user, project, or extra' });
   }
+  validateRequiredString(request.sourcePath, 'sourcePath', issues);
   validateRequiredString(request.description, 'description', issues);
   validateOptionalString(request.whenToUse, 'whenToUse', issues);
   validateModelAlias(request.modelAlias, 'modelAlias', issues);

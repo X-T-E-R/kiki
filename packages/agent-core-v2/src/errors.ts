@@ -1,4 +1,6 @@
 import { CoreErrors } from '#/_base/errors/codes';
+import { DispatchErrors } from '#/session/dispatch/errors';
+export { DispatchErrors } from '#/session/dispatch/errors';
 import { AgentLifecycleErrors } from '#/session/agentLifecycle/errors';
 import { AuthErrors } from '#/app/auth/errors';
 import { TaskErrors } from '#/agent/task/errors';
@@ -79,6 +81,7 @@ export { StateErrors } from '#/state/errors';
 
 export const ErrorCodes = {
   ...CoreErrors.codes,
+  ...DispatchErrors.codes,
   ...AgentLifecycleErrors.codes,
   ...AuthErrors.codes,
   ...TaskErrors.codes,

@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 import { TurnStarted } from '#/agent/loop/turnEvents';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { PromptCompleted, promptLaunchingKey } from '#/agent/prompt/promptService';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { Disposable, MutableDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -258,6 +260,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
 
   private readonly wallClockDeadline = this._register(new MutableDisposable<IDisposable>());
   private pendingContinuation?: PendingContinuation;
+  private yieldedGoalId?: string;
 
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -266,6 +269,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentContextInjectorService injector: IAgentContextInjectorService,
     @IAgentLoopService private readonly loopService: IAgentLoopService,
+    @IAgentPromptService private readonly prompts: IAgentPromptService,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
@@ -311,6 +315,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     );
     this._register(
       this.eventBus.subscribe(TurnStarted, (e) => {
+        this.yieldedGoalId = undefined;
         this.handleTurnLaunched(e.turnId, e.origin);
       }),
     );
@@ -388,6 +393,16 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         );
       }),
     );
+    this._register(this.eventBus.subscribe(PromptCompleted, (event) => {
+      if (event.reason === 'completed' || this.yieldedGoalId === undefined) return;
+      const goalId = this.yieldedGoalId;
+      this.yieldedGoalId = undefined;
+      if (!this.isActiveGoal(goalId) || this.liveTurnId !== undefined) return;
+      const settlement = event.reason === 'blocked'
+        ? this.markBlocked({ reason: 'User prompt blocked before goal continuation' }, 'runtime')
+        : this.pauseActiveGoal({ reason: 'User prompt failed before goal continuation' }, 'runtime');
+      void settlement.catch((error) => this.settleGoalAfterContinuationFailure(error, goalId));
+    }));
   }
 
   private get liveTurnId(): number | undefined {
@@ -914,6 +929,11 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   private launchContinuationTurn(goalId: string, stepCapped = false): void {
     if (!this.isActiveGoal(goalId)) return;
     if (this.pendingContinuation !== undefined) return;
+    if (this.states.get(promptLaunchingKey) || this.prompts.list().pending.length > 0) {
+      this.yieldedGoalId = goalId;
+      return;
+    }
+    this.yieldedGoalId = undefined;
     const prompt = stepCapped ? GOAL_STEP_CAP_CONTINUATION_PROMPT : GOAL_CONTINUATION_PROMPT;
     const message: ContextMessage = {
       role: 'user',

@@ -82,7 +82,12 @@ export function effectiveModelConfig(
   providerType?: string,
 ): ModelRecord {
   const { overrides, ...base } = model;
-  const effective: ModelRecord = overrides === undefined ? model : { ...base, ...overrides };
+  const effective: ModelRecord = overrides === undefined ? model : {
+    ...base,
+    ...overrides,
+    requestParams: base.requestParams === undefined && overrides.requestParams === undefined
+      ? undefined : { ...base.requestParams, ...overrides.requestParams },
+  };
   if (
     overrides?.supportEfforts !== undefined &&
     overrides.defaultEffort === undefined &&

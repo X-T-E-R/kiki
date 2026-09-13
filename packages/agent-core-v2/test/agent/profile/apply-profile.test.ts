@@ -21,6 +21,13 @@ import {
 } from '#/app/skillCatalog/skillSource';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { DEFAULT_PRODUCT_NAME } from '#/app/agentProfileCatalog/profile-shared';
+import { renderPromptTemplateResult } from '@kiki/agent-profiles/profileShared';
+import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
+import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
+import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute';
+import { freezeBoundProfile } from '#/agent/profile/boundProfile';
+import { IConfigService } from '#/app/config/config';
+import type { PromptConfig } from '#/app/prompt/configSection';
 
 import { stubAgentIdentity } from '../../app/agentIdentity/stubs';
 
@@ -106,6 +113,72 @@ describe('AgentProfileService.applyProfile', () => {
     );
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
+
+  it.each(['main-role', 'standalone-role'])('renders configured variables in %s without inheriting SYSTEM.md', async (name) => {
+    const { ctx: host, profile: svc } = buildContext();
+    const config = host.get(IConfigService);
+    const get = config.get.bind(config);
+    let prompt: PromptConfig = { variables: { search_guidance: 'Native GMA ${literal}' }, shared: 'REQUEST_ONLY_SHARED' };
+    vi.spyOn(config, 'get').mockImplementation(((domain: string) => domain === 'prompt' ? prompt : get(domain)) as IConfigService['get']);
+    const standalone = normalizeAgentProfile({ name, tools: [], renderSystemPrompt: (context) => renderPromptTemplateResult('${search_guidance}|${cwd}', context, { skillActive: false }) });
+    await svc.applyProfile(standalone);
+    expect(svc.getSystemPrompt().replaceAll('\\', '/')).toBe(`Native GMA \${literal}|${workDir}\n\nREQUEST_ONLY_SHARED`);
+    expect(svc.data().systemPrompt).not.toContain('REQUEST_ONLY_SHARED');
+    prompt = { variables: { search_guidance: 'Updated guidance' } };
+    await svc.refreshSystemPrompt();
+    expect(svc.getSystemPrompt().replaceAll('\\', '/')).toBe(`Updated guidance|${workDir}`);
+  });
+
+  it.each(['file', 'route', 'file-sources'] as const)('refreshes a cold %s from its stored definition without changing its lease or duplicating shared text', async (kind) => {
+    const { ctx: host, profile: svc } = buildContext();
+    const config = host.get(IConfigService);
+    const get = config.get.bind(config);
+    let prompt: PromptConfig = { variables: { guidance: 'old' }, shared: 'GLOBAL' };
+    vi.spyOn(config, 'get').mockImplementation(((domain: string) => domain === 'prompt' ? prompt : get(domain)) as IConfigService['get']);
+    const definition = parseAgentFileText({ path: join(workDir, 'stored.md'), source: 'explicit', text: '---\nname: frozen-worker\ndescription: Fixture stored profile\ntools: [Read]\n---\nRole ${guidance}', definitionId: 'frozen-source', contributionRoot: workDir });
+    const base = agentProfileFromFile(definition, (context) => renderPromptTemplateResult('BASE', context, { skillActive: false }));
+    const selected = kind !== 'route' ? base : resolveAgentProfileRoute({ id: 'frozen-route', profile: base.name, description: 'Fixture route', promptMode: 'append', prompt: 'Route ${guidance}', overriddenFields: [], path: join(workDir, 'route.md') }, base).effectiveProfile;
+    await svc.applyProfile(selected);
+    const bound = freezeBoundProfile(selected);
+    const frozen = kind === 'file-sources' ? { ...bound, fileSources: { root: definition, scopedBindings: {}, sourceDefinitions: { [definition.definitionId]: definition }, dependencyIndex: {}, diagnostics: [] } } : bound;
+    const before = { ...svc.data(), routeId: kind === 'route' ? 'frozen-route' : undefined, boundProfile: frozen };
+    svc.applyBindingSnapshot(before);
+    prompt = { variables: { guidance: 'new ${literal}' }, shared: 'GLOBAL_NEW' };
+    await svc.preparePromptConfiguration();
+    expect(svc.getSystemPrompt()).toContain('Role new ${literal}');
+    if (kind === 'route') expect(svc.getSystemPrompt()).toContain('Route new ${literal}');
+    expect(svc.getSystemPrompt().split('GLOBAL_NEW')).toHaveLength(2);
+    expect(svc.data().activeToolNames).toEqual(before.activeToolNames);
+    expect({ ...svc.data().boundProfile, promptBase: undefined }).toEqual({ ...frozen, promptBase: undefined });
+    expect(svc.data().boundProfile?.promptBase?.text).toContain('Role new ${literal}');
+    expect(svc.data().systemPrompt).not.toContain('GLOBAL_NEW');
+    svc.applyBindingSnapshot(svc.data());
+    prompt = {};
+    await svc.preparePromptConfiguration();
+    expect(svc.getSystemPrompt()).toContain('Role ${guidance}');
+    expect(svc.getSystemPrompt()).not.toContain('GLOBAL_NEW');
+  });
+
+  it('reports an unavailable saved source instead of silently keeping stale configured variables', async () => {
+    const { ctx: host, profile: svc } = buildContext();
+    const config = host.get(IConfigService);
+    const get = config.get.bind(config);
+    vi.spyOn(config, 'get').mockImplementation(((domain: string) => domain === 'prompt' ? { variables: { guidance: 'new' } } : get(domain)) as IConfigService['get']);
+    svc.applyBindingSnapshot({ ...svc.data(), profileName: 'missing-fixture-role', profileDefinitionId: 'missing-fixture-source' });
+    await expect(svc.preparePromptConfiguration()).rejects.toMatchObject({ code: 'config.invalid', message: expect.stringContaining('saved profile source is unavailable') });
+  });
+
+  it('does not rerender an unconfigured cold file profile merely because the prompt domain exists', async () => {
+    const { profile: svc } = buildContext();
+    const definition = parseAgentFileText({ path: join(workDir, 'unchanged.md'), source: 'explicit', text: '---\nname: unchanged\ndescription: Fixture\n---\nCurrent file text', definitionId: 'unchanged-source', contributionRoot: workDir });
+    const parsed = agentProfileFromFile(definition, (context) => renderPromptTemplateResult('BASE', context, { skillActive: false }));
+    await svc.applyProfile(parsed);
+    const snapshot = { ...svc.data(), systemPrompt: 'HISTORIC_FROZEN_PROMPT', boundProfile: freezeBoundProfile(parsed) };
+    svc.applyBindingSnapshot(snapshot);
+    await svc.preparePromptConfiguration();
+    expect(svc.getSystemPrompt()).toBe('HISTORIC_FROZEN_PROMPT');
+    expect(svc.data().renderGeneration).toBe(snapshot.renderGeneration);
+  });
 
   describe('custom identity', () => {
     const selfNaming: ResolvedAgentProfile = normalizeAgentProfile({

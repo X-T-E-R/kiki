@@ -1,8 +1,10 @@
 import picomatch from 'picomatch';
 
 import { isMcpToolName, type ToolSource } from '#/tool/toolContract';
+import { allowsResearchTool, type ExecutionRestriction } from '#/agent/profile/executionRestriction';
 
 export interface ToolActivationPolicy {
+  readonly executionRestriction?: ExecutionRestriction;
   readonly tools?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
@@ -13,6 +15,9 @@ export function isToolActive(
   name: string,
   source: ToolSource = 'builtin',
 ): boolean {
+  if (policy.executionRestriction === 'research-readonly' && !allowsResearchTool(name, source)) {
+    return false;
+  }
   const allowPolicies = [policy.tools, ...(policy.toolAllowPolicies ?? [])].filter(
     (candidate): candidate is readonly string[] => candidate !== undefined,
   );

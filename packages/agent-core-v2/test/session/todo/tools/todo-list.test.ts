@@ -1,43 +1,51 @@
 import { describe, expect, it } from 'vitest';
 
-import { type ISessionTodoService } from '#/session/todo/sessionTodo';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { TODO_LIST_TOOL_NAME, type TodoItem } from '#/session/todo/todoItem';
-import { TodoListInputSchema } from '#/agent/tools/todo-list/todo-list';
+import { ITodoListTool, TodoListInputSchema } from '#/agent/tools/todo-list/todo-list';
 import { TodoListTool } from '#/agent/tools/todo-list/todoListTool';
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { TestInstantiationService } from '#/_base/di/test';
+import { SyncDescriptor } from '#/_base/di/descriptors';
 import { executeTool } from '../../../tools/fixtures/execute-tool';
 
 const signal = new AbortController().signal;
 
-function makeTodoService(initial: readonly TodoItem[] = []): {
-  readonly service: ISessionTodoService;
+function makeTool(initial: readonly TodoItem[] = []): {
+  readonly tool: ITodoListTool;
   readonly getTodos: () => readonly TodoItem[];
 } {
   let todos = [...initial];
-  return {
-    service: {
-      _serviceBrand: undefined,
-      getTodos: () => todos,
-      setTodos: (next: readonly TodoItem[]) => {
-        todos = next.map((todo) => ({ title: todo.title, status: todo.status }));
-      },
-      clear: () => {
-        todos = [];
-      },
-      onDidChange: () => ({ dispose: () => {} }),
+  const ix = new TestInstantiationService();
+  ix.set(IAgentScopeContext, makeAgentScopeContext({ agentId: 'child', agentScope: 'child' }));
+  ix.set(ISessionTodoService, {
+    _serviceBrand: undefined,
+    getTodos: (agentId) => {
+      expect(agentId).toBe('child');
+      return todos;
     },
-    getTodos: () => todos,
-  };
-}
-
-function makeTool(initial: readonly TodoItem[] = []): {
-  readonly tool: TodoListTool;
-  readonly getTodos: () => readonly TodoItem[];
-} {
-  const { service, getTodos } = makeTodoService(initial);
-  return { tool: new TodoListTool(service), getTodos };
+    setTodos: (next, agentId) => {
+      expect(agentId).toBe('child');
+      todos = next.map((todo) => ({ title: todo.title, status: todo.status }));
+    },
+    clear: () => { todos = []; },
+    onDidChange: () => ({ dispose: () => {} }),
+    onDidChangeAgent: () => ({ dispose: () => {} }),
+  });
+  ix.set(ITodoListTool, new SyncDescriptor(TodoListTool));
+  return { tool: ix.get(ITodoListTool), getTodos: () => todos };
 }
 
 describe('TodoListTool', () => {
+  it('cannot override the caller identity with a tool argument', async () => {
+    const { tool } = makeTool([{ title: 'child list', status: 'pending' }]);
+    const injectedArgs = { agent_id: 'main', todos: [{ title: 'still child', status: 'done' as const }] };
+    const result = await executeTool(tool, {
+      turnId: 1, toolCallId: 'call_identity', args: injectedArgs, signal,
+    });
+    expect(result.output).toContain('still child');
+  });
+
   it('has name, description, and parameters from the current schema', () => {
     const { tool } = makeTool();
 
@@ -92,10 +100,7 @@ describe('TodoListTool', () => {
     expect(result.output).toContain('Todo list updated');
     expect(result.output).toContain('[pending] first');
     expect(result.output).toContain('[in_progress] second');
-    expect(result.output).toContain(
-      'Ensure that you continue to use the todo list to track progress.',
-    );
-    expect(result.output).toContain('exactly one task in_progress');
+    expect(result.output).not.toContain('Ensure that you continue to use the todo list');
     expect(getTodos()).toEqual([
       { title: 'first', status: 'pending' },
       { title: 'second', status: 'in_progress' },
@@ -131,11 +136,11 @@ describe('TodoListTool', () => {
     expect(getTodos()).toEqual([]);
   });
 
-  it('resolveExecution description reflects the mode', () => {
+  it('resolveExecution description reflects the mode', async () => {
     const { tool } = makeTool();
-    const readExecution = tool.resolveExecution({});
-    const clearExecution = tool.resolveExecution({ todos: [] });
-    const updateExecution = tool.resolveExecution({
+    const readExecution = await tool.resolveExecution({});
+    const clearExecution = await tool.resolveExecution({ todos: [] });
+    const updateExecution = await tool.resolveExecution({
       todos: [{ title: 'x', status: 'pending' }],
     });
 

@@ -13,9 +13,16 @@ export type AgentSystemPromptMode = z.infer<typeof AgentSystemPromptModeSchema>;
 
 export type AgentModelProfilePromptMode = 'prepend' | 'append' | 'wrap';
 
-export interface AgentModelProfile {
+export interface AgentModelParameters {
+  readonly contextBudget?: number;
+  readonly maxCompletionTokens?: number;
+  readonly serviceTier?: ServiceTier;
+  readonly requestParams?: RequestParams;
+}
+
+export interface AgentModelProfile extends AgentModelParameters {
   readonly alias: string;
-  readonly when: string;
+  readonly when?: string;
   readonly thinkingEffort?: string;
   readonly allowedEfforts?: readonly string[];
   readonly promptMode?: AgentModelProfilePromptMode;
@@ -45,6 +52,7 @@ export interface AgentProfileContext {
   readonly pluginSections?: string;
   readonly productName?: string;
   readonly replyStyleGuide?: string;
+  readonly promptVariables?: Readonly<Record<string, string>>;
   readonly [key: string]: unknown;
 }
 
@@ -60,7 +68,9 @@ export interface SystemPromptRenderResult {
   readonly environment: EnvironmentDisclosureSnapshot;
 }
 
-export interface AgentProfile {
+export interface AgentProfile extends AgentModelParameters {
+  readonly fileDefinition?: import('./agentFileTypes').AgentFileDefinition;
+  readonly routeDefinition?: AgentProfileRouteDefinition;
   readonly name: string;
   readonly definitionId?: string;
   readonly routeId?: string;

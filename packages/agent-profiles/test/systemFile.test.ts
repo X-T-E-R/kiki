@@ -20,6 +20,7 @@ import { HostFsError, nodeHostFs as hostFs, OsFsErrors } from './nodeHostFs';
 const BUILTIN_DEFAULT: AgentProfile = normalizeAgentProfile({
   name: DEFAULT_AGENT_PROFILE_NAME,
   description: 'builtin default description',
+  main: true,
   tools: ['Read', 'Skill', 'Bash'],
   disallowedTools: ['Write'],
   systemPrompt: () => 'BUILTIN PROMPT',
@@ -100,6 +101,8 @@ describe('loadSystemMdProfile', () => {
 
     expect(profile?.name).toBe(DEFAULT_AGENT_PROFILE_NAME);
     expect(profile?.override).toBe(true);
+    expect(profile?.main).toBe(true);
+    expect(profile?.sourcePath).toBe(join(home, SYSTEM_MD_FILENAME));
     expect(profile?.description).toBe('builtin default description');
     expect(profile?.tools).toEqual(['Read', 'Skill', 'Bash']);
     expect(profile?.disallowedTools).toEqual(['Write']);
@@ -196,6 +199,19 @@ describe('loadSystemMdProfile', () => {
     expect(warnings.some((message) => message.includes('override false'))).toBe(true);
   });
 
+  it('preserves an explicit main: false in upgraded SYSTEM.md', async () => {
+    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\nmain: false\n---\nSubagent-only prompt.');
+    const { warn } = collectWarnings();
+    expect((await loadProfile(hostFs, BUILTIN_DEFAULT, warn))?.main).toBe(false);
+  });
+
+  it('does not accept an external executor through inherited main status', async () => {
+    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\nexecutor: example-acp\n---\nExternal prompt.');
+    const { warnings, warn } = collectWarnings();
+    expect(await loadProfile(hostFs, BUILTIN_DEFAULT, warn)).toBeUndefined();
+    expect(warnings.join(' ')).toContain('unsupported for main');
+  });
+
   it('inherits builtin tools when an upgraded SYSTEM.md omits them', async () => {
     await writeFile(
       join(home, SYSTEM_MD_FILENAME),
@@ -217,6 +233,8 @@ describe('loadSystemMdProfile', () => {
 
     const profile = await loadProfile(hostFs, BUILTIN_DEFAULT, warn);
 
+    expect(profile?.main).toBe(true);
+    expect(profile?.sourcePath).toBe(join(home, SYSTEM_MD_FILENAME));
     expect(profile?.description).toBe('builtin default description');
     expect(profile?.systemPrompt({})).toBe('no description');
   });

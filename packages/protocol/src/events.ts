@@ -258,6 +258,7 @@ export type KimiErrorCode =
   | 'agent.not_found'
   | 'agent.already_exists'
   | 'agent.already_running'
+  | 'dispatch.limit_exceeded'
   | 'agent.not_a_subagent'
   | 'agent.not_owned'
   | 'agent.type_not_allowed'
@@ -1333,6 +1334,7 @@ export const kimiErrorCodeSchema = z.enum([
   'agent.not_found',
   'agent.already_exists',
   'agent.already_running',
+  'dispatch.limit_exceeded',
   'agent.not_a_subagent',
   'agent.not_owned',
   'agent.type_not_allowed',

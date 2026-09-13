@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { IInstantiationService } from '#/_base/di/instantiation';
+import { validatePromptRuntimeControls } from '#/agent/prompt/runtimeControls';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
@@ -39,6 +41,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
   declare readonly _serviceBrand: undefined;
 
   constructor(
+    @IInstantiationService private readonly instantiation: IInstantiationService,
     @ISessionSkillCatalog private readonly skillCatalog: ISessionSkillCatalog,
     @IAgentPromptService private readonly prompt: IAgentPromptService,
     @IAgentLoopService private readonly loop: IAgentLoopService,
@@ -127,6 +130,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     }
     await this.skillCatalog.ready;
     const prepared = input.skills.map((skill) => this.prepareBundled(skill));
+    this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, input.execution));
     if (this.scopeContext.agentId === MAIN_AGENT_ID) {
       await applyPromptMetadataUpdate(
         {

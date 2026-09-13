@@ -91,6 +91,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         summaryPolicy: opts.summaryPolicy ?? this.summaryPolicyFor(handle),
         signal: opts.signal,
         onReady: opts.onReady,
+        capacityReservation: opts.capacityReservation,
       })
       .then((run) => {
         const settle = (): void => this.scheduleRelease(agentId);

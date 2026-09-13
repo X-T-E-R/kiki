@@ -1,10 +1,12 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { Event } from '#/_base/event';
+import { renderPromptTemplateResult } from '@kiki/agent-profiles/profileShared';
 import { DEFAULT_INDEPENDENT_DELEGATION_NOTICE } from '#/agent/profile/delegationContext';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import {
@@ -55,6 +57,87 @@ describe('delegation context at bind', () => {
     await ctx?.dispose();
     ctx = undefined;
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }).catch(() => undefined);
+  });
+
+  it.each(['sub', 'independent', 'off'] as const)('MP-03 preserves %s notice and shared once in outbound bind, model-resume and anchor replacements', async (position) => {
+    await mkdir(join(homeDir, 'cognition'));
+    await writeFile(join(homeDir, 'cognition/replace.md'), 'REPLACEMENT BODY');
+    await writeFile(join(homeDir, 'cognition/anchor.md'), 'ANCHOR BODY');
+    const custom = normalizeAgentProfile({ name: 'replacement-role', delegationNotice: position === 'off' ? 'off' : undefined, systemPrompt: () => 'ORIGINAL BODY' });
+    ctx = createTestAgent(homeDirServices(homeDir), sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), { initialConfig: { prompt: { shared: 'SHARED_FINAL' } } });
+    const model = ctx.kimiConfig.models![MOCK_MODEL]!;
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: {
+      ...ctx.kimiConfig.models,
+      [MOCK_MODEL]: { ...model, cognition: { overlay: 'cognition/replace.md', overlayMode: 'replace' } },
+      'replacement-model': { ...model, model: 'replacement-model', cognition: { overlay: 'cognition/replace.md', overlayMode: 'replace', anchor: 'cognition/anchor.md', anchorScope: 'turn' } },
+    } };
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: custom.name, model: MOCK_MODEL, delegationPosition: position === 'off' ? 'sub' : position });
+    const notice = position === 'sub' ? TASK_AGENT_ROLE_PREFIX : position === 'independent' ? DEFAULT_INDEPENDENT_DELEGATION_NOTICE : undefined;
+    const requester = ctx.get(IAgentLLMRequesterService);
+    const assertOutbound = (body: string) => {
+      const system = ctx!.llmCalls.at(-1)!.systemPrompt;
+      expect(system).toContain(body);
+      expect(system).not.toContain('ORIGINAL BODY');
+      expect(system.split('SHARED_FINAL')).toHaveLength(2);
+      if (notice !== undefined) expect(system.split(notice)).toHaveLength(2);
+      else {
+        expect(system).not.toContain(TASK_AGENT_ROLE_PREFIX);
+        expect(system).not.toContain(DEFAULT_INDEPENDENT_DELEGATION_NOTICE);
+      }
+    };
+    ctx.mockNextResponse({ type: 'text', text: 'ok' });
+    await requester.request({});
+    assertOutbound('REPLACEMENT BODY');
+    (await profile.prepareResumeBinding({ modelAlias: 'replacement-model', allowModelChange: true }))();
+    ctx.mockNextResponse({ type: 'text', text: 'ok' });
+    await requester.request({});
+    assertOutbound('REPLACEMENT BODY');
+    ctx.mockNextResponse({ type: 'text', text: 'ok' });
+    await requester.request({ source: { type: 'turn', turnId: 0, step: 1 } });
+    assertOutbound('ANCHOR BODY');
+    const snapshot = JSON.parse(JSON.stringify(profile.data())) as ReturnType<typeof profile.data>;
+    const config = ctx.kimiConfig;
+    await ctx.dispose();
+    ctx = createTestAgent(homeDirServices(homeDir), sessionService(ISessionAgentProfileCatalog, catalogWith(custom)));
+    ctx.kimiConfig = config;
+    ctx.get(IAgentProfileService).applyBindingSnapshot(snapshot);
+    ctx.mockNextResponse({ type: 'text', text: 'ok' });
+    await ctx.get(IAgentLLMRequesterService).request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    assertOutbound('ANCHOR BODY');
+  });
+
+  it.each(['sub', 'independent', 'off'] as const)('preserves the saved %s notice across a cold variable refresh', async (position) => {
+    const custom = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      delegationNotice: position === 'off' ? 'off' : undefined,
+      renderSystemPrompt: (context) => renderPromptTemplateResult('Role ${guidance}', context, { skillActive: false }),
+    });
+    ctx = createTestAgent(homeDirServices(homeDir), sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), {
+      initialConfig: { prompt: { variables: { guidance: 'OLD' }, shared: 'SHARED_OLD' } },
+    });
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: custom.name, model: MOCK_MODEL, delegationPosition: position === 'off' ? 'sub' : position });
+    const before = JSON.parse(JSON.stringify(profile.data())) as ReturnType<typeof profile.data>;
+    const snippet = before.boundProfile?.promptBase?.delegationSnippet;
+    if (position !== 'off') expect(snippet).toBeTruthy();
+    await ctx.dispose();
+    ctx = createTestAgent(homeDirServices(homeDir), sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), {
+      initialConfig: { prompt: { variables: { guidance: 'NEW' }, shared: 'SHARED_NEW' } },
+    });
+    const restored = ctx.get(IAgentProfileService);
+    restored.applyBindingSnapshot(before);
+    await restored.preparePromptConfiguration();
+    expect(restored.getSystemPrompt()).toContain('Role NEW');
+    expect(restored.getSystemPrompt().split('SHARED_NEW')).toHaveLength(2);
+    expect(restored.data().boundProfile?.promptBase?.delegationSnippet).toBe(snippet);
+    if (snippet !== undefined) expect(restored.getSystemPrompt().split(snippet)).toHaveLength(2);
+    else {
+      expect(restored.getSystemPrompt()).not.toContain(TASK_AGENT_ROLE_PREFIX);
+      expect(restored.getSystemPrompt()).not.toContain(DEFAULT_INDEPENDENT_DELEGATION_NOTICE);
+    }
+    expect(restored.data().appliedLease).toEqual(before.appliedLease);
+    expect(restored.data().activeToolNames).toEqual(before.activeToolNames);
   });
 
   it('does not inject a prefix when the main agent binds explore', async () => {

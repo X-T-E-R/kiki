@@ -250,6 +250,28 @@ describe('IModelsDevImportService', () => {
     expect(config.get('defaultModel')).toBe('openai/gpt-4.1');
   });
 
+  it('preserves local parameter overrides when refreshing directory models', async () => {
+    setModelsDevUpstreamForTest({ fetchImpl: fetchJson(CATALOG) });
+    const overrides = { defaultEffort: 'max', contextBudget: 64000, maxCompletionTokens: 4000, serviceTier: 'flex', requestParams: { temperature: 0.4, top_p: 0.8 } };
+    const { config, imports } = createHost({
+      providers: { openai: { type: 'openai' } },
+      models: { 'openai/gpt-4.1': { provider: 'openai', model: 'gpt-4.1', maxContextSize: 1, overrides } },
+    });
+    await imports.importModelsDevProvider({ catalogId: 'openai' });
+    expect(config.get<ModelsSection>(MODELS_SECTION)['openai/gpt-4.1']).toMatchObject({ maxContextSize: 1047576, overrides });
+  });
+
+  it('preserves local parameter overrides when refreshing a custom registry', async () => {
+    setModelsDevUpstreamForTest({ fetchImpl: fetchJson(REGISTRY_DOC) });
+    const overrides = { defaultEffort: 'max', contextBudget: 64000, requestParams: { temperature: 0.4 } };
+    const { config, imports } = createHost({
+      providers: { 'acme-gpt': { type: 'openai' } },
+      models: { 'acme-gpt/gpt-x': { provider: 'acme-gpt', model: 'gpt-x', maxContextSize: 1, overrides } },
+    });
+    await imports.importCustomRegistry({ url: REGISTRY_URL });
+    expect(config.get<ModelsSection>(MODELS_SECTION)['acme-gpt/gpt-x']).toMatchObject({ maxContextSize: 128000, overrides });
+  });
+
   it('keeps the stored api_key on a re-import without one, replaces it when given', async () => {
     setModelsDevUpstreamForTest({ fetchImpl: fetchJson(CATALOG) });
     const { config, imports } = createHost({

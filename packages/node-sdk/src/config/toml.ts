@@ -371,6 +371,9 @@ function transformModelData(data: Record<string, unknown>): Record<string, unkno
   if (isPlainObject(out['overrides'])) {
     out['overrides'] = transformPlainObject(out['overrides']);
   }
+  if (isPlainObject(out['cognition'])) {
+    out['cognition'] = transformPlainObject(out['cognition']);
+  }
   return out;
 }
 
@@ -562,6 +565,8 @@ function modelToToml(model: ModelAlias, rawModel: unknown): Record<string, unkno
     } else if (key === 'overrides' && isPlainObject(value)) {
       const rawOverrides = isPlainObject(rawModel) ? rawModel['overrides'] : undefined;
       out['overrides'] = modelOverridesToToml(value, rawOverrides);
+    } else if (key === 'cognition' && isPlainObject(value)) {
+      out['cognition'] = Object.fromEntries(Object.entries(value).map(([field, item]) => [camelToSnake(field), item]));
     } else {
       setDefined(out, camelToSnake(key), value);
     }

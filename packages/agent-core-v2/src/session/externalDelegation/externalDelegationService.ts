@@ -737,7 +737,7 @@ export class SessionExternalDelegationService
         runtime: runtimeLease.runtime,
         workDir: view.workDir,
         signal: controller.signal,
-        onCreated: async (child) => {
+        onCreated: async (child, retain) => {
           await this.queueDispatch(
             doc,
             dispatchId,
@@ -752,6 +752,7 @@ export class SessionExternalDelegationService
               profileName,
               createdAt: Date.now(),
             },
+            retain,
           );
         },
       });
@@ -1056,6 +1057,7 @@ export class SessionExternalDelegationService
     fingerprint: string,
     reservation: ActiveDispatchKeyReservation,
     newChild?: StoredChild,
+    onDurable?: () => void,
   ): Promise<void> {
     const legacyTranscriptStart = target.agent.accessor.get(IAgentContextMemoryService).get().length;
     const projection = await this.buildTurnProjection(target.agent, false);
@@ -1103,6 +1105,7 @@ export class SessionExternalDelegationService
         const candidate = structuredClone(doc);
         publish(candidate);
         await this.store.set(this.scope, STORE_KEY, candidate);
+        onDurable?.();
         publish(doc);
         this.changed.fire();
       });

@@ -53,6 +53,7 @@ import {
   type SteerPayload,
 } from './prompt';
 import { promptMetadataTextFromContentParts } from './promptMetadataText';
+import { capturePromptGoalId, hasPromptRuntimeControls, preparePromptRuntimeControls, readPromptRuntimeControlChanges, validatePromptRuntimeControls } from './runtimeControls';
 import { PromptStepRequest, RetryStepRequest, SteerStepRequest } from './promptStepRequests';
 import { PromptAccepted, promptAdmissionKey } from './promptOps';
 import { daemonFileRefFromPart } from '#/agent/media/mediaRef';
@@ -190,6 +191,7 @@ interface Record extends PromptSnapshot {
   state: PromptState;
   message: ContextMessage;
   readonly execution?: PromptExecutionBinding;
+  readonly goalId?: string | null;
   readonly deferredDisabledTools?: readonly string[];
   readonly alreadyMaterialized: boolean;
   readonly launchedDeferred: Deferred<Turn | undefined>;
@@ -251,6 +253,7 @@ export class AgentPromptService implements IAgentPromptService {
   private readonly promptIds = new KeyReservationRegistry<string>();
   private readonly steeringPromptIds = new Set<string>();
   private steering = 0;
+  private waitingForLoop = false;
   private fullCompactionService: IAgentFullCompactionService | undefined;
   readonly hooks = { onBeforeSubmitPrompt: new OrderedHookSlot<PromptSubmitContext>() };
 
@@ -321,6 +324,7 @@ export class AgentPromptService implements IAgentPromptService {
       id,
       submit: async (message, execution, deferredDisabledTools) => {
         if (submitted) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt reservation already submitted');
+        this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, execution));
         submitted = true;
         reservation.commit(id);
         await this.dispatcher.dispatch(new PromptAccepted({ promptId: id }));
@@ -355,6 +359,7 @@ export class AgentPromptService implements IAgentPromptService {
       state: 'pending',
       message,
       execution: input.execution,
+      goalId: this.instantiation.invokeFunction((accessor) => capturePromptGoalId(accessor, input.execution)),
       deferredDisabledTools: input.deferredDisabledTools,
       alreadyMaterialized: input.alreadyMaterialized === true,
       launchedDeferred,
@@ -368,10 +373,11 @@ export class AgentPromptService implements IAgentPromptService {
     };
     this.pending.push(record);
     const idle = this.active === undefined && !this.launching;
-    const queued = !idle || (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running');
+    const queued = !idle || this.loop.status().state === 'running' || this.fullCompaction.compacting !== null;
     this.publishSubmitted(record, queued ? 'queued' : 'running');
     if (queued) {
       this.publishQueued(record);
+      void this.startNext();
       return record.handle;
     }
     void this.startNext();
@@ -413,8 +419,19 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   async submit(payload: PromptPayload): Promise<PromptLaunchResult | undefined> {
+    const handle = await this.submitPrompt(payload);
+    if (handle.state === 'pending') return undefined;
+    const turn = await handle.launched;
+    if (turn === undefined && handle.state !== 'blocked') {
+      throw new Error2(ErrorCodes.INTERNAL, `Prompt ${handle.id} failed to launch; inspect prompt completion events`);
+    }
+    return turn === undefined ? undefined : { turn_id: turn.id };
+  }
+
+  private async submitPrompt(payload: PromptPayload): Promise<PromptHandle> {
     const reservation = this[promptAdmission](payload.promptId);
     try {
+      this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, payload.execution));
       let deferredDisabledTools: readonly string[] | undefined;
       if (payload.disabledTools !== undefined) {
         if (payload.execution !== undefined && !this.profile.isRunnable()) {
@@ -431,15 +448,12 @@ export class AgentPromptService implements IAgentPromptService {
         }
       }
       await this.updatePromptMetadata(promptMetadataTextFromContentParts(payload.input));
-      const handle = await reservation.submit({
+      return await reservation.submit({
         role: 'user',
         content: [...payload.input],
         toolCalls: [],
         origin: { kind: 'user' },
       }, payload.execution, deferredDisabledTools);
-      if (handle.state === 'pending') return undefined;
-      const turn = await handle.launched;
-      return turn === undefined ? undefined : { turn_id: turn.id };
     } finally {
       reservation.dispose();
     }
@@ -505,7 +519,8 @@ export class AgentPromptService implements IAgentPromptService {
 
   async steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {
     if (promptIds.length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
-    if (this.active === undefined) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active prompt to steer into');
+    const targetTurnId = this.active?.turn.id ?? this.loop.status().activeTurnId;
+    if (targetTurnId === undefined) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active turn to steer into');
     const ids = new Set(promptIds);
     if (ids.size !== promptIds.length || this.pending.filter((item) => ids.has(item.id)).length !== ids.size) {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
@@ -514,9 +529,17 @@ export class AgentPromptService implements IAgentPromptService {
     for (const item of selected) this.steeringPromptIds.add(item.id);
     try {
       const activeAtEntry = this.active;
+      for (const item of selected) {
+        if (!hasPromptRuntimeControls(item.execution)) continue;
+        const changed = this.instantiation.invokeFunction((accessor) => readPromptRuntimeControlChanges(accessor, item.execution));
+        if (await changed()) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with pending plan, swarm or goal changes must run as their own turn');
+        }
+      }
       const { message: rerouted, captions } = this.extractCompressionCaptions(mergeSteerMessages(selected));
       await this.materializeDaemonRefs(rerouted);
-      if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry) {
+      if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry ||
+          this.loop.status().activeTurnId !== targetTurnId) {
         throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
       }
       this.steering++;
@@ -529,7 +552,7 @@ export class AgentPromptService implements IAgentPromptService {
       const request = new SteerStepRequest(rerouted, captions, this.reminders, (materialized) => {
         void this.dispatcher.dispatch(
           new TurnSteer({
-            turnId: activeAtEntry.turn.id,
+            turnId: targetTurnId,
             promptId: materialized.id,
             revision: undefined,
             lineage: undefined,
@@ -546,15 +569,27 @@ export class AgentPromptService implements IAgentPromptService {
       } finally {
         this.steering--;
       }
-      if (turn === undefined || this.active !== activeAtEntry) {
+      if (turn === undefined || turn.id !== targetTurnId || this.active !== activeAtEntry) {
         for (const { item, index } of removed.reverse()) this.pending.splice(index, 0, item);
         if (this.active === undefined) void this.startNext();
         throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active turn to steer into');
       }
       for (const item of selected) { item.state = 'steered'; item.launchedDeferred.resolve(turn); }
-      this.steered.set(this.active.id, [...(this.steered.get(this.active.id) ?? []), ...selected]);
+      if (activeAtEntry !== undefined) {
+        this.steered.set(activeAtEntry.id, [...(this.steered.get(activeAtEntry.id) ?? []), ...selected]);
+      } else {
+        void turn.result.then((result) => {
+          const state = result.type === 'cancelled' ? 'cancelled' : result.type === 'failed' ? 'failed' : 'completed';
+          for (const item of selected) {
+            item.state = state;
+            item.completionDeferred.resolve({ promptId: item.id, result, state });
+            if (state === 'cancelled') this.publishAborted(item.id);
+            else this.publishCompleted(item.id, state);
+          }
+        });
+      }
       void this.dispatcher.dispatch(
-        new PromptSteered({ activePromptId: this.active.id, promptIds: selected.map((x) => x.id), content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString() }),
+        new PromptSteered({ activePromptId: activeAtEntry?.id ?? selected[0]!.id, promptIds: selected.map((x) => x.id), content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString() }),
       );
       return selected.map((item) => item.handle);
     } finally {
@@ -605,11 +640,28 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async startNext(): Promise<void> {
-    if (this.active !== undefined || this.launching || this.steering > 0) return;
-    const item = this.pending.shift(); if (item === undefined) return;
+    if (this.active !== undefined || this.launching || this.steering > 0 || this.pending.length === 0) return;
+    if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') return;
+    let admission: ReturnType<IAgentLoopService['tryAcquireQuiescence']>;
+    try {
+      admission = this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve' });
+    } catch (error) {
+      for (const pending of this.pending.slice()) {
+        this.abort(pending.id, error instanceof Error ? error : undefined);
+      }
+      return;
+    }
+    if (admission === undefined) {
+      if (!this.waitingForLoop) {
+        this.waitingForLoop = true;
+        void this.loop.settled().then(() => { this.waitingForLoop = false; void this.startNext(); });
+      }
+      return;
+    }
+    const item = this.pending.shift()!;
     this.launching = true;
     try {
-      if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') { this.pending.unshift(item); return; }
+      this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, item.execution));
       await this.applyExecutionBinding(item.execution);
       if (item.deferredDisabledTools !== undefined) {
         await this.toolPolicy.setSessionDisabledTools(item.deferredDisabledTools);
@@ -622,19 +674,31 @@ export class AgentPromptService implements IAgentPromptService {
         item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'blocked' });
         this.publishCompleted(item.id, 'blocked'); return;
       }
-      const turn = (await this.loop.enqueue(
+      const applyControls = this.instantiation.invokeFunction((accessor) =>
+        preparePromptRuntimeControls(accessor, item.execution, item.goalId));
+      await applyControls();
+      const receipt = this.loop.enqueue(
         new PromptStepRequest(message, captions, this.reminders, item.alreadyMaterialized),
-      ).assigned).turn;
-      if (turn === undefined) { this.pending.unshift(item); return; }
+        { at: 'head' },
+      );
+      admission.dispose();
+      const turn = (await receipt.assigned).turn;
+      if (turn === undefined) {
+        if (hasPromptRuntimeControls(item.execution)) {
+          throw new Error2(ErrorCodes.INTERNAL, 'Prompt launch was not assigned after applying runtime controls');
+        }
+        this.pending.unshift(item); return;
+      }
       item.state = 'running'; item.launchedDeferred.resolve(turn); this.active = Object.assign(item, { turn });
       this.publishStarted(item);
       void turn.result.then((result) => this.settle(item, result));
-    } catch {
+    } catch (error) {
       item.state = 'failed';
       item.launchedDeferred.resolve(undefined);
-      item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'failed' });
+      item.completionDeferred.resolve({ promptId: item.id, result: { type: 'failed', steps: 0, error }, state: 'failed' });
       this.publishCompleted(item.id, 'failed');
     } finally {
+      admission.dispose();
       this.launching = false;
       if (this.active === undefined) void this.startNext();
     }

@@ -10,7 +10,7 @@ export const AgentSendInputSchema = z
       .trim()
       .min(1)
       .describe(
-        'Name or agent id of a direct child. Names come from the `name` parameter of the Agent tool; unnamed Agent and AgentSwarm children are addressed by agent id. Call AgentList when unsure.',
+        'Name or agent id of a direct child. Names come from the `name` parameter of the Agent tool; unnamed children are addressed by agent id. Call AgentList when unsure.',
       ),
     message: z
       .string()

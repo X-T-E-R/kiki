@@ -12,6 +12,13 @@ describe('config REST protocol', () => {
     expect(patchConfigRequestSchema.parse({ telemetry: false })).toEqual({});
   });
 
+  it('retains shared prompt text, case-sensitive tool names and underscore variables on the SDK wire', () => {
+    const prompt = { shared: '${team_note}', variables: { team_note: 'Example team', search_guidance: 'Native GMA SSE' }, tools: { WebSearch: '${search_guidance}' } };
+    expect(patchConfigRequestSchema.parse({ prompt })).toEqual({ prompt });
+    expect(configResponseSchema.parse({ prompt }).prompt).toEqual(prompt);
+    expect(patchConfigRequestSchema.safeParse({ prompt: { variables: { invalid: 42 } } }).success).toBe(false);
+  });
+
   it('keeps accepting server patch fields not mirrored by the shared schema', () => {
     expect(patchConfigRequestSchema.safeParse({
       thread_communication: { enabled: true },

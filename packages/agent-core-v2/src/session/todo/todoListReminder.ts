@@ -89,7 +89,7 @@ function isTodoListReminder(message: ContextMessage): boolean {
 
 function renderTodoListReminder(todos: readonly TodoItem[]): string {
   let message =
-    'The TodoList tool has not been updated recently. If you are working on tasks that benefit from progress tracking, consider using TodoList to update task status. Also consider clearing or rewriting the todo list if it has become stale and no longer matches the current work. Only use it if relevant. This is a gentle reminder; ignore it if not applicable. Make sure that you NEVER mention this reminder to the user.';
+    'TodoList has not been updated recently. If it still helps, update it; clear or rewrite it if stale. Ignore this reminder when it is not relevant. Do not mention this reminder to the user.';
 
   const items = renderTodoItems(todos);
   if (items.length > 0) {

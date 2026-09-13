@@ -162,10 +162,10 @@ export class ModelsDevImportService implements IModelsDevImportService {
     const withoutTarget = Object.fromEntries(
       Object.entries(records).filter(([, record]) => record.provider !== targetId),
     );
-    await config.replace(MODELS_SECTION, withoutTarget);
     const nextModels = { ...withoutTarget };
     for (const model of models) {
-      nextModels[`${targetId}/${model.id}`] = modelsDevModelToRecord(targetId, model);
+      const id = `${targetId}/${model.id}`;
+      nextModels[id] = { ...modelsDevModelToRecord(targetId, model), overrides: records[id]?.overrides };
     }
     await config.replace(MODELS_SECTION, nextModels);
 
@@ -219,11 +219,10 @@ export class ModelsDevImportService implements IModelsDevImportService {
       }
     }
 
+    const previousModels = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
     const removed = {
       providers: { ...providers },
-      models: {
-        ...config.inspect<ModelsSection>(MODELS_SECTION).userValue,
-      },
+      models: { ...previousModels },
     } as ManagedKimiConfigShape;
     const surviving = new Set(Object.values(entries).map((entry) => entry.id));
     for (const [providerId, provider] of Object.entries(removed.providers)) {
@@ -254,8 +253,14 @@ export class ModelsDevImportService implements IModelsDevImportService {
     for (const entry of Object.values(entries)) {
       applyCustomRegistryProvider(applied, entry, source);
     }
+    const nextModels = (applied.models ?? {}) as ModelsSection;
+    for (const [id, model] of Object.entries(nextModels)) {
+      if (previousModels[id]?.overrides !== undefined) {
+        nextModels[id] = { ...model, overrides: previousModels[id].overrides };
+      }
+    }
     await config.replace(PROVIDERS_SECTION, applied.providers as ProvidersSection);
-    await config.replace(MODELS_SECTION, (applied.models ?? {}) as ModelsSection);
+    await config.replace(MODELS_SECTION, nextModels);
 
     const firstEntry = Object.values(entries)[0];
     const firstModelKey = firstEntry === undefined ? undefined : Object.keys(firstEntry.models)[0];

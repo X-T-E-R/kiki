@@ -27,6 +27,7 @@ export interface ProfileModelState {
   readonly routeId?: string;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
+  readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -43,6 +44,7 @@ export interface ProfileModelState {
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnPolicy?: SpawnConstraints;
   readonly appliedLease?: SubagentLease;
+  readonly boundProfile?: import('./boundProfile').BoundProfile;
   readonly toolAllowPolicies?: readonly (readonly string[])[];
 }
 
@@ -53,6 +55,7 @@ const profileBindSchema = z.object({
   routeId: z.string().optional(),
   lockedModelAlias: z.string().optional(),
   lockedThinkingEffort: z.string().optional(),
+  executionRestriction: z.literal('research-readonly').optional(),
   executorId: z.string().optional(),
   executorProtocol: z.string().optional(),
   executorOptions: ExecutorOptionsSchema.readonly().optional(),
@@ -71,6 +74,7 @@ const profileBindSchema = z.object({
   subagentLeases: z.custom<Readonly<Record<string, SubagentLease>>>().optional(),
   spawnPolicy: z.custom<SpawnConstraints>().optional(),
   appliedLease: z.custom<SubagentLease>().optional(),
+  boundProfile: z.custom<import('./boundProfile').BoundProfile>().optional(),
 });
 
 export class ProfileBind extends Event2<z.infer<typeof profileBindSchema>> {
@@ -81,6 +85,7 @@ export class ProfileBind extends Event2<z.infer<typeof profileBindSchema>> {
 export interface ProfileBind extends z.infer<typeof profileBindSchema> {}
 
 const configUpdateSchema = z.object({
+  promptBase: z.custom<import('./boundProfile').BoundPromptBase>().optional(),
   modelAlias: z.string().optional(),
   profileName: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>().optional(),
@@ -145,6 +150,7 @@ export const profileKey = defineState(
     routeId: e.routeId,
     lockedModelAlias: e.lockedModelAlias,
     lockedThinkingEffort: e.lockedThinkingEffort,
+    executionRestriction: s.executionRestriction ?? e.executionRestriction,
     executorId: e.executorId,
     executorProtocol: e.executorProtocol,
     executorOptions: e.executorOptions,
@@ -161,9 +167,11 @@ export const profileKey = defineState(
     subagentLeases: e.subagentLeases,
     spawnPolicy: e.spawnPolicy,
     appliedLease: e.appliedLease,
+    boundProfile: e.boundProfile,
     toolAllowPolicies: e.toolAllowPolicies,
   }))
   .on(ConfigUpdate, (s, e) => {
+    if (e.promptBase !== undefined && s.boundProfile !== undefined) s.boundProfile = { ...s.boundProfile, promptBase: e.promptBase };
     if (e.modelAlias !== undefined && e.modelAlias !== s.modelAlias) {
       s.modelAlias = e.modelAlias;
     }

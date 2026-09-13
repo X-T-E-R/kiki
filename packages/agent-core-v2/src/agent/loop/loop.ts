@@ -149,7 +149,8 @@ export interface IAgentLoopService {
 
   cancelFromUser(turnId?: number): void;
 
-  tryAcquireQuiescence(): IDisposable | undefined;
+  /** A new turn may preserve standalone steps for its own admission; history mutations require the default empty queue. */
+  tryAcquireQuiescence(options?: { readonly pendingSteps: 'preserve' }): IDisposable | undefined;
 
   settled(): Promise<void>;
 

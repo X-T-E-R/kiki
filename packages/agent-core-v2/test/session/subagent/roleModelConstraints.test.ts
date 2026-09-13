@@ -92,6 +92,33 @@ function routePin(modelAlias: string): AgentProfileRouteDefinition {
   };
 }
 
+describe('model-scoped effort defaults', () => {
+  it('does not carry the profile default effort onto another model', () => {
+    expect(bindSubagent(
+      { modelAlias: 'provider/heavy' }, undefined,
+      { modelAlias: 'fast-model', thinkingEffort: 'medium' },
+    ).thinking).toBeUndefined();
+  });
+
+  it('matches canonical aliases and gives the model entry priority over the profile default', () => {
+    const role = { modelProfiles: [{ alias: 'fast-model', when: 'fast', thinkingEffort: 'max' }] };
+    expect(bindSubagent(
+      { modelAlias: 'provider/fast' }, role,
+      { modelAlias: 'fast', thinkingEffort: 'medium' },
+    ).thinking).toBe('max');
+    expect(bindSubagent(
+      { modelAlias: 'provider/fast', thinkingEffort: 'low' }, role,
+      { modelAlias: 'fast', thinkingEffort: 'medium' },
+    ).thinking).toBe('low');
+  });
+
+  it('does not apply an unpinned profile effort to a dispatched model', () => {
+    expect(bindSubagent(
+      { modelAlias: 'fast' }, undefined, { thinkingEffort: 'medium' },
+    ).thinking).toBeUndefined();
+  });
+});
+
 describe('a subagent model comes only from a profile pin or the dispatch', () => {
   it('fails closed with MODEL_NOT_CONFIGURED when neither source supplies a model', () => {
     let thrown: unknown;

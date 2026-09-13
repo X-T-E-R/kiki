@@ -23,6 +23,7 @@ export interface AgentProfileRouteUpdate {
 export interface AgentProfileWriteRequest {
   readonly name: string;
   readonly scope: AgentProfileWriteScope;
+  readonly sourcePath?: string;
   readonly description?: string;
   readonly whenToUse?: string | null;
   readonly modelAlias?: string | null;

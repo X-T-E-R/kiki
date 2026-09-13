@@ -456,30 +456,16 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
     expect(profile.data().thinkingLevel).toBe(expected);
   });
 
-  it('uses the model default when the runtime effort is blank', () => {
+  it('rejects a blank explicit runtime effort without changing the binding', () => {
     profile.update({ modelAlias: 'kimi-code/custom', thinkingLevel: 'low' });
-
-    profile.setThinking('   ');
-
-    expect(profile.data().thinkingLevel).toBe('max');
+    expect(() => profile.setThinking('   ')).toThrow(/not supported/);
+    expect(profile.data().thinkingLevel).toBe('low');
   });
 
-  it('preserves unlisted efforts with a warning for Kimi-managed Anthropic models', () => {
+  it('rejects unlisted explicit efforts for Kimi-managed Anthropic models', () => {
     profile.update({ modelAlias: 'kimi-code/compatible', thinkingLevel: 'max' });
-
-    expect(() => {
-      profile.setThinking('high');
-    }).not.toThrow();
-    expect(profile.data().thinkingLevel).toBe('high');
-    expect(ctx.allEvents).toContainEqual({
-      type: '[rpc]',
-      event: 'warning',
-      args: expect.objectContaining({
-        code: 'anthropic-thinking-effort-not-listed',
-        message:
-          'Thinking effort "high" is not listed for model "compatible-model" (known: max). The configured value will be sent unchanged to the Anthropic-compatible backend.',
-      }),
-    });
+    expect(() => profile.setThinking('high')).toThrow(/not supported/);
+    expect(profile.data().thinkingLevel).toBe('max');
   });
 
   it('clamps off to the model default for always-on models, on any transport', () => {

@@ -16,7 +16,7 @@ export const PRINT_WAIT_CEILING_S_DEFAULT = 315_360_000;
 export const PRINT_MAX_TURNS_DEFAULT = 100_000;
 
 /**
- * Per-subagent (`Agent` / `AgentSwarm`, foreground and background) timeout:
+ * Per-subagent (`AgentRun`, foreground and background) timeout:
  * `0` = no timeout (the interactive default is 2 hours). A headless run must
  * never have a subagent killed by a wall-clock cap; only the model itself may
  * stop one.

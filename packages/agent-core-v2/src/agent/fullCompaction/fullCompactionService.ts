@@ -22,6 +22,7 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { stripDynamicToolContext } from '#/agent/toolSelect/dynamicTools';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
 import {
   APIContextOverflowError,
@@ -139,6 +140,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
     @ISessionTodoService private readonly todo: ISessionTodoService,
+    @IAgentScopeContext private readonly scope: IAgentScopeContext,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IEventBus private readonly eventBus: IEventBus,
@@ -244,7 +246,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   private getEffectiveMaxContextTokens(): number {
-    const capability = this.profile.data().modelCapabilities;
+    const capability = this.profile.getModelCapabilities();
     const configured = capability.max_input_tokens ?? capability.max_context_tokens;
     const modelAlias = this.profile.data().modelAlias;
     const observed =
@@ -810,7 +812,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   private currentTodos(): readonly TodoItem[] {
-    return this.todo.getTodos();
+    return this.todo.getTodos(this.scope.agentId);
   }
 
   private tokenCountWithPending(): number {

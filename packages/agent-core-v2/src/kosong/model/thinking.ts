@@ -162,11 +162,14 @@ export function resolveThinkingEffortForModel(
   model: ModelThinkingMetadata | undefined,
   strictValidation = false,
 ): ThinkingEffort {
-  const configured = normalizeRequestedThinkingEffort(defaults?.effort);
+  const modelDefault = normalizeRequestedThinkingEffort(model?.overrides?.defaultEffort);
+  const configured = modelDefault ?? normalizeRequestedThinkingEffort(defaults?.effort);
   const normalized = normalizeRequestedThinkingEffort(requested);
   let effort: ThinkingEffort;
   if (normalized !== undefined) {
     effort = normalized;
+  } else if (modelDefault !== undefined) {
+    effort = modelDefault;
   } else if (defaults?.enabled === false) {
     effort = 'off';
   } else {

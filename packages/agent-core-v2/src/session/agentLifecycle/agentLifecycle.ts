@@ -37,10 +37,11 @@ export interface IAgentLifecycleService {
   readonly onDidCreate: Event<IAgentScopeHandle>;
   readonly onDidDispose: Event<string>;
 
+  /** Generated identities never reuse an existing wire journal; explicit agentId enables restoration. */
   create(opts?: CreateAgentOptions): Promise<IAgentScopeHandle>;
-  commitCreate?(agentId: string): void;
-  /** Remove an incomplete allocation from live state and durable session metadata. */
-  discard?(agentId: string): Promise<void>;
+  commitCreate(agentId: string): void;
+  /** Remove an incomplete allocation from live state and metadata, retaining its journal as a reserved identity. */
+  discard(agentId: string): Promise<void>;
 
   fork(sourceAgentId: string, opts?: ForkAgentOptions): Promise<IAgentScopeHandle>;
 

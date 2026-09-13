@@ -7,8 +7,9 @@
  * overrides, thinking effort/keep, and the completion-token budget (with its
  * window-clamp companions).
  * It is deliberately dialect-free — each wire dialect encodes (or silently drops)
- * an intent in its own hooks. The requester maps the params onto `GenerateOptions`
- * 1:1; typed fields are resolved before `requestParams`, whose entries only fill
+ * an intent in its own hooks. The requester maps the params onto `GenerateOptions`,
+ * with the configured model service tier supplying a fallback for the request tier.
+ * Typed fields are resolved before `requestParams`, whose entries only fill
  * keys the dialect has not already produced.
  */
 

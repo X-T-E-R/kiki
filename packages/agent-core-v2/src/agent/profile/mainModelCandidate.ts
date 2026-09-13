@@ -25,14 +25,12 @@ export function resolveMainThinkingCandidate(input: {
   readonly routeLockedThinking?: string;
   readonly modelProfileThinking?: string;
   readonly profileThinking?: string;
-  readonly sessionThinking?: string;
 }): string | undefined {
   return (
     nonempty(input.inputThinking) ??
     nonempty(input.routeLockedThinking) ??
     nonempty(input.modelProfileThinking) ??
-    nonempty(input.profileThinking) ??
-    nonempty(input.sessionThinking)
+    nonempty(input.profileThinking)
   );
 }
 

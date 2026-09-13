@@ -55,7 +55,10 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     return isToolActiveComposed(
       {
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,
-        profile: { disallowedTools: profile.disallowedTools },
+        profile: {
+          disallowedTools: profile.disallowedTools,
+          executionRestriction: profile.executionRestriction,
+        },
         global: this.config.get<ToolsConfig>(TOOLS_SECTION),
         sessionDisabledTools: this.sessionToolPolicy.disabledTools(),
       },
@@ -72,7 +75,10 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     return isToolActiveComposed(
       {
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,
-        profile,
+        profile: {
+          ...profile,
+          executionRestriction: this.profile.data().executionRestriction ?? profile.executionRestriction,
+        },
         global: this.config.get<ToolsConfig>(TOOLS_SECTION),
         sessionDisabledTools: this.sessionToolPolicy.disabledTools(),
       },

@@ -335,6 +335,42 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     expect(modelOf(agentState)).toBe(before);
   });
 
+  it('persists the research ceiling through snapshot replacement, tool overlays and cold replay', async () => {
+    svc.applyBindingSnapshot({
+      executionRestriction: 'research-readonly',
+      profileName: 'explore',
+      executorId: 'native',
+      thinkingLevel: 'off',
+      systemPrompt: 'research',
+    });
+    svc.applyBindingSnapshot({
+      profileName: 'writable',
+      thinkingLevel: 'off',
+      systemPrompt: 'new prompt',
+      activeToolNames: undefined,
+      toolAllowPolicies: undefined,
+    });
+    svc.update({ activeToolNames: ['Bash', 'Read'], disallowedTools: [] });
+    svc.addActiveTool('Skill');
+    expect(svc.data().executionRestriction).toBe('research-readonly');
+    expect(svc.data().toolAllowPolicies).toContainEqual([
+      'Read', 'ReadMediaFile', 'Glob', 'Grep', 'WebSearch', 'FetchURL',
+    ]);
+    expect(() => svc.applyBindingSnapshot({
+      executorId: 'external', thinkingLevel: 'off', systemPrompt: 'escape',
+    })).toThrow('native executor');
+    expect(svc.data().executorId).toBe('native');
+    const replay = buildHost('research-replay');
+    await restoreTestEventDispatcher(replay.dispatcher, replay.log, testWireScope(SCOPE, 'research-replay'), await readRecords());
+    expect(replay.svc.data().executionRestriction).toBe('research-readonly');
+    expect(replay.svc.data().toolAllowPolicies).toContainEqual([
+      'Read', 'ReadMediaFile', 'Glob', 'Grep', 'WebSearch', 'FetchURL',
+    ]);
+    replay.svc.applyBindingSnapshot({ thinkingLevel: 'off', systemPrompt: 'after resume' });
+    expect(replay.svc.data().executionRestriction).toBe('research-readonly');
+    replay.ix.dispose();
+  });
+
   it('persists and replays an allowlist reset to unrestricted', async () => {
     svc.applyBindingSnapshot({
       profileName: 'restricted',
@@ -663,9 +699,9 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     expect(host.svc.resolveRequestParams().thinkingEffort).toBe('max');
 
     host.svc.update({ modelAlias: 'other-code' });
-    expect(host.svc.data().thinkingLevel).toBe('high');
-    expect(host.svc.resolveModelContext().thinkingLevel).toBe('high');
-    expect(host.svc.resolveRequestParams().thinkingEffort).toBe('high');
+    expect(host.svc.data().thinkingLevel).toBe('on');
+    expect(host.svc.resolveModelContext().thinkingLevel).toBe('on');
+    expect(host.svc.resolveRequestParams().thinkingEffort).toBe('on');
   });
 
   it('applies thinking.keep model override on the Anthropic path', () => {

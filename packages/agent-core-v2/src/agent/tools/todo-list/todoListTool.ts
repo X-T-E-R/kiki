@@ -3,6 +3,7 @@ import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution'
 import { toInputJsonSchema } from '#/tool/input-schema';
 
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import {
   TODO_LIST_TOOL_NAME,
   renderTodoList,
@@ -15,7 +16,6 @@ import {
   type TodoListInput,
 } from './todo-list';
 import DESCRIPTION from './todo-list.md?raw';
-import TODO_LIST_WRITE_REMINDER from './todo-list-write-reminder.md?raw';
 
 export class TodoListTool implements ITodoListTool {
   declare readonly _serviceBrand: undefined;
@@ -23,7 +23,10 @@ export class TodoListTool implements ITodoListTool {
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(TodoListInputSchema);
 
-  constructor(@ISessionTodoService private readonly todo: ISessionTodoService) {}
+  constructor(
+    @ISessionTodoService private readonly todo: ISessionTodoService,
+    @IAgentScopeContext private readonly scope: IAgentScopeContext,
+  ) {}
 
   resolveExecution(args: TodoListInput): ToolExecution {
     const description =
@@ -37,19 +40,19 @@ export class TodoListTool implements ITodoListTool {
       approvalRule: this.name,
       execute: async () => {
         if (args.todos === undefined) {
-          return { isError: false, output: renderTodoList(this.todo.getTodos()) };
+          return { isError: false, output: renderTodoList(this.todo.getTodos(this.scope.agentId)) };
         }
 
         const next: readonly TodoItem[] = args.todos.map((todo) => ({
           title: todo.title,
           status: todo.status,
         }));
-        this.todo.setTodos(next);
-        const stored = this.todo.getTodos();
+        this.todo.setTodos(next, this.scope.agentId);
+        const stored = this.todo.getTodos(this.scope.agentId);
         const output =
           stored.length === 0
             ? 'Todo list cleared.'
-            : `Todo list updated.\n${renderTodoList(stored)}\n\n${TODO_LIST_WRITE_REMINDER.trim()}`;
+            : `Todo list updated.\n${renderTodoList(stored)}`;
         return { isError: false, output };
       },
     };

@@ -12,10 +12,30 @@ export interface PromptSubmitContext {
   block: boolean;
 }
 
+/**
+ * Execution selections apply at launch, not while queued. Runtime controls are
+ * main-agent-only. State echoes may steer; actual pending control changes
+ * require their own turn. Prompts wait for active autonomous turns and take
+ * priority over the next goal continuation. Loop admission remains reserved
+ * throughout asynchronous execution preparation.
+ * Plan, swarm and goal changes run after profile/media preparation and submit
+ * hooks. A later launch failure reports a failed prompt without rolling back
+ * successful domain operations or retrying those controls automatically.
+ * Goal operations retain their admitted goal identity; replacing that goal,
+ * even with the same objective, fails the stale prompt instead of controlling
+ * the replacement. A yielded goal pauses on prompt launch failure and blocks
+ * on a blocked prompt; neither case silently restarts its continuation.
+ */
 export interface PromptExecutionBinding {
   readonly profile?: string;
   readonly model?: string;
   readonly thinking?: string;
+  /** Applied at prompt launch, after media intake and submit hooks; never while queued. */
+  readonly planMode?: boolean;
+  readonly swarmMode?: boolean;
+  readonly goalObjective?: string;
+  /** Prompt-bound control; resume does not launch an autonomous continuation. */
+  readonly goalControl?: 'pause' | 'resume' | 'cancel';
 }
 
 export interface PromptInput {

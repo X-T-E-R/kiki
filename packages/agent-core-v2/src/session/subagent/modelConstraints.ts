@@ -226,5 +226,5 @@ function identitySet(entries: readonly string[] | undefined, models?: IModelServ
 }
 
 function resolveId(models: IModelService | undefined): (id: string) => string | undefined {
-  return (id) => models?.resolveId(id);
+  return (id) => models === undefined ? id : models.resolveId(id);
 }

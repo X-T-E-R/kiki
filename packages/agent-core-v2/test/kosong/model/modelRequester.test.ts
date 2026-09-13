@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import type OpenAI from 'openai';
+import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 
 import { isError2 } from '#/_base/errors/errors';
 import { APIStatusError, createAbortError } from '#/kosong/contract/errors';
@@ -127,6 +129,42 @@ async function collect(stream: AsyncIterable<ModelRequestEvent>): Promise<ModelR
 const INPUT = { systemPrompt: 'sys', tools: [], messages: [] };
 
 describe('ModelRequesterImpl request execution', () => {
+  it('uses model tier as a default beneath resolved request overrides without leaking to another model', async () => {
+    const provider = new FakeChatProvider();
+    const model = modelWith(staticAuth());
+    const priority = new ModelRequesterImpl({ ...model, serviceTier: 'priority' }, registryReturning(provider));
+    await collect(priority.request(INPUT, undefined, { serviceTier: 'flex', requestParams: { service_tier: 'default' } }));
+    await collect(priority.request(INPUT));
+    const ordinary = new ModelRequesterImpl(model, registryReturning(provider));
+    await collect(ordinary.request(INPUT));
+    await collect(ordinary.request(INPUT, undefined, { serviceTier: 'flex' }));
+    expect(provider.calls.map((call) => call.options?.serviceTier)).toEqual(['flex', 'priority', undefined, 'flex']);
+  });
+
+  it('sends resolved sampling and tier while clamping the final Responses output to remaining context', async () => {
+    let payload: unknown;
+    const provider = new OpenAIResponsesChatProvider({
+      apiKey: '', model: 'example-model', baseUrl: 'https://example.test/v1',
+      clientFactory: () => ({ responses: { create: async (params: unknown) => {
+        payload = params;
+        return { async *[Symbol.asyncIterator]() {
+          yield { type: 'response.output_text.delta', delta: 'ok' };
+          yield { type: 'response.completed', response: { id: 'response-1', status: 'completed', output: [] } };
+        } };
+      } } }) as unknown as OpenAI,
+    });
+    const requester = new ModelRequesterImpl({ ...modelWith(staticAuth()), serviceTier: 'priority' }, registryReturning(provider));
+    await collect(requester.request(INPUT, undefined, {
+      serviceTier: 'flex', sampling: { temperature: 0.4, topP: 0.8 },
+      maxCompletionTokens: 500, maxContextTokens: 1200, usedContextTokens: 1000,
+      requestParams: { temperature: 0.9, max_output_tokens: 999999, seed: 42 },
+    }));
+    expect(payload).toMatchObject({
+      model: 'example-model', service_tier: 'flex', temperature: 0.4, top_p: 0.8,
+      max_output_tokens: 200, seed: 42,
+    });
+  });
+
   it('maps ModelRequestParams onto GenerateOptions 1:1', async () => {
     const provider = new FakeChatProvider();
     const requester = new ModelRequesterImpl(modelWith(staticAuth('sk-1')), registryReturning(provider));

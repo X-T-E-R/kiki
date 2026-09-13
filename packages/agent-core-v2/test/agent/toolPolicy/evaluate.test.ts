@@ -7,6 +7,22 @@ import {
   literalToolNames,
 } from '#/agent/toolPolicy/evaluate';
 
+describe('research-readonly ceiling', () => {
+  it('intersects builtin research tools with every existing policy layer', () => {
+    const profile = { executionRestriction: 'research-readonly' as const };
+    expect(isToolActive(profile, 'Read')).toBe(true);
+    expect(isToolActive(profile, 'Read', 'user')).toBe(false);
+    expect(isToolActive(profile, 'Read', 'mcp')).toBe(false);
+    expect(isToolActive({ ...profile, tools: ['Read', 'Bash'] }, 'Bash')).toBe(false);
+    expect(isToolActive({ ...profile, tools: ['Grep'] }, 'Read')).toBe(false);
+    expect(isToolActive({ ...profile, toolAllowPolicies: [['Grep']] }, 'Read')).toBe(false);
+    expect(isToolActiveComposed({ profile, global: { disabled: ['Read'] } }, 'Read')).toBe(false);
+    expect(isToolActiveComposed({ profile, workspaceDisabledTools: ['Read'] }, 'Read')).toBe(false);
+    expect(isToolActiveComposed({ profile, sessionDisabledTools: ['Read'] }, 'Read')).toBe(false);
+    expect(isToolActive({ tools: undefined }, 'Bash')).toBe(true);
+  });
+});
+
 describe('findInactiveToolPatterns', () => {
   const known = new Set(['Read', 'Bash', 'Skill']);
   const isKnown = (name: string): boolean => known.has(name);

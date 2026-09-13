@@ -10,8 +10,10 @@ Usage notes:
 - `description` is a required short task description (3-5 words) for UI display.
 - When the task continues earlier work a subagent already did, pass that child's `name` or agent id as `resume` instead of spawning a fresh instance — the continued agent keeps its prior context.
 - Pass `name` when you expect to come back to the same child: a stable name is easier to carry across turns than a generated id, and `AgentList` and `AgentSend` accept it too.
+- For a new role, `profile_file` loads an explicit Agent Markdown file from an absolute or workspace-relative path. It is a role definition, not a shared prompt template, and is mutually exclusive with `profile`, `route`, and `resume`.
+- When using `resume`, omit `profile`, `profile_file`, and `route`. Omit `effort` to keep the saved effort, or pass it to apply on the next idle run. Changing `model_alias` to a different canonical model requires `allow_model_change: true`; a request resolving to the same canonical model is a no-op. Caller, role, route, and executor restrictions still apply. An external executor that cannot change a resumed thread binding returns an error instead of recreating the thread or executor.
 - A subagent's result is only visible to you, not to the user. When the user needs to see what a subagent produced, summarize the relevant parts yourself in your own reply.
-- Subagents use a fixed 2-hour timeout. If one times out, continue the same agent instead of starting over.
+- If a subagent times out, continue the same agent instead of starting over.
 
 When NOT to use AgentRun: skip delegation for trivial work you can do directly — reading a file whose path you already know, searching a small known set of files, or any task that takes only a step or two. Delegation has a context-handoff cost; it pays off only when the task is substantial enough to outweigh it.
 

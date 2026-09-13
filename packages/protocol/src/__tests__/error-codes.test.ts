@@ -35,6 +35,8 @@ describe('ErrorCode table', () => {
   it('names codes the daemon actually sends', () => {
     // Each of these reached clients as a bare number before it had a name.
     expect(ErrorCode.RATE_LIMITED).toBe(42901);
+    expect(ErrorCode.DISPATCH_LIMIT_EXCEEDED).toBe(42904);
+    expect(ErrorCodeReason[ErrorCode.DISPATCH_LIMIT_EXCEEDED]).toBe('dispatch.limit_exceeded');
     expect(ErrorCode.SESSION_LOCKED).toBe(40933);
     expect(ErrorCode.AGENT_PROFILE_READ_ONLY).toBe(40934);
     expect(ErrorCode.MCP_SERVER_READ_ONLY).toBe(40935);

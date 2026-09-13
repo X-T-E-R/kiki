@@ -18,7 +18,6 @@ const DEFAULT_APPROVE_TOOLS = new Set([
   'WebSearch',
   'FetchURL',
   'AgentRun',
-  'AgentSwarm',
   'AgentList',
   'AgentSend',
   'AskUserQuestion',

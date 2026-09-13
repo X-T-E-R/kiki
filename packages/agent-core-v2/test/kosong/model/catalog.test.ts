@@ -119,6 +119,20 @@ afterEach(() => {
 });
 
 describe('Model assembly (pure data)', () => {
+  it('preserves the model service tier in assembly and catalog wire projections', async () => {
+    const record: ModelRecord = { provider: 'kimi', model: 'example', maxContextSize: 1000, serviceTier: 'priority' };
+    const { host, catalog } = createHost({ ...kimiSections, models: { tiered: record } });
+    try {
+      expect(catalog.get('tiered').serviceTier).toBe('priority');
+      expect(catalog.inspect('tiered').resolved.serviceTier).toBe('priority');
+      expect(catalog.inspect('tiered').sources['resolved.serviceTier']).toMatchObject({ kind: 'config' });
+      expect(toProtocolModelFallback('tiered', record).service_tier).toBe('priority');
+      expect(await catalog.listModels()).toContainEqual(expect.objectContaining({ model: 'tiered', service_tier: 'priority' }));
+    } finally {
+      host.dispose();
+    }
+  });
+
   it('assembles a kimi model: protocol resolves to the vendor base, never a vendor', () => {
     const { host, catalog } = createHost(kimiSections);
     try {
@@ -668,7 +682,16 @@ describe('ModelCatalog inspect', () => {
     try {
       const model = catalog.get('k1');
       const view = catalog.inspect('k1');
-      const { authProvider: _auth, id: _id, name, ...rest } = model;
+      const {
+        authProvider: _auth,
+        id: _id,
+        name,
+        overrides: _overrides,
+        contextBudget: _contextBudget,
+        maxCompletionTokens: _maxCompletionTokens,
+        requestParams: _requestParams,
+        ...rest
+      } = model;
       expect(view.resolved).toMatchObject({ ...rest, wireName: name });
 
       silentModelWrite(models, {

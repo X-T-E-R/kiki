@@ -59,6 +59,7 @@ const KIMI_TO_PROTOCOL: Record<string, ErrorCode> = {
   [ErrorCodes.THREAD_CURSOR_INVALID]: ErrorCode.THREAD_CURSOR_INVALID,
   [ErrorCodes.THREAD_IDEMPOTENCY_CONFLICT]: ErrorCode.THREAD_IDEMPOTENCY_CONFLICT,
   [ErrorCodes.THREAD_LIMIT_EXCEEDED]: ErrorCode.THREAD_LIMIT_EXCEEDED,
+  [ErrorCodes.DISPATCH_LIMIT_EXCEEDED]: ErrorCode.DISPATCH_LIMIT_EXCEEDED,
   [ErrorCodes.THREAD_DELIVERY_FAILED]: ErrorCode.THREAD_DELIVERY_FAILED,
 };
 
@@ -70,7 +71,10 @@ const KIMI_TO_PROTOCOL: Record<string, ErrorCode> = {
 export function mapError(err: unknown, requestId: string): ReturnType<typeof errEnvelope> {
   if (err instanceof Error2) {
     const code = KIMI_TO_PROTOCOL[err.code] ?? ErrorCode.INTERNAL_ERROR;
-    return errEnvelope(code, err.message, requestId, err.stack);
+    const envelope = errEnvelope(code, err.message, requestId, err.stack);
+    return err.code === ErrorCodes.DISPATCH_LIMIT_EXCEEDED
+      ? { ...envelope, details: err.details }
+      : envelope;
   }
   if (err instanceof TimeoutError) {
     return errEnvelope(ErrorCode.INTERNAL_ERROR, err.message, requestId, err.stack);

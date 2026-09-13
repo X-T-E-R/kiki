@@ -38,6 +38,8 @@ import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivati
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { interactionKey } from '#/session/interaction/interactionOps';
 import { IWireService } from '#/wire/wire';
+import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -62,10 +64,9 @@ import { withSubagentProfile } from './subagentMetadata';
 import { resolveDelegationPosition } from '#/agent/profile/delegationContext';
 import { resolveMainModelCandidate } from '#/agent/profile/mainModelCandidate';
 
-let nextAgentId = 0;
-
 export class AgentLifecycleService extends Disposable implements IAgentLifecycleService {
   declare readonly _serviceBrand: undefined;
+  private nextAgentId = 0;
   private readonly handles = new Map<string, IAgentScopeHandle>();
   private readonly onWillCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
@@ -98,6 +99,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
     @IProtocolAdapterRegistry private readonly protocolAdapters: IProtocolAdapterRegistry,
+    @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
   ) {
     super();
     this._register(
@@ -316,9 +318,13 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     for (const id of this.handles.keys()) consider(id);
     const persisted = (await this.sessionMetadata.read()).agents ?? {};
     for (const id of Object.keys(persisted)) consider(id);
-    const candidate = Math.max(maxSuffix + 1, nextAgentId);
-    nextAgentId = candidate + 1;
-    return `agent-${String(candidate)}`;
+    for (;;) {
+      const candidate = Math.max(maxSuffix + 1, this.nextAgentId);
+      this.nextAgentId = candidate + 1;
+      const agentId = `agent-${String(candidate)}`;
+      const wireSize = await this.storage.size(this.ctx.scope(`agents/${agentId}`), AGENT_WIRE_RECORD_KEY);
+      if (wireSize === undefined) return agentId;
+    }
   }
 
   private async doCreate(agentId: string, opts: CreateAgentOptions): Promise<IAgentScopeHandle> {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { appendSharedPrompt, previewPromptConfig, PromptConfigSchema, RESERVED_PROMPT_VARIABLES } from '#/promptConfig';
 
 import {
   normalizeAgentProfile,
@@ -160,7 +161,34 @@ describe('systemPromptVars', () => {
   });
 });
 
+describe('shared prompt configuration', () => {
+  it('validates explicit references and reserves all fixed variables without interpreting values as templates', () => {
+    expect(PromptConfigSchema.safeParse({ shared: '${missing}' }).success).toBe(false);
+    expect(PromptConfigSchema.safeParse({ tools: { WebSearch: '${missing}' } }).success).toBe(false);
+    expect(PromptConfigSchema.safeParse({ variables: { 'bad-name': 'text' } }).success).toBe(false);
+    for (const name of Object.keys(systemPromptVars({}, { skillActive: false }))) expect(RESERVED_PROMPT_VARIABLES.has(name)).toBe(true);
+    for (const name of RESERVED_PROMPT_VARIABLES) expect(PromptConfigSchema.safeParse({ variables: { [name]: 'override' } }).success, name).toBe(false);
+    const config = PromptConfigSchema.parse({ shared: 'Global ${guidance}', variables: { guidance: 'literal ${shell_code}' }, tools: { WebSearch: '${guidance}' } });
+    expect(previewPromptConfig(config)).toEqual({ shared: 'Global literal ${shell_code}', tools: { WebSearch: 'literal ${shell_code}' } });
+  });
+
+  it('keeps old prompts unchanged when unset and renders the same shared text independently of inheritance', () => {
+    const config = { shared: '${guidance}', variables: { guidance: 'Shared instruction' } };
+    expect(appendSharedPrompt('main', undefined)).toBe('main');
+    expect(appendSharedPrompt('main', {})).toBe('main');
+    expect(appendSharedPrompt('main', config)).toBe('main\n\nShared instruction');
+    expect(appendSharedPrompt('standalone child', config)).toBe('standalone child\n\nShared instruction');
+  });
+});
+
 describe('renderPromptTemplateResult', () => {
+  it('substitutes configured variables once while protecting built-in names in standalone profiles', () => {
+    const result = renderPromptTemplateResult('${search_guidance}|${cwd}|${ordinary_unknown}', {
+      cwd: '/workspace',
+      promptVariables: { search_guidance: 'Use native ${literal} GMA.', cwd: 'forged', base_prompt: 'forged' },
+    }, { skillActive: false });
+    expect(result.text).toBe('Use native ${literal} GMA.|/workspace|${ordinary_unknown}');
+  });
   it('substitutes known variables and keeps unknown placeholders verbatim', () => {
     const out = renderPromptTemplateResult(
       'cwd=${cwd} unknown=${nope} bare=$cwd dollar=$${cwd}',

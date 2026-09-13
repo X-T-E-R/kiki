@@ -100,6 +100,10 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'prompt_mode',
   'prompt',
   'allowed_efforts',
+  'service_tier',
+  'request_params',
+  'context_budget',
+  'max_completion_tokens',
 ]);
 
 export function parseSubagentList(value: unknown, filePath: string): ParsedSubagentField {
@@ -390,7 +394,7 @@ function parseModelProfiles(
     }
     const prefix = `${field}[${index}]`;
     const alias = requiredString(item['alias'], `${prefix}.alias`, filePath);
-    const when = requiredString(item['when'], `${prefix}.when`, filePath);
+    const when = optionalString(item['when'], `${prefix}.when`, filePath);
     const thinkingEffort = optionalString(item['thinking_effort'], `${prefix}.thinking_effort`, filePath);
     const promptMode = parsePromptMode(item['prompt_mode'], `${prefix}.prompt_mode`, filePath);
     const prompt = optionalString(item['prompt'], `${prefix}.prompt`, filePath);
@@ -413,12 +417,23 @@ function parseModelProfiles(
     out.push({
       alias,
       when,
-      ...(thinkingEffort === undefined ? {} : { thinkingEffort }),
-      ...(promptMode === undefined ? {} : { promptMode, prompt }),
-      ...(allowedEfforts === undefined ? {} : { allowedEfforts }),
+      thinkingEffort,
+      promptMode,
+      prompt,
+      allowedEfforts,
+      serviceTier: parseServiceTier(item['service_tier'], `${prefix}.service_tier`, filePath) ?? undefined,
+      requestParams: parseRequestParams(item['request_params'], `${prefix}.request_params`, filePath) ?? undefined,
+      contextBudget: parseTokenBudget(item['context_budget'], `${prefix}.context_budget`, filePath),
+      maxCompletionTokens: parseTokenBudget(item['max_completion_tokens'], `${prefix}.max_completion_tokens`, filePath),
     });
   }
   return out;
+}
+
+function parseTokenBudget(value: unknown, field: string, filePath: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
+  throw new SubagentLeaseParseError(`Frontmatter field "${field}" in ${filePath} must be a positive integer token budget`);
 }
 
 function rejectModelPreference(value: unknown, field: string, filePath: string): void {

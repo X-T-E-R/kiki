@@ -8,6 +8,7 @@ import { AgentExecutionService } from '#/agent/execution/executionService';
 import type { IAgentProfileService } from '#/agent/profile/profile';
 import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type { IAgentStateService } from '#/agent/state/agentState';
+import type { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -306,6 +307,7 @@ describe('AgentExecutorPreflightService', () => {
         agentId: 'agent-test',
         scope: () => 'agent-test',
       } satisfies IAgentScopeContext,
+      { reserveExecution: () => () => {} } as unknown as ISessionDispatchService,
       {
         _serviceBrand: undefined,
         data: () => ({
@@ -315,6 +317,8 @@ describe('AgentExecutorPreflightService', () => {
           executorProtocol: 'acp-v1',
           executorDescriptorRevision: first.descriptor.revision,
         }),
+        preparePromptConfiguration: async () => false,
+        getSystemPrompt: () => '',
       } as IAgentProfileService,
       registry,
       {

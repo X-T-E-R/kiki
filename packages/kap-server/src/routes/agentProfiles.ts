@@ -33,6 +33,8 @@ import {
   type ScopedAgentProfileBinding,
 } from '@kiki/agent-core-v2';
 import {
+  agentCapabilitiesQuerySchema,
+  agentCapabilitiesResponseSchema,
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
   namedAgentProfileNameParamsSchema,
@@ -45,6 +47,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
+import { acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
 
 interface AgentProfilesRouteHost {
   get(
@@ -68,6 +71,27 @@ interface AgentProfilesRouteHost {
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
 export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Scope): void {
+  const capabilitiesRoute = defineRoute({
+    method: 'GET',
+    path: '/agents/capabilities',
+    querystring: agentCapabilitiesQuerySchema,
+    success: { data: agentCapabilitiesResponseSchema },
+    errors: { [ErrorCode.WORKSPACE_NOT_FOUND]: {}, [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Inspect live caller dispatch targets or a workspace draft preview without launching agents',
+    tags: ['agents'],
+  }, async (req, reply) => {
+    const result = await agentCapabilities(core, req.query);
+    if (result === 'workspace-not-found') {
+      reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
+    } else if (result === 'profile-not-found') {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Main profile is unavailable', req.id));
+    } else {
+      reply.send(okEnvelope(result, req.id));
+    }
+  });
+  app.get(capabilitiesRoute.path, capabilitiesRoute.options,
+    capabilitiesRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
   const listRoute = defineRoute(
     {
       method: 'GET',
@@ -92,7 +116,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         config.get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? [],
       );
       const workspaceId = req.query.workspace_id;
-      if (workspaceId === undefined) {
+      if (workspaceId === undefined && req.query.cwd === undefined) {
         const items = projectNamedAgentProfiles(
           registry.entries(),
           disabledBuiltins,
@@ -105,36 +129,41 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         return;
       }
 
-      const workspace = await core.accessor.get(IWorkspaceService).get(workspaceId);
-      if (workspace === undefined) {
-        reply.send(
-          errEnvelope(
-            ErrorCode.WORKSPACE_NOT_FOUND,
-            `workspace ${workspaceId} does not exist`,
-            req.id,
-          ),
-        );
+      const workspaceCatalog = await acquireWorkspaceProfileCatalog(core, req.query);
+      if (workspaceCatalog === undefined) {
+        reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
         return;
       }
-
-      const lease = await core.accessor
-        .get(IWorkspaceInstanceManager)
-        .acquire({ workspaceId: workspace.id });
       try {
-        await lease.instance.program.ready;
-        const items = projectNamedAgentProfiles(
-          registry.entries().filter((entry) =>
-            entry.workspaceKey === undefined || entry.workspaceKey === workspace.id
-          ),
-          disabledBuiltins,
-          disabledNamed,
-          req.query.expand === true,
-          await sessionAgentProfileCatalogs(core, workspace.id),
-          executors,
+        const { catalog, workspaceId: resolvedWorkspaceId } = workspaceCatalog;
+        const entries = registry.entries().filter((entry) =>
+          entry.workspaceKey === undefined || entry.workspaceKey === resolvedWorkspaceId
         );
+        const catalogs = new Map([[resolvedWorkspaceId, { catalog, snapshot: catalog.snapshot() }]]);
+        const effectiveProfiles = new Map(catalog.list().map((profile) => [profile.name, profile]));
+        const defaultProfile = catalog.snapshot().defaultProfile;
+        if (defaultProfile?.main === true) effectiveProfiles.set(defaultProfile.name, defaultProfile);
+        const items = req.query.effective === true
+          ? [...effectiveProfiles.values()].map((profile) => {
+              const inspection = catalog.inspect(profile.name);
+              const registration = entries.find((entry) =>
+                (inspection === undefined || entry.sourceId === inspection.sourceId && entry.priority === inspection.priority)
+                && entry.contribution.profiles.some((candidate) => sameProfileDefinition(candidate, profile))
+              );
+              const item = toNamedAgentProfile(registration ?? {
+                sourceId: inspection?.sourceId ?? BUILTIN_AGENT_PROFILE_SOURCE_ID,
+                priority: inspection?.priority ?? 0,
+                workspaceKey: resolvedWorkspaceId,
+                contribution: { profiles: [profile] },
+              }, profile, disabledBuiltins, disabledNamed, undefined,
+              { catalog, snapshot: catalog.snapshot() }, executors);
+              return profile === defaultProfile && profile.main === true ? { ...item, disabled: false } : item;
+            }).toSorted(compareNamedAgentProfiles)
+          : projectNamedAgentProfiles(entries, disabledBuiltins, disabledNamed,
+              req.query.expand === true, catalogs, executors);
         reply.send(okEnvelope({ items }, req.id));
       } finally {
-        lease.dispose();
+        workspaceCatalog.dispose();
       }
     },
   );
@@ -181,6 +210,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         const updated = await lease.instance.program.agentProfileWriter.update({
           name: req.params.name,
           scope: req.body.scope,
+          sourcePath: req.body.source_file,
           description: req.body.description,
           whenToUse: req.body.when_to_use,
           modelAlias: req.body.pinned_model_alias,
@@ -202,7 +232,9 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
             workspaceKey: updated.workspaceKey,
             contribution: { profiles: [updated.profile], routes: updated.routes },
           },
-          updated.profile,
+          profileWithBuiltinMain(updated.profile, core.accessor.get(IAgentProfileRegistry).entries()),
+          new Set(core.accessor.get(IConfigService).get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? []),
+          new Set(core.accessor.get(IConfigService).get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? []),
         ), req.id));
       } catch (error) {
         if (isError2(error) && error.code === ErrorCodes.VALIDATION_FAILED) {
@@ -270,7 +302,10 @@ function projectNamedAgentProfiles(
     b.priority - a.priority
     || a.sourceId.localeCompare(b.sourceId)
     || (a.workspaceKey ?? '').localeCompare(b.workspaceKey ?? '')
-  );
+  ).map((entry) => ({ ...entry, contribution: {
+    ...entry.contribution,
+    profiles: entry.contribution.profiles.map((profile) => profileWithBuiltinMain(profile, entries)),
+  } }));
   if (expand) {
     return registrations
       .flatMap((registration) =>
@@ -351,11 +386,20 @@ function catalogForProfile(
   return undefined;
 }
 
+function profileWithBuiltinMain(profile: AgentProfile, entries: readonly AgentProfileRegistration[]): AgentProfile {
+  const builtin = entries.find((entry) => entry.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID)
+    ?.contribution.profiles.find((candidate) => candidate.name === profile.name);
+  return profile.main === undefined && builtin?.main !== undefined
+    ? { ...profile, main: builtin.main }
+    : profile;
+}
+
 function sameProfileDefinition(left: AgentProfile | undefined, right: AgentProfile): boolean {
   if (left === right) return true;
-  return left?.definitionId !== undefined
-    && right.definitionId !== undefined
-    && left.definitionId === right.definitionId;
+  if (left?.definitionId !== undefined && right.definitionId !== undefined) {
+    return left.definitionId === right.definitionId;
+  }
+  return left?.sourcePath !== undefined && left.name === right.name && left.sourcePath === right.sourcePath;
 }
 
 function compareNamedAgentProfiles(a: NamedAgentProfile, b: NamedAgentProfile): number {
@@ -395,6 +439,9 @@ function toNamedAgentProfile(
     pinned_model_alias: profile.modelAlias,
     thinking_effort: profile.thinkingEffort,
     service_tier: profile.serviceTier,
+    request_params: profile.requestParams === undefined ? undefined : { ...profile.requestParams },
+    context_budget: profile.contextBudget,
+    max_completion_tokens: profile.maxCompletionTokens,
     tools: profile.tools === undefined ? undefined : [...profile.tools],
     disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
     model_profiles: profile.modelProfiles?.map(toNamedAgentModelProfile),
@@ -458,6 +505,10 @@ function toNamedAgentModelProfile(
   return {
     alias: modelProfile.alias,
     when: modelProfile.when,
+    context_budget: modelProfile.contextBudget,
+    max_completion_tokens: modelProfile.maxCompletionTokens,
+    service_tier: modelProfile.serviceTier,
+    request_params: modelProfile.requestParams === undefined ? undefined : { ...modelProfile.requestParams },
     thinking_effort: modelProfile.thinkingEffort,
     allowed_efforts: modelProfile.allowedEfforts === undefined
       ? undefined

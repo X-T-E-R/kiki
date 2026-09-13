@@ -1,4 +1,5 @@
 import { IdentityConfigSchema } from '@kiki/agent-core-v2/app/agentIdentity/configSection';
+import { SubagentConfigSchema } from '@kiki/agent-core-v2/session/subagent/configSection';
 import { McpSectionSchema } from '@kiki/agent-core-v2/app/mcpConfig/configSection';
 import { PluginsSectionSchema } from '@kiki/agent-core-v2/app/plugin/configSection';
 import { ThreadCommunicationConfigSchema } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
@@ -10,6 +11,7 @@ import {
   type TokenCountingConfig,
 } from '@kiki/agent-core-v2/agent/tokenCounting/configSection';
 import { ToolsConfigSchema } from '@kiki/agent-core-v2/agent/toolPolicy/configSection';
+import { PromptConfigSchema, PromptConfigPatchSchema } from '@kiki/agent-core-v2/app/prompt/configSection';
 import {
   DisabledBuiltinProfilesConfigSchema,
   DisabledNamedProfilesConfigSchema,
@@ -85,6 +87,7 @@ const replaceableConfigDomainSchema = z.enum([
   'nb_search',
   'plugins',
   'tools',
+  'prompt',
 ]);
 
 export const providerConfigResponseSchema = z.object({
@@ -95,10 +98,7 @@ export const providerConfigResponseSchema = z.object({
 });
 export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema>;
 
-export const subagentConfigResponseSchema = z.object({
-  timeoutMs: z.number().optional(),
-  denyModels: z.array(z.string()).optional(),
-});
+export const subagentConfigResponseSchema = SubagentConfigSchema;
 
 export const agentsConfigResponseSchema = z.object({
   enabled: z.boolean().optional(),
@@ -146,6 +146,7 @@ export const configResponseSchema = z.object({
   mcp: McpSectionSchema.optional(),
   plugins: PluginsSectionSchema.optional(),
   tools: ToolsConfigSchema.optional(),
+  prompt: PromptConfigSchema.optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
@@ -169,9 +170,11 @@ export const patchConfigRequestSchema = z.object({
   loop_control: z.unknown().optional(),
   background: z.unknown().optional(),
   subagent: z.object({
-    timeout_ms: z.number().optional(),
-    deny_models: z.array(z.string()).optional(),
-  }).optional(),
+    timeout_ms: SubagentConfigSchema.shape.timeoutMs,
+    deny_models: SubagentConfigSchema.shape.denyModels,
+    max_direct_children: SubagentConfigSchema.shape.maxDirectChildren,
+    max_total_subagents: SubagentConfigSchema.shape.maxTotalSubagents,
+  }).strict().optional(),
   agents: z.object({
     enabled: z.boolean().optional(),
   }).optional(),
@@ -194,6 +197,7 @@ export const patchConfigRequestSchema = z.object({
   mcp: mcpConfigRequestSchema.optional(),
   plugins: pluginsConfigRequestSchema.optional(),
   tools: ToolsConfigSchema.optional(),
+  prompt: PromptConfigPatchSchema.optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
 }).strict();
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

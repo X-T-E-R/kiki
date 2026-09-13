@@ -114,6 +114,12 @@ class FakeAgentLifecycle implements IAgentLifecycleService {
   create(): Promise<IAgentScopeHandle> {
     throw new Error('not implemented');
   }
+  commitCreate(): void {
+    throw new Error('not implemented');
+  }
+  discard(): Promise<void> {
+    throw new Error('not implemented');
+  }
   fork(): Promise<IAgentScopeHandle> {
     throw new Error('not implemented');
   }

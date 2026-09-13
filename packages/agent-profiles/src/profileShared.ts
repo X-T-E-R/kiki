@@ -1,4 +1,5 @@
 import { renderPrompt } from './renderPrompt';
+import { customPromptVariables } from './promptConfig';
 
 import {
   type AgentProfile,
@@ -72,6 +73,7 @@ export function systemPromptVars(
   const pluginSections = context.pluginSections ?? '';
   const additionalDirsInfo = context.additionalDirsInfo ?? '';
   return {
+    ...customPromptVariables(context.promptVariables),
     role_additional: '',
     product_name: context.productName ?? DEFAULT_PRODUCT_NAME,
     reply_style_guide: context.replyStyleGuide ?? DEFAULT_REPLY_STYLE_GUIDE,

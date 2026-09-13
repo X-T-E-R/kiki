@@ -30,6 +30,16 @@ function child(overrides: Partial<AgentProfile> = {}): AgentProfile {
 }
 
 describe('applyLease', () => {
+  it('keeps profile effort paired with its default model across leases and routes', () => {
+    const base = child({ modelAlias: 'example/first', thinkingEffort: 'medium' });
+    const resolveId = (id: string) => id === 'first' ? 'example/first' : id;
+    expect(applyLease(base, { name: 'explore', modelAlias: 'example/second' }, resolveId).thinkingEffort).toBeUndefined();
+    expect(applyLease(base, { name: 'explore', modelAlias: 'first' }, resolveId).thinkingEffort).toBe('medium');
+    const route = { id: 'explore.example', profile: 'explore', description: '', promptMode: 'inherit' as const, prompt: '', modelAlias: 'example/second', overriddenFields: ['model_alias'], path: '/agents/route.md' };
+    expect(resolveAgentProfileRoute(route, base, resolveId).effectiveProfile.thinkingEffort).toBeUndefined();
+    expect(resolveAgentProfileRoute({ ...route, modelAlias: 'first' }, base, resolveId).effectiveProfile.thinkingEffort).toBe('medium');
+  });
+
   it('intersects allowlists, unions denylists, and replaces tools', () => {
     const lease: SubagentLease = {
       name: 'explore',

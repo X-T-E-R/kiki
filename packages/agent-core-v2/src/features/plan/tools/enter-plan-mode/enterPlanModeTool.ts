@@ -58,7 +58,7 @@ function enteredPlanModeMessage(planPath: string | null): string {
     return [
       'Plan mode is now active. Your workflow:',
       '',
-      '1. Use read-only tools (Read, Grep, Glob) to investigate the codebase. Use Bash only when needed.',
+      '1. Investigate with Read, Grep, Glob, or a new native research-readonly AgentRun child. Children have no Bash and stay restricted after plan exit; resume and AgentSend are blocked in plan mode.',
       '2. Design a concrete, step-by-step plan.',
       '3. Wait for the host to provide a plan file path before calling ExitPlanMode.',
       '',
@@ -72,7 +72,7 @@ function enteredPlanModeMessage(planPath: string | null): string {
     '',
     `Plan file: ${planPath}`,
     '',
-    '1. Use read-only tools (Read, Grep, Glob) to investigate the codebase. Use Bash only when needed.',
+    '1. Investigate with Read, Grep, Glob, or a new native research-readonly AgentRun child. Children have no Bash and stay restricted after plan exit; resume and AgentSend are blocked in plan mode.',
     '2. Design a concrete, step-by-step plan.',
     '3. Write the plan to the plan file with Write or Edit.',
     '4. When the plan is ready, call ExitPlanMode for user approval.',

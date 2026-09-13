@@ -9,7 +9,11 @@ const requestParamsSchema = z.record(z.string(), z.union([z.string(), z.number()
 
 export const namedAgentModelProfileSchema = z.object({
   alias: z.string(),
-  when: z.string(),
+  when: z.string().optional(),
+  context_budget: z.number().int().min(1).optional(),
+  max_completion_tokens: z.number().int().min(1).optional(),
+  service_tier: serviceTierSchema.optional(),
+  request_params: requestParamsSchema.optional(),
   thinking_effort: z.string().optional(),
   allowed_efforts: z.array(z.string()).optional(),
   prompt_mode: promptModeSchema.optional(),
@@ -74,6 +78,9 @@ export const namedAgentProfileSchema = z.object({
   pinned_model_alias: z.string().optional(),
   thinking_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
+  request_params: requestParamsSchema.optional(),
+  context_budget: z.number().int().min(1).optional(),
+  max_completion_tokens: z.number().int().min(1).optional(),
   tools: z.array(z.string()).optional(),
   disallowed_tools: z.array(z.string()).optional(),
   model_profiles: z.array(namedAgentModelProfileSchema).optional(),
@@ -93,10 +100,69 @@ const booleanQueryParam = z.preprocess(
   z.boolean().optional(),
 );
 
+const absoluteCwdSchema = z.string().trim().min(1).refine(
+  (value) => /^(?:\/|[a-zA-Z]:[\\/]|\\\\)/.test(value),
+  'cwd must be an absolute path',
+);
+
 export const listNamedAgentProfilesQuerySchema = z.object({
   expand: booleanQueryParam,
-  workspace_id: z.string().min(1).optional(),
+  effective: booleanQueryParam,
+  workspace_id: z.string().trim().min(1).optional(),
+  cwd: absoluteCwdSchema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.workspace_id !== undefined && value.cwd !== undefined) {
+    context.addIssue({ code: 'custom', message: 'workspace_id and cwd are mutually exclusive' });
+  }
+  if (value.effective === true && value.workspace_id === undefined && value.cwd === undefined) {
+    context.addIssue({ code: 'custom', message: 'effective requires workspace_id or cwd' });
+  }
+  if (value.effective === true && value.expand === true) {
+    context.addIssue({ code: 'custom', message: 'effective and expand are mutually exclusive' });
+  }
 });
+
+export const agentCapabilitiesQuerySchema = z.union([
+  z.object({
+    session_id: z.string().trim().min(1),
+    agent_id: z.string().trim().min(1),
+  }).strict(),
+  z.object({
+    workspace_id: z.string().trim().min(1),
+    profile: z.string().trim().min(1),
+  }).strict(),
+  z.object({
+    cwd: absoluteCwdSchema,
+    profile: z.string().trim().min(1),
+  }).strict(),
+]);
+export type AgentCapabilitiesQuery = z.infer<typeof agentCapabilitiesQuerySchema>;
+
+export const agentCapabilityTargetSchema = z.object({
+  profile: z.string(),
+  route: z.string().optional(),
+  description: z.string().optional(),
+  executor: z.string(),
+  model_alias: z.string().optional(),
+  model_source: z.enum(['caller-lease', 'route', 'profile']).optional(),
+  thinking_effort: z.string().optional(),
+  effort_source: z.enum(['caller-lease', 'route', 'profile', 'model-profile', 'model', 'config', 'executor']).optional(),
+  defaults_available: z.boolean(),
+  unavailable_reason: z.string().optional(),
+  launch_allowed: z.boolean().optional(),
+  launch_unavailable_reason: z.string().optional(),
+  execution_restriction: z.literal('research-readonly').optional(),
+});
+export type AgentCapabilityTarget = z.infer<typeof agentCapabilityTargetSchema>;
+
+export const agentCapabilitiesResponseSchema = z.object({
+  context: z.enum(['live', 'draft']),
+  owner: z.object({ profile: z.string().optional(), agent_id: z.string().optional() }),
+  available: z.boolean(),
+  unavailable_reason: z.string().optional(),
+  targets: z.array(agentCapabilityTargetSchema),
+});
+export type AgentCapabilitiesResponse = z.infer<typeof agentCapabilitiesResponseSchema>;
 export type ListNamedAgentProfilesQuery = z.infer<
   typeof listNamedAgentProfilesQuerySchema
 >;
@@ -124,6 +190,7 @@ export const updateNamedAgentRouteSchema = z.object({
 export const updateNamedAgentProfileRequestSchema = z.object({
   scope: z.enum(['user', 'project', 'extra']),
   workspace_id: z.string().min(1),
+  source_file: z.string().min(1).optional(),
   description: z.string().trim().min(1).optional(),
   when_to_use: optionalProfileStringSchema,
   pinned_model_alias: modelAliasSchema.nullable().optional(),

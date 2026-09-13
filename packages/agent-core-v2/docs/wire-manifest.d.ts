@@ -99,6 +99,7 @@
  */
 interface ConfigUpdatePayload {
   _name: 'config.update';
+  promptBase?: import('./boundProfile').BoundPromptBase;
   modelAlias?: string;
   profileName?: string;
   /** ThinkingEffort */
@@ -511,6 +512,7 @@ interface ProfileBindPayload {
   routeId?: string;
   lockedModelAlias?: string;
   lockedThinkingEffort?: string;
+  executionRestriction?: 'research-readonly';
   executorId?: string;
   executorProtocol?: string;
   executorOptions?: Record<string, string | number | boolean>;
@@ -530,6 +532,7 @@ interface ProfileBindPayload {
   subagentLeases?: Readonly<Record<string, SubagentLease>>;
   spawnPolicy?: SpawnConstraints;
   appliedLease?: SubagentLease;
+  boundProfile?: import('./boundProfile').BoundProfile;
 }
 
 /**

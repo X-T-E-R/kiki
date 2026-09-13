@@ -53,6 +53,8 @@ const AGENT_FILE_KEYS = new Set([
   'recommended_models',
   'service_tier',
   'request_params',
+  'context_budget',
+  'max_completion_tokens',
   'system_prompt_mode',
   'model_preference',
   'whenToUse',
@@ -255,7 +257,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     description,
     whenToUse: nonEmptyString(frontmatter['whenToUse']),
     override,
-    ...(main ? { main: true } : {}),
+    main: typeof frontmatter['main'] === 'boolean' ? main : undefined,
     tools,
     disallowedTools,
     subagents,
@@ -271,6 +273,8 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     modelProfiles,
     serviceTier,
     requestParams,
+    contextBudget: parseTokenBudget(frontmatter['context_budget'], 'context_budget', options.path),
+    maxCompletionTokens: parseTokenBudget(frontmatter['max_completion_tokens'], 'max_completion_tokens', options.path),
     systemPromptMode: resolvedSystemPromptMode,
     prompt,
     path: options.path,
@@ -286,6 +290,10 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'prompt_mode',
   'prompt',
   'allowed_efforts',
+  'service_tier',
+  'request_params',
+  'context_budget',
+  'max_completion_tokens',
 ]);
 
 function resolveModelProfiles(
@@ -340,7 +348,7 @@ function parseModelProfiles(
     }
     const prefix = `${field}[${index}]`;
     const alias = requiredNonEmptyString(item['alias'], `${prefix}.alias`, filePath);
-    const when = requiredNonEmptyString(item['when'], `${prefix}.when`, filePath);
+    const when = optionalNonEmptyStringField(item['when'], `${prefix}.when`, filePath);
     const thinkingEffort = optionalNonEmptyStringField(
       item['thinking_effort'],
       `${prefix}.thinking_effort`,
@@ -369,12 +377,23 @@ function parseModelProfiles(
     out.push({
       alias,
       when,
-      ...(thinkingEffort === undefined ? {} : { thinkingEffort }),
-      ...(promptMode === undefined ? {} : { promptMode, prompt }),
-      ...(allowedEfforts === undefined ? {} : { allowedEfforts }),
+      thinkingEffort,
+      promptMode,
+      prompt,
+      allowedEfforts,
+      serviceTier: parseServiceTier(item['service_tier'], filePath),
+      requestParams: parseRequestParams(item['request_params'], filePath),
+      contextBudget: parseTokenBudget(item['context_budget'], `${prefix}.context_budget`, filePath),
+      maxCompletionTokens: parseTokenBudget(item['max_completion_tokens'], `${prefix}.max_completion_tokens`, filePath),
     });
   }
   return out;
+}
+
+function parseTokenBudget(value: unknown, field: string, filePath: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
+  throw new AgentFileParseError(`Frontmatter field "${field}" in ${filePath} must be a positive integer token budget`);
 }
 
 function parseModelProfilePromptMode(

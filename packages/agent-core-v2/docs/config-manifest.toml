@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (33 sections · 1 overlay(s))
+# Index (34 sections · 1 overlay(s))
 #   agentExecutors           src/app/agentExecutor/configSection.ts
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
@@ -33,6 +33,7 @@
 #   permission               src/agent/permissionRules/configSection.ts
 #   plan                     src/features/plan/configSection.ts
 #   plugins                  src/app/plugin/configSection.ts
+#   prompt                   src/app/prompt/configSection.ts
 #   providers                src/app/kosongConfig/configSection.ts
 #   requestIdentity          src/app/kosongConfig/configSection.ts
 #   subagent                 src/session/subagent/configSection.ts
@@ -332,6 +333,10 @@ merge_all_available_skills = true
   # support_efforts: string[]
   # default_effort: string
   # off_effort: string
+  # context_budget: integer
+  # max_completion_tokens: integer
+  # service_tier: "auto" | "default" | "flex" | "priority"
+  # request_params: record<string, string | number | boolean>
   # overrides: object
     # max_context_size: integer
     # max_input_size: integer
@@ -343,6 +348,10 @@ merge_all_available_skills = true
     # support_efforts: string[]
     # default_effort: string
     # off_effort: string
+    # context_budget: integer
+    # max_completion_tokens: integer
+    # service_tier: "auto" | "default" | "flex" | "priority"
+    # request_params: record<string, string | number | boolean>
   # cognition: object
     # overlay: string | string[]
     # steering: string | string[]
@@ -419,6 +428,18 @@ enter_approval_timeout_ms = 60000
 
 [plugins]
 # marketplace_url: string
+
+# ##########################################################################
+# prompt
+#   owner: src/app/prompt/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[prompt]
+# shared: string
+# variables: record<string, string>
+# tools: record<string, string>
 
 # ##########################################################################
 # providers
@@ -513,6 +534,8 @@ enter_approval_timeout_ms = 60000
 [subagent]
 timeout_ms = 7200000
 # deny_models: string[]
+max_direct_children = 16
+max_total_subagents = 0
 
 # ##########################################################################
 # task

@@ -489,6 +489,8 @@ function lifecycleHarness(initial: readonly IAgentScopeHandle[]) {
     onDidCreate: onDidCreate.event,
     onDidDispose: Event.None as AgentLifecycle['onDidDispose'],
     create: vi.fn(async () => { throw new Error('unexpected wake'); }),
+    commitCreate: () => { throw new Error('unexpected commit'); },
+    discard: async () => { throw new Error('unexpected discard'); },
     fork: vi.fn(async () => { throw new Error('unexpected fork'); }),
     get: (agentId) => handles.get(agentId),
     list: () => [...handles.values()],

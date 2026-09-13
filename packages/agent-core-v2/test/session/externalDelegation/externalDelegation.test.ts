@@ -356,6 +356,12 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(IAgentLifecycleService, {
       _serviceBrand: undefined,
       get: (id) => handles.get(id),
+      commitCreate: vi.fn(),
+      discard: vi.fn(async (agentId: string) => {
+        handles.get(agentId)?.dispose();
+        handles.delete(agentId);
+        delete agentMetas[agentId];
+      }),
       create: async (opts) => {
         createdWith.push(opts);
         const agentId = opts?.agentId ?? nextCreatedAgentId ?? 'external-child';
@@ -558,6 +564,11 @@ describe('SessionExternalDelegationService', () => {
     expect(afterFailure.dispatches).toEqual({});
     expect(afterFailure.dispatchKeys).toBeUndefined();
     expect(afterFailure.nextEventSeq).toBe(1);
+    expect(handles.has('external-child')).toBe(false);
+    expect(agentMetas['external-child']).toBeUndefined();
+    expect(ix.get(IAgentLifecycleService).commitCreate).not.toHaveBeenCalled();
+    expect(ix.get(IAgentLifecycleService).discard).toHaveBeenCalledWith('external-child');
+    expect(runAgentIds).toEqual([]);
 
     const retried = await service.dispatch({
       authority,
@@ -569,8 +580,43 @@ describe('SessionExternalDelegationService', () => {
     });
     expect(retried.status).toBe('queued');
     expect(runAgentIds).toEqual(['external-child']);
-    expect(createdWith).toHaveLength(1);
+    expect(createdWith).toHaveLength(2);
     expect(completions).toHaveLength(1);
+  });
+
+  it('retains a durably queued child when publication fails and recovers it after reload', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    await service.list(authority);
+    const failure = new Error('interaction publication failed');
+    vi.spyOn(ix.get(ISessionInteractionService), 'acquireConsumer').mockImplementationOnce(() => { throw failure; });
+    await expect(service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'retained_child',
+      profileName: 'coder',
+      message: 'work',
+      dispatchKey: 'retained-key',
+    })).rejects.toBe(failure);
+    expect(ix.get(IAgentLifecycleService).discard).not.toHaveBeenCalled();
+    expect(ix.get(IAgentLifecycleService).commitCreate).toHaveBeenCalledWith('external-child');
+    expect(handles.has('external-child')).toBe(true);
+    expect(agentMetas['external-child']).toBeDefined();
+    expect(runAgentIds).toEqual([]);
+    const stored = documents.get('root') as {
+      children: Record<string, { agentId: string; latestDispatchId: string }>;
+      dispatches: Record<string, { status: string }>;
+    };
+    const child = stored.children['retained_child']!;
+    expect(child.agentId).toBe('external-child');
+    expect(stored.dispatches[child.latestDispatchId]?.status).toBe('queued');
+    ix.set(ISessionExternalDelegationService, new SyncDescriptor(SessionExternalDelegationService));
+    const restored = ix.get(ISessionExternalDelegationService);
+    expect(restored).not.toBe(service);
+    expect((await restored.status({ authority, dispatchId: child.latestDispatchId })).status).toBe('interrupted');
+    const continued = await restored.continue({ authority, dispatchId: child.latestDispatchId, message: 'continue' });
+    expect(continued.status).toBe('queued');
+    expect(createdWith).toHaveLength(1);
+    expect(runAgentIds).toEqual(['external-child']);
   });
 
   it('queues idempotent mailbox messages only for an owned named child', async () => {

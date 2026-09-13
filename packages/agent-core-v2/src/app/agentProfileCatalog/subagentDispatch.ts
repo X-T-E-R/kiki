@@ -1,5 +1,6 @@
 import { Error2, ErrorCodes } from '#/errors';
 import type { IModelService } from '#/kosong/model/model';
+import { resolveProfileThinkingDefault } from './modelProfileOverlay';
 import {
   listAvailableSubagentTargets as listTargets,
   resolveSnapshotProfileDefinition as resolveSnapshotDefinition,
@@ -203,12 +204,20 @@ export function resolveSubagentTarget(
   models: IModelService,
 ): ResolvedSubagentTarget {
   const resolved = resolveSubagentDispatch(catalog, caller, input);
+  const selection = resolved.selection;
+  const resolveId = (selection.profile.executor ?? 'native') === 'native' ? aliasIdentity(models)! : (id: string) => id;
+  const profile = selection.route === undefined ? selection.profile : {
+    ...selection.profile,
+    thinkingEffort: selection.route.lockedThinkingEffort ?? resolveProfileThinkingDefault(
+      selection.baseProfile, selection.profile.modelAlias ?? '', resolveId,
+    ),
+  };
   const dispatched = appliedDispatchProfile(
-    resolved.selection.profile,
-    resolved.selection.baseProfile.name,
+    profile,
+    selection.baseProfile.name,
     caller,
     resolved.snapshot?.defaultProfile ?? catalog.getDefault(),
-    aliasIdentity(models),
+    resolveId,
   );
   assertAutomaticDispatchPermitted(dispatched.profile, resolved.selection.route, models);
   return {

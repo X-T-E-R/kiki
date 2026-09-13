@@ -99,6 +99,12 @@ describe('RestGateway', () => {
       onDidCreate: () => ({ dispose: () => {} }),
       onDidDispose: () => ({ dispose: () => {} }),
       create: () => Promise.resolve(agentHandle),
+      commitCreate: () => {
+        throw new Error('IAgentLifecycleService.commitCreate is not supported in the gateway test');
+      },
+      discard: async () => {
+        throw new Error('IAgentLifecycleService.discard is not supported in the gateway test');
+      },
       fork: () => Promise.resolve(agentHandle),
       get: (id) => (id === 'main' ? agentHandle : undefined),
       list: () => [agentHandle],

@@ -57,6 +57,14 @@ describe('resolveThinkingEffortForModel', () => {
     expect(resolveThinkingEffortForModel(undefined, { enabled: false }, thinkingModel, true)).toBe('off');
   });
 
+  it('uses user model overrides before global fallback without promoting catalog defaults', () => {
+    const model = { ...thinkingModel, overrides: { defaultEffort: 'medium' } };
+    expect(resolveThinkingEffortForModel(undefined, { effort: 'low' }, model, true)).toBe('medium');
+    expect(resolveThinkingEffortForModel('low', { effort: 'high' }, model, true)).toBe('low');
+    expect(resolveThinkingEffortForModel(undefined, { effort: 'low' }, thinkingModel, true)).toBe('low');
+    expect(resolveThinkingEffortForModel(undefined, undefined, thinkingModel, true)).toBe('high');
+  });
+
   it('picks the middle effort when the model declares no default', () => {
     expect(
       defaultThinkingEffortForModel({ capabilities: ['thinking'], supportEfforts: ['low', 'medium', 'high'] }),

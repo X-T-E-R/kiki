@@ -4,10 +4,12 @@ import type {
   ResolvedAgentProfileRoute,
 } from './agentProfile';
 import { renderPromptTemplateResult } from './profileShared';
+import { resolveProfileThinkingDefault } from './modelProfileOverlay';
 
 export function resolveAgentProfileRoute(
   route: AgentProfileRouteDefinition,
   base: AgentProfile,
+  resolveId: (id: string) => string | undefined = (id) => id,
 ): ResolvedAgentProfileRoute {
   const tools = route.tools !== undefined ? route.tools : base.tools;
   const disallowedTools =
@@ -38,6 +40,7 @@ export function resolveAgentProfileRoute(
   }
   const effective: AgentProfile = {
     ...base,
+    routeDefinition: structuredClone(route),
     routeId: route.id,
     tools,
     toolAllowPolicies:
@@ -47,7 +50,8 @@ export function resolveAgentProfileRoute(
     disallowedTools,
     subagents,
     modelAlias: route.modelAlias ?? base.modelAlias,
-    thinkingEffort: route.thinkingEffort ?? base.thinkingEffort,
+    thinkingEffort: route.thinkingEffort ?? (route.modelAlias === undefined ? base.thinkingEffort
+      : resolveProfileThinkingDefault(base, route.modelAlias, resolveId)),
     serviceTier,
     requestParams,
     renderSystemPrompt: (context) => {

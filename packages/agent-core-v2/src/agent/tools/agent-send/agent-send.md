@@ -4,8 +4,8 @@ The child picks the message up at the beginning of its next step. This is not an
 
 Who you can address:
 
-- Any **direct** child of the current agent — including unnamed children from `AgentRun` and children from `AgentSwarm`. Grandchildren are not reachable; send from their parent instead.
-- Identify the child by the stable `name` you passed to `AgentRun`, or by its agent id. Swarm children and anonymous `AgentRun` children have no name; use the agent id `AgentRun` / `AgentSwarm` returned.
+- Any **direct** child of the current agent — including unnamed children from `AgentRun`. Grandchildren are not reachable; send from their parent instead. Historical swarm children that remain in the session can still be addressed by agent id.
+- Identify the child by the stable `name` you passed to `AgentRun`, or by its agent id. Anonymous `AgentRun` children and retained historical swarm children have no name; use the agent id.
 - Names are unique within the session and come only from the `name` parameter of `AgentRun`. Do not invent names. If you do not know a valid name or agent id, call `AgentList` first.
 
 Guidelines:

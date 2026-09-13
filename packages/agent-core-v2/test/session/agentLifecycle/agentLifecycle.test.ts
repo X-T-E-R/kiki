@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { resolve } from 'pathe';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
+import { IWireService } from '#/wire/wire';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
@@ -74,6 +81,9 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
+import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
+import { AgentCollaborationRegistry, IAgentCollaborationRegistry, COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import { createWireMetadataRecord, type WireRecord } from '#/wire/record';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -189,7 +199,7 @@ describe('AgentLifecycleService', () => {
   let registerAgent: ReturnType<typeof vi.fn<ISessionMetadata['registerAgent']>>;
   let atomicDocs: Map<string, unknown>;
   let permissionModeSetMode: ReturnType<typeof vi.fn>;
-  let stopAllOnExit: ReturnType<typeof vi.fn>;
+  let stopAllOnExit: ReturnType<typeof vi.fn<IAgentTaskService['stopAllOnExit']>>;
   let loopActiveTurnId: number | undefined;
   let loopPendingTurnIds: number[];
   let loopCancel: ReturnType<typeof vi.fn<IAgentLoopService['cancel']>>;
@@ -200,7 +210,7 @@ describe('AgentLifecycleService', () => {
   let beforeExecuteListeners: number;
   let didExecuteHookIds: string[];
 
-  beforeEach(() => {
+  function createTestHost(): void {
     _clearAgentToolContributionsForTests();
     disposables = new DisposableStore();
     ix = disposables.add(new TestInstantiationService());
@@ -517,7 +527,9 @@ describe('AgentLifecycleService', () => {
       compacting: null,
     } as unknown as IAgentFullCompactionService);
     ix.set(IAgentLifecycleService, new SyncDescriptor(AgentLifecycleService));
-  });
+  }
+
+  beforeEach(createTestHost);
   afterEach(() => {
     disposables.dispose();
     vi.restoreAllMocks();
@@ -717,11 +729,34 @@ describe('AgentLifecycleService', () => {
     });
   });
 
-  it('create assigns sequential ids when unspecified', async () => {
+  it('create reserves distinct ids before concurrent durable existence checks settle', async () => {
     const svc = ix.get(IAgentLifecycleService);
-    const a = await svc.create({});
-    const b = await svc.create({});
+    const [a, b] = await Promise.all([svc.create({}), svc.create({})]);
     expect(a.id).not.toBe(b.id);
+    expect(svc.list()).toHaveLength(2);
+  });
+
+  it.each(['', 'not a valid journal'])('skips a previously allocated wire even when its content is %j', async (content) => {
+    await ix.get(IFileSystemStorageService).write(
+      ix.get(ISessionContext).scope('agents/agent-0'),
+      AGENT_WIRE_RECORD_KEY,
+      new TextEncoder().encode(content),
+    );
+    const child = await ix.get(IAgentLifecycleService).create({});
+    expect(child.id).toBe('agent-1');
+    expect(child.accessor.get(IAgentProfileService).data().routeId).toBeUndefined();
+  });
+
+  it('fails closed without creating a scope when durable identity inspection fails', async () => {
+    const failure = new Error('storage unavailable');
+    vi.spyOn(ix.get(IFileSystemStorageService), 'size').mockRejectedValueOnce(failure);
+    const lifecycle = ix.get(IAgentLifecycleService);
+    const willCreate = vi.fn();
+    disposables.add(lifecycle.onWillCreate(willCreate));
+    await expect(lifecycle.create({})).rejects.toBe(failure);
+    expect(lifecycle.list()).toEqual([]);
+    expect(willCreate).not.toHaveBeenCalled();
+    expect(registerAgent).not.toHaveBeenCalled();
   });
 
   it('persists complete agent metadata when creating a child', async () => {
@@ -1188,6 +1223,131 @@ describe('AgentLifecycleService', () => {
 
     svc.commitCreate?.(agent.id);
     expect(events).toEqual(['will:deferred', 'did:deferred']);
+  });
+
+  it('discards staged children from real metadata without announcing creation and permits the same name', async () => {
+    ix.stub(ISessionIndexMirror, { record: () => {} });
+    ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+    ix.set(IAgentCollaborationRegistry, new SyncDescriptor(AgentCollaborationRegistry));
+    const metadata = ix.get(ISessionMetadata);
+    const names = ix.get(IAgentCollaborationRegistry);
+    const svc = ix.get(IAgentLifecycleService);
+    const owner = { kind: 'agent', agentId: 'main' } as const;
+    const created: string[] = [];
+    const disposed: string[] = [];
+    disposables.add(svc.onDidCreate((child) => created.push(child.id)));
+    disposables.add(svc.onDidDispose((id) => disposed.push(id)));
+    await svc.create({ agentId: 'main' });
+    created.length = 0;
+    expect(await names.reserve('retry_child', owner)).toBe(true);
+    const child = await svc.create({
+      deferCreateEvent: true,
+      delegator: owner,
+      labels: { [COLLABORATION_TASK_NAME_LABEL]: 'retry_child' },
+    });
+    expect((await metadata.read()).agents?.[child.id]).toBeDefined();
+    expect(await names.reserve('retry_child', owner)).toBe(false);
+    await svc.discard(child.id);
+    names.release('retry_child', owner);
+    svc.commitCreate(child.id);
+    expect(svc.get(child.id)).toBeUndefined();
+    expect(Object.keys((await metadata.read()).agents ?? {})).toEqual(['main']);
+    expect(atomicDocs.get('test/state.json')).toMatchObject({ agents: { main: { type: 'main' } } });
+    expect(Object.keys((atomicDocs.get('test/state.json') as { agents: object }).agents)).toEqual(['main']);
+    expect(disposed).toEqual([child.id]);
+    expect(created).toEqual([]);
+    expect(await names.reserve('retry_child', owner)).toBe(true);
+    const retried = await svc.create({
+      deferCreateEvent: true,
+      delegator: owner,
+      labels: { [COLLABORATION_TASK_NAME_LABEL]: 'retry_child' },
+    });
+    names.commit('retry_child', owner);
+    svc.commitCreate(retried.id);
+    expect(created).toEqual([retried.id]);
+  });
+
+  it('does not recycle a discarded durable identity after cold allocation while retaining readonly restores', async () => {
+    const tempRoot = resolve('.tmp/agent-allocation');
+    await mkdir(tempRoot, { recursive: true });
+    const home = await mkdtemp(`${tempRoot}/cold-`);
+    const installStores = (): void => {
+      ix.stub(IFileSystemStorageService, new FileStorageService(home));
+      ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
+      ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+      ix.stub(ISessionIndexMirror, { record: () => {} });
+      ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+      ix.set(IAgentCollaborationRegistry, new SyncDescriptor(AgentCollaborationRegistry));
+    };
+    const closeHost = async (): Promise<void> => {
+      const lifecycle = ix.get(IAgentLifecycleService);
+      for (const handle of lifecycle.list()) await lifecycle.remove(handle.id);
+      await ix.get(IAppendLogStore).close();
+      await ix.get(IFileSystemStorageService).close();
+      disposables.dispose();
+    };
+    const bindReadonly = async (child: IAgentScopeHandle): Promise<void> => {
+      child.accessor.get(IEventDispatcher).dispatch(new ProfileBind({
+        profileName: 'explore',
+        routeId: 'research-route',
+        executionRestriction: 'research-readonly',
+        systemPrompt: 'Research only',
+        thinkingEffort: 'off',
+        disallowedTools: [],
+      }));
+      await child.accessor.get(IWireService).flush();
+    };
+    installStores();
+    try {
+      const lifecycle = ix.get(IAgentLifecycleService);
+      const owner = { kind: 'agent', agentId: 'main' } as const;
+      const names = ix.get(IAgentCollaborationRegistry);
+      await lifecycle.create({ agentId: 'main' });
+      expect(await names.reserve('retry_child', owner)).toBe(true);
+      const failed = await lifecycle.create({
+        deferCreateEvent: true,
+        delegator: owner,
+        labels: { [COLLABORATION_TASK_NAME_LABEL]: 'retry_child' },
+      });
+      await bindReadonly(failed);
+      const failure = new Error('initial ownership write failed');
+      const store = ix.get(IAtomicDocumentStore);
+      vi.spyOn(store, 'set').mockRejectedValueOnce(failure);
+      await expect(store.set('external-delegation', 'root', { child: failed.id })).rejects.toBe(failure);
+      await lifecycle.discard(failed.id);
+      names.release('retry_child', owner);
+      expect((await ix.get(ISessionMetadata).read()).agents?.[failed.id]).toBeUndefined();
+      const failedScope = ix.get(ISessionContext).scope(`agents/${failed.id}`);
+      expect(await ix.get(IFileSystemStorageService).size(failedScope, AGENT_WIRE_RECORD_KEY)).toBeGreaterThan(0);
+      const retained = await lifecycle.create({ agentId: 'retained', deferCreateEvent: true });
+      await bindReadonly(retained);
+      await store.set('external-delegation', 'root', { child: retained.id });
+      lifecycle.commitCreate(retained.id);
+      await closeHost();
+      createTestHost();
+      installStores();
+      const cold = ix.get(IAgentLifecycleService);
+      const coldNames = ix.get(IAgentCollaborationRegistry);
+      expect(await coldNames.reserve('retry_child', owner)).toBe(true);
+      const fresh = await cold.create({
+        deferCreateEvent: true,
+        delegator: owner,
+        labels: { [COLLABORATION_TASK_NAME_LABEL]: 'retry_child' },
+      });
+      expect(fresh.accessor.get(IAgentProfileService).data().executionRestriction).toBeUndefined();
+      expect(fresh.accessor.get(IAgentProfileService).data().routeId).toBeUndefined();
+      expect(fresh.id).not.toBe(failed.id);
+      coldNames.commit('retry_child', owner);
+      cold.commitCreate(fresh.id);
+      const restored = await cold.create({ agentId: retained.id });
+      expect(restored.accessor.get(IAgentProfileService).data()).toMatchObject({
+        executionRestriction: 'research-readonly', routeId: 'research-route',
+      });
+      expect(await ix.get(IAtomicDocumentStore).get('external-delegation', 'root')).toEqual({ child: retained.id });
+    } finally {
+      await closeHost();
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it('de-dupes concurrent create calls for the same agent id', async () => {

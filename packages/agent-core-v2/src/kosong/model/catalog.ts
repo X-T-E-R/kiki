@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
-import type { ProviderRequestAuth } from '#/kosong/contract/provider';
+import type { ProviderRequestAuth, ServiceTier } from '#/kosong/contract/provider';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { Protocol, ProtocolProviderOptions } from '#/kosong/protocol/protocol';
 
@@ -49,6 +49,11 @@ export interface Model {
   readonly reasoningKey?: string;
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
+  readonly overrides?: ModelRecord['overrides'];
+  readonly contextBudget?: number;
+  readonly maxCompletionTokens?: number;
+  readonly requestParams?: ModelRecord['requestParams'];
+  readonly serviceTier?: ServiceTier;
   readonly alwaysThinking: boolean;
   readonly providerType?: string;
   readonly providerName: string;
@@ -74,6 +79,7 @@ export const modelCatalogItemSchema = z.object({
   capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
+  service_tier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
@@ -121,6 +127,7 @@ export function toProtocolModel(
     capabilities: effectiveModelConfig(record, providerType ?? model.providerType).capabilities,
     support_efforts: model.supportEfforts === undefined ? undefined : [...model.supportEfforts],
     default_effort: model.defaultEffort,
+    service_tier: model.serviceTier,
     request_identity: requestIdentityToWire(record.requestIdentity),
   };
 }
@@ -139,6 +146,7 @@ export function toProtocolModelFallback(
     capabilities: effective.capabilities,
     support_efforts: effective.supportEfforts,
     default_effort: effective.defaultEffort,
+    service_tier: effective.serviceTier,
     request_identity: requestIdentityToWire(record.requestIdentity),
   };
 }

@@ -4,6 +4,9 @@ import type {
 } from '@kiki/agent-profiles/ports';
 
 import { type CollectionView } from '#/_base/di/collection';
+import { createHash } from 'node:crypto';
+import { applyFileCallerCeiling, freezeBoundProfile } from './boundProfile';
+import { assertResearchExecutor, RESEARCH_READONLY_TOOLS } from './executionRestriction';
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -54,6 +57,11 @@ import {
 } from '#/agent/profile/delegationContext';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
+import { appendSharedPrompt } from '@kiki/agent-profiles/promptConfig';
+import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
+import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute';
+import { restoreProfileFileSources } from '#/session/dispatch/profileFile';
 import type { LoopControl } from '#/agent/loop/configSection';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
@@ -84,6 +92,8 @@ import {
   applyMatchedModelProfilePrompt,
   declaresModelProfilePrompt,
   resolveModelProfileEntry,
+  resolveProfileThinkingDefault,
+  mergeModelParameters,
 } from '#/app/agentProfileCatalog/modelProfileOverlay';
 import {
   aliasIdentity,
@@ -349,13 +359,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   applyBindingSnapshot(snapshot: ProfileBindingSnapshot): void {
+    const executionRestriction = this.profileState.executionRestriction ?? snapshot.executionRestriction;
+    assertResearchExecutor(executionRestriction, snapshot.executorId);
     this.activeProfile = undefined;
+    this.promptConfigurationSignature = undefined;
+    this.preparedPromptVariables = '{}';
     this.activeProfileDefinitionId = snapshot.profileDefinitionId;
     this.activeToolNamesOverlay = undefined;
     const agentsMdPaths =
       snapshot.agentsMdPaths ?? extractAgentsMdPathsFromSystemPrompt(snapshot.systemPrompt);
     void this.dispatcher.dispatch(
       new ProfileBind({
+        executionRestriction,
         modelAlias: snapshot.modelAlias,
         profileName: snapshot.profileName,
         profileDefinitionId: snapshot.profileDefinitionId,
@@ -381,6 +396,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         subagentLeases: snapshot.subagentLeases,
         spawnPolicy: snapshot.spawnPolicy,
         appliedLease: snapshot.appliedLease,
+        boundProfile: snapshot.boundProfile,
       }),
     );
     this.afterConfigDispatch({
@@ -431,16 +447,28 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
               return { profile: base, baseProfile: base, route: undefined };
             })()
           : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
+    const executionRestriction = this.profileState.executionRestriction ?? input.executionRestriction;
+    assertResearchExecutor(executionRestriction, selection.profile.executor);
     const executor = await this.executors.resolveExecutable(
       selection.profile.executor,
       selection.profile.executorOptions,
     );
+    assertResearchExecutor(executionRestriction, executor.descriptor.id);
     const external = executor.descriptor.id !== 'native';
     const resolveId = external
       ? (id: string): string => id
       : aliasIdentity(this.models);
-    const leased = applyLease(selection.profile, input.lease, resolveId);
-    const profile = applySpawnPolicy(leased, input.spawnPolicy, resolveId);
+    const routedProfile = selection.route === undefined ? selection.profile : {
+      ...selection.profile,
+      thinkingEffort: selection.route.lockedThinkingEffort ?? resolveProfileThinkingDefault(
+        selection.baseProfile, selection.profile.modelAlias ?? '', resolveId ?? ((id) => id),
+      ),
+    };
+    const leased = applyLease(routedProfile, input.lease, resolveId);
+    const effectiveProfile = applyFileCallerCeiling(applySpawnPolicy(leased, input.spawnPolicy, resolveId));
+    const profile = executionRestriction === 'research-readonly'
+      ? { ...effectiveProfile, toolAllowPolicies: [...(effectiveProfile.toolAllowPolicies ?? []), RESEARCH_READONLY_TOOLS] }
+      : effectiveProfile;
     const spawnPolicy = intersectSpawnPolicy(
       input.spawnPolicy,
       selection.profile.spawnConstraints,
@@ -508,14 +536,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
     }
 
-    if (input.strictThinking === true && input.thinking !== undefined) {
+    if (input.thinking !== undefined) {
       this.assertThinkingEffortSupported(input.thinking, model, alias);
     }
 
     await this.sessionToolPolicy.ready;
     const context = await this.buildSystemPromptContext(profile);
     this.assertRouteBindable(selection.route?.id);
-    const currentProfileName = this.profileName;
     this.delegationPosition =
       input.delegationPosition ??
       (this.agentScope.agentId === MAIN_AGENT_ID ? 'main' : 'sub');
@@ -523,19 +550,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const systemPrompt = assembled.text;
     this.cacheAgentsMdWarning(context);
 
-    const matchedModelProfile = resolveModelProfileEntry(
-      profile.modelProfiles,
-      alias,
-      (id) => this.models.resolveId(id),
-    );
     const thinkingLevel = this.resolveThinkingEffort(
       resolveMainThinkingCandidate({
         inputThinking: input.thinking,
         routeLockedThinking: selection.route?.lockedThinkingEffort,
-        modelProfileThinking: matchedModelProfile?.thinkingEffort,
-        profileThinking: profile.thinkingEffort,
-        sessionThinking:
-          currentProfileName === selection.baseProfile.name ? this.thinkingLevel : undefined,
+        profileThinking: resolveProfileThinkingDefault(profile, alias, (id) => this.models.resolveId(id)),
       }),
       model,
     );
@@ -603,6 +622,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       routeId: selection.route?.id,
       lockedModelAlias: canonicalRouteModelAlias,
       lockedThinkingEffort: selection.route?.lockedThinkingEffort,
+      executionRestriction,
       executorId: 'native',
       executorProtocol: 'native',
       executorOptions: undefined,
@@ -621,6 +641,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       subagentLeases,
       spawnPolicy,
       appliedLease: input.lease,
+      boundProfile: freezeBoundProfile(profile, assembled.promptBase),
     }));
     this.afterConfigDispatch({
       modelAlias: alias,
@@ -655,10 +676,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         `External executor "${executor.descriptor.id}" is unsupported for the main agent`,
       );
     }
-    if (profile.serviceTier !== undefined || profile.requestParams !== undefined) {
+    if ([profile, ...(profile.modelProfiles ?? [])].some((entry) =>
+      entry.serviceTier !== undefined || entry.requestParams !== undefined || entry.contextBudget !== undefined || entry.maxCompletionTokens !== undefined,
+    )) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,
-        `External executor profile "${selection.baseProfile.name}" cannot declare service_tier or request_params`,
+        `External executor profile "${selection.baseProfile.name}" cannot declare service_tier, request_params, context_budget, or max_completion_tokens; these parameters require native execution`,
       );
     }
     const routeModelAlias = selection.route?.lockedModelAlias;
@@ -674,21 +697,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         `model is required to bind external executor profile "${selection.baseProfile.name}"`,
       );
     }
-    const matchedModelProfile = resolveModelProfileEntry(
-      profile.modelProfiles,
-      requestedAlias,
-      (id) => id,
-    );
-    const currentProfileName = this.profileName;
     const requestedThinking = resolveMainThinkingCandidate({
       inputThinking: input.thinking,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
-      modelProfileThinking: matchedModelProfile?.thinkingEffort,
-      profileThinking: profile.thinkingEffort,
-      sessionThinking:
-        currentProfileName === selection.baseProfile.name
-          ? this.thinkingLevel
-          : undefined,
+      profileThinking: resolveProfileThinkingDefault(profile, requestedAlias, (id) => id),
     }) ?? 'off';
     const validated = this.requireValidBinding(
       this.executors.validateBinding(executor.descriptor.id, executor.options, {
@@ -768,6 +780,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       subagentLeases,
       spawnPolicy,
       appliedLease: input.lease,
+      boundProfile: freezeBoundProfile(profile, assembled.promptBase),
     }));
     this.afterConfigDispatch({
       modelAlias: alias,
@@ -794,13 +807,81 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         complete,
       );
     }
-    return {
-      ok: true,
-      binding: {
-        modelAlias:
-          complete.modelAlias === undefined ? undefined : this.resolveModelId(complete.modelAlias),
-        thinkingEffort: complete.thinkingEffort,
-      },
+    const modelAlias = complete.modelAlias === undefined ? undefined : this.resolveModelId(complete.modelAlias);
+    const changedModel = modelAlias !== undefined && modelAlias !== this.modelAlias;
+    const thinkingEffort = binding.thinkingEffort ?? (changedModel
+      ? this.resolveThinkingEffort(
+          resolveProfileThinkingDefault(this.profileState.boundProfile ?? this.resolveActiveProfile(), modelAlias, (id) => this.models.resolveId(id)),
+          this.modelCatalog.get(modelAlias),
+        )
+      : complete.thinkingEffort);
+    return { ok: true, binding: { modelAlias, thinkingEffort } };
+  }
+
+  async prepareResumeBinding(input: Parameters<IAgentProfileService['prepareResumeBinding']>[0]): Promise<() => void> {
+    const previous = this.data();
+    const validated = this.requireValidBinding(this.validateBinding({
+      modelAlias: input.modelAlias,
+      thinkingEffort: input.thinkingEffort,
+    }));
+    const model = validated.modelAlias;
+    if (model === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'The resumed agent has no bound model.');
+    const thinking = (this.isExternalExecutor ? validated.thinkingEffort : normalizeRequestedThinkingEffort(validated.thinkingEffort)) ?? previous.thinkingLevel;
+    const identity = (alias: string | undefined): string | undefined => alias === undefined || this.isExternalExecutor ? alias : this.models.resolveId(alias) ?? alias;
+    const changedModel = model !== identity(previous.modelAlias);
+    if (changedModel && (input.allowModelChange !== true || input.modelAlias === undefined)) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID,
+        `Changing the resumed agent model from "${previous.modelAlias ?? '(unbound)'}" to "${model}" requires model_alias plus allow_model_change: true.`,
+        { details: { previousModel: previous.modelAlias, requestedModel: model, requiredParameter: 'allow_model_change' } });
+    }
+    if (previous.lockedModelAlias !== undefined && model !== identity(previous.lockedModelAlias)) {
+      throw new Error2(ErrorCodes.ROUTE_BINDING_CONFLICT, 'The resumed agent model is locked by its route.',
+        { details: { lockedModelAlias: previous.lockedModelAlias, requestedModel: model } });
+    }
+    if (previous.lockedThinkingEffort !== undefined && thinking !== previous.lockedThinkingEffort) {
+      throw new Error2(ErrorCodes.ROUTE_BINDING_CONFLICT, 'The resumed agent effort is locked by its route.',
+        { details: { lockedThinkingEffort: previous.lockedThinkingEffort, requestedEffort: thinking } });
+    }
+    const constraints = previous.boundProfile ?? this.resolveActiveProfile();
+    if (constraints === undefined && (changedModel || thinking !== previous.thinkingLevel)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role constraints cannot be resolved; resume without changing the binding.');
+    }
+    const resolver = this.isExternalExecutor ? undefined : this.models;
+    assertBoundModelAllowed(this.config, model, constraints, resolver, thinking);
+    for (const ceiling of input.callerConstraints ?? []) {
+      assertBoundModelAllowed(this.config, model, ceiling, resolver, thinking);
+    }
+    if (this.isExternalExecutor) {
+      if (changedModel || thinking !== previous.thinkingLevel) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID,
+          `Executor "${previous.executorId}" does not support changing a resumed thread binding; no thread or executor was replaced.`,
+          { details: { executor: previous.executorId, previousModel: previous.modelAlias, requestedModel: model, previousEffort: previous.thinkingLevel, requestedEffort: thinking } });
+      }
+    } else {
+      this.assertThinkingEffortSupported(thinking, this.modelCatalog.get(model), model);
+    }
+    let systemPrompt: string | undefined;
+    let environmentDisclosure: EnvironmentDisclosureSnapshot | undefined;
+    if (changedModel) {
+      const base = previous.boundProfile?.promptBase;
+      if (base !== undefined) {
+        const withModel = applyMatchedModelProfilePrompt(base.text, constraints?.modelProfiles, model, (id) => this.models.resolveId(id));
+        systemPrompt = injectDelegationContext(await this.applyCognitionOverlay(withModel, model), base.delegationSnippet);
+        environmentDisclosure = base.environment;
+      } else if (this.declaresCognitionOverlay(previous.modelAlias) || this.declaresCognitionOverlay(model)
+        || declaresModelProfilePrompt(constraints?.modelProfiles, previous.modelAlias, (id) => this.models.resolveId(id))
+        || declaresModelProfilePrompt(constraints?.modelProfiles, model, (id) => this.models.resolveId(id))) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved prompt base is unavailable; resume without changing the model.');
+      }
+    }
+    return () => {
+      const current = this.data();
+      if (current.modelAlias !== previous.modelAlias || current.thinkingLevel !== previous.thinkingLevel
+        || current.profileDefinitionId !== previous.profileDefinitionId || current.routeId !== previous.routeId) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'The agent binding changed during resume admission. Retry against its current binding.');
+      }
+      assertBoundModelAllowed(this.config, model, constraints, resolver, thinking);
+      if (changedModel || thinking !== previous.thinkingLevel) this.update({ modelAlias: model, thinkingLevel: thinking, systemPrompt, environmentDisclosure });
     };
   }
 
@@ -936,8 +1017,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     modelAlias: string,
   ): void {
     const normalized = normalizeRequestedThinkingEffort(requested);
-    if (normalized === undefined || this.supportsThinkingEffort(normalized, model)) return;
     const efforts = model?.supportEfforts ?? [];
+    const declared = normalized === 'on' || normalized === 'off' ||
+      (efforts.length === 0 ? !this.strictThinkingValidation(model) : efforts.includes(normalized ?? ''));
+    if (normalized !== undefined && declared && this.supportsThinkingEffort(normalized, model)) return;
     const supported = efforts.length === 0 ? 'off' : ['off', ...efforts].join(', ');
     throw new ProfileError(
       ProfileErrors.codes.MODEL_CONFIG_INVALID,
@@ -952,7 +1035,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void {
     this.activeProfile = profile;
     this.activeProfileDefinitionId = profile.definitionId;
-    const rendered = profile.renderSystemPrompt(context);
+    const rendered = profile.renderSystemPrompt({
+      ...context,
+      promptVariables: this.config.get<PromptConfig>(PROMPT_SECTION)?.variables,
+    });
     this.update({
       profileName: profile.name,
       systemPrompt: injectDelegationContext(rendered.text, undefined),
@@ -998,10 +1084,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         profile,
         context,
         this.modelAlias ?? '',
+        this.profileState.boundProfile?.promptBase,
       );
       this.update({
         profileName: profile.name,
         systemPrompt: assembled.text,
+        promptBase: assembled.promptBase,
         environmentDisclosure: assembled.environment,
         agentsMdPaths: context.agentsMdPaths ?? [],
       });
@@ -1047,8 +1135,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     profile: ResolvedAgentProfile,
     context: SystemPromptContext,
     alias: string,
-  ): Promise<{ readonly text: string; readonly environment: EnvironmentDisclosureSnapshot }> {
-    const rendered = profile.renderSystemPrompt(context);
+    savedBase?: import('./boundProfile').BoundPromptBase,
+  ): Promise<{ readonly text: string; readonly environment: EnvironmentDisclosureSnapshot; readonly promptBase: import('./boundProfile').BoundPromptBase }> {
+    const promptVariables = this.config.get<PromptConfig>(PROMPT_SECTION)?.variables;
+    const rendered = profile.renderSystemPrompt({ ...context, promptVariables });
     const withModel = applyMatchedModelProfilePrompt(
       rendered.text,
       profile.modelProfiles,
@@ -1059,7 +1149,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     );
     let snippet: string | undefined;
     try {
-      snippet = await resolveDelegationSnippet({
+      snippet = savedBase !== undefined ? savedBase.delegationSnippet : await resolveDelegationSnippet({
         position: this.delegationPosition,
         notice: profile.delegationNotice,
         config: this.config.get<AgentsConfig | undefined>(AGENTS_SECTION)?.delegation,
@@ -1079,13 +1169,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       }
       throw error;
     }
-    const withDelegation = injectDelegationContext(withModel, snippet);
+    const body = (profile.executor ?? 'native') === 'native'
+      ? await this.applyCognitionOverlay(withModel, alias)
+      : withModel;
     return {
-      text:
-        (profile.executor ?? 'native') === 'native'
-          ? await this.applyCognitionOverlay(withDelegation, alias)
-          : withDelegation,
+      text: injectDelegationContext(body, snippet),
       environment: rendered.environment,
+      promptBase: { text: rendered.text, environment: rendered.environment, delegationSnippet: snippet, promptVariablesRevision: createHash('sha256').update(JSON.stringify(promptVariables ?? {})).digest('hex') },
     };
   }
 
@@ -1146,13 +1236,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       systemPrompt: this.systemPrompt,
       agentsMdPaths: this.profileState.agentsMdPaths,
       activeToolNames: this.activeToolNames === undefined ? undefined : [...this.activeToolNames],
-      toolAllowPolicies: this.profileState.toolAllowPolicies?.map((policy) => [...policy]),
+      executionRestriction: this.profileState.executionRestriction,
+      toolAllowPolicies: this.profileState.executionRestriction === 'research-readonly'
+        ? [...(this.profileState.toolAllowPolicies ?? []), RESEARCH_READONLY_TOOLS]
+        : this.profileState.toolAllowPolicies?.map((policy) => [...policy]),
       disallowedTools: [...(this.profileState.disallowedTools ?? [])],
       subagents:
         this.profileState.subagents === undefined ? undefined : [...this.profileState.subagents],
       subagentLeases: this.profileState.subagentLeases,
       spawnPolicy: this.profileState.spawnPolicy,
       appliedLease: this.profileState.appliedLease,
+      boundProfile: this.profileState.boundProfile,
       serviceTier: this.serviceTier,
       requestParams:
         this.requestParams === undefined ? undefined : { ...this.requestParams },
@@ -1178,8 +1272,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const loopControl = this.config.get<LoopControl>('loopControl');
     return {
       modelAlias,
-      modelCapabilities: model.capabilities,
-      maxOutputSize: model.maxOutputSize,
+      modelCapabilities: this.getModelCapabilities(),
+      maxOutputSize: this.getMaxOutputSize(),
       alwaysThinking: model.alwaysThinking || undefined,
       thinkingLevel: this.resolveThinkingState(model).effective,
       reservedContextSize: loopControl?.reservedContextSize,
@@ -1199,38 +1293,51 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const thinking = this.resolveThinkingState(model);
     const thinkingConfig = this.config.get<ThinkingConfig>(THINKING_SECTION);
     const overrides = this.config.get<ModelOverrides>('modelOverrides');
+    const parameters = this.resolveModelParameters(model);
+    const requestParams = parameters.requestParams;
     const sampling: SamplingOptions = {
-      temperature: overrides?.temperature,
-      topP: overrides?.topP,
+      temperature: typeof requestParams?.['temperature'] === 'number' ? requestParams['temperature'] : overrides?.temperature,
+      topP: typeof requestParams?.['top_p'] === 'number' ? requestParams['top_p'] : overrides?.topP,
     };
-    let params: ModelRequestParams = {
+    return {
       cacheKey: this.sessionContext.sessionId,
       sampling:
         sampling.temperature === undefined && sampling.topP === undefined ? undefined : sampling,
       thinkingEffort: thinking.effective,
-      thinkingKeep: resolveThinkingKeep(
-        overrides?.thinkingKeep,
-        thinkingConfig?.keep,
-        thinking.effective,
-      ),
+      thinkingKeep: resolveThinkingKeep(overrides?.thinkingKeep, thinkingConfig?.keep, thinking.effective),
+      serviceTier: parameters.serviceTier,
+      requestParams,
+      maxCompletionTokens: parameters.maxCompletionTokens,
+      maxContextTokens: parameters.contextBudget === undefined ? undefined : this.getModelCapabilities().max_context_tokens,
     };
-    const serviceTier = this.serviceTier;
-    if (serviceTier !== undefined) params = { ...params, serviceTier };
-    const requestParams = this.requestParams;
-    if (requestParams !== undefined) {
-      params = { ...params, requestParams: { ...requestParams } };
-    }
-    return params;
+  }
+
+  private resolveModelParameters(model: Model | undefined) {
+    const profile = this.profileState.boundProfile ?? this.activeProfile;
+    const entry = resolveModelProfileEntry(profile?.modelProfiles, model?.id ?? '', (id) => this.models.resolveId(id));
+    return mergeModelParameters(model, profile ?? { serviceTier: this.serviceTier, requestParams: this.requestParams }, entry);
   }
 
   getModelCapabilities(): ModelCapability {
     if (this.isExternalExecutor) return UNKNOWN_CAPABILITY;
-    return this.tryResolveRawModel()?.capabilities ?? UNKNOWN_CAPABILITY;
+    const model = this.tryResolveRawModel();
+    if (model === undefined) return UNKNOWN_CAPABILITY;
+    const budget = this.resolveModelParameters(model).contextBudget;
+    if (budget === undefined) return model.capabilities;
+    const total = Math.min(model.capabilities.max_context_tokens, budget);
+    return {
+      ...model.capabilities,
+      max_context_tokens: total,
+      max_input_tokens: Math.min(model.capabilities.max_input_tokens ?? total, total),
+    };
   }
 
   getMaxOutputSize(): number | undefined {
     if (this.isExternalExecutor) return undefined;
-    return this.tryResolveRawModel()?.maxOutputSize;
+    const model = this.tryResolveRawModel();
+    const budget = this.resolveModelParameters(model).maxCompletionTokens;
+    if (budget === undefined) return model?.maxOutputSize;
+    return Math.min(model?.maxOutputSize ?? budget, budget);
   }
 
   hasModel(): boolean {
@@ -1249,7 +1356,30 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   getSystemPrompt(): string {
-    return this.systemPrompt;
+    return appendSharedPrompt(this.systemPrompt, this.config.get<PromptConfig>(PROMPT_SECTION));
+  }
+
+  private promptConfigurationSignature: string | undefined;
+  private preparedPromptVariables = '{}';
+
+  async preparePromptConfiguration(): Promise<boolean> {
+    const config = this.config.get<PromptConfig>(PROMPT_SECTION);
+    const signature = JSON.stringify(config ?? {});
+    if (this.promptConfigurationSignature === signature) return false;
+    const bound = this.profileState.boundProfile;
+    const variables = JSON.stringify(config?.variables ?? {});
+    const savedRevision = bound?.promptBase?.promptVariablesRevision;
+    const needsRefresh = this.promptConfigurationSignature === undefined && savedRevision !== undefined
+      ? savedRevision !== createHash('sha256').update(variables).digest('hex')
+      : variables !== this.preparedPromptVariables;
+    if (needsRefresh) {
+      if (this.profileName !== undefined && this.resolveActiveProfile() === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Prompt variables changed, but the saved profile source is unavailable. Restore its source definition or explicitly rebind the profile.');
+      await this.refreshSystemPrompt();
+      if (bound !== undefined && this.profileState.boundProfile?.promptBase?.promptVariablesRevision !== createHash('sha256').update(variables).digest('hex')) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Prompt variable refresh did not complete. Resolve the system-prompt refresh warning before retrying.');
+    }
+    this.preparedPromptVariables = variables;
+    this.promptConfigurationSignature = signature;
+    return true;
   }
 
   getActiveToolNames(): readonly string[] | undefined {
@@ -1272,6 +1402,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     changed: Omit<ProfileUpdateData, 'activeToolNames'>,
   ): ConfigUpdatePayload {
     const payload: ConfigUpdatePayload = {};
+    if (changed.promptBase !== undefined) payload.promptBase = changed.promptBase;
     if (changed.modelAlias !== undefined) payload.modelAlias = changed.modelAlias;
     if (changed.profileName !== undefined) payload.profileName = changed.profileName;
     if (changed.thinkingLevel !== undefined || changed.modelAlias !== undefined) {
@@ -1279,9 +1410,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         payload.thinkingEffort =
           (changed.thinkingLevel ?? this.profileState.thinkingLevel) as ThinkingEffort;
       } else {
-        const model = this.resolveModelForThinking(changed.modelAlias ?? this.modelAlias);
-        const requested =
-          changed.thinkingLevel ?? (this.modelAlias === undefined ? undefined : this.thinkingLevel);
+        const alias = changed.modelAlias ?? this.modelAlias;
+        const model = this.resolveModelForThinking(alias);
+        const changedModel = alias !== undefined && this.resolveModelId(alias) !== this.modelAlias;
+        const requested = changed.thinkingLevel ?? (changedModel
+          ? resolveProfileThinkingDefault(this.profileState.boundProfile ?? this.resolveActiveProfile(), alias, (id) => this.models.resolveId(id))
+          : this.modelAlias === undefined ? undefined : this.thinkingLevel);
         payload.thinkingEffort = this.resolveThinkingEffort(requested, model);
       }
     }
@@ -1364,7 +1498,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (modelAlias === undefined) return;
     const capabilities = this.isExternalExecutor
       ? undefined
-      : this.tryResolveRawModel()?.capabilities;
+      : this.getModelCapabilities();
     const maxContextTokens = capabilities?.max_input_tokens ?? capabilities?.max_context_tokens;
     void this.dispatcher.dispatch(
       new AgentStatusUpdated({
@@ -1521,9 +1655,27 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private resolveActiveProfile(): ResolvedAgentProfile | undefined {
     if (this.activeProfile !== undefined) return this.activeProfile;
+    const bound = this.profileState.boundProfile;
+    if (bound !== undefined) {
+      const defaults = this.catalog.getDefault();
+      const restored = bound.fileSources !== undefined
+        ? restoreProfileFileSources(bound.fileSources, defaults, bound.definitionId)
+        : bound.fileDefinition !== undefined
+          ? agentProfileFromFile(bound.fileDefinition, (context) => defaults.renderSystemPrompt(context))
+          : bound.routeDefinition !== undefined ? this.catalog.get(bound.routeDefinition.profile) : undefined;
+      if (restored !== undefined) {
+        const rendered = bound.routeDefinition === undefined ? restored : resolveAgentProfileRoute(bound.routeDefinition, restored).effectiveProfile;
+        return { ...bound, systemPrompt: rendered.systemPrompt, renderSystemPrompt: rendered.renderSystemPrompt };
+      }
+    }
     const profileName = this.profileName;
     if (profileName === undefined) return undefined;
-    if (this.routeId !== undefined) return undefined;
+    if (this.routeId !== undefined) {
+      try {
+        const restored = this.catalog.resolveSelection({ route: this.routeId }).profile;
+        return bound === undefined ? restored : { ...bound, systemPrompt: restored.systemPrompt, renderSystemPrompt: restored.renderSystemPrompt };
+      } catch { return undefined; }
+    }
     const definitionId = this.profileState.profileDefinitionId;
     const catalogProfile =
       definitionId === undefined

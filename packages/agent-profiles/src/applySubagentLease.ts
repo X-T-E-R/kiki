@@ -3,7 +3,7 @@ import {
   type AgentProfile,
   type AgentProfileRouteCatalogEntry,
 } from './agentProfile';
-import { applyModelProfilePromptDelta } from './modelProfileOverlay';
+import { applyModelProfilePromptDelta, resolveProfileThinkingDefault } from './modelProfileOverlay';
 import type { ModelAliasResolver } from './ports';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
 
@@ -70,7 +70,8 @@ export function applyLease(
     disallowedTools,
     subagents,
     modelAlias: lease.modelAlias ?? profile.modelAlias,
-    thinkingEffort: lease.thinkingEffort ?? profile.thinkingEffort,
+    thinkingEffort: lease.thinkingEffort ?? (lease.modelAlias === undefined ? profile.thinkingEffort
+      : resolveProfileThinkingDefault(profile, lease.modelAlias, resolveId ?? ((id) => id))),
     allowedModels: intersectAllowlists(profile.allowedModels, lease.allowedModels, resolveId),
     denyModels: unionLists(profile.denyModels, lease.denyModels, resolveId),
     allowedEfforts: intersectAllowlists(profile.allowedEfforts, lease.allowedEfforts),

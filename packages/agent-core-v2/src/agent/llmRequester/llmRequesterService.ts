@@ -11,6 +11,7 @@ import {
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentCognitionAnchorService } from '#/agent/cognition/cognitionAnchor';
 import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
+import { injectDelegationContext } from '#/agent/profile/delegationContext';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -18,6 +19,8 @@ import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
+import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
+import { appendSharedPrompt, supplementToolDescription } from '@kiki/agent-profiles/promptConfig';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
   APIContextOverflowError,
@@ -188,6 +191,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   declare readonly _serviceBrand: undefined;
 
   private readonly toolCallIdNormalizer = new ToolCallIdNormalizer();
+  private promptVariablesSignature = '{}';
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -662,16 +666,33 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   private async resolveRequest(
     overrides: AgentLLMRequestOverrides,
   ): Promise<ResolvedLLMRequest> {
+    const promptConfig = this.config.get<PromptConfig>(PROMPT_SECTION);
+    const promptChanged = await this.profile.preparePromptConfiguration();
+    const variablesSignature = JSON.stringify(promptConfig ?? {});
+    if (promptChanged || variablesSignature !== this.promptVariablesSignature) {
+      this.promptVariablesSignature = variablesSignature;
+      for (const [turnId, config] of this.turnConfigs) {
+        this.turnConfigs.set(turnId, { ...config, systemPrompt: this.profile.getSystemPrompt() });
+      }
+    }
     const turnConfig = this.resolveTurnConfig(overrides.source);
     const resolved = turnConfig?.resolved ?? this.profile.resolveModelContext();
     const baseParams = turnConfig?.params ?? this.profile.resolveRequestParams();
     const agentMeta = (await this.sessionMetadata.read()).agents?.[this.agentContext.agentId];
+    const globalCompletionCap = this.config.get<ModelOverrides>('modelOverrides')?.maxCompletionTokens;
+    const completionCap = Math.min(
+      globalCompletionCap !== undefined && globalCompletionCap <= 0 && (baseParams.maxCompletionTokens !== undefined || baseParams.maxContextTokens !== undefined)
+        ? Infinity : globalCompletionCap ?? Infinity,
+      baseParams.maxCompletionTokens ?? Infinity,
+      resolved.maxOutputSize ?? Infinity,
+      overrides.maxOutputSize ?? Infinity,
+      resolved.modelCapabilities.max_context_tokens > 0 ? resolved.modelCapabilities.max_context_tokens : Infinity,
+    );
     const budgetParams = completionBudgetParams({
       budget: resolveCompletionBudget({
         maxOutputSize: overrides.maxOutputSize ?? resolved.maxOutputSize,
         reservedContextSize: resolved.reservedContextSize,
-        maxCompletionTokensCap:
-          this.config.get<ModelOverrides>('modelOverrides')?.maxCompletionTokens,
+        maxCompletionTokensCap: Number.isFinite(completionCap) ? completionCap : undefined,
       }),
       capability: resolved.modelCapabilities,
       usedContextTokens:
@@ -757,8 +778,13 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       },
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
-      systemPrompt: anchoredPrompt ?? resolvedSystemPrompt,
-      tools: [...(overrides.tools ?? this.defaultTools())],
+      systemPrompt: anchoredPrompt !== undefined || overrides.systemPrompt !== undefined
+        ? appendSharedPrompt(injectDelegationContext(anchoredPrompt ?? resolvedSystemPrompt, this.profile.data().boundProfile?.promptBase?.delegationSnippet), promptConfig)
+        : resolvedSystemPrompt,
+      tools: (overrides.tools ?? this.defaultTools()).map((tool) => ({
+        ...tool,
+        description: supplementToolDescription(tool.name, tool.description, promptConfig),
+      })),
       messages: [...messages],
       source: overrides.source,
       logFields: logFieldsForSource(overrides.source),

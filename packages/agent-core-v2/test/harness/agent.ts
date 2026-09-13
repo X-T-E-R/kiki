@@ -111,7 +111,7 @@ import { hasProviderDefinition } from '#/kosong/provider/providerDefinition';
 import { summarizeSkill, type SkillCatalog } from '#/app/skillCatalog/types';
 import { type ModelCapability } from '#/kosong/contract/capability';
 import { isToolCall, isToolCallPart, type ContentPart, type Message as KosongMessage, type StreamedMessagePart } from '#/kosong/contract/message';
-import { type ThinkingEffort } from '#/kosong/contract/provider';
+import { type ServiceTier, type ThinkingEffort } from '#/kosong/contract/provider';
 import { type Tool as KosongTool } from '#/kosong/contract/tool';
 import type { generate as kosongGenerate } from '#/kosong/contract/generate';
 import type { ChatProvider, GenerateOptions, StreamedMessage } from '#/kosong/contract/provider';
@@ -220,7 +220,6 @@ import {
 import type { IHostProcess } from '#/os/interface/hostProcess';
 import { ISessionQuestionService, type QuestionResult } from '#/session/question/question';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
-import { ISessionSwarmService } from '#/features/swarm/session/sessionSwarm';
 import type { PathAccessOperation } from '#/session/workspaceContext/workspaceContext';
 
 import { stubAgentIdentity } from '../app/agentIdentity/stubs';
@@ -258,6 +257,7 @@ interface KimiConfig {
 }
 
 interface ModelConfigForConfig {
+  readonly serviceTier?: ServiceTier;
   readonly provider: string;
   readonly model: string;
   readonly maxContextSize: number;
@@ -770,24 +770,6 @@ function createSessionSkillCatalog(catalog: SkillCatalog): ISessionSkillCatalog 
   };
 }
 
-export function swarmServices(
-  swarmService: ISessionSwarmService | ISessionSwarmService['run'],
-): TestAgentServiceOverride {
-  const service =
-    typeof swarmService === 'function'
-      ? {
-          _serviceBrand: undefined,
-          getSwarmItem: async () => undefined,
-          run: swarmService,
-          cancel: () => {},
-        } satisfies ISessionSwarmService
-      : swarmService;
-  return [
-    sessionService(ISessionSwarmService, service),
-    agentService(IAgentSwarmService, new SyncDescriptor(AgentSwarmService)),
-  ];
-}
-
 export function createCommandRunner(stdout: string, exitCode = 0): IHostProcessService {
   function createProcess(): IHostProcess {
     return {
@@ -1279,6 +1261,12 @@ export class AgentTestContext {
                 Promise.reject(
                   new Error('IAgentLifecycleService.create is not supported in the test harness'),
                 ),
+              commitCreate: () => {
+                throw new Error('IAgentLifecycleService.commitCreate is not supported in the test harness');
+              },
+              discard: async () => {
+                throw new Error('IAgentLifecycleService.discard is not supported in the test harness');
+              },
               fork: () =>
                 Promise.reject(
                   new Error('IAgentLifecycleService.fork is not supported in the test harness'),

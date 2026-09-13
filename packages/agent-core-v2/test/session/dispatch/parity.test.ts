@@ -15,6 +15,7 @@ import { type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentLoopService, type AgentLoopStatus } from '#/agent/loop/loop';
 import {
   constrainPermissionMode,
@@ -80,6 +81,7 @@ import {
 } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
+import { evaluateDispatchAdmission, tightenDispatchLaunchPolicy } from '#/session/dispatch/launchPolicy';
 import {
   type DispatchUsageView,
   type ExternalAuthority,
@@ -338,10 +340,11 @@ function labelEntries(labels: Readonly<Record<string, string>> | undefined): Pro
 function normalizedLabels(
   lane: 'internal' | 'external',
   labels: Readonly<Record<string, string>> | undefined,
+  parentAgentId = 'main',
 ): ProbeTuple {
   const values = { ...labels };
   if (lane === 'internal') {
-    expect(values['parentAgentId']).toBe('main');
+    expect(values['parentAgentId']).toBe(parentAgentId);
     expect(values['requestIdentityParentTurn']).toBe('1');
     expect(values['requestIdentityRootAgent']).toBe('main');
     expect(values['requestIdentityRootTurn']).toBe('1');
@@ -401,7 +404,7 @@ class ParityProbe {
       throw new Error(`Unexpected ${lane} delegator kind`);
     }
     this.rawLabels.push(labelEntries(options.labels));
-    this.labels.push(normalizedLabels(lane, options.labels));
+    this.labels.push(normalizedLabels(lane, options.labels, options.delegator?.kind === 'agent' ? options.delegator.agentId : 'main'));
   }
 
   recordName(action: 'reserve' | 'commit' | 'release', taskName: string, owner: DelegatorRef): void {
@@ -456,6 +459,7 @@ interface TaskRecord {
 }
 
 interface LaneOptions {
+  readonly capacity?: { readonly maxDirectChildren: number; readonly maxTotalSubagents: number };
   readonly profile?: AgentProfile;
   readonly mainModel?: string;
   readonly resolveModelAlias?: (id: string) => string | undefined;
@@ -539,6 +543,9 @@ function createLane(
     id: agentId,
     accessor: {
       get: ((serviceId: unknown) => {
+        if (serviceId === IAgentActivityView) {
+          return { _serviceBrand: undefined, state: () => ({ lifecycle: 'ready', background: [] }) } satisfies IAgentActivityView;
+        }
         if (serviceId === IAgentLifecycleService) return lifecycle;
         if (serviceId === ISessionSubagentService) return subagents;
         if (serviceId === IAgentProfileService) {
@@ -728,6 +735,7 @@ function createLane(
       profileDefinitionId: resolved.definitionId,
       thinkingLevel: validated.binding.thinkingEffort ?? 'off',
       systemPrompt: '',
+      executionRestriction: binding?.executionRestriction ?? prior?.executionRestriction,
       activeToolNames: resolved.tools,
       disallowedTools: resolved.disallowedTools,
       executorId: resolved.executor,
@@ -764,6 +772,12 @@ function createLane(
     onDidCreate: Event.None,
     onDidDispose: Event.None,
     create: lifecycleCreate,
+    commitCreate: vi.fn(),
+    discard: vi.fn(async (agentId: string) => {
+      handles.get(agentId)?.dispose();
+      handles.delete(agentId);
+      delete metadataAgents[agentId];
+    }),
     get: (agentId: string) => handles.get(agentId),
     list: () => [...handles.values()],
     broadcastPermissionMode: () => {},
@@ -985,7 +999,7 @@ function createLane(
   ix.stub(IBootstrapService, {
     getEnv: () => options.externalPermissionCeiling ?? 'yolo',
   });
-  ix.stub(IConfigService, { get: <T>() => undefined as T });
+  ix.stub(IConfigService, { get: <T>(section: string) => (section === 'subagent' ? options.capacity : undefined) as T });
   ix.stub(IModelService, { resolveId: options.resolveModelAlias ?? ((id: string) => id) });
   ix.stub(IModelCatalog, {
     get: options.modelCatalogGet ?? ((id: string) => ({ id }) as Model),
@@ -1172,6 +1186,317 @@ describe('AgentRun and dispatch parity golden', () => {
     disposables.dispose();
   });
 
+  it('MP-01 honors route effort over a model-profile default when dispatch omits effort', async () => {
+    const profile = normalizeAgentProfile({ ...parityProfile, allowedEfforts: ['low', 'high'], modelProfiles: [{ alias: 'parity-model', thinkingEffort: 'low' }] });
+    const lane = createLane(disposables, 'internal', { profile });
+    const route: ResolvedAgentProfileRoute = { id: 'coder.locked', profile: 'coder', description: '', modelAlias: 'parity-model', thinkingEffort: 'high', lockedModelAlias: 'parity-model', lockedThinkingEffort: 'high', overriddenFields: ['model_alias', 'thinking_effort'], effectiveProfile: profile };
+    Object.assign(lane.ix.get(ISessionAgentProfileCatalog), { resolveSelection: () => ({ profile, baseProfile: profile, route }), listRoutes: () => [route] });
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    const input = { requesterAgentId: 'main', delegator: { kind: 'agent', agentId: 'main' } as const, routeId: route.id, message: 'work', parentTurnId: 1, workDir: '/workspace', runtime: lane.ix.get(IAgentRuntimeService).inspect(), signal: new AbortController().signal };
+    const result = await lane.runInternal({ route: route.id, prompt: 'work', description: 'MP01 route default', background: true });
+    expect(result.isError).not.toBe(true);
+    expect(lane.lifecycleCreate.mock.calls[0]?.[0]?.binding?.thinking).toBe('high');
+    await expect(dispatch.launch({ ...input, thinkingEffort: 'low' })).rejects.toMatchObject({ code: 'agent_profile_route.binding_conflict' });
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares the tree limit across main, child and grandchild dispatch and retains cancelled descendants until settlement', async () => {
+    const lane = createLane(disposables, 'internal', { capacity: { maxDirectChildren: 16, maxTotalSubagents: 2 } });
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    const controller = new AbortController();
+    const input = (caller: string) => ({
+      requesterAgentId: caller, delegator: { kind: 'agent', agentId: caller } as const,
+      profileName: 'coder', message: 'work', parentTurnId: 1, workDir: '/workspace',
+      runtime: lane.ix.get(IAgentRuntimeService).inspect(), signal: controller.signal,
+    });
+    const parent = await dispatch.launch(input('main'));
+    Object.assign(parent.child.agent.accessor.get(IAgentProfileService).data(), { subagents: ['coder'] });
+    const grandchild = await dispatch.launch(input(parent.child.agentId));
+    Object.assign(grandchild.child.agent.accessor.get(IAgentProfileService).data(), { subagents: ['coder'] });
+    await expect(dispatch.launch(input(grandchild.child.agentId))).rejects.toMatchObject({
+      code: 'dispatch.limit_exceeded', details: { layer: 'tree', current: 2, limit: 2 },
+    });
+    const parentStarted = await parent.started;
+    lane.completions[0]!.resolve({ summary: 'parent done' });
+    await parentStarted.completion;
+    const deepest = await dispatch.launch(input(grandchild.child.agentId));
+    await deepest.started;
+    controller.abort(new Error('cancel requested'));
+    await expect(dispatch.launch({ ...input('main'), signal: new AbortController().signal })).rejects.toMatchObject({
+      code: 'dispatch.limit_exceeded', details: { layer: 'tree', current: 2, limit: 2 },
+    });
+    lane.completions[1]!.resolve({ summary: 'cancelled execution settled' });
+    await (await grandchild.started).completion;
+    await dispatch.launch({ ...input('main'), signal: new AbortController().signal });
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(4);
+  });
+
+  it('loads profile_file through AgentRun without registering its name and intersects caller permissions', async () => {
+    const lane = createLane(disposables, 'internal');
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    const readText = vi.fn(async () => '---\nname: coder\ndescription: File role\nmodel_alias: parity-model\nthinking_effort: high\ntools: [Read, Write, Bash]\nsubagents: [coder, outside]\n---\nFILE INSTRUCTIONS');
+    Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path, readText } });
+    Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), { activeToolNames: ['Read'], disallowedTools: ['Bash'] });
+    const original = lane.ix.get(ISessionAgentProfileCatalog).get('coder');
+    const result = await lane.runInternal({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true });
+    expect(result.isError).not.toBe(true);
+    expect(readText).toHaveBeenCalledWith('/workspace/custom.md');
+    expect(lane.ix.get(ISessionAgentProfileCatalog).get('coder')).toBe(original);
+    const bound = lane.lifecycleCreate.mock.calls[0]![0]!.binding!.resolvedProfile!;
+    expect(bound.sourcePath).toBe('/workspace/custom.md');
+    expect(bound.toolAllowPolicies).toContainEqual(['Read']);
+    expect(bound.disallowedTools).toContain('Bash');
+    expect(bound.subagents).toEqual(['coder']);
+    expect(bound.systemPrompt({})).toContain('FILE INSTRUCTIONS');
+    await complete(lane, 0);
+    const denied = await lane.runInternal({ profile_file: 'custom.md', model_alias: 'outside-model', prompt: 'fail', description: 'Reject escape', background: true });
+    expect(denied.isError).toBe(true);
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    await expect(lane.ix.get(ISubagentTool).resolveExecution({ profile_file: '/outside/custom.md', prompt: 'fail', description: 'Outside path' })).rejects.toMatchObject({ code: 'fs.path_escapes' });
+  });
+
+  it('blocks concurrent creation before side effects, and releases only when execution settles', async () => {
+    const lane = createLane(disposables, 'internal', { capacity: { maxDirectChildren: 1, maxTotalSubagents: 0 } });
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    const input = {
+      requesterAgentId: 'main', delegator: { kind: 'agent', agentId: 'main' } as const,
+      profileName: 'coder', message: 'work', parentTurnId: 1, workDir: '/workspace',
+      runtime: lane.ix.get(IAgentRuntimeService).inspect(), signal: new AbortController().signal,
+    };
+    await expect(dispatch.launch({ ...input, signal: AbortSignal.abort(new Error('cancelled before launch')) })).rejects.toThrow('cancelled before launch');
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    const first = dispatch.launch(input);
+    await expect(dispatch.launch(input)).rejects.toMatchObject({
+      code: 'dispatch.limit_exceeded', details: { layer: 'direct', current: 1, limit: 1 },
+    });
+    const run = await first;
+    await run.started;
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    await expect(dispatch.launch(input)).rejects.toMatchObject({ code: 'dispatch.limit_exceeded' });
+    lane.completions[0]!.resolve({ summary: 'done' });
+    await (await run.started).completion;
+    await dispatch.launch(input);
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases a failed launch reservation and prevents concurrent resume during preparation', async () => {
+    const lane = createLane(disposables, 'internal', { capacity: { maxDirectChildren: 1, maxTotalSubagents: 1 } });
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    const input = {
+      requesterAgentId: 'main', delegator: { kind: 'agent', agentId: 'main' } as const,
+      profileName: 'coder', message: 'work', parentTurnId: 1, workDir: '/workspace',
+      runtime: lane.ix.get(IAgentRuntimeService).inspect(), signal: new AbortController().signal,
+    };
+    lane.lifecycleCreate.mockRejectedValueOnce(new Error('create failed'));
+    await expect(dispatch.launch(input)).rejects.toThrow('create failed');
+    const run = await dispatch.launch(input);
+    const started = await run.started;
+    lane.completions[0]!.resolve({ summary: 'done' });
+    await started.completion;
+    const gate = deferred<void>();
+    const resumed = dispatch.runOnExisting(run.child, 'continue', {
+      signal: input.signal, requesterAgentId: 'main', onBeforeRun: () => gate.promise,
+    });
+    await expect(dispatch.runOnExisting(run.child, 'duplicate', {
+      signal: input.signal, requesterAgentId: 'main',
+    })).rejects.toMatchObject({ code: 'agent.already_running' });
+    gate.resolve();
+    await resumed;
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['before-ownership', 'durable', 'run'] as const)('rolls back only unowned creation failures at %s', async (boundary) => {
+    const lane = createLane(disposables, 'internal');
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    const lifecycle = lane.ix.get(IAgentLifecycleService);
+    const failure = new Error('injected launch failure');
+    const input = {
+      requesterAgentId: 'main',
+      delegator: { kind: 'agent', agentId: 'main' } as const,
+      profileName: 'coder',
+      name: 'retry_child',
+      message: 'work',
+      parentTurnId: 1,
+      workDir: '/workspace',
+      runtime: lane.ix.get(IAgentRuntimeService).inspect(),
+      signal: new AbortController().signal,
+      onCreated: async (_child: unknown, retain: () => void) => {
+        if (boundary === 'durable') retain();
+        if (boundary !== 'run') throw failure;
+      },
+    };
+    if (boundary === 'run') lane.subagentRun.mockRejectedValueOnce(failure);
+    if (boundary === 'run') {
+      const run = await dispatch.launch(input);
+      await expect(run.started).rejects.toBe(failure);
+    } else {
+      await expect(dispatch.launch(input)).rejects.toBe(failure);
+    }
+    expect(lane.lifecycleCreate.mock.calls[0]![0]).toMatchObject({ deferCreateEvent: true });
+    if (boundary === 'before-ownership') {
+      expect(lifecycle.discard).toHaveBeenCalledWith('agent_child_1');
+      expect(lifecycle.commitCreate).not.toHaveBeenCalled();
+      expect([...lane.handles.keys()]).toEqual(['main']);
+      expect(Object.keys(lane.metadataAgents)).toEqual(['main']);
+      expect(lane.subagentRun).not.toHaveBeenCalled();
+      const retried = await dispatch.launch({ ...input, onCreated: undefined });
+      await retried.started;
+      expect(retried.child.agentId).toBe('agent_child_2');
+      expect(lifecycle.commitCreate).toHaveBeenCalledWith('agent_child_2');
+    } else {
+      expect(lifecycle.discard).not.toHaveBeenCalled();
+      expect(lifecycle.commitCreate).toHaveBeenCalledWith('agent_child_1');
+      expect(lane.handles.has('agent_child_1')).toBe(true);
+      expect(lane.metadataAgents['agent_child_1']).toBeDefined();
+    }
+  });
+
+  it('reports the original launch failure and discard failure while releasing the name reservation', async () => {
+    const lane = createLane(disposables, 'internal');
+    const failure = new Error('initial write failed');
+    const cleanupFailure = new Error('discard failed');
+    vi.mocked(lane.ix.get(IAgentLifecycleService).discard).mockRejectedValueOnce(cleanupFailure);
+    const rejected = lane.ix.get(ISessionDispatchService).launch({
+      requesterAgentId: 'main',
+      delegator: { kind: 'agent', agentId: 'main' },
+      profileName: 'coder',
+      name: 'failed_child',
+      message: 'work',
+      parentTurnId: 1,
+      workDir: '/workspace',
+      runtime: lane.ix.get(IAgentRuntimeService).inspect(),
+      signal: new AbortController().signal,
+      onCreated: async () => { throw failure; },
+    });
+    await expect(rejected).rejects.toMatchObject({ cause: failure, errors: [failure, cleanupFailure] });
+    expect(lane.probe.names).toContainEqual(expect.arrayContaining(['release']));
+  });
+
+  it.each(['manual', 'auto', 'yolo'] as const)('birth-binds research before the first run in %s without prefix or inherited tools', async (mode) => {
+    const prefix = vi.fn(async () => 'must not execute');
+    const lane = createLane(disposables, 'internal', { profile: { ...parityProfile, promptPrefix: prefix } });
+    lane.setPermissionMode('main', mode);
+    Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), {
+      subagentLeases: { coder: parityLease }, spawnPolicy: paritySpawnPolicy,
+    });
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    disposables.add(dispatch.registerPlanStateReader('main', () => true));
+    const result = await lane.runInternal({
+      profile: 'coder', prompt: 'research only', description: 'Research code', background: true,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    const birth = lane.lifecycleCreate.mock.calls[0]![0]!;
+    expect(birth.binding?.executionRestriction).toBe('research-readonly');
+    expect(birth.binding?.inheritedUserToolNames).toBeUndefined();
+    expect(birth.binding?.lease).toEqual(parityLease);
+    expect(birth.binding?.spawnPolicy).toEqual(paritySpawnPolicy);
+    expect(prefix).not.toHaveBeenCalled();
+    expect(lane.probe.userToolInheritance).toEqual([]);
+    expect(lane.permissionMode('agent_child_1')).toBe(mode);
+    expect(lane.handles.get('agent_child_1')!.accessor.get(IAgentProfileService).data().executionRestriction).toBe('research-readonly');
+    await complete(lane, 0);
+  });
+
+  it('retains an issued research ceiling while catalog readiness is pending and plan exits', async () => {
+    const lane = createLane(disposables, 'internal');
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    let active = true;
+    disposables.add(dispatch.registerPlanStateReader('main', () => active));
+    let ready!: () => void;
+    Object.defineProperty(lane.ix.get(ISessionAgentProfileCatalog), 'ready', {
+      value: new Promise<void>((resolve) => { ready = resolve; }), configurable: true,
+    });
+    const launch = dispatch.launch({
+      delegator: { kind: 'agent', agentId: 'main' }, requesterAgentId: 'main',
+      profileName: 'coder', message: 'research only', parentTurnId: 1,
+      runtime: new FakeRuntime({ workspaceId: 'workspace_test', runtimeId: 'local', generation: 'test' }),
+      workDir: '/work', signal: new AbortController().signal,
+    });
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    active = false;
+    ready();
+    const run = await launch;
+    expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding?.executionRestriction).toBe('research-readonly');
+    expect(run.child.agent.accessor.get(IAgentProfileService).data().executionRestriction).toBe('research-readonly');
+    await complete(lane, 0);
+  });
+
+  it('rejects a research dispatch to an external executor before child creation or running', async () => {
+    const lane = createLane(disposables, 'internal', {
+      profile: { ...parityProfile, executor: 'external' },
+    });
+    disposables.add(lane.ix.get(ISessionDispatchService).registerPlanStateReader('main', () => true));
+    const result = await lane.runInternal({ profile: 'coder', prompt: 'research', description: 'Inspect code', background: true });
+    expect(result.isError).toBe(true);
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    expect(lane.subagentRun).not.toHaveBeenCalled();
+  });
+
+  it.each(['native', 'external'] as const)('captures the real AgentRun request before catalog await for %s', async (executor) => {
+    const prefix = vi.fn(async () => 'unsafe prefix');
+    const lane = createLane(disposables, 'internal', { profile: { ...parityProfile, executor, promptPrefix: prefix } });
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    let active = true;
+    disposables.add(dispatch.registerPlanStateReader('main', () => active));
+    let ready!: () => void;
+    const pending = new Promise<void>((resolve) => { ready = resolve; });
+    const reachedCatalog = vi.fn(() => pending);
+    Object.defineProperty(lane.ix.get(ISessionAgentProfileCatalog), 'ready', { get: reachedCatalog, configurable: true });
+    const resultPromise = lane.runInternal({ profile: 'coder', prompt: 'research', description: 'Read source', background: true });
+    expect(reachedCatalog).toHaveBeenCalled();
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    active = false;
+    ready();
+    const result = await resultPromise;
+    expect(prefix).not.toHaveBeenCalled();
+    expect(lane.probe.userToolInheritance).toEqual([]);
+    if (executor === 'external') {
+      expect(result.isError).toBe(true);
+      expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+      expect(lane.subagentRun).not.toHaveBeenCalled();
+    } else {
+      expect(result.isError).not.toBe(true);
+      expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding?.executionRestriction).toBe('research-readonly');
+      await complete(lane, 0);
+    }
+  });
+
+  it.each(['active', 'idle', 'released', 'cold'] as const)('rejects real AgentRun resume of an old %s writable child without resolving or running it', async (state) => {
+    const lane = createLane(disposables, 'internal');
+    await lane.runInternal({ profile: 'coder', prompt: 'old work', description: 'Old work', background: true, name: 'old_child' });
+    if (state !== 'active') await complete(lane, 0);
+    if (state === 'released' || state === 'cold') lane.dropHandle('agent_child_1');
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    disposables.add(dispatch.registerPlanStateReader('main', () => true));
+    const resolve = vi.spyOn(dispatch, 'resolveOwnedChild');
+    lane.lifecycleCreate.mockClear();
+    lane.subagentRun.mockClear();
+    const result = await lane.runInternal({ resume: ' old_child ', prompt: 'continue writing', description: 'Resume work', background: true });
+    expect(result.isError).toBe(true);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    expect(lane.subagentRun).not.toHaveBeenCalled();
+    if (state === 'active') await complete(lane, 0);
+  });
+
+  it('projects launch eligibility without dispatch effects and shares the exact runtime predicate', () => {
+    const lane = createLane(disposables, 'internal');
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    let active = true;
+    disposables.add(dispatch.registerPlanStateReader('main', () => active));
+    const captured = dispatch.readLaunchPolicy('main');
+    expect(Object.isFrozen(captured)).toBe(true);
+    expect(evaluateDispatchAdmission(captured, 'spawn', 'native')).toEqual({ allowed: true, executionRestriction: 'research-readonly', reason: undefined });
+    expect(evaluateDispatchAdmission(captured, 'spawn', 'external').allowed).toBe(false);
+    expect(evaluateDispatchAdmission(captured, 'resume').allowed).toBe(false);
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    expect(lane.subagentRun).not.toHaveBeenCalled();
+    active = false;
+    expect(evaluateDispatchAdmission(dispatch.readLaunchPolicy('main'), 'spawn', 'external').allowed).toBe(true);
+    expect(evaluateDispatchAdmission(tightenDispatchLaunchPolicy(dispatch.readLaunchPolicy('main'), captured), 'spawn', 'external').allowed).toBe(false);
+  });
+
   it('keeps every probe normalization difference explicit', () => {
     expect(PROBE_DIFFERENCE_WHITELIST).toEqual({
       workIdField: ['task_id', 'dispatch_id'],
@@ -1342,13 +1667,13 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(internal.probe.profileBinds).toEqual(external.probe.profileBinds);
     await expect(continuedExternal).rejects.toThrow(/active dispatch/);
 
-    const invalidInternal = await internal.runInternal({
+    await expect(internal.runInternal({
       prompt: 'switch profile',
       description: 'Switch profile',
       resume: 'parity_child',
       profile: 'coder',
       background: true,
-    });
+    })).rejects.toThrow('Cannot set profile, profile_file, or route');
     await expect(external.external.dispatch({
       authority,
       target: 'named',
@@ -1356,11 +1681,10 @@ describe('AgentRun and dispatch parity golden', () => {
       profileName: 'other',
       message: 'switch profile',
     })).rejects.toThrow(/cannot change profile/);
-    expect(invalidInternal.isError).toBe(true);
   });
 
   it('rebuilds a cold named child with its context and the caller current mode', async () => {
-    const internal = createLane(disposables, 'internal');
+    const internal = createLane(disposables, 'internal', { capacity: { maxDirectChildren: 1, maxTotalSubagents: 1 } });
     const first = await internal.runInternal({
       prompt: 'remember restart context',
       description: 'Persist child',
@@ -1401,7 +1725,15 @@ describe('AgentRun and dispatch parity golden', () => {
       collaborationTaskName: 'restart_child',
       profileName: 'coder',
     });
+    const denied = await internal.runInternal({ profile: 'coder', prompt: 'over limit', description: 'No spare slot', background: true });
+    expect(denied.isError).toBe(true);
+    expect(JSON.parse(outputText(denied.output))).toMatchObject({ code: 'dispatch.limit_exceeded', details: { layer: 'direct', current: 1, limit: 1 } });
+    expect(internal.lifecycleCreate).toHaveBeenCalledTimes(2);
     await complete(internal, 1);
+    const next = await internal.runInternal({ resume: 'restart_child', prompt: 'next run', description: 'Reuse slot', background: true });
+    expect(next.isError).not.toBe(true);
+    expect(internal.lifecycleCreate).toHaveBeenCalledTimes(2);
+    await complete(internal, 2);
   });
 
   it('keeps a cold fixed-mode worker on its persisted permission mode', async () => {

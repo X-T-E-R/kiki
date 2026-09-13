@@ -35,37 +35,11 @@ describe('main bind candidate ladder', () => {
     expect(resolveMainModelCandidate({})).toEqual({ alias: undefined, source: 'default' });
   });
 
-  it('places profile thinking after the route lock and before session thinking', () => {
-    expect(
-      resolveMainThinkingCandidate({
-        inputThinking: 'high',
-        routeLockedThinking: 'max',
-        modelProfileThinking: 'low',
-        profileThinking: 'medium',
-        sessionThinking: 'off',
-      }),
-    ).toBe('high');
-    expect(
-      resolveMainThinkingCandidate({
-        routeLockedThinking: 'max',
-        modelProfileThinking: 'low',
-        profileThinking: 'medium',
-        sessionThinking: 'off',
-      }),
-    ).toBe('max');
-    expect(
-      resolveMainThinkingCandidate({
-        modelProfileThinking: 'low',
-        profileThinking: 'medium',
-        sessionThinking: 'off',
-      }),
-    ).toBe('low');
-    expect(
-      resolveMainThinkingCandidate({
-        profileThinking: 'medium',
-        sessionThinking: 'off',
-      }),
-    ).toBe('medium');
-    expect(resolveMainThinkingCandidate({ sessionThinking: 'off' })).toBe('off');
+  it('resolves current request and profile defaults without a session-history fallback', () => {
+    expect(resolveMainThinkingCandidate({ inputThinking: 'high', routeLockedThinking: 'max', modelProfileThinking: 'low', profileThinking: 'medium' })).toBe('high');
+    expect(resolveMainThinkingCandidate({ routeLockedThinking: 'max', modelProfileThinking: 'low', profileThinking: 'medium' })).toBe('max');
+    expect(resolveMainThinkingCandidate({ modelProfileThinking: 'low', profileThinking: 'medium' })).toBe('low');
+    expect(resolveMainThinkingCandidate({ profileThinking: 'medium' })).toBe('medium');
+    expect(resolveMainThinkingCandidate({})).toBeUndefined();
   });
 });

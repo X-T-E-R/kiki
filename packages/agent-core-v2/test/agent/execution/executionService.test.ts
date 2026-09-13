@@ -11,6 +11,7 @@ import type { IAgentProfileService, ProfileData } from '#/agent/profile/profile'
 import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import type { IAgentStateService } from '#/agent/state/agentState';
+import type { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import type {
   AgentExecutorContext,
   AgentExecutorProvider,
@@ -30,6 +31,8 @@ function profile(data: Partial<ProfileData>): IAgentProfileService {
       systemPrompt: '',
       ...data,
     }),
+    preparePromptConfiguration: async () => false,
+    getSystemPrompt: () => data.systemPrompt ?? '',
   } as IAgentProfileService;
 }
 
@@ -46,6 +49,10 @@ function states(): IAgentStateService {
     _serviceBrand: undefined,
     contributeState: () => ({ dispose: () => {} }),
   } as unknown as IAgentStateService;
+}
+
+function dispatch(): ISessionDispatchService {
+  return { reserveExecution: () => () => {} } as unknown as ISessionDispatchService;
 }
 
 describe('AgentExecutionService', () => {
@@ -105,6 +112,7 @@ describe('AgentExecutionService', () => {
     const service = new AgentExecutionService(
       ix,
       scope(),
+      dispatch(),
       profile({
         executorId: 'fake',
         executorProtocol: 'acp-v1',
@@ -159,6 +167,8 @@ describe('AgentExecutionService', () => {
     const profileService = {
       _serviceBrand: undefined,
       data: () => binding,
+      preparePromptConfiguration: async () => false,
+      getSystemPrompt: () => binding.systemPrompt,
     } as IAgentProfileService;
     const contexts: AgentExecutorContext[] = [];
     const shutdowns: ReturnType<typeof vi.fn>[] = [];
@@ -204,7 +214,7 @@ describe('AgentExecutionService', () => {
       discover: async () => [],
       provider: () => provider,
     };
-    const service = new AgentExecutionService(ix, scope(), profileService, registry, states());
+    const service = new AgentExecutionService(ix, scope(), dispatch(), profileService, registry, states());
 
     const first = await service.run(
       { kind: 'prompt', prompt: 'first' },
@@ -272,6 +282,7 @@ describe('AgentExecutionService', () => {
     const service = new AgentExecutionService(
       ix,
       scope(),
+      dispatch(),
       profile({ executorId: 'fake', ...binding }),
       registry,
       states(),
@@ -303,6 +314,7 @@ describe('AgentExecutionService', () => {
     const service = new AgentExecutionService(
       ix,
       scope(),
+      dispatch(),
       profile({
         executorId: 'missing',
         executorProtocol: 'acp-v1',

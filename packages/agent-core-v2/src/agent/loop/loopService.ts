@@ -5,6 +5,8 @@ import { createControlledPromise } from '@antfu/utils';
 
 import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { abortError, isAbortError, isUserCancellation, userCancellationReason } from '#/_base/utils/abort';
@@ -120,6 +122,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentTelemetryContextService private readonly telemetryContext: IAgentTelemetryContextService,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IAgentScopeContext private readonly scope: IAgentScopeContext,
+    @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
   ) {
     super();
     this.states.contributeState(turnKey);
@@ -177,7 +181,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.pendingAssignments.set(request, assignment);
 
     if (this.quiescenceDepth > 0) {
-      this.heldAdmissions.push({ request, options });
+      if (options?.at === 'head') this.heldAdmissions.unshift({ request, options });
+      else this.heldAdmissions.push({ request, options });
     } else {
       this.admit(request, options);
     }
@@ -253,12 +258,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.cancel(turnId);
   }
 
-  tryAcquireQuiescence(): IDisposable | undefined {
+  tryAcquireQuiescence(options?: { readonly pendingSteps: 'preserve' }): IDisposable | undefined {
     if (this.disposing) throw abortError('Agent loop disposed');
     if (
       this.quiescenceDepth > 0 ||
       this.activeTurnJob !== undefined ||
-      this.hasPendingRequests()
+      this.pendingTurns.length > 0 ||
+      this.heldAdmissions.some(({ request }) => !request.aborted) ||
+      (options?.pendingSteps !== 'preserve' && this.standaloneStepQueue.hasPendingRequests())
     ) {
       return undefined;
     }
@@ -269,7 +276,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private releaseQuiescence(): void {
     if (this.quiescenceDepth === 0) return;
     this.quiescenceDepth -= 1;
-    if (this.quiescenceDepth > 0 || this.disposing) return;
+    if (this.quiescenceDepth > 0) return;
+    if (this.disposing) { this.maybeSettle(); return; }
     this.pumpTurns();
     for (const admission of this.heldAdmissions.splice(0)) {
       if (admission.request.aborted) continue;
@@ -320,6 +328,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   settled(): Promise<void> {
     if (
+      this.quiescenceDepth === 0 &&
       this.activeTurnJob === undefined &&
       this.pendingTurns.length === 0 &&
       this.heldAdmissions.length === 0
@@ -333,6 +342,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private maybeSettle(): void {
     if (
+      this.quiescenceDepth > 0 ||
       this.activeTurnJob !== undefined ||
       this.pendingTurns.length > 0 ||
       this.heldAdmissions.length > 0
@@ -494,7 +504,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const { mode, provider_type, protocol } = telemetryContext;
     let thinkingEffort: string | undefined;
     let result: TurnResult | undefined;
+    let releaseCapacity: (() => void) | undefined;
     try {
+      turn.signal.throwIfAborted();
+      releaseCapacity = this.dispatch.reserveTurnExecution(this.scope.agentId, this.scope.parentAgentId);
       thinkingEffort = this.llmRequester.prepareTurnConfig(turn.id)?.thinkingEffort;
       const started: TurnStartedTelemetryEvent = {
         turn_id: turn.id,
@@ -516,6 +529,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     } finally {
       this.settleTurnReady(ready, result);
       this.releaseActiveTurn(turn, result);
+      releaseCapacity?.();
       const traceId =
         result?.type === 'completed'
           ? this.lastRequestTraceId

@@ -19,7 +19,8 @@ export const SubagentToolInputSchema = z.preprocess(
     const hasProfile =
       typeof normalized['profile'] === 'string' && normalized['profile'].length > 0;
     const hasRoute = typeof normalized['route'] === 'string' && normalized['route'].length > 0;
-    if (!hasProfile && !hasResumeId && !hasRoute) {
+    const hasFile = typeof normalized['profile_file'] === 'string' && normalized['profile_file'].trim().length > 0;
+    if (!hasProfile && !hasResumeId && !hasRoute && !hasFile) {
       normalized['profile'] = DEFAULT_PROFILE_NAME;
     } else if (!hasProfile) {
       delete normalized['profile'];
@@ -51,11 +52,13 @@ export const SubagentToolInputSchema = z.preprocess(
       .describe(
         'Optional stable name for the new subagent, unique within this session (lowercase letters, digits, and underscores; "root" is reserved). Use it to address the same agent again with resume, AgentSend, or AgentList instead of tracking its generated ID. Rejected together with resume.',
       ),
+    profile_file: z.string().trim().min(1).optional().describe('Explicit profile Markdown file, absolute or workspace-relative. Only for new agents; mutually exclusive with profile and route. This is a role definition, not a shared prompt template.'),
+    allow_model_change: z.boolean().optional().describe('Required true when resume explicitly changes model_alias to a different canonical model. Does not bypass role, caller, route or executor restrictions.'),
     resume: z
       .string()
       .optional()
       .describe(
-        'Name or agent ID of an existing direct child to continue instead of creating a new one. When set, do not also pass name, profile, route, model_alias, or effort; the continued agent keeps its persisted binding.',
+        'Name or agent ID of an existing direct child. Do not pass name, profile, profile_file, or route. Omitted effort/model keep the saved binding. An explicit effort applies to the next idle run; changing model_alias also requires allow_model_change: true.',
       ),
     background: z
       .boolean()
@@ -69,23 +72,23 @@ export const SubagentToolInputSchema = z.preprocess(
       .min(1)
       .optional()
       .describe(
-        'Exact configured [models] alias for the new subagent. Required unless the chosen profile or route pins one; a subagent never runs on the caller\'s model.',
+        'Omit to use the target default model. An explicit configured alias must be allowed for the selected profile, caller lease, and route. Required only when the target has no default; never copy the caller\'s model.',
       ),
     effort: z
       .string()
       .trim()
       .min(1)
       .optional()
-      .describe('Thinking effort for the new subagent.'),
+      .describe('Omit to use the target default thinking effort. Override only with an effort allowed by the target; never copy the caller\'s effort.'),
   }).superRefine((args, ctx) => {
-    if (
-      args.resume?.trim() &&
-      (args.route !== undefined || args.model_alias !== undefined || args.effort !== undefined)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Cannot set route, model_alias, or effort when continuing an existing agent',
-      });
+    if (args.profile_file !== undefined && (args.profile !== undefined || args.route !== undefined)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profile_file is mutually exclusive with profile and route' });
+    }
+    if (args.resume?.trim() && (args.route !== undefined || args.profile_file !== undefined || args.profile !== undefined)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cannot set profile, profile_file, or route when continuing an existing agent' });
+    }
+    if (args.allow_model_change !== undefined && (!args.resume?.trim() || args.model_alias === undefined)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'allow_model_change requires resume and model_alias' });
     }
     if (args.resume?.trim() && args.name !== undefined) {
       ctx.addIssue({
@@ -114,6 +117,7 @@ export const SUBAGENT_STOPPED_MESSAGE = 'The subagent was stopped before it fini
 
 export interface ISubagentTool extends AgentTool<SubagentToolInput> {
   readonly _serviceBrand: undefined;
+  dispatchCatalog(): import('./subagentCapabilities').SubagentCapabilityCatalog;
 }
 
 export const ISubagentTool = createDecorator<ISubagentTool>('subagentTool');

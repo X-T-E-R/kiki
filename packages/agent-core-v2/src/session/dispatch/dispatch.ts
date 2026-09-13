@@ -15,6 +15,7 @@ export interface DispatchResolvedBinding {
 }
 
 export interface DispatchLaunchInput {
+  readonly capturedLaunchPolicy?: import('./launchPolicy').DispatchLaunchPolicy;
   readonly delegator: DelegatorRef;
   readonly requesterAgentId: string;
   readonly requesterProfileData?: ProfileData;
@@ -40,17 +41,28 @@ export interface DispatchLaunchInput {
   readonly parentTurnId?: number;
   readonly executorPolicy?: 'any' | 'native';
   readonly onReady?: () => void;
-  readonly onCreated?: (child: DispatchChild) => Promise<void>;
+  /**
+   * Runs before creation is announced or execution starts. A rejection discards the new child
+   * unless retain was called after durable ownership was written, before fallible publication.
+   * Retained children survive launch failures for recovery; execution failures never discard them.
+   */
+  readonly onCreated?: (child: DispatchChild, retain: () => void) => Promise<void>;
 }
 
 export type DispatchIdlePolicy = 'execution' | 'quiescent';
 
 export interface DispatchRunOptions {
+  readonly capturedLaunchPolicy?: import('./launchPolicy').DispatchLaunchPolicy;
   readonly signal: AbortSignal;
   readonly requesterAgentId?: string;
   readonly onReady?: () => void;
   readonly lineage?: string;
   readonly idlePolicy?: DispatchIdlePolicy;
+  readonly bindingOverride?: {
+    readonly modelAlias?: string;
+    readonly thinkingEffort?: string;
+    readonly allowModelChange?: boolean;
+  };
   readonly onBeforeRun?: (child: DispatchChild) => Promise<void>;
 }
 
@@ -94,7 +106,11 @@ export interface DispatchWaitResult<T> {
 
 export interface ISessionDispatchService {
   readonly _serviceBrand: undefined;
+  registerPlanStateReader(requesterAgentId: string, read: () => boolean): import('#/_base/di/lifecycle').IDisposable;
+  readLaunchPolicy(requesterAgentId: string): import('./launchPolicy').DispatchLaunchPolicy;
   readonly onDidDelegateRun: Event<DispatchDelegatedRunEvent>;
+  reserveExecution(agentId: string, parentAgentId?: string, reservation?: import('./capacity').DispatchReservation): () => void;
+  reserveTurnExecution(agentId: string, parentAgentId?: string): () => void;
   launch(input: DispatchLaunchInput): Promise<DispatchRun>;
   resolveOwnedChild(delegator: DelegatorRef, ref: string): Promise<DispatchChild>;
   runOnExisting(

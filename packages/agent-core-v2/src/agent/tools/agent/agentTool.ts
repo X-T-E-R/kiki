@@ -1,5 +1,9 @@
 import { type CollectionView } from '#/_base/di/collection';
 import type { Runtime } from '#/runtime/runtime';
+import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { resolvePathAccessPath } from '#/tool/path-access';
+import { loadDispatchProfileFile, inheritProfileFileSources } from '#/session/dispatch/profileFile';
+import { evaluateDispatchAdmission, tightenDispatchLaunchPolicy, type DispatchLaunchPolicy } from '#/session/dispatch/launchPolicy';
 import {
   isAbortError,
   isUserCancellation,
@@ -32,7 +36,7 @@ import type {
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
-import { listAvailableSubagentTargets } from '#/app/agentProfileCatalog/subagentDispatch';
+import { projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProjection';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
 import { IModelService } from '#/kosong/model/model';
@@ -80,7 +84,7 @@ import AGENT_BACKGROUND_DESCRIPTION from './agent-background-enabled.md?raw';
 import AGENT_DESCRIPTION_BASE from './agent.md?raw';
 
 const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (schema) => {
-  addSubagentBindingSchemaConstraints(schema, 'agent');
+  addSubagentBindingSchemaConstraints(schema);
 });
 export { buildProfileDescriptions } from './subagentDescription';
 
@@ -128,11 +132,14 @@ export class SubagentTool implements ISubagentTool {
     const backgroundDescription = this.canRunInBackground()
       ? AGENT_BACKGROUND_DESCRIPTION
       : AGENT_BACKGROUND_DISABLED_DESCRIPTION;
-    let description = `${AGENT_DESCRIPTION_BASE}\n\n${backgroundDescription}`;
+    const timeoutDescription = formatSubagentTimeoutDescription(
+      resolveSubagentTimeoutMs(this.config),
+    );
+    let description = `${AGENT_DESCRIPTION_BASE}\n\nSubagent timeout: ${timeoutDescription}.\n\n${backgroundDescription}`;
     const own = this.profile.data();
     const snapshot =
       own.profileDefinitionId === undefined ? undefined : this.catalogSnapshot();
-    const targets = listAvailableSubagentTargets(
+    const targets = projectSubagentModelCatalog(
       this.catalog,
       own,
       {
@@ -141,6 +148,7 @@ export class SubagentTool implements ISubagentTool {
         snapshot,
       },
       this.models,
+      this.config,
     );
     const typeLines = buildProfileDescriptions(
       targets.profiles,
@@ -157,7 +165,7 @@ export class SubagentTool implements ISubagentTool {
     if (routeLines) {
       description += `\n\nAvailable agent routes (pass via route):\n${routeLines}`;
     }
-    const modelLines = buildSubagentModelDescriptions(this.models);
+    const modelLines = buildSubagentModelDescriptions(targets.aliases);
     if (modelLines !== undefined) {
       description += `\n\n${modelLines}`;
     }
@@ -180,6 +188,17 @@ export class SubagentTool implements ISubagentTool {
     return false;
   }
 
+  dispatchCatalog(): import('./subagentCapabilities').SubagentCapabilityCatalog {
+    const caller = this.profile.data();
+    return {
+      catalog: this.catalog,
+      caller,
+      profiles: this.catalogProfiles(),
+      routes: this.catalogRoutes(),
+      snapshot: caller.profileDefinitionId === undefined ? undefined : this.catalogSnapshot(),
+    };
+  }
+
   private catalogProfiles(): readonly AgentProfile[] {
     if (this.frozenCatalogProfiles !== undefined) return this.frozenCatalogProfiles;
     const profiles = this.catalog.list().filter((profile) => profile.main !== true);
@@ -195,8 +214,7 @@ export class SubagentTool implements ISubagentTool {
   }
 
   private catalogSnapshot(): AgentProfileCatalogSnapshot {
-    if (this.frozenCatalogSnapshot !== undefined) return this.frozenCatalogSnapshot;
-    const snapshot = this.catalog.snapshot?.() ?? {
+    const snapshot = this.frozenCatalogSnapshot ?? this.catalog.snapshot?.() ?? {
       publicProfiles: new Map(this.catalog.list().map((profile) => [profile.name, profile])),
       defaultProfile: this.catalog.getDefault(),
       routes: new Map(),
@@ -206,7 +224,7 @@ export class SubagentTool implements ISubagentTool {
       diagnostics: [],
     };
     if (this.catalogReady) this.frozenCatalogSnapshot = snapshot;
-    return snapshot;
+    return inheritProfileFileSources(this.profile.data(), this.catalog, snapshot) ?? snapshot;
   }
 
   private knownToolReferences(): ToolReference[] {
@@ -224,6 +242,9 @@ export class SubagentTool implements ISubagentTool {
   }
 
   async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {
+    const capturedLaunchPolicy = this.dispatch.readLaunchPolicy(this.callerAgentId);
+    const admission = evaluateDispatchAdmission(capturedLaunchPolicy, args.resume?.trim() ? 'resume' : 'spawn');
+    if (!admission.allowed) return { output: admission.reason!, isError: true };
     const requestedProfileName = args.profile?.length ? args.profile : undefined;
     const requestedRoute = args.route?.trim();
     const resumeAgentId = args.resume?.trim();
@@ -238,27 +259,42 @@ export class SubagentTool implements ISubagentTool {
     if (resumeAgentId !== undefined && resumeAgentId.length > 0 && requestedRoute !== undefined) {
       return { output: 'Cannot set route when resuming an existing agent.', isError: true };
     }
-    if (
-      resumeAgentId !== undefined &&
-      resumeAgentId.length > 0 &&
-      (args.model_alias !== undefined || args.effort !== undefined)
-    ) {
-      return {
-        output: 'Cannot set model_alias or effort when continuing an existing agent.',
-        isError: true,
-      };
+    if (args.profile_file !== undefined && (resumeAgentId || requestedProfileName || requestedRoute)) {
+      return { output: 'profile_file is only for a new agent and is mutually exclusive with profile and route.', isError: true };
     }
 
     const profileNameForDisplay =
       resumeAgentId !== undefined && resumeAgentId.length > 0
         ? (await this.resumeProfileName(resumeAgentId)) ?? RESUMED_LABEL
-        : requestedRoute ?? requestedProfileName ?? DEFAULT_PROFILE_NAME;
+        : args.profile_file ?? requestedRoute ?? requestedProfileName ?? DEFAULT_PROFILE_NAME;
     const prefix = args.background === true ? 'Launching background' : 'Launching';
     if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
     const snapshot = this.catalog.snapshot?.();
+    let filePath: string | undefined;
+    let generation: string | undefined;
+    if (args.profile_file !== undefined) {
+      const runtime = this.runtime.inspect();
+      const view = new RuntimeWorkspaceView(runtime, this.workspace);
+      const pathOptions = {
+        env: runtime.environment,
+        workspace: { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
+        operation: 'read' as const,
+      };
+      filePath = resolvePathAccessPath(args.profile_file, pathOptions);
+      view.resolve(filePath, view.workDir, true);
+      generation = runtime.identity.generation;
+      const preparation = this.runtime.acquire(['fs']);
+      try {
+        if (preparation.runtime.identity.generation !== generation) return { output: 'Runtime changed before execution. Retry the tool call.', isError: true };
+        filePath = resolvePathAccessPath(await preparation.runtime.fs!.realpath(filePath), pathOptions);
+        view.resolve(filePath, view.workDir, true);
+      } finally {
+        preparation.dispose();
+      }
+    }
     return {
       description: `${prefix} ${profileNameForDisplay} agent: ${args.description}`,
-      accesses: ToolAccesses.none(),
+      accesses: filePath === undefined ? ToolAccesses.none() : ToolAccesses.readFile(filePath),
       display: {
         kind: 'agent_call',
         agent_name: profileNameForDisplay,
@@ -267,7 +303,12 @@ export class SubagentTool implements ISubagentTool {
       },
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, profileNameForDisplay),
-      execute: (ctx) => this.execution(args, ctx, snapshot),
+      execute: async (ctx) => {
+        if (generation !== undefined && this.runtime.inspect().identity.generation !== generation) {
+          return { output: 'Runtime changed before execution. Retry the tool call.', isError: true };
+        }
+        return this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy);
+      },
     };
   }
 
@@ -290,7 +331,11 @@ export class SubagentTool implements ISubagentTool {
     controller: AbortController,
     runtime: Runtime,
     snapshot: AgentProfileCatalogSnapshot | undefined,
+    capturedLaunchPolicy: DispatchLaunchPolicy,
   ): Promise<SubagentHandle> {
+    const policy = tightenDispatchLaunchPolicy(this.dispatch.readLaunchPolicy(this.callerAgentId), capturedLaunchPolicy);
+    const admission = evaluateDispatchAdmission(policy, args.resume?.trim() ? 'resume' : 'spawn');
+    if (!admission.allowed) throw new Error2(ErrorCodes.REQUEST_INVALID, admission.reason!);
     const requester = this.lifecycle.get(this.callerAgentId);
     if (requester === undefined) {
       throw new Error2(
@@ -300,6 +345,8 @@ export class SubagentTool implements ISubagentTool {
       );
     }
     const resumeRef = args.resume?.trim();
+    const fileTarget = args.profile_file === undefined ? undefined
+      : await loadDispatchProfileFile(args.profile_file, runtime, this.workspace, this.catalog, this.profile.data(), snapshot);
     const run: DispatchRun =
       resumeRef !== undefined && resumeRef.length > 0
         ? await this.dispatch.runOnExisting(
@@ -308,20 +355,21 @@ export class SubagentTool implements ISubagentTool {
               resumeRef,
             ),
             args.prompt,
-            { signal: controller.signal, requesterAgentId: this.callerAgentId },
+            {
+              signal: controller.signal, requesterAgentId: this.callerAgentId, capturedLaunchPolicy: policy,
+              bindingOverride: args.model_alias === undefined && args.effort === undefined ? undefined : {
+                modelAlias: args.model_alias, thinkingEffort: args.effort, allowModelChange: args.allow_model_change,
+              },
+            },
           )
         : await this.dispatch.launch({
+            capturedLaunchPolicy: policy,
             delegator: { kind: 'agent', agentId: this.callerAgentId },
             requesterAgentId: this.callerAgentId,
             requesterProfileData: this.profile.data(),
-            profileName:
-              args.profile?.length
-                ? args.profile
-                : args.route === undefined
-                  ? DEFAULT_PROFILE_NAME
-                  : undefined,
+            profileName: fileTarget?.profileName ?? (args.profile?.length ? args.profile : args.route === undefined ? DEFAULT_PROFILE_NAME : undefined),
             routeId: args.route,
-            snapshot,
+            snapshot: fileTarget?.snapshot ?? snapshot,
             message: args.prompt,
             name: args.name?.trim(),
             modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
@@ -360,6 +408,7 @@ export class SubagentTool implements ISubagentTool {
     args: SubagentToolInput,
     { toolCallId, signal, turnId }: ExecutableToolContext,
     snapshot: AgentProfileCatalogSnapshot | undefined,
+    capturedLaunchPolicy: DispatchLaunchPolicy,
   ): Promise<ExecutableToolResult> {
     try {
       signal.throwIfAborted();
@@ -382,7 +431,7 @@ export class SubagentTool implements ISubagentTool {
         return { output: BACKGROUND_AGENT_UNAVAILABLE, isError: true };
       }
       const timeoutMs = resolveSubagentTimeoutMs(this.config);
-      const runtimeLease = this.runtime.acquire(['process']);
+      const runtimeLease = this.runtime.acquire(args.profile_file === undefined ? ['process'] : ['process', 'fs']);
 
       const controller = new AbortController();
       const abortBeforeRegister = (): void => {
@@ -394,7 +443,7 @@ export class SubagentTool implements ISubagentTool {
 
       let handle: SubagentHandle;
       try {
-        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot);
+        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot, capturedLaunchPolicy);
       } catch (error) {
         signal.removeEventListener('abort', abortBeforeRegister);
         this.log.warn('subagent launch failed', {
@@ -482,6 +531,9 @@ export class SubagentTool implements ISubagentTool {
       }
       return await this.formatForegroundResult(taskId, handle, timeoutMs);
     } catch (error) {
+      if (isError2(error) && error.code === ErrorCodes.DISPATCH_LIMIT_EXCEEDED) {
+        return { output: JSON.stringify({ code: error.code, message: error.message, details: error.details }), isError: true };
+      }
       return { output: `subagent error: ${launchErrorMessage(error, signal)}`, isError: true };
     }
   }

@@ -64,6 +64,7 @@ export class LocalRuntime implements Runtime {
       dirname: (p) => path.dirname(p),
     };
     this.workspace = {
+      supportsExternalPaths: true,
       mapRoots: (roots) => ({
         workDir: path.resolve(roots.workDir),
         additionalDirs: roots.additionalDirs?.map((root) => path.resolve(root)),

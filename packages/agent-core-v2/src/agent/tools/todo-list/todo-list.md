@@ -18,6 +18,10 @@ Use this tool to maintain a structured TODO list as you work through a multi-ste
 - When unsure of the current state, call query mode first (omit `todos`) to check the list before deciding what to update.
 - If no available tool can move any task forward, tell the user where you are stuck instead of repeatedly re-ordering the same todos.
 
+**Ownership:**
+- This list belongs to the calling agent. Other agents have separate lists; you cannot read or update their lists through this tool.
+- Existing historical shared lists remain with the main agent.
+
 **How to use:**
 - Call with `todos: [...]` to replace the full list. Statuses: pending / in_progress / done.
 - Call with no `todos` argument to retrieve the current list without changing it.

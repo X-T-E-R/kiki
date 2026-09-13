@@ -92,8 +92,17 @@ export function projectAgentProfileCatalog(input: {
   for (const entry of ordered) {
     const entryProfiles = new Map<string, AgentProfile>();
     for (const profile of entry.contribution.profiles) entryProfiles.set(profile.name, profile);
-    for (const profile of entryProfiles.values()) {
-      if (input.disabledNamedProfiles.has(profile.name)) continue;
+    for (const declared of entryProfiles.values()) {
+      const builtin = builtinEntry?.contribution.profiles.find((item) => item.name === declared.name);
+      const profile = declared.main === undefined && builtin?.main !== undefined
+        ? { ...declared, main: builtin.main }
+        : declared;
+      if (profile.main === true && profile.executor !== undefined && profile.executor !== 'native') {
+        input.warn(`External executor "${profile.executor}" is unsupported for main agent profile "${profile.name}"`);
+        continue;
+      }
+      if (input.disabledNamedProfiles.has(profile.name)
+        && !(profile.name === DEFAULT_AGENT_PROFILE_NAME && profile.main === true)) continue;
       const candidates = fileCandidates.get(profile.name) ?? [];
       candidates.push({ profile, sourceId: entry.sourceId, priority: entry.priority });
       fileCandidates.set(profile.name, candidates);
@@ -115,7 +124,12 @@ export function projectAgentProfileCatalog(input: {
         });
         continue;
       }
-      merged.set(candidate.profile.name, candidate.profile);
+      if (input.disabledNamedProfiles.has(candidate.profile.name)) {
+        defaultBindingProfile = candidate.profile;
+        merged.delete(candidate.profile.name);
+      } else {
+        merged.set(candidate.profile.name, candidate.profile);
+      }
       inspections.set(candidate.profile.name, {
         name: candidate.profile.name,
         profile: candidate.profile,
@@ -201,6 +215,7 @@ export function projectAgentProfileCatalog(input: {
     if (profile.definitionId !== undefined) visit(profile.definitionId);
   }
   const defaultProfile = merged.get(DEFAULT_AGENT_PROFILE_NAME) ?? defaultBindingProfile;
+  if (defaultProfile?.definitionId !== undefined) visit(defaultProfile.definitionId);
   const snapshot: AgentProfileCatalogSnapshot = {
     publicProfiles: new Map(merged),
     defaultProfile,

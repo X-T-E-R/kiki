@@ -35,18 +35,26 @@ export async function loadSystemMdProfile(
     return undefined;
   }
   if (text.trim().length === 0) return undefined;
-  if (isUpgradedSystemMd(text, path, warn)) {
-    try {
-      return loadUpgradedSystemMd(text, path, builtinDefault, warn);
-    } catch (error) {
-      warn(`agent SYSTEM.md parse failed: ${String(error)} [${path}]`);
-      return undefined;
-    }
+  try {
+    return parseSystemMdProfile(text, path, builtinDefault, warn);
+  } catch (error) {
+    warn(`agent SYSTEM.md parse failed: ${String(error)} [${path}]`);
+    return undefined;
   }
-  return loadLegacySystemMd(text, builtinDefault);
 }
 
-function isUpgradedSystemMd(text: string, path: string, warn: (message: string) => void): boolean {
+export function parseSystemMdProfile(
+  text: string,
+  path: string,
+  builtinDefault: AgentProfile,
+  warn: (message: string) => void,
+): AgentProfile {
+  return isUpgradedSystemMd(text, path, warn)
+    ? loadUpgradedSystemMd(text, path, builtinDefault, warn)
+    : { ...loadLegacySystemMd(text, builtinDefault), sourcePath: path };
+}
+
+export function isUpgradedSystemMd(text: string, path: string, warn: (message: string) => void): boolean {
   const firstLine = text.split(/\r?\n/, 1)[0]?.trim();
   if (firstLine !== '---') return false;
   try {
@@ -96,9 +104,14 @@ function loadUpgradedSystemMd(
     forceName: DEFAULT_AGENT_PROFILE_NAME,
     forceOverride: true,
   });
+  const main = definition.main ?? builtinDefault.main;
+  if (main === true && definition.executor !== undefined && definition.executor !== 'native') {
+    throw new Error(`External executor "${definition.executor}" is unsupported for main agent profile ${path}`);
+  }
   return agentProfileFromFile(
     {
       ...definition,
+      main,
       tools: Object.hasOwn(parsed.data, 'tools') ? definition.tools : builtinDefault.tools,
       disallowedTools: Object.hasOwn(parsed.data, 'disallowedTools')
         ? definition.disallowedTools
@@ -126,6 +139,7 @@ function loadLegacySystemMd(text: string, builtinDefault: AgentProfile): AgentPr
     name: DEFAULT_AGENT_PROFILE_NAME,
     description: builtinDefault.description,
     override: true,
+    main: builtinDefault.main,
     tools: builtinDefault.tools,
     disallowedTools: builtinDefault.disallowedTools,
     subagents: builtinDefault.subagents,

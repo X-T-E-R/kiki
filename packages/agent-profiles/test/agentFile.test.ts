@@ -98,6 +98,10 @@ body
     ).toThrow(/unsupported for main/);
   });
 
+  it('preserves explicit main: false separately from omission', () => {
+    expect(parse('---\nname: agent\ndescription: d\nmain: false\n---\nbody').main).toBe(false);
+  });
+
   it('parses main: true as a curation flag', () => {
     const def = parse('---\nname: solo\ndescription: d\nmain: true\n---\n\nbody\n');
     expect(def.main).toBe(true);
@@ -179,12 +183,36 @@ body
     ]);
   });
 
-  it('rejects a recommended_models entry missing when', () => {
-    expect(() =>
-      parse(
-        '---\nname: solo\ndescription: d\nrecommended_models:\n  - alias: other-model\n---\n\nbody\n',
-      ),
-    ).toThrow(/"recommended_models\[0\]\.when"/);
+  it('accepts alias-only candidates with either model-profile spelling', () => {
+    for (const field of ['recommended_models', 'model_profiles']) {
+      const definition = parse(`---\nname: solo\ndescription: d\n${field}:\n  - alias: other-model\n---\n\nbody\n`);
+      expect(definition.modelProfiles).toEqual([{ alias: 'other-model' }]);
+    }
+  });
+
+  it('parses independent profile budgets and per-model request overrides', () => {
+    const definition = parse(`---
+name: solo
+description: d
+context_budget: 64000
+max_completion_tokens: 8000
+model_profiles:
+  - alias: other-model
+    context_budget: 32000
+    max_completion_tokens: 4000
+    service_tier: flex
+    request_params:
+      temperature: 0.4
+      top_p: 0.8
+---
+body
+`);
+    expect(definition).toMatchObject({ contextBudget: 64000, maxCompletionTokens: 8000 });
+    expect(definition.modelProfiles?.[0]).toMatchObject({
+      alias: 'other-model', contextBudget: 32000, maxCompletionTokens: 4000,
+      serviceTier: 'flex', requestParams: { temperature: 0.4, top_p: 0.8 },
+    });
+    expect(() => parse('---\nname: solo\ndescription: d\ncontext_budget: 0\n---\nbody')).toThrow(/positive integer/);
   });
 
   it('rejects a recommended_models entry with an unknown key', () => {
