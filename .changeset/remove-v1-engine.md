@@ -9,7 +9,7 @@ What is gone:
 
 - The `@moonshot-ai/agent-core`, `@moonshot-ai/acp-adapter`, and `@moonshot-ai/migration-legacy` packages.
 - `KIMI_CODE_LEGACY_FLAG`, which selected the v1 engine for `kimi`, `kimi -p`, `kimi doctor`, `kimi acp`, `kimi export`, and `kimi provider`, and the VS Code `kimi.useAgentCoreV1` setting.
-- `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` and the five-tool Codex-style adapter (`spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`), which only ever existed on v1. Use `AgentRun`, `AgentSwarm`, `AgentList`, and `AgentSend`.
+- `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` and the five-tool Codex-style adapter (`spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`), which only ever existed on v1. Use `AgentRun`, `AgentList`, and `AgentSend`.
 - The `kimi migrate` command, its TUI screen, and the VS Code `Kimi Code: Migrate Legacy Data` command. Kiki can no longer import a kimi-cli-era `~/.kimi` home. Sessions imported before this release keep working and keep their `[imported]` badge.
 - The `Agent` alias for the `AgentRun` tool.
 

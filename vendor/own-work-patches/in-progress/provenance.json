@@ -7,7 +7,7 @@
   "outputArchiveSha256": "034a4314db8cf10e792866ec7b8e7000cff38a0945c5f81549b815db9a320792",
   "sourcePatch": "vendor/own-work-patches/in-progress/source.patch",
   "sourcePatchSha256": "07d357310364c0e0dd308737bf9f8a9a6a4357e3538912bb30c52f2e83e50bdb",
-  "sourceReference": "C:/Programs/Meta/MetaSystem/systems/own-work/packages/own-work",
+  "sourceReference": "<internal-monorepo>/systems/own-work/packages/own-work",
   "sourceReferenceGitHead": "6d76363e673484ddf40ca42d5837b129cdc29663",
   "sourceReferenceReadOnly": true,
   "changedSourceFiles": [
