@@ -183,7 +183,19 @@ function Invoke-Launch([string]$Root) {
     Get-ArtifactInfo $sidecarPath 'Promoted Kiki backend' | Out-Null
 
     # Tauri starts the adjacent kiki-server.exe through its external sidecar API.
-    Start-Process -FilePath $mainPath -WorkingDirectory $releasePath
+    if ((Split-Path -Leaf $rootPath) -eq 'Kiki-Dev') {
+        $previousHome = $env:KIKI_HOME
+        try {
+            $env:KIKI_HOME = $rootPath
+            Start-Process -FilePath $mainPath -WorkingDirectory $releasePath
+        }
+        finally {
+            $env:KIKI_HOME = $previousHome
+        }
+    }
+    else {
+        Start-Process -FilePath $mainPath -WorkingDirectory $releasePath
+    }
 }
 
 function Assert-SafeShortcutPath([string]$Path, [string]$Label) {

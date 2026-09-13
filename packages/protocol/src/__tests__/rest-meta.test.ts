@@ -5,6 +5,8 @@ import { metaResponseSchema, type MetaResponse } from '../rest/meta';
 describe('metaResponseSchema', () => {
   const sample = {
     server_version: '0.1.0',
+    build_id: 'build-42',
+    build_channel: 'beta',
     capabilities: {
       websocket: true,
       file_upload: true,
@@ -24,6 +26,8 @@ describe('metaResponseSchema', () => {
   it('round-trips a well-formed payload', () => {
     const parsed: MetaResponse = metaResponseSchema.parse(sample);
     expect(parsed.server_version).toBe('0.1.0');
+    expect(parsed.build_id).toBe('build-42');
+    expect(parsed.build_channel).toBe('beta');
     expect(parsed.capabilities.websocket).toBe(true);
     expect(parsed.server_id).toBe('01HXYZABCDEFGHJKMNPQRSTVWX');
     expect(parsed.started_at).toBe('2026-06-04T10:30:00.000Z');

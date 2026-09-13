@@ -36,6 +36,8 @@ interface DiskInstance {
   heartbeat_at: number;
   workspaces?: string[];
   host_version?: string;
+  build_id?: string;
+  build_channel?: string;
 }
 
 function writeInstance(serverId: string, fields: Partial<DiskInstance> & { pid: number }): void {
@@ -49,6 +51,8 @@ function writeInstance(serverId: string, fields: Partial<DiskInstance> & { pid: 
     heartbeat_at: fields.heartbeat_at ?? 1000,
     ...(fields.workspaces !== undefined ? { workspaces: fields.workspaces } : {}),
     ...(fields.host_version !== undefined ? { host_version: fields.host_version } : {}),
+    ...(fields.build_id !== undefined ? { build_id: fields.build_id } : {}),
+    ...(fields.build_channel !== undefined ? { build_channel: fields.build_channel } : {}),
   };
   writeFileSync(join(instancesDir, `${serverId}.json`), JSON.stringify(disk));
 }
@@ -91,10 +95,24 @@ describe('createInstanceRegistry — register / release', () => {
     expect(existsSync(filePath)).toBe(false);
   });
 
-  it('records host_version when provided', async () => {
+  it('records the server version and build identity when provided', async () => {
     const registry = createInstanceRegistry({ instancesDir, now: () => 1 });
-    const reg = await registry.register({ ...baseInfo, serverVersion: '1.2.3' });
-    expect(readInstance(reg.serverId).host_version).toBe('1.2.3');
+    const reg = await registry.register({
+      ...baseInfo,
+      serverVersion: '1.2.3',
+      buildId: 'build-42',
+      buildChannel: 'beta',
+    });
+    expect(readInstance(reg.serverId)).toMatchObject({
+      host_version: '1.2.3',
+      build_id: 'build-42',
+      build_channel: 'beta',
+    });
+    expect((await registry.listLive())[0]).toMatchObject({
+      serverVersion: '1.2.3',
+      buildId: 'build-42',
+      buildChannel: 'beta',
+    });
     await reg.release();
   });
 

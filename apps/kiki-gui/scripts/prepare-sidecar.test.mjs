@@ -49,18 +49,24 @@ test('writes target-specific manifest names beside the sidecar', () => {
   );
 });
 
-test('manifest pins the staged bytes, sha256, target, and server version', () => {
+test('manifest pins the staged bytes, target, version, and desktop build identity', () => {
   const root = mkdtempSync(join(tmpdir(), 'kiki-sidecar-manifest-'));
   try {
     const sidecar = join(root, 'kiki-server');
     writeFileSync(sidecar, 'known-sidecar-bytes');
-    assert.deepEqual(createSidecarManifest(sidecar, 'test-target', '9.8.7'), {
-      schemaVersion: 1,
+    assert.deepEqual(createSidecarManifest(sidecar, 'test-target', '9.8.7', 'build-42', 'beta'), {
+      schemaVersion: 2,
       target: 'test-target',
       bytes: 19,
       sha256: '29025d693dd94cf370051062a2d686f6b42d509aadb4de56d4b8f40f15a707cd',
       serverVersion: '9.8.7',
+      buildId: 'build-42',
+      buildChannel: 'beta',
     });
+    assert.equal(
+      createSidecarManifest(sidecar, 'test-target', '9.8.7').buildId,
+      '29025d693dd94cf370051062a2d686f6b42d509aadb4de56d4b8f40f15a707cd',
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

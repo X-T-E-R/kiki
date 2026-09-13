@@ -21,6 +21,8 @@ export interface ServerInstanceInfo {
   readonly heartbeatAt: number;
   readonly workspaces: readonly string[];
   readonly serverVersion?: string;
+  readonly buildId?: string;
+  readonly buildChannel?: string;
 }
 
 interface ServerInstanceDisk {
@@ -32,6 +34,8 @@ interface ServerInstanceDisk {
   heartbeat_at: number;
   workspaces?: string[];
   host_version?: string;
+  build_id?: string;
+  build_channel?: string;
 }
 
 export interface InstanceRegistration {
@@ -84,7 +88,9 @@ function encode(info: ServerInstanceInfo): string {
     started_at: info.startedAt,
     heartbeat_at: info.heartbeatAt,
     workspaces: [...info.workspaces],
-    ...(info.serverVersion !== undefined ? { host_version: info.serverVersion } : {}),
+    host_version: info.serverVersion,
+    build_id: info.buildId,
+    build_channel: info.buildChannel,
   };
   return JSON.stringify(disk);
 }
@@ -99,7 +105,10 @@ function decode(raw: string): ServerInstanceInfo | undefined {
       typeof parsed.port === 'number' &&
       typeof parsed.started_at === 'number' &&
       typeof parsed.heartbeat_at === 'number' &&
-      (parsed.workspaces === undefined || parsed.workspaces.every((value) => typeof value === 'string'))
+      (parsed.workspaces === undefined || parsed.workspaces.every((value) => typeof value === 'string')) &&
+      (parsed.host_version === undefined || typeof parsed.host_version === 'string') &&
+      (parsed.build_id === undefined || typeof parsed.build_id === 'string') &&
+      (parsed.build_channel === undefined || typeof parsed.build_channel === 'string')
     ) {
       return {
         serverId: parsed.server_id,
@@ -109,7 +118,9 @@ function decode(raw: string): ServerInstanceInfo | undefined {
         startedAt: parsed.started_at,
         heartbeatAt: parsed.heartbeat_at,
         workspaces: parsed.workspaces ?? [],
-        ...(parsed.host_version !== undefined ? { serverVersion: parsed.host_version } : {}),
+        serverVersion: parsed.host_version,
+        buildId: parsed.build_id,
+        buildChannel: parsed.build_channel,
       };
     }
     return undefined;
@@ -233,7 +244,9 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
             startedAt: info.startedAt,
             heartbeatAt: now(),
             workspaces: [...state.workspaces],
-            ...(info.serverVersion !== undefined ? { serverVersion: info.serverVersion } : {}),
+            serverVersion: info.serverVersion,
+            buildId: info.buildId,
+            buildChannel: info.buildChannel,
           };
           await writeFileAtomic(filePath, encode(full));
         } finally {

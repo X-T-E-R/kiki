@@ -54,6 +54,8 @@ export type ExternalDelegationState = z.infer<typeof externalDelegationStateSche
 
 export const metaResponseSchema = z.object({
   server_version: z.string().min(1),
+  build_id: z.string().min(1).optional(),
+  build_channel: z.string().min(1).optional(),
   capabilities: metaCapabilitiesSchema,
   server_id: z.string().min(1),
   started_at: isoDateTimeSchema,

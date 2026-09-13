@@ -18,7 +18,7 @@ macro_rules! command_names {
 
 const APP_COMMANDS: &[&str] = app_commands!(command_names);
 const MAIN_CAPABILITY_PATH: &str = "capabilities/main.json";
-const SIDECAR_MANIFEST_VERSION: u32 = 1;
+const SIDECAR_MANIFEST_VERSION: u32 = 2;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +28,8 @@ struct SidecarManifest {
     bytes: u64,
     sha256: String,
     server_version: String,
+    build_id: String,
+    build_channel: String,
 }
 
 fn sha256_file(path: &Path) -> String {
@@ -55,8 +57,8 @@ fn sha256_file(path: &Path) -> String {
 }
 
 fn validate_main_capability() {
-    let raw = fs::read_to_string(MAIN_CAPABILITY_PATH)
-        .expect("Cannot read the main Tauri capability");
+    let raw =
+        fs::read_to_string(MAIN_CAPABILITY_PATH).expect("Cannot read the main Tauri capability");
     let capability: serde_json::Value =
         serde_json::from_str(&raw).expect("The main Tauri capability is invalid JSON");
     let windows = capability["windows"]
@@ -143,6 +145,18 @@ fn main() {
             && !manifest.server_version.contains(['\r', '\n']),
         "Kiki desktop sidecar manifest has an invalid serverVersion; run `pnpm desktop:prepare` from apps/kiki-gui"
     );
+    assert!(
+        !manifest.build_id.is_empty()
+            && manifest.build_id.trim() == manifest.build_id
+            && !manifest.build_id.contains(['\r', '\n']),
+        "Kiki desktop sidecar manifest has an invalid buildId; run `pnpm desktop:prepare` from apps/kiki-gui"
+    );
+    assert!(
+        !manifest.build_channel.is_empty()
+            && manifest.build_channel.trim() == manifest.build_channel
+            && !manifest.build_channel.contains(['\r', '\n']),
+        "Kiki desktop sidecar manifest has an invalid buildChannel; run `pnpm desktop:prepare` from apps/kiki-gui"
+    );
 
     println!("cargo:rerun-if-changed={}", sidecar.display());
     println!("cargo:rerun-if-changed={}", manifest_path.display());
@@ -150,9 +164,20 @@ fn main() {
         "cargo:rustc-env=KIKI_SIDECAR_SERVER_VERSION={}",
         manifest.server_version
     );
+    println!(
+        "cargo:rustc-env=KIKI_SIDECAR_BUILD_ID={}",
+        manifest.build_id
+    );
+    println!(
+        "cargo:rustc-env=KIKI_SIDECAR_BUILD_CHANNEL={}",
+        manifest.build_channel
+    );
     println!("cargo:rerun-if-env-changed=KIKI_UPDATER_PUBLIC_KEY");
     if let Ok(public_key) = env::var("KIKI_UPDATER_PUBLIC_KEY") {
-        println!("cargo:rustc-env=KIKI_UPDATER_PUBLIC_KEY={}", public_key.trim());
+        println!(
+            "cargo:rustc-env=KIKI_UPDATER_PUBLIC_KEY={}",
+            public_key.trim()
+        );
     }
     println!("cargo:rerun-if-env-changed=KIKI_UPDATE_CHANNEL");
     println!(

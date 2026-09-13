@@ -217,6 +217,8 @@ export interface ServerStartOptions {
    * `hostIdentity.version` instead.
    */
   readonly serverVersion?: string;
+  readonly buildId?: string;
+  readonly buildChannel?: string;
 }
 
 export interface RunningServer {
@@ -239,6 +241,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKikiHome(opts.homeDir);
   const serverVersion = opts.serverVersion ?? getServerVersion();
+  const buildId = opts.buildId ?? process.env['KIKI_BUILD_ID'];
+  const buildChannel = opts.buildChannel ?? process.env['KIKI_BUILD_CHANNEL'];
   const startedAt = Date.now();
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
   const externalDelegation = opts.externalDelegation === undefined
@@ -256,6 +260,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     port,
     startedAt,
     serverVersion,
+    buildId,
+    buildChannel,
   });
   const exposureClass = classify(host, { bindClass: opts.bindClass });
   if (exposureClass !== 'loopback' && opts.insecureNoTls !== true) {
@@ -613,6 +619,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   await registerApiV1Routes(app, core, {
     serverVersion,
+    buildId,
+    buildChannel,
     serverId: registration.serverId,
     startedAt: new Date(startedAt).toISOString(),
     hostIdentity: opts.hostIdentity,

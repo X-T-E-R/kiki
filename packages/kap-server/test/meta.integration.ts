@@ -52,7 +52,7 @@ describe('/api/meta experimental_flags', () => {
     }
   });
 
-  async function boot(toml?: string): Promise<string> {
+  async function boot(toml?: string, buildId?: string, buildChannel?: string): Promise<string> {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-meta-'));
     if (toml !== undefined) {
       await writeFile(join(home, 'config.toml'), toml, 'utf-8');
@@ -63,6 +63,8 @@ describe('/api/meta experimental_flags', () => {
       port: 0,
       homeDir: home,
       logLevel: 'silent',
+      buildId,
+      buildChannel,
     });
     return `http://127.0.0.1:${server.port}`;
   }
@@ -80,6 +82,18 @@ describe('/api/meta experimental_flags', () => {
     const base = await boot();
     const flags = await getMetaFlags(base);
     expect(flags['tool-select']).toBe(false);
+  });
+
+  it('reports the immutable desktop build identity when supplied', async () => {
+    const base = await boot(undefined, 'build-42', 'beta');
+    const res = await authedFetch(server as RunningServer, base, '/api/meta');
+    expect(await res.json()).toMatchObject({
+      code: 0,
+      data: {
+        build_id: 'build-42',
+        build_channel: 'beta',
+      },
+    });
   });
 
   it('reports a config-enabled flag from the very first response', async () => {

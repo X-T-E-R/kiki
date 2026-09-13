@@ -27,7 +27,7 @@ const KIKI_ROOT = resolve(GUI_ROOT, '..', '..');
 const BINARIES_DIR = resolve(GUI_ROOT, 'src-tauri', 'binaries');
 const KIMI_PACKAGE_JSON = resolve(KIKI_ROOT, 'apps', 'kimi-code', 'package.json');
 const SIDECAR_NAME = 'kiki-server';
-const SIDECAR_MANIFEST_VERSION = 1;
+const SIDECAR_MANIFEST_VERSION = 2;
 
 const RUST_TO_SEA_TARGET = new Map([
   ['x86_64-pc-windows-msvc', 'win32-x64'],
@@ -92,7 +92,13 @@ export function readKimiServerVersion(packageJsonPath = KIMI_PACKAGE_JSON) {
   return parsed.version;
 }
 
-export function createSidecarManifest(sidecarPath, target, serverVersion) {
+export function createSidecarManifest(
+  sidecarPath,
+  target,
+  serverVersion,
+  buildId,
+  buildChannel = 'dev',
+) {
   const bytes = statSync(sidecarPath).size;
   const sha256 = createHash('sha256').update(readFileSync(sidecarPath)).digest('hex');
   return {
@@ -101,6 +107,8 @@ export function createSidecarManifest(sidecarPath, target, serverVersion) {
     bytes,
     sha256,
     serverVersion,
+    buildId: buildId?.trim() || sha256,
+    buildChannel,
   };
 }
 
@@ -143,7 +151,13 @@ export function stageSidecar({ argv = process.argv.slice(2), env = process.env }
   if (!target.includes('windows')) chmodSync(destination, 0o755);
 
   const serverVersion = readKimiServerVersion();
-  const manifest = createSidecarManifest(destination, target, serverVersion);
+  const manifest = createSidecarManifest(
+    destination,
+    target,
+    serverVersion,
+    env['KIKI_BUILD_SHA'],
+    env['KIKI_UPDATE_CHANNEL']?.trim() || 'dev',
+  );
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   return { target, source, destination, manifestPath, ...manifest };

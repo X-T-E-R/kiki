@@ -6,6 +6,8 @@
  * process lifecycle at 00a2c6fc43754f40022b0703459824559bee73ea (MIT).
  * Kiki deliberately keeps only the single-child subset needed here and relies
  * on kap-server's own registry, token, and authenticated shutdown contracts.
+ * Registry peers are attached only when their exact build identity matches;
+ * every attached peer remains externally owned and is never stopped by Kiki.
  */
 pub mod config_import;
 
@@ -57,6 +59,8 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const MAX_HTTP_STATUS_LINE_BYTES: usize = 256;
 const MAX_META_RESPONSE_BYTES: usize = 64 * 1024;
 const EXPECTED_SIDECAR_SERVER_VERSION: &str = env!("KIKI_SIDECAR_SERVER_VERSION");
+const EXPECTED_SIDECAR_BUILD_ID: &str = env!("KIKI_SIDECAR_BUILD_ID");
+const EXPECTED_SIDECAR_BUILD_CHANNEL: &str = env!("KIKI_SIDECAR_BUILD_CHANNEL");
 const UPDATER_PUBLIC_KEY: Option<&str> = option_env!("KIKI_UPDATER_PUBLIC_KEY");
 const STABLE_UPDATE_ENDPOINT: &str = "https://x-t-e-r.github.io/kiki/updater/stable/latest.json";
 const BETA_UPDATE_ENDPOINT: &str = "https://x-t-e-r.github.io/kiki/updater/beta/latest.json";
@@ -92,6 +96,10 @@ struct InstanceRecord {
     heartbeat_at: u64,
     #[serde(default)]
     workspaces: Vec<String>,
+    #[serde(default)]
+    build_id: Option<String>,
+    #[serde(default)]
+    build_channel: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,16 +109,22 @@ struct InstanceCandidate {
     started_at: u64,
     heartbeat_at: u64,
     workspaces: Vec<String>,
+    build_id: Option<String>,
+    build_channel: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct MetaEnvelope {
-    data: MetaData,
+    data: BackendIdentity,
 }
 
-#[derive(Debug, Deserialize)]
-struct MetaData {
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+struct BackendIdentity {
     server_version: String,
+    #[serde(default)]
+    build_id: Option<String>,
+    #[serde(default)]
+    build_channel: Option<String>,
 }
 
 /// Structured backend failure for the frontend's desktop failure card.
@@ -520,7 +534,9 @@ impl BackendManager {
             .clone();
         if let Some(connection) = cached {
             let port = connection_port(&connection)?;
-            if authenticated_server_version(port, &connection.token).is_ok() {
+            if authenticated_backend_identity(port, &connection.token)
+                .is_ok_and(|identity| backend_identity_matches(&identity))
+            {
                 return Ok(connection);
             }
             self.clear_attached(&connection);
@@ -581,6 +597,8 @@ impl BackendManager {
                         })?
                         .args(["web", "--no-open", "--port", "0", "--log-level", "warn"])
                         .env("KIKI_HOME", &runtime.kiki_home)
+                        .env("KIKI_BUILD_ID", EXPECTED_SIDECAR_BUILD_ID)
+                        .env("KIKI_BUILD_CHANNEL", EXPECTED_SIDECAR_BUILD_CHANNEL)
                         .env("KIKI_DESKTOP_BUNDLED", "1")
                         .env("KIKI_DESKTOP_OAUTH_HOME", &runtime.oauth_home);
                     let (events, child) = command.spawn().map_err(|error| {
@@ -628,18 +646,21 @@ impl BackendManager {
                         url: format!("http://127.0.0.1:{}", record.port),
                         token,
                     };
-                    if let Ok(server_version) =
-                        authenticated_server_version(record.port, &connection.token)
+                    if let Ok(identity) =
+                        authenticated_backend_identity(record.port, &connection.token)
                     {
-                        if !sidecar_version_matches(
-                            EXPECTED_SIDECAR_SERVER_VERSION,
-                            &server_version,
-                        ) {
+                        if !backend_identity_matches(&identity) {
                             self.discard_backend(&pending);
                             return Err(pending.monitor.startup_failure(
                                 pending.pid,
                                 format!(
-                                    "reported server version {server_version}, but this desktop bundle expects {EXPECTED_SIDECAR_SERVER_VERSION}. The packaged backend is stale or belongs to a different build; run `pnpm desktop:prepare` and rebuild Kiki."
+                                    "reported backend identity {} / {} / {}, but this desktop bundle expects {} / {} / {}. The packaged backend is stale or belongs to a different build; run `pnpm desktop:prepare` and rebuild Kiki.",
+                                    identity.server_version,
+                                    identity.build_id.as_deref().unwrap_or("missing build id"),
+                                    identity.build_channel.as_deref().unwrap_or("missing channel"),
+                                    EXPECTED_SIDECAR_SERVER_VERSION,
+                                    EXPECTED_SIDECAR_BUILD_ID,
+                                    EXPECTED_SIDECAR_BUILD_CHANNEL,
                                 ),
                             ));
                         }
@@ -2505,6 +2526,10 @@ fn kiki_home_dir() -> Result<PathBuf, String> {
     if let Some(path) = env::var_os("KIKI_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));
     }
+    default_kiki_home_dir()
+}
+
+fn default_kiki_home_dir() -> Result<PathBuf, String> {
     dirs::home_dir()
         .map(|home| home.join(".kiki"))
         .ok_or_else(|| "Cannot resolve Kiki Home for the current user".to_string())
@@ -2551,6 +2576,80 @@ fn read_instance_records(home: &Path) -> Result<Vec<InstanceRecord>, String> {
     Ok(records)
 }
 
+fn read_discoverable_instance_records(
+    home: &Path,
+    is_alive: impl Fn(u32) -> bool,
+) -> Result<Vec<InstanceRecord>, String> {
+    let directories = [
+        home.join("server").join("instances"),
+        home.join("instances"),
+    ];
+    let mut records = Vec::new();
+    for instances in directories {
+        let entries = match fs::read_dir(&instances) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Cannot read Kiki's server registry at {}: {error}",
+                    instances.display()
+                ))
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let record = fs::read_to_string(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<InstanceRecord>(&raw).ok());
+            let valid = record
+                .as_ref()
+                .is_some_and(|record| instance_candidate(record.clone()).is_some());
+            let alive = record.as_ref().is_some_and(|record| is_alive(record.pid));
+            if !valid || !alive {
+                if let Err(error) = fs::remove_file(&path) {
+                    if error.kind() != io::ErrorKind::NotFound {
+                        eprintln!(
+                            "Kiki could not prune invalid server instance record {}: {error}",
+                            path.display()
+                        );
+                    }
+                }
+                continue;
+            }
+            records.push(record.expect("validated instance record must exist"));
+        }
+    }
+    Ok(records)
+}
+
+fn remove_owned_instance_records(home: &Path, pid: u32, launched_at_ms: u64) {
+    for instances in [
+        home.join("server").join("instances"),
+        home.join("instances"),
+    ] {
+        let Ok(entries) = fs::read_dir(instances) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<InstanceRecord>(&raw) else {
+                continue;
+            };
+            if record.pid == pid && record.started_at >= launched_at_ms {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 fn find_instance_for_pid(
     home: &Path,
     pid: u32,
@@ -2570,15 +2669,51 @@ fn discover_running_backend(
     let Some(token) = read_token(home)? else {
         return Ok(None);
     };
-    for candidate in
-        rank_instance_candidates(read_instance_records(home)?, current_workspace, pid_alive)
-    {
-        if authenticated_server_version(candidate.port, &token).is_ok() {
+    for candidate in rank_instance_candidates(
+        read_discoverable_instance_records(home, pid_alive)?,
+        current_workspace,
+        |_| true,
+    ) {
+        if candidate.build_id.as_deref() != Some(EXPECTED_SIDECAR_BUILD_ID)
+            || candidate.build_channel.as_deref() != Some(EXPECTED_SIDECAR_BUILD_CHANNEL)
+        {
+            eprintln!(
+                "Kiki skipped backend pid {} on port {}: registry build identity {} / {} does not match {} / {}",
+                candidate.pid,
+                candidate.port,
+                candidate.build_id.as_deref().unwrap_or("missing build id"),
+                candidate
+                    .build_channel
+                    .as_deref()
+                    .unwrap_or("missing channel"),
+                EXPECTED_SIDECAR_BUILD_ID,
+                EXPECTED_SIDECAR_BUILD_CHANNEL,
+            );
+            continue;
+        }
+        let Ok(identity) = authenticated_backend_identity(candidate.port, &token) else {
+            continue;
+        };
+        if backend_identity_matches(&identity) {
             return Ok(Some(DesktopConnection {
                 url: format!("http://127.0.0.1:{}", candidate.port),
                 token,
             }));
         }
+        eprintln!(
+            "Kiki skipped backend pid {} on port {}: authenticated identity {} / {} / {} does not match {} / {} / {}",
+            candidate.pid,
+            candidate.port,
+            identity.server_version,
+            identity.build_id.as_deref().unwrap_or("missing build id"),
+            identity
+                .build_channel
+                .as_deref()
+                .unwrap_or("missing channel"),
+            EXPECTED_SIDECAR_SERVER_VERSION,
+            EXPECTED_SIDECAR_BUILD_ID,
+            EXPECTED_SIDECAR_BUILD_CHANNEL,
+        );
     }
     Ok(None)
 }
@@ -2637,6 +2772,8 @@ fn instance_candidate(record: InstanceRecord) -> Option<InstanceCandidate> {
         started_at: record.started_at,
         heartbeat_at: record.heartbeat_at.max(record.started_at),
         workspaces: record.workspaces,
+        build_id: record.build_id,
+        build_channel: record.build_channel,
     })
 }
 
@@ -2717,13 +2854,15 @@ fn read_token(home: &Path) -> Result<Option<String>, String> {
     }
 }
 
-fn sidecar_version_matches(expected: &str, actual: &str) -> bool {
-    expected == actual
+fn backend_identity_matches(identity: &BackendIdentity) -> bool {
+    identity.server_version == EXPECTED_SIDECAR_SERVER_VERSION
+        && identity.build_id.as_deref() == Some(EXPECTED_SIDECAR_BUILD_ID)
+        && identity.build_channel.as_deref() == Some(EXPECTED_SIDECAR_BUILD_CHANNEL)
 }
 
-fn authenticated_server_version(port: u16, token: &str) -> Result<String, String> {
+fn authenticated_backend_identity(port: u16, token: &str) -> Result<BackendIdentity, String> {
     let response = http_get_body(port, "/api/meta", token, MAX_META_RESPONSE_BYTES)?;
-    parse_meta_server_version_response(&response)
+    parse_meta_backend_identity_response(&response)
 }
 
 /// Authenticated GET against the loopback backend; returns the raw response
@@ -2840,7 +2979,7 @@ fn parse_workspaces_registry_response(response: &[u8]) -> Result<Vec<PathBuf>, S
     Ok(roots)
 }
 
-fn parse_meta_server_version_response(response: &[u8]) -> Result<String, String> {
+fn parse_meta_backend_identity_response(response: &[u8]) -> Result<BackendIdentity, String> {
     let status_end = response
         .iter()
         .position(|byte| *byte == b'\n')
@@ -2864,7 +3003,23 @@ fn parse_meta_server_version_response(response: &[u8]) -> Result<String, String>
     if envelope.data.server_version.is_empty() {
         return Err("Kiki backend metadata omitted server_version".to_string());
     }
-    Ok(envelope.data.server_version)
+    if envelope
+        .data
+        .build_id
+        .as_ref()
+        .is_some_and(String::is_empty)
+    {
+        return Err("Kiki backend metadata contained an empty build_id".to_string());
+    }
+    if envelope
+        .data
+        .build_channel
+        .as_ref()
+        .is_some_and(String::is_empty)
+    {
+        return Err("Kiki backend metadata contained an empty build_channel".to_string());
+    }
+    Ok(envelope.data)
 }
 
 fn connection_port(connection: &DesktopConnection) -> Result<u16, String> {
@@ -2970,6 +3125,7 @@ fn parse_http_status_line(bytes: &[u8]) -> StatusLineParse {
 fn force_stop(backend: OwnedBackend) {
     let _ = kill_tree::blocking::kill_tree(backend.pid);
     let _ = backend.child.kill();
+    remove_owned_instance_records(&backend.home, backend.pid, backend.launched_at_ms);
 }
 
 struct TrayLabels {
@@ -3236,7 +3392,10 @@ mod tests {
         let custom_paths = resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).unwrap();
         assert_eq!(custom_paths.config_path, kiki.join("config.toml"));
         assert_eq!(custom_paths.oauth_home, custom_home);
-        assert_eq!(selected_compatibility_home(&custom.compatibility, &kimi, &kiki).unwrap(), custom_home);
+        assert_eq!(
+            selected_compatibility_home(&custom.compatibility, &kimi, &kiki).unwrap(),
+            custom_home
+        );
 
         custom.compatibility.home_kind = CompatibilityHomeKind::Kiki;
         custom.compatibility.custom_home = None;
@@ -3248,6 +3407,14 @@ mod tests {
         custom.compatibility.custom_home = Some("relative".to_string());
         assert!(selected_compatibility_home(&custom.compatibility, &kimi, &kiki).is_err());
         assert!(resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).is_err());
+    }
+
+    #[test]
+    fn default_kiki_home_preserves_the_existing_user_state_root() {
+        assert_eq!(
+            default_kiki_home_dir().unwrap(),
+            dirs::home_dir().unwrap().join(".kiki")
+        );
     }
 
     #[test]
@@ -3880,6 +4047,86 @@ mod tests {
     }
 
     #[test]
+    fn discovery_cleanup_keeps_valid_live_records_and_removes_invalid_or_dead_records() {
+        let home = env::temp_dir().join(format!(
+            "kiki-discovery-cleanup-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        let instances = home.join("server").join("instances");
+        fs::create_dir_all(&instances).unwrap();
+        let live = instances.join("live.json");
+        let dead = instances.join("dead.json");
+        let remote = instances.join("remote.json");
+        let invalid = instances.join("invalid.json");
+        fs::write(
+            &live,
+            r#"{"pid":42,"host":"127.0.0.1","port":43123,"started_at":100}"#,
+        )
+        .unwrap();
+        fs::write(
+            &dead,
+            r#"{"pid":43,"host":"127.0.0.1","port":43124,"started_at":100}"#,
+        )
+        .unwrap();
+        fs::write(
+            &remote,
+            r#"{"pid":42,"host":"example.test","port":43125,"started_at":100}"#,
+        )
+        .unwrap();
+        fs::write(&invalid, "{broken").unwrap();
+
+        let records = read_discoverable_instance_records(&home, |pid| pid == 42).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].pid, 42);
+        assert!(live.exists());
+        assert!(!dead.exists());
+        assert!(!remote.exists());
+        assert!(!invalid.exists());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn owned_instance_cleanup_removes_only_valid_records_from_the_same_launch() {
+        let home = env::temp_dir().join(format!(
+            "kiki-owned-instance-cleanup-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        let instances = home.join("server").join("instances");
+        fs::create_dir_all(&instances).unwrap();
+        let matching = instances.join("matching.json");
+        let older = instances.join("older.json");
+        let other_pid = instances.join("other-pid.json");
+        let invalid = instances.join("invalid.json");
+        fs::write(
+            &matching,
+            r#"{"pid":42,"host":"127.0.0.1","port":43123,"started_at":200}"#,
+        )
+        .unwrap();
+        fs::write(
+            &older,
+            r#"{"pid":42,"host":"127.0.0.1","port":43124,"started_at":99}"#,
+        )
+        .unwrap();
+        fs::write(
+            &other_pid,
+            r#"{"pid":43,"host":"127.0.0.1","port":43125,"started_at":200}"#,
+        )
+        .unwrap();
+        fs::write(&invalid, "{broken").unwrap();
+
+        remove_owned_instance_records(&home, 42, 100);
+
+        assert!(!matching.exists());
+        assert!(older.exists());
+        assert!(other_pid.exists());
+        assert!(invalid.exists());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn desktop_connection_token_comes_from_the_home_token_file() {
         let home = env::temp_dir().join(format!(
             "kiki-token-test-{}-{}",
@@ -4021,19 +4268,105 @@ mod tests {
     }
 
     #[test]
-    fn metadata_probe_extracts_version_and_rejects_incompatible_payloads() {
-        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"data\":{\"server_version\":\"0.36.1\"}}";
-        assert_eq!(
-            parse_meta_server_version_response(response).unwrap(),
-            "0.36.1"
+    fn metadata_probe_extracts_build_identity_and_rejects_incompatible_payloads() {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"data\":{{\"server_version\":\"{}\",\"build_id\":\"{}\",\"build_channel\":\"{}\"}}}}",
+            EXPECTED_SIDECAR_SERVER_VERSION,
+            EXPECTED_SIDECAR_BUILD_ID,
+            EXPECTED_SIDECAR_BUILD_CHANNEL,
         );
-        assert!(sidecar_version_matches("0.36.1", "0.36.1"));
-        assert!(!sidecar_version_matches("0.36.1", "0.35.0"));
+        let identity = parse_meta_backend_identity_response(response.as_bytes()).unwrap();
+        assert!(backend_identity_matches(&identity));
+
+        let same_version_other_build = BackendIdentity {
+            server_version: EXPECTED_SIDECAR_SERVER_VERSION.to_string(),
+            build_id: Some("different-build".to_string()),
+            build_channel: Some(EXPECTED_SIDECAR_BUILD_CHANNEL.to_string()),
+        };
+        assert!(!backend_identity_matches(&same_version_other_build));
 
         let missing = b"HTTP/1.1 200 OK\r\n\r\n{\"data\":{}}";
-        assert!(parse_meta_server_version_response(missing).is_err());
+        assert!(parse_meta_backend_identity_response(missing).is_err());
         let rejected = b"HTTP/1.1 401 Unauthorized\r\n\r\n{}";
-        assert!(parse_meta_server_version_response(rejected).is_err());
+        assert!(parse_meta_backend_identity_response(rejected).is_err());
+    }
+
+    #[test]
+    fn discovery_rejects_same_version_different_build_without_removing_external_record() {
+        let home = env::temp_dir().join(format!(
+            "kiki-build-selection-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        let instances = home.join("server").join("instances");
+        fs::create_dir_all(&instances).unwrap();
+        fs::write(home.join("server.token"), "test-token\n").unwrap();
+        let body = serde_json::json!({
+            "data": {
+                "server_version": EXPECTED_SIDECAR_SERVER_VERSION,
+                "build_id": "different-build",
+                "build_channel": EXPECTED_SIDECAR_BUILD_CHANNEL,
+            }
+        })
+        .to_string();
+
+        let rejected_port = spawn_stub_server("200 OK", body, 1);
+        let record_path = instances.join("rejected.json");
+        fs::write(
+            &record_path,
+            serde_json::json!({
+                "server_id": "rejected",
+                "pid": std::process::id(),
+                "host": "127.0.0.1",
+                "port": rejected_port,
+                "started_at": 100,
+                "heartbeat_at": 100,
+                "build_id": EXPECTED_SIDECAR_BUILD_ID,
+                "build_channel": EXPECTED_SIDECAR_BUILD_CHANNEL,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(discover_running_backend(&home, None).unwrap(), None);
+        assert!(record_path.exists());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn discovery_skips_legacy_record_without_build_identity_before_http_probe() {
+        let home = env::temp_dir().join(format!(
+            "kiki-record-build-prefilter-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        let instances = home.join("server").join("instances");
+        fs::create_dir_all(&instances).unwrap();
+        fs::write(home.join("server.token"), "test-token\n").unwrap();
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let record_path = instances.join("legacy.json");
+        fs::write(
+            &record_path,
+            serde_json::json!({
+                "server_id": "legacy",
+                "pid": std::process::id(),
+                "host": "127.0.0.1",
+                "port": port,
+                "started_at": 100,
+                "heartbeat_at": 100,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(discover_running_backend(&home, None).unwrap(), None);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(record_path.exists());
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -4271,7 +4604,9 @@ mod tests {
     #[test]
     fn host_path_citations_require_real_paths_without_relaxing_authorization() {
         let root = env::current_dir().unwrap().join(".tmp").join(format!(
-            "host-reference-{}-{}", std::process::id(), unix_epoch_millis().unwrap()
+            "host-reference-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
         ));
         fs::create_dir_all(&root).unwrap();
         let file = root.join("source 中.txt");
@@ -4283,7 +4618,9 @@ mod tests {
         let manager = BackendManager::default();
         for path in [&file, &root] {
             for op in [HostPathOp::Open, HostPathOp::Reveal] {
-                let error = manager.require_authorized_host_path(path, op, &|_| panic!("must not prompt")).unwrap_err();
+                let error = manager
+                    .require_authorized_host_path(path, op, &|_| panic!("must not prompt"))
+                    .unwrap_err();
                 assert!(error.contains("not connected"), "{error}");
             }
         }

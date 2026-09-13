@@ -20,6 +20,8 @@ interface RouteHost {
 
 export interface MetaRouteOptions {
   readonly serverVersion: string;
+  readonly buildId?: string;
+  readonly buildChannel?: string;
   readonly serverId: string;
   readonly startedAt: string;
   /** Whether terminal REST and WebSocket controls are exposed on this bind. */
@@ -64,6 +66,8 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
   };
   const staticData = Object.freeze({
     server_version: opts.serverVersion,
+    build_id: opts.buildId,
+    build_channel: opts.buildChannel,
     capabilities: Object.freeze(capabilities),
     server_id: opts.serverId,
     started_at: opts.startedAt,

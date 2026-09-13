@@ -64,6 +64,8 @@ interface ApiV1RouteHost {
 
 export interface RegisterApiV1RoutesOptions {
   readonly serverVersion: string;
+  readonly buildId?: string;
+  readonly buildChannel?: string;
   readonly serverId: string;
   readonly startedAt: string;
   readonly hostIdentity: KimiHostIdentity;
@@ -115,6 +117,8 @@ export async function registerApiV1Routes(
 
       registerMetaRoute(apiV1, {
         serverVersion: opts.serverVersion,
+        buildId: opts.buildId,
+        buildChannel: opts.buildChannel,
         serverId: opts.serverId,
         startedAt: opts.startedAt,
         enableTerminals: opts.enableTerminals !== false,
