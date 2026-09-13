@@ -34,6 +34,7 @@ const KIMI_CONFIG_DOMAINS = [
   'permission',
   'hooks',
   'nbSearch',
+  'nbSearchSource',
   'mergeAllAvailableSkills',
   'extraSkillDirs',
   'loopControl',

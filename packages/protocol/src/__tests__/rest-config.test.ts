@@ -35,6 +35,13 @@ describe('config REST protocol', () => {
     expect(patchConfigRequestSchema.safeParse({ services: {} }).success).toBe(false);
   });
 
+  it('keeps local-source preferences outside the canonical config and rejects source secrets', () => {
+    expect(patchConfigRequestSchema.parse({ nb_search_source: {} })).toEqual({ nb_search_source: { reuse_local_config: true } });
+    expect(configResponseSchema.parse({ nb_search_source: { reuse_local_config: false } }).nb_search_source).toEqual({ reuse_local_config: false });
+    expect(nbSearchConfigPatchSchema.safeParse({ reuse_local_config: false }).success).toBe(false);
+    expect(patchConfigRequestSchema.safeParse({ nb_search_source: { reuse_local_config: false, api_key: 'fixture-private-key' } }).success).toBe(false);
+  });
+
   it('accepts the explicit nb_search config contract', () => {
     expect(patchConfigRequestSchema.parse({
       nb_search: {

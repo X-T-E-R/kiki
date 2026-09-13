@@ -6,6 +6,7 @@
  */
 
 import '@kiki/node-sdk/native-fs-watch-error-guard';
+import { initializeNbSearchWorkerEntry } from './native/nb-search-worker';
 
 import {
   flushDiagnosticLogs,
@@ -74,6 +75,7 @@ export async function handleMainCommand(
 
 export function main(): void {
   process.title = PROCESS_NAME;
+  if (initializeNbSearchWorkerEntry()) return;
   bootstrap();
 }
 

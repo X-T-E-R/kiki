@@ -1771,6 +1771,7 @@ export const zh: Record<I18nKey, string> = {
   'st.nbSearch.source.issue.LOCAL_CONFIG_UNREADABLE': '服务器未能读取本机 nb-search 配置。请检查文件及访问权限，或关闭复用。',
   'st.nbSearch.source.issue.EFFECTIVE_CONFIG_INVALID': '合并后的配置无效。请检查 nb-search 设置及 Kiki 覆盖项，或关闭复用以隔离本机文件。',
   'st.nbSearch.source.issue.ISOLATED_STORAGE_UNAVAILABLE': 'Kiki 未能准备独立搜索存储。请检查其缓存目录的访问权限后重试。',
+  'st.nbSearch.source.issue.LOCAL_CONFIG_INVALID_IGNORED': '本机 nb-search 配置无法解析，Kiki 已忽略该文件并以默认配置继续。修正或删除该文件后即可恢复生效。',
   'st.nbSearch.source.layerDefaults': '引擎默认',
   'st.nbSearch.source.layerLocal': '服务器本机 nb-search 配置',
   'st.nbSearch.source.layerEnvironment': '服务器环境变量',

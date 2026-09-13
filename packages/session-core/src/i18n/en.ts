@@ -1800,6 +1800,7 @@ export const en = {
   'st.nbSearch.source.issue.LOCAL_CONFIG_UNREADABLE': 'The server could not read its nb-search configuration. Check the file and its access permissions, or turn reuse off.',
   'st.nbSearch.source.issue.EFFECTIVE_CONFIG_INVALID': 'The combined configuration is invalid. Check the nb-search settings and Kiki overrides, or turn reuse off to isolate the local file.',
   'st.nbSearch.source.issue.ISOLATED_STORAGE_UNAVAILABLE': 'Kiki could not prepare isolated search storage. Check access to its cache directory and retry.',
+  'st.nbSearch.source.issue.LOCAL_CONFIG_INVALID_IGNORED': 'The local nb-search configuration could not be parsed, so Kiki ignored it and continued with defaults. Fix or remove the local file to bring it back.',
   'st.nbSearch.source.layerDefaults': 'Engine defaults',
   'st.nbSearch.source.layerLocal': 'Server nb-search configuration',
   'st.nbSearch.source.layerEnvironment': 'Server environment',

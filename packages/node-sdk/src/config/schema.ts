@@ -10,7 +10,7 @@ import {
   parseConfigPatch,
   type CanonicalConfigPatch,
 } from '@nb-corp/nb-search';
-import { findUnknownNbSearchProviderOptions } from '@kiki/protocol';
+import { findUnknownNbSearchProviderOptions, nbSearchSourceConfigSchema } from '@kiki/protocol';
 
 import { ErrorCodes, KimiError } from '../errors';
 import { z } from 'zod';
@@ -394,6 +394,7 @@ export const KimiConfigSchema = z.object({
   permission: PermissionConfigSchema.optional(),
   hooks: z.array(HookDefSchema).optional(),
   nbSearch: NbSearchConfigSchema.optional(),
+  nbSearchSource: nbSearchSourceConfigSchema.optional(),
   mergeAllAvailableSkills: z.boolean().optional(),
   extraSkillDirs: z.array(z.string()).optional(),
   extraAgentDirs: z.array(z.string()).optional(),
@@ -437,7 +438,8 @@ export const KimiConfigPatchSchema = z
     permission: PermissionConfigPatchSchema.optional(),
     hooks: z.array(HookDefSchema).optional(),
     nbSearch: NbSearchConfigPatchSchema.optional(),
-      mergeAllAvailableSkills: z.boolean().optional(),
+    nbSearchSource: nbSearchSourceConfigSchema.optional(),
+    mergeAllAvailableSkills: z.boolean().optional(),
     extraSkillDirs: z.array(z.string()).optional(),
     extraAgentDirs: z.array(z.string()).optional(),
     loopControl: LoopControlPatchSchema.optional(),

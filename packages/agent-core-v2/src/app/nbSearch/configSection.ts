@@ -1,6 +1,5 @@
 import {
   builtInProviderRegistrations,
-  createNbSearchRuntime,
   parseConfigPatch,
   type CanonicalConfigPatch,
 } from '@nb-corp/nb-search';
@@ -28,7 +27,6 @@ export const NbSearchConfigSchema = z.custom<CanonicalConfigPatch>(
             : `provider_instances.${issue.provider_instance_id}.options.${issue.option_key} is not supported`,
         );
       }
-      createNbSearchRuntime({ env: process.env, config });
       return true;
     } catch {
       return false;
@@ -72,6 +70,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 registerConfigSection(NB_SEARCH_SECTION, NbSearchConfigSchema, {
   merge: mergeNbSearchConfig,
+  fromToml: preserveCanonicalKeys,
+  toToml: preserveCanonicalKeys,
+});
+
+export const NB_SEARCH_SOURCE_SECTION = 'nbSearchSource';
+export const NbSearchSourceConfigSchema = z.object({ reuse_local_config: z.boolean().default(true) }).strict();
+export type NbSearchSourceConfig = z.infer<typeof NbSearchSourceConfigSchema>;
+
+registerConfigSection(NB_SEARCH_SOURCE_SECTION, NbSearchSourceConfigSchema, {
+  defaultValue: { reuse_local_config: true },
   fromToml: preserveCanonicalKeys,
   toToml: preserveCanonicalKeys,
 });

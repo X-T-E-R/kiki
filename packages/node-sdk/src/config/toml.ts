@@ -308,7 +308,7 @@ export function transformTomlData(data: Record<string, unknown>): Record<string,
       result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'permission' && isPlainObject(value)) {
       result[targetKey] = transformPermissionData(value);
-    } else if (targetKey === 'nbSearch' && isPlainObject(value)) {
+    } else if ((targetKey === 'nbSearch' || targetKey === 'nbSearchSource') && isPlainObject(value)) {
       result[targetKey] = cloneRecord(value);
     } else if (targetKey === 'loopControl' && isPlainObject(value)) {
       result[targetKey] = transformLoopControlData(value);
@@ -487,6 +487,7 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   setRecordSection(out, 'models', config.models, modelToToml);
   setSection(out, 'thinking', config.thinking, thinkingToToml);
   setSection(out, 'nb_search', config.nbSearch, nbSearchToToml);
+  setSection(out, 'nb_search_source', config.nbSearchSource, (source) => ({ ...source }));
   setSection(out, 'loop_control', config.loopControl, loopControlToToml);
   setSection(out, 'background', config.background, backgroundToToml);
   setSection(out, 'subagent', config.subagent, subagentToToml);

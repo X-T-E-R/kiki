@@ -1,5 +1,23 @@
 import { z } from 'zod';
 
+export const nbSearchSourceConfigSchema = z.object({
+  reuse_local_config: z.boolean().default(true),
+}).strict();
+
+export type NbSearchSourceConfig = z.infer<typeof nbSearchSourceConfigSchema>;
+
+export const nbSearchConfigSourceStatusSchema = z.object({
+  reuse_local_config: z.boolean(),
+  layers: z.array(z.enum(['defaults', 'local', 'environment', 'kiki'])),
+  local_config: z.enum(['present', 'missing', 'ignored', 'unreadable', 'invalid']),
+  local_credentials: z.enum(['present', 'missing', 'ignored', 'unreadable', 'invalid', 'rejected']).optional(),
+  credential_source: z.enum(['environment', 'environment+local']).optional(),
+  availability: z.enum(['ready', 'unavailable']),
+  issues: z.array(z.string()),
+}).strict();
+
+export type NbSearchConfigSourceStatus = z.infer<typeof nbSearchConfigSourceStatusSchema>;
+
 const fetchInputKindSchema = z.enum(['url', 'inline_text', 'inline_bytes', 'file']);
 const fetchRepresentationSchema = z.enum(['markdown', 'text']);
 const executionModeSchema = z.enum(['sync', 'async']);
@@ -218,6 +236,7 @@ const fetchPipelineCapabilitySchema = z
 
 export const nbSearchCapabilitiesSchema = z
   .object({
+    config_source: nbSearchConfigSourceStatusSchema.optional(),
     schema_version: z.literal('3.0'),
     revision: z.string(),
     providers: z

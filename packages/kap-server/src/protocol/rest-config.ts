@@ -19,7 +19,7 @@ import {
 } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { nbSearchConfigPatchSchema } from '@kiki/protocol';
+import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -85,6 +85,7 @@ const replaceableConfigDomainSchema = z.enum([
   'disabled_named_profiles',
   'mcp',
   'nb_search',
+  'nb_search_source',
   'plugins',
   'tools',
   'prompt',
@@ -123,6 +124,7 @@ export const configResponseSchema = z.object({
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
+  nb_search_source: nbSearchSourceConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
@@ -165,6 +167,7 @@ export const patchConfigRequestSchema = z.object({
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
+  nb_search_source: nbSearchSourceConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),

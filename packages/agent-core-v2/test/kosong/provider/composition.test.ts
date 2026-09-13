@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { nativeSearchParameters, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -120,6 +121,32 @@ async function captureRejectedFetch(run: () => Promise<unknown>): Promise<Reques
   if (captured === undefined) throw new Error('fetch was not called');
   return captured;
 }
+
+describe('native web tool provider schemas', () => {
+  it.each(['anthropic', 'openai', 'openai_responses'] as const)('serializes an object-root schema with all donor fields through %s', async (protocol) => {
+    const tools = [
+      { name: 'WebSearch', description: 'Search fixture', parameters: nativeSearchParameters() },
+      { name: 'FetchURL', description: 'Fetch fixture', parameters: nativeFetchParameters() },
+    ];
+    const request = await captureRejectedFetch(async () => {
+      const options = { model: 'fixture-model', apiKey: 'fixture-key', baseUrl: 'https://example.test/v1' };
+      const provider = protocol === 'anthropic' ? new AnthropicChatProvider(options)
+        : protocol === 'openai' ? new OpenAILegacyChatProvider(options) : new OpenAIResponsesChatProvider(options);
+      return provider.generate('', tools, []);
+    });
+    const body = await request.json() as { tools: { input_schema?: Record<string, unknown>; parameters?: Record<string, unknown>; function?: { parameters: Record<string, unknown> } }[] };
+    expect(body.tools).toHaveLength(2);
+    for (const [index, tool] of body.tools.entries()) {
+      const parameters = tool.input_schema ?? tool.function?.parameters ?? tool.parameters;
+      expect(parameters).toStrictEqual(tools[index]!.parameters);
+      expect(parameters).toMatchObject({ type: 'object', additionalProperties: false });
+      for (const key of ['anyOf', 'oneOf', 'allOf']) expect(parameters).not.toHaveProperty(key);
+      expect(parameters?.['properties']).toHaveProperty('action');
+      expect(parameters?.['properties']).toHaveProperty('job_id');
+      expect(parameters?.['properties']).toHaveProperty('execution');
+    }
+  });
+});
 
 const registry = new ProtocolAdapterRegistry();
 

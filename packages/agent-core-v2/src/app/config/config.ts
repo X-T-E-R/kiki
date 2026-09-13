@@ -221,6 +221,7 @@ export interface IConfigService {
   replaceSections(
     sections: Readonly<Record<string, unknown>>,
     target?: ConfigTarget,
+    expectedValues?: Readonly<Record<string, unknown>>,
   ): Promise<void>;
   reload(): Promise<void>;
   diagnostics(): readonly ConfigDiagnostic[];

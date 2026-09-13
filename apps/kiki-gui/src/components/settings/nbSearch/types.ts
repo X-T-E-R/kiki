@@ -66,6 +66,7 @@ const SOURCE_ISSUE_MESSAGE_KEYS: Readonly<Record<string, I18nKey>> = {
   LOCAL_CREDENTIAL_BINDING_MISMATCH: 'st.nbSearch.source.issue.LOCAL_CREDENTIAL_BINDING_MISMATCH',
   EFFECTIVE_CONFIG_INVALID: 'st.nbSearch.source.issue.EFFECTIVE_CONFIG_INVALID',
   ISOLATED_STORAGE_UNAVAILABLE: 'st.nbSearch.source.issue.ISOLATED_STORAGE_UNAVAILABLE',
+  LOCAL_CONFIG_INVALID_IGNORED: 'st.nbSearch.source.issue.LOCAL_CONFIG_INVALID_IGNORED',
 };
 
 export function sourceIssueMessageKey(code: string): I18nKey | undefined {

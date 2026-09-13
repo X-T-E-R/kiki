@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { requestIdentityPolicySchema } from '../modelCatalog';
-import { nbSearchConfigPatchSchema } from './nbSearch';
+import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from './nbSearch';
 
 export const promptConfigSchema = z.object({
   shared: z.string().optional(),
@@ -60,6 +60,7 @@ export const configResponseSchema = z.object({
   permission: z.unknown().optional(),
   hooks: z.array(z.unknown()).optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
+  nb_search_source: nbSearchSourceConfigSchema.optional(),
   prompt: promptConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
@@ -93,6 +94,7 @@ export const patchConfigRequestSchema = z.object({
   hooks: z.array(z.unknown()).optional(),
   services: z.never().optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
+  nb_search_source: nbSearchSourceConfigSchema.optional(),
   prompt: promptConfigSchema.optional(),
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),

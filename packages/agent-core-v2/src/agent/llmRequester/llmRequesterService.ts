@@ -19,6 +19,7 @@ import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
+import { INbSearchService } from '#/app/nbSearch/nbSearch';
 import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
 import { appendSharedPrompt, supplementToolDescription } from '@kiki/agent-profiles/promptConfig';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -207,6 +208,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @ISessionContext private readonly sessionContext: ISessionContext,
     @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @IConfigService private readonly config: IConfigService,
+    @INbSearchService private readonly nbSearch: INbSearchService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IModelService private readonly modelService: IModelService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
@@ -666,6 +668,9 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   private async resolveRequest(
     overrides: AgentLLMRequestOverrides,
   ): Promise<ResolvedLLMRequest> {
+    if (overrides.tools === undefined && this.defaultTools().some((tool) => tool.name === 'WebSearch' || tool.name === 'FetchURL')) {
+      await this.nbSearch.prepareToolDescriptions();
+    }
     const promptConfig = this.config.get<PromptConfig>(PROMPT_SECTION);
     const promptChanged = await this.profile.preparePromptConfiguration();
     const variablesSignature = JSON.stringify(promptConfig ?? {});

@@ -1,0 +1,27 @@
+{
+  "package": "@nb-corp/nb-search",
+  "upstream": "https://github.com/NB-Corp/nb-search",
+  "source_commit": "2eb8e28",
+  "source_version": "0.3.0",
+  "also_verified_commit": "2689c4d",
+  "license": "MIT",
+  "patch": "source.patch",
+  "patch_sha256": "7c4d91fe14a8979b8433ba990846f007ca7d8dc5a54dfe565e63f55402c1d2b8",
+  "adapter_revision": "1-kiki-approved-identity-2",
+  "integration_status": "installed hosted-worker additive package; core and node-sdk depend on vendor/nb-search-0.3.0-aa805a24.tgz",
+  "additive_patch": "hosted-worker.patch",
+  "additive_patch_sha256": "75e531704307fd12a7542e62a058edaa6c88daf5ffda7ac51b4b3fb7bbc2af0a",
+  "apply_order": ["source.patch", "hosted-worker.patch"],
+  "hosted_worker_api": "Expose existing launcher injection and side-effect-free runWorker with readiness callback; no file admission or operation fingerprint changes.",
+  "vendor_tarball": {
+    "path": "vendor/nb-search-0.3.0-aa805a24.tgz",
+    "sha512": "aa805a2435ac86db6bcde1755231b1300a2983a4d5d4d76f2235271a89607c590390a7b39cd118be9f4a441aad75aec114f7aa96e4b534626a0c889749f2d290",
+    "sha256": "4b3197e4aed76f9c16a0e12aee058969644e99f5a3c691b062ef0d68d013a9a8"
+  },
+  "scope": "Optional file scope canonical_target and approved_identity are checked by the existing scoped handle reader; approved_identity is captured from the opened canonical target and carried by existing execution snapshots. Original source and file extraction policy retained.",
+  "build": "pnpm --dir .tmp/nb-search-r1-base build",
+  "pack": "pnpm --dir .tmp/nb-search-r1-base pack --pack-destination .tmp/nb-search-hosted-worker-vendor-xXBjY4/pack",
+  "apply": "git apply vendor/nb-search-patches/canonical-target/source.patch against an isolated upstream source checkout",
+  "test": "node node_modules/vitest/vitest.mjs run test/file-admission.test.ts test/fetch-jobs.test.ts test/fetch-egress.test.ts test/fetch-rich-semantics.test.ts",
+  "hosted_worker_test": "pnpm --filter @kiki/node-sdk exec vitest run test/nb-search-worker.integration.ts"
+}

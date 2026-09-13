@@ -6,6 +6,16 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
+import {
+  NB_SEARCH_SECTION,
+  NB_SEARCH_SOURCE_SECTION,
+  NbSearchConfigSchema,
+  NbSearchSourceConfigSchema,
+  mergeNbSearchConfig,
+  type NbSearchConfig,
+  type NbSearchSourceConfig,
+} from '@kiki/agent-core-v2/app/nbSearch/configSection';
 import {
   requestIdentityFromWire,
   requestIdentityToWire,
@@ -43,6 +53,7 @@ interface ConfigRouteHost {
 const configResponseWireSchema = configResponseSchema.passthrough();
 
 export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
+  let nbSearchWrites: Promise<void> = Promise.resolve();
   const getRoute = defineRoute(
     {
       method: 'GET',
@@ -86,6 +97,32 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
           camelPatch['defaultPermissionMode'] = 'yolo';
         }
         delete camelPatch['yolo'];
+        if (camelPatch[NB_SEARCH_SECTION] !== undefined || camelPatch[NB_SEARCH_SOURCE_SECTION] !== undefined) {
+          const write = nbSearchWrites.then(async () => {
+            const nbSections: Record<string, unknown> = {};
+            const expected: Record<string, unknown> = {
+              [NB_SEARCH_SOURCE_SECTION]: structuredClone(config.inspect(NB_SEARCH_SOURCE_SECTION).userValue),
+            };
+            if (camelPatch[NB_SEARCH_SECTION] !== undefined) expected[NB_SEARCH_SECTION] = structuredClone(config.inspect(NB_SEARCH_SECTION).userValue);
+            const source = camelPatch[NB_SEARCH_SOURCE_SECTION] === undefined
+              ? config.get<NbSearchSourceConfig | undefined>(NB_SEARCH_SOURCE_SECTION)
+              : NbSearchSourceConfigSchema.parse(camelPatch[NB_SEARCH_SOURCE_SECTION]);
+            if (camelPatch[NB_SEARCH_SECTION] !== undefined) {
+              const proposed = NbSearchConfigSchema.parse(mergeNbSearchConfig(
+                replaceDomains.has(NB_SEARCH_SECTION) ? undefined : config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION),
+                camelPatch[NB_SEARCH_SECTION],
+              ));
+              await core.accessor.get(INbSearchService).validateConfiguration(proposed, source?.reuse_local_config ?? true);
+              nbSections[NB_SEARCH_SECTION] = proposed;
+            }
+            if (camelPatch[NB_SEARCH_SOURCE_SECTION] !== undefined) nbSections[NB_SEARCH_SOURCE_SECTION] = source;
+            await config.replaceSections(nbSections, ConfigTarget.User, expected);
+          });
+          nbSearchWrites = write.catch(() => undefined);
+          await write;
+        }
+        delete camelPatch[NB_SEARCH_SECTION];
+        delete camelPatch[NB_SEARCH_SOURCE_SECTION];
         for (const domain of Object.keys(camelPatch)) {
           if (domain === 'prompt' && replaceDomains.has(domain)) {
             await config.replaceSections({ [domain]: camelPatch[domain] }, ConfigTarget.User);
@@ -194,7 +231,7 @@ function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       const targetKey = preserveKeys ? key : snakeToCamel(key);
-      if (!preserveKeys && (key === 'nb_search' || key === 'prompt')) {
+      if (!preserveKeys && (key === 'nb_search' || key === 'nb_search_source' || key === 'prompt')) {
         result[targetKey] = value;
       } else {
         result[targetKey] = convertKeysSnakeToCamel(

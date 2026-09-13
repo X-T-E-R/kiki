@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (34 sections · 1 overlay(s))
+# Index (35 sections · 1 overlay(s))
 #   agentExecutors           src/app/agentExecutor/configSection.ts
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
@@ -30,6 +30,7 @@
 #   modelCatalog             src/app/kosongConfig/configSection.ts
 #   models                   src/app/kosongConfig/configSection.ts
 #   nbSearch                 src/app/nbSearch/configSection.ts
+#   nbSearchSource           src/app/nbSearch/configSection.ts
 #   permission               src/agent/permissionRules/configSection.ts
 #   plan                     src/features/plan/configSection.ts
 #   plugins                  src/app/plugin/configSection.ts
@@ -391,6 +392,16 @@ merge_all_available_skills = true
 
 [nb_search]
 # (schema uses transforms; see the owner file)
+
+# ##########################################################################
+# nbSearchSource (config.toml: nb_search_source)
+#   owner: src/app/nbSearch/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[nb_search_source]
+reuse_local_config = true
 
 # ##########################################################################
 # permission

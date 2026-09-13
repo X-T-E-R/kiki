@@ -409,8 +409,8 @@ importers:
         specifier: workspace:^
         version: link:../tree-sitter-bash
       '@nb-corp/nb-search':
-        specifier: 0.2.0
-        version: 0.2.0(playwright@1.60.0)
+        specifier: file:../../vendor/nb-search-0.3.0-aa805a24.tgz
+        version: file:vendor/nb-search-0.3.0-aa805a24.tgz(playwright@1.60.0)
       ajv:
         specifier: ^8.18.0
         version: 8.18.0
@@ -650,8 +650,8 @@ importers:
         specifier: ^9.3.0
         version: 9.3.0
       '@nb-corp/nb-search':
-        specifier: 0.2.0
-        version: 0.2.0(playwright@1.60.0)
+        specifier: file:../../vendor/nb-search-0.3.0-aa805a24.tgz
+        version: file:vendor/nb-search-0.3.0-aa805a24.tgz(playwright@1.60.0)
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
@@ -2180,8 +2180,9 @@ packages:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
 
-  '@nb-corp/nb-search@0.2.0':
-    resolution: {integrity: sha512-s8bipaKPHD6tIZQ1GZCcrRX3EglQpaR4h65ZAP3FOfjqhOIrKD1f232rJ6k8MjbNfl5ppkQZb/chKRoIHMslsw==}
+  '@nb-corp/nb-search@file:vendor/nb-search-0.3.0-aa805a24.tgz':
+    resolution: {integrity: sha512-qoBaJDWshttrzeF1UjGxMAopg6TV1NdvIjUnGolgfFkDkKeznNEYvp9KRBqtda7BFPeqluS1NGJqDIiXSfLSkA==, tarball: file:vendor/nb-search-0.3.0-aa805a24.tgz}
+    version: 0.3.0
     engines: {node: '>=24.15.0'}
     hasBin: true
     peerDependencies:
@@ -9682,7 +9683,7 @@ snapshots:
       '@tybys/wasm-util': 0.10.1
     optional: true
 
-  '@nb-corp/nb-search@0.2.0(playwright@1.60.0)':
+  '@nb-corp/nb-search@file:vendor/nb-search-0.3.0-aa805a24.tgz(playwright@1.60.0)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.29.0(zod@4.3.6)
       zod: 4.3.6

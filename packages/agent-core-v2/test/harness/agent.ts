@@ -24,6 +24,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
 import { SessionCronServiceImpl } from '#/session/cron/sessionCronServiceImpl';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
+import { INbSearchSourceStore } from '#/app/nbSearch/sourceStore';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { CronTaskPersistenceService } from '#/app/cron/cronTaskPersistenceService';
 import { IAgentGoalService } from '#/agent/goal/goal';
@@ -1101,6 +1102,13 @@ export class AgentTestContext {
             configService(() => this.kimiConfig),
           );
           reg.defineInstance(IAgentIdentity, stubAgentIdentity());
+          reg.defineInstance(INbSearchSourceStore, {
+            _serviceBrand: undefined,
+            withSource: async (reuse, _config, use) => use({
+              env: {},
+              status: { reuse_local_config: reuse, layers: ['defaults'], local_config: 'ignored', availability: 'unavailable', issues: ['TEST_SEARCH_NOT_CONFIGURED'] },
+            }),
+          });
           reg.defineInstance(
             IAppendLogStore,
             new PersistenceAppendLogStore(

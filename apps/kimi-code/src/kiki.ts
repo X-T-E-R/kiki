@@ -1,4 +1,5 @@
 import { delegationProcedureTable } from '@kiki/klient/procedures';
+import { initializeNbSearchWorkerEntry } from './native/nb-search-worker';
 import { Command } from 'commander';
 
 import { getVersion } from './cli/version';
@@ -21,6 +22,7 @@ export function createKikiProgram(version = getVersion()): Command {
 }
 
 export async function main(): Promise<void> {
+  if (initializeNbSearchWorkerEntry()) return;
   await createKikiProgram().parseAsync(process.argv);
 }
 

@@ -482,12 +482,14 @@ export class ConfigService extends Disposable implements IConfigService {
   async replaceSections(
     sections: Readonly<Record<string, unknown>>,
     target: ConfigTarget = ConfigTarget.User,
+    expectedValues?: Readonly<Record<string, unknown>>,
   ): Promise<void> {
     await this.ready;
     const domains = Object.keys(sections);
     if (domains.length === 0) return;
     if (target === ConfigTarget.Memory) {
       const staged: ResolvedConfig = { ...this.memory };
+      assertExpectedConfigValues(staged, expectedValues);
       for (const domain of domains) {
         const value = sections[domain];
         if (value === undefined || value === null) {
@@ -503,6 +505,7 @@ export class ConfigService extends Disposable implements IConfigService {
     await this.enqueueStateTransition(async () => {
       this.assertPersistable();
       await this.persistDomains(domains, (stagedRaw, stagedRawSnake) => {
+        assertExpectedConfigValues(stagedRaw, expectedValues);
         for (const domain of domains) {
           const value = sections[domain] === null ? undefined : sections[domain];
           const stripped = this.stripEnv(domain, value, stagedRaw, stagedRawSnake);
@@ -869,6 +872,14 @@ export class ConfigService extends Disposable implements IConfigService {
     }
     this.rawSnake = stagedRawSnake;
     this.raw = stagedRaw;
+  }
+}
+
+function assertExpectedConfigValues(current: ResolvedConfig, expected: Readonly<Record<string, unknown>> | undefined): void {
+  for (const [domain, value] of Object.entries(expected ?? {})) {
+    if (!deepEqual(current[domain], value)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Configuration changed during validation. Reload settings and retry.');
+    }
   }
 }
 

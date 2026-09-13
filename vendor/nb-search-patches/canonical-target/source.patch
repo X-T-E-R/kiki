@@ -1,0 +1,207 @@
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -59,7 +59,7 @@
+ export interface FetchProviderResult { url?: string; final_url?: string; title?: string; content: string; content_type: string; media_type: string; representation: FetchRepresentation; format: 'text'; byte_length: number; truncated: boolean; warnings: FetchWarning[] }
+ export interface FetchProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; fetch(request: FetchProviderRequest): Promise<FetchProviderResult> }
+ export interface FetchDocument extends FetchProviderResult { source_lane: string }
+-export interface FetchFileScope { id: string; root: string; media_types?: readonly string[] }
++export interface FetchFileScope { id: string; root: string; media_types?: readonly string[]; canonical_target?: string; approved_identity?: { dev: string; ino: string } }
+ 
+ export interface ProviderResult {
+   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
+--- a/src/config-schema.ts
++++ b/src/config-schema.ts
+@@ -31,7 +31,7 @@
+ const laneSchema = z.object({ provider_instance_id: z.string().trim().min(1).max(256), operation_id: z.string().trim().min(1).max(128), latency: z.enum(['fast', 'medium', 'slow']), cost: z.enum(['free', 'cheap', 'expensive']), evidence_groups: z.array(z.string().trim().min(1).max(128)).min(1).max(32).optional() }).strict();
+ const presetSchema = z.object({ lanes: z.array(z.string().trim().min(1).max(256)).min(1) }).strict().superRefine((value, context) => { if (new Set(value.lanes).size !== value.lanes.length) context.addIssue({ code: 'custom', path: ['lanes'], message: 'preset lanes must be unique' }); });
+ const fetchChainSchema = z.object({ input_kind: z.enum(['url', 'inline_text', 'inline_bytes', 'file']), representation: z.enum(['markdown', 'text']).optional(), pipelines: z.array(z.string().trim().min(1).max(256)).min(1) }).strict();
+-const fileScopeSchema = z.object({ id: z.string().trim().min(1).max(256), root: z.string().trim().min(1), media_types: z.array(z.string().trim().min(1).max(256)).min(1).optional() }).strict();
++const fileScopeSchema = z.object({ id: z.string().trim().min(1).max(256), root: z.string().trim().min(1), media_types: z.array(z.string().trim().min(1).max(256)).min(1).optional(), canonical_target: z.string().min(1).optional(), approved_identity: z.object({ dev: z.string().regex(/^(0|[1-9][0-9]*)$/), ino: z.string().regex(/^[1-9][0-9]*$/) }).strict().optional() }).strict();
+ const fetchConfigSchema = z.object({ file_scopes: z.array(fileScopeSchema).max(64) }).strict().superRefine((value, context) => { if (new Set(value.file_scopes.map((item) => item.id)).size !== value.file_scopes.length) context.addIssue({ code: 'custom', path: ['file_scopes'], message: 'file scope ids must be unique' }); });
+ const qualitySchema = z.object({ min_content_chars: z.number().int().min(0).max(10_000_000), blocked_markers: z.array(z.string().min(1).max(256)).max(64) }).strict();
+ const fetchExecutionSchema = z.object({ max_source_bytes: z.number().int().min(1).max(64 * 1024 * 1024), max_response_bytes: z.number().int().min(1024).max(64 * 1024 * 1024), max_content_chars: z.number().int().min(256).max(10_000_000), max_redirects: z.number().int().min(0).max(20), quality: qualitySchema }).strict();
+--- a/src/fetch-sources.ts
++++ b/src/fetch-sources.ts
+@@ -7,10 +7,26 @@
+ 
+ const TEXT_MEDIA_TYPES = ['text/html', 'text/plain', 'text/markdown'] as const;
+ interface FileIdentity { dev: number; ino: number; size: number; isFile(): boolean }
+-interface OpenFile { stat(): Promise<FileIdentity>; read(buffer: Uint8Array, offset: number, length: number, position: number | null): Promise<{ bytesRead: number }>; close(): Promise<void> }
++interface OpenFile { approvedIdentity?(): Promise<{ dev: string; ino: string }>; stat(): Promise<FileIdentity>; read(buffer: Uint8Array, offset: number, length: number, position: number | null): Promise<{ bytesRead: number }>; close(): Promise<void> }
+ export interface LocalFetchFileIo { realpath(path: string): Promise<string>; stat(path: string): Promise<FileIdentity>; open(path: string, flags: number): Promise<OpenFile> }
+ export function localFileOpenFlags(platform: NodeJS.Platform): number { return platform === 'win32' ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW; }
+-const nodeFileIo: LocalFetchFileIo = { realpath, stat, async open(path, flags) { return await open(path, flags) as FileHandle; } };
++async function handleIdentity(handle: FileHandle): Promise<{ dev: string; ino: string }> {
++  const value = await handle.stat({ bigint: true });
++  if (!value.isFile() || value.dev < 0n || value.ino <= 0n) throw new NbSearchError('FETCH_FILE_BLOCKED', 'Stable file identity is unavailable on this filesystem.');
++  return { dev: value.dev.toString(), ino: value.ino.toString() };
++}
++const nodeFileIo: LocalFetchFileIo = { realpath, stat, async open(path, flags) {
++  const handle = await open(path, flags);
++  return { stat: () => handle.stat(), approvedIdentity: () => handleIdentity(handle), read: (...args) => handle.read(...args), close: () => handle.close() };
++} };
++export async function captureFetchFileIdentity(canonicalTarget: string): Promise<{ dev: string; ino: string }> {
++  if (!isAbsolute(canonicalTarget) || resolve(canonicalTarget) !== canonicalTarget) throw blockedFile();
++  const handle = await nodeFileIo.open(canonicalTarget, localFileOpenFlags(process.platform));
++  try {
++    if (await nodeFileIo.realpath(canonicalTarget) !== canonicalTarget) throw blockedFile();
++    return await handle.approvedIdentity!();
++  } finally { await handle.close(); }
++}
+ export class LocalFetchProvider implements FetchProvider {
+   readonly name = 'local-reader';
+   constructor(private readonly fileIo: LocalFetchFileIo = nodeFileIo) {}
+@@ -43,10 +59,18 @@
+ async function readScopedFile(scopeId: string, path: string, scopes: readonly FetchFileScope[], maxBytes: number, fileIo: LocalFetchFileIo): Promise<{ bytes: Buffer; scope: FetchFileScope }> {
+   const scope = scopes.find((item) => item.id === scopeId); if (scope === undefined) throw new NbSearchError('FETCH_SCOPE_NOT_FOUND', `File scope ${scopeId} is not configured.`);
+   if (isAbsolute(path)) throw blockedFile(); let root: string; try { root = await fileIo.realpath(resolve(scope.root)); } catch (error) { throw new NbSearchError('FETCH_FILE_BLOCKED', 'The file scope root is unavailable.', false, undefined, { cause: error }); } const candidate = resolve(root, path); assertContained(root, candidate);
++  const admitted = scope.canonical_target;
++  if (admitted !== undefined && (!isAbsolute(admitted) || resolve(admitted) !== admitted || candidate !== admitted || await fileIo.realpath(candidate) !== admitted)) throw blockedFile();
+   let handle: OpenFile; try { handle = await fileIo.open(candidate, localFileOpenFlags(process.platform)); } catch (error) { throw new NbSearchError('FETCH_FILE_BLOCKED', 'The requested file is unavailable.', false, undefined, { cause: error }); }
+   try {
+     const opened = await handle.stat(); if (!opened.isFile()) throw blockedFile(); assertSize(opened.size, maxBytes);
++    if (admitted !== undefined || scope.approved_identity !== undefined) {
++      if (admitted === undefined || scope.approved_identity === undefined || handle.approvedIdentity === undefined) throw new NbSearchError('FETCH_FILE_BLOCKED', 'Approved file identity is unavailable. Retry file admission.');
++      const actual = await handle.approvedIdentity();
++      if (actual.dev !== scope.approved_identity.dev || actual.ino !== scope.approved_identity.ino) throw new NbSearchError('FETCH_FILE_BLOCKED', 'The approved file object was replaced. Retry file admission.');
++    }
+     let canonical: string; try { canonical = await fileIo.realpath(candidate); } catch (error) { throw new NbSearchError('FETCH_FILE_BLOCKED', 'The requested file identity is unavailable.', false, undefined, { cause: error }); } assertContained(root, canonical);
++    if (admitted !== undefined && canonical !== admitted) throw blockedFile();
+     const current = await fileIo.stat(canonical); if (!current.isFile() || current.dev !== opened.dev || current.ino !== opened.ino) throw blockedFile();
+     return { bytes: await readBounded(handle, maxBytes), scope };
+   } finally { await handle.close(); }
+--- a/src/provider-registry.ts
++++ b/src/provider-registry.ts
+@@ -72,7 +72,7 @@
+ function registrationsWithFetchIo(directIo: DirectFetchIo | undefined, browserIo: BrowserRenderIo): readonly ProviderRegistration[] { return [directRegistration(directIo), waybackRegistration(directIo), browserRegistration(browserIo), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, context7Registration, zhipuRegistration, githubRegistration, parallelRegistration, searxngRegistration, openAiCompatibleRegistration, grokRegistration, gmaRegistration]; }
+ const urlStages = [{ id: 'remote.acquire', role: 'acquire' as const }, { id: 'content.extract', role: 'extract' as const }];
+ const remoteFetch = (operation_id: string): FetchOperationDescriptor => ({ operation_id, schema_id: 'nb-search.fetch@1', input_kinds: ['url'], media_types: ['text/html', 'text/plain', 'text/markdown'], representations: ['markdown', 'text'], execution_modes: ['sync'], egress: 'url', stages: urlStages });
+-function directRegistration(io: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'direct-http', adapter_version: '1', query_operations: [], fetch_operations: [{ ...remoteFetch('fetch'), media_types: ['text/html', 'application/xhtml+xml', 'text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'application/ld+json', 'application/xml', 'text/xml', 'application/rss+xml', 'application/atom+xml'], stages: [{ id: 'direct.http', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }, { operation_id: 'local', schema_id: 'nb-search.fetch@1', input_kinds: ['inline_text', 'inline_bytes', 'file'], media_types: ['text/html', 'text/plain', 'text/markdown'], representations: ['markdown', 'text'], execution_modes: ['sync', 'async'], egress: 'none', stages: [{ id: 'local.acquire', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: { fetch: new DirectFetchProvider(io), local: new LocalFetchProvider() } }) }; }
++function directRegistration(io: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'direct-http', adapter_version: '1-kiki-approved-identity-2', query_operations: [], fetch_operations: [{ ...remoteFetch('fetch'), media_types: ['text/html', 'application/xhtml+xml', 'text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'application/ld+json', 'application/xml', 'text/xml', 'application/rss+xml', 'application/atom+xml'], stages: [{ id: 'direct.http', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }, { operation_id: 'local', schema_id: 'nb-search.fetch@1', input_kinds: ['inline_text', 'inline_bytes', 'file'], media_types: ['text/html', 'text/plain', 'text/markdown'], representations: ['markdown', 'text'], execution_modes: ['sync', 'async'], egress: 'none', stages: [{ id: 'local.acquire', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: { fetch: new DirectFetchProvider(io), local: new LocalFetchProvider() } }) }; }
+ function waybackRegistration(directIo: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'wayback', adapter_version: '1', query_operations: [], fetch_operations: [{ ...remoteFetch('fetch'), media_types: ['text/html', 'application/xhtml+xml', 'text/plain', 'text/markdown'], stages: [{ id: 'wayback.lookup', role: 'acquire' }, { id: 'wayback.snapshot', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: (context) => ({ query: {}, fetch: { fetch: new WaybackFetchProvider({ transport: context.transports.http, ...(directIo === undefined ? {} : { directIo }) }) } }) }; }
+ function browserRegistration(io: BrowserRenderIo): ProviderRegistration { return { descriptor: { provider_id: 'browser-render', adapter_version: '1', query_operations: [], fetch_operations: [{ operation_id: 'render', schema_id: 'nb-search.fetch@1', input_kinds: ['url'], media_types: ['text/html', 'application/xhtml+xml', 'text/plain'], representations: ['markdown', 'text'], execution_modes: ['async'], egress: 'url', stages: [{ id: 'browser.chromium', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: io.available ? { render: new BrowserRenderProvider(io) } : {} as Readonly<Record<string, FetchProvider>> }) }; }
+ const jinaRegistration: ProviderRegistration = {
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -7,6 +7,7 @@
+ 
+ export type { HttpRequest, HttpResponse, HttpTransport } from './transport.ts';
+ export { ResponseLimitError } from './transport.ts';
++export { captureFetchFileIdentity } from './fetch-sources.ts';
+ 
+ export { createNbSearchRemoteClient } from './remote-client.ts';
+ export type { CreateNbSearchRemoteClientOptions } from './remote-client.ts';
+--- /dev/null
++++ b/test/file-admission.test.ts
+@@ -0,0 +1,111 @@
++import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
++import { spawn } from 'node:child_process';
++import { tmpdir } from 'node:os';
++import { join, resolve } from 'node:path';
++import { afterEach, describe, expect, it } from 'vitest';
++import { createRuntimeComposition } from '../src/app.ts';
++import { captureFetchFileIdentity, LocalFetchProvider, type LocalFetchFileIo } from '../src/fetch-sources.ts';
++import { open, stat } from 'node:fs/promises';
++
++const roots: string[] = [];
++afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
++async function fixture() {
++  const root = await realpath(await mkdtemp(join(tmpdir(), 'nb-file-admission-')));
++  roots.push(root);
++  const workspace = join(root, 'workspace');
++  const docs = join(workspace, 'docs');
++  const privateDir = join(root, 'private');
++  await mkdir(docs, { recursive: true });
++  await mkdir(privateDir);
++  await writeFile(join(docs, 'document.txt'), 'AUTHORIZED CONTENT');
++  await writeFile(join(privateDir, 'document.txt'), 'PRIVATE CONTENT');
++  const target = await realpath(join(docs, 'document.txt'));
++  const env = { NB_SEARCH_CONFIG: join(root, 'config.json'), NB_SEARCH_HOME: root };
++  await writeFile(env.NB_SEARCH_CONFIG, '{}');
++  const config = { home: root, jobs_root: join(root, 'jobs'), fetch: { file_scopes: [{ id: 'scope', root, canonical_target: target, approved_identity: JSON.parse(JSON.stringify(await captureFetchFileIdentity(target))), media_types: ['text/plain'] }] } };
++  const app = createRuntimeComposition(env, { cwd: root, homeDirectory: root, launcher: { async launch() {} }, config });
++  const source = { kind: 'file' as const, scope: 'scope', path: 'workspace/docs/document.txt' };
++  return { root, docs, privateDir, target, env, config, app, source };
++}
++async function worker(job: string, root: string, env: Record<string, string>) {
++  await new Promise<void>((done, reject) => {
++    const child = spawn(process.execPath, ['--experimental-transform-types', resolve('src/worker.ts'), job, join(root, 'jobs')], { env: { ...env, PATH: process.env['PATH'] }, stdio: ['ignore', 'pipe', 'pipe'] });
++    let error = '';
++    child.stderr.on('data', (chunk) => { error += String(chunk); });
++    child.once('error', reject);
++    child.once('exit', (code) => code === 0 ? done() : reject(new Error(error)));
++  });
++}
++
++describe('canonical file admission at the worker read', () => {
++  it('rejects ABA against the approved identity before handle.read', async () => {
++    const root = resolve('fixture'); const target = join(root, 'document.txt'); let reads = 0;
++    const privateStat = { dev: 1, ino: 2, size: 7, isFile: () => true };
++    const io: LocalFetchFileIo = { realpath: async (path) => path, stat: async () => privateStat, open: async () => ({ stat: async () => privateStat, approvedIdentity: async () => ({ dev: '1', ino: '2' }), read: async (buffer) => { reads++; if (reads > 1) return { bytesRead: 0 }; buffer.set(Buffer.from('PRIVATE')); return { bytesRead: 7 }; }, close: async () => {} }) };
++    await expect(new LocalFetchProvider(io).fetch({ source: { kind: 'file', scope: 'scope', path: 'document.txt' }, representation: 'text', max_source_bytes: 1024, max_content_chars: 1024, file_scopes: [{ id: 'scope', root, canonical_target: target, approved_identity: JSON.parse(JSON.stringify({ dev: '1', ino: '9007199254740993' })) }], signal: new AbortController().signal, max_response_bytes: 1024, max_redirects: 0 })).rejects.toMatchObject({ code: 'FETCH_FILE_BLOCKED' });
++    expect(reads).toBe(0);
++  });
++  it('reproduces the unconstrained donor scope reading the replaced directory', async () => {
++    const f = await fixture();
++    const app = createRuntimeComposition(f.env, { cwd: f.root, homeDirectory: f.root, launcher: { async launch() {} }, config: { ...f.config, fetch: { file_scopes: [{ id: 'scope', root: f.root, media_types: ['text/plain'] }] } } });
++    const queued = await app.runtime.fetch({ action: 'run', source: f.source, pipeline: 'direct.local', execution: 'async', idempotency_key: 'unconstrained' });
++    if (queued.action !== 'run' || queued.execution !== 'async' || queued.job === undefined) throw new Error(JSON.stringify(queued));
++    await rename(f.docs, `${f.docs}-original`);
++    await symlink(f.privateDir, f.docs, process.platform === 'win32' ? 'junction' : 'dir');
++    await worker(queued.job.job_id, f.root, f.env);
++    const page = await app.runtime.fetch({ action: 'read', job_id: queued.job.job_id });
++    if (page.action !== 'read') throw new Error(JSON.stringify(page));
++    expect(Buffer.concat(page.chunks.map((chunk) => Buffer.from(chunk.data_base64, 'base64'))).toString('utf8')).toContain('PRIVATE CONTENT');
++  }, 30_000);
++  it.each(['none', 'inplace', 'atomic', 'link'])('keeps the approved file identity with worker update=%s', async (mode) => {
++    const replace = mode === 'atomic' || mode === 'link';
++    const f = await fixture();
++    const sync = await f.app.runtime.fetch({ action: 'run', source: f.source, pipeline: 'direct.local' });
++    expect(sync).toMatchObject({ status: 'succeeded', documents: [{ content: 'AUTHORIZED CONTENT' }] });
++    const input = { action: 'run' as const, source: f.source, pipeline: 'direct.local', execution: 'async' as const, idempotency_key: 'file-job' };
++    const queued = await f.app.runtime.fetch(input);
++    if (queued.action !== 'run' || queued.execution !== 'async' || queued.job === undefined) throw new Error(JSON.stringify(queued));
++    const id = queued.job.job_id;
++    expect(await f.app.runtime.fetch(input)).toMatchObject({ reused: true, job: { job_id: id } });
++    const snapshot = await f.app.store.readExecutionSnapshot(id);
++    expect(snapshot.request).toMatchObject({ source: f.source, file_scopes: [{ canonical_target: f.target, approved_identity: f.config.fetch.file_scopes[0]!.approved_identity, media_types: ['text/plain'] }] });
++    if (mode === 'link') {
++      await rename(f.docs, `${f.docs}-original`);
++      await symlink(f.privateDir, f.docs, process.platform === 'win32' ? 'junction' : 'dir');
++    }
++    if (mode === 'inplace') await writeFile(f.target, 'AUTHORIZED CONTENT UPDATED');
++    if (mode === 'atomic') {
++      await writeFile(`${f.target}.replacement`, 'PRIVATE CONTENT');
++      await rename(`${f.target}.replacement`, f.target);
++    }
++    await worker(id, f.root, f.env);
++    const restored = createRuntimeComposition(f.env, { cwd: f.root, homeDirectory: f.root, launcher: { async launch() {} }, config: f.config });
++    expect(await restored.runtime.fetch({ action: 'get', job_id: id })).toMatchObject({ state: replace ? 'failed' : 'succeeded' });
++    const page = await restored.runtime.fetch({ action: 'read', job_id: id });
++    if (page.action !== 'read') throw new Error(JSON.stringify(page));
++    const content = Buffer.concat(page.chunks.map((chunk) => Buffer.from(chunk.data_base64, 'base64'))).toString('utf8');
++    expect(content).not.toContain('PRIVATE CONTENT');
++    if (replace) {
++      expect(await restored.runtime.fetch({ action: 'get', job_id: id })).toMatchObject({ error: { code: 'FETCH_FILE_BLOCKED' } });
++      expect(content).toBe('');
++    } else expect(content).toContain(mode === 'inplace' ? 'AUTHORIZED CONTENT UPDATED' : 'AUTHORIZED CONTENT');
++    expect(await restored.runtime.fetch({ action: 'cancel', job_id: id })).toMatchObject({ state: replace ? 'failed' : 'succeeded', cancel_requested: false });
++    expect(await readFile(join(f.privateDir, 'document.txt'), 'utf8')).toBe('PRIVATE CONTENT');
++  }, 30_000);
++
++  it('rejects a directory replacement after open and before reading the handle', async () => {
++    const f = await fixture();
++    let reads = 0;
++    const io: LocalFetchFileIo = {
++      realpath, stat,
++      async open(path, flags) {
++        await rename(f.docs, `${f.docs}-original`);
++        await symlink(f.privateDir, f.docs, process.platform === 'win32' ? 'junction' : 'dir');
++        const handle = await open(path, flags);
++        return { stat: () => handle.stat(), close: () => handle.close(), read: async (...args) => { reads++; return handle.read(...args); } };
++      },
++    };
++    await expect(new LocalFetchProvider(io).fetch({ source: f.source, representation: 'text', max_source_bytes: 1024, max_content_chars: 1024, file_scopes: f.config.fetch.file_scopes, signal: new AbortController().signal, max_response_bytes: 1024, max_redirects: 0 })).rejects.toMatchObject({ code: 'FETCH_FILE_BLOCKED' });
++    expect(reads).toBe(0);
++  });
++});
