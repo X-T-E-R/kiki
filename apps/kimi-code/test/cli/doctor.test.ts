@@ -429,7 +429,7 @@ model_alias: openai/fast-model
     expect(stdout.join('')).toContain(`OK agents       ${agentPath}`);
   });
 
-  it('reports an ambiguous model_alias as an error', async () => {
+  it('warns when an ambiguous model_alias resolves to the first configured candidate', async () => {
     await writeFile(
       join(dir, 'config.toml'),
       `
@@ -462,12 +462,12 @@ model_alias: fast-model
 
     const code = await handleDoctor(deps, {});
 
-    expect(code).toBe(1);
-    expect(stdout.join('')).toBe('');
-    const err = stderr.join('');
-    expect(err).toContain(`ERROR agents       ${agentPath}`);
-    expect(err).toContain(
-      'Model "fast-model" matches multiple configured models: "alpha/fast-model", "beta/fast-model". Use a full model id to disambiguate.',
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const out = stdout.join('');
+    expect(out).toContain(`WARN agents       ${agentPath}`);
+    expect(out).toContain(
+      'model_alias "fast-model" is ambiguous and resolves to "alpha/fast-model", the first configured candidate (alpha/fast-model, beta/fast-model).',
     );
   });
 

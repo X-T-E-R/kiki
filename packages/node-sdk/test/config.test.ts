@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiConfigRpc, createKimiHarness, ErrorCodes, KimiError } from '#/index';
 
-import { parseConfigString, readConfigFile, writeConfigFile } from '#/config';
+import { parseConfigString, readConfigFile, resolveModelAlias, writeConfigFile } from '#/config';
 import { TEST_IDENTITY } from './test-identity';
 
 // node-sdk/agent-core normalize paths to forward slashes (pathe). Mirror that
@@ -115,6 +115,24 @@ provider = "local"
 model = "reload-test-model"
 max_context_size = 200000
 `;
+
+describe('resolveModelAlias', () => {
+  it('resolves an ambiguous bare id to the first catalog candidate and warns', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const resolved = resolveModelAlias({
+        'beta/fast-model': { provider: 'beta', model: 'fast-model', maxContextSize: 128_000 },
+        'alpha/fast-model': { provider: 'alpha', model: 'fast-model', maxContextSize: 128_000 },
+      }, 'fast-model');
+
+      expect(resolved?.id).toBe('beta/fast-model');
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]?.[0]).toContain('resolves to "beta/fast-model"');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
 
 describe('SDK config TOML', () => {
   it('round-trips model parameter overrides and preserves wire parameter spelling', async () => {

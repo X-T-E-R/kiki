@@ -486,8 +486,9 @@ async function checkAgentProfiles(
     const errors: string[] = [];
     const warnings: string[] = [];
     if (file.modelAlias !== undefined) {
-      const modelAliasError = describeUnresolvedModelAlias(context.models, file.modelAlias);
-      if (modelAliasError !== undefined) errors.push(modelAliasError);
+      const diagnostic = describeModelAlias(context.models, file.modelAlias);
+      if (diagnostic?.kind === 'error') errors.push(diagnostic.message);
+      if (diagnostic?.kind === 'warning') warnings.push(diagnostic.message);
     }
     const missingSubagents =
       file.subagents?.includes('*') === true
@@ -679,16 +680,29 @@ function modelRecordFromToml(entry: Record<string, unknown>): ModelRecord {
   };
 }
 
-function describeUnresolvedModelAlias(
+interface ModelAliasDiagnostic {
+  readonly kind: 'error' | 'warning';
+  readonly message: string;
+}
+
+function describeModelAlias(
   models: Readonly<Record<string, ModelRecord>>,
   modelAlias: string,
-): string | undefined {
-  try {
-    if (resolveModelId(models, modelAlias) !== undefined) return undefined;
-    return `model_alias "${modelAlias}" does not name an entry in config.toml [models].`;
-  } catch (error) {
-    return errorMessage(error);
+): ModelAliasDiagnostic | undefined {
+  let warning: ModelAliasDiagnostic | undefined;
+  const resolved = resolveModelId(models, modelAlias, ({ candidates, resolved: candidate }) => {
+    warning = {
+      kind: 'warning',
+      message: `model_alias "${modelAlias}" is ambiguous and resolves to "${candidate}", the first configured candidate (${candidates.join(', ')}).`,
+    };
+  });
+  if (resolved === undefined) {
+    return {
+      kind: 'error',
+      message: `model_alias "${modelAlias}" does not name an entry in config.toml [models].`,
+    };
   }
+  return warning;
 }
 
 function findZodError(error: unknown): z.ZodError | undefined {

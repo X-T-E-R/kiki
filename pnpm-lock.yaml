@@ -658,6 +658,9 @@ importers:
       '@nb-corp/nb-search':
         specifier: file:../../vendor/nb-search-0.3.0-aa805a24.tgz
         version: file:vendor/nb-search-0.3.0-aa805a24.tgz(playwright@1.60.0)
+      own-work:
+        specifier: file:../../vendor/own-work-0.1.1-kiki-034a4314.tgz
+        version: file:vendor/own-work-0.1.1-kiki-034a4314.tgz
       pathe:
         specifier: ^2.0.3
         version: 2.0.3

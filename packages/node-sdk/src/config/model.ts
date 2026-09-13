@@ -4,8 +4,6 @@ import {
   matchUnknownClaudeProfile,
 } from '@kiki/agent-core-v2/kosong/provider/bases/anthropic/anthropic-profile';
 
-import { ErrorCodes, KimiError } from '../errors';
-
 import type { ModelAlias, ProviderType } from './schema';
 
 export interface ResolvedModelAlias {
@@ -24,21 +22,17 @@ export function resolveModelAlias(
   const candidates = Object.entries(models)
     .filter(([candidateId, alias]) =>
       matchesBareModelId(candidateId, id) || matchesBareModelId(alias.model, id),
-    )
-    .toSorted(([left], [right]) => left.localeCompare(right));
+    );
   if (candidates.length === 0) return undefined;
-  if (candidates.length === 1) {
-    const [candidateId, alias] = candidates[0]!;
-    return { id: candidateId, alias };
-  }
 
-  const candidateIds = candidates.map(([candidateId]) => candidateId);
-  const quotedCandidates = candidateIds.map((candidate) => `"${candidate}"`).join(', ');
-  throw new KimiError(
-    ErrorCodes.CONFIG_INVALID,
-    `Model "${id}" matches multiple configured models: ${quotedCandidates}. Use a full model id to disambiguate.`,
-    { details: { model: id, candidates: candidateIds } },
-  );
+  const [candidateId, alias] = candidates[0]!;
+  if (candidates.length > 1) {
+    const candidateIds = candidates.map(([candidate]) => candidate);
+    console.warn(
+      `[model] ambiguous model id "${id}" resolves to "${candidateId}" (first configured of ${candidateIds.map((candidate) => `"${candidate}"`).join(', ')}); use a full model id to pin another`,
+    );
+  }
+  return { id: candidateId, alias };
 }
 
 function matchesBareModelId(value: string | undefined, id: string): boolean {

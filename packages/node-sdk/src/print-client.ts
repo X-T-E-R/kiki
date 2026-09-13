@@ -7,9 +7,13 @@ import {
   logSeed,
   resolveLoggingConfig,
   type BootstrapInput,
+  type Scope,
 } from '@kiki/agent-core-v2';
+import { ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
 import { createKlient } from '@kiki/klient/memory';
 import type { Klient } from '@kiki/klient';
+
+import { createPrintTaskBoardService } from './print-task-board';
 
 export { PRINT_MAX_TURNS_DEFAULT, PRINT_WAIT_CEILING_S_DEFAULT, setClampedTimeout } from '@kiki/agent-core-v2';
 export type { AgentTaskConfig, PrintBackgroundMode } from '@kiki/agent-core-v2';
@@ -22,9 +26,12 @@ export interface PrintClientHost {
 }
 
 export async function createPrintClient(input: BootstrapInput & { homeDir: string }): Promise<PrintClientHost> {
-  const { app } = bootstrap(input, [
+  let app: Scope | undefined;
+  const result = bootstrap(input, [
     ...logSeed(resolveLoggingConfig({ homeDir: input.homeDir, env: process.env })),
+    [ITaskBoardService, createPrintTaskBoardService(() => app!)],
   ]);
+  app = result.app;
   try {
     const config = app.accessor.get(IConfigService);
     await config.ready;
