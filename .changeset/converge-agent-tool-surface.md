@@ -1,6 +1,6 @@
 ---
-"@moonshot-ai/agent-core-v2": minor
-"kimi-code": minor
+"@kiki/agent-core-v2": minor
+"@kiki/cli": minor
 ---
 
 **Breaking (v2 tool surface):** converge the agent tools onto `AgentRun` / `AgentSwarm` / `AgentList` / `AgentSend` and the `Task*` family.
