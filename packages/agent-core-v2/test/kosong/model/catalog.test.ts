@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createScopedTestHost } from '#/_base/di/test';
 import { isErrorCode } from '#/_base/errors/codes';
@@ -483,7 +483,7 @@ describe('Model assembly (pure data)', () => {
     }
   });
 
-  it('reports ambiguous bare ids and preserves not-configured errors otherwise', () => {
+  it('resolves ambiguous bare ids to the first candidate and preserves not-configured errors otherwise', () => {
     const { host, catalog } = createHost({
       ...kimiSections,
       models: {
@@ -491,12 +491,10 @@ describe('Model assembly (pure data)', () => {
         'beta/other': { provider: 'kimi', model: 'shared', maxContextSize: 1 },
       },
     });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      expect(() => catalog.get('shared')).toThrowError(
-        expect.objectContaining({
-          message: expect.stringMatching(/alpha\/shared.*beta\/other.*full model id/),
-        }),
-      );
+      expect(catalog.get('shared').id).toBe('alpha/shared');
+      expect(warn).toHaveBeenCalled();
       expect(() => catalog.get('missing')).toThrow(
         'Model "missing" is not configured in config.toml.',
       );
@@ -504,6 +502,7 @@ describe('Model assembly (pure data)', () => {
         'Model "other/shared" is not configured in config.toml.',
       );
     } finally {
+      warn.mockRestore();
       host.dispose();
     }
   });

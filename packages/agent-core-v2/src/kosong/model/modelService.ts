@@ -42,7 +42,11 @@ export class ModelService extends Disposable implements IModelService {
     this._onDidChangeDefaultModel.event;
 
   resolveId(id: string): string | undefined {
-    return resolveModelId(this.models, id);
+    return resolveModelId(this.models, id, ({ candidates, resolved }) => {
+      console.warn(
+        `[model] ambiguous model id "${id}" resolves to "${resolved}" (first configured of ${candidates.map((candidate) => `"${candidate}"`).join(', ')}); use a full model id to pin another`,
+      );
+    });
   }
 
   get(id: string): ModelRecord | undefined {

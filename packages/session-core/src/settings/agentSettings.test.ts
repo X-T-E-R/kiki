@@ -9,6 +9,7 @@ import {
   namedAgentOverrideRelations,
   namedAgentSessionHref,
   partitionNamedAgentProfiles,
+  resolveCatalogModel,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
   summarizeNamedAgentLease,
@@ -469,5 +470,37 @@ describe('composerDefaultsForProfile', () => {
       model: undefined,
       thinking: undefined,
     });
+  });
+});
+
+
+describe('resolveCatalogModel', () => {
+  const catalog = [
+    { provider: 'alpha', model: 'alpha/k3-256k' },
+    { provider: 'beta', model: 'beta/k3-256k' },
+    { provider: 'fixture', model: 'fixture/kiki-pro' },
+    { provider: 'openai', model: 'fast-model' },
+    { provider: 'managed:kimi-code', model: 'k3-review' },
+  ];
+
+  it('prefers an exact catalog key', () => {
+    expect(resolveCatalogModel(catalog, 'fixture/kiki-pro')?.provider).toBe('fixture');
+    expect(resolveCatalogModel(catalog, 'fast-model')?.provider).toBe('openai');
+  });
+
+  it('resolves an ambiguous bare id to the first catalog row in server order', () => {
+    expect(resolveCatalogModel(catalog, 'k3-256k')?.model).toBe('alpha/k3-256k');
+  });
+
+  it('resolves a provider-qualified id to the matching bare key', () => {
+    expect(resolveCatalogModel(catalog, 'openai/fast-model')?.model).toBe('fast-model');
+    expect(resolveCatalogModel(catalog, 'kimi-code/k3-review')?.model).toBe('k3-review');
+    expect(resolveCatalogModel(catalog, 'anthropic/fast-model')).toBeUndefined();
+  });
+
+  it('returns undefined for unknown ids', () => {
+    expect(resolveCatalogModel(catalog, 'missing')).toBeUndefined();
+    expect(resolveCatalogModel(catalog, 'other/k3-256k')).toBeUndefined();
+    expect(resolveCatalogModel(catalog, 'alpha/')).toBeUndefined();
   });
 });

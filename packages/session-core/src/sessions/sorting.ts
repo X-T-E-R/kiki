@@ -68,15 +68,15 @@ export function sortTasks(tasks: readonly Task[]): Task[] {
   });
 }
 
-/** Substring match for searchable-select options, over label, hint, and keywords. */
-export function filterSelectOptions<T extends { readonly label: string; readonly hint?: string; readonly keywords?: string }>(
+/** Substring match for searchable-select options, over label, hint, description, and keywords. */
+export function filterSelectOptions<T extends { readonly label: string; readonly hint?: string; readonly description?: string; readonly keywords?: string }>(
   options: readonly T[],
   query: string,
 ): T[] {
   const needle = query.trim().toLowerCase();
   if (needle === '') return [...options];
   return options.filter((option) =>
-    [option.label, option.hint, option.keywords].some(
+    [option.label, option.hint, option.description, option.keywords].some(
       (text) => text !== undefined && text.toLowerCase().includes(needle),
     ),
   );

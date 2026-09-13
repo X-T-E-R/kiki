@@ -26,6 +26,34 @@ export function resolveSelectedEffort(
   return efforts[0];
 }
 
+/**
+ * Composer-side mirror of the engine's `resolveModelId` over the `/models`
+ * catalog: an exact key wins first, a bare id matches any `provider/id` key
+ * tail, and a qualified `provider/tail` id matches the bare key of that
+ * provider (including `managed:`-prefixed provider ids). An ambiguous bare id
+ * is not an error — the first catalog row in server order resolves it, which
+ * is the candidate the engine picks as well.
+ */
+export function resolveCatalogModel<T extends { readonly model: string; readonly provider: string }>(
+  items: readonly T[],
+  id: string,
+): T | undefined {
+  const exact = items.find((item) => item.model === id);
+  if (exact !== undefined) return exact;
+  if (!id.includes('/')) {
+    return items.find((item) => item.model.endsWith(`/${id}`));
+  }
+  const slash = id.lastIndexOf('/');
+  const prefix = id.slice(0, slash);
+  const tail = id.slice(slash + 1);
+  if (tail === '') return undefined;
+  return items.find(
+    (item) =>
+      item.model === tail &&
+      (item.provider === prefix || item.provider.endsWith(`:${prefix}`)),
+  );
+}
+
 export function subagentGovernanceFromConfig(config: unknown): SubagentGovernanceDraft {
   const subagent = configObjectOrEmpty(configObjectOrEmpty(config)['subagent']);
   return { denyModels: normalizeConfigStringList(subagent['denyModels']).join('\n') };

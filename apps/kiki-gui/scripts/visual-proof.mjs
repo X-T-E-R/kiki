@@ -1139,9 +1139,9 @@ async function scenarioHeroShell() {
   await page.waitForTimeout(600);
   await shot('hero-desktop');
 
-  // Agent picker: a standalone toolbar control again. Only main profiles are
-  // conversation partners — subagent profiles (reviewer) never list, and with
-  // every option a main profile the labels carry no ` · main` suffix.
+  // Agent picker: a standalone toolbar control again. Every enabled profile
+  // is a conversation candidate — the two mains lead, the enabled non-main
+  // (reviewer) follows — and the labels carry no ` · main` suffix.
   await page.waitForSelector('#composer-agent-profile-select', { timeout: 10_000 });
   const profileTrigger = page.locator('#composer-agent-profile-select');
   const profileTriggerText = await profileTrigger.textContent();
@@ -1152,13 +1152,27 @@ async function scenarioHeroShell() {
   const profileOptions = await page
     .locator('#composer-agent-profile-select-list [role="option"]')
     .allTextContents();
+  const reviewerIndex = profileOptions.findIndex((text) => text.includes('reviewer'));
+  const grokIndex = profileOptions.findIndex((text) => text.includes('grok-only'));
   if (
-    profileOptions.length !== 2
-    || !profileOptions.some((text) => text.includes('grok-only'))
-    || profileOptions.some((text) => text.includes('reviewer'))
+    profileOptions.length !== 3
+    || grokIndex === -1
+    || reviewerIndex === -1
+    || reviewerIndex < grokIndex
   ) {
-    throw new Error(`agent picker must list exactly the main profiles, got ${JSON.stringify(profileOptions)}`);
+    throw new Error(`agent picker must list the mains first, then enabled non-main profiles, got ${JSON.stringify(profileOptions)}`);
   }
+  // Let the panel's enter animation settle before the shot.
+  await page.waitForTimeout(400);
+  await shot('hero-profile-picker');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+
+  // Model picker: provider groups, capability/effort badges, effort footer.
+  await page.locator('#composer-model-select').click();
+  await page.waitForSelector('#composer-model-select-list [role="option"]', { timeout: 5000 });
+  await page.waitForTimeout(400);
+  await shot('hero-model-picker');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
 
@@ -1243,6 +1257,21 @@ async function scenarioHeroShell() {
   await page.click(`button[aria-label="${S.openMenuAria}"]`);
   await page.waitForTimeout(400);
   await shot('hero-mobile-drawer');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+
+  // The pickers must not degrade at mobile width: the panel narrows to the
+  // viewport instead of overflowing it.
+  await page.locator('#composer-agent-profile-select').click();
+  await page.waitForSelector('#composer-agent-profile-select-list [role="option"]', { timeout: 5000 });
+  await page.waitForTimeout(400);
+  const mobilePickerBox = await page
+    .locator('#composer-agent-profile-select-list')
+    .boundingBox();
+  if (mobilePickerBox === null || mobilePickerBox.x < 0 || mobilePickerBox.x + mobilePickerBox.width > 390) {
+    throw new Error(`profile picker overflows the 390px viewport: ${JSON.stringify(mobilePickerBox)}`);
+  }
+  await shot('hero-profile-picker-mobile');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
 

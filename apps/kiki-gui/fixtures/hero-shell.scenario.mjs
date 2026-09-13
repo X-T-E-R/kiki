@@ -18,8 +18,8 @@ const ANSWER = 'Here is the fixture answer from the hero shell flow.';
 export default {
   sessions: [],
   snapshots: {},
-  // Main-only agent picker proof: two main profiles plus a subagent profile
-  // that must never appear in the composer picker.
+  // Agent picker proof: two main profiles lead the list, the enabled non-main
+  // profile follows — every enabled profile is a conversation candidate now.
   agentProfiles: [
     {
       name: 'agent',

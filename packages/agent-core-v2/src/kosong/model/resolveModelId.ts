@@ -1,6 +1,3 @@
-import { Error2 } from '#/_base/errors/errors';
-import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
-
 import type { ModelRecord } from './model';
 import { nonEmpty } from './modelAuth';
 
@@ -8,13 +5,10 @@ function matchesBareModelId(value: string | undefined, id: string): boolean {
   return value === id || value?.endsWith(`/${id}`) === true;
 }
 
-function throwAmbiguousModelId(id: string, candidates: readonly string[]): never {
-  const quotedCandidates = candidates.map((candidate) => `"${candidate}"`).join(', ');
-  throw new Error2(
-    CONFIG_INVALID_ERROR_CODE,
-    `Model "${id}" matches multiple configured models: ${quotedCandidates}. Use a full model id to disambiguate.`,
-    { details: { model: id, candidates } },
-  );
+export interface AmbiguousModelIdResolution {
+  readonly id: string;
+  readonly candidates: readonly string[];
+  readonly resolved: string;
 }
 
 function isProviderPrefixConsistent(model: ModelRecord, prefix: string): boolean {
@@ -23,18 +17,30 @@ function isProviderPrefixConsistent(model: ModelRecord, prefix: string): boolean
   return providerRef === prefix || providerRef.endsWith(`:${prefix}`);
 }
 
+/**
+ * Resolves a configured model id or alias to its canonical key. An ambiguous
+ * alias (one name pointing at several configured models) is not an error: the
+ * first candidate in catalog order wins deterministically and `onAmbiguous`
+ * observes the pick so callers can surface it.
+ */
 export function resolveModelId(
   models: Readonly<Record<string, ModelRecord>>,
   id: string,
+  onAmbiguous?: (resolution: AmbiguousModelIdResolution) => void,
 ): string | undefined {
   if (models[id] !== undefined) return id;
 
+  const firstOf = (candidates: readonly string[]): string => {
+    const resolved = candidates[0]!;
+    onAmbiguous?.({ id, candidates, resolved });
+    return resolved;
+  };
+
   const aliasCandidates = Object.entries(models)
     .filter(([, model]) => (model.aliases ?? []).includes(id))
-    .map(([candidateId]) => candidateId)
-    .toSorted();
+    .map(([candidateId]) => candidateId);
   if (aliasCandidates.length === 1) return aliasCandidates[0];
-  if (aliasCandidates.length > 1) throwAmbiguousModelId(id, aliasCandidates);
+  if (aliasCandidates.length > 1) return firstOf(aliasCandidates);
 
   if (!id.includes('/')) {
     const candidates = Object.entries(models)
@@ -42,11 +48,10 @@ export function resolveModelId(
         ([candidateId, model]) =>
           matchesBareModelId(candidateId, id) || matchesBareModelId(model.model, id),
       )
-      .map(([candidateId]) => candidateId)
-      .toSorted();
+      .map(([candidateId]) => candidateId);
     if (candidates.length === 0) return undefined;
     if (candidates.length === 1) return candidates[0];
-    throwAmbiguousModelId(id, candidates);
+    return firstOf(candidates);
   }
 
   const slash = id.lastIndexOf('/');

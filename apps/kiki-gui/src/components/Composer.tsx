@@ -48,9 +48,10 @@ import {
   type ComposerAttachment,
   type SelectionAnnotation,
 } from '@kiki/session-core/composer';
-import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
+import { errorText, issueText, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import {
   isComposerSendKey,
+  resolveCatalogModel,
   resolveSelectedEffort,
   settingsServerSnapshot,
   settingsSnapshot,
@@ -102,23 +103,53 @@ export { resolveSelectedEffort };
 /** Fallback display/binding when the server echoes no profile on a session. */
 export const DEFAULT_AGENT_PROFILE = 'agent';
 
+const nonEmpty = (value: string | undefined): string | undefined =>
+  value === undefined || value.trim() === '' ? undefined : value;
+
 /**
- * Profile picker options: only main profiles (`main === true`) are listed —
- * subagent profiles exist to be dispatched, not to headline a conversation.
- * Disabled profiles are not offered. A previously selected one remains
- * visible on the trigger with a diagnostic until the user reselects.
+ * The wire's private flag: a private profile hides from every public
+ * enumeration surface (catalog list, this picker) but stays resolvable by
+ * name. Read defensively so the exclusion activates the moment the catalog
+ * serialization carries the field.
+ */
+const isPrivateProfile = (item: NamedAgentProfile): boolean =>
+  (item as NamedAgentProfile & { readonly private?: boolean }).private === true;
+
+/**
+ * Profile picker options: every enabled, non-private profile is a
+ * conversation candidate. Main profiles lead the list (they exist to
+ * headline sessions), the rest follow in catalog order under their own
+ * group; disabled and private profiles are not offered. A previously
+ * selected one remains visible on the trigger with a diagnostic until the
+ * user reselects.
  */
 export function buildAgentProfileOptions(
   items: readonly NamedAgentProfile[],
+  t: (key: I18nKey, params?: I18nParams) => string,
 ): SearchableSelectOption[] {
-  return items
-    .filter((item) => item.main === true && !item.disabled)
-    .map((item) => ({
-      value: item.name,
-      label: item.name,
-      hint: item.description,
-      title: item.name,
-    }));
+  const pickable = items.filter((item) => !item.disabled && !isPrivateProfile(item));
+  const toOption = (item: NamedAgentProfile, group: string): SearchableSelectOption => ({
+    value: item.name,
+    label: item.name,
+    description: nonEmpty(item.description) ?? nonEmpty(item.when_to_use),
+    hint: nonEmpty(item.pinned_model_alias),
+    title: item.name,
+    group,
+    badges: [
+      { label: item.source },
+      ...(nonEmpty(item.thinking_effort) !== undefined
+        ? [{ label: t('composer.profileEffortBadge', { effort: item.thinking_effort! }) }]
+        : []),
+    ],
+  });
+  return [
+    ...pickable
+      .filter((item) => item.main === true)
+      .map((item) => toOption(item, t('composer.profileGroupMain'))),
+    ...pickable
+      .filter((item) => item.main !== true)
+      .map((item) => toOption(item, t('composer.profileGroupOther'))),
+  ];
 }
 
 type ComposerMenu =
@@ -405,30 +436,59 @@ export function Composer({
   });
   const models = modelsQuery.data?.items ?? [];
 
-  // Model picker options: the inherit entry first, then the catalog; the model
-  // id rides `keywords` so searching works against display names AND raw ids.
+  // Model picker options: the inherit entry first, then the catalog grouped
+  // by provider; the model id rides `keywords` so searching works against
+  // display names AND raw ids. The inherit row resolves its target against
+  // the catalog so an ambiguous bare alias still shows who will serve it.
   const modelOptions: readonly SearchableSelectOption[] = useMemo(
-    () => [
-      {
-        value: '',
-        label:
-          defaultModel !== undefined
-            ? t('composer.inheritSession', { model: defaultModel })
-            : t(
-                modelSource === 'local-default'
-                  ? 'composer.inheritLocal'
-                  : 'composer.inheritServer',
-                { model: serverDefaultModel ?? t('composer.unknown') },
-              ),
-      },
-      ...models.map((item) => ({
-        value: item.model,
-        label: `${item.display_name ?? item.model}${item.model === defaultModel ? t('composer.sessionDefaultSuffix') : ''}`,
-        hint: item.provider,
-        keywords: item.model,
-        title: item.model,
-      })),
-    ],
+    () => {
+      const inheritTargetId = defaultModel ?? serverDefaultModel;
+      const inheritResolved =
+        inheritTargetId !== undefined ? resolveCatalogModel(models, inheritTargetId) : undefined;
+      const inheritDisplay = inheritResolved?.display_name ?? inheritTargetId ?? t('composer.unknown');
+      return [
+        {
+          value: '',
+          label:
+            defaultModel !== undefined
+              ? t('composer.inheritSession', { model: inheritDisplay })
+              : t(
+                  modelSource === 'local-default'
+                    ? 'composer.inheritLocal'
+                    : 'composer.inheritServer',
+                  { model: inheritDisplay },
+                ),
+          hint:
+            inheritResolved?.display_name !== undefined &&
+            inheritResolved.display_name !== inheritTargetId
+              ? inheritTargetId
+              : undefined,
+          badges:
+            inheritResolved !== undefined ? [{ label: inheritResolved.provider }] : undefined,
+        },
+        ...models.map((item) => ({
+          value: item.model,
+          label: `${item.display_name ?? item.model}${item.model === defaultModel ? t('composer.sessionDefaultSuffix') : ''}`,
+          hint:
+            item.display_name !== undefined && item.display_name !== item.model
+              ? item.model
+              : undefined,
+          group: item.provider,
+          badges: [
+            ...(item.capabilities ?? []).map((capability) => ({ label: capability })),
+            ...(item.support_efforts ?? []).map((level) => ({
+              label:
+                level === item.default_effort
+                  ? t('composer.modelEffortDefaultBadge', { effort: level })
+                  : level,
+              accent: level === item.default_effort,
+            })),
+          ],
+          keywords: item.model,
+          title: item.model,
+        })),
+      ];
+    },
     [models, defaultModel, serverDefaultModel, modelSource, t],
   );
 
@@ -442,12 +502,20 @@ export function Composer({
     retry: false,
   });
   const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
-    () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? []),
-    [agentProfilesQuery.data],
+    () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? [], t),
+    [agentProfilesQuery.data, t],
   );
   const validateProfile = agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
   const validatingModel = model ?? defaultModel ?? serverDefaultModel;
-  const selectedModel = models.find((item) => item.model === validatingModel);
+  const selectedModel = validatingModel !== undefined
+    ? resolveCatalogModel(models, validatingModel)
+    : undefined;
+  // An override holding a bare alias (e.g. a profile-pinned k3-256k) displays
+  // as the resolved catalog row, so the trigger names the serving provider's
+  // model instead of an unmatched raw id.
+  const resolvedModelKey = model !== undefined
+    ? resolveCatalogModel(models, model)?.model
+    : undefined;
   const selectionLoading = modelsQuery.isPending || (validateProfile && agentProfilesQuery.isPending);
   const selectionCatalogError = modelsQuery.error ?? (validateProfile ? agentProfilesQuery.error : null);
   const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
@@ -1541,8 +1609,9 @@ export function Composer({
                     }
                     ariaLabel={t('composer.agentProfileAria')}
                     emptyText={t('composer.noAgentProfiles')}
+                    searchPlaceholder={t('composer.profileSearchPlaceholder')}
                     placement="above"
-                    panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1 w-72 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+                    panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1.5 w-96 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
                     buttonClassName={`flex max-w-44 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/30 ${
                       agentProfilePending
                         ? 'border-accent bg-accent-soft text-accent'
@@ -1556,6 +1625,7 @@ export function Composer({
                   modelOptions={modelOptions}
                   hasCatalog={models.length > 0}
                   model={model}
+                  resolvedModelKey={resolvedModelKey}
                   effectiveModel={effectiveModel}
                   modelSource={modelSource}
                   onChangeModel={onChangeModel}
@@ -2216,6 +2286,7 @@ function ModelChip({
   modelOptions,
   hasCatalog,
   model,
+  resolvedModelKey,
   effectiveModel,
   modelSource,
   onChangeModel,
@@ -2227,6 +2298,8 @@ function ModelChip({
   /** False when `GET /models` returned nothing — no model is pickable. */
   readonly hasCatalog: boolean;
   readonly model: string | undefined;
+  /** The catalog key `model` resolves to (bare aliases land on a provider row). */
+  readonly resolvedModelKey: string | undefined;
   readonly effectiveModel: string | undefined;
   readonly modelSource: ComposerModelSource;
   readonly onChangeModel: (model: string | undefined) => void;
@@ -2255,13 +2328,14 @@ function ModelChip({
       options={hasCatalog ? modelOptions : []}
       hideFilter={!hasCatalog}
       // With no catalog the raw value renders verbatim — the read-only label.
-      value={hasCatalog ? (model ?? '') : (effectiveModel ?? '')}
+      value={hasCatalog ? (resolvedModelKey ?? model ?? '') : (effectiveModel ?? '')}
       onChange={(next) => { onChangeModel(next === '' ? undefined : next); }}
       title={title}
       ariaLabel={t('composer.modelAria')}
       emptyText={t('composer.inheritDefault')}
+      searchPlaceholder={t('composer.modelSearchPlaceholder')}
       placement="above"
-      panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1 w-72 max-w-[calc(100vw-48px)] rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+      panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1.5 w-96 max-w-[calc(100vw-48px)] rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
       buttonClassName="flex min-w-0 items-center gap-1 rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent focus:ring-2 focus:ring-accent/30"
       triggerSuffix={
         showEffort ? (
@@ -2270,7 +2344,7 @@ function ModelChip({
       }
       panelFooter={
         showEffort ? (
-          <div className="flex items-center gap-2 border-t border-hairline px-2.5 py-2">
+          <div className="flex items-center gap-2 border-t border-hairline px-3 py-2.5">
             <span className="shrink-0 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
               {t('composer.effortHeading')}
             </span>

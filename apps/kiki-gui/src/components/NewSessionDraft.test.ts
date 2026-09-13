@@ -899,6 +899,8 @@ describe('resolveSelectedEffort', () => {
 });
 
 describe('buildAgentProfileOptions', () => {
+  const t = (key: string, params?: Record<string, string | number>) =>
+    params !== undefined ? `${key}:${Object.values(params).join(',')}` : key;
   const profile = (overrides: Partial<NamedAgentProfile>): NamedAgentProfile => ({
     name: 'agent',
     source: 'builtin',
@@ -908,48 +910,90 @@ describe('buildAgentProfileOptions', () => {
     ...overrides,
   });
 
-  it('lists only enabled main profiles, without any main suffix or badge', () => {
-    const options = buildAgentProfileOptions([
-      profile({ name: 'agent', main: true, description: 'General-purpose.' }),
-      profile({ name: 'grok-only', source: 'user', main: true }),
-      // Subagent profiles are dispatch targets, not conversation partners —
-      // they never appear in the picker, even while enabled.
-      profile({ name: 'reviewer', source: 'workspace' }),
-      profile({ name: 'legacy', disabled: true }),
-      profile({ name: 'suspended-main', main: true, disabled: true }),
-    ]);
-    expect(options.map((option) => option.value)).toEqual(['agent', 'grok-only']);
+  it('lists every enabled profile — mains first, then the rest in catalog order', () => {
+    const options = buildAgentProfileOptions(
+      [
+        profile({ name: 'agent', main: true, description: 'General-purpose.' }),
+        profile({ name: 'reviewer', source: 'workspace', description: 'Reviews code.' }),
+        profile({ name: 'grok-only', source: 'user', main: true }),
+        profile({ name: 'legacy', disabled: true }),
+        profile({ name: 'suspended-main', main: true, disabled: true }),
+      ],
+      t,
+    );
+    // Enabled non-main profiles are pickable; only disabled ones drop out.
+    expect(options.map((option) => option.value)).toEqual(['agent', 'grok-only', 'reviewer']);
     expect(options[0]?.label).toBe('agent');
-    expect(options[0]?.hint).toBe('General-purpose.');
-    expect(options[1]?.label).toBe('grok-only');
+    expect(options[0]?.description).toBe('General-purpose.');
+    expect(options[0]?.group).toBe('composer.profileGroupMain');
+    expect(options[1]?.group).toBe('composer.profileGroupMain');
+    expect(options[2]?.group).toBe('composer.profileGroupOther');
+  });
+
+  it('carries the bound model, effort, and source as row facts', () => {
+    const options = buildAgentProfileOptions(
+      [
+        profile({
+          name: 'researcher',
+          source: 'user',
+          pinned_model_alias: 'k3-256k',
+          thinking_effort: 'high',
+          when_to_use: 'Use for deep research tasks.',
+        }),
+      ],
+      t,
+    );
+    expect(options[0]?.hint).toBe('k3-256k');
+    expect(options[0]?.description).toBe('Use for deep research tasks.');
+    expect(options[0]?.badges).toEqual([
+      { label: 'user' },
+      { label: 'composer.profileEffortBadge:high' },
+    ]);
   });
 
   it('does not offer a disabled main profile as a fallback option', () => {
-    const options = buildAgentProfileOptions([
-      profile({ name: 'suspended-main', main: true, disabled: true }),
-    ]);
+    const options = buildAgentProfileOptions(
+      [profile({ name: 'suspended-main', main: true, disabled: true })],
+      t,
+    );
     expect(options).toEqual([]);
+  });
+
+  it('excludes profiles the wire marks private', () => {
+    // Private profiles hide from public enumeration but resolve by name, so a
+    // bound session keeps its trigger label while the picker skips the row.
+    const options = buildAgentProfileOptions(
+      [
+        profile({ name: 'agent', main: true }),
+        { ...profile({ name: 'internal', main: true }), private: true } as NamedAgentProfile,
+      ],
+      t,
+    );
+    expect(options.map((option) => option.value)).toEqual(['agent']);
   });
 
   it('never promotes a private scoped subagent lease to a selectable profile', () => {
     // Dedicated subagents live only inside a parent profile's `subagents`
     // lease list — they are not public catalog entries, so even a parent
     // carrying a `scope: 'private'` lease yields no option for the child.
-    const options = buildAgentProfileOptions([
-      profile({
-        name: 'agent',
-        main: true,
-        subagents: [
-          'reviewer',
-          {
-            name: 'writer',
-            source: './_private/research/writer.md',
-            scope: 'private',
-            status: 'ready',
-          },
-        ],
-      }),
-    ]);
+    const options = buildAgentProfileOptions(
+      [
+        profile({
+          name: 'agent',
+          main: true,
+          subagents: [
+            'reviewer',
+            {
+              name: 'writer',
+              source: './_private/research/writer.md',
+              scope: 'private',
+              status: 'ready',
+            },
+          ],
+        }),
+      ],
+      t,
+    );
     expect(options.map((option) => option.value)).toEqual(['agent']);
   });
 });

@@ -323,7 +323,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
-      skills: [{ name: 'update-config' }, { name: 'check-kimi-code-docs' }],
+      skills: [{ name: 'update-config' }, { name: 'check-kiki-docs' }],
     });
     expect(submitted.body.code).toBe(0);
     expect(submitted.body.data.prompt_id).toMatch(/^msg_/);
@@ -336,7 +336,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const bundled = history.find((message) => message.origin?.kind === 'user');
     expect(bundled?.origin).toMatchObject({
       kind: 'user',
-      skillActivations: [{ skillName: 'update-config' }, { skillName: 'check-kimi-code-docs' }],
+      skillActivations: [{ skillName: 'update-config' }, { skillName: 'check-kiki-docs' }],
     });
     const texts = bundled?.content
       .filter((part) => part.type === 'text')

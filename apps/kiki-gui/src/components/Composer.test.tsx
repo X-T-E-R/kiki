@@ -326,7 +326,7 @@ describe('Composer send latch', () => {
 });
 
 describe('Composer agent profile picker', () => {
-  it('renders the bound profile without a main suffix and lists only main profiles', async () => {
+  it('renders the bound profile without a main suffix and lists every enabled profile, mains first', async () => {
     const { container } = await renderComposer({
       agentProfile: 'agent',
       onChangeAgentProfile: () => {},
@@ -341,10 +341,20 @@ describe('Composer agent profile picker', () => {
     const options = [...container.querySelectorAll('[role="option"]')].map(
       (row) => row.textContent ?? '',
     );
+    // Mains lead, then the enabled non-main profiles; only disabled drops out.
     expect(options.some((text) => text.includes('grok-only'))).toBe(true);
-    expect(options.some((text) => text.includes('reviewer'))).toBe(false);
+    expect(options.some((text) => text.includes('reviewer'))).toBe(true);
     expect(options.some((text) => text.includes('legacy'))).toBe(false);
+    expect(options.findIndex((text) => text.includes('reviewer'))).toBeGreaterThan(
+      options.findIndex((text) => text.includes('grok-only')),
+    );
     expect(options.some((text) => text.includes('main'))).toBe(false);
+    // Rows carry the useful facts: description, source badge.
+    const agentRow = [...container.querySelectorAll('[role="option"]')].find(
+      (row) => row.textContent?.includes('agent'),
+    );
+    expect(agentRow?.textContent).toContain('General-purpose built-in agent.');
+    expect(agentRow?.textContent).toContain('builtin');
   });
 
   it('reports picks through onChangeAgentProfile (the parent owns the confirm flow)', async () => {
@@ -380,7 +390,7 @@ describe('Composer agent profile picker', () => {
     expect(second.container.querySelector('[role="alert"] button')?.textContent).toBe('Retry');
   });
 
-  it('excludes disabled main and subagent profiles, preserving an invalid choice with a diagnostic', async () => {
+  it('excludes disabled profiles while enabled non-mains stay pickable, preserving an invalid choice with a diagnostic', async () => {
     listNamedAgentProfiles.mockResolvedValue({
       items: [
         { name: 'agent', source: 'builtin', main: true, disabled: true, routes: [] },
@@ -398,11 +408,12 @@ describe('Composer agent profile picker', () => {
     const options = [...container.querySelectorAll('[role="option"]')].map(
       (row) => row.textContent ?? '',
     );
-    expect(options).toHaveLength(0);
+    expect(options).toHaveLength(1);
+    expect(options[0]).toContain('reviewer');
     expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('unavailable');
   });
 
-  it('loads workspace main profiles without exposing workspace subagents', async () => {
+  it('loads workspace profiles including enabled non-main profiles', async () => {
     listNamedAgentProfiles.mockImplementation(async (workspaceId?: string) => ({
       items: workspaceId === 'wd_alpha'
         ? [
@@ -424,7 +435,7 @@ describe('Composer agent profile picker', () => {
       (row) => row.textContent ?? '',
     );
     expect(options.some((text) => text.includes('alpha-main'))).toBe(true);
-    expect(options.some((text) => text.includes('alpha-helper'))).toBe(false);
+    expect(options.some((text) => text.includes('alpha-helper'))).toBe(true);
   });
 
   it('does not reuse a stale profile catalog when the workspace changes', async () => {
@@ -792,6 +803,57 @@ describe('Composer model chip', () => {
     expect(container.querySelector('#composer-model-select-list')).toBeNull();
     await click(container.querySelector('[data-effort="high"]')!);
     expect(onChangeEffort).toHaveBeenCalledWith('high');
+  });
+
+  it('treats an ambiguous bare alias as available, naming the serving provider', async () => {
+    listModels.mockResolvedValue({
+      items: [
+        { provider: 'alpha', model: 'alpha/k3-256k', display_name: 'K3 256K' },
+        { provider: 'beta', model: 'beta/k3-256k', display_name: 'K3 256K' },
+      ],
+    });
+    const { container } = await renderComposer({ serverDefaultModel: 'k3-256k' });
+    for (let index = 0; index < 5; index += 1) await settle();
+    // The engine resolves the same alias to the first candidate — not "unavailable".
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    expect(trigger.textContent).toContain('K3 256K');
+
+    await click(trigger);
+    const rows = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    expect(rows).toHaveLength(3);
+    // The inherit row shows the resolved display name and the serving provider.
+    expect(rows[0]?.textContent).toContain('inherit server default');
+    expect(rows[0]?.textContent).toContain('K3 256K');
+    expect(rows[0]?.textContent).toContain('alpha');
+    // Catalog rows group by provider.
+    const headers = [...container.querySelectorAll('#composer-model-select-list p')].map(
+      (node) => node.textContent,
+    );
+    expect(headers).toContain('alpha');
+    expect(headers).toContain('beta');
+  });
+
+  it('resolves a bare-alias override onto the first candidate row', async () => {
+    listModels.mockResolvedValue({
+      items: [
+        { provider: 'alpha', model: 'alpha/k3-256k', display_name: 'K3 256K' },
+        { provider: 'beta', model: 'beta/k3-256k', display_name: 'K3 256K' },
+      ],
+    });
+    const { container } = await renderComposer({ model: 'k3-256k' });
+    for (let index = 0; index < 5; index += 1) await settle();
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+    // The trigger shows the resolved row's display name, not the raw alias.
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    expect(trigger.textContent).toContain('K3 256K');
+    expect(trigger.textContent).not.toContain('k3-256k');
+
+    await click(trigger);
+    const selected = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
+      (row) => row.getAttribute('aria-selected') === 'true',
+    );
+    expect(selected?.textContent).toContain('alpha/k3-256k');
   });
 });
 

@@ -15,7 +15,7 @@ const PRODUCT_SKILLS = [
   'import-from-cc-codex',
   'update-config',
   'custom-theme',
-  'check-kimi-code-docs',
+  'check-kiki-docs',
 ];
 const NEUTRAL_SKILLS = BUILTIN_SKILLS.map((s) => s.name).filter(
   (name) => !PRODUCT_SKILLS.includes(name),

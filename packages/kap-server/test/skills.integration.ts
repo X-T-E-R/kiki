@@ -154,7 +154,7 @@ describe('server-v2 /api/v1 skills', () => {
       expect(updateConfig).not.toHaveProperty('isSubSkill');
     });
 
-    it('lists the check-kimi-code-docs builtin skill', async () => {
+    it('lists the check-kiki-docs builtin skill', async () => {
       const id = await createSession();
       const { body } = await getJson<{ skills: SkillWire[] }>(
         `/api/v1/sessions/${id}/skills`,
@@ -162,7 +162,7 @@ describe('server-v2 /api/v1 skills', () => {
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
 
-      const docsSkill = skills.find((s) => s.name === 'check-kimi-code-docs');
+      const docsSkill = skills.find((s) => s.name === 'check-kiki-docs');
       expect(docsSkill).toBeDefined();
       expect(docsSkill).toMatchObject({ source: 'builtin' });
       expect(docsSkill?.description.length).toBeGreaterThan(0);

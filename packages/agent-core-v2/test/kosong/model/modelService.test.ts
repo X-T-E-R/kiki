@@ -1,7 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { modelsFromToml, modelsToToml } from '#/app/kosongConfig/configSection';
-import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 import { type ModelRecord } from '#/kosong/model/model';
 import { ModelService } from '#/kosong/model/modelService';
 
@@ -130,23 +129,21 @@ describe('ModelService', () => {
     expect(service.resolveId('deepseek-v4-flash')).toBe('deepseek-v4-flash');
   });
 
-  it('rejects ambiguous bare ids with every canonical candidate', () => {
+  it('resolves an ambiguous bare id to the first catalog candidate and warns', () => {
     const service = createService({
       'alpha/deepseek-v4-flash': { model: 'deepseek-v4-flash' },
       'beta/other': { model: 'deepseek-v4-flash' },
     });
-
-    expect(() => service.resolveId('deepseek-v4-flash')).toThrowError(
-      expect.objectContaining({
-        code: CONFIG_INVALID_ERROR_CODE,
-        message:
-          'Model "deepseek-v4-flash" matches multiple configured models: "alpha/deepseek-v4-flash", "beta/other". Use a full model id to disambiguate.',
-        details: {
-          model: 'deepseek-v4-flash',
-          candidates: ['alpha/deepseek-v4-flash', 'beta/other'],
-        },
-      }),
-    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(service.resolveId('deepseek-v4-flash')).toBe('alpha/deepseek-v4-flash');
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]?.[0]).toContain('"deepseek-v4-flash"');
+      expect(warn.mock.calls[0]?.[0]).toContain('"alpha/deepseek-v4-flash"');
+      expect(warn.mock.calls[0]?.[0]).toContain('"beta/other"');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not suffix-match unknown or qualified ids', () => {
@@ -194,20 +191,21 @@ describe('ModelService', () => {
     expect(service.resolveId('openai/legacy-flash')).toBe('fast-model');
   });
 
-  it('rejects duplicate aliases with the same ambiguity error as bare ids', () => {
+  it('resolves duplicate aliases to the first catalog candidate and warns', () => {
     const service = createService({
       alpha: { aliases: ['fast-model'] },
       beta: { aliases: ['fast-model'] },
     });
-
-    expect(() => service.resolveId('fast-model')).toThrowError(
-      expect.objectContaining({
-        code: CONFIG_INVALID_ERROR_CODE,
-        message:
-          'Model "fast-model" matches multiple configured models: "alpha", "beta". Use a full model id to disambiguate.',
-        details: { model: 'fast-model', candidates: ['alpha', 'beta'] },
-      }),
-    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(service.resolveId('fast-model')).toBe('alpha');
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]?.[0]).toContain('"fast-model"');
+      expect(warn.mock.calls[0]?.[0]).toContain('"alpha"');
+      expect(warn.mock.calls[0]?.[0]).toContain('"beta"');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('prefers an exact aliases hit over bare-name tail matching', () => {
