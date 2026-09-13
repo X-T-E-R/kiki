@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const bin = join(pkgRoot, 'dist', 'mcp', 'stdio.mjs');
-const coreImport = '@moonshot-ai/agent-core-v2';
+const coreImport = '@kiki/agent-core-v2';
 const relativeImport = /(?:from|import)\s*["'](\.\.?\/[^"']+)["']/g;
 
 function fail(message) {

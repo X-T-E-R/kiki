@@ -1,4 +1,4 @@
-import { Container, Text } from '@moonshot-ai/pi-tui';
+import { Container, Text } from '@kiki/pi-tui';
 
 import { SHELL_OUTPUT_PREVIEW_LINES } from '#/tui/constant/rendering';
 import { currentTheme } from '#/tui/theme';

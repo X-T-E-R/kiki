@@ -41,7 +41,7 @@ import {
   type ISessionScopeHandle,
   type PromptHandle,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import type {
   EditMessageRequest,

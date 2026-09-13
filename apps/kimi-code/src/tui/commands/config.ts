@@ -5,7 +5,7 @@ import {
   type PermissionMode,
   type Session,
   type ThinkingEffort,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 import { EditorSelectorComponent } from '../components/dialogs/editor-selector';
 import { EffortSelectorComponent } from '../components/dialogs/effort-selector';

@@ -4,7 +4,7 @@ import {
   type ManagedKimiOAuthRef,
   type RefreshProviderHost,
   type RefreshResult,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';

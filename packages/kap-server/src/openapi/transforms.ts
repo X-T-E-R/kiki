@@ -3,7 +3,7 @@ import {
   fsDiffResponseSchema,
   fsGitStatusRequestSchema,
   fsGitStatusResponseSchema,
-} from '@moonshot-ai/agent-core-v2/app/git/git';
+} from '@kiki/agent-core-v2/app/git/git';
 import {
   fsGrepRequestSchema,
   fsGrepResponseSchema,
@@ -21,7 +21,7 @@ import {
   fsStatManyResponseSchema,
   fsStatRequestSchema,
   fsStatResponseSchema,
-} from '@moonshot-ai/agent-core-v2/workspace/workspaceFs/fs';
+} from '@kiki/agent-core-v2/workspace/workspaceFs/fs';
 import { z } from 'zod';
 
 import {

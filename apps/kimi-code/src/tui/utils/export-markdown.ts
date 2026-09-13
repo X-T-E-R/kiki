@@ -1,4 +1,4 @@
-import type { ContentPart, ContextMessage, PromptOrigin, ToolCall } from '@moonshot-ai/kimi-code-sdk';
+import type { ContentPart, ContextMessage, PromptOrigin, ToolCall } from '@kiki/node-sdk';
 
 const HINT_KEYS = ['path', 'file_path', 'command', 'query', 'url', 'name', 'pattern'] as const;
 

@@ -1,4 +1,4 @@
-import { parseKimiCodeCustomHeaders } from '@moonshot-ai/kimi-code-oauth';
+import { parseKimiCodeCustomHeaders } from '@kiki/oauth';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';

@@ -14,7 +14,7 @@ import {
   type KimiRegion,
   type ManagedKimiConfigShape,
   type OAuthRefreshOutcome,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 
 import {
   loadRuntimeConfigSafe,

@@ -12,7 +12,7 @@ export default defineConfig({
   outDir: 'dist',
   clean: true,
   deps: {
-    alwaysBundle: [/^@moonshot-ai\/klient\/procedures/u],
+    alwaysBundle: [/^@kiki\/klient\/procedures/u],
   },
   define: {
     [BUILT_IN_CATALOG_DEFINE]: builtInCatalogDefine(),

@@ -1,4 +1,4 @@
-import type { ContentPart, ThinkingEffort, TokenUsage } from '@moonshot-ai/agent-core-v2';
+import type { ContentPart, ThinkingEffort, TokenUsage } from '@kiki/agent-core-v2';
 
 import type {
   AgentConfigUpdateData,
@@ -15,9 +15,9 @@ import type {
   PromptOrigin,
   SwarmModeTrigger,
   UserToolRegistration,
-} from '@moonshot-ai/agent-core-v2';
-import type { MCPToolDefinition } from '@moonshot-ai/agent-core-v2/mcpCore/types';
-import type { UsageRecordScope } from '@moonshot-ai/agent-core-v2/agent/usage/usageOps';
+} from '@kiki/agent-core-v2';
+import type { MCPToolDefinition } from '@kiki/agent-core-v2/mcpCore/types';
+import type { UsageRecordScope } from '@kiki/agent-core-v2/agent/usage/usageOps';
 
 /**
  * The tool-store slice a `tools.update_store` record carries. The wire keeps

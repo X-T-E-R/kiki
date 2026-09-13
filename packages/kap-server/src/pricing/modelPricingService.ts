@@ -17,7 +17,7 @@ import {
   LifecycleScope,
   ScopeActivation,
   registerScopedService,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { getModelPricingRuntimeState } from './runtime';
 

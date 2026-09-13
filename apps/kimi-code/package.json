@@ -1,5 +1,5 @@
 {
-  "name": "@moonshot-ai/kimi-code",
+  "name": "@kiki/cli",
   "version": "0.37.2",
   "description": "The Starting Point for Next-Gen Agents",
   "license": "MIT",
@@ -80,13 +80,13 @@
     "node-pty": "^1.1.0"
   },
   "devDependencies": {
-    "@moonshot-ai/acp-server": "workspace:^",
-    "@moonshot-ai/agent-core-v2": "workspace:^",
-    "@moonshot-ai/kap-server": "workspace:^",
-    "@moonshot-ai/kimi-code-oauth": "workspace:^",
-    "@moonshot-ai/kimi-code-sdk": "workspace:^",
-    "@moonshot-ai/minidb": "workspace:^",
-    "@moonshot-ai/pi-tui": "workspace:^",
+    "@kiki/acp-server": "workspace:^",
+    "@kiki/agent-core-v2": "workspace:^",
+    "@kiki/kap-server": "workspace:^",
+    "@kiki/oauth": "workspace:^",
+    "@kiki/node-sdk": "workspace:^",
+    "@kiki/minidb": "workspace:^",
+    "@kiki/pi-tui": "workspace:^",
     "@types/semver": "^7.7.0",
     "@types/ws": "^8.18.0",
     "@types/yazl": "^2.4.6",
@@ -107,9 +107,9 @@
   },
   "dependencies": {
     "@kiki/session-core": "workspace:^",
-    "@moonshot-ai/klient": "workspace:^",
-    "@moonshot-ai/protocol": "workspace:^",
-    "@moonshot-ai/transcript": "workspace:^",
+    "@kiki/klient": "workspace:^",
+    "@kiki/protocol": "workspace:^",
+    "@kiki/transcript": "workspace:^",
     "ws": "^8.18.0"
   }
 }

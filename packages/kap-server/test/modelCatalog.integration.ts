@@ -13,7 +13,7 @@ import {
   type IProviderDiscoveryService as IProviderDiscoveryServiceType,
   type ModelCatalogConfig,
   type ScopeSeed,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerModelCatalogRoutes } from '../src/routes/modelCatalog';

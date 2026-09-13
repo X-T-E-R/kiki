@@ -2,7 +2,7 @@
  * Subagent wire projection — shared display-name and persisted-label resolution.
  */
 
-import type { AgentMeta } from '@moonshot-ai/agent-core-v2';
+import type { AgentMeta } from '@kiki/agent-core-v2';
 
 export function resolveSubagentDisplayName(
   userLabel: string | undefined,

@@ -69,7 +69,7 @@ import {
   type WireMigration,
   type WireMigrationRecord,
   type WireRecord,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import type { AgentReplayRecord, AgentReplayRecordPayload } from '#/protocol';
 import type { AgentRecord } from '#/wire/records';
 

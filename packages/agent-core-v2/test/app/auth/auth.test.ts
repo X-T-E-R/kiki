@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import {
   resolveKimiCodeOAuthKey,
   resolveKimiCodeRuntimeAuth,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';

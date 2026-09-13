@@ -13,7 +13,7 @@
  * everything in the process.
  */
 
-import { MAX_IMAGE_EDGE_PX, READ_IMAGE_BYTE_BUDGET } from '@moonshot-ai/agent-core-v2';
+import { MAX_IMAGE_EDGE_PX, READ_IMAGE_BYTE_BUDGET } from '@kiki/agent-core-v2';
 
 import type { ImageConfig } from '#/config';
 

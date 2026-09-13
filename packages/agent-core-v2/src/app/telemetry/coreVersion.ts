@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PACKAGE_NAME = '@moonshot-ai/agent-core-v2';
+const PACKAGE_NAME = '@kiki/agent-core-v2';
 const UNKNOWN_VERSION = 'unknown';
 const MAX_WALK_UP = 8;
 

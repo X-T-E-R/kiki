@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/kimi-code": minor
+"@kiki/cli": minor
 ---
 
 Enable the external delegation surface (KAP v2 + kiki-mcp) by default.

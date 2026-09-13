@@ -1,4 +1,4 @@
-import { delegationProcedureTable } from '@moonshot-ai/klient/procedures';
+import { delegationProcedureTable } from '@kiki/klient/procedures';
 import { Command } from 'commander';
 
 import { getVersion } from './cli/version';

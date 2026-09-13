@@ -4,7 +4,7 @@ import {
   getLiveSessionById,
   type AgentTaskInfo,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { ErrorCode } from '../protocol/error-codes';
 import {
   cancelTaskResultSchema,

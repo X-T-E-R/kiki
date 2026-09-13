@@ -14,7 +14,7 @@ import {
   truncateToWidth,
   visibleWidth,
   type Focusable,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 import { SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
 import { formatIdleDuration } from '#/tui/utils/cache-hint';

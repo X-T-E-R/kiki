@@ -22,10 +22,10 @@ export async function loadSelectableAgentProfiles(
   host: Pick<SlashCommandHost, 'harness' | 'state'>,
 ): Promise<readonly SelectableAgentProfile[]> {
   const [core, discovery, roots, paths, config, pluginRoots] = await Promise.all([
-    import('@moonshot-ai/agent-core-v2'),
-    import('@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentFileDiscovery'),
-    import('@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'),
-    import('@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'),
+    import('@kiki/agent-core-v2'),
+    import('@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentFileDiscovery'),
+    import('@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'),
+    import('@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'),
     readAgentCatalogConfig(host.harness.configPath),
     loadPluginAgentRoots(host.harness),
   ]);

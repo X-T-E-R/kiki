@@ -1,12 +1,12 @@
-# @moonshot-ai/klient
+# @kiki/klient
 
 Contract-driven client SDK for the agent-core-v2 engine. One facade, three
 transports — you pick the transport **once** at creation; everything after
 that is byte-identical:
 
 ```ts
-import { bootstrap, logSeed, resolveLoggingConfig } from '@moonshot-ai/agent-core-v2';
-import { createKlient } from '@moonshot-ai/klient/memory';   // or '/ipc'
+import { bootstrap, logSeed, resolveLoggingConfig } from '@kiki/agent-core-v2';
+import { createKlient } from '@kiki/klient/memory';   // or '/ipc'
 
 const { app } = bootstrap({ homeDir }, [
   ...logSeed(resolveLoggingConfig({ homeDir, env: process.env })),
@@ -65,9 +65,9 @@ http │ ipc │ memory
 
 | entry | options | events |
 |---|---|---|
-| `@moonshot-ai/klient/http` | `{ endpoint, token, fetch?, WebSocket? }` | authenticated `/api/klient/events` WebSocket |
-| `@moonshot-ai/klient/ipc` | `{ socketPath, token? }` | same socket |
-| `@moonshot-ai/klient/memory` | `{ scope }` (a bootstrapped engine app scope) | direct emitter/bus subscription |
+| `@kiki/klient/http` | `{ endpoint, token, fetch?, WebSocket? }` | authenticated `/api/klient/events` WebSocket |
+| `@kiki/klient/ipc` | `{ socketPath, token? }` | same socket |
+| `@kiki/klient/memory` | `{ scope }` (a bootstrapped engine app scope) | direct emitter/bus subscription |
 
 All three transports use the same dispatcher contract and JSON frame codec.
 The memory transport JSON-round-trips values in process, kap-server hosts the

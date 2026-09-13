@@ -1,4 +1,4 @@
-import type { PluginSummary } from '@moonshot-ai/kimi-code-sdk';
+import type { PluginSummary } from '@kiki/node-sdk';
 
 export const OFFICIAL_BADGE = 'official';
 export const CURATED_BADGE = 'curated';

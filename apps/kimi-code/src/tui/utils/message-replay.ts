@@ -7,8 +7,8 @@ import type {
   PromptOrigin,
   ResumedAgentState,
   ToolCall,
-} from '@moonshot-ai/kimi-code-sdk';
-import { limitAgentReplayByTurns } from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
+import { limitAgentReplayByTurns } from '@kiki/node-sdk';
 
 import type {
   AppState,

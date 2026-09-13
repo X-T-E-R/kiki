@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { resolveKimiHome } from '@moonshot-ai/agent-core-v2';
+import { resolveKimiHome } from '@kiki/agent-core-v2';
 import { ulid } from 'ulid';
 
 /** Default cadence for refreshing `heartbeat_at`. */

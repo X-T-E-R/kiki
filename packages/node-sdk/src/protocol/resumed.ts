@@ -12,8 +12,8 @@ import type {
   PlanData,
   SessionMeta,
   ToolInfo,
-} from '@moonshot-ai/agent-core-v2';
-import type { UsageStatus } from '@moonshot-ai/protocol';
+} from '@kiki/agent-core-v2';
+import type { UsageStatus } from '@kiki/protocol';
 
 import type { BackgroundTaskInfo } from './background';
 import type { SessionSummary } from './core-api';

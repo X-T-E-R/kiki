@@ -1,4 +1,4 @@
-import type { ProviderConfig } from '@moonshot-ai/kimi-code-sdk';
+import type { ProviderConfig } from '@kiki/node-sdk';
 import chalk from 'chalk';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 

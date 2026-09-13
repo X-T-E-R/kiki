@@ -2,7 +2,7 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { ConfigTarget, IConfigService, IMcpManagementService } from '@moonshot-ai/agent-core-v2';
+import { ConfigTarget, IConfigService, IMcpManagementService } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 
 import { defineKlientConformance } from './helpers/conformance.js';

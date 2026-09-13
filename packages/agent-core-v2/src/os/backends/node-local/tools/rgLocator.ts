@@ -5,7 +5,7 @@ import { homedir, tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-import { kimiRegionProfile, resolveKimiRegion } from '@moonshot-ai/kimi-code-oauth';
+import { kimiRegionProfile, resolveKimiRegion } from '@kiki/oauth';
 import { extract as extractTar } from 'tar';
 import { type Entry, fromBuffer as yauzlFromBuffer } from 'yauzl';
 import { basename, join } from 'pathe';

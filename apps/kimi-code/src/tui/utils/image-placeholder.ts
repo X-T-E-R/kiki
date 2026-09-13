@@ -44,13 +44,13 @@ import { copyFileSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { PromptPart, Session } from '@moonshot-ai/kimi-code-sdk';
+import type { PromptPart, Session } from '@kiki/node-sdk';
 import {
   buildDaemonFileUrl,
   buildImageCompressionCaption,
   buildMediaPathTag,
   sessionMediaOriginalsDir,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 import { getCacheDir } from '#/utils/paths';
 

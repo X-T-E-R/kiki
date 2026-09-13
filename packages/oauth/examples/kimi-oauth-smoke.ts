@@ -9,7 +9,7 @@ import {
   type DeviceAuthorization,
   type KimiHostIdentity,
   type ManagedKimiConfigShape,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 
 async function main(): Promise<void> {
   const explicitHomeDir = process.env['KIMI_OAUTH_SMOKE_HOME'];

@@ -20,11 +20,11 @@ export default defineConfig({
     ].join('\n'),
   },
   alias: {
-    '@moonshot-ai/kaos': fileURLToPath(new URL('../kaos/src/index.ts', import.meta.url)),
-    '@moonshot-ai/kimi-code-oauth': fileURLToPath(new URL('../oauth/src/index.ts', import.meta.url)),
+    '@kiki/kaos': fileURLToPath(new URL('../kaos/src/index.ts', import.meta.url)),
+    '@kiki/oauth': fileURLToPath(new URL('../oauth/src/index.ts', import.meta.url)),
   },
   deps: {
-    alwaysBundle: [/^@moonshot-ai\//],
+    alwaysBundle: [/^@kiki\//],
     neverBundle: [],
   },
 });

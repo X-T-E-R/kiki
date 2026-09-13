@@ -2,7 +2,7 @@
  * Scenario: cognition `anchor` replaces the outbound system prompt for
  * the configured opening steps of a turn.
  *
- * Run: `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
+ * Run: `pnpm --filter @kiki/agent-core-v2 exec vitest run
  * test/agent/cognition/cognitionAnchor.test.ts`
  */
 

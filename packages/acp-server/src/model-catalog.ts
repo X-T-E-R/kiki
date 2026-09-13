@@ -13,7 +13,7 @@
  *   3. the model id is on the {@link TOGGLEABLE_THINKING_MODELS} allow-list.
  */
 
-import type { ModelCatalogItem } from '@moonshot-ai/klient';
+import type { ModelCatalogItem } from '@kiki/klient';
 
 /**
  * One catalog row per configured model, suitable for an ACP picker.

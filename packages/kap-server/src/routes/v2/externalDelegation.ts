@@ -1,10 +1,10 @@
 import { timingSafeEqual } from 'node:crypto';
 
-import type { Scope } from '@moonshot-ai/agent-core-v2';
+import type { Scope } from '@kiki/agent-core-v2';
 import {
   delegationProcedureTable,
   type DelegationProcedureName,
-} from '@moonshot-ai/klient/procedures';
+} from '@kiki/klient/procedures';
 
 import type { ExternalDelegationState } from '../../protocol/rest-meta';
 import { errEnvelope, okEnvelope } from '../../protocol/envelope';

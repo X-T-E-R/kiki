@@ -23,7 +23,7 @@ import {
   type ProviderCatalogItem,
   type Session,
   type SessionStatusResponse,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import { DaemonClient, EnvelopeError } from '../harness/index.js';
 import { fetchWithReport } from '../harness/report.js';

@@ -17,8 +17,8 @@ const mocks = vi.hoisted(() => ({
   }>(),
 }));
 
-vi.mock('@moonshot-ai/agent-core-v2', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@moonshot-ai/agent-core-v2')>();
+vi.mock('@kiki/agent-core-v2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/agent-core-v2')>();
   return { ...actual, resumeSessionById: mocks.resume };
 });
 

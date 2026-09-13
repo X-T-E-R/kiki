@@ -12,7 +12,7 @@ import {
   ISessionInteractionService,
   type ContextMessage,
   type ScopeSeed,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

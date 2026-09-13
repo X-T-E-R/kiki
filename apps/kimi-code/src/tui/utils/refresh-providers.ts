@@ -4,8 +4,8 @@ import {
   type RefreshProviderOptions,
   type RefreshProviderScope,
   type RefreshResult,
-} from '@moonshot-ai/kimi-code-oauth';
-import type { KimiConfig, KimiConfigPatch, OAuthRef } from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/oauth';
+import type { KimiConfig, KimiConfigPatch, OAuthRef } from '@kiki/node-sdk';
 
 /**
  * CLI-side host for provider-model refresh. Kept on the SDK's full config types
@@ -25,7 +25,7 @@ export type { ProviderChange, RefreshProviderOptions, RefreshProviderScope, Refr
 
 /**
  * Refresh remote model metadata for the configured providers. Thin adapter over
- * the shared `refreshProviderModels` orchestrator in `@moonshot-ai/kimi-code-oauth`
+ * the shared `refreshProviderModels` orchestrator in `@kiki/oauth`
  * (which is also what the daemon's scheduled/manual refresh uses).
  */
 export async function refreshAllProviderModels(

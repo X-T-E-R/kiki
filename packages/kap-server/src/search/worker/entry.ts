@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 
-import { configureTextBuildWorkerRuntime } from '@moonshot-ai/minidb/worker-runtime';
+import { configureTextBuildWorkerRuntime } from '@kiki/minidb/worker-runtime';
 
 import { GlobalSearchError, type GlobalSearchErrorReason } from '../contract.ts';
 import {

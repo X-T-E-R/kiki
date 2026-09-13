@@ -1,4 +1,4 @@
-import { effectiveModelAlias, type ModelAlias, type ThinkingEffort } from '@moonshot-ai/kimi-code-sdk';
+import { effectiveModelAlias, type ModelAlias, type ThinkingEffort } from '@kiki/node-sdk';
 import {
   Container,
   Key,
@@ -7,7 +7,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
   type Focusable,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 
 import { DEFAULT_OAUTH_PROVIDER_NAME, PRODUCT_NAME } from '#/constant/app';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';

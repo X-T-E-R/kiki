@@ -1,4 +1,4 @@
-import { createDecorator } from '@moonshot-ai/agent-core-v2';
+import { createDecorator } from '@kiki/agent-core-v2';
 
 import { verifyPassword } from './password';
 import type { TokenStore } from './tokenStore';

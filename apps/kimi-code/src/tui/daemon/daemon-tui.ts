@@ -1,9 +1,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
-import { Text, TuiAltScreen } from '@moonshot-ai/pi-tui';
-import type { PermissionMode } from '@moonshot-ai/kimi-code-sdk';
-import type { PromptStatus, UpdateSessionProfileRequest } from '@moonshot-ai/protocol';
+import { Text, TuiAltScreen } from '@kiki/pi-tui';
+import type { PermissionMode } from '@kiki/node-sdk';
+import type { PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { SessionController } from '@kiki/session-core/session/sessionController';

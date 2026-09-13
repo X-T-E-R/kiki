@@ -1,4 +1,4 @@
-import { Container, Text, type Component, type TUI } from '@moonshot-ai/pi-tui';
+import { Container, Text, type Component, type TUI } from '@kiki/pi-tui';
 
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import type { Block, ToolBlock } from '@kiki/session-core/session/transcript/types';

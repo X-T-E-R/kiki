@@ -1,7 +1,7 @@
 ---
-"@moonshot-ai/agent-core-v2": patch
-"@moonshot-ai/kap-server": patch
-"@moonshot-ai/kimi-code": patch
+"@kiki/agent-core-v2": patch
+"@kiki/kap-server": patch
+"@kiki/cli": patch
 ---
 
 Load the plugin marketplace only from an explicitly configured catalog source.

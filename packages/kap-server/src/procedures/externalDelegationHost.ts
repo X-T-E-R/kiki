@@ -16,18 +16,18 @@ import {
   type ExternalTurnEventPage,
   type ISessionExternalDelegationService as ExternalDelegationService,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
-import type { PromptOrigin } from '@moonshot-ai/agent-core-v2/agent/contextMemory/types';
-import type { ApprovalRequest } from '@moonshot-ai/agent-core-v2/session/approval/approval';
-import type { QuestionRequest } from '@moonshot-ai/agent-core-v2/session/question/question';
+} from '@kiki/agent-core-v2';
+import type { PromptOrigin } from '@kiki/agent-core-v2/agent/contextMemory/types';
+import type { ApprovalRequest } from '@kiki/agent-core-v2/session/approval/approval';
+import type { QuestionRequest } from '@kiki/agent-core-v2/session/question/question';
 import {
   delegationProcedure,
   type DelegationProcedureInput,
   type DelegationProcedureName,
   type DelegationProcedureOutput,
   type SeatKlient,
-} from '@moonshot-ai/klient/procedures';
-import type { NormalizedExecutorContent, NormalizedExecutorEvent } from '@moonshot-ai/protocol';
+} from '@kiki/klient/procedures';
+import type { NormalizedExecutorContent, NormalizedExecutorEvent } from '@kiki/protocol';
 
 import { ensureMainAgent } from '../transport/mainAgent';
 

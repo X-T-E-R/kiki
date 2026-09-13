@@ -2,7 +2,7 @@
  * View-layer contracts shared by daemon interaction adapters and dialogs.
  */
 
-import type { QuestionAnswerMethod } from '@moonshot-ai/kimi-code-sdk';
+import type { QuestionAnswerMethod } from '@kiki/node-sdk';
 
 // ── Display blocks (approval panel) ──────────────────────────────────
 

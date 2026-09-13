@@ -1,4 +1,4 @@
-import type { ILogService } from '@moonshot-ai/agent-core-v2';
+import type { ILogService } from '@kiki/agent-core-v2';
 
 export type LogLevel = 'off' | 'error' | 'warn' | 'info' | 'debug';
 

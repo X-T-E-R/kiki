@@ -11,12 +11,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { Service } from '@moonshot-ai/agent-core-v2/_base/di/service';
-import { CommandContribution } from '@moonshot-ai/agent-core-v2/agent/command/commandContribution';
-import { IFeatureManager } from '@moonshot-ai/agent-core-v2/app/feature/featureManager';
-import { getLiveSessionById } from '@moonshot-ai/agent-core-v2/app/sessionManager/sessionLookup';
-import { IAgentLifecycleService } from '@moonshot-ai/agent-core-v2/session/agentLifecycle/agentLifecycle';
-import { IAgentPromptService, reservePrompt } from '@moonshot-ai/agent-core-v2/agent/prompt/prompt';
+import { Service } from '@kiki/agent-core-v2/_base/di/service';
+import { CommandContribution } from '@kiki/agent-core-v2/agent/command/commandContribution';
+import { IFeatureManager } from '@kiki/agent-core-v2/app/feature/featureManager';
+import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { IAgentPromptService, reservePrompt } from '@kiki/agent-core-v2/agent/prompt/prompt';
 
 import type { Klient } from '../../src/index.js';
 import type { TestEngine } from './engine.js';

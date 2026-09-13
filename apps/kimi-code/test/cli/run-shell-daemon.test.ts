@@ -29,8 +29,8 @@ const mocks = vi.hoisted(() => ({
   restoreTerminalModes: vi.fn(),
 }));
 
-vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@moonshot-ai/kimi-code-sdk')>();
+vi.mock('@kiki/node-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/node-sdk')>();
   return {
     ...actual,
     createKimiHarness: vi.fn(() => ({

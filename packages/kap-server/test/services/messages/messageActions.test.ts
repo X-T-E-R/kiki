@@ -7,7 +7,7 @@ import {
   ISessionActivityView,
   ISessionInteractionService,
   type ISessionScopeHandle,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { describe, expect, it } from 'vitest';
 
 import { assertSessionIdle } from '../../../src/services/messages/messageActions';

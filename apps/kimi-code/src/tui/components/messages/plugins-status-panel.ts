@@ -1,4 +1,4 @@
-import type { PluginInfo, PluginSummary } from '@moonshot-ai/kimi-code-sdk';
+import type { PluginInfo, PluginSummary } from '@kiki/node-sdk';
 
 import { currentTheme } from '#/tui/theme';
 import {

@@ -8,8 +8,8 @@ import {
   ISessionManager,
   IWorkspaceInstanceManager,
   normalizeAgentProfile,
-} from '@moonshot-ai/agent-core-v2';
-import { ErrorCode, listNamedAgentProfilesResponseSchema } from '@moonshot-ai/protocol';
+} from '@kiki/agent-core-v2';
+import { ErrorCode, listNamedAgentProfilesResponseSchema } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type RunningServer, startServer } from '../src/start';
 import { authedFetch } from './helpers/auth';

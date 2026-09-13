@@ -21,7 +21,7 @@ import {
   type DeviceAuthorization,
   type KimiRegion,
   type ManagedKimiConfigShape,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 import type {
   OAuthFlowSnapshot,
   OAuthFlowStart,

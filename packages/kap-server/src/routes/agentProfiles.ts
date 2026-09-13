@@ -31,7 +31,7 @@ import {
   type DisabledNamedProfilesConfig,
   type Scope,
   type ScopedAgentProfileBinding,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
@@ -39,7 +39,7 @@ import {
   namedAgentProfileSchema,
   updateNamedAgentProfileRequestSchema,
   type NamedAgentProfile,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';

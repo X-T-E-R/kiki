@@ -22,8 +22,8 @@ import {
   type Terminal,
   truncateToWidth,
   visibleWidth,
-} from '@moonshot-ai/pi-tui';
-import type { BackgroundTaskInfo } from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/pi-tui';
+import type { BackgroundTaskInfo } from '@kiki/node-sdk';
 
 import { MESSAGE_INDENT } from '#/tui/constant/rendering';
 import { STATUS_BULLET } from '#/tui/constant/symbols';

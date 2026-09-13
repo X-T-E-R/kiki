@@ -14,21 +14,21 @@
  * memory behave identically by construction.
  */
 
-import type { ServiceIdentifier } from '@moonshot-ai/agent-core-v2/_base/di/instantiation';
-import { IWorkspaceInstanceManager } from '@moonshot-ai/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
-import { ISessionManager } from '@moonshot-ai/agent-core-v2/app/sessionManager/sessionManager';
-import { getLiveSessionById } from '@moonshot-ai/agent-core-v2/app/sessionManager/sessionLookup';
-import { IAgentLifecycleService } from '@moonshot-ai/agent-core-v2/session/agentLifecycle/agentLifecycle';
-import { ensureMainAgent } from '@moonshot-ai/agent-core-v2/session/agentLifecycle/mainAgent';
-import { ISessionInteractionService } from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
-import { IEventBus } from '@moonshot-ai/agent-core-v2/app/event/eventBus';
+import type { ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
+import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
+import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
+import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
+import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
+import { IEventBus } from '@kiki/agent-core-v2/app/event/eventBus';
 import type {
   FileMeta,
   GetResult,
   SaveOptions,
-} from '@moonshot-ai/agent-core-v2/app/file/fileService';
-import { FileErrors } from '@moonshot-ai/agent-core-v2/app/file/fileService';
-import { Error2, ErrorCodes } from '@moonshot-ai/agent-core-v2/errors';
+} from '@kiki/agent-core-v2/app/file/fileService';
+import { FileErrors } from '@kiki/agent-core-v2/app/file/fileService';
+import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
 
 import { Readable } from 'node:stream';
 

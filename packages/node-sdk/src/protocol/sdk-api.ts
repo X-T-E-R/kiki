@@ -1,6 +1,6 @@
-import type { ContentPart } from '@moonshot-ai/agent-core-v2';
+import type { ContentPart } from '@kiki/agent-core-v2';
 
-import type { AgentEvent, ToolInputDisplay } from '@moonshot-ai/protocol';
+import type { AgentEvent, ToolInputDisplay } from '@kiki/protocol';
 
 import type { RPCMethods } from './client';
 import type { WithAgentId, WithSessionId } from './types';

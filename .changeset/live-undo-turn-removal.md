@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/kimi-code": patch
+"@kiki/cli": patch
 ---
 
 Remove undone turns from live transcripts immediately.

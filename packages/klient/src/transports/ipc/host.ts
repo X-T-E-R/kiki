@@ -8,7 +8,7 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { unlink } from 'node:fs/promises';
 
-import { ErrorCode } from '@moonshot-ai/protocol';
+import { ErrorCode } from '@kiki/protocol';
 
 import type { IDisposable } from '../../core/channel.js';
 import { RPCError } from '../../core/errors.js';

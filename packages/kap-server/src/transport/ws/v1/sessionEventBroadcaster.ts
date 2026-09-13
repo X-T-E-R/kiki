@@ -10,7 +10,7 @@ import type {
   ISessionScopeHandle,
   Scope,
   SessionActivityState,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   IAgentContextMemoryService,
   IAgentLifecycleService,
@@ -25,7 +25,7 @@ import {
   MAIN_AGENT_ID,
   foldLoopEvent,
   getLiveSessionById,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import type {
   ConfigWarningItem,
   SessionCreatedEvent,
@@ -50,7 +50,7 @@ import {
   type TranscriptOpsEvent,
   type TranscriptResetEvent,
   type TranscriptStore,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 
 import { toWireApproval } from '../../../routes/approvals';
 import { toWireQuestion } from '../../../routes/questions';

@@ -14,8 +14,8 @@ import {
   type SessionSummary,
   type TokenUsage,
   type WireRecord,
-} from '@moonshot-ai/agent-core-v2';
-import type { UsageAggregateWire, UsageQuery, UsageResponse } from '@moonshot-ai/protocol';
+} from '@kiki/agent-core-v2';
+import type { UsageAggregateWire, UsageQuery, UsageResponse } from '@kiki/protocol';
 
 import { IModelPricingService } from '../pricing/modelPricingService';
 

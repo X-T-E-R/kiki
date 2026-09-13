@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-import type { IScopeHandle, Scope, SessionActivityState } from '@moonshot-ai/agent-core-v2';
+import type { IScopeHandle, Scope, SessionActivityState } from '@kiki/agent-core-v2';
 import {
   IAgentLifecycleService,
   IEventBus,
@@ -14,7 +14,7 @@ import {
   ISessionManager,
   LifecycleScope,
   MAIN_AGENT_ID,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { describe, expect, it } from 'vitest';
 
 import {

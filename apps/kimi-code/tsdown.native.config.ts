@@ -21,7 +21,7 @@ const optionalNativeDependencies = new Set(['cpu-features']);
 function shouldAlwaysBundle(id: string): boolean {
   if (builtins.has(id) || id.startsWith('node:')) return false;
   if (optionalNativeDependencies.has(id)) return false;
-  // Everything else is force-bundled, including `@moonshot-ai/*` and its
+  // Everything else is force-bundled, including `@kiki/*` and its
   // transitive dependencies, so the SEA bundle is self-contained.
   return true;
 }

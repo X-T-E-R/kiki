@@ -1,8 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
 
-import { IConfigService, type Scope } from '@moonshot-ai/agent-core-v2';
-import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
-import { EXTERNAL_DELEGATION_FLAG_ID } from '@moonshot-ai/agent-core-v2/session/externalDelegation/flag';
+import { IConfigService, type Scope } from '@kiki/agent-core-v2';
+import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
+import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
 
 import type { ExternalDelegationSeatManager } from '../mcp/externalDelegationSeats';
 import type { ExternalDelegationState } from '../protocol/rest-meta';

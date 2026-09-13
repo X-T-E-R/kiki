@@ -2,14 +2,14 @@ import type { ContentBlock, SessionNotification } from '@agentclientprotocol/sdk
 import type {
   NormalizedExecutorContent,
   NormalizedExecutorEvent,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import { AcpProtocolError } from '#/errors';
 
 export type {
   NormalizedExecutorContent,
   NormalizedExecutorEvent,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 function object(value: unknown, name: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {

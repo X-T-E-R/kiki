@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/kimi-code": patch
+"@kiki/cli": patch
 ---
 
 Fix attached images disappearing from the user message while the agent is working.

@@ -50,22 +50,22 @@ import {
   type LoopRunResult,
   type PrintBackgroundMode,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
-import { createKimiDefaultHeaders } from '@moonshot-ai/kimi-code-oauth';
-import type { GoalUpdated } from '@moonshot-ai/agent-core-v2/agent/goal/goalOps';
-import type { TurnEnded } from '@moonshot-ai/agent-core-v2/agent/loop/turnOps';
+} from '@kiki/agent-core-v2';
+import { createKimiDefaultHeaders } from '@kiki/oauth';
+import type { GoalUpdated } from '@kiki/agent-core-v2/agent/goal/goalOps';
+import type { TurnEnded } from '@kiki/agent-core-v2/agent/loop/turnOps';
 import type {
   AssistantDelta,
   ThinkingDelta,
   ToolCallDelta,
-} from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
-import type { TurnStepRetrying } from '@moonshot-ai/agent-core-v2/agent/stepRetry/stepRetryService';
-import type { HookResult } from '@moonshot-ai/agent-core-v2/features/externalHooks/agent/agentExternalHooksService';
+} from '@kiki/agent-core-v2/agent/loop/turnEvents';
+import type { TurnStepRetrying } from '@kiki/agent-core-v2/agent/stepRetry/stepRetryService';
+import type { HookResult } from '@kiki/agent-core-v2/features/externalHooks/agent/agentExternalHooksService';
 import type {
   ToolCallStarted,
   ToolProgress,
   ToolResultEvent,
-} from '@moonshot-ai/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
+} from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
 import { resolve } from 'pathe';
 
 import { PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';

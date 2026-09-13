@@ -28,7 +28,7 @@ import {
   getLiveSessionById,
   resumeSessionById,
   type ContextMessage,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { sessionSnapshotResponseSchema } from '../src/protocol/rest-snapshot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 

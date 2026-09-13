@@ -5,7 +5,7 @@ import {
   kimiCodeToolsUrl,
   parseKimiCodeCustomHeaders,
   resolveKimiCodeRuntimeAuth,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';

@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/kimi-code": patch
+"@kiki/cli": patch
 ---
 
 Fix `kiki serve` so it hosts the packaged Kiki GUI.

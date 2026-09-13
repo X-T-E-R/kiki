@@ -1,6 +1,6 @@
-import type { Component } from '@moonshot-ai/pi-tui';
-import type { ContextMessage } from '@moonshot-ai/kimi-code-sdk';
-import { isKimiError } from '@moonshot-ai/kimi-code-sdk';
+import type { Component } from '@kiki/pi-tui';
+import type { ContextMessage } from '@kiki/node-sdk';
+import { isKimiError } from '@kiki/node-sdk';
 
 import { WelcomeComponent } from '../components/chrome/welcome';
 import { CompactionComponent } from '../components/dialogs/compaction';

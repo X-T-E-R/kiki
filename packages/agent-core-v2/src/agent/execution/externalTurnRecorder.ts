@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   NormalizedExecutorContent,
   NormalizedExecutorEvent,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { PromptOrigin } from '#/agent/contextMemory/types';

@@ -11,9 +11,9 @@ import {
   overrideScopedService,
   type TerminalProcess,
   type TerminalSpawnOptions,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { ErrorCode } from '../src/protocol/error-codes';
-import type { Terminal } from '@moonshot-ai/agent-core-v2/os/interface/terminal';
+import type { Terminal } from '@kiki/agent-core-v2/os/interface/terminal';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 

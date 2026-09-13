@@ -10,7 +10,7 @@ import type {
   SessionActivityCause,
   SessionActivityChangedEvent,
   SessionActivityState,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   IAgentActivityView,
   IAgentContextMemoryService,
@@ -38,9 +38,9 @@ import {
   MAIN_AGENT_ID,
   SessionInteractionService,
   StateRegistry,
-} from '@moonshot-ai/agent-core-v2';
-import { IAgentToolSelectService } from '@moonshot-ai/agent-core-v2/agent/toolSelect/toolSelect';
-import { TurnStarted } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
+} from '@kiki/agent-core-v2';
+import { IAgentToolSelectService } from '@kiki/agent-core-v2/agent/toolSelect/toolSelect';
+import { TurnStarted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type { AgentEvent } from '../src/transport/ws/v1/events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 

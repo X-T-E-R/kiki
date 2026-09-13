@@ -7,7 +7,7 @@ import {
   sessionWarningsResponseSchema,
   updateSessionProfileRequestSchema,
   type UpdateSessionProfileRequest,
-} from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
+} from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
 import { restContextBreakdownSchema } from './context-usage';
 import { goalSnapshotSchema } from './goal';
@@ -24,7 +24,7 @@ export type {
   SessionWarning,
   SessionWarningsResponse,
   UpdateSessionProfileRequest,
-} from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
+} from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
 export const sessionStatusResponseSchema = coreSessionStatusResponseSchema.extend({
   context_breakdown: restContextBreakdownSchema.optional(),

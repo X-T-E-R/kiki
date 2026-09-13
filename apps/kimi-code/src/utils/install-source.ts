@@ -15,7 +15,7 @@ export type InstallSource =
   | 'native'
   | 'unsupported';
 
-const NPM_PACKAGE_NAME = '@moonshot-ai/kimi-code';
+const NPM_PACKAGE_NAME = '@kiki/cli';
 const nodeRequire = createRequire(import.meta.url);
 
 interface NodeSeaModule {

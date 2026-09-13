@@ -10,8 +10,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { Kaos } from '@moonshot-ai/kaos';
-import { ISessionManager } from '@moonshot-ai/agent-core-v2';
+import type { Kaos } from '@kiki/kaos';
+import { ISessionManager } from '@kiki/agent-core-v2';
 import { createKimiHarness, KimiHarness } from '#/index';
 import type { KimiError } from '#/index';
 import type { SDKRpcClient } from '#/sdk-rpc-client';

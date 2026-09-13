@@ -1,4 +1,4 @@
-import type { ApprovalRequest, ToolInputDisplay } from '@moonshot-ai/kimi-code-sdk';
+import type { ApprovalRequest, ToolInputDisplay } from '@kiki/node-sdk';
 import { goalStartOptions } from '#/tui/components/dialogs/goal-start-permission-prompt';
 import type { ApprovalPanelChoice, ApprovalPanelData, DisplayBlock } from '#/tui/interactions/types';
 

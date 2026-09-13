@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   resolve: {
     alias: {
-      '@moonshot-ai/kimi-code-oauth': fileURLToPath(
+      '@kiki/oauth': fileURLToPath(
         new URL('../oauth/src/index.ts', import.meta.url),
       ),
     },

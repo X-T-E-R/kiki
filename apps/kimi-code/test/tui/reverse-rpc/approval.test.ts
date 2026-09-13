@@ -1,4 +1,4 @@
-import type { ApprovalRequest } from '@moonshot-ai/kimi-code-sdk';
+import type { ApprovalRequest } from '@kiki/node-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApprovalController } from '#/tui/reverse-rpc/approval/controller';

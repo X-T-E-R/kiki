@@ -2,7 +2,7 @@
  * Scenario: per-model cognition overlay is appended at profile bind without
  * changing route or profile identity.
  *
- * Run: `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
+ * Run: `pnpm --filter @kiki/agent-core-v2 exec vitest run
  * test/agent/profile/cognition-binding.test.ts`
  */
 

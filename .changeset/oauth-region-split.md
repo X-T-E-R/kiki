@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/kimi-code": minor
+"@kiki/cli": minor
 ---
 
 Support two OAuth login methods — kimi.ai and kimi.com.

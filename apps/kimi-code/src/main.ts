@@ -5,7 +5,7 @@
  * the requested UI runner.
  */
 
-import '@moonshot-ai/kimi-code-sdk/native-fs-watch-error-guard';
+import '@kiki/node-sdk/native-fs-watch-error-guard';
 
 import {
   flushDiagnosticLogs,
@@ -13,7 +13,7 @@ import {
   log,
   resolveGlobalLogPath,
   resolveKimiHome,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 import { createProgram } from './cli/commands';
 import { finalizeHeadlessRun } from './cli/headless-exit';

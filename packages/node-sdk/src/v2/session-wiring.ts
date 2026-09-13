@@ -24,7 +24,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import type { Event, ToolInputDisplay } from '@moonshot-ai/protocol';
+import type { Event, ToolInputDisplay } from '@kiki/protocol';
 
 import type {
   ApprovalRequest,
@@ -49,7 +49,7 @@ import {
   type IDisposable,
   type Interaction,
   type ISessionScopeHandle,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { translateDomainEvent } from '#/v2/event-mapper';
 

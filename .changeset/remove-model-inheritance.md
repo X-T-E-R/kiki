@@ -1,6 +1,6 @@
 ---
-"@moonshot-ai/kimi-code-sdk": major
-"@moonshot-ai/kimi-code": major
+"@kiki/node-sdk": major
+"@kiki/cli": major
 ---
 
 Subagents no longer inherit the caller's model. A subagent's model now comes from exactly two places: a `model_alias` pinned on its agent profile (or the profile's route, or the caller's tower lease), or an explicit `model_alias` passed with the dispatch. When neither is present, `AgentRun`, `AgentSwarm`, and tower spawn fail with `model.not_configured` instead of silently running the subagent on the caller's model. The built-in profiles (`coder`, `explore`, `tower-worker`) ship without a pin, so dispatching them requires `model_alias` until you pin one.

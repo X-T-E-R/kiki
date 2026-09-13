@@ -1,7 +1,7 @@
 /**
  * Scenario: cognition path confinement and slot loading.
  *
- * Run: `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
+ * Run: `pnpm --filter @kiki/agent-core-v2 exec vitest run
  * test/agent/cognition/cognitionFiles.test.ts`
  */
 

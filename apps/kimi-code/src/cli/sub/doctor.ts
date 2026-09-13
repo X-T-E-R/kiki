@@ -3,13 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 
-import type { ModelRecord } from '@moonshot-ai/agent-core-v2/kosong/model/model';
-import { resolveModelId } from '@moonshot-ai/agent-core-v2/kosong/model/resolveModelId';
+import type { ModelRecord } from '@kiki/agent-core-v2/kosong/model/model';
+import { resolveModelId } from '@kiki/agent-core-v2/kosong/model/resolveModelId';
 import {
   createKimiConfigRpc,
   type KimiConfigRpc,
   type KimiConfigValidationIssue,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 import type { Command } from 'commander';
 import { parse as parseToml } from 'smol-toml';
 import { z } from 'zod';
@@ -23,14 +23,14 @@ interface WritableLike {
 
 type MaybePromise<T> = T | Promise<T>;
 
-type AgentCoreModule = typeof import('@moonshot-ai/agent-core-v2');
+type AgentCoreModule = typeof import('@kiki/agent-core-v2');
 type AgentRootsModule = typeof import(
-  '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'
+  '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'
 );
 type AgentPathsModule = typeof import(
-  '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'
+  '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'
 );
-type FrontmatterModule = typeof import('@moonshot-ai/agent-core-v2/_base/text/frontmatter');
+type FrontmatterModule = typeof import('@kiki/agent-core-v2/_base/text/frontmatter');
 
 interface DoctorAgentModules {
   readonly core: AgentCoreModule;
@@ -41,10 +41,10 @@ interface DoctorAgentModules {
 
 async function loadAgentProfileModules(): Promise<DoctorAgentModules> {
   const [core, agentRoots, agentPaths, frontmatter] = await Promise.all([
-    import('@moonshot-ai/agent-core-v2'),
-    import('@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'),
-    import('@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'),
-    import('@moonshot-ai/agent-core-v2/_base/text/frontmatter'),
+    import('@kiki/agent-core-v2'),
+    import('@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'),
+    import('@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'),
+    import('@kiki/agent-core-v2/_base/text/frontmatter'),
   ]);
   return { core, agentRoots, agentPaths, frontmatter };
 }

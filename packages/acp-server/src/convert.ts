@@ -7,8 +7,8 @@ import {
   type McpServerConfig,
   parseImageDataUrl,
   persistOriginalImage,
-} from '@moonshot-ai/agent-core-v2';
-import type { ToolInputDisplay, ToolResultEvent } from '@moonshot-ai/protocol';
+} from '@kiki/agent-core-v2';
+import type { ToolInputDisplay, ToolResultEvent } from '@kiki/protocol';
 
 import { log } from './log';
 import { isHideOutputMarker } from './marker';

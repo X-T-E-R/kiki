@@ -15,7 +15,7 @@
 | 表面 | 分类 | 此处分类的含义 |
 | --- | --- | --- |
 | Kimi Code CLI、TUI（终端用户界面）和 `kimi` 命令 | 继承 | 安装、登录、会话、配置和常规命令行为继续使用现有的 Kimi Code CLI 文档。 |
-| `kap-server`、`@moonshot-ai/protocol`，以及它们提供的会话、配置和认证契约 | 继承 | Kiki 客户端使用这些契约，不另行定义一套服务端或协议。 |
+| `kap-server`、`@kiki/protocol`，以及它们提供的会话、配置和认证契约 | 继承 | Kiki 客户端使用这些契约，不另行定义一套服务端或协议。 |
 | `agent-core-v2` 中的模型绑定区域 | 改造 | Kiki 扩展了选定的上游 Agent 引擎路径，同时保留原有的会话和任务生命周期。 |
 | 为新派生子 Agent 显式绑定模型 alias 和 thinking effort | Kiki 独有 | 只有符号选择器路径默认关闭，显式绑定本身是稳定能力，始终可用。工具参数用 `model_alias` 和 `effort`；Agent 文件仍用 `thinking_effort`。 |
 | 通过 [`[models."<alias>".cognition]`](../configuration/config-files.md#模型认知) 按模型做提示词调节 | Kiki 独有 | Overlay、steering 和 anchor 提示词文件挂到模型别名上，而不是 Agent profile 上。仓库不为它们附带任何默认正文；每个文件都在运行时从数据根读取，未声明的字段不会注入任何内容。 |
@@ -75,7 +75,7 @@ Klient 在 `global.threads` 下提供对应方法：`hostId`、`list`、`read`�
 
 ## 区分 GUI、服务端和客户端
 
-Kiki 没有引入第二套后端。`@kiki/gui` 调用继承的 `kap-server` REST 和 WebSocket 表面（用于请求/响应的 API 与实时更新通道），并使用 `@moonshot-ai/protocol` 中的类型；现有 TUI 和其他客户端继续使用各自既有的 Kimi Code 路径。
+Kiki 没有引入第二套后端。`@kiki/gui` 调用继承的 `kap-server` REST 和 WebSocket 表面（用于请求/响应的 API 与实时更新通道），并使用 `@kiki/protocol` 中的类型；现有 TUI 和其他客户端继续使用各自既有的 Kimi Code 路径。
 
 | 边界 | 本仓库中的责任方 | 影响 |
 | --- | --- | --- |

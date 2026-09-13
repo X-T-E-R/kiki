@@ -2,8 +2,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { IFeatureManager } from '@moonshot-ai/agent-core-v2/app/feature/featureManager';
-import { getFeatureRecipes } from '@moonshot-ai/agent-core-v2/features/featureRegistry';
+import { IFeatureManager } from '@kiki/agent-core-v2/app/feature/featureManager';
+import { getFeatureRecipes } from '@kiki/agent-core-v2/features/featureRegistry';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

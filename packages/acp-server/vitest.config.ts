@@ -19,7 +19,7 @@ function findPackageRoot(importer: string | undefined): string | undefined {
 /**
  * Resolve `#/` subpath imports the way Node's package.json `imports` field does,
  * scoped to the importer's owning package. acp-server pulls in
- * `@moonshot-ai/agent-core-v2` source (the full barrel), whose internal `#/foo`
+ * `@kiki/agent-core-v2` source (the full barrel), whose internal `#/foo`
  * imports must resolve against that package's own `src/`.
  *
  * Mirrors `packages/server-v2/vitest.config.ts`.

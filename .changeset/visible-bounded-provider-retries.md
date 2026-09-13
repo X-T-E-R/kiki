@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/agent-core-v2": patch
+"@kiki/agent-core-v2": patch
 "@kiki/gui": patch
 ---
 

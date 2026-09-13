@@ -1,4 +1,4 @@
-import { isDaemonFileUrl } from '@moonshot-ai/kimi-code-sdk';
+import { isDaemonFileUrl } from '@kiki/node-sdk';
 
 export type MediaUrlKind = 'audio' | 'image' | 'video';
 

@@ -1,7 +1,7 @@
 ---
-"@moonshot-ai/agent-core-v2": minor
-"@moonshot-ai/transcript": minor
-"@moonshot-ai/kap-server": minor
+"@kiki/agent-core-v2": minor
+"@kiki/transcript": minor
+"@kiki/kap-server": minor
 "@kiki/gui": minor
 ---
 

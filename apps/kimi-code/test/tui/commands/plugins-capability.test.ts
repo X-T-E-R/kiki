@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { log } from '@moonshot-ai/kimi-code-sdk';
-import { resetCapabilitiesCache, setCapabilities, type Component } from '@moonshot-ai/pi-tui';
+import { log } from '@kiki/node-sdk';
+import { resetCapabilitiesCache, setCapabilities, type Component } from '@kiki/pi-tui';
 
 import { __pluginsCommandInternals } from '#/tui/commands/plugins';
 import { NoticeMessageComponent } from '#/tui/components/messages/status-message';

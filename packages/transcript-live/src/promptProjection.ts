@@ -1,5 +1,5 @@
-import { daemonFileRefFromPart, type ContentPart } from '@moonshot-ai/agent-core-v2';
-import type { MessageContent } from '@moonshot-ai/protocol';
+import { daemonFileRefFromPart, type ContentPart } from '@kiki/agent-core-v2';
+import type { MessageContent } from '@kiki/protocol';
 
 /**
  * Prompt content (engine kosong parts) → the v1 wire `messageContentSchema`

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createKimiHarness, type KimiHarness } from '@moonshot-ai/kimi-code-sdk';
+import { createKimiHarness, type KimiHarness } from '@kiki/node-sdk';
 
 import { smokeIdentityFromEnv, runPromptToEnd } from './runtime-smoke-helpers';
 

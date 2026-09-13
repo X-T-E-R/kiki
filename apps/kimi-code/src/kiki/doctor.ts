@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import { platform } from 'node:os';
 
-import { serverTokenPath } from '@moonshot-ai/kap-server';
+import { serverTokenPath } from '@kiki/kap-server';
 import type { Command } from 'commander';
 
 import { resolveKikiHome } from './home';

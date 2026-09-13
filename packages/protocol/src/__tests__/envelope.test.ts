@@ -2,7 +2,7 @@
  * Scenario: protocol success/error envelopes and canonical error codes.
  * Responsibilities: verify schema round-trips, stable numeric codes, and reason labels.
  * Wiring: pure protocol schemas and constructors; no external boundaries.
- * Run: `pnpm --filter @moonshot-ai/protocol exec vitest run src/__tests__/envelope.test.ts`.
+ * Run: `pnpm --filter @kiki/protocol exec vitest run src/__tests__/envelope.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';

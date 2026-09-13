@@ -13,11 +13,11 @@ import {
   type IAgentScopeHandle,
   type PermissionMode,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import type {
   SessionAgentConfigCreate,
   SessionAgentConfigPartial,
-} from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
+} from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
 import { ensureMainAgent } from '../transport/mainAgent';
 

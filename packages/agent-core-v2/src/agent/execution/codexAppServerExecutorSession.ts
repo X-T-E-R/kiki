@@ -10,7 +10,7 @@ import {
   type CodexTurnHandle,
   type CodexTurnCompletion,
   type HostProcessServiceLike,
-} from '@moonshot-ai/codex-client';
+} from '@kiki/codex-client';
 
 import {
   agentExecutorBindingFingerprint,

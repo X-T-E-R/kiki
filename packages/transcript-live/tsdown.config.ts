@@ -10,7 +10,7 @@ export default defineConfig({
   clean: true,
   plugins: [rawTextPlugin()],
   deps: {
-    alwaysBundle: [/^@moonshot-ai\//],
+    alwaysBundle: [/^@kiki\//],
     neverBundle: [],
   },
 });

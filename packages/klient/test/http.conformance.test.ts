@@ -6,7 +6,7 @@ import {
   ConfigTarget,
   IConfigService,
   ISessionIndex,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { vi } from 'vitest';
 
 import { startServer } from '../../kap-server/src/start.js';

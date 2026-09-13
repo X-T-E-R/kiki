@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import {
   configureModelPricingRuntime,
   getModelPricingRuntimeState,
-} from '@moonshot-ai/kap-server/model-pricing-runtime';
+} from '@kiki/kap-server/model-pricing-runtime';
 
 import { KAP_MODEL_PRICES_ASSET } from '../../scripts/native/manifest.mjs';
 import {

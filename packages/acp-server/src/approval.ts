@@ -17,7 +17,7 @@ import type {
 import type {
   SessionApprovalRequest as ApprovalRequest,
   SessionApprovalResponse as ApprovalResponse,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { displayBlockToAcpContent } from './convert';
 import { acpToolCallId } from './events-map';

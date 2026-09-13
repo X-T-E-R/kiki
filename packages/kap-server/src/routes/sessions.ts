@@ -43,8 +43,8 @@ import {
   type Scope,
   type SessionSummary,
   type SessionUsageSummary,
-} from '@moonshot-ai/agent-core-v2';
-import { SessionMetaUpdated } from '@moonshot-ai/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
+} from '@kiki/agent-core-v2';
+import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
 import { pageResponseSchema } from '../protocol/pagination';

@@ -25,7 +25,7 @@ import {
   LifecycleScope,
   registerScopedService,
   ScopeActivation,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { IAcpConnection } from './acpConnection';
 

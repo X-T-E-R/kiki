@@ -7,8 +7,8 @@ import {
   type DelegationProcedureInput,
   type DelegationProcedureName,
   type DelegationProcedureTable,
-} from '@moonshot-ai/klient/procedures';
-import { createSeatKlient, type SeatKlient } from '@moonshot-ai/klient/procedures/http';
+} from '@kiki/klient/procedures';
+import { createSeatKlient, type SeatKlient } from '@kiki/klient/procedures/http';
 import type { Command } from 'commander';
 
 import { resolveKikiHome } from './home';

@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { IWorkspaceInstanceManager } from '@moonshot-ai/agent-core-v2';
-import type { HostFsChange, IHostFsWatchService } from '@moonshot-ai/agent-core-v2/os/interface/hostFsWatch';
-import { FakeRuntime } from '@moonshot-ai/agent-core-v2/runtime/fakeRuntime';
-import type { RuntimeProviderRuntimeHandle } from '@moonshot-ai/agent-core-v2/runtime/runtimeUnitHost';
+import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2';
+import type { HostFsChange, IHostFsWatchService } from '@kiki/agent-core-v2/os/interface/hostFsWatch';
+import { FakeRuntime } from '@kiki/agent-core-v2/runtime/fakeRuntime';
+import type { RuntimeProviderRuntimeHandle } from '@kiki/agent-core-v2/runtime/runtimeUnitHost';
 import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';

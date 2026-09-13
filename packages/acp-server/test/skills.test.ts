@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { SkillSummary } from '@moonshot-ai/agent-core-v2';
+import type { SkillSummary } from '@kiki/agent-core-v2';
 
 import { ACP_BUILTIN_SLASH_COMMANDS } from '../src/builtin-commands';
 import { buildAcpSkillSlashCommands } from '../src/slash';

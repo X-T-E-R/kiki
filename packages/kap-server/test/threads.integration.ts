@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-import { Error2, ErrorCodes, IThreadCommunicationService, type Scope } from '@moonshot-ai/agent-core-v2';
+import { Error2, ErrorCodes, IThreadCommunicationService, type Scope } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ErrorCode } from '../src/protocol/error-codes';

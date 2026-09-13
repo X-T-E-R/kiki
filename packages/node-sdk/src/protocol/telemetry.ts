@@ -1,4 +1,4 @@
-import type { TelemetryContextPatch, TelemetryProperties } from '@moonshot-ai/agent-core-v2';
+import type { TelemetryContextPatch, TelemetryProperties } from '@kiki/agent-core-v2';
 
 /**
  * The telemetry sink a host hands the SDK. Deliberately narrower than the

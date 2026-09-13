@@ -1,4 +1,4 @@
-import type { Component, Focusable } from '@moonshot-ai/pi-tui';
+import type { Component, Focusable } from '@kiki/pi-tui';
 import type {
   AgentStatusUpdatedEvent,
   AssistantDeltaEvent,
@@ -32,7 +32,7 @@ import type {
   TurnStepStartedEvent,
   TokenUsage,
   WarningEvent,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 import { MoonLoader } from '../components/chrome/moon-loader';
 import { buildGoalMarker } from '../components/messages/goal-markers';

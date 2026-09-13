@@ -7,11 +7,11 @@ import {
   IWorkspaceInstanceManager,
   getLiveSessionById,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
-import type { Runtime, RuntimeLease } from '@moonshot-ai/agent-core-v2/runtime/runtime';
-import { RuntimeWorkspaceView } from '@moonshot-ai/agent-core-v2/runtime/runtimeWorkspaceView';
-import type { IHostFsWatchHandle, HostFsChange } from '@moonshot-ai/agent-core-v2/os/interface/hostFsWatch';
-import type { FsChangeEntry, FsChangeEvent } from '@moonshot-ai/agent-core-v2/workspace/workspaceFs/fsWatch';
+} from '@kiki/agent-core-v2';
+import type { Runtime, RuntimeLease } from '@kiki/agent-core-v2/runtime/runtime';
+import { RuntimeWorkspaceView } from '@kiki/agent-core-v2/runtime/runtimeWorkspaceView';
+import type { IHostFsWatchHandle, HostFsChange } from '@kiki/agent-core-v2/os/interface/hostFsWatch';
+import type { FsChangeEntry, FsChangeEvent } from '@kiki/agent-core-v2/workspace/workspaceFs/fsWatch';
 
 import type { EventEnvelope, JournalLogger } from './sessionEventJournal';
 

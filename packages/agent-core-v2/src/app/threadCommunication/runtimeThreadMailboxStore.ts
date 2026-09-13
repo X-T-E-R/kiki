@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { LockError, MiniDb, type BatchInputOp } from '@moonshot-ai/minidb';
-import { ClusterDb } from '@moonshot-ai/minidb/cluster';
+import { LockError, MiniDb, type BatchInputOp } from '@kiki/minidb';
+import { ClusterDb } from '@kiki/minidb/cluster';
 import { join } from 'pathe';
 
 import type { IDisposable } from '#/_base/di/lifecycle';

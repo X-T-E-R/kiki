@@ -25,7 +25,7 @@ import {
   type ISessionMediaStore,
   type ImageCompressionTelemetry,
   type ITelemetryService,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import type { PromptSubmission } from '../protocol/rest-prompt';
 

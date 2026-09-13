@@ -8,14 +8,14 @@ import {
   deleteAllKittyImages,
   resetCapabilitiesCache,
   setCapabilities,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 import type {
   ApprovalRequest,
   ApprovalResponse,
   Event,
   GoalSnapshot,
   Session,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApprovalPanelComponent } from '#/tui/components/dialogs/approval-panel';

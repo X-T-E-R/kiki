@@ -1,4 +1,4 @@
-import type { ApprovalResponse } from '@moonshot-ai/kimi-code-sdk';
+import type { ApprovalResponse } from '@kiki/node-sdk';
 
 import { ReverseRpcController } from '#/tui/reverse-rpc/base-controller';
 import type { ApprovalPanelData } from '#/tui/reverse-rpc/types';

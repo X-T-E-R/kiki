@@ -1,4 +1,4 @@
-import { Container, Spacer, Text } from '@moonshot-ai/pi-tui';
+import { Container, Spacer, Text } from '@kiki/pi-tui';
 
 import { currentTheme } from '#/tui/theme';
 import type { ColorToken } from '#/tui/theme';

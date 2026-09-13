@@ -1,7 +1,7 @@
 import {
   delegationProcedureTable,
   type DelegationProcedureName,
-} from '@moonshot-ai/klient/procedures';
+} from '@kiki/klient/procedures';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { McpSeat, SeatResolver } from '../mcp/seatResolver';

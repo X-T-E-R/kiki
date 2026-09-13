@@ -12,10 +12,10 @@ import type {
   ISessionIndex,
   SessionIndexStatus,
   SessionSummary,
-} from '@moonshot-ai/agent-core-v2';
-import { Emitter, Event } from '@moonshot-ai/agent-core-v2/_base/event';
-import { MiniDb } from '@moonshot-ai/minidb';
-import { TranscriptStore, type TranscriptOperation } from '@moonshot-ai/transcript';
+} from '@kiki/agent-core-v2';
+import { Emitter, Event } from '@kiki/agent-core-v2/_base/event';
+import { MiniDb } from '@kiki/minidb';
+import { TranscriptStore, type TranscriptOperation } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SyncSessionInput } from '../../src/search/indexCore';

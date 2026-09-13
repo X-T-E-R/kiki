@@ -1,4 +1,4 @@
-import type { ApprovalHandler, ApprovalRequest, ApprovalResponse } from '@moonshot-ai/kimi-code-sdk';
+import type { ApprovalHandler, ApprovalRequest, ApprovalResponse } from '@kiki/node-sdk';
 
 import { adaptApprovalRequest } from './adapter';
 import type { ApprovalController } from './controller';

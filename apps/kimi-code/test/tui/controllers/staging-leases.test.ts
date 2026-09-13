@@ -1,4 +1,4 @@
-import type { TurnEndedEvent, TurnStartedEvent } from '@moonshot-ai/kimi-code-sdk';
+import type { TurnEndedEvent, TurnStartedEvent } from '@kiki/node-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import {

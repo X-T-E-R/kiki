@@ -566,7 +566,7 @@ model_preference: secondary
         loadAgentProfileModules: () =>
           Promise.reject(
             new Error(
-              "Cannot find module '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'",
+              "Cannot find module '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'",
             ),
           ),
       },

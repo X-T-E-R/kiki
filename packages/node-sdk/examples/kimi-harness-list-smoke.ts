@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { createKimiHarness } from '@moonshot-ai/kimi-code-sdk';
+import { createKimiHarness } from '@kiki/node-sdk';
 
 import { smokeIdentityFromEnv } from './runtime-smoke-helpers';
 

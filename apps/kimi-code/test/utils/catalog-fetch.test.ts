@@ -1,4 +1,4 @@
-import { DEFAULT_CATALOG_URL, CatalogFetchError } from '@moonshot-ai/kimi-code-sdk';
+import { DEFAULT_CATALOG_URL, CatalogFetchError } from '@kiki/node-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import { fetchCatalogOrBuiltIn } from '#/utils/catalog-fetch';

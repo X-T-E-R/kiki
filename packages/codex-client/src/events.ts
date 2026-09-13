@@ -1,4 +1,4 @@
-import type { NormalizedExecutorEvent } from '@moonshot-ai/protocol';
+import type { NormalizedExecutorEvent } from '@kiki/protocol';
 
 import { CodexClientError } from '#/errors';
 

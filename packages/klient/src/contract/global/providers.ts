@@ -6,7 +6,7 @@
  * packages can register new vendors without touching this schema.
  */
 
-import { RequestIdentityPolicySchema } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';

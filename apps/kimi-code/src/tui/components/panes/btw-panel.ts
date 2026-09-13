@@ -1,10 +1,10 @@
-import type { Component, MarkdownTheme } from '@moonshot-ai/pi-tui';
+import type { Component, MarkdownTheme } from '@kiki/pi-tui';
 import {
   Markdown,
   Text,
   truncateToWidth,
   visibleWidth,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 import chalk from 'chalk';
 
 import { THINKING_PREVIEW_LINES } from '../../constant/rendering';

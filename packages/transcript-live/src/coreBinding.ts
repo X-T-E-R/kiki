@@ -13,7 +13,7 @@ import {
   type Interaction,
   type ISessionScopeHandle,
   type PromptSnapshot,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   TranscriptFactReducer,
   TranscriptWireAdapter,
@@ -23,7 +23,7 @@ import {
   type TranscriptPrompt,
   type TranscriptStore,
   type TranscriptWireRecord,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 
 import { projectPromptContentParts } from './promptProjection';
 import {

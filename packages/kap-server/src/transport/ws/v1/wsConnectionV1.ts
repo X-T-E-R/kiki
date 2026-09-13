@@ -16,12 +16,12 @@ import {
   resumeSessionById,
   type Scope,
   type TerminalFrame,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   detachGrades,
   transcriptSubscribeV2PayloadSchema,
   type TranscriptGradeSpec,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 import { ulid } from 'ulid';
 import type { RawData, WebSocket } from 'ws';
 

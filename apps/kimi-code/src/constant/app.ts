@@ -1,4 +1,4 @@
-import { ErrorCodes } from '@moonshot-ai/kimi-code-sdk';
+import { ErrorCodes } from '@kiki/node-sdk';
 
 import { currentKimiProfile } from '#/utils/region';
 
@@ -41,7 +41,7 @@ export const HEADLESS_FORCE_EXIT_GRACE_MS = 2000;
 export const HEADLESS_STDIO_DRAIN_TIMEOUT_MS = 10000;
 
 // Published npm package name; this can differ from the executable command.
-export const NPM_PACKAGE_NAME = '@moonshot-ai/kimi-code';
+export const NPM_PACKAGE_NAME = '@kiki/cli';
 
 // App-owned data paths. SDK/core runtime config is intentionally not routed here.
 export const KIMI_CODE_HOME_ENV = 'KIMI_CODE_HOME';
@@ -74,7 +74,7 @@ export function kimiCodeCdnBase(): string {
 // The marketplace env override name lives in the shared agent-core-v2 plugin
 // domain (kap-server consumes it from there). Deep-path import: this module is
 // evaluated on every CLI invocation, so it must not pull in the engine root.
-export { KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV } from '@moonshot-ai/agent-core-v2/app/plugin/marketplace';
+export { KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV } from '@kiki/agent-core-v2/app/plugin/marketplace';
 // Official plugins whose usage bills against the user's plan quota. Installing
 // one of these shows a quota note after the install result.
 export const QUOTA_CONSUMING_PLUGIN_IDS: readonly string[] = ['kimi-datasource'];

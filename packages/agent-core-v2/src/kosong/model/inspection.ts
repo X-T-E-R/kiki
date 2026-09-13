@@ -1,4 +1,4 @@
-import { parseKimiCodeCustomHeaders } from '@moonshot-ai/kimi-code-oauth';
+import { parseKimiCodeCustomHeaders } from '@kiki/oauth';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
 

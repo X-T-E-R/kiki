@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { registerExportCommand } from '#/cli/sub/export';
 import { createKimiCodeHostIdentity } from '#/cli/version';
-import { createKimiHarness, log } from '@moonshot-ai/kimi-code-sdk';
+import { createKimiHarness, log } from '@kiki/node-sdk';
 // Internal test hook: the root logger reset is deliberately not part of the
 // SDK's public surface, so this e2e reaches into the SDK's logging module.
 import { __resetRootLoggerForTest } from '../../../../packages/node-sdk/src/logging/index';

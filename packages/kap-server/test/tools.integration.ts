@@ -9,7 +9,7 @@ import {
   ISessionToolPolicy,
   IModelCatalog,
   type ExecutableTool,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { listMcpJsonServersResponseSchema } from '../src/protocol/rest-mcpConfig';
 import {
   listMcpServersResponseSchema,

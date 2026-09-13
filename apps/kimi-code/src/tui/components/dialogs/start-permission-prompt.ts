@@ -5,7 +5,7 @@ import {
   visibleWidth,
   type Component,
   type Focusable,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 
 import { SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';

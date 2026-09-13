@@ -12,9 +12,13 @@
   "include": [
     "src/**/*.ts",
     "../agent-core-v2/src/**/*.ts",
+    "../agent-profiles/src/**/*.ts",
+    "../acp-client/src/**/*.ts",
+    "../codex-client/src/**/*.ts",
     "../kaos/src/**/*.ts",
     "../klient/src/**/*.ts",
-    "../oauth/src/**/*.ts"
+    "../oauth/src/**/*.ts",
+    "../protocol/src/**/*.ts"
   ],
   "exclude": ["dist", ".tmp-api-extractor", "examples", "test", "../*/dist", "../*/test"]
 }

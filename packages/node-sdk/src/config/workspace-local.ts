@@ -1,4 +1,4 @@
-import type { Kaos } from '@moonshot-ai/kaos';
+import type { Kaos } from '@kiki/kaos';
 import { dirname, isAbsolute, join, normalize, resolve } from 'pathe';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { z } from 'zod';

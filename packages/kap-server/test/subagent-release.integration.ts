@@ -9,7 +9,7 @@ import {
   IWireService,
   getLiveSessionById,
   type ContextMessage,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

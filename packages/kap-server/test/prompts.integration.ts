@@ -20,7 +20,7 @@ import {
   closeSessionById,
   getLiveSessionById,
   resumeSessionById,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

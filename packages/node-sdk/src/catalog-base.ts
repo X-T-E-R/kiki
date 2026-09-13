@@ -1,4 +1,4 @@
-import type { ModelCapability } from '@moonshot-ai/agent-core-v2';
+import type { ModelCapability } from '@kiki/agent-core-v2';
 
 import type { ProviderType } from '#/config';
 

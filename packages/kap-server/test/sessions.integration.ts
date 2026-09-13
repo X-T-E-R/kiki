@@ -40,11 +40,11 @@ import {
   sessionDirOf,
   type ServiceIdentifier,
   type ScopeSeed,
-} from '@moonshot-ai/agent-core-v2';
-import { Event, type IWaitUntil } from '@moonshot-ai/agent-core-v2/_base/event';
-import { TurnStarted } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
-import { sessionWarningsResponseSchema } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
-import { encodeWorkDirKey } from '@moonshot-ai/agent-core-v2/_base/utils/workdir-slug';
+} from '@kiki/agent-core-v2';
+import { Event, type IWaitUntil } from '@kiki/agent-core-v2/_base/event';
+import { TurnStarted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
+import { sessionWarningsResponseSchema } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
+import { encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';

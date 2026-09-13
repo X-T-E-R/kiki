@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildGoalCompletionMessage } from '#/tui/utils/goal-completion';
-import type { GoalSnapshot } from '@moonshot-ai/kimi-code-sdk';
+import type { GoalSnapshot } from '@kiki/node-sdk';
 
 function snapshot(overrides: Partial<GoalSnapshot> = {}): GoalSnapshot {
   return {

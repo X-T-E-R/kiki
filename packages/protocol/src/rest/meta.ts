@@ -61,7 +61,7 @@ export const metaResponseSchema = z.object({
   external_delegation: externalDelegationStateSchema.optional(),
   /**
    * Backend engine generation serving this API. `'v2'` is the DI × Scope
-   * engine (`@moonshot-ai/kap-server` / `agent-core-v2`); older servers omit
+   * engine (`@kiki/kap-server` / `agent-core-v2`); older servers omit
    * the field (treat absence as v1). Lets clients identify the backend without
    * probing routes.
    */

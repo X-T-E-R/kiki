@@ -1,19 +1,19 @@
 import { z } from 'zod';
 
-import { isoDateTimeSchema } from '@moonshot-ai/agent-core-v2/_base/utils/isoDateTime';
+import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import { messageContentSchema } from './message';
 import {
   promptPermissionModeSchema,
   promptPlanGateSchema,
   promptThinkingSchema,
-} from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
+} from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
 export { promptPermissionModeSchema, promptPlanGateSchema, promptThinkingSchema };
 export type {
   PromptPermissionMode,
   PromptPlanGate,
   PromptThinking,
-} from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
+} from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
 export const promptSkillActivationSchema = z.object({
   name: z.string().min(1),

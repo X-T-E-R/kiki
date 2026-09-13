@@ -11,7 +11,7 @@ import {
   type OAuthClientMetadata,
   type OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { OAuthTokenTransaction } from '@moonshot-ai/kimi-code-oauth';
+import { OAuthTokenTransaction } from '@kiki/oauth';
 
 import { BugIndicatingError } from '#/errors';
 

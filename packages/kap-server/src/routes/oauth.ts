@@ -1,4 +1,4 @@
-import { IOAuthService, type Scope } from '@moonshot-ai/agent-core-v2';
+import { IOAuthService, type Scope } from '@kiki/agent-core-v2';
 import {
   managedUserInfoResultSchema,
   managedUsageResultSchema,
@@ -9,7 +9,7 @@ import {
   oauthRegionResultSchema,
   type ManagedUsageResult,
   type UsageRow,
-} from '@moonshot-ai/agent-core-v2/app/auth/oauthProtocol';
+} from '@kiki/agent-core-v2/app/auth/oauthProtocol';
 import { z } from 'zod';
 
 import { okEnvelope } from '../envelope';

@@ -1,4 +1,4 @@
-import { redactCtx, type ILogService } from '@moonshot-ai/agent-core-v2';
+import { redactCtx, type ILogService } from '@kiki/agent-core-v2';
 
 import type {
   DiagnosticLogHost,

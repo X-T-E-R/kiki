@@ -1,5 +1,5 @@
 {
-  "name": "@moonshot-ai/codex-client",
+  "name": "@kiki/codex-client",
   "version": "0.0.1",
   "private": true,
   "description": "Outbound Codex app-server process and turn client",
@@ -24,6 +24,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@moonshot-ai/protocol": "workspace:^"
+    "@kiki/protocol": "workspace:^"
   }
 }

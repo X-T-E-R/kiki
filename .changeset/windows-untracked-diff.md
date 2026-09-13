@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/kimi-code": patch
+"@kiki/cli": patch
 ---
 
 Fix diffs for untracked files on Windows.

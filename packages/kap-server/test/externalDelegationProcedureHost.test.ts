@@ -1,4 +1,4 @@
-import { ISessionExternalDelegationService, resumeSessionById } from '@moonshot-ai/agent-core-v2';
+import { ISessionExternalDelegationService, resumeSessionById } from '@kiki/agent-core-v2';
 import Fastify from 'fastify';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,8 +10,8 @@ import {
 
 const ensureMainAgent = vi.hoisted(() => vi.fn());
 
-vi.mock('@moonshot-ai/agent-core-v2', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@moonshot-ai/agent-core-v2')>();
+vi.mock('@kiki/agent-core-v2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/agent-core-v2')>();
   return { ...actual, resumeSessionById: vi.fn() };
 });
 

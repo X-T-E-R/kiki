@@ -4,7 +4,7 @@ import {
   type CodexServerRequestHandler,
   type CodexTurnHandle,
   type NormalizedExecutorEvent,
-} from '@moonshot-ai/codex-client';
+} from '@kiki/codex-client';
 import { describe, expect, it, vi } from 'vitest';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';

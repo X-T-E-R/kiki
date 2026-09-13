@@ -1,9 +1,9 @@
 /** Per-agent step-usage fold that enriches the terminal turn frame. */
 
-import type { Event2 } from '@moonshot-ai/agent-core-v2';
-import type { TurnStepCompleted } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
-import type { TurnEnded } from '@moonshot-ai/agent-core-v2/agent/loop/turnOps';
-import type { TokenUsage } from '@moonshot-ai/agent-core-v2/kosong/contract/usage';
+import type { Event2 } from '@kiki/agent-core-v2';
+import type { TurnStepCompleted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
+import type { TurnEnded } from '@kiki/agent-core-v2/agent/loop/turnOps';
+import type { TokenUsage } from '@kiki/agent-core-v2/kosong/contract/usage';
 
 export interface TurnUsageSummary {
   readonly usage: TokenUsage;

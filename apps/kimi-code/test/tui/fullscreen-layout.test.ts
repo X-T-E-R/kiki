@@ -7,7 +7,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { Spacer, type Terminal, TuiAltScreen } from '@moonshot-ai/pi-tui';
+import { Spacer, type Terminal, TuiAltScreen } from '@kiki/pi-tui';
 import { VirtualTerminal } from '../../../../packages/pi-tui/test/virtual-terminal';
 
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';

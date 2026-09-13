@@ -1,6 +1,6 @@
 ---
-"@moonshot-ai/agent-core-v2": minor
-"@moonshot-ai/kap-server": minor
+"@kiki/agent-core-v2": minor
+"@kiki/kap-server": minor
 "@kiki/gui": minor
 ---
 

@@ -10,9 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { KIMI_CODE_PLATFORM } from '@moonshot-ai/kimi-code-oauth';
-import type { ProtocolAdapterConfig } from '@moonshot-ai/agent-core-v2/kosong/protocol/protocol';
-import { ProtocolAdapterRegistry } from '@moonshot-ai/agent-core-v2/kosong/provider/protocolAdapterRegistry';
+import { KIMI_CODE_PLATFORM } from '@kiki/oauth';
+import type { ProtocolAdapterConfig } from '@kiki/agent-core-v2/kosong/protocol/protocol';
+import { ProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/provider/protocolAdapterRegistry';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, type Event, type KimiHarness } from '#/index';

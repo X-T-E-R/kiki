@@ -87,11 +87,11 @@ jobs:
 
       - name: Build native executable (release profile, macOS signed)
         if: runner.os == 'macOS' && inputs.sign-macos
-        run: pnpm --filter @moonshot-ai/kimi-code run build:native:release
+        run: pnpm --filter @kiki/cli run build:native:release
 
       - name: Build native executable (local profile)
         if: '!(runner.os == ''macOS'' && inputs.sign-macos)'
-        run: pnpm --filter @moonshot-ai/kimi-code run build:native:sea
+        run: pnpm --filter @kiki/cli run build:native:sea
 
       - name: Notarize macOS binary
         if: runner.os == 'macOS' && inputs.sign-macos
@@ -107,10 +107,10 @@ jobs:
         uses: ./.github/actions/macos-keychain-cleanup
 
       - name: Smoke test native executable
-        run: pnpm --filter @moonshot-ai/kimi-code run test:native:smoke
+        run: pnpm --filter @kiki/cli run test:native:smoke
 
       - name: Package native artifact
-        run: pnpm --filter @moonshot-ai/kimi-code run package:native
+        run: pnpm --filter @kiki/cli run package:native
 
       - name: Upload native artifact
         uses: actions/upload-artifact@v7

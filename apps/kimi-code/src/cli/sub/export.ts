@@ -14,7 +14,7 @@ import {
   type KimiHarness,
   type SessionSummary,
   type ShellEnvironment,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 import type { Command } from 'commander';
 import { createKimiCodeHostIdentity } from '#/cli/version';
 import { detectInstallSource } from '#/utils/install-source';

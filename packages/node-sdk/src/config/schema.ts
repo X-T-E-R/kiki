@@ -1,15 +1,15 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parsePattern } from '@moonshot-ai/agent-core-v2';
-import { HOOK_EVENT_TYPES } from '@moonshot-ai/agent-core-v2/features/externalHooks/internal/types';
+import { parsePattern } from '@kiki/agent-core-v2';
+import { HOOK_EVENT_TYPES } from '@kiki/agent-core-v2/features/externalHooks/internal/types';
 import {
   builtInProviderRegistrations,
   createNbSearchRuntime,
   parseConfigPatch,
   type CanonicalConfigPatch,
 } from '@nb-corp/nb-search';
-import { findUnknownNbSearchProviderOptions } from '@moonshot-ai/protocol';
+import { findUnknownNbSearchProviderOptions } from '@kiki/protocol';
 
 import { ErrorCodes, KimiError } from '../errors';
 import { z } from 'zod';

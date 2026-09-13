@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import type { SeatKlient } from '@moonshot-ai/klient/procedures';
+import type { SeatKlient } from '@kiki/klient/procedures';
 
 import { createKikiMcpServer, type KikiMcpServerOptions } from './server';
 import type { McpSeat, SeatResolver } from './seatResolver';

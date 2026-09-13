@@ -15,7 +15,7 @@ import {
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 
 import { currentTheme } from '#/tui/theme';
 import type {

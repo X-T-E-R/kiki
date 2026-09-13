@@ -7,7 +7,7 @@
  * a small host rig.
  * Run: pnpm -C apps/kimi-code exec vitest run test/tui/commands/provider.test.ts
  */
-import type { ModelAlias } from '@moonshot-ai/kimi-code-sdk';
+import type { ModelAlias } from '@kiki/node-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SlashCommandHost } from '#/tui/commands';

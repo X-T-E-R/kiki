@@ -28,7 +28,7 @@ import {
   type StreamedMessagePart,
   type TokenUsage,
   type Tool,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 interface ScriptedResponse {
   readonly parts: readonly StreamedMessagePart[];

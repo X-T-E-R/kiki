@@ -127,7 +127,7 @@ describe('native release artifacts', () => {
       `${checksum}  kimi-code-darwin-arm64.zip\n`,
     );
 
-    await execFileAsync(process.execPath, [manifestScript, releaseDir, '@moonshot-ai/kimi-code@0.5.0']);
+    await execFileAsync(process.execPath, [manifestScript, releaseDir, '@kiki/cli@0.5.0']);
 
     const manifest = JSON.parse(
       await readFile(join(releaseDir, 'manifest.json'), 'utf-8'),
@@ -138,7 +138,7 @@ describe('native release artifacts', () => {
     };
     expect(manifest).toEqual({
       version: '0.5.0',
-      tag: '@moonshot-ai/kimi-code@0.5.0',
+      tag: '@kiki/cli@0.5.0',
       platforms: {
         'darwin-arm64': {
           filename: 'kimi-code-darwin-arm64.zip',

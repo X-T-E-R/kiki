@@ -1,7 +1,7 @@
 ---
-"@moonshot-ai/agent-core-v2": patch
-"@moonshot-ai/kap-server": patch
-"@moonshot-ai/protocol": patch
+"@kiki/agent-core-v2": patch
+"@kiki/kap-server": patch
+"@kiki/protocol": patch
 ---
 
 Add workspace-aware named agent listing and configurable named profile disablement.

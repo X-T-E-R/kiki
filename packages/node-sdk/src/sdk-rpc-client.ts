@@ -133,7 +133,7 @@ import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { AgentContextData, ExperimentalFeatureState } from '@moonshot-ai/agent-core-v2';
+import type { AgentContextData, ExperimentalFeatureState } from '@kiki/agent-core-v2';
 
 import {
   ensureConfigFile,
@@ -147,13 +147,13 @@ import { getRootLogger, type DiagnosticLogHost } from '#/logging';
 import type { BeginGlobalMcpServerAuthResult } from '#/protocol';
 import { noopTelemetryClient } from '#/protocol/telemetry';
 import { limitAgentReplayByTurns } from '#/wire/replay-turns';
-import { encodeWorkDirKey } from '@moonshot-ai/agent-core-v2/_base/utils/workdir-slug';
-import { McpConnectionManager } from '@moonshot-ai/agent-core-v2/mcpCore/connection-manager';
-import { loadMcpServers } from '@moonshot-ai/agent-core-v2/app/mcpConfig/configLoader';
-import { IAppendLogStore } from '@moonshot-ai/agent-core-v2/persistence/interface/appendLogStore';
-import { SessionIndexErrors } from '@moonshot-ai/agent-core-v2/app/sessionIndex/errors';
-import { AgentStatusUpdated } from '@moonshot-ai/agent-core-v2/agent/usage/usageEvents';
-import type { McpServerConfig as WorkspaceMcpServerConfig } from '@moonshot-ai/agent-core-v2/mcpCore/config-schema';
+import { encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
+import { McpConnectionManager } from '@kiki/agent-core-v2/mcpCore/connection-manager';
+import { loadMcpServers } from '@kiki/agent-core-v2/app/mcpConfig/configLoader';
+import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
+import { SessionIndexErrors } from '@kiki/agent-core-v2/app/sessionIndex/errors';
+import { AgentStatusUpdated } from '@kiki/agent-core-v2/agent/usage/usageEvents';
+import type { McpServerConfig as WorkspaceMcpServerConfig } from '@kiki/agent-core-v2/mcpCore/config-schema';
 import {
   bootstrap,
   DEFAULT_AGENT_PROFILE_NAME,
@@ -237,10 +237,10 @@ import {
   type Scope,
   type ServicesAccessor,
   type SessionSummary as V2SessionSummary,
-} from '@moonshot-ai/agent-core-v2';
-import { RPCError, type AgentHandle, type Klient } from '@moonshot-ai/klient';
-import { createKlient } from '@moonshot-ai/klient/memory';
-import { assertKimiHostIdentity, createKimiDefaultHeaders } from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/agent-core-v2';
+import { RPCError, type AgentHandle, type Klient } from '@kiki/klient';
+import { createKlient } from '@kiki/klient/memory';
+import { assertKimiHostIdentity, createKimiDefaultHeaders } from '@kiki/oauth';
 
 import { KimiAuthFacade } from '#/auth';
 import { KimiHarness } from '#/kimi-harness';

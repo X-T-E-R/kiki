@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { LockError, MiniDb } from '@moonshot-ai/minidb';
-import { ClusterDb } from '@moonshot-ai/minidb/cluster';
+import { LockError, MiniDb } from '@kiki/minidb';
+import { ClusterDb } from '@kiki/minidb/cluster';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';

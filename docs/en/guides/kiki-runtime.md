@@ -15,7 +15,7 @@ The classification describes the origin and maintenance boundary of a surface, n
 | Surface | Classification | What the label means here |
 | --- | --- | --- |
 | Kimi Code CLI, TUI (terminal user interface), and the `kimi` command | Inherited | Installation, login, sessions, configuration, and ordinary command behavior continue to use the existing Kimi Code CLI docs. |
-| `kap-server`, `@moonshot-ai/protocol`, and the session, configuration, and authentication contracts they expose | Inherited | Kiki clients consume these contracts instead of defining a separate server or protocol family. |
+| `kap-server`, `@kiki/protocol`, and the session, configuration, and authentication contracts they expose | Inherited | Kiki clients consume these contracts instead of defining a separate server or protocol family. |
 | Model-binding areas in `agent-core-v2` | Adapted | Kiki extends selected upstream agent-engine paths while preserving their existing session and task lifecycles. |
 | Explicit model-alias and thinking-effort binding for newly spawned subagents | Kiki-only | Only the symbolic-selector path is disabled by default; the explicit binding itself is stable and always available. Tool parameters use `model_alias` and `effort`; Agent files still use `thinking_effort`. |
 | Per-model prompt conditioning via [`[models."<alias>".cognition]`](../configuration/config-files.md#model-cognition) | Kiki-only | Overlay, steering, and anchor prompt files attach to a model alias rather than an agent profile. The repository ships no default text for them; every file is read from the data root at runtime, and an undeclared field injects nothing. |
@@ -75,7 +75,7 @@ Workspace overrides persist across restarts. Clearing one returns the workspace 
 
 ## Separate the GUI, server, and clients
 
-Kiki does not introduce a second backend stack. `@kiki/gui` calls the inherited `kap-server` REST and WebSocket surfaces (the request/response API and live update channel) and uses types from `@moonshot-ai/protocol`; the existing TUI and other clients continue to use their established Kimi Code paths.
+Kiki does not introduce a second backend stack. `@kiki/gui` calls the inherited `kap-server` REST and WebSocket surfaces (the request/response API and live update channel) and uses types from `@kiki/protocol`; the existing TUI and other clients continue to use their established Kimi Code paths.
 
 | Boundary | Owner in this repository | Consequence |
 | --- | --- | --- |

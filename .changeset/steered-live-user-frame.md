@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/kimi-code": patch
+"@kiki/cli": patch
 ---
 
 Show steered user messages in the live transcript.

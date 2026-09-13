@@ -1,4 +1,4 @@
-import type { PromptStatus } from '@moonshot-ai/protocol';
+import type { PromptStatus } from '@kiki/protocol';
 
 import type { SessionViewState } from '@kiki/session-core/session/transcript/types';
 

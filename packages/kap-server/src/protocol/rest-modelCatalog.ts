@@ -1,16 +1,16 @@
 import { z } from 'zod';
 
-import { PROVIDER_ID_PATTERN } from '@moonshot-ai/agent-core-v2';
+import { PROVIDER_ID_PATTERN } from '@kiki/agent-core-v2';
 import {
   modelCatalogItemSchema,
   providerCatalogItemSchema,
-} from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
+} from '@kiki/agent-core-v2/kosong/model/catalog';
 import {
   RequestIdentityPolicyWireSchema,
   requestIdentityFromWire,
   resolveProviderRequestIdentity,
   type RequestIdentityPolicyWire,
-} from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+} from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 
 export const listModelsResponseSchema = z.object({
   items: z.array(modelCatalogItemSchema),

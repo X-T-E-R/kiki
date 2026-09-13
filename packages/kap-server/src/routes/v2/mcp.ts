@@ -5,12 +5,12 @@ import {
   IMcpManagementService,
   isError2,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   McpServerHttpConfigSchema,
   McpServerSseConfigSchema,
   McpServerStdioConfigSchema,
-} from '@moonshot-ai/agent-core-v2/mcpCore/config-schema';
+} from '@kiki/agent-core-v2/mcpCore/config-schema';
 import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';

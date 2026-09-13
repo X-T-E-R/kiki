@@ -15,8 +15,8 @@
  * history.
  */
 import { ErrorCodes, KimiError } from '#/errors';
-import type { ContextMessage } from '@moonshot-ai/agent-core-v2';
-import { estimateTokensForMessages } from '@moonshot-ai/agent-core-v2/kosong/contract/tokens';
+import type { ContextMessage } from '@kiki/agent-core-v2';
+import { estimateTokensForMessages } from '@kiki/agent-core-v2/kosong/contract/tokens';
 
 /** Byte-identical with v1's `IMPORT_CONTEXT_GUIDANCE`. */
 const IMPORT_CONTEXT_GUIDANCE =

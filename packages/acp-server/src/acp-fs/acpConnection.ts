@@ -18,7 +18,7 @@ import {
   registerScopedService,
   ScopeActivation,
   type ServiceIdentifier,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 /**
  * Narrow ACP-client file surface the ACP-backed `IHostFileSystem` needs.

@@ -16,9 +16,9 @@ import {
   workspacePersistenceScope,
   type IDisposable,
   type SessionSummary,
-} from '@moonshot-ai/agent-core-v2';
-import { normalizeLiteral, tokenize } from '@moonshot-ai/minidb';
-import type { TranscriptStore } from '@moonshot-ai/transcript';
+} from '@kiki/agent-core-v2';
+import { normalizeLiteral, tokenize } from '@kiki/minidb';
+import type { TranscriptStore } from '@kiki/transcript';
 
 import {
   GlobalSearchError,

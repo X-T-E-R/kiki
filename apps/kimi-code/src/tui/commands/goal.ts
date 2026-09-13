@@ -1,4 +1,4 @@
-import { ErrorCodes, isKimiError, type PermissionMode } from '@moonshot-ai/kimi-code-sdk';
+import { ErrorCodes, isKimiError, type PermissionMode } from '@kiki/node-sdk';
 
 import {
   GoalStartPermissionPromptComponent,

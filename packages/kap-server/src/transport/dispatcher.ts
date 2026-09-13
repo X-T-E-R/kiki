@@ -7,7 +7,7 @@ import {
   type IScopeHandle,
   type Scope,
   type ServiceIdentifier,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import type { ScopeKind } from './channel';
 import { resolveAnyScopedServiceId } from './channelRegistry';

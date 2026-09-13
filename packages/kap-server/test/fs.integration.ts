@@ -2,9 +2,9 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { IModelCatalog, IWorkspaceInstanceManager } from '@moonshot-ai/agent-core-v2';
-import { HostFileSystem } from '@moonshot-ai/agent-core-v2/os/backends/node-local/hostFsService';
-import { FakeRuntime } from '@moonshot-ai/agent-core-v2/runtime/fakeRuntime';
+import { IModelCatalog, IWorkspaceInstanceManager } from '@kiki/agent-core-v2';
+import { HostFileSystem } from '@kiki/agent-core-v2/os/backends/node-local/hostFsService';
+import { FakeRuntime } from '@kiki/agent-core-v2/runtime/fakeRuntime';
 import { ErrorCode } from '../src/protocol/error-codes';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 

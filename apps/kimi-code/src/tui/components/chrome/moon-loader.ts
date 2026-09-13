@@ -1,5 +1,5 @@
-import { Text, visibleWidth } from '@moonshot-ai/pi-tui';
-import type { TUI } from '@moonshot-ai/pi-tui';
+import { Text, visibleWidth } from '@kiki/pi-tui';
+import type { TUI } from '@kiki/pi-tui';
 
 import {
   BRAILLE_SPINNER_FRAMES,

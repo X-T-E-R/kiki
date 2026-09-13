@@ -8,10 +8,10 @@ import {
   ISessionManager,
   ISessionMcpHandle,
   IWorkspaceInstanceManager,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { SessionSummary } from '@moonshot-ai/klient';
+import type { SessionSummary } from '@kiki/klient';
 
 import { filterSessionSummariesByCwd } from '../src/server';
 import { createTestClient, type TestClient } from './_helpers/acpClient';

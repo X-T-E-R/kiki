@@ -1,4 +1,4 @@
-import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@moonshot-ai/kimi-code-sdk';
+import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@kiki/node-sdk';
 import { describe, expect, it } from 'vitest';
 
 import { formatBackgroundTaskTranscript } from '@/tui/utils/background-task-status';

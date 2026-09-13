@@ -1,5 +1,5 @@
-import type { BackgroundTaskInfo, Session } from '@moonshot-ai/kimi-code-sdk';
-import type { ProcessTerminal, TUI } from '@moonshot-ai/pi-tui';
+import type { BackgroundTaskInfo, Session } from '@kiki/node-sdk';
+import type { ProcessTerminal, TUI } from '@kiki/pi-tui';
 
 import { AgentActivityViewer, formatSubagentActivityPreview } from '../components/dialogs/agent-activity-viewer';
 import { TaskOutputViewer } from '../components/dialogs/task-output-viewer';

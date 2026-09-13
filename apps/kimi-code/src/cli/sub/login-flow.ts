@@ -5,8 +5,8 @@
  * MUST treat the returned promise as `Promise<never>`.
  */
 
-import { createKimiHarness } from '@moonshot-ai/kimi-code-sdk';
-import { OAuthAccessDeniedError, type KimiRegion } from '@moonshot-ai/kimi-code-oauth';
+import { createKimiHarness } from '@kiki/node-sdk';
+import { OAuthAccessDeniedError, type KimiRegion } from '@kiki/oauth';
 
 import { createKimiCodeHostIdentity } from '#/cli/version';
 import { openUrl } from '#/utils/open-url';

@@ -34,11 +34,11 @@ import { join } from 'node:path';
 import { EXAMPLE_CLIENT_IDENTITY } from './identity.js';
 
 
-import { bootstrap, logSeed, resolveLoggingConfig } from '@moonshot-ai/agent-core-v2';
-import { IConfigService } from '@moonshot-ai/agent-core-v2/app/config/config';
-import { IKosongConfigService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/kosongConfig';
-import { type Klient } from '@moonshot-ai/klient';
-import { createKlient } from '@moonshot-ai/klient/memory';
+import { bootstrap, logSeed, resolveLoggingConfig } from '@kiki/agent-core-v2';
+import { IConfigService } from '@kiki/agent-core-v2/app/config/config';
+import { IKosongConfigService } from '@kiki/agent-core-v2/app/kosongConfig/kosongConfig';
+import { type Klient } from '@kiki/klient';
+import { createKlient } from '@kiki/klient/memory';
 
 function assert(cond: boolean, message: string): asserts cond {
   if (!cond) throw new Error(`assertion failed: ${message}`);

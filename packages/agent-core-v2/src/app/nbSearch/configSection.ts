@@ -4,7 +4,7 @@ import {
   parseConfigPatch,
   type CanonicalConfigPatch,
 } from '@nb-corp/nb-search';
-import { findUnknownNbSearchProviderOptions } from '@moonshot-ai/protocol';
+import { findUnknownNbSearchProviderOptions } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';

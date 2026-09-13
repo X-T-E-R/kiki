@@ -1,13 +1,13 @@
-import type { AgentActivityUpdated } from '@moonshot-ai/agent-core-v2/agent/activityView/activityView';
-import type { ContextSpliced } from '@moonshot-ai/agent-core-v2/agent/contextMemory/contextEvents';
-import type { HookResult } from '@moonshot-ai/agent-core-v2/features/externalHooks/agent/agentExternalHooksService';
+import type { AgentActivityUpdated } from '@kiki/agent-core-v2/agent/activityView/activityView';
+import type { ContextSpliced } from '@kiki/agent-core-v2/agent/contextMemory/contextEvents';
+import type { HookResult } from '@kiki/agent-core-v2/features/externalHooks/agent/agentExternalHooksService';
 import type {
   CompactionBlocked,
   CompactionCancelled,
   CompactionCompleted,
   CompactionStarted,
-} from '@moonshot-ai/agent-core-v2/agent/fullCompaction/compactionOps';
-import type { GoalUpdated } from '@moonshot-ai/agent-core-v2/agent/goal/goalOps';
+} from '@kiki/agent-core-v2/agent/fullCompaction/compactionOps';
+import type { GoalUpdated } from '@kiki/agent-core-v2/agent/goal/goalOps';
 import type {
   AssistantDelta,
   ThinkingDelta,
@@ -16,11 +16,11 @@ import type {
   TurnStepCompleted,
   TurnStepInterrupted,
   TurnStepStarted,
-} from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
-import type { TurnEnded } from '@moonshot-ai/agent-core-v2/agent/loop/turnOps';
-import type { AgentErrorEvent } from '@moonshot-ai/agent-core-v2/agent/mcp/mcpEvents';
-import type { PluginCommandActivated } from '@moonshot-ai/agent-core-v2/agent/pluginCommand/pluginCommand';
-import type { WarningIssued } from '@moonshot-ai/agent-core-v2/agent/profile/profileOps';
+} from '@kiki/agent-core-v2/agent/loop/turnEvents';
+import type { TurnEnded } from '@kiki/agent-core-v2/agent/loop/turnOps';
+import type { AgentErrorEvent } from '@kiki/agent-core-v2/agent/mcp/mcpEvents';
+import type { PluginCommandActivated } from '@kiki/agent-core-v2/agent/pluginCommand/pluginCommand';
+import type { WarningIssued } from '@kiki/agent-core-v2/agent/profile/profileOps';
 import type {
   PromptAborted,
   PromptCompleted,
@@ -29,34 +29,34 @@ import type {
   PromptStarted,
   PromptSteered,
   PromptSubmitted,
-} from '@moonshot-ai/agent-core-v2/agent/prompt/promptService';
+} from '@kiki/agent-core-v2/agent/prompt/promptService';
 import type {
   ShellCompleted,
   ShellOutput,
   ShellStarted,
-} from '@moonshot-ai/agent-core-v2/agent/shellCommand/shellCommandService';
-import type { SkillActivated } from '@moonshot-ai/agent-core-v2/agent/skill/skillOps';
-import type { TurnStepRetrying } from '@moonshot-ai/agent-core-v2/agent/stepRetry/stepRetryService';
+} from '@kiki/agent-core-v2/agent/shellCommand/shellCommandService';
+import type { SkillActivated } from '@kiki/agent-core-v2/agent/skill/skillOps';
+import type { TurnStepRetrying } from '@kiki/agent-core-v2/agent/stepRetry/stepRetryService';
 import type {
   TaskNotified,
   TaskStarted,
   TaskTerminatedNotice,
-} from '@moonshot-ai/agent-core-v2/agent/task/taskOps';
+} from '@kiki/agent-core-v2/agent/task/taskOps';
 import type {
   ToolCallStarted,
   ToolProgress,
   ToolResultEvent,
-} from '@moonshot-ai/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
-import type { AgentStatusUpdated } from '@moonshot-ai/agent-core-v2/agent/usage/usageEvents';
-import type { PlanRevision } from '@moonshot-ai/agent-core-v2/features/plan/planOps';
-import type { SubagentSuspended } from '@moonshot-ai/agent-core-v2/features/swarm/session/sessionSwarmService';
-import type { CronFired } from '@moonshot-ai/agent-core-v2/session/cron/cronOps';
+} from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
+import type { AgentStatusUpdated } from '@kiki/agent-core-v2/agent/usage/usageEvents';
+import type { PlanRevision } from '@kiki/agent-core-v2/features/plan/planOps';
+import type { SubagentSuspended } from '@kiki/agent-core-v2/features/swarm/session/sessionSwarmService';
+import type { CronFired } from '@kiki/agent-core-v2/session/cron/cronOps';
 import type {
   SubagentCompleted,
   SubagentFailed,
   SubagentSpawned,
   SubagentStarted,
-} from '@moonshot-ai/agent-core-v2/session/subagent/mirrorAgentRun';
+} from '@kiki/agent-core-v2/session/subagent/mirrorAgentRun';
 import {
   projectInteractionEndState,
   taskNotificationFrameId,
@@ -80,7 +80,7 @@ import {
   type TurnHeader,
   type TurnOrigin,
   type TurnState,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 
 import { toLegacyPhase } from './legacyPhase';
 import { projectPromptContentParts } from './promptProjection';

@@ -1,5 +1,5 @@
 import { buildSkillSlashCommands, isUserActivatableSkill } from '#/tui/commands/index';
-import type { SkillSummary } from '@moonshot-ai/kimi-code-sdk';
+import type { SkillSummary } from '@kiki/node-sdk';
 import { describe, expect, it } from 'vitest';
 
 function skill(

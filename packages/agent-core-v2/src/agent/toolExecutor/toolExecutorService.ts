@@ -4,7 +4,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { AsyncEmitter, type Event } from '#/_base/event';
 import { defineState } from '#/state/state';
 import type { ContentPart, ToolCall } from '#/kosong/contract/message';
-import type { ToolInputDisplay } from '@moonshot-ai/protocol';
+import type { ToolInputDisplay } from '@kiki/protocol';
 
 import {
   compileToolArgsValidator,

@@ -3,7 +3,7 @@
  * `agent-core-v2/app/config/config.ts`.
  */
 
-import { RequestIdentityPolicySchema } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { z } from 'zod';
 
 import { noResult } from '../helpers.js';

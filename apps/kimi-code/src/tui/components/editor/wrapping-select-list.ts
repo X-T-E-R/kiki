@@ -6,7 +6,7 @@ import {
   type SelectItem,
   type SelectListLayoutOptions,
   type SelectListTheme,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 
 // Mirror pi-tui's private select-list layout constants
 // (dist/components/select-list.js); keep in sync when bumping pi-tui.

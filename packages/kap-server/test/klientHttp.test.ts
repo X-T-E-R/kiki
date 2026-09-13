@@ -2,8 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { Scope } from '@moonshot-ai/agent-core-v2';
-import { createKlient } from '@moonshot-ai/klient/http';
+import type { Scope } from '@kiki/agent-core-v2';
+import { createKlient } from '@kiki/klient/http';
 import Fastify from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';

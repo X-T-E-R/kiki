@@ -1,4 +1,4 @@
-import { Container, truncateToWidth, visibleWidth } from '@moonshot-ai/pi-tui';
+import { Container, truncateToWidth, visibleWidth } from '@kiki/pi-tui';
 
 import { SELECT_POINTER } from '../../constant/symbols';
 import type { QueuedMessage } from '../../types';

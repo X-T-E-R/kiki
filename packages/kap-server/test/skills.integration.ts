@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import {
   IAgentLifecycleService,
   getLiveSessionById,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   activateSkillResultSchema,
   listSkillsResponseSchema,

@@ -1,6 +1,6 @@
 ---
-"@moonshot-ai/kimi-code": minor
-"@moonshot-ai/kimi-code-sdk": minor
+"@kiki/cli": minor
+"@kiki/node-sdk": minor
 ---
 
 Retire upstream cloud features and remove the duplicate Kosong package.

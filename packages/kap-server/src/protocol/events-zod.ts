@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { isoDateTimeSchema } from '@moonshot-ai/agent-core-v2/_base/utils/isoDateTime';
-import type { TurnEndReason } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
+import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
+import type { TurnEndReason } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type {
   BundledSkillActivation,
   CompactionSummaryOrigin,
@@ -17,15 +17,15 @@ import type {
   SystemTriggerOrigin,
   TaskOrigin,
   UserPromptOrigin,
-} from '@moonshot-ai/agent-core-v2/agent/contextMemory/types';
+} from '@kiki/agent-core-v2/agent/contextMemory/types';
 import { messageContentSchema } from './message';
-import type { HookResultPayload } from '@moonshot-ai/agent-core-v2/features/externalHooks/agent/agentExternalHooksService';
+import type { HookResultPayload } from '@kiki/agent-core-v2/features/externalHooks/agent/agentExternalHooksService';
 import type {
   CompactionBlockedPayload,
   CompactionCompletedPayload,
   CompactionStartedPayload,
-} from '@moonshot-ai/agent-core-v2/agent/fullCompaction/compactionOps';
-import type { CompactionResult } from '@moonshot-ai/agent-core-v2/agent/fullCompaction/types';
+} from '@kiki/agent-core-v2/agent/fullCompaction/compactionOps';
+import type { CompactionResult } from '@kiki/agent-core-v2/agent/fullCompaction/types';
 import type {
   GoalActor,
   GoalBudgetLimits,
@@ -36,7 +36,7 @@ import type {
   GoalSnapshot,
   GoalStatus,
   GoalToolResult,
-} from '@moonshot-ai/agent-core-v2/agent/goal/types';
+} from '@kiki/agent-core-v2/agent/goal/types';
 import type {
   AssistantDeltaPayload,
   ThinkingDeltaPayload,
@@ -44,41 +44,41 @@ import type {
   TurnStepCompletedPayload,
   TurnStepInterruptedPayload,
   TurnStepStartedPayload,
-} from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
+} from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type {
   McpServerStatusEventPayload,
   McpServerStatusPayload,
   ToolListUpdatedPayload,
   ToolListUpdatedReason,
-} from '@moonshot-ai/agent-core-v2/agent/mcp/mcpEvents';
-import type { McpOAuthAuthorizationUrlUpdateData } from '@moonshot-ai/agent-core-v2/agent/mcp/tools/auth';
-import type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
-import type { WarningEvent } from '@moonshot-ai/agent-core-v2/agent/profile/profileService';
-import type { PluginCommandActivatedPayload } from '@moonshot-ai/agent-core-v2/agent/pluginCommand/pluginCommand';
+} from '@kiki/agent-core-v2/agent/mcp/mcpEvents';
+import type { McpOAuthAuthorizationUrlUpdateData } from '@kiki/agent-core-v2/agent/mcp/tools/auth';
+import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
+import type { WarningEvent } from '@kiki/agent-core-v2/agent/profile/profileService';
+import type { PluginCommandActivatedPayload } from '@kiki/agent-core-v2/agent/pluginCommand/pluginCommand';
 import type {
   ShellCompletedPayload,
   ShellOutputPayload,
   ShellStartedPayload,
-} from '@moonshot-ai/agent-core-v2/agent/shellCommand/shellCommandService';
+} from '@kiki/agent-core-v2/agent/shellCommand/shellCommandService';
 
-import type { TurnStepRetryingPayload } from '@moonshot-ai/agent-core-v2/agent/stepRetry/stepRetryService';
-import type { AgentTaskStatus } from '@moonshot-ai/agent-core-v2/agent/task/types';
+import type { TurnStepRetryingPayload } from '@kiki/agent-core-v2/agent/stepRetry/stepRetryService';
+import type { AgentTaskStatus } from '@kiki/agent-core-v2/agent/task/types';
 import type {
   ToolCallStartedPayload,
   ToolProgressPayload,
   ToolResultEventPayload,
-} from '@moonshot-ai/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
-import type { UsageStatus } from '@moonshot-ai/agent-core-v2/agent/usage/usage';
-import type { FinishReason } from '@moonshot-ai/agent-core-v2/kosong/contract/provider';
-import type { TokenUsage } from '@moonshot-ai/agent-core-v2/kosong/contract/usage';
+} from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
+import type { UsageStatus } from '@kiki/agent-core-v2/agent/usage/usage';
+import type { FinishReason } from '@kiki/agent-core-v2/kosong/contract/provider';
+import type { TokenUsage } from '@kiki/agent-core-v2/kosong/contract/usage';
 import type {
   SubagentCompletedPayload,
   SubagentFailedPayload,
   SubagentSpawnedPayload,
   SubagentStartedPayload,
-} from '@moonshot-ai/agent-core-v2/session/subagent/mirrorAgentRun';
-import type { SubagentSuspendedPayload } from '@moonshot-ai/agent-core-v2/features/swarm/session/sessionSwarmService';
-import type { ToolUpdate } from '@moonshot-ai/agent-core-v2/tool/toolContract';
+} from '@kiki/agent-core-v2/session/subagent/mirrorAgentRun';
+import type { SubagentSuspendedPayload } from '@kiki/agent-core-v2/features/swarm/session/sessionSwarmService';
+import type { ToolUpdate } from '@kiki/agent-core-v2/tool/toolContract';
 
 import { contextBreakdownSchema } from './context-usage';
 import { ToolInputDisplaySchema } from './display';

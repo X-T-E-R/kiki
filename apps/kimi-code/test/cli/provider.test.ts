@@ -6,7 +6,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
-import type { KimiConfig } from '@moonshot-ai/kimi-code-sdk';
+import type { KimiConfig } from '@kiki/node-sdk';
 
 import {
   handleCatalogAdd,
@@ -26,8 +26,8 @@ const harnessRouting = vi.hoisted(() => ({
   harness: undefined as unknown,
 }));
 
-vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@moonshot-ai/kimi-code-sdk')>();
+vi.mock('@kiki/node-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/node-sdk')>();
   return {
     ...actual,
     createKimiHarness: (...args: unknown[]) => {

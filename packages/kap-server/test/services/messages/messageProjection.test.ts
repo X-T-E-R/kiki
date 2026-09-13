@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ContextMessage } from '@moonshot-ai/agent-core-v2';
+import type { ContextMessage } from '@kiki/agent-core-v2';
 
 import { toProtocolMessage } from '../../../src/services/messages/messageProjection';
 

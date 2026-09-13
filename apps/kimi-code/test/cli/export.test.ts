@@ -19,7 +19,7 @@ import type {
   ExportSessionManifest,
   ExportSessionResult,
   SessionSummary,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 let tmp: string;
 
@@ -30,8 +30,8 @@ const mocks = vi.hoisted(() => ({
   resolveKimiHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-export-home'),
 }));
 
-vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@moonshot-ai/kimi-code-sdk')>();
+vi.mock('@kiki/node-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/node-sdk')>();
   const createFakeHarness = (options: { readonly homeDir?: string } | undefined) => ({
     homeDir: options?.homeDir ?? '/tmp/kimi-export-home',
     exportSession: mocks.harnessExportSession,

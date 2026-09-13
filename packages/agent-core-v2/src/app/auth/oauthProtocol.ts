@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { isoDateTimeSchema } from '#/_base/utils/isoDateTime';
-import { kimiRegionSchema } from '@moonshot-ai/kimi-code-oauth';
+import { kimiRegionSchema } from '@kiki/oauth';
 
 export const oauthFlowStatusEnum = z.enum([
   'pending',
@@ -140,4 +140,4 @@ export type ManagedUsageResult = z.infer<typeof managedUsageResultSchema>;
 export {
   managedUserInfoResultSchema,
   type ManagedUserInfoResult,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';

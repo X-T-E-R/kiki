@@ -7,7 +7,7 @@
  * `<media path>` tag is authored, so text parts always merge freely.
  */
 
-import type { PromptPart } from '@moonshot-ai/kimi-code-sdk';
+import type { PromptPart } from '@kiki/node-sdk';
 
 import type { SteerInputItem } from '../types';
 

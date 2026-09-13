@@ -4,13 +4,13 @@ import {
   IConfigService,
   IEventService,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
-import { REQUEST_IDENTITY_SECTION } from '@moonshot-ai/agent-core-v2/app/kosongConfig/configSection';
+} from '@kiki/agent-core-v2';
+import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import {
   requestIdentityFromWire,
   requestIdentityToWire,
   type RequestIdentityPolicy,
-} from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+} from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';

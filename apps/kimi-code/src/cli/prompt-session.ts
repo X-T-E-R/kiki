@@ -27,7 +27,7 @@ import type {
   SessionSummary,
   TelemetryProperties,
   Unsubscribe,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 export interface PromptHarness {
   readonly homeDir: string;

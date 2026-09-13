@@ -1,4 +1,4 @@
-import { ErrorCodes, isError2 } from '@moonshot-ai/agent-core-v2';
+import { ErrorCodes, isError2 } from '@kiki/agent-core-v2';
 
 import { errEnvelope } from './envelope';
 import { ErrorCode } from './protocol/error-codes';

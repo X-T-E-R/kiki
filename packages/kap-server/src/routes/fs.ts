@@ -15,7 +15,7 @@ import {
   isError2,
   Error2,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   fsDiffRequestSchema,
   fsGitStatusRequestSchema,
@@ -30,14 +30,14 @@ import {
   fsStatRequestSchema,
   fsSuggestRequestSchema,
   fsSuggestResponseSchema,
-} from '@moonshot-ai/agent-core-v2/workspace/workspaceFs/fs';
-import { GitService } from '@moonshot-ai/agent-core-v2/app/git/gitService';
-import type { IHostFileSystem } from '@moonshot-ai/agent-core-v2/os/interface/hostFileSystem';
-import type { RuntimeCapability, RuntimeLease } from '@moonshot-ai/agent-core-v2/runtime/runtime';
-import { WorkspaceFsService } from '@moonshot-ai/agent-core-v2/workspace/workspaceFs/fsService';
-import { WorkspaceGitService } from '@moonshot-ai/agent-core-v2/workspace/workspaceGit/workspaceGitService';
-import type { IWorkspaceContext } from '@moonshot-ai/agent-core-v2/workspace/workspaceContext/workspaceContext';
-import type { IWorkspaceDirs } from '@moonshot-ai/agent-core-v2/workspace/workspaceDirs/workspaceDirs';
+} from '@kiki/agent-core-v2/workspace/workspaceFs/fs';
+import { GitService } from '@kiki/agent-core-v2/app/git/gitService';
+import type { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem';
+import type { RuntimeCapability, RuntimeLease } from '@kiki/agent-core-v2/runtime/runtime';
+import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
+import { WorkspaceGitService } from '@kiki/agent-core-v2/workspace/workspaceGit/workspaceGitService';
+import type { IWorkspaceContext } from '@kiki/agent-core-v2/workspace/workspaceContext/workspaceContext';
+import type { IWorkspaceDirs } from '@kiki/agent-core-v2/workspace/workspaceDirs/workspaceDirs';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';

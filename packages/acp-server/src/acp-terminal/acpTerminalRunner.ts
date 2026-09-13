@@ -16,7 +16,7 @@ import type {
   RuntimeProviderContext,
   RuntimeProviderFactory,
   RuntimeProviderHost,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { AcpHostFileSystem, IAcpConnection, type IAcpTerminalHandle } from '../acp-fs';
 

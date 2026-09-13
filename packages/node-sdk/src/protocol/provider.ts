@@ -1,4 +1,4 @@
-import type { ModelCapability, ProviderRequestAuth } from '@moonshot-ai/agent-core-v2';
+import type { ModelCapability, ProviderRequestAuth } from '@kiki/agent-core-v2';
 
 import type { ModelAlias, ProviderType } from '#/config';
 import type { Logger } from '#/logging';

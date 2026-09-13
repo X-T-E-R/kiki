@@ -9,13 +9,13 @@
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { OAuthAccessDeniedError } from '@moonshot-ai/kimi-code-oauth';
+import { OAuthAccessDeniedError } from '@kiki/oauth';
 
 const mockLogin = vi.fn();
 
-vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
-  const actual = await vi.importActual<typeof import('@moonshot-ai/kimi-code-sdk')>(
-    '@moonshot-ai/kimi-code-sdk',
+vi.mock('@kiki/node-sdk', async () => {
+  const actual = await vi.importActual<typeof import('@kiki/node-sdk')>(
+    '@kiki/node-sdk',
   );
   return {
     ...actual,
@@ -29,7 +29,7 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
 
 vi.mock('#/utils/open-url', () => ({ openUrl: vi.fn() }));
 
-import { createKimiHarness } from '@moonshot-ai/kimi-code-sdk';
+import { createKimiHarness } from '@kiki/node-sdk';
 
 import { registerLoginCommand } from '#/cli/sub/login';
 import { openUrl } from '#/utils/open-url';

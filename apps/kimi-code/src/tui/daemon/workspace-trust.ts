@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve, win32 } from 'node:path';
 
-import { ProcessTerminal, TuiMainScreen } from '@moonshot-ai/pi-tui';
+import { ProcessTerminal, TuiMainScreen } from '@kiki/pi-tui';
 
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';
 import {

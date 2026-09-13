@@ -62,19 +62,19 @@ export {
   resolveGlobalLogPath,
 } from '#/logging';
 export type { LogContext, LogLevel, LogPayload, Logger } from '#/logging';
-export { resolveKimiHome } from '@moonshot-ai/agent-core-v2';
+export { resolveKimiHome } from '@kiki/agent-core-v2';
 
 // Host-side config helpers — safe config reader + config path resolution, used
 // by hosts (e.g. the CLI's server telemetry bootstrap) that need to inspect
 // config without spinning up a full engine.
 export { effectiveModelAlias, loadRuntimeConfigSafe, resolveConfigPath } from '#/config';
 export { limitAgentReplayByTurns } from '#/wire/replay-turns';
-export { parseAgentFileText } from '@moonshot-ai/agent-core-v2';
-export { resolveAgentPath } from '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths';
+export { parseAgentFileText } from '@kiki/agent-core-v2';
+export { resolveAgentPath } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths';
 
 // Process-wide HTTP proxy bootstrap — installed once at CLI startup so all
 // outbound fetch honors HTTP_PROXY / HTTPS_PROXY / NO_PROXY.
-export { installGlobalProxyDispatcher } from '@moonshot-ai/agent-core-v2/_base/utils/proxy';
+export { installGlobalProxyDispatcher } from '@kiki/agent-core-v2/_base/utils/proxy';
 
 // Image compression — ingestion sites (e.g. the CLI's clipboard paste, the ACP
 // adapter) shrink oversized images while constructing the content part, before
@@ -95,14 +95,14 @@ export {
   sessionMediaOriginalsDir,
   IMAGE_BYTE_BUDGET,
   MAX_IMAGE_EDGE_PX,
-} from '@moonshot-ai/agent-core-v2';
-export type { ImageCompressionTelemetry } from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
+export type { ImageCompressionTelemetry } from '@kiki/agent-core-v2';
 export type {
   CompressImageOptions,
   CompressImageResult,
   CompressBase64Result,
   ImageCompressionCaptionInput,
-} from '@moonshot-ai/agent-core-v2/agent/media/image-compress';
+} from '@kiki/agent-core-v2/agent/media/image-compress';
 export { ImageLimits } from '#/image-limits';
 
 // Experimental feature flags — types only. Resolved values come from
@@ -114,7 +114,7 @@ export type {
   FlagDefinitionInput,
   FlagId,
   FlagSurface,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 // Daemon file references (agent-core-v2) — pure helpers for the internal
 // `kimi-file://` media URLs and the model-facing `<image|video|file>` path
@@ -128,11 +128,11 @@ export {
   isDaemonFileUrl,
   matchSingleMediaPathTag,
   parseDaemonFileUrl,
-} from '@moonshot-ai/agent-core-v2/agent/media/mediaRef';
+} from '@kiki/agent-core-v2/agent/media/mediaRef';
 export type {
   DaemonFileRef,
   MediaKind,
-} from '@moonshot-ai/agent-core-v2/agent/media/mediaRef';
+} from '@kiki/agent-core-v2/agent/media/mediaRef';
 
 export type {
   KimiAuthLoginResult,

@@ -4,8 +4,8 @@ import {
   IAgentRuntimeBindingService,
   resumeSessionById,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
-import { RuntimeError } from '@moonshot-ai/agent-core-v2/runtime/runtimeRegistry';
+} from '@kiki/agent-core-v2';
+import { RuntimeError } from '@kiki/agent-core-v2/runtime/runtimeRegistry';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';

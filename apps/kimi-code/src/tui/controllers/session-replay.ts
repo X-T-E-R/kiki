@@ -6,7 +6,7 @@ import type {
   ResumedAgentState,
   Session,
   ToolCall,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 import { ToolCallComponent } from '../components/messages/tool-call';
 import { ShellRunComponent } from '../components/messages/shell-run';

@@ -1,4 +1,4 @@
-import type { AutocompleteItem, SlashCommand } from '@moonshot-ai/pi-tui';
+import type { AutocompleteItem, SlashCommand } from '@kiki/pi-tui';
 
 export type SlashCommandAvailability = 'always' | 'idle-only';
 

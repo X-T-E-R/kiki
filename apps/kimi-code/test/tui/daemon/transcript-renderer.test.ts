@@ -1,4 +1,4 @@
-import { Container } from '@moonshot-ai/pi-tui';
+import { Container } from '@kiki/pi-tui';
 import type { Block } from '@kiki/session-core/session/transcript/types';
 import { describe, expect, it } from 'vitest';
 

@@ -36,8 +36,8 @@ import { join } from 'node:path';
 import { EXAMPLE_CLIENT_IDENTITY } from './identity.js';
 
 
-import { bootstrap, logSeed, resolveLoggingConfig } from '@moonshot-ai/agent-core-v2';
-import { createKlient } from '@moonshot-ai/klient/memory';
+import { bootstrap, logSeed, resolveLoggingConfig } from '@kiki/agent-core-v2';
+import { createKlient } from '@kiki/klient/memory';
 
 const SEEDED_MODEL_ID = 'klient-example-model';
 

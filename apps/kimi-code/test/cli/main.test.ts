@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ErrorCodes, KimiError } from '@moonshot-ai/kimi-code-sdk';
+import { ErrorCodes, KimiError } from '@kiki/node-sdk';
 
 import { validateOptions } from '#/cli/options';
 import type { CLIOptions } from '#/cli/options';
@@ -38,9 +38,9 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
-  const actual = await vi.importActual<typeof import('@moonshot-ai/kimi-code-sdk')>(
-    '@moonshot-ai/kimi-code-sdk',
+vi.mock('@kiki/node-sdk', async () => {
+  const actual = await vi.importActual<typeof import('@kiki/node-sdk')>(
+    '@kiki/node-sdk',
   );
   class MockKimiHarness {
     readonly homeDir = mocks.harness.homeDir;

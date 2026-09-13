@@ -16,7 +16,7 @@ import {
   ISessionIndex,
   logSeed,
   resolveLoggingConfig,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 /** Shared host identity for klient test engines (bootstrap requires one). */
 export const TEST_CLIENT_IDENTITY = {

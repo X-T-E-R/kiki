@@ -28,7 +28,7 @@ There is no legacy `KimiTUI` runtime path or experimental selector.
 ## Core boundaries
 
 - Session snapshots, transcript ordering, reconnect/resync, prompt submission, abort, history rewrites, agent forest state, todos, tasks, usage, and retry state come from `@kiki/session-core`.
-- Prefer `@moonshot-ai/klient` facades for daemon capabilities: `global.*`, `session(id).*`, and `session(id).agent(id).*`.
+- Prefer `@kiki/klient` facades for daemon capabilities: `global.*`, `session(id).*`, and `session(id).agent(id).*`.
 - Add a REST adapter to `daemon/client.ts` only when an existing public REST contract has no Klient facade. Do not add raw service/procedure escape hatches.
 - Components do not call Klient, REST, the SDK, or session-core controllers. They receive view data and callbacks.
 - Commands without a real daemon contract stay disabled. Unknown slash input must never fall through as a prompt; discovered Skill and profile commands are the only dynamic exceptions.
@@ -67,5 +67,5 @@ All selectors and dialogs must follow `DESIGN.md`: `SearchableList`, `SELECT_POI
 - Daemon coordinator, commands, client, socket, pagination, attachments, transcript state, and lifecycle tests → `test/tui/daemon/`.
 - Interaction adapter tests → `test/tui/interactions/`.
 - Component tests remain under `test/tui/components/`.
-- Run focused daemon/run-shell tests, `@moonshot-ai/kimi-code` and `@kiki/session-core` typechecks, remaining TUI tests, printable-key/color guards, and `git diff --check`.
+- Run focused daemon/run-shell tests, `@kiki/cli` and `@kiki/session-core` typechecks, remaining TUI tests, printable-key/color guards, and `git diff --check`.
 - Real TTY behavior may remain a stated manual residual; do not replace it with a fake terminal assertion that does not exercise the contract.

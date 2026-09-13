@@ -5,7 +5,7 @@ description: Use when generating changesets in the kimi-code repository — deci
 
 # Generate Changesets
 
-The only user-facing published package is the CLI: `@moonshot-ai/kimi-code`. All other `@moonshot-ai/*` packages (sdk, agent-core, kosong, kaos, oauth, telemetry, and so on) are internal.
+The only user-facing published package is the CLI: `@kiki/cli`. All other `@moonshot-ai/*` packages (sdk, agent-core, kosong, kaos, oauth, telemetry, and so on) are internal.
 
 ## 1. Whether to Write
 
@@ -16,7 +16,7 @@ Do not write:
 - Changes internal to core/server packages — architecture, protocols, refactors, config/journal/wire mechanics — unless they fix a bug users care about.
 - When you are unsure whether users can perceive a change, ask first.
 
-Do write: user-perceivable new features or behavior changes, and internal-package changes that fix a user-useful bug or change CLI output/behavior (list `@moonshot-ai/kimi-code` for those).
+Do write: user-perceivable new features or behavior changes, and internal-package changes that fix a user-useful bug or change CLI output/behavior (list `@kiki/cli` for those).
 
 ## 2. What to Write
 
@@ -24,7 +24,7 @@ Create a short kebab-case file under `.changeset/`:
 
 ```markdown
 ---
-"@moonshot-ai/kimi-code": patch
+"@kiki/cli": patch
 ---
 
 Fix occasional loss of tool call results in long conversations.
@@ -46,10 +46,10 @@ Wording:
 
 ## 4. Which Package
 
-- An internal change enters the CLI bundle and is user-perceivable → list `@moonshot-ai/kimi-code`.
+- An internal change enters the CLI bundle and is user-perceivable → list `@kiki/cli`.
 - An internal change does not enter the CLI or is not user-perceivable → write nothing; if it is written, list only that internal package.
 - Never mix packages ignored in `.changeset/config.json` with non-ignored packages in one frontmatter.
-- pi-tui exception: pi-tui-only changes list `@moonshot-ai/pi-tui`; if the same change is also visible to CLI users, write a separate CLI changeset (two files, never mixed).
+- pi-tui exception: pi-tui-only changes list `@kiki/pi-tui`; if the same change is also visible to CLI users, write a separate CLI changeset (two files, never mixed).
 
 ## 5. Workflow
 

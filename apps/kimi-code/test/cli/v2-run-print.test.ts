@@ -20,7 +20,7 @@ import {
   ISessionManager,
   type BootstrapInput,
   type Event2,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { runV2Print } from '../../src/cli/v2/run-v2-print';
 
@@ -32,8 +32,8 @@ const mocks = vi.hoisted(() => ({
   createKimiDeviceId: vi.fn(() => 'device-1'),
 }));
 
-vi.mock('@moonshot-ai/agent-core-v2', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@moonshot-ai/agent-core-v2')>();
+vi.mock('@kiki/agent-core-v2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/agent-core-v2')>();
   return {
     ...actual,
     bootstrap: mocks.bootstrap,
@@ -41,9 +41,9 @@ vi.mock('@moonshot-ai/agent-core-v2', async (importOriginal) => {
   };
 });
 
-vi.mock('@moonshot-ai/kimi-code-oauth', async () => {
-  const actual = await vi.importActual<typeof import('@moonshot-ai/kimi-code-oauth')>(
-    '@moonshot-ai/kimi-code-oauth',
+vi.mock('@kiki/oauth', async () => {
+  const actual = await vi.importActual<typeof import('@kiki/oauth')>(
+    '@kiki/oauth',
   );
   return {
     ...actual,
@@ -52,8 +52,8 @@ vi.mock('@moonshot-ai/kimi-code-oauth', async () => {
   };
 });
 
-vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@moonshot-ai/kimi-code-sdk')>();
+vi.mock('@kiki/node-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/node-sdk')>();
   return {
     ...actual,
     resolveKimiHome: mocks.resolveKimiHome,

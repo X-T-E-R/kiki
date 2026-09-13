@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { Event } from '@moonshot-ai/protocol';
+import type { Event } from '@kiki/protocol';
 import {
   IAgentLifecycleService,
   IAgentProfileService,
@@ -18,7 +18,7 @@ import {
   ISessionInteractionService,
   type IAgentScopeHandle,
   type ISessionScopeHandle,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { SessionEventWiring, type SessionEventSink } from '#/v2/session-wiring';
 

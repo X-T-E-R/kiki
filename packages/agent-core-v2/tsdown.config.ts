@@ -10,6 +10,6 @@ export default defineConfig({
   clean: true,
   plugins: [rawTextPlugin()],
   deps: {
-    neverBundle: ['@moonshot-ai/kimi-code-oauth'],
+    neverBundle: ['@kiki/oauth'],
   },
 });

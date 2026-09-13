@@ -7,7 +7,7 @@
  * (snake_case fields).
  */
 
-import { RequestIdentityPolicyWireSchema } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { z } from 'zod';
 
 import type { ServiceContract, StreamingProcedureContract } from '../types.js';

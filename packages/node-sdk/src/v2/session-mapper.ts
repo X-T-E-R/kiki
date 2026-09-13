@@ -6,7 +6,7 @@
  * `IBootstrapService.sessionDir`, and the workspace catalog). Everything else
  * is a field rename (`custom` ↔ `metadata`).
  */
-import type { SessionSummary as V2SessionSummary } from '@moonshot-ai/agent-core-v2';
+import type { SessionSummary as V2SessionSummary } from '@kiki/agent-core-v2';
 
 import { resolve, win32 } from 'node:path';
 

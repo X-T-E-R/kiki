@@ -23,9 +23,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@moonshot-ai/agent-core-v2": "workspace:^",
-    "@moonshot-ai/protocol": "workspace:^",
-    "@moonshot-ai/transcript": "workspace:^"
+    "@kiki/agent-core-v2": "workspace:^",
+    "@kiki/protocol": "workspace:^",
+    "@kiki/transcript": "workspace:^"
   },
   "devDependencies": {
     "@kiki/session-core": "workspace:^"

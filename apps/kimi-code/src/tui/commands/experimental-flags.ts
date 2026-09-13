@@ -1,4 +1,4 @@
-import type { ExperimentalFeatureState, ExperimentalFlagMap } from '@moonshot-ai/kimi-code-sdk';
+import type { ExperimentalFeatureState, ExperimentalFlagMap } from '@kiki/node-sdk';
 
 import { experimentalFeatureMap } from '#/utils/experimental-features';
 

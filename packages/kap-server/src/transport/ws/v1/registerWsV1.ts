@@ -1,4 +1,4 @@
-import type { Scope } from '@moonshot-ai/agent-core-v2';
+import type { Scope } from '@kiki/agent-core-v2';
 import { WebSocketServer } from 'ws';
 
 import type { CredentialValidator } from '../../../services/auth/credentials';

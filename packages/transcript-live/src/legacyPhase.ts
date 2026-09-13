@@ -1,5 +1,5 @@
-import type { AgentActivityState } from '@moonshot-ai/agent-core-v2';
-import type { AgentPhase } from '@moonshot-ai/protocol';
+import type { AgentActivityState } from '@kiki/agent-core-v2';
+import type { AgentPhase } from '@kiki/protocol';
 
 /**
  * Map the native v2 `AgentActivityState` to the legacy v1 `AgentPhase`
@@ -99,4 +99,4 @@ export function toLegacyPhase(state: AgentActivityState): AgentPhase | undefined
   return undefined;
 }
 
-export type { AgentPhase } from '@moonshot-ai/protocol';
+export type { AgentPhase } from '@kiki/protocol';

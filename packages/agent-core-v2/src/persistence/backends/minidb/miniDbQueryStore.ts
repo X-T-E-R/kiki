@@ -2,8 +2,8 @@ import { promises as fsp } from 'node:fs';
 
 import { join } from 'pathe';
 
-import { type QueryOptions } from '@moonshot-ai/minidb';
-import { ClusterDb } from '@moonshot-ai/minidb/cluster';
+import { type QueryOptions } from '@kiki/minidb';
+import { ClusterDb } from '@kiki/minidb/cluster';
 
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';

@@ -14,7 +14,7 @@ import chalk, { Chalk } from 'chalk';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { resetCapabilitiesCache, setCapabilities } from '@moonshot-ai/pi-tui';
+import { resetCapabilitiesCache, setCapabilities } from '@kiki/pi-tui';
 
 import { registerWebCommand } from '#/cli/sub/web';
 import type { WebCommandDeps } from '#/cli/sub/web/run';

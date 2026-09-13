@@ -13,7 +13,7 @@
 //                   process's keyspace (cross-process, mostly cross-shard).
 // A raw single-process MiniDb baseline is measured first for reference.
 //
-// Run:  pnpm --filter @moonshot-ai/minidb bench:cluster
+// Run:  pnpm --filter @kiki/minidb bench:cluster
 // Env:  CLUSTER_BENCH_PROCESSES=1,2,4,8 CLUSTER_BENCH_SHARDS=1,4,16
 //       CLUSTER_BENCH_KEYS=3000 CLUSTER_BENCH_VALUE_BYTES=64
 //       CLUSTER_BENCH_HOLD_MS=250

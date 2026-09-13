@@ -1,5 +1,5 @@
-import type { ProtocolAdapterConfig } from '@moonshot-ai/agent-core-v2/kosong/protocol/protocol';
-import { ProtocolAdapterRegistry } from '@moonshot-ai/agent-core-v2/kosong/provider/protocolAdapterRegistry';
+import type { ProtocolAdapterConfig } from '@kiki/agent-core-v2/kosong/protocol/protocol';
+import { ProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/provider/protocolAdapterRegistry';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, type KimiError } from '#/index';

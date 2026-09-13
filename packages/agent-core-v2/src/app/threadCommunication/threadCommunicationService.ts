@@ -1,4 +1,4 @@
-import { createKimiDeviceId } from '@moonshot-ai/kimi-code-oauth';
+import { createKimiDeviceId } from '@kiki/oauth';
 
 import { Disposable, DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import { ILogService } from '#/_base/log/log';

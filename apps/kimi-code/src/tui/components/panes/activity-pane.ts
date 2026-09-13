@@ -1,4 +1,4 @@
-import { Container, Spacer, Text } from '@moonshot-ai/pi-tui';
+import { Container, Spacer, Text } from '@kiki/pi-tui';
 
 import type { MoonLoader } from '#/tui/components/chrome/moon-loader';
 import { ACTIVITY_DETAIL_INDENT } from '#/tui/constant/rendering';

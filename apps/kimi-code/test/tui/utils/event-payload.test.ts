@@ -1,4 +1,4 @@
-import { ErrorCodes, KimiError } from '@moonshot-ai/kimi-code-sdk';
+import { ErrorCodes, KimiError } from '@kiki/node-sdk';
 import { describe, expect, it } from 'vitest';
 
 import { STREAMING_ARGS_PREVIEW_MAX_CHARS } from '#/tui/constant/streaming';

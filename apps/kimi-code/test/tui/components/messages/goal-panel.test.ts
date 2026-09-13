@@ -1,4 +1,4 @@
-import { visibleWidth } from '@moonshot-ai/pi-tui';
+import { visibleWidth } from '@kiki/pi-tui';
 import chalk from 'chalk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -12,7 +12,7 @@ import {
 } from '#/tui/components/messages/goal-panel';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { darkColors } from '#/tui/theme/colors';
-import type { GoalSnapshot } from '@moonshot-ai/kimi-code-sdk';
+import type { GoalSnapshot } from '@kiki/node-sdk';
 
 const previousChalkLevel = chalk.level;
 beforeAll(() => {

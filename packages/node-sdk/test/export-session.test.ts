@@ -10,8 +10,8 @@ import { createKimiHarness, KimiError } from '#/index';
 import {
   exportSessionDirectory,
   type ExportSessionDirectorySummary,
-} from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExportService';
-import { WIRE_PROTOCOL_VERSION } from '@moonshot-ai/agent-core-v2/wire/migration/migration';
+} from '@kiki/agent-core-v2/app/sessionExport/sessionExportService';
+import { WIRE_PROTOCOL_VERSION } from '@kiki/agent-core-v2/wire/migration/migration';
 
 import { resolveGlobalLogPath } from '#/logging';
 import { recordingTelemetry, type TelemetryRecord } from './telemetry';

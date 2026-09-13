@@ -1,4 +1,4 @@
-import type { ShellEnvironment } from '@moonshot-ai/kimi-code-sdk';
+import type { ShellEnvironment } from '@kiki/node-sdk';
 
 function detectMultiplexer(): string | undefined {
   if (process.env['TMUX']) return 'tmux';

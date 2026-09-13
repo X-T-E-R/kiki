@@ -2,8 +2,8 @@ import type {
   ContentPart,
   TelemetryContextPatch,
   TelemetryProperties,
-} from '@moonshot-ai/agent-core-v2';
-import type { Kaos } from '@moonshot-ai/kaos';
+} from '@kiki/agent-core-v2';
+import type { Kaos } from '@kiki/kaos';
 
 import type {
   ExportSessionManifest,
@@ -11,7 +11,7 @@ import type {
   ShellEnvironment,
   TelemetryClient,
 } from '#/protocol';
-import type { KimiHostIdentity, OAuthRefreshOutcome } from '@moonshot-ai/kimi-code-oauth';
+import type { KimiHostIdentity, OAuthRefreshOutcome } from '@kiki/oauth';
 
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -25,7 +25,7 @@ export interface AgentRuntimeBinding {
   readonly runtimeId: string;
 }
 
-export type { CapabilityStatus } from '@moonshot-ai/agent-core-v2/app/capability/types';
+export type { CapabilityStatus } from '@kiki/agent-core-v2/app/capability/types';
 
 // Engine-shaped facts, straight from the v2 engine.
 export type {
@@ -50,7 +50,7 @@ export type {
   PromptOrigin,
   ReloadSummary,
   ToolInfo,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 // The SDK's own RPC contract and the value types it carries.
 export type {
@@ -98,10 +98,10 @@ export type {
 
 export type { KimiHostIdentity, OAuthRefreshOutcome };
 export type { TelemetryClient, TelemetryContextPatch, TelemetryProperties };
-export type { ContentPart, Role, ThinkingEffort, ToolCall } from '@moonshot-ai/agent-core-v2';
+export type { ContentPart, Role, ThinkingEffort, ToolCall } from '@kiki/agent-core-v2';
 // Contributed commands are an agent-core-v2 seam; the type is re-exported
 // from the v2 engine (v1 sessions report an empty command set).
-export type { AgentCommandInfo } from '@moonshot-ai/agent-core-v2/agent/command/agentCommand';
+export type { AgentCommandInfo } from '@kiki/agent-core-v2/agent/command/agentCommand';
 
 export type PermissionMode = 'yolo' | 'manual' | 'auto';
 
@@ -126,7 +126,7 @@ export interface WorkspaceTrustInfo {
 }
 
 /** Metadata of one upload in the engine's daemon file store. */
-export type { FileMeta } from '@moonshot-ai/agent-core-v2/app/file/fileService';
+export type { FileMeta } from '@kiki/agent-core-v2/app/file/fileService';
 
 /** Input for `uploadFile`: the upload's display name and MIME type. */
 export interface UploadFileOptions {

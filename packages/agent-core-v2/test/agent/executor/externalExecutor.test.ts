@@ -8,7 +8,7 @@ import type {
   AcpTurnRequest,
   AcpTurnResult,
   NormalizedExecutorEvent,
-} from '@moonshot-ai/acp-client';
+} from '@kiki/acp-client';
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildModeOption } from '../../../../acp-server/src/config-options';

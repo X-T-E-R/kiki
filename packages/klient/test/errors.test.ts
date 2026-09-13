@@ -1,5 +1,5 @@
-import { Error2, ErrorCodes, type ErrorCode as EngineErrorCode } from '@moonshot-ai/agent-core-v2/errors';
-import { ErrorCode } from '@moonshot-ai/protocol';
+import { Error2, ErrorCodes, type ErrorCode as EngineErrorCode } from '@kiki/agent-core-v2/errors';
+import { ErrorCode } from '@kiki/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { RPCError, toRPCError } from '../src/core/errors.js';

@@ -1,5 +1,5 @@
 {
-  "name": "@moonshot-ai/tree-sitter-bash",
+  "name": "@kiki/tree-sitter-bash",
   "version": "0.1.0",
   "private": true,
   "description": "A pure-TypeScript bash parser producing a syntax tree whose named node types match tree-sitter-bash one-to-one.",

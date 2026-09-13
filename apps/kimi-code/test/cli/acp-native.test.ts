@@ -2,7 +2,7 @@
  * `kimi acp`
  *
  * Verifies that the ACP v2 sub-command is registered on the program and that
- * the action wires `@moonshot-ai/acp-server`'s `runAcpServer` (the real server
+ * the action wires `@kiki/acp-server`'s `runAcpServer` (the real server
  * is stubbed so the test doesn't actually take over stdio). The module is
  * loaded via a lazy dynamic import in the action, so the mock intercepts that
  * import.
@@ -11,11 +11,11 @@
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@moonshot-ai/acp-server', () => ({
+vi.mock('@kiki/acp-server', () => ({
   runAcpServer: vi.fn(async () => undefined),
 }));
 
-import { runAcpServer } from '@moonshot-ai/acp-server';
+import { runAcpServer } from '@kiki/acp-server';
 
 import { registerAcpCommand } from '#/cli/sub/acp';
 import { registerNativeAcpCommand } from '#/cli/sub/acp-native';
@@ -149,7 +149,7 @@ describe('kimi acp', () => {
     // Stub the SDK harness so runLoginFlow doesn't hit a real OAuth endpoint:
     // harness.auth.login resolves immediately and triggers exit 0.
     const loginStub = vi.fn(async () => ({ providerName: 'kimi-code' }));
-    vi.doMock(import('@moonshot-ai/kimi-code-sdk'), async (importOriginal) => {
+    vi.doMock(import('@kiki/node-sdk'), async (importOriginal) => {
       const actual = await importOriginal();
       return {
         ...actual,
@@ -173,7 +173,7 @@ describe('kimi acp', () => {
       expect(runAcpServer).not.toHaveBeenCalled();
       expect(exitSpy).toHaveBeenCalledWith(0);
     } finally {
-      vi.doUnmock('@moonshot-ai/kimi-code-sdk');
+      vi.doUnmock('@kiki/node-sdk');
       vi.resetModules();
     }
   });

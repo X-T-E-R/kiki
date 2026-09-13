@@ -6,7 +6,7 @@ import {
   PromptStarted,
   PromptSteered,
   PromptSubmitted,
-} from '@moonshot-ai/agent-core-v2/agent/prompt/promptService';
+} from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { describe, expect, it } from 'vitest';
 
 import {

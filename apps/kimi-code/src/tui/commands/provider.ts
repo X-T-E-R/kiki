@@ -3,7 +3,7 @@ import {
   fetchCustomRegistry,
   type CustomRegistrySource,
   type ManagedKimiConfigShape,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 import {
   applyCatalogProvider,
   catalogProviderModels,
@@ -12,7 +12,7 @@ import {
   resolveCatalogImport,
   type Catalog,
   type ThinkingEffort,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 import { createKimiCodeUserAgent } from '#/cli/version';
 import { fetchCatalogOrBuiltIn } from '#/utils/catalog-fetch';

@@ -59,21 +59,21 @@ adapts the engine's `IFileService` streams in both directions.
 
 ## Command reference
 
-- `pnpm --filter @moonshot-ai/klient test` — all Vitest suites (unit +
+- `pnpm --filter @kiki/klient test` — all Vitest suites (unit +
   conformance + e2e; live cases skip without their env).
-- `KIMI_SERVER_URL=http://127.0.0.1:58627 pnpm --filter @moonshot-ai/klient test`
+- `KIMI_SERVER_URL=http://127.0.0.1:58627 pnpm --filter @kiki/klient test`
   — include the live legacy cases against a running server.
-- `pnpm --filter @moonshot-ai/klient docker:e2e` — docker e2e; the run
+- `pnpm --filter @kiki/klient docker:e2e` — docker e2e; the run
   derives its runner name/namespace from the current workspace to avoid
   cross-workspace conflicts.
-- `pnpm --filter @moonshot-ai/klient typecheck` / `pnpm smoke` (in-process
+- `pnpm --filter @kiki/klient typecheck` / `pnpm smoke` (in-process
   smoke over the memory transport; see `examples/smoke.ts`).
-- `pnpm --filter @moonshot-ai/klient smoke:boundary` — ModelRequester boundary
+- `pnpm --filter @kiki/klient smoke:boundary` — ModelRequester boundary
   probe: pings every model configured in the real `~/.kimi-code/config.toml`
   through the in-process engine, then drives deterministic failure modes
   against a local stub to show which errors the ChatProvider layer wraps and
   which the requester owns (see `examples/model-requester-boundary.ts`).
-- `pnpm --filter @moonshot-ai/klient smoke:select-tools` — select_tools
+- `pnpm --filter @kiki/klient smoke:select-tools` — select_tools
   (progressive tool disclosure) probe for kimi-type providers: stub-verifies
   the kimi-only wire encoding of dynamic tool declarations, then runs a live
   two-step select→use flow per real kimi model (see

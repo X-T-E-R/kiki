@@ -10,7 +10,7 @@ import {
   startServer,
   type RunningServer,
   type ServerInstanceInfo,
-} from '@moonshot-ai/kap-server';
+} from '@kiki/kap-server';
 import type { Command } from 'commander';
 
 import { createKimiCodeHostIdentity, getVersion } from '../cli/version';

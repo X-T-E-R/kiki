@@ -1,6 +1,6 @@
-import type { Component, Focusable } from '@moonshot-ai/pi-tui';
-import type { DeviceAuthorization } from '@moonshot-ai/kimi-code-oauth';
-import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
+import type { Component, Focusable } from '@kiki/pi-tui';
+import type { DeviceAuthorization } from '@kiki/oauth';
+import type { KimiHarness, Session } from '@kiki/node-sdk';
 
 import type { ColorToken, ThemeName } from '#/tui/theme';
 

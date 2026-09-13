@@ -1,4 +1,4 @@
-import type { Session } from '@moonshot-ai/kimi-code-sdk';
+import type { Session } from '@kiki/node-sdk';
 
 import { AgentGroupComponent } from '../components/messages/agent-group';
 import { AssistantMessageComponent } from '../components/messages/assistant-message';

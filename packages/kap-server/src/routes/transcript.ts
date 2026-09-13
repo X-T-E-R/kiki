@@ -1,4 +1,4 @@
-import { MAIN_AGENT_ID, type Scope } from '@moonshot-ai/agent-core-v2';
+import { MAIN_AGENT_ID, type Scope } from '@kiki/agent-core-v2';
 import {
   filterOpsForGrade,
   isPlainAgentId,
@@ -14,7 +14,7 @@ import {
   type TranscriptItem,
   type TurnOrigin,
   type TurnState,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';

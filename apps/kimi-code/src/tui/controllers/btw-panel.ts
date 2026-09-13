@@ -1,10 +1,10 @@
-import { Spacer } from '@moonshot-ai/pi-tui';
+import { Spacer } from '@kiki/pi-tui';
 import type {
   Event,
   KimiHarness,
   Session,
   TurnEndedEvent,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
 import { BtwPanelComponent } from '../components/panes/btw-panel';

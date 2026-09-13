@@ -3,7 +3,7 @@ import {
   OAuthConnectionError,
   OAuthUnauthorizedError,
   RetryableRefreshError,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 
 /**
  * Classify an OAuth token-fetch failure into the public {@link KimiError}

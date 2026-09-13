@@ -12,16 +12,16 @@ import {
   type ProviderConfig,
   type ProvidersSection,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
-import { setDefaultModelResponseSchema } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
-import { requestIdentityFromWire } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { refreshProviderModelsResponseSchema } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
+} from '@kiki/agent-core-v2';
+import { setDefaultModelResponseSchema } from '@kiki/agent-core-v2/kosong/model/catalog';
+import { requestIdentityFromWire } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import { refreshProviderModelsResponseSchema } from '@kiki/agent-core-v2/app/kosongConfig/discovery';
 import {
   DEFAULT_MODEL_SECTION,
   DEFAULT_PROVIDER_SECTION,
   MODELS_SECTION,
   PROVIDERS_SECTION,
-} from '@moonshot-ai/agent-core-v2/app/kosongConfig/configSection';
+} from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';

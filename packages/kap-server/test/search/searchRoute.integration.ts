@@ -4,8 +4,8 @@ import { join } from 'node:path';
 
 process.env['KIMI_CODE_EXPERIMENTAL_SEARCH_WORKER'] = '1';
 
-import { ISessionIndex, type SessionSummary } from '@moonshot-ai/agent-core-v2';
-import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
+import { ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
+import { Event } from '@kiki/agent-core-v2/_base/event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../../src/start';

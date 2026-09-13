@@ -11,7 +11,7 @@ import {
   resumeSessionById,
   sessionMediaOriginalsDir,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { ErrorCode } from '../protocol/error-codes';
 import { messageRoleSchema } from '../protocol/message';
 import {

@@ -12,7 +12,7 @@ import {
   type IDisposable,
   type Scope,
   type SessionMeta,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   AgentTranscript,
   TranscriptFactReducer,
@@ -27,7 +27,7 @@ import {
   type TranscriptOperation,
   type TranscriptTaskRef,
   type TranscriptTurn,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 
 import {
   bindSessionTranscript,

@@ -1,11 +1,11 @@
-import type { SessionCursor } from '@moonshot-ai/protocol';
+import type { SessionCursor } from '@kiki/protocol';
 import {
   transcriptOpsEventSchema,
   transcriptResetEventSchema,
   type TranscriptCursor,
   type TranscriptEvent,
   type TranscriptGradeSpec,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 
 import { DEFAULT_TRANSCRIPT_GRADES, type SessionSocket } from '@kiki/session-core/transport';
 import type { ResyncRequiredPayload, SessionEventFrame } from '@kiki/session-core/wire';

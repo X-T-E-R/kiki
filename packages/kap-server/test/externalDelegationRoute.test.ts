@@ -12,7 +12,7 @@ import {
   ISessionManager,
   resumeSessionById,
   type PermissionMode,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { type RunningServer, startServer } from '../src/start';
 import { externalDelegationAuthorityFromEnv } from '../src/mcp/externalDelegationAuthority';

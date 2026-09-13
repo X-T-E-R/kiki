@@ -6,7 +6,7 @@ import {
   IHomeRuntimeService,
   IThreadCommunicationService,
   IThreadMailboxStore,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';

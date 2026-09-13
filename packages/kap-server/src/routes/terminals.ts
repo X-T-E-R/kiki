@@ -5,8 +5,8 @@ import {
   isError2,
   Error2,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
-import { createTerminalRequestSchema } from '@moonshot-ai/agent-core-v2/os/interface/terminal';
+} from '@kiki/agent-core-v2';
+import { createTerminalRequestSchema } from '@kiki/agent-core-v2/os/interface/terminal';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';

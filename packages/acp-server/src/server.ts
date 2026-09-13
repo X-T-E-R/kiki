@@ -62,9 +62,9 @@ import type {
   SessionHandle,
   SessionRestoreOptions,
   SessionSummary,
-} from '@moonshot-ai/klient';
-import { ErrorCodes, isError2 } from '@moonshot-ai/agent-core-v2';
-import { RPCError } from '@moonshot-ai/klient';
+} from '@kiki/klient';
+import { ErrorCodes, isError2 } from '@kiki/agent-core-v2';
+import { RPCError } from '@kiki/klient';
 
 import type { AcpClient } from './acp-client';
 import type { IAcpConnection } from './acp-fs';

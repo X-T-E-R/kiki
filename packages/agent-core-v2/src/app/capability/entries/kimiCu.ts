@@ -3,7 +3,7 @@ import { access, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { kimiCdnContentUrl } from '@moonshot-ai/kimi-code-oauth';
+import { kimiCdnContentUrl } from '@kiki/oauth';
 
 import { downloadToFile, runCommand } from '../host';
 import type {

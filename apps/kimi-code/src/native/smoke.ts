@@ -4,8 +4,8 @@ import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 
-import { MiniDb } from '@moonshot-ai/minidb';
-import { getSearchWorkerRuntimeState } from '@moonshot-ai/kap-server/search-worker-runtime';
+import { MiniDb } from '@kiki/minidb';
+import { getSearchWorkerRuntimeState } from '@kiki/kap-server/search-worker-runtime';
 
 import {
   getEmbeddedNativeAssetManifest,
@@ -13,7 +13,7 @@ import {
   getNativePackageRoot,
 } from './native-assets';
 
-const smokePackages = ['@mariozechner/clipboard', '@moonshot-ai/pi-tui'];
+const smokePackages = ['@mariozechner/clipboard', '@kiki/pi-tui'];
 
 function smokePiTuiNativeLoad(): void {
   const platform = process.platform;

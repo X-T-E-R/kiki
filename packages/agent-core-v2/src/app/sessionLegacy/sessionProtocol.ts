@@ -30,7 +30,7 @@ export const sessionMetadataSchema = z
   .catchall(z.unknown());
 export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;
 
-/** Mirrors `sessionAgentConfigSchema` in `@moonshot-ai/protocol`; the pair is
+/** Mirrors `sessionAgentConfigSchema` in `@kiki/protocol`; the pair is
  *  pinned together by a drift test in kap-server. */
 export const sessionAgentConfigSchema = z.object({
   model: z.string(),

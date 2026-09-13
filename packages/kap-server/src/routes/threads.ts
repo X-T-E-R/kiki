@@ -16,7 +16,7 @@ import {
   type WaitThreadResult,
   type WaitThreadsInput,
   type WaitThreadsResult,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';

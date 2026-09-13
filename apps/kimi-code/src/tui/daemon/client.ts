@@ -1,5 +1,5 @@
-import type { Klient } from '@moonshot-ai/klient';
-import { createKlient } from '@moonshot-ai/klient/http';
+import type { Klient } from '@kiki/klient';
+import { createKlient } from '@kiki/klient/http';
 import type {
   ApprovalResolveRequest,
   ApprovalResolveResult,
@@ -18,7 +18,7 @@ import type {
   Session,
   SessionSnapshotResponse,
   UpdateSessionProfileRequest,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import {
   API_CODES,

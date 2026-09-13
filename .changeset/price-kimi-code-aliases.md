@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/kap-server": patch
+"@kiki/kap-server": patch
 "@kiki/gui": patch
 ---
 

@@ -7,25 +7,25 @@
  * wire).
  */
 
-import type { AgentActivityState } from '@moonshot-ai/agent-core-v2/agent/activityView/activityView';
+import type { AgentActivityState } from '@kiki/agent-core-v2/agent/activityView/activityView';
 import type {
   ApprovalRequest,
   ApprovalResponse,
-} from '@moonshot-ai/agent-core-v2/session/approval/approval';
+} from '@kiki/agent-core-v2/session/approval/approval';
 import type {
   Interaction,
   InteractionKind,
-} from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
+} from '@kiki/agent-core-v2/session/interaction/interaction';
 import type {
   QuestionRequest,
   QuestionResult,
-} from '@moonshot-ai/agent-core-v2/session/question/question';
+} from '@kiki/agent-core-v2/session/question/question';
 import type {
   AgentMeta,
   SessionMeta,
   SessionMetaPatch,
-} from '@moonshot-ai/agent-core-v2/session/sessionMetadata/sessionMetadata';
-import type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
+} from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { SkillSummary } from '@kiki/agent-core-v2/app/skillCatalog/types';
 
 import type { ScopeRef } from '../channel.js';
 import type { McpServerConfig } from '../../contract/mcp.js';

@@ -20,7 +20,7 @@
  * `tui/components/**` and rejects bare-literal comparisons.
  */
 
-import { decodeKittyPrintable } from '@moonshot-ai/pi-tui';
+import { decodeKittyPrintable } from '@kiki/pi-tui';
 
 export function printableChar(data: string): string {
   return decodeKittyPrintable(data) ?? data;

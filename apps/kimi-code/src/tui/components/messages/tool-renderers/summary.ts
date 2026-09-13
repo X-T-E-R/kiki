@@ -10,8 +10,8 @@
  * sees the actual error message, not a synthetic summary.
  */
 
-import type { Component } from '@moonshot-ai/pi-tui';
-import { Text } from '@moonshot-ai/pi-tui';
+import type { Component } from '@kiki/pi-tui';
+import { Text } from '@kiki/pi-tui';
 import chalk from 'chalk';
 
 import { renderTruncated } from './truncated';

@@ -9,7 +9,7 @@ import type {
   ExternalRespondRequest,
   ExternalSendRequest,
   ExternalTranscriptLookup,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 

@@ -6,7 +6,7 @@ import {
   TuiMainScreen,
   VStack,
   type TUI,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 
 import { clipboard } from '#/utils/clipboard/clipboard-native';
 import { openUrl } from '#/utils/open-url';

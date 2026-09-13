@@ -1,4 +1,4 @@
-import type { Scope } from '@moonshot-ai/agent-core-v2';
+import type { Scope } from '@kiki/agent-core-v2';
 import {
   createKlientDispatcher,
   decodeJsonFrame,
@@ -12,7 +12,7 @@ import {
   type KlientDispatcher,
   type KlientFrame,
   type ScopeRef,
-} from '@moonshot-ai/klient/host';
+} from '@kiki/klient/host';
 import type { FastifyInstance } from 'fastify';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 

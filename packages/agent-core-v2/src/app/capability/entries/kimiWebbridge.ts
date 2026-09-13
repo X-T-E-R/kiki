@@ -7,7 +7,7 @@ import {
   kimiCdnContentUrl,
   kimiRegionProfile,
   resolveKimiRegion,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 
 import { downloadToFile, runCommand } from '../host';
 import type {

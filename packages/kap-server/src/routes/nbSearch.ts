@@ -1,5 +1,5 @@
-import { INbSearchService, type Scope } from '@moonshot-ai/agent-core-v2';
-import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@moonshot-ai/protocol';
+import { INbSearchService, type Scope } from '@kiki/agent-core-v2';
+import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@kiki/protocol';
 
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';

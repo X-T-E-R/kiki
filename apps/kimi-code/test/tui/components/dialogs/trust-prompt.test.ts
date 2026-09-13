@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { WorkspaceTrustMcpServerInfo } from '@moonshot-ai/kimi-code-sdk';
+import type { WorkspaceTrustMcpServerInfo } from '@kiki/node-sdk';
 
 import { TrustPromptComponent } from '#/tui/components/dialogs/trust-prompt';
 

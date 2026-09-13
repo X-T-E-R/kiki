@@ -1,5 +1,5 @@
-import { IAuthLegacyService, type Scope } from '@moonshot-ai/agent-core-v2';
-import { authSummarySchema } from '@moonshot-ai/agent-core-v2/app/authLegacy/authLegacy';
+import { IAuthLegacyService, type Scope } from '@kiki/agent-core-v2';
+import { authSummarySchema } from '@kiki/agent-core-v2/app/authLegacy/authLegacy';
 
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';

@@ -46,7 +46,7 @@ Main directories:
 - `interactions` converts approval/question requests into the data shape a UI panel/dialog needs and converts user choices back into daemon responses.
 - `theme` is the single source of truth for colors and styles. Components must not bypass the theme system and use chalk named colors directly.
 - `utils` holds utility functions with no UI-state dependency. Logic that needs `TUIState` or a component instance must not live under app-level `src/utils`.
-- The daemon TUI may consume `@kiki/session-core` and `@moonshot-ai/klient`; other app paths continue to use `@moonshot-ai/kimi-code-sdk`. Never import `@moonshot-ai/agent-core-v2` directly in app code.
+- The daemon TUI may consume `@kiki/session-core` and `@kiki/klient`; other app paths continue to use `@kiki/node-sdk`. Never import `@kiki/agent-core-v2` directly in app code.
 
 ## TUI Coding Conventions
 

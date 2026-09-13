@@ -30,13 +30,13 @@ import {
   type ConfigDiagnostic,
   type Scope,
   type ScopeSeed,
-} from '@moonshot-ai/agent-core-v2';
-import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
-import { EXTERNAL_DELEGATION_FLAG_ID } from '@moonshot-ai/agent-core-v2/session/externalDelegation/flag';
+} from '@kiki/agent-core-v2';
+import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
+import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
 import {
   createKimiDefaultHeaders,
   type KimiHostIdentity,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 import { createAsyncApiDocument } from './protocol/asyncapi';
 import type { ExternalDelegationState } from './protocol/rest-meta';
 import Fastify, { type FastifyInstance } from 'fastify';

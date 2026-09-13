@@ -1,4 +1,4 @@
-import { CapabilityErrors, ICapabilityService, isError2, type Scope } from '@moonshot-ai/agent-core-v2';
+import { CapabilityErrors, ICapabilityService, isError2, type Scope } from '@kiki/agent-core-v2';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';

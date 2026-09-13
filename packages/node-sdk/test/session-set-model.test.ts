@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import { FileTokenStorage, type TokenInfo } from '@moonshot-ai/kimi-code-oauth';
+import { FileTokenStorage, type TokenInfo } from '@kiki/oauth';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createKimiHarness, type KimiError, type KimiHarness } from '#/index';

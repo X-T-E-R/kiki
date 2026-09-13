@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 import { describe, it, expect } from 'vitest';
 
-import { parseDaemonFileUrl } from '@moonshot-ai/kimi-code-sdk';
+import { parseDaemonFileUrl } from '@kiki/node-sdk';
 
 import { KIMI_CODE_HOME_ENV } from '#/constant/app';
 import { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';

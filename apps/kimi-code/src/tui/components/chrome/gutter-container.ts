@@ -15,8 +15,8 @@
  * style changes that genuinely dirty every child (e.g. theme switches).
  */
 
-import { Container } from '@moonshot-ai/pi-tui';
-import type { Component } from '@moonshot-ai/pi-tui';
+import { Container } from '@kiki/pi-tui';
+import type { Component } from '@kiki/pi-tui';
 
 import { prefixPreservingOsc133Zone } from '#/tui/utils/osc133';
 import { isRenderCacheEnabled } from '#/tui/utils/render-cache';

@@ -1,4 +1,4 @@
-import type { TUI } from '@moonshot-ai/pi-tui';
+import type { TUI } from '@kiki/pi-tui';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { MoonLoader } from '#/tui/components/chrome/moon-loader';

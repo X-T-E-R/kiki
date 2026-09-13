@@ -1,4 +1,4 @@
-import type { MessageContent } from '@moonshot-ai/protocol';
+import type { MessageContent } from '@kiki/protocol';
 
 import { MEDIA_FILE_REF_MIN_REMAINING_MS } from '#/tui/constant/media';
 import type {

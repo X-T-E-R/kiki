@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { normalizeLiteral } from '@moonshot-ai/minidb';
+import { normalizeLiteral } from '@kiki/minidb';
 
 import {
   GlobalSearchError,

@@ -3,7 +3,7 @@ import {
   type McpOAuthAuthorizationUrlUpdateData,
   type ToolProgressEvent,
   type ToolUpdate,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 export type OpenUrl = (url: string) => void;
 

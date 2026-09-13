@@ -14,7 +14,7 @@
  *    reads from, and `process.argv[1]` is advertised as the legacy
  *    `_meta['terminal-auth'].command` fallback.
  *
- * `@moonshot-ai/acp-server` (and its `agent-core-v2` engine) is loaded via a
+ * `@kiki/acp-server` (and its `agent-core-v2` engine) is loaded via a
  * lazy dynamic import so parsing the CLI does not initialize the ACP engine —
  * mirroring the `kimi server run` v2 routing in `#/cli/sub/server/run.ts`.
  */
@@ -57,7 +57,7 @@ export function registerNativeAcpCommand(parent: Command): void {
       // path to this very binary so the client can spawn it for login.
       const legacyCommand = process.argv[1];
       try {
-        const { runAcpServer } = await import('@moonshot-ai/acp-server');
+        const { runAcpServer } = await import('@kiki/acp-server');
         await runAcpServer({
           homeDir: getDataDir(),
           agentInfo: { name: 'Kimi Code CLI', version: getVersion() },

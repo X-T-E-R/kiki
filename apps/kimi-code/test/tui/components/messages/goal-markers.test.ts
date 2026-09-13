@@ -1,9 +1,9 @@
-import { visibleWidth } from '@moonshot-ai/pi-tui';
+import { visibleWidth } from '@kiki/pi-tui';
 import { describe, expect, it } from 'vitest';
 
 import { SwarmModeMarkerComponent } from '#/tui/components/messages/swarm-markers';
 import { buildGoalMarker, GoalMarkerComponent } from '#/tui/components/messages/goal-markers';
-import type { GoalChange } from '@moonshot-ai/kimi-code-sdk';
+import type { GoalChange } from '@kiki/node-sdk';
 
 const ANSI_SGR = /\[[0-9;]*m/g;
 function strip(lines: string[]): string {

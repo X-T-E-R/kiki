@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ErrorCodes, KimiError } from '@moonshot-ai/kimi-code-sdk';
+import { ErrorCodes, KimiError } from '@kiki/node-sdk';
 
 import {
   appendGoalQueueItem,

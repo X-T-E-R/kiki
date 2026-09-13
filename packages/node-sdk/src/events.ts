@@ -1,12 +1,12 @@
 import type { ApprovalRequest, ApprovalResponse, QuestionRequest, QuestionResult } from '#/protocol';
 
 // Event union plus shared fields/payloads used across event families. The
-// vocabulary itself lives in `@moonshot-ai/protocol` — the engine-neutral
+// vocabulary itself lives in `@kiki/protocol` — the engine-neutral
 // package both the daemon and this SDK speak.
-export type { Event } from '@moonshot-ai/protocol';
+export type { Event } from '@kiki/protocol';
 export type { KimiErrorPayload } from '#/errors';
 
-export { MCP_OAUTH_AUTHORIZATION_URL_TOOL_UPDATE } from '@moonshot-ai/protocol';
+export { MCP_OAUTH_AUTHORIZATION_URL_TOOL_UPDATE } from '@kiki/protocol';
 
 // Session lifecycle/status events and their status payload.
 export type {
@@ -18,7 +18,7 @@ export type {
   ErrorEvent,
   WarningEvent,
   UsageStatus,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 // Turn and step lifecycle events plus the turn-ending reason enum.
 export type {
@@ -29,14 +29,14 @@ export type {
   TurnStepRetryingEvent,
   TurnStepInterruptedEvent,
   TurnEndReason,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 // Streaming content and hook-result events.
 export type {
   AssistantDeltaEvent,
   HookResultEvent,
   ThinkingDeltaEvent,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 // Tool-call events and incremental progress payloads.
 export type {
@@ -47,7 +47,7 @@ export type {
   ToolUpdate,
   ToolInputDisplay,
   McpOAuthAuthorizationUrlUpdateData,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 // MCP tool-list and server status events.
 export type {
@@ -55,7 +55,7 @@ export type {
   ToolListUpdatedReason,
   McpServerStatusEvent,
   McpServerStatusPayload,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 // Approval and question reverse-RPC shapes, plus the in-process tool-call
 // bridge. These are the SDK's own contract (see `src/protocol/sdk-api.ts`).
@@ -82,7 +82,7 @@ export type {
   SubagentSuspendedEvent,
   SubagentCompletedEvent,
   SubagentFailedEvent,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 // Compaction lifecycle events and compaction result payload.
 export type {
@@ -91,16 +91,16 @@ export type {
   CompactionCancelledEvent,
   CompactionCompletedEvent,
   CompactionResult,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 // Background task lifecycle events emitted by the BPM. Covers both
 // bash (`bash-*`) and agent (`agent-*`) tasks under one wire format.
 export type {
   BackgroundTaskStartedEvent,
   BackgroundTaskTerminatedEvent,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
-export type { CronFiredEvent } from '@moonshot-ai/protocol';
+export type { CronFiredEvent } from '@kiki/protocol';
 
 export type MaybePromise<T> = T | Promise<T>;
 

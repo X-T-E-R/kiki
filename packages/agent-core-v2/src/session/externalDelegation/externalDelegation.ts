@@ -11,7 +11,7 @@ import type { AgentMessageAcceptance } from '#/session/agentCollaboration/messag
 import type { ApprovalResponse } from '#/session/approval/approval';
 import type { DispatchProfileCatalogEntry } from '#/session/dispatch/profileCatalogProjection';
 import type { QuestionResult } from '#/session/question/question';
-import type { NormalizedExecutorEvent } from '@moonshot-ai/protocol';
+import type { NormalizedExecutorEvent } from '@kiki/protocol';
 
 export type ExternalDispatchStatus =
   | 'queued'

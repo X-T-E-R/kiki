@@ -5,4 +5,4 @@ export * from '#/types';
 export type {
   NormalizedExecutorContent,
   NormalizedExecutorEvent,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';

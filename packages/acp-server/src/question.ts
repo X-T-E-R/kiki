@@ -16,7 +16,7 @@ import type {
   PermissionOption,
   RequestPermissionResponse,
 } from '@agentclientprotocol/sdk';
-import type { QuestionAnswers, QuestionItem } from '@moonshot-ai/agent-core-v2';
+import type { QuestionAnswers, QuestionItem } from '@kiki/agent-core-v2';
 
 /**
  * `optionId` namespace for the AskUserQuestion bridge.

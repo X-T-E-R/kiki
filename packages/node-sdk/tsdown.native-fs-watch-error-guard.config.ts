@@ -7,7 +7,7 @@ export default defineConfig({
   outDir: 'dist',
   clean: false,
   deps: {
-    alwaysBundle: [/^@moonshot-ai\//],
+    alwaysBundle: [/^@kiki\//],
     neverBundle: [],
   },
   outputOptions: {

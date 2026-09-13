@@ -32,13 +32,13 @@ Requires Node.js 22.19.0 or later:
 
 ```sh
 node --version
-npm install -g @moonshot-ai/kimi-code
+npm install -g @kiki/cli
 ```
 
 Or with pnpm:
 
 ```sh
-pnpm add -g @moonshot-ai/kimi-code
+pnpm add -g @kiki/cli
 ```
 
 ## Upgrade and uninstall
@@ -52,13 +52,13 @@ kimi --version
 **Upgrade**: download a newer build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases), or upgrade directly via the package manager:
 
 ```sh
-npm install -g @moonshot-ai/kimi-code@latest
+npm install -g @kiki/cli@latest
 ```
 
 **Uninstall**: if you installed via the script, delete the `kimi` executable. If you installed via npm:
 
 ```sh
-npm uninstall -g @moonshot-ai/kimi-code
+npm uninstall -g @kiki/cli
 ```
 
 ## First launch

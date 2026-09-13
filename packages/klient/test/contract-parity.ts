@@ -3,7 +3,7 @@
  * types they mirror. Plain `.ts` (not `.test.ts`) — vitest must not pick it
  * up; `tsc -p tsconfig.json --noEmit` is the check.
  *
- * Wire shapes the engine imports from `@moonshot-ai/protocol` are reached
+ * Wire shapes the engine imports from `@kiki/protocol` are reached
  * through indexed access on the engine service interfaces, since klient does
  * not depend on the protocol package directly.
  */
@@ -20,21 +20,21 @@ import type {
   BackgroundRef,
   ToolCallRef,
   TurnPhase,
-} from '@moonshot-ai/agent-core-v2/agent/activityView/activityView';
-import type { AgentContextData } from '@moonshot-ai/agent-core-v2/agent/contextMemory/types';
-import type { IAgentCommandService } from '@moonshot-ai/agent-core-v2/agent/command/agentCommand';
-import type { IAgentRuntimeBindingService } from '@moonshot-ai/agent-core-v2/agent/runtimeBinding/runtimeBinding';
-import type { TurnEndReason } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
-import type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
-import type { IAgentProfileService } from '@moonshot-ai/agent-core-v2/agent/profile/profile';
-import type { IAgentPromptService } from '@moonshot-ai/agent-core-v2/agent/prompt/prompt';
-import type { IAgentShellCommandService } from '@moonshot-ai/agent-core-v2/agent/shellCommand/shellCommand';
-import type { IAgentSkillService } from '@moonshot-ai/agent-core-v2/agent/skill/skill';
-import type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
-import type { PlanData } from '@moonshot-ai/agent-core-v2/features/plan/plan';
-import type { UsageStatus } from '@moonshot-ai/agent-core-v2/agent/usage/usage';
-import type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
-import type { McpServerEntry } from '@moonshot-ai/agent-core-v2/mcpCore/connection-manager';
+} from '@kiki/agent-core-v2/agent/activityView/activityView';
+import type { AgentContextData } from '@kiki/agent-core-v2/agent/contextMemory/types';
+import type { IAgentCommandService } from '@kiki/agent-core-v2/agent/command/agentCommand';
+import type { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
+import type { TurnEndReason } from '@kiki/agent-core-v2/agent/loop/turnEvents';
+import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
+import type { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
+import type { IAgentPromptService } from '@kiki/agent-core-v2/agent/prompt/prompt';
+import type { IAgentShellCommandService } from '@kiki/agent-core-v2/agent/shellCommand/shellCommand';
+import type { IAgentSkillService } from '@kiki/agent-core-v2/agent/skill/skill';
+import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
+import type { PlanData } from '@kiki/agent-core-v2/features/plan/plan';
+import type { UsageStatus } from '@kiki/agent-core-v2/agent/usage/usage';
+import type { SkillSummary } from '@kiki/agent-core-v2/app/skillCatalog/types';
+import type { McpServerEntry } from '@kiki/agent-core-v2/mcpCore/connection-manager';
 import type {
   GlobalMcpServerConfig,
   McpAuthStatusQuery,
@@ -47,30 +47,30 @@ import type {
   McpServerLocator,
   McpServerTestResult,
   McpServerTestTarget,
-} from '@moonshot-ai/agent-core-v2/app/mcpManagement/mcpManagement';
+} from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import type {
   McpRegistryPluginOrigin,
   McpRegistryQuery,
   McpServerSource,
-} from '@moonshot-ai/agent-core-v2/app/mcpRegistry/mcpRegistry';
-import type { McpServerConfig } from '@moonshot-ai/agent-core-v2/mcpCore/config-schema';
-import type { McpServerConfigView } from '@moonshot-ai/agent-core-v2/mcpCore/configView';
-import type { FullCompactionInput } from '@moonshot-ai/agent-core-v2/agent/fullCompaction/fullCompaction';
-import type { ISessionScopeHandle } from '@moonshot-ai/agent-core-v2/_base/di/scope';
+} from '@kiki/agent-core-v2/app/mcpRegistry/mcpRegistry';
+import type { McpServerConfig } from '@kiki/agent-core-v2/mcpCore/config-schema';
+import type { McpServerConfigView } from '@kiki/agent-core-v2/mcpCore/configView';
+import type { FullCompactionInput } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
+import type { ISessionScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
 import type {
   CreateChildSessionOptions,
   CreateSessionOptions,
   ForkSessionOptions,
   ResumeSessionOptions,
-} from '@moonshot-ai/agent-core-v2/workspace/sessionLifecycle/sessionLifecycle';
+} from '@kiki/agent-core-v2/workspace/sessionLifecycle/sessionLifecycle';
 import type {
   ApprovalRequest,
   ApprovalResponse,
-} from '@moonshot-ai/agent-core-v2/session/approval/approval';
+} from '@kiki/agent-core-v2/session/approval/approval';
 import type {
   Interaction,
   InteractionResolution,
-} from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
+} from '@kiki/agent-core-v2/session/interaction/interaction';
 import type {
   QuestionAnswers,
   QuestionItem,
@@ -78,48 +78,48 @@ import type {
   QuestionRequest,
   QuestionResponse,
   QuestionResult,
-} from '@moonshot-ai/agent-core-v2/session/question/question';
+} from '@kiki/agent-core-v2/session/question/question';
 import type {
   AgentMeta,
   SessionMeta,
   SessionMetadataChangedEvent,
   SessionMetaPatch,
-} from '@moonshot-ai/agent-core-v2/session/sessionMetadata/sessionMetadata';
-import type { ISessionTitleService } from '@moonshot-ai/agent-core-v2/session/sessionTitle/sessionTitle';
+} from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { ISessionTitleService } from '@kiki/agent-core-v2/session/sessionTitle/sessionTitle';
 import type {
   AuthStatus,
   IOAuthService,
-} from '@moonshot-ai/agent-core-v2/app/auth/auth';
-import type { IBootstrapService } from '@moonshot-ai/agent-core-v2/app/bootstrap/bootstrap';
+} from '@kiki/agent-core-v2/app/auth/auth';
+import type { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
 import type {
   ConfigDiagnostic,
   ConfigInspectValue,
   ConfigTarget,
-} from '@moonshot-ai/agent-core-v2/app/config/config';
+} from '@kiki/agent-core-v2/app/config/config';
 import type {
   CapabilityInstallProgress,
   CapabilityStatus,
   CapabilityStep,
-} from '@moonshot-ai/agent-core-v2/app/capability/types';
-import type { ExperimentalFeatureState } from '@moonshot-ai/agent-core-v2/app/flag/flag';
+} from '@kiki/agent-core-v2/app/capability/types';
+import type { ExperimentalFeatureState } from '@kiki/agent-core-v2/app/flag/flag';
 import type {
   FileMeta,
   SaveOptions,
-} from '@moonshot-ai/agent-core-v2/app/file/fileService';
+} from '@kiki/agent-core-v2/app/file/fileService';
 import type {
   FsBrowseResponse,
   FsHomeResponse,
-} from '@moonshot-ai/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
-import type { ModelRecord } from '@moonshot-ai/agent-core-v2/kosong/model/model';
-import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
-import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
+} from '@kiki/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
+import type { ModelRecord } from '@kiki/agent-core-v2/kosong/model/model';
+import type { IModelCatalog } from '@kiki/agent-core-v2/kosong/model/catalog';
+import type { IProviderDiscoveryService } from '@kiki/agent-core-v2/app/kosongConfig/discovery';
 import type {
   GetPluginInfoInput,
   InstallPluginInput,
   RemovePluginInput,
   SetPluginEnabledInput,
   SetPluginMcpServerEnabledInput,
-} from '@moonshot-ai/agent-core-v2/app/plugin/plugin';
+} from '@kiki/agent-core-v2/app/plugin/plugin';
 import type {
   PluginCommandDef,
   PluginDiagnostic,
@@ -130,17 +130,17 @@ import type {
   PluginSummary,
   PluginUpdateStatus,
   ReloadSummary,
-} from '@moonshot-ai/agent-core-v2/app/plugin/types';
-import type { ProviderConfig } from '@moonshot-ai/agent-core-v2/kosong/provider/provider';
-import type { RequestIdentityPolicy } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+} from '@kiki/agent-core-v2/app/plugin/types';
+import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
+import type { RequestIdentityPolicy } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import type {
   SessionListQuery,
   SessionSummary,
-} from '@moonshot-ai/agent-core-v2/app/sessionIndex/sessionIndex';
+} from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import type {
   Workspace,
   WorkspaceUpdate,
-} from '@moonshot-ai/agent-core-v2/app/workspace/workspace';
+} from '@kiki/agent-core-v2/app/workspace/workspace';
 import type {
   ListThreadsInput,
   ListThreadsResult,
@@ -156,8 +156,8 @@ import type {
   WaitThreadResult,
   WaitThreadsInput,
   WaitThreadsResult,
-} from '@moonshot-ai/agent-core-v2/app/threadCommunication/threadCommunication';
-// Test-only: `@moonshot-ai/protocol` is a devDependency; importing its types
+} from '@kiki/agent-core-v2/app/threadCommunication/threadCommunication';
+// Test-only: `@kiki/protocol` is a devDependency; importing its types
 // here (never in `src/`) strengthens parity for the agent event stream.
 import type {
   AssistantDeltaEvent,
@@ -177,7 +177,7 @@ import type {
   TurnEndedEvent,
   TurnStartedEvent,
   WarningEvent,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import {
   activityLastTurnStateSchema,
@@ -392,7 +392,7 @@ type AssertWireToEngine<TSchema extends z.ZodType, TEngine> = [z.infer<TSchema>]
   : never;
 
 // Protocol wire shapes, derived from the engine interfaces (no direct
-// `@moonshot-ai/protocol` dependency in klient).
+// `@kiki/protocol` dependency in klient).
 type OAuthFlowStart = Awaited<ReturnType<IOAuthService['startLogin']>>;
 type OAuthFlowSnapshot = NonNullable<ReturnType<IOAuthService['getFlow']>>;
 type OAuthLoginCancelResponse = Awaited<ReturnType<IOAuthService['cancelLogin']>>;

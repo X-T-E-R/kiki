@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   getTextBuildWorkerRuntimeState,
   resetTextBuildWorkerRuntime,
-} from '@moonshot-ai/minidb/worker-runtime';
+} from '@kiki/minidb/worker-runtime';
 
 import {
   getEmbeddedNativeAssetManifest,

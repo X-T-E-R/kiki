@@ -1,4 +1,4 @@
-import { OPEN_PLATFORMS } from '@moonshot-ai/kimi-code-oauth';
+import { OPEN_PLATFORMS } from '@kiki/oauth';
 
 import { KIMI_CODE_GLOBAL_PLATFORM_VALUE } from '#/utils/region';
 

@@ -4,14 +4,14 @@ import {
   daemonFileRefFromPart as engineRefFromPart,
   matchSingleMediaPathTag as engineMatchTag,
   parseDaemonFileUrl as engineParse,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   daemonFileRefFromPairingPart as mirrorRefFromPart,
   matchMediaPathTagText as mirrorMatchTag,
   parseDaemonFileRef as mirrorParse,
   type MediaRefPart,
-} from '@moonshot-ai/transcript';
-import type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
+} from '@kiki/transcript';
+import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
 
 const URLS = [
   'kimi-file://f_1?path=%2Fcache%2Fshot.png',

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 
-import type { createKimiDeviceId as createKimiDeviceIdFn } from '@moonshot-ai/kimi-code-oauth';
+import type { createKimiDeviceId as createKimiDeviceIdFn } from '@kiki/oauth';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runShell } from '#/cli/run-shell';
@@ -66,8 +66,8 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@moonshot-ai/kimi-code-sdk')>();
+vi.mock('@kiki/node-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/node-sdk')>();
   const makeHarnessStub = (args: unknown[]) => {
     const options = args[0] as { readonly homeDir?: string } | undefined;
     const homeDir = options?.homeDir ?? '/tmp/kimi-code-test-home';
@@ -99,9 +99,9 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
   };
 });
 
-vi.mock('@moonshot-ai/kimi-code-oauth', async () => {
-  const actual = await vi.importActual<typeof import('@moonshot-ai/kimi-code-oauth')>(
-    '@moonshot-ai/kimi-code-oauth',
+vi.mock('@kiki/oauth', async () => {
+  const actual = await vi.importActual<typeof import('@kiki/oauth')>(
+    '@kiki/oauth',
   );
   return {
     ...actual,

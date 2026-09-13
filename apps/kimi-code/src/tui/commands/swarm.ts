@@ -1,4 +1,4 @@
-import type { PermissionMode } from '@moonshot-ai/kimi-code-sdk';
+import type { PermissionMode } from '@kiki/node-sdk';
 
 import {
   SwarmStartPermissionPromptComponent,

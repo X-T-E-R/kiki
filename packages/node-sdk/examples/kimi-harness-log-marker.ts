@@ -8,7 +8,7 @@ import {
   log,
   resolveGlobalLogPath,
   resolveKimiHome,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 type MarkerLevel = 'error' | 'warn';
 

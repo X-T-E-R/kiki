@@ -11,7 +11,7 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
-import { createServerLogger, startServer, type ServerLogger } from '@moonshot-ai/kap-server';
+import { createServerLogger, startServer, type ServerLogger } from '@kiki/kap-server';
 import chalk from 'chalk';
 import type { Command } from 'commander';
 

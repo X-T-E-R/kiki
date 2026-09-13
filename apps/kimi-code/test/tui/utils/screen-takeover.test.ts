@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Component, Terminal } from '@moonshot-ai/pi-tui';
-import { Text, TuiAltScreen, TuiMainScreen } from '@moonshot-ai/pi-tui';
+import type { Component, Terminal } from '@kiki/pi-tui';
+import { Text, TuiAltScreen, TuiMainScreen } from '@kiki/pi-tui';
 
 import { beginScreenTakeover, endScreenTakeover } from '#/tui/utils/screen-takeover';
 

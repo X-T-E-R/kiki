@@ -4,9 +4,9 @@ import type {
   AgentContextData,
   ExperimentalFeatureState,
   SwarmModeTrigger,
-} from '@moonshot-ai/agent-core-v2';
-import type { Kaos } from '@moonshot-ai/kaos';
-import type { Event } from '@moonshot-ai/protocol';
+} from '@kiki/agent-core-v2';
+import type { Kaos } from '@kiki/kaos';
+import type { Event } from '@kiki/protocol';
 
 import { ErrorCodes, KimiError, makeErrorPayload } from '#/errors';
 import type {

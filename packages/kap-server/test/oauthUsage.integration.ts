@@ -6,13 +6,13 @@ import {
   IOAuthService,
   type IOAuthService as IOAuthServiceType,
   type ScopeSeed,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   managedUserInfoResultSchema,
   managedUsageResultSchema,
   type ManagedUserInfoResult,
   type ManagedUsageResult,
-} from '@moonshot-ai/agent-core-v2/app/auth/oauthProtocol';
+} from '@kiki/agent-core-v2/app/auth/oauthProtocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

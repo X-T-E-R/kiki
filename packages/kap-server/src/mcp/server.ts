@@ -8,7 +8,7 @@ import {
   SeatKlientError,
   type DelegationProcedureInput,
   type SeatKlient,
-} from '@moonshot-ai/klient/procedures';
+} from '@kiki/klient/procedures';
 import { z } from 'zod';
 
 import {

@@ -16,7 +16,7 @@ import {
   FileTokenStorage,
   resolveKimiCodeOAuthRef,
   resolveKimiTokenStorageName,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -47,19 +47,19 @@ import {
   ISessionManager,
   ISessionTodoService,
   OsProcessErrors,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { createFileMcpOAuthService } from './mcp-oauth-store';
-import { McpOAuthService as McpOAuthServiceV2 } from '@moonshot-ai/agent-core-v2/mcpCore/oauth/service';
+import { McpOAuthService as McpOAuthServiceV2 } from '@kiki/agent-core-v2/mcpCore/oauth/service';
 
 import { TEST_IDENTITY } from './test-identity';
 import { recordingTelemetry, type TelemetryRecord } from './telemetry';
 
 const hostEnvProbe = vi.hoisted(() => ({ failWithMissingShell: false }));
 
-vi.mock('@moonshot-ai/agent-core-v2/_base/execEnv/environmentProbe', async (importOriginal) => {
+vi.mock('@kiki/agent-core-v2/_base/execEnv/environmentProbe', async (importOriginal) => {
   const actual = await importOriginal<
-    typeof import('@moonshot-ai/agent-core-v2/_base/execEnv/environmentProbe')
+    typeof import('@kiki/agent-core-v2/_base/execEnv/environmentProbe')
   >();
   return {
     ...actual,

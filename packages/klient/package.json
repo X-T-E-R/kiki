@@ -1,5 +1,5 @@
 {
-  "name": "@moonshot-ai/klient",
+  "name": "@kiki/klient",
   "version": "0.1.2",
   "private": true,
   "description": "Kimi client SDK — contract-driven facade over agent-core-v2, routable over http, ipc, or in-memory transports.",
@@ -61,11 +61,11 @@
     "docker:e2e": "bash scripts/run-docker-e2e.sh"
   },
   "dependencies": {
-    "@moonshot-ai/agent-core-v2": "workspace:^",
+    "@kiki/agent-core-v2": "workspace:^",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@moonshot-ai/protocol": "workspace:^",
+    "@kiki/protocol": "workspace:^",
     "@types/ws": "^8.18.0",
     "ulid": "^3.0.1",
     "ws": "^8.18.0"

@@ -1,4 +1,4 @@
-import type { Event } from '@moonshot-ai/kimi-code-sdk';
+import type { Event } from '@kiki/node-sdk';
 import { describe, expect, it } from 'vitest';
 
 import {

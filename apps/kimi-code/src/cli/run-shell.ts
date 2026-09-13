@@ -5,7 +5,7 @@ import {
   flushDiagnosticLogsSync,
   log,
   type KimiHarnessOptions,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 
 import { CLI_UI_MODE } from '#/constant/app';
 import type { TuiConfig } from '#/tui/config';

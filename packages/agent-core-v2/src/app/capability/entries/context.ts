@@ -1,4 +1,4 @@
-import type { KimiRegion } from '@moonshot-ai/kimi-code-oauth';
+import type { KimiRegion } from '@kiki/oauth';
 
 import type { IPluginService } from '#/app/plugin/plugin';
 import type { IHostProcessService } from '#/os/interface/hostProcess';

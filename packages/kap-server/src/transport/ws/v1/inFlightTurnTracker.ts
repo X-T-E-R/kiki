@@ -1,4 +1,4 @@
-import type { LoopRecordedEvent } from '@moonshot-ai/agent-core-v2';
+import type { LoopRecordedEvent } from '@kiki/agent-core-v2';
 
 import type { Event } from './events';
 import type { InFlightToolCall, InFlightTurn } from '../../../protocol/rest-snapshot';

@@ -32,13 +32,13 @@ Kimi Code CLI 为全交互式 TUI 应用，推荐在支持真彩色与连字的�
 
 ```sh
 node --version
-npm install -g @moonshot-ai/kimi-code
+npm install -g @kiki/cli
 ```
 
 或用 pnpm：
 
 ```sh
-pnpm add -g @moonshot-ai/kimi-code
+pnpm add -g @kiki/cli
 ```
 
 ## 升级与卸载
@@ -52,13 +52,13 @@ kimi --version
 **升级**：从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载较新构建，或直接使用包管理器升级：
 
 ```sh
-npm install -g @moonshot-ai/kimi-code@latest
+npm install -g @kiki/cli@latest
 ```
 
 **卸载**：脚本安装的用户删除 `kimi` 可执行文件即可；npm 安装的用户：
 
 ```sh
-npm uninstall -g @moonshot-ai/kimi-code
+npm uninstall -g @kiki/cli
 ```
 
 ## 第一次启动

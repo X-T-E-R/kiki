@@ -1,7 +1,7 @@
 import type { ContentPart, ToolCall } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
-import type { ToolInputDisplay } from '@moonshot-ai/protocol';
+import type { ToolInputDisplay } from '@kiki/protocol';
 
 export type ExecutableToolOutput = string | ContentPart[];
 

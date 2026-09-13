@@ -1,4 +1,4 @@
-import { Error2, ErrorCodes } from '@moonshot-ai/agent-core-v2/errors';
+import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
 
 /**
  * Client-side RPC error surfaced when the wire envelope carries a non-zero

@@ -1,4 +1,4 @@
-import type { PluginSummary } from '@moonshot-ai/kimi-code-sdk';
+import type { PluginSummary } from '@kiki/node-sdk';
 
 import {
   computeUpdateStatus,

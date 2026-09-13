@@ -14,8 +14,8 @@
  *   - `installReverseRpcHandler` — uniform helper for approval/question
  *   - `waitForFrame` / `waitForSessionBusy` — standalone wait helpers
  *
- * Re-exports `@moonshot-ai/protocol` types are NOT bundled here — scenarios
- * that want them import from `@moonshot-ai/protocol` directly.
+ * Re-exports `@kiki/protocol` types are NOT bundled here — scenarios
+ * that want them import from `@kiki/protocol` directly.
  */
 export { DaemonClient } from './client.js';
 export type {

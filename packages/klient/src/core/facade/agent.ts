@@ -8,19 +8,19 @@
  * (`turn.*`, `assistant.delta`, `tool.call.*`, `prompt.completed`, …).
  */
 
-import type { IAgentCommandService } from '@moonshot-ai/agent-core-v2/agent/command/agentCommand';
-import type { IAgentContextMemoryService } from '@moonshot-ai/agent-core-v2/agent/contextMemory/contextMemory';
-import type { IAgentMcpService } from '@moonshot-ai/agent-core-v2/agent/mcp/mcp';
-import type { IAgentRuntimeBindingService } from '@moonshot-ai/agent-core-v2/agent/runtimeBinding/runtimeBinding';
-import type { IAgentPromptService } from '@moonshot-ai/agent-core-v2/agent/prompt/prompt';
-import type { IAgentTokenCountingService } from '@moonshot-ai/agent-core-v2/agent/tokenCounting/tokenCounting';
-import type { IAgentPlanService } from '@moonshot-ai/agent-core-v2/features/plan/plan';
-import type { IAgentProfileService } from '@moonshot-ai/agent-core-v2/agent/profile/profile';
-import type { IAgentShellCommandService } from '@moonshot-ai/agent-core-v2/agent/shellCommand/shellCommand';
-import type { IAgentSkillService } from '@moonshot-ai/agent-core-v2/agent/skill/skill';
-import type { IAgentUsageService } from '@moonshot-ai/agent-core-v2/agent/usage/usage';
-import type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
-import type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
+import type { IAgentCommandService } from '@kiki/agent-core-v2/agent/command/agentCommand';
+import type { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
+import type { IAgentMcpService } from '@kiki/agent-core-v2/agent/mcp/mcp';
+import type { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
+import type { IAgentPromptService } from '@kiki/agent-core-v2/agent/prompt/prompt';
+import type { IAgentTokenCountingService } from '@kiki/agent-core-v2/agent/tokenCounting/tokenCounting';
+import type { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
+import type { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
+import type { IAgentShellCommandService } from '@kiki/agent-core-v2/agent/shellCommand/shellCommand';
+import type { IAgentSkillService } from '@kiki/agent-core-v2/agent/skill/skill';
+import type { IAgentUsageService } from '@kiki/agent-core-v2/agent/usage/usage';
+import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
+import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
 
 import type { AgentTaskInfo } from '../../contract/agent/schemas.js';
 import type { ScopeRef } from '../channel.js';

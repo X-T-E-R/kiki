@@ -13,13 +13,13 @@ import {
   sessionDirOf,
   type Event2,
   type SessionSummary,
-} from '@moonshot-ai/agent-core-v2';
-import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
+} from '@kiki/agent-core-v2';
+import { Event } from '@kiki/agent-core-v2/_base/event';
 import {
   type FsGitStatusResponse,
   type FsPullRequest,
   IGitService,
-} from '@moonshot-ai/agent-core-v2/app/git/git';
+} from '@kiki/agent-core-v2/app/git/git';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

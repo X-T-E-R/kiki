@@ -1,4 +1,4 @@
-import { PRINT_WAIT_CEILING_S_DEFAULT } from '@moonshot-ai/agent-core-v2';
+import { PRINT_WAIT_CEILING_S_DEFAULT } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 
 import {

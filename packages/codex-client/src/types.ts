@@ -1,6 +1,6 @@
 import type { Readable, Writable } from 'node:stream';
 
-import type { NormalizedExecutorEvent } from '@moonshot-ai/protocol';
+import type { NormalizedExecutorEvent } from '@kiki/protocol';
 
 export interface HostProcessOptionsLike {
   readonly cwd?: string;

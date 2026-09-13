@@ -50,8 +50,8 @@ jobs:
 
       - name: Build and smoke-test Windows x64 sidecar
         run: |
-          pnpm --filter @moonshot-ai/kimi-code run build:native:sea
-          pnpm --filter @moonshot-ai/kimi-code run test:native:smoke
+          pnpm --filter @kiki/cli run build:native:sea
+          pnpm --filter @kiki/cli run test:native:smoke
           pnpm --filter @kiki/gui run desktop:prepare -- --target x86_64-pc-windows-msvc
 
       - name: Test Rust desktop crate

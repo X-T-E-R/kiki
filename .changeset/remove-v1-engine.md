@@ -1,6 +1,6 @@
 ---
-"@moonshot-ai/kimi-code-sdk": major
-"@moonshot-ai/kimi-code": major
+"@kiki/node-sdk": major
+"@kiki/cli": major
 ---
 
 Remove the v1 agent engine. `agent-core-v2` is now the only engine, and there is no way to select another one.

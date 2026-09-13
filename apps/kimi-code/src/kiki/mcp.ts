@@ -3,7 +3,7 @@ import { realpath } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { normalize, resolve } from 'node:path';
 
-import { runKikiMcpStdio } from '@moonshot-ai/kap-server';
+import { runKikiMcpStdio } from '@kiki/kap-server';
 import type { Command } from 'commander';
 
 import { resolveKikiHome } from './home';

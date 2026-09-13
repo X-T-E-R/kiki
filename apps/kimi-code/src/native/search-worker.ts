@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import {
   configureSearchWorkerRuntime,
   getSearchWorkerRuntimeState,
-} from '@moonshot-ai/kap-server/search-worker-runtime';
+} from '@kiki/kap-server/search-worker-runtime';
 
 import { KAP_SEARCH_WORKER_ASSET } from '../../scripts/native/manifest.mjs';
 import {

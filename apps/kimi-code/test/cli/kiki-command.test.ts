@@ -2,12 +2,12 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { delegationProcedureTable } from '@moonshot-ai/klient/procedures';
-import type { SeatKlient } from '@moonshot-ai/klient/procedures/http';
+import { delegationProcedureTable } from '@kiki/klient/procedures';
+import type { SeatKlient } from '@kiki/klient/procedures/http';
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { RunningServer, ServerStartOptions } from '@moonshot-ai/kap-server';
+import type { RunningServer, ServerStartOptions } from '@kiki/kap-server';
 
 import {
   KIKI_CLI_PRINCIPAL,
@@ -168,7 +168,7 @@ describe('kiki delegation CLI', () => {
 
   it('keeps the delegation CLI free of direct agent-core imports', async () => {
     const source = await readFile(join(import.meta.dirname, '../../src/kiki/delegation.ts'), 'utf8');
-    expect(source).not.toContain('@moonshot-ai/agent-core-v2');
+    expect(source).not.toContain('@kiki/agent-core-v2');
   });
 
   it('executes Commander positionals and options through the generic projection', async () => {

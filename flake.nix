@@ -86,27 +86,27 @@
       ];
 
       workspaceNames = [
-        "@moonshot-ai/acp-client"
-        "@moonshot-ai/acp-server"
-        "@moonshot-ai/agent-core-v2"
+        "@kiki/acp-client"
+        "@kiki/acp-server"
+        "@kiki/agent-core-v2"
         "@kiki/agent-profiles"
-        "@moonshot-ai/codex-client"
-        "@moonshot-ai/kap-server"
-        "@moonshot-ai/kaos"
-        "@moonshot-ai/minidb"
-        "@moonshot-ai/kimi-code-sdk"
-        "@moonshot-ai/kimi-code-oauth"
-        "@moonshot-ai/klient"
-        "@moonshot-ai/pi-tui"
-        "@moonshot-ai/protocol"
+        "@kiki/codex-client"
+        "@kiki/kap-server"
+        "@kiki/kaos"
+        "@kiki/minidb"
+        "@kiki/node-sdk"
+        "@kiki/oauth"
+        "@kiki/klient"
+        "@kiki/pi-tui"
+        "@kiki/protocol"
         "@kiki/session-core"
-        "@moonshot-ai/transcript"
+        "@kiki/transcript"
         "@kiki/transcript-live"
-        "@moonshot-ai/tree-sitter-bash"
-        "@moonshot-ai/kimi-code"
+        "@kiki/tree-sitter-bash"
+        "@kiki/cli"
         "@kiki/gui"
-        "kimi-code"
-        "kimi-code-docs"
+        "kiki"
+        "@kiki/docs"
       ];
     in
     {
@@ -193,7 +193,7 @@
                     "await runVerifyStep({ requireGatekeeper: false });" \
                     "// runVerifyStep skipped in nix sandbox (sigtool lacks -dv)"
               ''}
-              pnpm --filter=@moonshot-ai/kimi-code run build:native:sea
+              pnpm --filter=@kiki/cli run build:native:sea
               runHook postBuild
             '';
 

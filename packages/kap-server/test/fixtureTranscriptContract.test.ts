@@ -3,7 +3,7 @@ import {
   transcriptEventSchema,
   transcriptOpsEventSchema,
   transcriptResetEventSchema,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 import { describe, expect, it } from 'vitest';
 
 import { wsEventEnvelopeSchema } from '../src/protocol/ws-control';

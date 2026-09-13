@@ -8,8 +8,8 @@
  * (a viewer opened from another viewer).
  */
 
-import type { Component, TUI } from '@moonshot-ai/pi-tui';
-import { TuiAltScreen } from '@moonshot-ai/pi-tui';
+import type { Component, TUI } from '@kiki/pi-tui';
+import { TuiAltScreen } from '@kiki/pi-tui';
 
 /** Restore data for a screen takeover; opaque to callers. */
 export type ScreenTakeover =

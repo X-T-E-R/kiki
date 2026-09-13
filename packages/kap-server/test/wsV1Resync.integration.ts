@@ -11,14 +11,14 @@ import {
   IWireService,
   getLiveSessionById,
   resumeSessionById,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   AgentTranscript,
   type AgentTranscriptSnapshot,
   type TranscriptCoverage,
   type TranscriptCursor,
   type TranscriptOperation,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 

@@ -1,7 +1,7 @@
 /**
  * Scenario: `model_steering` injects near-field guidance on every new turn.
  *
- * Run: `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
+ * Run: `pnpm --filter @kiki/agent-core-v2 exec vitest run
  * test/features/modelSteering/modelSteering.test.ts`
  */
 

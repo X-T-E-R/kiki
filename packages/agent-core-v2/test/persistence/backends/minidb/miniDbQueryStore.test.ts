@@ -8,7 +8,7 @@ import { ScopeActivation, _clearScopedRegistryForTests, registerScopedService } 
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { ClusterDb } from '@moonshot-ai/minidb/cluster';
+import { ClusterDb } from '@kiki/minidb/cluster';
 import {
   drainQueryStoreDisposals,
   MINIDB_QUERY_STORE_SUBDIR,

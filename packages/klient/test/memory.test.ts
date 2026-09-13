@@ -1,8 +1,8 @@
 import { rm } from 'node:fs/promises';
 
 import { describe, expect, it, vi } from 'vitest';
-import { ConfigTarget, IConfigService } from '@moonshot-ai/agent-core-v2';
-import { Error2, ErrorCodes } from '@moonshot-ai/agent-core-v2/errors';
+import { ConfigTarget, IConfigService } from '@kiki/agent-core-v2';
+import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
 
 import { defineKlientConformance } from './helpers/conformance.js';
 import { createKlient } from '../src/transports/memory/index.js';

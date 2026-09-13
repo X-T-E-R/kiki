@@ -1,4 +1,4 @@
-import type { ExperimentalFeatureState } from '@moonshot-ai/kimi-code-sdk';
+import type { ExperimentalFeatureState } from '@kiki/node-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { SlashCommandHost } from '#/tui/commands';

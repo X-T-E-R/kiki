@@ -22,7 +22,7 @@ import {
   type ISessionScopeHandle,
   type ISessionStateService,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import {
   AgentTranscript,
   TranscriptFactReducer,
@@ -36,7 +36,7 @@ import {
   type TranscriptOperation,
   type TranscriptTask,
   type TranscriptTurn,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 import { describe, expect, it, vi } from 'vitest';
 
 import {

@@ -6,7 +6,7 @@
 // (see `AcpSession.driveUnknownCommand`) — they never reach the model as
 // prompt text. Non-slash input classifies as `passthrough` and does.
 
-import { isUserActivatableSkillType, type SkillSummary } from '@moonshot-ai/agent-core-v2';
+import { isUserActivatableSkillType, type SkillSummary } from '@kiki/agent-core-v2';
 
 import {
   ACP_BUILTIN_SLASH_COMMAND_NAMES,

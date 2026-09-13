@@ -1,4 +1,4 @@
-import { visibleWidth } from '@moonshot-ai/pi-tui';
+import { visibleWidth } from '@kiki/pi-tui';
 import chalk from 'chalk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 

@@ -1,4 +1,4 @@
-import type { QuestionResponse } from '@moonshot-ai/protocol';
+import type { QuestionResponse } from '@kiki/protocol';
 
 import type { QuestionBlock } from '@kiki/session-core/session/transcript/types';
 

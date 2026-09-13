@@ -1,4 +1,4 @@
-import { resolveKimiHome } from '@moonshot-ai/agent-core-v2';
+import { resolveKimiHome } from '@kiki/agent-core-v2';
 import {
   createKimiDefaultHeaders,
   KIMI_CODE_FLOW_CONFIG,
@@ -9,9 +9,9 @@ import {
   resolveKimiCodeOAuthRef,
   type KimiHostIdentity,
   type ManagedKimiOAuthRef,
-} from '@moonshot-ai/kimi-code-oauth';
-import type { ProviderRequestAuth } from '@moonshot-ai/agent-core-v2';
-import { APIStatusError, UNKNOWN_CAPABILITY } from '@moonshot-ai/agent-core-v2';
+} from '@kiki/oauth';
+import type { ProviderRequestAuth } from '@kiki/agent-core-v2';
+import { APIStatusError, UNKNOWN_CAPABILITY } from '@kiki/agent-core-v2';
 
 import { ErrorCodes, KimiError } from '#/errors';
 import type { Logger } from '#/logging';

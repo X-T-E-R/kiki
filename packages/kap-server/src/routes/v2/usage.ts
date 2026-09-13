@@ -1,5 +1,5 @@
-import type { Scope } from '@moonshot-ai/agent-core-v2';
-import { usageQuerySchema, usageResponseSchema } from '@moonshot-ai/protocol';
+import type { Scope } from '@kiki/agent-core-v2';
+import { usageQuerySchema, usageResponseSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';

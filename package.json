@@ -1,5 +1,5 @@
 {
-  "name": "@moonshot-ai/monorepo",
+  "name": "@kiki/monorepo",
   "version": "0.1.1",
   "private": true,
   "license": "MIT",
@@ -7,7 +7,7 @@
   "scripts": {
     "postinstall": "node scripts/fix-node-pty-perms.mjs",
     "build": "pnpm -r run build",
-    "build:packages": "pnpm -r --filter './packages/*' run build",
+    "build:packages": "pnpm -r --filter \"./packages/*\" --fail-if-no-match run build",
     "dev:cli": "pnpm -C apps/kimi-code run dev",
     "dev:cli:marketplace": "KIMI_CODE_DEV_MARKETPLACE_URL=plugins/marketplace.json pnpm -C apps/kimi-code run dev",
     "dev:server": "pnpm -C apps/kimi-code run dev:server",
@@ -16,10 +16,10 @@
     "build:plugin-marketplace": "pnpm -C apps/kimi-code run build:plugin-marketplace",
     "dev:docs": "pnpm -C docs install --ignore-workspace && pnpm -C docs run dev",
     "docs:check-governance": "node scripts/check-docs-governance.mjs",
-    "typecheck": "pnpm run build:packages && pnpm -r --filter './packages/*' run typecheck && pnpm --filter @moonshot-ai/kimi-code run typecheck && pnpm --filter @kiki/gui run typecheck && pnpm --filter kimi-code run typecheck",
+    "typecheck": "pnpm run build:packages && pnpm -r --filter \"./packages/*\" --fail-if-no-match run typecheck && pnpm --filter @kiki/cli run typecheck && pnpm --filter @kiki/gui run typecheck && pnpm --filter kiki run typecheck",
     "lint": "node scripts/check-no-comments.mjs && oxlint --type-aware",
     "lint:fix": "pnpm run lint --fix",
-    "lint:pkg": "pnpm --filter @moonshot-ai/kimi-code exec publint && npm_config_cache=${TMPDIR:-/tmp}/kimi-code-npm-cache pnpm --filter @moonshot-ai/kimi-code exec attw --pack . --profile node16",
+    "lint:pkg": "pnpm --filter @kiki/cli exec publint && npm_config_cache=${TMPDIR:-/tmp}/kimi-code-npm-cache pnpm --filter @kiki/cli exec attw --pack . --profile node16",
     "sherif": "sherif -i @agentclientprotocol/sdk",
     "test": "vitest run",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",

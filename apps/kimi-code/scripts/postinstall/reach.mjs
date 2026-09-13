@@ -112,7 +112,7 @@ export function pmGlobalInstallCommand(pm, pkg) {
  *     location global` persistently). npm intentionally does NOT
  *     also set `npm_config_global` in this case, so without this
  *     branch the migration silently no-ops for `npm install
- *     --location=global @moonshot-ai/kimi-code` — verified on npm
+ *     --location=global @kiki/cli` — verified on npm
  *     11.13.0.
  *   - {@link isYarnClassicGlobalAdd} — yarn classic does NOT set
  *     `npm_config_global` for `yarn global add`. The only reliable
@@ -246,7 +246,7 @@ async function isExecutableFile(filePath) {
 //   - pnpm POSIX shims (literal `/bin/sh` scripts, not symlinks; pnpm
 //     does not symlink into the package root the way npm/yarn classic
 //     do on POSIX)
-const PACKAGE_NAME_MARKERS = ['@moonshot-ai/kimi-code', '@moonshot-ai\\kimi-code'];
+const PACKAGE_NAME_MARKERS = ['@kiki/cli', '@moonshot-ai\\kimi-code'];
 
 async function shimReferencesOwnPackage(shimPath) {
   try {

@@ -11,9 +11,9 @@ import {
   type Scope,
   type SessionSummary,
   type WireRecord,
-} from '@moonshot-ai/agent-core-v2';
-import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
-import type { UsageQuery } from '@moonshot-ai/protocol';
+} from '@kiki/agent-core-v2';
+import { Event } from '@kiki/agent-core-v2/_base/event';
+import type { UsageQuery } from '@kiki/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';

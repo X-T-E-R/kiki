@@ -8,7 +8,7 @@ import {
   resumeSessionById,
   type PermissionMode,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { ulid } from 'ulid';
 import { z } from 'zod';
 

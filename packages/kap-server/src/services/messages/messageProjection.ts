@@ -1,4 +1,4 @@
-import { parseDaemonFileUrl, type ContextMessage } from '@moonshot-ai/agent-core-v2';
+import { parseDaemonFileUrl, type ContextMessage } from '@kiki/agent-core-v2';
 
 import type { Message, MessageContent, MessageRole, ToolUseContent } from '../../protocol/message';
 

@@ -1,4 +1,4 @@
-import { Text, truncateToWidth, type Component } from '@moonshot-ai/pi-tui';
+import { Text, truncateToWidth, type Component } from '@kiki/pi-tui';
 
 import { currentTheme } from '#/tui/theme';
 import type { ColorPalette } from '#/tui/theme/colors';

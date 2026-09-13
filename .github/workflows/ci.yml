@@ -64,7 +64,7 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @moonshot-ai/pi-tui test
+      - run: pnpm --filter @kiki/pi-tui test
 
   # The VS Code extension suite runs on the default (v2) engine as part of the
   # sharded root run above; this job reruns it on the legacy v1 engine, which
@@ -83,7 +83,7 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter kimi-code test
+      - run: pnpm --filter kiki test
         env:
           KIMI_CODE_LEGACY_FLAG: "1"
 
@@ -162,4 +162,4 @@ jobs:
             pnpm dlx --package @typescript/native-preview@beta tsgo -p "${config}" --noEmit
           done
       - name: Typecheck VS Code extension
-        run: pnpm --filter kimi-code run typecheck
+        run: pnpm --filter kiki run typecheck

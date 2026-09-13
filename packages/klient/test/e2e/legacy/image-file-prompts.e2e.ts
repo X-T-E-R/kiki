@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { ErrorCode } from '@moonshot-ai/protocol';
+import { ErrorCode } from '@kiki/protocol';
 
 import { DaemonClient, EnvelopeError } from '../harness/index.js';
 import { fetchWithReport } from '../harness/report.js';

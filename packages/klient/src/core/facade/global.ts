@@ -9,33 +9,33 @@
 import type {
   SessionListQuery,
   SessionSummary,
-} from '@moonshot-ai/agent-core-v2/app/sessionIndex/sessionIndex';
-import type { SessionMeta } from '@moonshot-ai/agent-core-v2/session/sessionMetadata/sessionMetadata';
-import type { Page } from '@moonshot-ai/agent-core-v2/persistence/interface/queryStore';
+} from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
+import type { SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { Page } from '@kiki/agent-core-v2/persistence/interface/queryStore';
 import type {
   Workspace,
   WorkspaceUpdate,
-} from '@moonshot-ai/agent-core-v2/app/workspace/workspace';
+} from '@kiki/agent-core-v2/app/workspace/workspace';
 import type {
   ConfigDiagnostic,
   ConfigInspectValue,
   ConfigTarget,
-} from '@moonshot-ai/agent-core-v2/app/config/config';
-import type { ProviderConfig } from '@moonshot-ai/agent-core-v2/kosong/provider/provider';
+} from '@kiki/agent-core-v2/app/config/config';
+import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import type {
   AuthStatus,
   IOAuthService,
   OAuthLoginOptions,
-} from '@moonshot-ai/agent-core-v2/app/auth/auth';
-import type { ExperimentalFeatureState } from '@moonshot-ai/agent-core-v2/app/flag/flag';
+} from '@kiki/agent-core-v2/app/auth/auth';
+import type { ExperimentalFeatureState } from '@kiki/agent-core-v2/app/flag/flag';
 import type {
   FsBrowseResponse,
   FsHomeResponse,
-} from '@moonshot-ai/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
-import type { FileMeta } from '@moonshot-ai/agent-core-v2/app/file/fileService';
-import type { ModelRecord } from '@moonshot-ai/agent-core-v2/kosong/model/model';
-import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
-import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
+} from '@kiki/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
+import type { FileMeta } from '@kiki/agent-core-v2/app/file/fileService';
+import type { ModelRecord } from '@kiki/agent-core-v2/kosong/model/model';
+import type { IModelCatalog } from '@kiki/agent-core-v2/kosong/model/catalog';
+import type { IProviderDiscoveryService } from '@kiki/agent-core-v2/app/kosongConfig/discovery';
 
 import type { McpServerConfig } from '../../contract/mcp.js';
 import { decodeBase64, encodeBase64 } from '../base64.js';
@@ -49,7 +49,7 @@ import type {
   McpServerLocator,
   McpServerTestResult,
   McpServerTestTarget,
-} from '@moonshot-ai/agent-core-v2/app/mcpManagement/mcpManagement';
+} from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import type {
   AnonymousProviderInput,
   GenerateEvent,
@@ -64,8 +64,8 @@ import type {
   PluginSummary,
   PluginUpdateStatus,
   ReloadSummary,
-} from '@moonshot-ai/agent-core-v2/app/plugin/types';
-import type { CapabilityStatus } from '@moonshot-ai/agent-core-v2/app/capability/types';
+} from '@kiki/agent-core-v2/app/plugin/types';
+import type { CapabilityStatus } from '@kiki/agent-core-v2/app/capability/types';
 import type {
   ListThreadsInput,
   ListThreadsResult,
@@ -75,7 +75,7 @@ import type {
   SendThreadMessageResult,
   WaitThreadsInput,
   WaitThreadsResult,
-} from '@moonshot-ai/agent-core-v2/app/threadCommunication/threadCommunication';
+} from '@kiki/agent-core-v2/app/threadCommunication/threadCommunication';
 
 /** Low-level caller the klient factory builds: routes + validates one service call. */
 export type Caller = (
@@ -103,7 +103,7 @@ export type ScopedStreamCaller = (
 ) => AsyncIterable<unknown>;
 
 // ---------------------------------------------------------------------------
-// Wire-type aliases for shapes the engine sources from `@moonshot-ai/protocol`
+// Wire-type aliases for shapes the engine sources from `@kiki/protocol`
 // (not a direct klient dependency) — derived through the service interfaces.
 // ---------------------------------------------------------------------------
 

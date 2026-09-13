@@ -1,5 +1,5 @@
 import { resolveSubagentDisplayName } from '@kiki/transcript-live';
-import type { AgentTaskInfo } from '@moonshot-ai/agent-core-v2';
+import type { AgentTaskInfo } from '@kiki/agent-core-v2';
 
 import type { Event } from './events';
 import type { SnapshotSubagent } from '../../../protocol/rest-snapshot';

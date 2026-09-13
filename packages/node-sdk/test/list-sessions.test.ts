@@ -17,7 +17,7 @@ import {
   MINIDB_QUERY_STORE_SUBDIR,
   ISessionIndex,
   ISessionIndexMirror,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { createKimiHarness, SDKRpcClient } from '#/index';
 import type { KimiError } from '#/index';

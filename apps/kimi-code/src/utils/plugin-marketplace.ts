@@ -1,6 +1,6 @@
 /**
  * `#/utils/plugin-marketplace` — CLI-side wrapper over the shared plugin
- * marketplace client/parser (`@moonshot-ai/agent-core-v2`,
+ * marketplace client/parser (`@kiki/agent-core-v2`,
  * `app/plugin/marketplace`). The shared module owns catalog reading, the
  * lenient entry normalization, source resolution, and version derivation;
  * this wrapper adds only the CLI's configured-source resolution (option →
@@ -21,8 +21,8 @@ import {
   type MarketplaceLocation,
   type PluginMarketplace,
   type PluginMarketplaceEntry,
-} from '@moonshot-ai/agent-core-v2/app/plugin/marketplace';
-import type { KimiConfig } from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/agent-core-v2/app/plugin/marketplace';
+import type { KimiConfig } from '@kiki/node-sdk';
 
 import { KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV } from '#/constant/app';
 
@@ -33,7 +33,7 @@ export {
   type PluginMarketplaceEntry,
   type PluginMarketplaceTier,
   type MarketplaceUpdateStatus,
-} from '@moonshot-ai/agent-core-v2/app/plugin/marketplace';
+} from '@kiki/agent-core-v2/app/plugin/marketplace';
 
 export const BUILT_IN_PLUGIN_MARKETPLACE_SOURCE = 'builtin:kimi-code-capabilities';
 export const LOCAL_DEV_PLUGIN_MARKETPLACE_SOURCE = resolve(

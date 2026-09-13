@@ -9,12 +9,12 @@ describe('native fs.watch error guard subpath', () => {
       'utf-8',
     );
     expect(source).toBe(
-      "import '@moonshot-ai/agent-core-v2/_base/utils/nativeFsWatchErrorGuard';\n",
+      "import '@kiki/agent-core-v2/_base/utils/nativeFsWatchErrorGuard';\n",
     );
 
-    await import('@moonshot-ai/kimi-code-sdk/native-fs-watch-error-guard');
+    await import('@kiki/node-sdk/native-fs-watch-error-guard');
     const { isNativeFsWatchErrorGuardInstalled } = await import(
-      '@moonshot-ai/agent-core-v2/_base/utils/nativeFsWatchErrorGuard'
+      '@kiki/agent-core-v2/_base/utils/nativeFsWatchErrorGuard'
     );
     expect(isNativeFsWatchErrorGuardInstalled()).toBe(true);
   });

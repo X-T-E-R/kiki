@@ -5,15 +5,15 @@ import {
   resumeSessionById,
   type ExternalDispatchView,
   type ISessionExternalDelegationService as ExternalDelegationService,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerV2ExternalDelegationRoutes } from '../src/routes/v2/externalDelegation';
 
 const mainAgent = vi.hoisted(() => ({ ensure: vi.fn() }));
 
-vi.mock('@moonshot-ai/agent-core-v2', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@moonshot-ai/agent-core-v2')>();
+vi.mock('@kiki/agent-core-v2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/agent-core-v2')>();
   return { ...actual, resumeSessionById: vi.fn() };
 });
 

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PluginSummary } from '@moonshot-ai/kimi-code-sdk';
+import type { PluginSummary } from '@kiki/node-sdk';
 
 import {
   PluginUpdateNotifier,

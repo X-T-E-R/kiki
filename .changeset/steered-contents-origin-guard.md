@@ -1,5 +1,5 @@
 ---
-"@moonshot-ai/kimi-code": patch
+"@kiki/cli": patch
 ---
 
 Fix skill instructions showing up as ordinary user messages in rebuilt transcripts.

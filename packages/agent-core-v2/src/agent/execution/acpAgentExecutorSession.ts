@@ -13,7 +13,7 @@ import {
   type ExecutorSessionRefEnvelope,
   type HostProcessServiceLike,
   type NormalizedExecutorEvent,
-} from '@moonshot-ai/acp-client';
+} from '@kiki/acp-client';
 
 import {
   agentExecutorBindingFingerprint,

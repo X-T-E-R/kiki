@@ -1,12 +1,12 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { EXTERNAL_INTERACTION_NOT_OWNED_CODE as CORE_INTERACTION_NOT_OWNED_CODE } from '@moonshot-ai/agent-core-v2';
+import { EXTERNAL_INTERACTION_NOT_OWNED_CODE as CORE_INTERACTION_NOT_OWNED_CODE } from '@kiki/agent-core-v2';
 import {
   delegationProcedureTable,
   type DelegationProcedureName,
   type DelegationProcedureOutput,
   type SeatKlient,
-} from '@moonshot-ai/klient/procedures';
+} from '@kiki/klient/procedures';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {

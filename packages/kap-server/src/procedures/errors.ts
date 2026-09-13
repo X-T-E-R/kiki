@@ -4,7 +4,7 @@ import {
   classifyExternalFailureCode,
   externalFailureDescription,
   isError2,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { z } from 'zod';
 
 export interface ExternalDelegationPublicFailure {

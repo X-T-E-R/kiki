@@ -14,7 +14,7 @@
 import { mkdirSync } from 'node:fs';
 import process from 'node:process';
 
-import { createKimiHarness, type Event } from '@moonshot-ai/kimi-code-sdk';
+import { createKimiHarness, type Event } from '@kiki/node-sdk';
 import { describe, expect, test } from 'vitest';
 
 import { createKimiCodeHostIdentity, getVersion } from '#/cli/version';

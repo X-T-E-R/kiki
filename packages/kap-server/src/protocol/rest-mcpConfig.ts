@@ -4,7 +4,7 @@
  * Covers listing and mutating the editable user/project MCP server entries.
  */
 
-import { McpServerConfigSchema } from '@moonshot-ai/agent-core-v2';
+import { McpServerConfigSchema } from '@kiki/agent-core-v2';
 import { z } from 'zod';
 
 export const mcpJsonWriteScopeSchema = z.enum(['user', 'project']);

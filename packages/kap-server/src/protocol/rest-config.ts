@@ -1,23 +1,23 @@
-import { IdentityConfigSchema } from '@moonshot-ai/agent-core-v2/app/agentIdentity/configSection';
-import { McpSectionSchema } from '@moonshot-ai/agent-core-v2/app/mcpConfig/configSection';
-import { PluginsSectionSchema } from '@moonshot-ai/agent-core-v2/app/plugin/configSection';
-import { ThreadCommunicationConfigSchema } from '@moonshot-ai/agent-core-v2/app/threadCommunication/configSection';
-import { ImageConfigSchema } from '@moonshot-ai/agent-core-v2/agent/media/configSection';
-import { AgentTaskConfigSchema } from '@moonshot-ai/agent-core-v2/agent/task/configSection';
-import { PlanConfigSchema } from '@moonshot-ai/agent-core-v2/features/plan/configSection';
+import { IdentityConfigSchema } from '@kiki/agent-core-v2/app/agentIdentity/configSection';
+import { McpSectionSchema } from '@kiki/agent-core-v2/app/mcpConfig/configSection';
+import { PluginsSectionSchema } from '@kiki/agent-core-v2/app/plugin/configSection';
+import { ThreadCommunicationConfigSchema } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
+import { ImageConfigSchema } from '@kiki/agent-core-v2/agent/media/configSection';
+import { AgentTaskConfigSchema } from '@kiki/agent-core-v2/agent/task/configSection';
+import { PlanConfigSchema } from '@kiki/agent-core-v2/features/plan/configSection';
 import {
   TokenCountingConfigSchema,
   type TokenCountingConfig,
-} from '@moonshot-ai/agent-core-v2/agent/tokenCounting/configSection';
-import { ToolsConfigSchema } from '@moonshot-ai/agent-core-v2/agent/toolPolicy/configSection';
+} from '@kiki/agent-core-v2/agent/tokenCounting/configSection';
+import { ToolsConfigSchema } from '@kiki/agent-core-v2/agent/toolPolicy/configSection';
 import {
   DisabledBuiltinProfilesConfigSchema,
   DisabledNamedProfilesConfigSchema,
   ExtraAgentDirsConfigSchema,
-} from '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
-import { WorkspaceInstanceConfigSchema } from '@moonshot-ai/agent-core-v2/workspace/workspaceInstance/configSection';
-import { RequestIdentityPolicyWireSchema } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { nbSearchConfigPatchSchema } from '@moonshot-ai/protocol';
+} from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
+import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
+import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import { nbSearchConfigPatchSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;

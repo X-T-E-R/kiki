@@ -4,7 +4,7 @@ import type {
   IConfigService,
   IProviderDiscoveryService,
   ModelCatalogConfig,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import { ModelCatalogRefreshScheduler } from '../src/services/modelCatalog/modelCatalogRefreshScheduler';
 import type { ServerLogger } from '../src/services/pinoLoggerService';

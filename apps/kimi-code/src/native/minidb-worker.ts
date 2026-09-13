@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import {
   configureTextBuildWorkerRuntime,
   getTextBuildWorkerRuntimeState,
-} from '@moonshot-ai/minidb/worker-runtime';
+} from '@kiki/minidb/worker-runtime';
 
 import { MINIDB_TEXT_BUILD_WORKER_ASSET } from '../../scripts/native/manifest.mjs';
 import {

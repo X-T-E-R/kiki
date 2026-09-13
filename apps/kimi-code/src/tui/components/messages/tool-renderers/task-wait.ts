@@ -7,7 +7,7 @@
  * error (the tool says so itself), so it renders in the warning tone.
  */
 
-import { Text, type Component } from '@moonshot-ai/pi-tui';
+import { Text, type Component } from '@kiki/pi-tui';
 
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';

@@ -14,7 +14,7 @@ import {
   type IAgentScopeHandle,
   type Scope,
   type WireRecord,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 
 import type { Message, MessageRole } from '../../protocol/message';
 import { toProtocolMessage } from './messageProjection';

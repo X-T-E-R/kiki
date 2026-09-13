@@ -8,8 +8,8 @@ import {
   IModelService,
   type IAgentScopeHandle,
   type UsageStatus,
-} from '@moonshot-ai/agent-core-v2';
-import { IAgentToolSelectService } from '@moonshot-ai/agent-core-v2/agent/toolSelect/toolSelect';
+} from '@kiki/agent-core-v2';
+import { IAgentToolSelectService } from '@kiki/agent-core-v2/agent/toolSelect/toolSelect';
 
 import type { ContextBreakdown } from '../../protocol/context-usage';
 

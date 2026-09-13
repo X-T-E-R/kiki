@@ -21,14 +21,14 @@ import {
   IWorkspaceInstanceManager,
   IWorkspaceService,
   getLiveSessionById,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import type {
   AgentRuntimeBindingSnapshot,
   ServiceIdentifier,
   SessionWorkspaceAssociationSnapshot,
   WorkspaceInstanceSnapshot,
-} from '@moonshot-ai/agent-core-v2';
-import { FakeRuntime } from '@moonshot-ai/agent-core-v2/runtime/fakeRuntime';
+} from '@kiki/agent-core-v2';
+import { FakeRuntime } from '@kiki/agent-core-v2/runtime/fakeRuntime';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

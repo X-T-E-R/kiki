@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
-import type { FileMeta, KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
-import { compressImageForModel } from '@moonshot-ai/kimi-code-sdk';
+import type { FileMeta, KimiHarness, Session } from '@kiki/node-sdk';
+import { compressImageForModel } from '@kiki/node-sdk';
 
 import {
   ClipboardMediaError,

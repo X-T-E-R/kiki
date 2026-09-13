@@ -1,7 +1,7 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { LockError } from '@moonshot-ai/minidb';
+import { LockError } from '@kiki/minidb';
 
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';

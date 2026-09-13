@@ -18,8 +18,8 @@ import {
   IWorkspaceService,
   noopTelemetryService,
   type SessionIndexStatus,
-} from '@moonshot-ai/agent-core-v2';
-import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
+} from '@kiki/agent-core-v2';
+import { Event } from '@kiki/agent-core-v2/_base/event';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';
 import { IGlobalSearchService } from '../src/search/searchService';

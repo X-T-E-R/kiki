@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import chalk from 'chalk';
-import type { CapabilityStatus, PluginSummary } from '@moonshot-ai/kimi-code-sdk';
+import type { CapabilityStatus, PluginSummary } from '@kiki/node-sdk';
 
 import {
   PluginInstallTrustConfirmComponent,

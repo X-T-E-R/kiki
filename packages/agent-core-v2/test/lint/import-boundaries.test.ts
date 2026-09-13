@@ -53,7 +53,7 @@ describe('check-import-boundaries', () => {
 
   it('allows sibling-package imports outside kosong', () => {
     const violations = checkSource(
-      `import { something } from '@moonshot-ai/kaos';`,
+      `import { something } from '@kiki/kaos';`,
       at('log', 'log.ts'),
     );
     expect(violations).toHaveLength(0);
@@ -147,7 +147,7 @@ describe('check-import-boundaries', () => {
 
   it('resolves the package self-reference as an intra-v2 import', () => {
     const violations = checkSource(
-      `import { Foo } from '@moonshot-ai/agent-core-v2/kosong/provider/provider';`,
+      `import { Foo } from '@kiki/agent-core-v2/kosong/provider/provider';`,
       atKosong('protocol', 'protocol.ts'),
     );
     expect(violations).toHaveLength(1);

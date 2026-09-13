@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type { Session } from '@moonshot-ai/kimi-code-sdk';
+import type { Session } from '@kiki/node-sdk';
 
 import { copyTextToClipboard } from '#/utils/clipboard/clipboard-text';
 import { detectInstallSource } from '#/utils/install-source';

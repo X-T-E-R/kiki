@@ -4,7 +4,7 @@ import {
   guiStoreLengthResponseSchema,
   guiStoreRemoveItemBodySchema,
   guiStoreSetItemBodySchema,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 import { z } from 'zod';
 
 import { okEnvelope } from '../envelope';

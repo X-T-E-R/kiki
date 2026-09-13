@@ -1,5 +1,5 @@
-import type { ExperimentalFeatureState } from '@moonshot-ai/agent-core-v2';
-import type { Kaos } from '@moonshot-ai/kaos';
+import type { ExperimentalFeatureState } from '@kiki/agent-core-v2';
+import type { Kaos } from '@kiki/kaos';
 
 import { ErrorCodes, KimiError } from '#/errors';
 import { ImageLimits } from '#/image-limits';

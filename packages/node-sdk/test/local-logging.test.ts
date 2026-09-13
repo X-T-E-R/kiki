@@ -5,8 +5,8 @@ import * as zlib from 'node:zlib';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AppLogService } from '@moonshot-ai/agent-core-v2';
-import { SessionLogService } from '@moonshot-ai/agent-core-v2/session/sessionLog/sessionLogService';
+import { AppLogService } from '@kiki/agent-core-v2';
+import { SessionLogService } from '@kiki/agent-core-v2/session/sessionLog/sessionLogService';
 
 import { createKimiHarness, log, type KimiHarness } from '#/index';
 import { __resetRootLoggerForTest, getRootLogger } from '#/logging';

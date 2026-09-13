@@ -30,14 +30,14 @@ import {
   ConfigRegistry,
   type AnyEnvBindings,
   type EnvBinding,
-} from '@moonshot-ai/agent-core-v2';
-import { collectKeyDeprecations } from '@moonshot-ai/agent-core-v2/app/config/deprecations';
+} from '@kiki/agent-core-v2';
+import { collectKeyDeprecations } from '@kiki/agent-core-v2/app/config/deprecations';
 import {
   camelToSnake,
   describeTomlSyntaxError,
   isPlainObject,
   transformTomlData,
-} from '@moonshot-ai/agent-core-v2/app/config/toml';
+} from '@kiki/agent-core-v2/app/config/toml';
 
 /**
  * Top-level domains the v2 engine reads via `IConfigService.get` / `inspect`

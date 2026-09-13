@@ -9,7 +9,7 @@
  * — into the dim detail line so the user still sees it.
  */
 
-import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@moonshot-ai/kimi-code-sdk';
+import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@kiki/node-sdk';
 
 import type { BackgroundAgentStatusData, BackgroundAgentStatusPhase } from '@/tui/types';
 

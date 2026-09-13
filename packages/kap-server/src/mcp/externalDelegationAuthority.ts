@@ -12,7 +12,7 @@ import {
   resumeSessionById,
   type PermissionMode,
   type Scope,
-} from '@moonshot-ai/agent-core-v2';
+} from '@kiki/agent-core-v2';
 import { realpath } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { isAbsolute, normalize } from 'node:path';

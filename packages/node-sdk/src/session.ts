@@ -1,4 +1,4 @@
-import type { AgentContextData, SwarmModeTrigger } from '@moonshot-ai/agent-core-v2';
+import type { AgentContextData, SwarmModeTrigger } from '@kiki/agent-core-v2';
 
 import { ErrorCodes, KimiError, type KimiErrorCode } from '#/errors';
 import { type ApprovalHandler, type Event, type QuestionHandler } from '#/events';

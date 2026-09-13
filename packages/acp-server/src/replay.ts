@@ -20,7 +20,7 @@
  */
 
 import type { SessionNotification } from '@agentclientprotocol/sdk';
-import type { ContentPart, ContextMessage, ToolCall } from '@moonshot-ai/agent-core-v2';
+import type { ContentPart, ContextMessage, ToolCall } from '@kiki/agent-core-v2';
 
 import {
   assistantDeltaToSessionUpdate,

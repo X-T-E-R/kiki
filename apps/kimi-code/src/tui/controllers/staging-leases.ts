@@ -52,7 +52,7 @@
  * are injected, so the tracker is unit-testable without a TUI.
  */
 
-import type { TurnEndedEvent, TurnStartedEvent } from '@moonshot-ai/kimi-code-sdk';
+import type { TurnEndedEvent, TurnStartedEvent } from '@kiki/node-sdk';
 
 import type { QueuedMessage } from '../types';
 

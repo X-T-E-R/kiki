@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
-import { isoDateTimeSchema } from '@moonshot-ai/agent-core-v2/_base/utils/isoDateTime';
+import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import {
   transcriptSubscribeV2PayloadSchema,
   type TranscriptSubscribeV2Payload,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 
 import { eventSchema } from './events-zod';
 

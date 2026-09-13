@@ -7,7 +7,7 @@ import type {
   KimiOAuthLogoutResult,
   KimiOAuthTokenRef,
   KimiRegion,
-} from '@moonshot-ai/kimi-code-oauth';
+} from '@kiki/oauth';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Error2 } from '#/_base/errors/errors';
 

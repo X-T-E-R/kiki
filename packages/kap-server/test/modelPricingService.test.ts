@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { IBootstrapService, ILogService } from '@moonshot-ai/agent-core-v2';
+import type { IBootstrapService, ILogService } from '@kiki/agent-core-v2';
 
 import {
   ModelPriceCatalog,

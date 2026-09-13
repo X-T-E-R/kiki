@@ -1,5 +1,5 @@
-import type { Component } from '@moonshot-ai/pi-tui';
-import { Spacer, Text, visibleWidth } from '@moonshot-ai/pi-tui';
+import type { Component } from '@kiki/pi-tui';
+import { Spacer, Text, visibleWidth } from '@kiki/pi-tui';
 
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';

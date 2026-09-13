@@ -2,9 +2,9 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ISessionIndex, type SessionSummary } from '@moonshot-ai/agent-core-v2';
-import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
-import { usageResponseSchema, type UsageResponse } from '@moonshot-ai/protocol';
+import { ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
+import { Event } from '@kiki/agent-core-v2/_base/event';
+import { usageResponseSchema, type UsageResponse } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';

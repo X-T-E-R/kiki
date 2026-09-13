@@ -6,7 +6,7 @@
  * render-cache toggle pattern (see utils/render-cache.ts).
  */
 
-import type { MarkdownOptions } from '@moonshot-ai/pi-tui';
+import type { MarkdownOptions } from '@kiki/pi-tui';
 
 // Default on, matching upstream pi-tui; overridden from tui.toml at startup
 // and on /reload.

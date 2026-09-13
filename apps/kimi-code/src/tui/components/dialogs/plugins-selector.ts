@@ -6,13 +6,13 @@ import {
   truncateToWidth,
   visibleWidth,
   type Focusable,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 import type {
   CapabilityStatus,
   PluginInfo,
   PluginMcpServerInfo,
   PluginSummary,
-} from '@moonshot-ai/kimi-code-sdk';
+} from '@kiki/node-sdk';
 import chalk from 'chalk';
 
 import { SELECT_POINTER } from '#/tui/constant/symbols';

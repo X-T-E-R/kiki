@@ -23,10 +23,10 @@ import type {
   SwarmModeTrigger,
   ToolDisclosure,
   ToolInfo,
-} from '@moonshot-ai/agent-core-v2';
-import type { McpServerConfigView } from '@moonshot-ai/agent-core-v2/mcpCore/configView';
-import type { ContentPart } from '@moonshot-ai/agent-core-v2';
-import type { SessionWarning, UsageStatus } from '@moonshot-ai/protocol';
+} from '@kiki/agent-core-v2';
+import type { McpServerConfigView } from '@kiki/agent-core-v2/mcpCore/configView';
+import type { ContentPart } from '@kiki/agent-core-v2';
+import type { SessionWarning, UsageStatus } from '@kiki/protocol';
 
 import type { KimiConfig, KimiConfigPatch, McpServerConfig } from '../config';
 import type { BackgroundTaskInfo } from './background';

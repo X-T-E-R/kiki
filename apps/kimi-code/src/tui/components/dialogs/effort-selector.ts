@@ -5,9 +5,9 @@ import {
   truncateToWidth,
   wrapTextWithAnsi,
   type Focusable,
-} from '@moonshot-ai/pi-tui';
+} from '@kiki/pi-tui';
 
-import type { ThinkingEffort } from '@moonshot-ai/kimi-code-sdk';
+import type { ThinkingEffort } from '@kiki/node-sdk';
 
 import { currentTheme } from '#/tui/theme';
 
