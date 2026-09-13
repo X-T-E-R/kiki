@@ -304,7 +304,9 @@ function projectNamedAgentProfiles(
     || (a.workspaceKey ?? '').localeCompare(b.workspaceKey ?? '')
   ).map((entry) => ({ ...entry, contribution: {
     ...entry.contribution,
-    profiles: entry.contribution.profiles.map((profile) => profileWithBuiltinMain(profile, entries)),
+    profiles: entry.contribution.profiles
+      .filter((profile) => profile.private !== true)
+      .map((profile) => profileWithBuiltinMain(profile, entries)),
   } }));
   if (expand) {
     return registrations

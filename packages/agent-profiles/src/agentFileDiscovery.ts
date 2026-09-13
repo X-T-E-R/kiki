@@ -57,7 +57,7 @@ export async function discoverAgentFiles(
         contributionRoot,
         warn: (message) => warn?.(message),
       });
-      if (!agent.private && !byName.has(agent.name)) {
+      if (!byName.has(agent.name)) {
         byName.set(agent.name, agent);
       }
     } catch (error) {
@@ -66,6 +66,8 @@ export async function discoverAgentFiles(
         skipped.push({ path: filePath, reason: error.message });
         warnCapped(filePath, `Skipping invalid agent file at ${filePath}: ${error.message}`, error);
       } else {
+        const reason = `Unexpected error while loading agent file: ${errorMessage(error)}`;
+        skipped.push({ path: filePath, reason });
         warnCapped(filePath, `Skipping agent file at ${filePath} due to unexpected error`, error);
       }
     }
@@ -79,6 +81,7 @@ export async function discoverAgentFiles(
       entries = (await fs.readdir(dirPath)).map((entry) => entry.name).toSorted();
     } catch (error) {
       if (depth > 0) {
+        skipped.push({ path: dirPath, reason: `Unreadable agent directory: ${errorMessage(error)}` });
         warnCapped(dirPath, `Skipping unreadable directory ${dirPath}: ${errorMessage(error)}`, error);
         return;
       }
@@ -98,6 +101,9 @@ export async function discoverAgentFiles(
         await parseAndRegister(entryPath, root);
       } catch (error) {
         if (isHostFsUnavailable(error)) throw error;
+        if (entry.endsWith('.md')) {
+          skipped.push({ path: entryPath, reason: `Unreadable agent path: ${errorMessage(error)}` });
+        }
         warnCapped(entryPath, `Skipping unreadable agent path ${entryPath}: ${errorMessage(error)}`, error);
       }
     }

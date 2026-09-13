@@ -396,6 +396,29 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     container.dispose();
   });
 
+  it('keeps the last good projection when a catalog contribution cannot be projected', () => {
+    const { container, catalog, warnings, contribute } = makeCatalog();
+    const stable = profile('stable');
+    contribute('user', [stable]);
+    const snapshot = catalog.snapshot();
+    const broken = profile('broken');
+    Object.defineProperty(broken, 'name', {
+      get: () => {
+        throw new Error('broken profile getter');
+      },
+    });
+
+    catalog.setContribution('broken', { profiles: [broken] }, 100);
+
+    expect(catalog.get('stable')).toBe(stable);
+    expect(catalog.snapshot()).toBe(snapshot);
+    expect(warnings).toContainEqual(
+      expect.stringContaining('keeping the last good catalog'),
+    );
+    catalog.dispose();
+    container.dispose();
+  });
+
   it("fires 'catalog' on reload", async () => {
     const { container, catalog } = makeCatalog();
     const seen: string[] = [];

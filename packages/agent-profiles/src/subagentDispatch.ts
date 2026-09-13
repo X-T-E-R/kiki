@@ -78,8 +78,8 @@ export function resolveSnapshotProfileDefinition(
   definitionId: string,
   profileName: string,
 ): AgentProfile | undefined {
-  const publicProfile = snapshot.publicProfiles.get(profileName);
-  if (publicProfile?.definitionId === definitionId) return publicProfile;
+  const profile = (snapshot.resolvableProfiles ?? snapshot.publicProfiles).get(profileName);
+  if (profile?.definitionId === definitionId) return profile;
   for (const table of snapshot.scopedBindings.values()) {
     const binding = table.get(profileName);
     if (

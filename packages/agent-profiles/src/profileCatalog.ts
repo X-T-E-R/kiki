@@ -44,9 +44,11 @@ export interface AgentProfileInspection {
 
 export interface ProfileCatalogProjection {
   readonly profiles: ReadonlyMap<string, AgentProfile>;
+  readonly resolvableProfiles: ReadonlyMap<string, AgentProfile>;
   readonly defaultBindingProfile?: AgentProfile;
   readonly inspections: ReadonlyMap<string, AgentProfileInspection>;
   readonly routes: ReadonlyMap<string, ResolvedAgentProfileRoute>;
+  readonly publicRoutes: ReadonlyMap<string, ResolvedAgentProfileRoute>;
   readonly routeDiagnostics: readonly AgentProfileRouteDiagnostic[];
   readonly snapshot: AgentProfileCatalogSnapshot;
 }
@@ -64,7 +66,8 @@ export function projectAgentProfileCatalog(input: {
   readonly routeBaseMissingCode: string;
   readonly warn: (message: string) => void;
 }): ProfileCatalogProjection {
-  const merged = new Map<string, AgentProfile>();
+  const publicProfiles = new Map<string, AgentProfile>();
+  const resolvableProfiles = new Map<string, AgentProfile>();
   let defaultBindingProfile: AgentProfile | undefined;
   const inspections = new Map<string, AgentProfileInspection>();
   const builtinEntry = input.entries.find(
@@ -74,7 +77,8 @@ export function projectAgentProfileCatalog(input: {
     for (const profile of builtinEntry.contribution.profiles) {
       if (profile.name === DEFAULT_AGENT_PROFILE_NAME) defaultBindingProfile = profile;
       if (input.disabledBuiltinProfiles.has(profile.name)) continue;
-      merged.set(profile.name, profile);
+      publicProfiles.set(profile.name, profile);
+      resolvableProfiles.set(profile.name, profile);
       inspections.set(profile.name, {
         name: profile.name,
         profile,
@@ -113,7 +117,7 @@ export function projectAgentProfileCatalog(input: {
     const suppressed: AgentProfileSuppressedCandidate[] = [];
     let winner = false;
     for (const candidate of candidates) {
-      if (merged.has(candidate.profile.name) && candidate.profile.override !== true) {
+      if (resolvableProfiles.has(candidate.profile.name) && candidate.profile.override !== true) {
         input.warn(
           `agent file profile "${candidate.profile.name}" ignored: a same-name builtin profile exists; set "override: true" in the frontmatter to replace it`,
         );
@@ -126,9 +130,12 @@ export function projectAgentProfileCatalog(input: {
       }
       if (input.disabledNamedProfiles.has(candidate.profile.name)) {
         defaultBindingProfile = candidate.profile;
-        merged.delete(candidate.profile.name);
+        publicProfiles.delete(candidate.profile.name);
+        resolvableProfiles.delete(candidate.profile.name);
       } else {
-        merged.set(candidate.profile.name, candidate.profile);
+        resolvableProfiles.set(candidate.profile.name, candidate.profile);
+        if (candidate.profile.private === true) publicProfiles.delete(candidate.profile.name);
+        else publicProfiles.set(candidate.profile.name, candidate.profile);
       }
       inspections.set(candidate.profile.name, {
         name: candidate.profile.name,
@@ -169,8 +176,9 @@ export function projectAgentProfileCatalog(input: {
     }
   }
   const routes = new Map<string, ResolvedAgentProfileRoute>();
+  const publicRoutes = new Map<string, ResolvedAgentProfileRoute>();
   for (const route of routeCandidates.values()) {
-    const base = merged.get(route.profile);
+    const base = resolvableProfiles.get(route.profile);
     if (base === undefined) {
       const message = `Agent profile route "${route.id}" ignored because base profile "${route.profile}" is unavailable`;
       routeDiagnostics.push({
@@ -182,7 +190,9 @@ export function projectAgentProfileCatalog(input: {
       input.warn(message);
       continue;
     }
-    routes.set(route.id, resolveAgentProfileRoute(route, base));
+    const resolved = resolveAgentProfileRoute(route, base);
+    routes.set(route.id, resolved);
+    if (publicProfiles.has(route.profile)) publicRoutes.set(route.id, resolved);
   }
 
   const scopedBindings = new Map<string, ReadonlyMap<string, ScopedAgentProfileBinding>>();
@@ -211,13 +221,14 @@ export function projectAgentProfileCatalog(input: {
       return;
     }
   };
-  for (const profile of merged.values()) {
+  for (const profile of resolvableProfiles.values()) {
     if (profile.definitionId !== undefined) visit(profile.definitionId);
   }
-  const defaultProfile = merged.get(DEFAULT_AGENT_PROFILE_NAME) ?? defaultBindingProfile;
+  const defaultProfile = resolvableProfiles.get(DEFAULT_AGENT_PROFILE_NAME) ?? defaultBindingProfile;
   if (defaultProfile?.definitionId !== undefined) visit(defaultProfile.definitionId);
   const snapshot: AgentProfileCatalogSnapshot = {
-    publicProfiles: new Map(merged),
+    publicProfiles: new Map(publicProfiles),
+    resolvableProfiles: new Map(resolvableProfiles),
     defaultProfile,
     routes: new Map(routes),
     scopedBindings,
@@ -227,10 +238,12 @@ export function projectAgentProfileCatalog(input: {
   };
 
   return {
-    profiles: merged,
+    profiles: publicProfiles,
+    resolvableProfiles,
     defaultBindingProfile,
     inspections,
     routes,
+    publicRoutes,
     routeDiagnostics,
     snapshot,
   };

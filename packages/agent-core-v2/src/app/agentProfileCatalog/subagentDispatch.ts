@@ -137,7 +137,7 @@ export function resolveSubagentDispatch(
       const profile =
         snapshot === undefined
           ? catalog.get(profileName)
-          : snapshot.publicProfiles.get(profileName);
+          : (snapshot.resolvableProfiles ?? snapshot.publicProfiles).get(profileName);
       if (profile === undefined) {
         const available = [
           ...(snapshot === undefined ? catalog.list() : snapshot.publicProfiles.values()),
@@ -179,7 +179,7 @@ export function resolveSubagentDispatch(
         },
       );
     }
-    const baseProfile = snapshot.publicProfiles.get(route.profile);
+    const baseProfile = (snapshot.resolvableProfiles ?? snapshot.publicProfiles).get(route.profile);
     if (baseProfile === undefined) {
       throw new Error2(
         ErrorCodes.ROUTE_BASE_MISSING,

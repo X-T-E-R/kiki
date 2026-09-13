@@ -56,6 +56,7 @@ export function inheritProfileFileSources(
   const materialized = materializeSources(sources, defaults);
   return {
     publicProfiles: base?.publicProfiles ?? new Map(catalog.list().map((profile) => [profile.name, profile])),
+    resolvableProfiles: base?.resolvableProfiles,
     defaultProfile: defaults, routes: base?.routes ?? new Map(),
     scopedBindings: new Map([...(base?.scopedBindings ?? []), ...materialized.scopedBindings]),
     sourceDefinitions: new Map([...(base?.sourceDefinitions ?? []), ...materialized.sourceDefinitions]),
@@ -113,6 +114,10 @@ export async function loadDispatchProfileFile(
     ...(base?.publicProfiles ?? catalog.list().map((entry) => [entry.name, entry] as const)),
     [profile.name, profile],
   ]);
+  const resolvableProfiles = new Map<string, AgentProfile>([
+    ...(base?.resolvableProfiles ?? publicProfiles),
+    [profile.name, profile],
+  ]);
   const scopedBindings = new Map([...(base?.scopedBindings ?? []), ...loadedBindings]);
   if (caller.profileDefinitionId !== undefined) {
     const own = new Map(scopedBindings.get(caller.profileDefinitionId));
@@ -122,7 +127,7 @@ export async function loadDispatchProfileFile(
   return {
     profileName: profile.name,
     snapshot: {
-      publicProfiles, defaultProfile: defaults, routes: base?.routes ?? new Map(), scopedBindings,
+      publicProfiles, resolvableProfiles, defaultProfile: defaults, routes: base?.routes ?? new Map(), scopedBindings,
       sourceDefinitions: new Map([...(base?.sourceDefinitions ?? []), ...sourceDefinitions, [profile.definitionId!, profile]]),
       dependencyIndex: new Map([...(base?.dependencyIndex ?? []), ...graph.dependencyIndex]),
       diagnostics: [...(base?.diagnostics ?? []), ...graph.diagnostics],

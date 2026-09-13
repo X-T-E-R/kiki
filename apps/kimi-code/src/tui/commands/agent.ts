@@ -74,6 +74,7 @@ export async function loadSelectableAgentProfiles(
     ...project.agents,
     ...explicit,
   ]) {
+    if (definition.private) continue;
     if (config.disabledNamedProfiles.has(definition.name)) continue;
     if (enabledBuiltinNames.has(definition.name) && definition.override !== true) continue;
     merged.set(definition.name, {

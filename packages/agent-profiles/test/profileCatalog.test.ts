@@ -108,6 +108,33 @@ describe('projectAgentProfileCatalog', () => {
     expect(warnings.join(' ')).toContain('unsupported for main');
   });
 
+  it('keeps private profiles and routes resolvable while omitting them from public projections', () => {
+    const hidden = normalizeAgentProfile({ ...profile('writer'), private: true });
+    const route = {
+      id: 'writer.fast',
+      profile: 'writer',
+      description: 'fast',
+      promptMode: 'inherit' as const,
+      prompt: '',
+      overriddenFields: [],
+      path: '/agents/.routes/writer/fast.md',
+    };
+    const { result } = project([
+      {
+        sourceId: 'user',
+        priority: AGENT_PROFILE_SOURCE_PRIORITY.user,
+        contribution: { profiles: [hidden], routes: [route] },
+      },
+    ]);
+
+    expect(result.profiles.has('writer')).toBe(false);
+    expect(result.resolvableProfiles.get('writer')).toBe(hidden);
+    expect(result.routes.has('writer.fast')).toBe(true);
+    expect(result.publicRoutes.has('writer.fast')).toBe(false);
+    expect(result.snapshot.publicProfiles.has('writer')).toBe(false);
+    expect(result.snapshot.resolvableProfiles?.get('writer')).toBe(hidden);
+  });
+
   it('projects routes and reports a missing route base', () => {
     const base = profile('writer');
     const { result, warnings } = project([

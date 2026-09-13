@@ -82,6 +82,10 @@ describe('/agent', () => {
           'Use the pinned model.',
         ].join('\n'),
       );
+      await writeFile(
+        join(agentDir, 'm3-worker.md'),
+        '---\nname: m3-worker\ndescription: Private worker\nprivate: true\n---\nPrivate prompt.',
+      );
       const configPath = join(dir, 'config.toml');
       await writeFile(configPath, '');
 
@@ -95,6 +99,7 @@ describe('/agent', () => {
         description: 'Pinned main profile',
         main: true,
       });
+      expect(profiles.some((profile) => profile.name === 'm3-worker')).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

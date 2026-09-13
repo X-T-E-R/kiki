@@ -11,6 +11,7 @@ export abstract class AgentProfileLoaderBase extends Service {
 
   private readyPromise: Promise<void> = Promise.resolve();
   private tail: Promise<void> = Promise.resolve();
+  private lastGoodContribution: AgentProfileContribution | undefined;
   private readonly contributionHandle = this._register(new MutableDisposable<IDisposable>());
 
   constructor(
@@ -49,7 +50,7 @@ export abstract class AgentProfileLoaderBase extends Service {
 
   private async loadAndContribute(): Promise<void> {
     try {
-      const contribution = await this.load();
+      const contribution = this.withLastGoodEntries(await this.load());
       const registration = {
         sourceId: this.sourceId,
         priority: this.priority,
@@ -62,9 +63,91 @@ export abstract class AgentProfileLoaderBase extends Service {
         const handle = this.provide(AgentProfileContribution, registration);
         this.contributionHandle.value = { dispose: () => void handle.dispose() };
       }
+      this.lastGoodContribution = contribution;
     } catch (error) {
       if (this.fatal) throw error;
       this.log.warn(`agent profile loader "${this.sourceId}" load failed: ${String(error)}`);
     }
+  }
+
+  private withLastGoodEntries(contribution: AgentProfileContribution): AgentProfileContribution {
+    const previous = this.lastGoodContribution;
+    if (previous === undefined || contribution.skipped === undefined) return contribution;
+    const invalidProfilePaths = new Set(
+      contribution.skipped
+        .filter((entry) => entry.code?.startsWith('agent_profile_route.') !== true)
+        .map((entry) => this.pathKey(entry.path)),
+    );
+    const invalidRoutePaths = new Set(
+      contribution.skipped
+        .filter((entry) => entry.code?.startsWith('agent_profile_route.') === true)
+        .map((entry) => this.pathKey(entry.path)),
+    );
+    const currentProfileNames = new Set(contribution.profiles.map((profile) => profile.name));
+    const retainedProfiles = previous.profiles.filter(
+      (profile) =>
+        profile.sourcePath !== undefined &&
+        this.matchesFailedPath(profile.sourcePath, invalidProfilePaths) &&
+        !currentProfileNames.has(profile.name),
+    );
+    const currentRouteIds = new Set((contribution.routes ?? []).map((route) => route.id));
+    const retainedRoutes = (previous.routes ?? []).filter(
+      (route) =>
+        (this.matchesFailedPath(route.path, invalidRoutePaths) ||
+          this.matchesFailedPath(route.path, invalidProfilePaths)) &&
+        !currentRouteIds.has(route.id),
+    );
+    for (const profile of retainedProfiles) {
+      this.log.warn(
+        `agent profile loader "${this.sourceId}" is keeping the last good profile "${profile.name}" after a reload error`,
+      );
+    }
+    for (const route of retainedRoutes) {
+      this.log.warn(
+        `agent profile loader "${this.sourceId}" is keeping the last good route "${route.id}" after a reload error`,
+      );
+    }
+    if (retainedProfiles.length === 0 && retainedRoutes.length === 0) return contribution;
+    return {
+      ...contribution,
+      profiles: [...contribution.profiles, ...retainedProfiles],
+      routes: [...(contribution.routes ?? []), ...retainedRoutes],
+      scopedBindings:
+        retainedProfiles.length === 0
+          ? contribution.scopedBindings
+          : new Map([
+              ...(previous.scopedBindings ?? []),
+              ...(contribution.scopedBindings ?? []),
+            ]),
+      sourceDefinitions:
+        retainedProfiles.length === 0
+          ? contribution.sourceDefinitions
+          : new Map([
+              ...(previous.sourceDefinitions ?? []),
+              ...(contribution.sourceDefinitions ?? []),
+            ]),
+      dependencyIndex:
+        retainedProfiles.length === 0
+          ? contribution.dependencyIndex
+          : new Map([
+              ...(previous.dependencyIndex ?? []),
+              ...(contribution.dependencyIndex ?? []),
+            ]),
+    };
+  }
+
+  private matchesFailedPath(path: string, failedPaths: ReadonlySet<string>): boolean {
+    const candidate = this.pathKey(path);
+    for (const failed of failedPaths) {
+      if (candidate === failed || candidate.startsWith(`${failed}/`)) return true;
+    }
+    return false;
+  }
+
+  private pathKey(path: string): string {
+    const normalized = path.replaceAll('\\', '/');
+    return process.platform === 'win32' || /^[a-zA-Z]:\//u.test(normalized)
+      ? normalized.toLowerCase()
+      : normalized;
   }
 }

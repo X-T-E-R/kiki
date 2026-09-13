@@ -25,6 +25,7 @@ export function agentProfileFromFile(
     sourcePath: definition.path,
     whenToUse: definition.whenToUse,
     override: definition.override || definition.source === 'explicit',
+    private: definition.private,
     main: definition.main,
     tools: definition.tools,
     disallowedTools: definition.disallowedTools,

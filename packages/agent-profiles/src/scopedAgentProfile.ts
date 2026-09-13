@@ -26,6 +26,7 @@ export interface ScopedAgentProfileBinding {
 
 export interface AgentProfileCatalogSnapshot {
   readonly publicProfiles: ReadonlyMap<string, AgentProfile>;
+  readonly resolvableProfiles?: ReadonlyMap<string, AgentProfile>;
   readonly defaultProfile?: AgentProfile;
   readonly routes: ReadonlyMap<string, ResolvedAgentProfileRoute>;
   readonly scopedBindings: ReadonlyMap<string, ReadonlyMap<string, ScopedAgentProfileBinding>>;

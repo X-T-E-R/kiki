@@ -77,6 +77,7 @@ import { IExplicitAgentProfileLoader } from '#/workspace/workspaceAgentProfileLo
 import { IFlagService } from '#/app/flag/flag';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
+import { resolveSubagentDispatch } from '#/app/agentProfileCatalog/subagentDispatch';
 import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentRouteFile';
 import { resolveAgentSourceGraph } from '#/workspace/workspaceAgentProfileLoader/internal/agentSourceGraph';
 import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoader/internal/types';
@@ -1818,6 +1819,56 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('hides private profiles from listings while preserving named and frozen resolution', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.homeDir, 'agents');
+      const profilePath = await writeAgent(root, 'm3-worker.md', agentMd('m3-worker', 'public worker'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const frozen = stack.catalog.snapshot();
+        const caller = { subagents: ['m3-worker'] };
+        expect(stack.catalog.list().map((profile) => profile.name)).toContain('m3-worker');
+
+        await writeFile(profilePath, privateAgentMd('m3-worker', 'private worker'));
+        await stack.userLoader.reload();
+
+        expect(stack.catalog.get('m3-worker')).toMatchObject({
+          description: 'private worker',
+          private: true,
+        });
+        expect(stack.catalog.resolveSelection({ profile: 'm3-worker' }).profile.name).toBe('m3-worker');
+        expect(
+          resolveSubagentDispatch(stack.catalog, caller, { profileName: 'm3-worker' }).selection.profile.name,
+        ).toBe('m3-worker');
+        expect(stack.catalog.list().map((profile) => profile.name)).not.toContain('m3-worker');
+        expect(stack.catalog.snapshot().publicProfiles.has('m3-worker')).toBe(false);
+
+        await writeFile(profilePath, 'invalid frontmatter');
+        await stack.userLoader.reload();
+
+        expect(stack.catalog.get('m3-worker')?.description).toBe('private worker');
+        expect(stack.catalog.list().map((profile) => profile.name)).not.toContain('m3-worker');
+        expect(
+          stack.warnings.some(
+            (warning) => warning.includes('last good profile') && warning.includes('m3-worker'),
+          ),
+        ).toBe(true);
+
+        await rm(profilePath);
+        await stack.userLoader.reload();
+
+        expect(stack.catalog.get('m3-worker')).toBeUndefined();
+        expect(() => stack.catalog.list()).not.toThrow();
+        expect(
+          resolveSubagentDispatch(stack.catalog, caller, {
+            profileName: 'm3-worker',
+            snapshot: frozen,
+          }).selection.profile.description,
+        ).toBe('public worker');
+      });
+    });
+  });
+
   it('keeps private aliases scoped to each winning parent while wildcard remains public-only', async () => {
     await withFixture(async (fixture) => {
       const userRoot = join(fixture.homeDir, 'agents');
@@ -1898,7 +1949,8 @@ describe('agent profile loaders + session catalog', () => {
 
         await writeFile(parentPath, 'invalid parent');
         await stack.workspaceLoader.reload();
-        expect(stack.catalog.get('team')).toBeUndefined();
+        expect(stack.catalog.get('team')).toBe(parent);
+        expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer')?.status).toBe('unavailable');
         expect(stack.catalog.get('writer')).toBeUndefined();
       });
 
@@ -2004,7 +2056,8 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, { extraAgentDirs: [firstRoot] }, async (stack) => {
         await stack.ready();
         const parent = stack.catalog.get('team')!;
-        expect(stack.catalog.get('writer')).toBeUndefined();
+        expect(stack.catalog.get('writer')?.description).toBe('portable writer');
+        expect(stack.catalog.list().map((profile) => profile.name)).not.toContain('writer');
         expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer')?.profile?.description).toBe('portable writer');
       });
 

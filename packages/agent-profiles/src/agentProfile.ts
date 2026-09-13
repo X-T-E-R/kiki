@@ -78,6 +78,7 @@ export interface AgentProfile extends AgentModelParameters {
   readonly sourcePath?: string;
   readonly whenToUse?: string;
   readonly override?: boolean;
+  readonly private?: boolean;
   readonly main?: boolean;
   readonly tools?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];

@@ -157,6 +157,7 @@ describe('GET /api/v1/agents', () => {
     const body = (await response.json()) as Envelope<unknown>;
     expect(body.code).toBe(0);
     const data = listNamedAgentProfilesResponseSchema.parse(body.data);
+    expect(data.items.some((profile) => profile.name === 'm3-worker')).toBe(false);
     const reviewer = data.items.find((profile) => profile.name === 'reviewer' && profile.source === 'user');
     expect(reviewer).toEqual({
       name: 'reviewer',
@@ -427,6 +428,11 @@ describe('GET /api/v1/agents', () => {
         'Write the research summary.',
         '',
       ].join('\n'),
+      'utf-8',
+    );
+    await writeFile(
+      join(agentsDir, 'm3-worker.md'),
+      '---\nname: m3-worker\ndescription: Private worker\nprivate: true\n---\n\nPrivate worker prompt.\n',
       'utf-8',
     );
 

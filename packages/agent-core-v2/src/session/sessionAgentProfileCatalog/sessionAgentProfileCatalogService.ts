@@ -67,10 +67,12 @@ export class SessionAgentProfileCatalogService
 {
   declare readonly _serviceBrand: undefined;
 
-  private merged = new Map<string, AgentProfile>();
+  private resolvable = new Map<string, AgentProfile>();
+  private publicProfiles = new Map<string, AgentProfile>();
   private defaultBindingProfile: AgentProfile | undefined;
   private inspections = new Map<string, AgentProfileInspection>();
   private routes = new Map<string, ResolvedAgentProfileRoute>();
+  private publicRoutes = new Map<string, ResolvedAgentProfileRoute>();
   private routeDiagnosticsValue: AgentProfileRouteDiagnostic[] = [];
   private snapshotValue: AgentProfileCatalogSnapshot | undefined;
   private readonly contributions = new Map<string, AgentProfileRegistration>();
@@ -87,14 +89,15 @@ export class SessionAgentProfileCatalogService
   ) {
     super();
     this.reproject();
-    this.readyPromise = this.config.ready.then(() => this.reproject());
+    this.readyPromise = this.config.ready.then(() => {
+      this.reproject();
+    });
     this._register(
       this.registry.onDidChange((change) => {
         if (change.workspaceKey !== undefined && change.workspaceKey !== this.seed.workspaceKey) {
           return;
         }
-        this.reproject();
-        this.onDidChangeEmitter.fire(change.sourceId);
+        if (this.reproject()) this.onDidChangeEmitter.fire(change.sourceId);
       }),
     );
     this._register(
@@ -103,8 +106,7 @@ export class SessionAgentProfileCatalogService
           change.domain !== DISABLED_BUILTIN_PROFILES_SECTION
           && change.domain !== DISABLED_NAMED_PROFILES_SECTION
         ) return;
-        this.reproject();
-        this.onDidChangeEmitter.fire('catalog');
+        if (this.reproject()) this.onDidChangeEmitter.fire('catalog');
       }),
     );
   }
@@ -114,7 +116,7 @@ export class SessionAgentProfileCatalogService
   }
 
   get(name: string): AgentProfile | undefined {
-    return this.merged.get(name);
+    return this.resolvable.get(name);
   }
 
   getDefault(): AgentProfile {
@@ -128,12 +130,12 @@ export class SessionAgentProfileCatalogService
   }
 
   list(): readonly AgentProfile[] {
-    return [...this.merged.values()];
+    return [...this.publicProfiles.values()];
   }
 
   listRoutes(): readonly AgentProfileRouteCatalogEntry[] {
     if (!this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID)) return [];
-    return [...this.routes.values()].map(
+    return [...this.publicRoutes.values()].map(
       ({
         effectiveProfile: _profile,
         lockedModelAlias: _alias,
@@ -225,14 +227,12 @@ export class SessionAgentProfileCatalogService
 
   setContribution(id: string, contribution: AgentProfileRegistration['contribution'], priority: number): void {
     this.contributions.set(id, { sourceId: id, priority, contribution });
-    this.reproject();
-    this.onDidChangeEmitter.fire(id);
+    if (this.reproject()) this.onDidChangeEmitter.fire(id);
   }
 
   removeContribution(id: string): void {
     if (!this.contributions.delete(id)) return;
-    this.reproject();
-    this.onDidChangeEmitter.fire(id);
+    if (this.reproject()) this.onDidChangeEmitter.fire(id);
   }
 
   async load(): Promise<void> {
@@ -241,8 +241,7 @@ export class SessionAgentProfileCatalogService
 
   async reload(): Promise<void> {
     await this.ready;
-    this.reproject();
-    this.onDidChangeEmitter.fire('catalog');
+    if (this.reproject()) this.onDidChangeEmitter.fire('catalog');
   }
 
   private relevantEntries(): AgentProfileRegistration[] {
@@ -267,20 +266,30 @@ export class SessionAgentProfileCatalogService
     );
   }
 
-  private reproject(): void {
-    const projection = projectAgentProfileCatalog({
-      entries: this.relevantEntries(),
-      disabledBuiltinProfiles: this.disabledBuiltinProfileNames(),
-      disabledNamedProfiles: this.disabledNamedProfileNames(),
-      routeBaseMissingCode: ErrorCodes.ROUTE_BASE_MISSING,
-      warn: (message) => this.log.warn(message),
-    });
-    this.merged = new Map(projection.profiles);
-    this.defaultBindingProfile = projection.defaultBindingProfile;
-    this.inspections = new Map(projection.inspections);
-    this.routes = new Map(projection.routes);
-    this.routeDiagnosticsValue = [...projection.routeDiagnostics];
-    this.snapshotValue = projection.snapshot;
+  private reproject(): boolean {
+    try {
+      const projection = projectAgentProfileCatalog({
+        entries: this.relevantEntries(),
+        disabledBuiltinProfiles: this.disabledBuiltinProfileNames(),
+        disabledNamedProfiles: this.disabledNamedProfileNames(),
+        routeBaseMissingCode: ErrorCodes.ROUTE_BASE_MISSING,
+        warn: (message) => this.log.warn(message),
+      });
+      this.resolvable = new Map(projection.resolvableProfiles);
+      this.publicProfiles = new Map(projection.profiles);
+      this.defaultBindingProfile = projection.defaultBindingProfile;
+      this.inspections = new Map(projection.inspections);
+      this.routes = new Map(projection.routes);
+      this.publicRoutes = new Map(projection.publicRoutes);
+      this.routeDiagnosticsValue = [...projection.routeDiagnostics];
+      this.snapshotValue = projection.snapshot;
+      return true;
+    } catch (error) {
+      this.log.warn('agent profile catalog reload failed; keeping the last good catalog', {
+        error: String(error),
+      });
+      return false;
+    }
   }
 }
 
