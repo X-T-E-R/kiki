@@ -86,6 +86,9 @@ describe('delegation context at bind', () => {
         expect(system).not.toContain(DEFAULT_INDEPENDENT_DELEGATION_NOTICE);
       }
     };
+    const assertAnchored = () => {
+      expect(ctx!.llmCalls.at(-1)!.systemPrompt).toBe('ANCHOR BODY');
+    };
     ctx.mockNextResponse({ type: 'text', text: 'ok' });
     await requester.request({});
     assertOutbound('REPLACEMENT BODY');
@@ -95,7 +98,7 @@ describe('delegation context at bind', () => {
     assertOutbound('REPLACEMENT BODY');
     ctx.mockNextResponse({ type: 'text', text: 'ok' });
     await requester.request({ source: { type: 'turn', turnId: 0, step: 1 } });
-    assertOutbound('ANCHOR BODY');
+    assertAnchored();
     const snapshot = JSON.parse(JSON.stringify(profile.data())) as ReturnType<typeof profile.data>;
     const config = ctx.kimiConfig;
     await ctx.dispose();
@@ -104,7 +107,7 @@ describe('delegation context at bind', () => {
     ctx.get(IAgentProfileService).applyBindingSnapshot(snapshot);
     ctx.mockNextResponse({ type: 'text', text: 'ok' });
     await ctx.get(IAgentLLMRequesterService).request({ source: { type: 'turn', turnId: 1, step: 1 } });
-    assertOutbound('ANCHOR BODY');
+    assertAnchored();
   });
 
   it.each(['sub', 'independent', 'off'] as const)('preserves the saved %s notice across a cold variable refresh', async (position) => {
