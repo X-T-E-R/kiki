@@ -491,6 +491,25 @@ describe('media preview wiring', () => {
     expect(dialog?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AA');
   });
 
+  it('places user message media above the message text', async () => {
+    const container = await renderTranscript([
+      userBlock({
+        id: 'u-media',
+        text: 'look at this',
+        media: [{ kind: 'image', url: 'data:image/png;base64,AA', mime: 'image/png' }],
+      }),
+    ]);
+    const img = container.querySelector('img');
+    const bubble = [...container.querySelectorAll('div')].find(
+      (div) => div.textContent === 'look at this',
+    );
+    expect(img).not.toBeNull();
+    expect(bubble).not.toBeNull();
+    expect(
+      img!.compareDocumentPosition(bubble!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it('renders file refs as chips with name and size', async () => {
     const probe = makeRoot();
     await renderSettled(

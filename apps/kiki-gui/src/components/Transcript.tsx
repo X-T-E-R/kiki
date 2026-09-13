@@ -212,6 +212,7 @@ const UserMessage = memo(function UserMessage({
         </span>
         <span className="text-xs text-ink-faint"><RelativeTime at={block.createdAt} /></span>
       </span>
+      {block.media !== undefined ? <div className="mb-1.5"><MediaPartList media={block.media} align="end" /></div> : null}
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
           initialText={block.text}
@@ -250,7 +251,6 @@ const UserMessage = memo(function UserMessage({
           <span aria-hidden className="text-[9px]">{expanded ? '▴' : '▾'}</span>
         </button>
       ) : null}
-      {block.media !== undefined ? <MediaPartList media={block.media} align="end" /> : null}
       {block.promptStatus === 'queued' || block.promptStatus === 'blocked' ? (
         <span
           className={`mt-1 mr-1 flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] font-medium ${
