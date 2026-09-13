@@ -155,7 +155,7 @@ export const TaskBoard = memo(function TaskBoard({
       {prototypeMode ? (
         <div
           data-prototype-badge
-          className="shrink-0 bg-amber-card/80 border-b border-amber-rule/30 px-4 py-1 text-[10.5px] font-mono text-amber-ink flex items-center justify-between"
+          className="shrink-0 bg-amber-card/80 border-b border-amber-rule/30 px-5 py-1.5 text-[11px] font-mono text-amber-ink flex items-center justify-between"
         >
           <span>PROTOTYPE DISPLAY SLICE · Workboard / 看板 (未接持久服务)</span>
           <span>Runtime: Decoupled Mock Layer</span>
@@ -164,7 +164,7 @@ export const TaskBoard = memo(function TaskBoard({
 
       {/* Error alert banner */}
       {error ? (
-        <div className="shrink-0 bg-danger/10 border-b border-danger/20 px-4 py-1.5 text-[11.5px] text-danger flex items-center justify-between">
+        <div className="shrink-0 bg-danger/10 border-b border-danger/20 px-5 py-2 text-[12px] text-danger flex items-center justify-between">
           <span>看板数据加载/同步异常: {error}</span>
         </div>
       ) : null}
@@ -173,7 +173,7 @@ export const TaskBoard = memo(function TaskBoard({
       {!showUnavailable && (issues.length > 0 || cardIssues.length > 0) ? (
         <div
           data-task-board-issues
-          className="flex shrink-0 items-center gap-2 border-b border-amber-rule/30 bg-amber-card/70 px-4 py-1.5 text-[11.5px] text-amber-ink"
+          className="flex shrink-0 items-center gap-2 border-b border-amber-rule/30 bg-amber-card/70 px-5 py-2 text-[12px] text-amber-ink"
         >
           <span
             className="min-w-0 truncate"
@@ -188,14 +188,14 @@ export const TaskBoard = memo(function TaskBoard({
       ) : null}
 
       {/* Header Bar */}
-      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-panel px-4 py-3">
+      <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline bg-panel px-5 py-3.5">
         <div className="flex min-w-0 shrink-0 items-center gap-3">
           {onCloseBoard ? (
             <button
               type="button"
               onClick={onCloseBoard}
               aria-label="Back to Session"
-              className="flex items-center gap-1 rounded-lg border border-hairline px-2.5 py-1 text-[12px] font-medium text-ink-soft hover:border-accent hover:text-accent transition-colors"
+              className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink-soft hover:border-accent hover:text-accent transition-colors"
             >
               <span>‹</span>
               <span>返回会话</span>
@@ -204,37 +204,37 @@ export const TaskBoard = memo(function TaskBoard({
 
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="font-display text-[17px] font-semibold text-ink leading-none">
+              <h2 className="font-display text-[19px] font-semibold text-ink leading-none">
                 需求与任务看板
               </h2>
               {loading ? (
-                <span className="font-mono text-[10px] text-accent animate-pulse">
+                <span className="font-mono text-[10.5px] text-accent animate-pulse">
                   同步中...
                 </span>
               ) : null}
             </div>
-            <span className="font-mono text-[10.5px] text-ink-faint">
+            <span className="font-mono text-[11px] text-ink-faint">
               共 {filteredTasks.length} / {tasks.length} 项需求
             </span>
           </div>
         </div>
 
         {/* Action Controls & Filters */}
-        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2.5">
           {/* Search Box */}
           <input
             type="search"
             placeholder="搜索任务/提示词..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-48 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[12px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden"
+            className="w-60 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-3 py-1.5 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden"
           />
 
           {/* Workspace Filter (All / Specific Workspace) */}
           <select
             value={selectedWorkspaceFilter}
             onChange={(e) => setSelectedWorkspaceFilter(e.target.value)}
-            className="w-48 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] text-ink focus:border-accent focus:outline-hidden font-mono"
+            className="w-52 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink focus:border-accent focus:outline-hidden font-mono"
           >
             <option value="all">全工作区总览</option>
             {workspaces.map((ws) => (
@@ -248,7 +248,7 @@ export const TaskBoard = memo(function TaskBoard({
           <select
             value={selectedSessionFilter}
             onChange={(e) => setSelectedSessionFilter(e.target.value)}
-            className="w-56 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] text-ink focus:border-accent focus:outline-hidden font-mono"
+            className="w-60 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink focus:border-accent focus:outline-hidden font-mono"
           >
             <option value="all">全部会话关联</option>
             {sessions.map((s) => (
@@ -264,7 +264,7 @@ export const TaskBoard = memo(function TaskBoard({
               data-task-board-refresh
               disabled={refreshDisabled}
               onClick={() => { void onRefresh(); }}
-              className="rounded-lg border border-hairline px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               {refreshLabel}
             </button>
@@ -274,7 +274,7 @@ export const TaskBoard = memo(function TaskBoard({
           <button
             type="button"
             onClick={() => setShowNewTaskModal(true)}
-            className="rounded-lg bg-accent px-3 py-1 text-[12px] font-medium text-panel hover:bg-accent-deep transition-colors shadow-xs"
+            className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-medium text-panel hover:bg-accent-deep transition-colors shadow-xs"
           >
             + 新建需求
           </button>
@@ -285,20 +285,20 @@ export const TaskBoard = memo(function TaskBoard({
       {showUnavailable ? (
         <div
           data-task-board-unavailable
-          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-y-auto px-6 py-12 text-center"
+          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3.5 overflow-y-auto px-6 py-12 text-center"
         >
-          <h3 className="font-display text-[15px] font-semibold text-ink">
+          <h3 className="font-display text-[17px] font-semibold text-ink">
             {t('taskBoard.unavailable.title')}
           </h3>
-          <p className="max-w-lg text-[12px] leading-relaxed text-ink-soft">
+          <p className="max-w-xl text-[13px] leading-relaxed text-ink-soft">
             {t('taskBoard.unavailable.description')}
           </p>
           {issues.length > 0 ? (
-            <ul className="w-full max-w-lg space-y-1 rounded-xl border border-hairline bg-panel px-3 py-2 text-left">
+            <ul className="w-full max-w-xl space-y-1.5 rounded-xl border border-hairline bg-panel px-4 py-3 text-left">
               {issues.slice(0, 8).map((issue, index) => (
                 <li
                   key={`${issue.workspaceId ?? 'host'}:${index}`}
-                  className="flex items-baseline gap-2 text-[11.5px]"
+                  className="flex items-baseline gap-2 text-[12px]"
                   title={issue.message}
                 >
                   <span className="min-w-0 flex-1 truncate font-medium text-ink-soft">
@@ -310,18 +310,18 @@ export const TaskBoard = memo(function TaskBoard({
                 </li>
               ))}
               {issues.length > 8 ? (
-                <li className="text-[10.5px] text-ink-faint">+{issues.length - 8}</li>
+                <li className="text-[11px] text-ink-faint">+{issues.length - 8}</li>
               ) : null}
             </ul>
           ) : null}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             {onRefresh ? (
               <button
                 type="button"
                 data-task-board-unavailable-retry
                 disabled={refreshDisabled}
                 onClick={() => { void onRefresh(); }}
-                className="rounded-lg border border-hairline px-3 py-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg border border-hairline px-3.5 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {t('common.retry')}
               </button>
@@ -330,7 +330,7 @@ export const TaskBoard = memo(function TaskBoard({
               <button
                 type="button"
                 onClick={onOpenSettings}
-                className="rounded-lg border border-hairline px-3 py-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
+                className="rounded-lg border border-hairline px-3.5 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
               >
                 {t('sidebar.manageWorkspaces')}
               </button>
@@ -339,8 +339,8 @@ export const TaskBoard = memo(function TaskBoard({
         </div>
       ) : (
       /* Kanban Columns Grid (Scrollable horizontally) */
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-contain p-4">
-        <div className="grid h-full min-h-0 min-w-max grid-flow-col auto-cols-[minmax(300px,360px)] gap-4">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-contain p-5">
+        <div className="grid h-full min-h-0 min-w-max grid-flow-col auto-cols-[minmax(330px,400px)] gap-4">
           {columns.map((col) => {
             const colTasks = filteredTasks.filter((t) => t.status === col.status);
             const isManualTarget = !prototypeMode || col.status === 'backlog' || col.status === 'todo';
@@ -364,11 +364,11 @@ export const TaskBoard = memo(function TaskBoard({
                     }
                   }
                 }}
-                className="flex min-h-0 min-w-0 w-[min(360px,calc(100vw-2rem))] max-w-[360px] flex-col overflow-hidden rounded-2xl border border-hairline bg-paper/60 p-3"
+                className="flex min-h-0 min-w-0 w-[min(400px,calc(100vw-2.5rem))] max-w-[400px] flex-col overflow-hidden rounded-2xl border border-hairline bg-paper/60 p-3.5"
               >
                 {/* Column Header */}
-                <div className="flex shrink-0 items-center justify-between gap-2 pb-2 mb-2 border-b border-hairline">
-                  <div className="flex min-w-0 items-center gap-1.5">
+                <div className="flex shrink-0 items-center justify-between gap-2 pb-2.5 mb-2.5 border-b border-hairline">
+                  <div className="flex min-w-0 items-center gap-2">
                     <span
                       className={`h-2 w-2 rounded-full ${
                         col.status === 'running' || col.status === 'in_progress'
@@ -382,19 +382,19 @@ export const TaskBoard = memo(function TaskBoard({
                                 : 'bg-ink-faint'
                       }`}
                     />
-                    <h3 className="min-w-0 truncate font-mono text-[12px] font-semibold tracking-wider text-ink uppercase">
+                    <h3 className="min-w-0 truncate font-mono text-[12.5px] font-semibold tracking-wider text-ink uppercase">
                       {col.label}
                     </h3>
                   </div>
-                  <span className="shrink-0 rounded-full border border-hairline bg-paper px-2 py-0.2 font-mono text-[10px] text-ink-faint">
+                  <span className="shrink-0 rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-faint">
                     {colTasks.length}
                   </span>
                 </div>
 
                 {/* Column Cards Scrollable List */}
-                <div className="min-h-0 min-w-0 flex-1 space-y-2.5 overflow-y-auto overscroll-y-contain pr-1">
+                <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain pr-1">
                   {colTasks.length === 0 ? (
-                    <div className="py-8 text-center text-[11.5px] text-ink-faint border border-dashed border-hairline rounded-xl">
+                    <div className="py-8 text-center text-[12px] text-ink-faint border border-dashed border-hairline rounded-xl">
                       暂无需求卡片
                     </div>
                   ) : (

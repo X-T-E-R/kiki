@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  agentIdentityPatch,
   appendExtraSkillDirs,
   AI_SETTINGS_TABS,
   aiTabForCard,
   buildSettingsSearchIndex,
   clearRestartRequirement,
+  communicationPatch,
   createProvider,
   fetchRemoteModels,
   humanizeMs,
@@ -29,6 +31,7 @@ import {
   readSettings,
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
+  resourceLimitPatch,
   remoteModelsHeaders,
   remoteModelsUrl,
   replaceProvider,
@@ -38,7 +41,6 @@ import {
   resolveSettingsRoute,
   restartRequirementSnapshot,
   runtimeConfigDraftFromConfig,
-  runtimeConfigPatch,
   searchSettings,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
@@ -52,6 +54,7 @@ import {
   settingsSnapshot,
   subscribeRestartRequirement,
   subscribeSettings,
+  taskRuntimePatch,
   toolPolicyDraftFromConfig,
   toolPolicyPatch,
   validateDesktopConfigDraft,
@@ -235,7 +238,7 @@ describe('settings persistence and validation', () => {
     });
   });
 
-  it('maps every runtime config domain from GET projection to a replacement patch', () => {
+  it('maps every engine config domain from GET projection to the split narrow patches', () => {
     const draft = runtimeConfigDraftFromConfig({
       providers: {},
       cron: { debug: true, noJitter: true, noStale: false, disabled: false, manualTick: true, clock: 'utc', pollIntervalMs: null },
@@ -253,25 +256,38 @@ describe('settings persistence and validation', () => {
     draft.extraAgentDirs.push(' C:\\agents ', 'D:\\agents');
     draft.disabledBuiltinProfiles = [];
 
-    const patch = runtimeConfigPatch(draft);
-    // cron is env-driven and never persisted — absent from both the patch and replace_domains.
-    expect(patch.cron).toBeUndefined();
-    expect(patch.workspace_instance).toEqual({ idle_ttl_ms: 120_000 });
-    expect(patch.image).toEqual({ max_edge_px: 2048, read_byte_budget: 4_000_000 });
-    expect(patch.task).toEqual(expect.objectContaining({ max_running_tasks: 4, keep_alive_on_exit: true, print_background_mode: 'drain' }));
-    expect(patch.extra_agent_dirs).toEqual(['C:\\agents', 'D:\\agents']);
-    expect(patch.disabled_builtin_profiles).toEqual([]);
-    // mcp and tools belong to other leaves — the runtime patch neither sends
-    // nor replaces them, so a stale runtime draft can never roll them back.
-    expect(patch.mcp).toBeUndefined();
-    expect(patch.tools).toBeUndefined();
-    expect(patch.replace_domains).toEqual(expect.arrayContaining([
-      'thread_communication', 'token_counting', 'workspace_instance', 'image', 'task',
-      'identity', 'extra_agent_dirs', 'disabled_builtin_profiles',
-    ]));
-    expect(patch.replace_domains).not.toContain('cron');
-    expect(patch.replace_domains).not.toContain('mcp');
-    expect(patch.replace_domains).not.toContain('tools');
+    // cron is env-driven and never persisted — no patch emits or replaces it.
+    const taskPatch = taskRuntimePatch(draft.task);
+    expect(taskPatch.task).toEqual(expect.objectContaining({ max_running_tasks: 4, keep_alive_on_exit: true, print_background_mode: 'drain' }));
+    expect(taskPatch.replace_domains).toEqual(['task']);
+    expect(taskPatch.cron).toBeUndefined();
+
+    const resourcePatch = resourceLimitPatch(draft);
+    expect(resourcePatch.workspace_instance).toEqual({ idle_ttl_ms: 120_000 });
+    expect(resourcePatch.image).toEqual({ max_edge_px: 2048, read_byte_budget: 4_000_000 });
+    expect(resourcePatch.replace_domains).toEqual(['workspace_instance', 'image']);
+
+    const commPatch = communicationPatch(draft);
+    expect(commPatch.thread_communication).toEqual({ enabled: true });
+    expect(commPatch.token_counting).toEqual({ strategy: 'measured' });
+    expect(commPatch.replace_domains).toEqual(['thread_communication', 'token_counting']);
+
+    const identityPatch = agentIdentityPatch(draft);
+    expect(identityPatch.identity).toEqual({ name: 'Example Agent', slug: 'example-agent' });
+    expect(identityPatch.extra_agent_dirs).toEqual(['C:\\agents', 'D:\\agents']);
+    expect(identityPatch.disabled_builtin_profiles).toEqual([]);
+    expect(identityPatch.replace_domains).toEqual(['identity', 'extra_agent_dirs', 'disabled_builtin_profiles']);
+
+    // mcp and tools belong to other leaves — none of the split patches sends
+    // or replaces them, so a stale draft can never roll them back.
+    for (const patch of [taskPatch, resourcePatch, commPatch, identityPatch]) {
+      expect(patch.cron).toBeUndefined();
+      expect(patch.mcp).toBeUndefined();
+      expect(patch.tools).toBeUndefined();
+      expect(patch.replace_domains).not.toContain('cron');
+      expect(patch.replace_domains).not.toContain('mcp');
+      expect(patch.replace_domains).not.toContain('tools');
+    }
   });
 
   it('projects malformed config roots and lists to safe canonical defaults', () => {
@@ -302,10 +318,10 @@ describe('settings persistence and validation', () => {
     expect(policy.toolsDisabled).toEqual([]);
   });
 
-  it('rejects invalid runtime integers before config writes', () => {
+  it('rejects invalid engine integers before config writes', () => {
     const draft = runtimeConfigDraftFromConfig({ providers: {} });
     draft.imageMaxEdgePx = '0';
-    expect(() => runtimeConfigPatch(draft)).toThrow(/image\.max_edge_px/);
+    expect(() => resourceLimitPatch(draft)).toThrow(/image\.max_edge_px/);
     draft.imageMaxEdgePx = '';
     // The mcp domain upper bound is enforced by its own leaf's patch helper.
     expect(() => mcpTimeoutsPatch('2147483648', '')).toThrow(/mcp\.startup_timeout_ms/);
@@ -769,8 +785,9 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_NAV_TREE[0]).toMatchObject({ kind: 'group', id: 'app' });
     expect(SETTINGS_NAV_TREE.at(-1)).toEqual({ kind: 'leaf', section: 'about' });
     expect(settingsGroupForSection('ai')?.id).toBe('ai');
-    // The Plan & tasks leaf owns plan defaults and the task board; runtime stays
-    // under system and the remaining advanced controls stay in Data & advanced.
+    // The Plan & tasks leaf owns plan defaults, the task board, and the task
+    // policy/cron cards from the retired runtime leaf; the remaining engine
+    // knobs live under Data & advanced, identity under Agents.
     expect(settingsGroupForSection('skills')?.id).toBe('extensions');
     expect(settingsGroupForSection('mcp')?.id).toBe('extensions');
     expect(settingsGroupForSection('plugins')?.id).toBe('extensions');
@@ -778,7 +795,7 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(settingsGroupForSection('tasks')?.id).toBe('extensions');
     expect(settingsGroupForSection('search')?.id).toBe('extensions');
     expect(settingsGroupForSection('subagents')?.id).toBe('agents');
-    expect(settingsGroupForSection('runtime')?.id).toBe('system');
+    expect(settingsGroupForSection('runtime')).toBeUndefined();
     expect(settingsGroupForSection('experimental')).toBeUndefined();
     expect(settingsGroupForSection('advanced')?.id).toBe('advanced');
     expect(settingsGroupForSection('workspaces')?.id).toBe('system');
@@ -806,7 +823,7 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['subagents']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['ai']?.scopes).toEqual(['server']);
-    expect(SETTINGS_SECTION_META['runtime']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['runtime']).toBeUndefined();
     expect(SETTINGS_SECTION_META['automation']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['search']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['tasks']?.scopes).toEqual(['server']);
@@ -939,6 +956,27 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-timeout', tab: undefined });
   });
 
+  it('redirects the retired runtime page to tasks and keeps dissolved card links precise', () => {
+    // Bare /settings/runtime lands on tasks, where its dominant content (task
+    // policy, cron) now lives; the dissolved st-card-runtime hash follows its
+    // hand-written alias to the task-policy card.
+    expect(resolveSettingsRoute('runtime', ''))
+      .toEqual({ status: 'ok', section: 'tasks', cardId: undefined, tab: undefined });
+    expect(resolveSettingsRoute('runtime', '#st-card-runtime'))
+      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-task-policy', tab: undefined });
+    expect(resolveSettingsRoute('retired-section', '#st-card-runtime'))
+      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-task-policy', tab: undefined });
+    // Cards that moved out of the runtime page resolve to their new owners.
+    expect(resolveSettingsRoute('runtime', '#st-card-cron'))
+      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-cron', tab: undefined });
+    expect(resolveSettingsRoute('runtime', '#st-card-communication'))
+      .toEqual({ status: 'ok', section: 'advanced', cardId: 'st-card-communication', tab: undefined });
+    expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))
+      .toEqual({ status: 'ok', section: 'advanced', cardId: 'st-card-resource-limits', tab: undefined });
+    expect(resolveSettingsRoute('runtime', '#st-card-agent-runtime'))
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-runtime', tab: undefined });
+  });
+
   it('flags genuinely unknown sections instead of silently falling back to general', () => {
     expect(resolveSettingsRoute('nonsense', '')).toEqual({ status: 'unknown', section: 'nonsense', cardId: undefined });
     expect(resolveSettingsRoute('nonsense', '#st-card-not-real')).toEqual({ status: 'unknown', section: 'nonsense', cardId: 'st-card-not-real' });
@@ -948,8 +986,10 @@ describe('settings route resolver', () => {
   it('knows the canonical owner of every indexed card', () => {
     expect(settingsSectionForCard('st-card-mcp')).toBe('mcp');
     expect(settingsSectionForCard('st-card-language')).toBe('general');
+    expect(settingsSectionForCard('st-card-task-policy')).toBe('tasks');
     // Dissolved cards leave the spec to their LEGACY_CARD_ALIASES entry.
     expect(settingsSectionForCard('st-card-sidecar')).toBeUndefined();
+    expect(settingsSectionForCard('st-card-runtime')).toBeUndefined();
     expect(settingsSectionForCard('st-card-nowhere')).toBeUndefined();
   });
 });
@@ -1003,21 +1043,31 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
   });
 
   it('keeps every split-leaf patch inside its own domains', () => {
-    const runtimePatch = runtimeConfigPatch(runtimeConfigDraftFromConfig({ providers: {} }));
+    const engineDraft = runtimeConfigDraftFromConfig({ providers: {} });
+    const taskPatch = taskRuntimePatch(engineDraft.task);
+    const resourcePatch = resourceLimitPatch(engineDraft);
+    const commPatch = communicationPatch(engineDraft);
+    const identityPatch = agentIdentityPatch(engineDraft);
     const toolsPatch = toolPolicyPatch({ toolsEnabled: [], toolsDisabled: [] });
     const mcpPatch = mcpTimeoutsPatch('60000', '');
-    expect(Object.keys(runtimePatch)).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
+    for (const patch of [taskPatch, resourcePatch, commPatch, identityPatch]) {
+      expect(Object.keys(patch)).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
+      expect(patch.replace_domains).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
+    }
+    expect(Object.keys(taskPatch).toSorted()).toEqual(['replace_domains', 'task']);
+    expect(Object.keys(resourcePatch).toSorted()).toEqual(['image', 'replace_domains', 'workspace_instance']);
+    expect(Object.keys(commPatch).toSorted()).toEqual(['replace_domains', 'thread_communication', 'token_counting']);
+    expect(Object.keys(identityPatch).toSorted()).toEqual(['disabled_builtin_profiles', 'extra_agent_dirs', 'identity', 'replace_domains']);
     expect(Object.keys(toolsPatch).toSorted()).toEqual(['replace_domains', 'tools']);
     expect(Object.keys(mcpPatch).toSorted()).toEqual(['mcp', 'replace_domains']);
-    expect(runtimePatch.replace_domains).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
   });
 
   it('two leaves saving from divergent echoes never roll each other back', () => {
-    // The runtime leaf holds echo A (stale tools policy), the automation leaf
-    // holds echo B (stale runtime values). Because each save only replaces its
+    // The advanced leaf holds echo A (stale tools policy), the automation leaf
+    // holds echo B (stale engine values). Because each save only replaces its
     // own domains, applying both patches in sequence keeps every leaf's newest
     // values no matter how stale the other leaf's draft was.
-    const runtimeSave = runtimeConfigPatch(runtimeConfigDraftFromConfig({
+    const resourceSave = resourceLimitPatch(runtimeConfigDraftFromConfig({
       providers: {},
       workspace_instance: { idleTtlMs: 60_000 },
       tools: { enabled: ['Read'], disabled: [] },
@@ -1038,12 +1088,12 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
       tools: 'policy-from-B',
       mcp: 'mcp-from-C',
     };
-    const afterRuntime = apply(server, runtimeSave as never);
-    expect(afterRuntime['tools']).toBe('policy-from-B');
-    expect(afterRuntime['mcp']).toBe('mcp-from-C');
-    const afterBoth = apply(afterRuntime, toolsSave as never);
+    const afterResource = apply(server, resourceSave as never);
+    expect(afterResource['tools']).toBe('policy-from-B');
+    expect(afterResource['mcp']).toBe('mcp-from-C');
+    const afterBoth = apply(afterResource, toolsSave as never);
     expect(afterBoth['tools']).toEqual({ enabled: ['Bash'], disabled: ['Read'] });
-    expect(afterBoth['workspace_instance']).toEqual(runtimeSave.workspace_instance);
+    expect(afterBoth['workspace_instance']).toEqual(resourceSave.workspace_instance);
     expect(afterBoth['mcp']).toBe('mcp-from-C');
   });
 });

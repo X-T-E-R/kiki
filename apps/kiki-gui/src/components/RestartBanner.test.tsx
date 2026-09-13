@@ -169,6 +169,7 @@ describe('RestartBanner restart decision', () => {
     expect(restartNativeServer).not.toHaveBeenCalled();
     const dialog = container.querySelector('[role="alertdialog"]');
     expect(dialog).not.toBeNull();
+    expect(dialog!.className).toContain('max-w-[520px]');
     expect(container.textContent).toContain('Restart to apply pending changes?');
     expect(container.textContent).toContain('terminates 2 running session task(s)');
   });

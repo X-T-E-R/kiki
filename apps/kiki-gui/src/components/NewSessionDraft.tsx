@@ -373,7 +373,10 @@ export function useNewSessionDraft({
       swarmMode: context.swarmMode,
     });
 
-    client
+    // Returned so the composer's send latch rides the create round trip: a
+    // second trigger while this is in flight is ignored, and a failed create
+    // releases the latch for retry.
+    return client
       .createSession(body)
       .then((session) => {
         writeDraft(DRAFT_KEY, '');
@@ -403,7 +406,7 @@ export function useNewSessionDraft({
 
   const send = useCallback((text: string, composerAttachments: readonly ComposerAttachment[]) => {
     if (buildPromptContent(text, composerAttachments) === null) return;
-    createThenNavigate({
+    return createThenNavigate({
       initialPrompt: text.trim(),
       initialAttachments: composerAttachments,
     });
@@ -414,7 +417,7 @@ export function useNewSessionDraft({
     args: string,
     composerAttachments: readonly ComposerAttachment[],
   ) => {
-    createThenNavigate({
+    return createThenNavigate({
       initialSkill: { name, args, attachments: composerAttachments },
     });
   }, [createThenNavigate]);

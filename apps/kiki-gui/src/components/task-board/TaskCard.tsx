@@ -53,48 +53,48 @@ export const TaskCard = memo(function TaskCard({
         e.dataTransfer.effectAllowed = 'move';
       }}
       onClick={() => onClick(task)}
-      className="group relative flex min-w-0 flex-col rounded-xl border border-hairline bg-panel p-3 shadow-xs hover:border-accent/60 hover:shadow-sm transition-all cursor-pointer select-none"
+      className="group relative flex min-w-0 flex-col rounded-xl border border-hairline bg-panel p-3.5 shadow-xs hover:border-accent/60 hover:shadow-sm transition-all cursor-pointer select-none"
     >
       {/* Top row: Priority & Workspace Tag */}
       <div className="flex min-w-0 items-center justify-between gap-1.5">
         <span
-          className={`shrink-0 rounded-sm border px-1.5 py-0.2 font-mono text-[9.5px] font-semibold ${pChip.className}`}
+          className={`shrink-0 rounded-sm border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${pChip.className}`}
         >
           {pChip.label}
         </span>
 
         {task.workspaceTitle ? (
-          <span className="min-w-0 max-w-28 truncate font-mono text-[10px] text-ink-faint" title={task.workspaceTitle}>
+          <span className="min-w-0 max-w-36 truncate font-mono text-[10.5px] text-ink-faint" title={task.workspaceTitle}>
             📁 {task.workspaceTitle}
           </span>
         ) : null}
       </div>
 
       {/* Card Title */}
-      <h4 className="mt-1.5 min-w-0 text-[13px] font-semibold leading-snug text-ink group-hover:text-accent transition-colors line-clamp-2">
+      <h4 className="mt-2 min-w-0 text-[13.5px] font-semibold leading-snug text-ink group-hover:text-accent transition-colors line-clamp-2">
         {task.title}
       </h4>
 
       {/* Card Excerpt */}
       {task.description ? (
-        <p className="mt-1 min-w-0 text-[11.5px] text-ink-soft leading-relaxed line-clamp-2">
+        <p className="mt-1.5 min-w-0 text-[12px] text-ink-soft leading-relaxed line-clamp-2">
           {task.description}
         </p>
       ) : null}
 
       {/* Context Freeze Snapshot Pill */}
       {task.freezeGoal ? (
-        <div className="mt-2 rounded bg-amber-card/50 border border-amber-rule/30 px-1.5 py-0.5 text-[10px] text-amber-ink truncate font-mono">
+        <div className="mt-2 rounded bg-amber-card/50 border border-amber-rule/30 px-2 py-1 text-[10.5px] text-amber-ink truncate font-mono">
           ❄️ {task.freezeGoal}
         </div>
       ) : null}
 
       {/* Bottom Meta: execution facts, associations, and update time */}
-      <div className={`mt-3 flex items-center justify-between gap-1.5 text-[10.5px] font-mono ${latestExecution || task.linkedExecutionIds?.length || task.associatedSessionIds?.length ? 'border-t border-hairline pt-2' : ''}`}>
+      <div className={`mt-3.5 flex items-center justify-between gap-1.5 text-[11px] font-mono ${latestExecution || task.linkedExecutionIds?.length || task.associatedSessionIds?.length ? 'border-t border-hairline pt-2.5' : ''}`}>
         <div className="flex min-w-0 items-center gap-1.5">
           {latestExecution ? (
             <span
-              className={`rounded-full px-1.5 py-0.5 text-[9.5px] font-medium ${
+              className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
                 latestExecution.result === 'succeeded'
                   ? 'bg-success/10 text-success'
                   : latestExecution.result === 'failed'
@@ -110,14 +110,14 @@ export const TaskCard = memo(function TaskCard({
                   : '● 运行中'}
             </span>
           ) : task.linkedExecutionIds?.length ? (
-            <span className="text-ink-faint text-[10px]" title="执行引用不表示运行状态">
+            <span className="text-ink-faint text-[10.5px]" title="执行引用不表示运行状态">
               {task.linkedExecutionIds.length} 个执行引用
             </span>
           ) : null}
 
           {task.associatedSessionIds && task.associatedSessionIds.length > 0 ? (
             <span
-              className="shrink-0 rounded border border-hairline bg-paper px-1 text-[9.5px] text-ink-soft"
+              className="shrink-0 rounded border border-hairline bg-paper px-1.5 text-[10px] text-ink-soft"
               title={`${task.associatedSessionIds.length} 个关联会话`}
             >
               ⌁ {task.associatedSessionIds.length}
@@ -125,7 +125,7 @@ export const TaskCard = memo(function TaskCard({
           ) : null}
         </div>
 
-        <span className="shrink-0 text-ink-faint text-[10px]">
+        <span className="shrink-0 text-ink-faint text-[10.5px]">
           {formatRelativeTime(task.updatedAt)}
         </span>
       </div>

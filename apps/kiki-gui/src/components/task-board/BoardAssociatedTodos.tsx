@@ -267,19 +267,19 @@ function TodoItems({ todos }: { readonly todos: SessionViewState['todos'] }) {
   const doneCount = todos.filter((todo) => todo.status === 'done').length;
   return (
     <div data-board-associated-todo-list className="space-y-1.5">
-      <div className="flex items-center justify-between gap-2 font-mono text-[10px] text-ink-faint">
+      <div className="flex items-center justify-between gap-2 font-mono text-[10.5px] text-ink-faint">
         <span>{t('agentPanel.todoTitle')}</span>
         <span>{doneCount}/{todos.length}</span>
       </div>
       {todos.length === 0 ? (
-        <p className="py-1 text-[11px] text-ink-faint">{t('agentPanel.noTodos')}</p>
+        <p className="py-1 text-[11.5px] text-ink-faint">{t('agentPanel.noTodos')}</p>
       ) : (
         <ul className="space-y-1">
           {todos.map((todo, index) => {
             const tone = todoTone(todo.status);
             return (
-              <li key={`${index}:${todo.title}`} className="flex items-start gap-2 text-[11.5px] leading-snug">
-                <span className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border text-[9px] font-bold ${tone.className}`} aria-hidden>
+              <li key={`${index}:${todo.title}`} className="flex items-start gap-2 text-[12px] leading-snug">
+                <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border text-[10px] font-bold ${tone.className}`} aria-hidden>
                   {tone.icon}
                 </span>
                 <input
@@ -367,33 +367,33 @@ export const BoardAssociatedTodos = memo(function BoardAssociatedTodos({
         type="button"
         aria-expanded={expanded}
         onClick={() => { setExpanded((value) => !value); }}
-        className="flex w-full items-center justify-between gap-2 text-left text-[10.5px] font-semibold tracking-[0.06em] text-ink-faint uppercase transition-colors hover:text-ink"
+        className="flex w-full items-center justify-between gap-2 text-left text-[11px] font-semibold tracking-[0.06em] text-ink-faint uppercase transition-colors hover:text-ink"
       >
         <span className="flex min-w-0 items-center gap-1.5">
           <span aria-hidden className={`shrink-0 text-[8px] transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}>▶</span>
           <span className="truncate">{t('agentPanel.todoTitle')}</span>
         </span>
-        <span className="shrink-0 font-mono text-[9.5px] text-ink-faint">
+        <span className="shrink-0 font-mono text-[10px] text-ink-faint">
           {doneCount}/{todoCount}
         </span>
       </button>
       {expanded ? (
         <div data-board-associated-todos-content className="mt-2 space-y-2">
           {!ready ? (
-            <p role="status" className="text-[11px] text-ink-faint">{manager === null ? t('diagnostics.unavailable') : t('diagnostics.loading')}</p>
+            <p role="status" className="text-[11.5px] text-ink-faint">{manager === null ? t('diagnostics.unavailable') : t('diagnostics.loading')}</p>
           ) : snapshots.map((snapshot) => {
             const agentIds = ['main', ...Object.keys(snapshot.agents)];
             return (
               <section key={snapshot.sessionId} data-board-associated-todos-session={snapshot.sessionId} className="space-y-2 border-t border-hairline/70 pt-2 first:border-t-0 first:pt-0">
-                <div className="font-mono text-[10px] font-semibold text-ink-soft">{sessionLabels[snapshot.sessionId] ?? snapshot.sessionId}</div>
-                {snapshot.error ? <p role="alert" className="text-[11px] text-danger">{t('diagnostics.error')} · {snapshot.error}</p> : null}
+                <div className="font-mono text-[10.5px] font-semibold text-ink-soft">{sessionLabels[snapshot.sessionId] ?? snapshot.sessionId}</div>
+                {snapshot.error ? <p role="alert" className="text-[11.5px] text-danger">{t('diagnostics.error')} · {snapshot.error}</p> : null}
                 {agentIds.map((agentId) => {
                   const state = agentId === 'main' ? snapshot.main : snapshot.agents[agentId];
                   if (state === undefined) return null;
                   return (
                     <div key={agentId} data-board-associated-todos-agent={agentId} className="space-y-1.5 border-t border-hairline/60 pt-1.5">
-                      <div className="mb-1 font-mono text-[10px] font-semibold text-ink-faint">{agentLabel(agentId, snapshot.forest, t('agentPanel.mainBadge'))}</div>
-                      {state.loaded ? <TodoItems todos={state.todos} /> : <p role="status" className="text-[11px] text-ink-faint">{t('diagnostics.loading')}</p>}
+                      <div className="mb-1 font-mono text-[10.5px] font-semibold text-ink-faint">{agentLabel(agentId, snapshot.forest, t('agentPanel.mainBadge'))}</div>
+                      {state.loaded ? <TodoItems todos={state.todos} /> : <p role="status" className="text-[11.5px] text-ink-faint">{t('diagnostics.loading')}</p>}
                     </div>
                   );
                 })}

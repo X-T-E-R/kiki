@@ -8,6 +8,7 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import type { KikiConfigResponse } from '../../lib/client';
+import { CommunicationSettingsCard, ResourceLimitsCard } from './EngineLimitSettings';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
 
@@ -83,6 +84,8 @@ export function AdvancedSection() {
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
+      <CommunicationSettingsCard />
+      <ResourceLimitsCard />
       <ExperimentalSection
         featureIds={['search_worker', 'persistence_minidb_readmodel']}
         includeUnknown

@@ -55,6 +55,7 @@ import {
   HistoryLine,
   HistoryRunRow,
   historyRunsEqual,
+  isAbortedPromptNotice,
   isMarkerNotice,
   type GroupedDisplayNode,
 } from './ActivityHistory';
@@ -1269,10 +1270,11 @@ function displayNodeTurnId(node: GroupedDisplayNode): string | undefined {
 
 /**
  * Compact-history predicate: which nodes may fold into a history run. Only
- * TERMINAL facts qualify — resolved approvals/questions, goal/plan markers,
- * settled subagent lifecycle events and compact-form subagent cards. Failed
- * or cancelled entries stay individually visible (never swallowed); pending
- * interactions keep their full cards and break the run.
+ * TERMINAL facts qualify — resolved approvals/questions, terminal prompt
+ * dividers, goal/plan markers, settled subagent lifecycle events and
+ * compact-form subagent cards. Failed or cancelled entries stay individually
+ * visible (never swallowed); pending interactions keep their full cards and
+ * break the run.
  */
 /**
  * Background-task terminal notifications project as `system` blocks (variant
@@ -1299,7 +1301,7 @@ function isCompactHistoryNode(
     case 'question':
       return node.outcome !== undefined;
     case 'notice':
-      return isMarkerNotice(node);
+      return isMarkerNotice(node) || isAbortedPromptNotice(node);
     case 'system':
       return node.variant === 'task' && !isFailedTaskNotificationText(node.text);
     case 'subagent-event':

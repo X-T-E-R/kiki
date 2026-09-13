@@ -3,6 +3,7 @@ import { AgentTaskSettings } from './AgentTaskSettings';
 import { BoardStorageSettings } from './BoardStorageSettings';
 import { ExperimentalSection } from './ExperimentalSection';
 import { PlanSettings } from './PlanSettings';
+import { CronRuntimeCard, TaskPolicyCard } from './TaskRuntimeSettings';
 
 /** Task board storage and the agent-local Todo explanation share one capability leaf. */
 export function TasksSection() {
@@ -10,6 +11,8 @@ export function TasksSection() {
   return (
     <div className="space-y-4">
       <PlanSettings />
+      <TaskPolicyCard />
+      <CronRuntimeCard />
       <AgentTaskSettings
         boardContent={
           <>

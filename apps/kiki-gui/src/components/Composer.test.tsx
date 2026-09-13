@@ -221,12 +221,13 @@ describe('Composer host compatibility', () => {
     const { container } = await renderComposer({ value: 'browser prompt', onSend });
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
 
-    act(() => {
+    await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
 
     expect(onSend).toHaveBeenCalledWith('browser prompt', []);
     expect(preparePrompt).not.toHaveBeenCalled();
+    // The send latch releases once the (void) submit settles a microtask later.
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
   });
 
@@ -277,6 +278,50 @@ describe('Composer host compatibility', () => {
       newKeyAfterSession,
       newKeyAfterSession,
     ]);
+  });
+});
+
+describe('Composer send latch', () => {
+  it('ignores a rapid second trigger while the submission is in flight', async () => {
+    const gate = deferred<void>();
+    const onSend = vi.fn(() => gate.promise);
+    const { container } = await renderComposer({ value: 'double tap', onSend });
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    expect(sendButton.disabled).toBe(false);
+
+    await click(sendButton);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    // The intent alone disables the button — no waiting for the parent to
+    // clear the draft or for `busy` to arrive.
+    expect(sendButton.disabled).toBe(true);
+
+    // The rapid second click during the round trip is swallowed.
+    await click(sendButton);
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    // Settling releases the latch, so a deliberate next send goes through.
+    await act(async () => { gate.resolve(); });
+    await settle();
+    expect(sendButton.disabled).toBe(false);
+    await click(sendButton);
+    expect(onSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the latch for a retry when the submission rejects', async () => {
+    const onSend = vi.fn()
+      .mockImplementationOnce(() => Promise.reject(new Error('fixture offline')))
+      .mockImplementationOnce(() => Promise.resolve());
+    const { container } = await renderComposer({ value: 'retry me', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+
+    await pressKey(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(sendButton.disabled).toBe(false);
+
+    await pressKey(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1020,7 +1065,7 @@ describe('Composer slash skill catalog', () => {
     for (let index = 0; index < 8; index += 1) await settle();
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
 
-    act(() => {
+    await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
 

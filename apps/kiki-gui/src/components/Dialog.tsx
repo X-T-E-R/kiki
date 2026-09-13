@@ -20,8 +20,33 @@ import { registerOverlay } from '../lib/uiBusy';
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-const DEFAULT_PANEL_CLASS =
-  'anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]';
+/**
+ * Shared panel chrome (everything but the width cap) plus the semantic width
+ * scale. Callers pair `DIALOG_PANEL_BASE` with one of the sizes instead of
+ * hand-rolling a width; shells that own their chrome (fixed-height flex
+ * layouts, alert dialogs) still compose the tier for the cap alone:
+ *
+ * - `sm`  520px — confirmations and single-field prompts (rename, undo).
+ * - `md`  640px — standard forms with a handful of controls (profile editor).
+ * - `lg`  880px — roomy single-column forms with large writing surfaces (new task).
+ * - `xl`  1080px — sectioned detail views with side rails (task detail).
+ * - `2xl` 1280px — full workspace surfaces (task board).
+ *
+ * Panels stay fluid below the cap (`w-full`), so narrow viewports just get a
+ * full-bleed panel inside the overlay padding.
+ */
+export const DIALOG_PANEL_BASE =
+  'anim-enter w-full rounded-2xl border border-hairline bg-panel p-6 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]';
+
+export const DIALOG_PANEL_SIZES = {
+  sm: 'max-w-[520px]',
+  md: 'max-w-[640px]',
+  lg: 'max-w-[880px]',
+  xl: 'max-w-[1080px]',
+  '2xl': 'max-w-[1280px]',
+} as const;
+
+const DEFAULT_PANEL_CLASS = `${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`;
 
 export function Dialog({
   onClose,
@@ -36,7 +61,7 @@ export function Dialog({
   ariaLabel: string;
   /** uiBusy overlay registration id — unique per dialog kind. */
   overlayId: string;
-  /** Replaces the default panel chrome (larger dialogs restyle width/padding). */
+  /** Replaces the default panel chrome — prefer composing DIALOG_PANEL_BASE + DIALOG_PANEL_SIZES. */
   panelClassName?: string;
   /** Replaces the default backdrop layout (slide-overs and lightboxes restyle alignment/tint). */
   overlayClassName?: string;

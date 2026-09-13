@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import type { BoardCard, BoardClient, BoardPatch, BoardStatus, BoardSummary } from '@kiki/klient/contract/board/types';
+import type { BoardCard, BoardPatch, BoardStatus, BoardSummary } from '@kiki/klient/contract/board/types';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection, useControllerRegistry } from '../../state/connection';
@@ -8,7 +8,7 @@ import {
   BoardAssociatedTodosProvider,
   createBoardAssociatedTodoManager,
 } from './BoardAssociatedTodos';
-import { boardCardKey, TaskBoardController } from './TaskBoardController';
+import { boardCardKey, TaskBoardController, type TaskBoardClient } from './TaskBoardController';
 import { OWN_WORK_BOARD_COLUMNS, type BoardSessionOption, type BoardTask, type BoardWorkspaceOption, type TaskPriority } from './types';
 
 const OWN_WORK_COLUMN_LABEL_KEYS = {
@@ -21,7 +21,7 @@ const OWN_WORK_COLUMN_LABEL_KEYS = {
 } as const satisfies Record<(typeof OWN_WORK_BOARD_COLUMNS)[number]['status'], I18nKey>;
 
 export interface TaskBoardContainerProps {
-  readonly client: BoardClient;
+  readonly client: TaskBoardClient;
   readonly workspaceIds: readonly string[];
   readonly currentWorkspaceId?: string;
   readonly currentSessionId?: string;

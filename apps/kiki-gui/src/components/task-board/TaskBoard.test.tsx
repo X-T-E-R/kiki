@@ -182,6 +182,7 @@ describe('TaskBoard Component Presentation', () => {
     // Detail modal opens
     const modal = container.querySelector('[data-task-detail-modal]');
     expect(modal).not.toBeNull();
+    expect(modal?.firstElementChild?.className).toContain('max-w-[1080px]');
     expect(modal?.textContent).toContain('重构右栏为独立 Agent Panel');
     expect(modal?.querySelector('[data-board-associated-todos]')).not.toBeNull();
 
@@ -238,6 +239,7 @@ describe('TaskBoard Component Presentation', () => {
 
     const newModal = container.querySelector('[data-new-task-modal]');
     expect(newModal).not.toBeNull();
+    expect(newModal?.firstElementChild?.className).toContain('max-w-[880px]');
 
     const titleInput = newModal!.querySelector('input[type="text"]') as HTMLInputElement;
     await act(async () => {

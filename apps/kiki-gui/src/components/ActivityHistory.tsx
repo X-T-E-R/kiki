@@ -1,10 +1,11 @@
 /**
  * Compact history presentation: terminal interaction facts (resolved
- * approvals/questions), goal/plan markers, settled subagent lifecycle entries
- * and compact subagent cards stay INLINE in the timeline at their original
- * position. Runs of ≥2 consecutive compact entries fold into an expandable
- * summary row so notification piles stop flooding the log; failed or
- * cancelled entries never fold (the caller's predicate excludes them).
+ * approvals/questions), terminal prompt dividers, goal/plan markers, settled
+ * subagent lifecycle entries and compact subagent cards stay INLINE in the
+ * timeline at their original position. Runs of ≥2 consecutive compact
+ * entries fold into an expandable summary row so notification piles stop
+ * flooding the log; failed or cancelled entries never fold (the caller's
+ * predicate excludes them).
  */
 
 import { memo, useState, type ReactNode } from 'react';
@@ -23,6 +24,17 @@ import { RelativeTime } from './RelativeTime';
 /** Marker notices (goal/plan/swarm …) are the neutral, transcript-owned ones. */
 export function isMarkerNotice(block: NoticeBlock): boolean {
   return block.tone === 'neutral' && block.id.startsWith('agent-marker-');
+}
+
+/**
+ * Terminal-prompt divider ("Prompt aborted"): session-core's
+ * mergeTranscriptPromptBlocks projects one neutral notice per aborted/failed
+ * prompt. It is a terminal lifecycle fact like a resolved interaction, so it
+ * may fold — left out of the compact set it both piles at the tail itself
+ * and breaks runs of adjacent compact entries.
+ */
+export function isAbortedPromptNotice(block: NoticeBlock): boolean {
+  return block.tone === 'neutral' && block.id.startsWith('notice-aborted-');
 }
 
 /**

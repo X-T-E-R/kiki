@@ -8,6 +8,7 @@ import { useEffect, useRef } from 'react';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
+import { DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
 import { DANGER_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 export interface ConfirmDialogProps {
@@ -100,20 +101,20 @@ export function ConfirmDialog({
         role="alertdialog"
         aria-modal="true"
         aria-label={title}
-        className="anim-enter w-full max-w-[420px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_12px_32px_rgba(28,25,23,0.18)]"
+        className={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`}
         onClick={(event) => { event.stopPropagation(); }}
         onKeyDown={onKeyDown}
       >
-        <h3 className="font-display text-[15px] font-semibold text-ink">{title}</h3>
+        <h3 className="font-display text-[17px] font-semibold text-ink">{title}</h3>
         {body !== undefined ? (
-          <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">{body}</p>
+          <p className="mt-2.5 text-[13px] leading-relaxed text-ink-soft">{body}</p>
         ) : null}
         {consequences !== undefined && consequences.length > 0 ? (
-          <ul className="mt-2 list-disc space-y-1 pl-5 text-[12px] leading-relaxed text-ink-soft">
+          <ul className="mt-2.5 list-disc space-y-1.5 pl-5 text-[12.5px] leading-relaxed text-ink-soft">
             {consequences.map((item) => <li key={item}>{item}</li>)}
           </ul>
         ) : null}
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-6 flex justify-end gap-2.5">
           <button ref={cancelRef} type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onCancel}>
             {cancelLabel ?? t('common.cancel')}
           </button>

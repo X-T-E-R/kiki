@@ -79,7 +79,10 @@ function SubagentTimeoutCard() {
     <SectionCard id="st-card-subagent-timeout" title={t('st.subagentTimeout.title')} badge={restart.required ? 'restart' : undefined}>
       <div className="space-y-4">
         <fieldset disabled={configQuery.isLoading || saving} className="space-y-4 disabled:opacity-60">
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentTimeout')}
+          {/* No visible label: the card title already names the field ("子代理
+              超时"), so a repeated caption read as a duplicate. The input keeps
+              its aria-label for screen readers. */}
+          <label className="block text-[11px] font-medium text-ink-soft">
             <MsUnitInput
               value={config.subagent.timeoutMs}
               onChange={(timeoutMs) => { setConfig({ ...config, subagent: { ...config.subagent, timeoutMs } }); }}

@@ -20,7 +20,6 @@ import { GeneralSection } from './settings/GeneralSection';
 import { McpSection } from './settings/McpSection';
 import { NbSearchSection } from './settings/NbSearchSection';
 import { PluginsSection } from './settings/PluginsSection';
-import { RuntimeSection } from './settings/RuntimeSection';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsFlashContext } from './settings/SectionCard';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
@@ -79,7 +78,7 @@ function MobileSettingsDrawer({
         onClick={onClose}
         className="absolute inset-0 bg-shell/20"
       />
-      <div className="absolute inset-y-0 left-0 flex w-[260px] flex-col overflow-y-auto border-r border-hairline bg-panel p-3">
+      <div className="absolute inset-y-0 left-0 flex w-[260px] flex-col overflow-y-auto overscroll-y-contain border-r border-hairline bg-panel p-3">
         <div className="flex items-center justify-between px-1 pb-1">
           <span className="font-display text-[13px] font-semibold text-ink">{t('st.title')}</span>
           <button
@@ -197,7 +196,6 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'tasks' ? <TasksSection />
     : active === 'search' ? <NbSearchSection />
     : active === 'workspaces' ? <WorkspacesSection />
-    : active === 'runtime' ? <RuntimeSection />
     : active === 'advanced' ? <AdvancedSection />
     : <AboutSection />;
 

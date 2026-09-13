@@ -796,37 +796,54 @@ async function scenarioSubagents() {
   if (!railText.includes('Researcher') || !railText.includes('Reviewer')) {
     throw new Error('subagent rail does not list both agents');
   }
+  const rail = page.locator('[data-session-rail]');
+  const railToggle = page.locator('[data-rail-toggle]');
+  // The board launcher lives inside the open session rail only — Esc closes
+  // the rail via the session view's window keydown handler, so never assume
+  // the rail is still open; make every step explicit.
+  const ensureRailOpen = async () => {
+    if (await rail.count() === 0) {
+      await railToggle.click();
+      await rail.waitFor({ timeout: 10_000 });
+    }
+  };
   const launcher = page.locator('[data-session-task-board]');
+  await ensureRailOpen();
   await launcher.click();
   await page.getByRole('dialog').waitFor({ timeout: 10_000 });
   await page.keyboard.press('Escape');
   await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
-  await page.locator('[data-rail-toggle]').click();
-  if (await page.locator('[data-session-rail]').count() !== 0) throw new Error('rail did not close');
+  // With the rail closed there must be no board entry anywhere: the floating
+  // fallback leaked onto /new, settings, and closed-rail sessions.
+  await ensureRailOpen();
+  await railToggle.click();
+  if (await rail.count() !== 0) throw new Error('rail did not close');
+  if (await launcher.count() !== 0) throw new Error('board launcher leaked outside the rail');
+  await ensureRailOpen();
   await launcher.click();
   await page.getByRole('dialog').waitFor({ timeout: 10_000 });
   await page.keyboard.press('Escape');
   await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
+  await ensureRailOpen();
   await page.locator('[data-subagent-id="agent-research"]').click();
   await page.waitForURL(/\/agent\/agent-research$/, { timeout: 10_000 });
   await waitForText('Protocol map complete.');
   await waitForText('Read');
   await page.waitForTimeout(500);
   await shot('subagents-agent-page');
-  await launcher.click();
-  await page.getByRole('dialog').waitFor({ timeout: 10_000 });
-  await page.keyboard.press('Escape');
-  await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
   await page.setViewportSize({ width: 700, height: 760 });
   await page.waitForTimeout(250);
-  const mobileToggle = page.locator('[data-agent-rail-toggle]');
-  await mobileToggle.click();
-  await page.locator('[data-session-rail]').waitFor({ timeout: 5_000 });
+  if (await rail.count() === 0) {
+    await page.locator('[data-agent-rail-toggle]').click();
+    await rail.waitFor({ timeout: 5_000 });
+  }
   const launcherBox = await launcher.boundingBox();
-  const send = page.getByRole('button', { name: S.sendAria }).first();
-  const sendBox = await send.count() > 0 ? await send.boundingBox() : null;
-  if (launcherBox === null || (sendBox !== null && launcherBox.x < sendBox.x + sendBox.width && launcherBox.x + launcherBox.width > sendBox.x && launcherBox.y < sendBox.y + sendBox.height && launcherBox.y + launcherBox.height > sendBox.y)) {
-    throw new Error('narrow rail board launcher overlaps composer send control');
+  const railBox = await rail.boundingBox();
+  if (launcherBox === null || railBox === null
+    || launcherBox.x < railBox.x - 1 || launcherBox.y < railBox.y - 1
+    || launcherBox.x + launcherBox.width > railBox.x + railBox.width + 1
+    || launcherBox.y + launcherBox.height > railBox.y + railBox.height + 1) {
+    throw new Error('narrow rail board launcher is not contained in the rail');
   }
   await page.locator('[data-agent-panel-scroll]').evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await page.waitForTimeout(100);

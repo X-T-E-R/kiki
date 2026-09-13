@@ -1,5 +1,8 @@
-import type { BoardCard, BoardClient, BoardCreateTarget, BoardPage, BoardPatch, BoardResult, BoardStorageRef, BoardSummary, BoardWriteInput } from '@kiki/klient/contract/board/types';
+import type { BoardCard, BoardClient, BoardCreateTarget, BoardOverviewClient, BoardPage, BoardPatch, BoardResult, BoardStorageRef, BoardSummary, BoardWriteInput } from '@kiki/klient/contract/board/types';
 
+export interface TaskBoardClient extends BoardClient {
+  readonly overview?: BoardOverviewClient['overview'];
+}
 export function boardCardKey(card: Pick<BoardSummary, 'id' | 'workspaceId' | 'storage'>): string {
   return JSON.stringify([card.workspaceId, card.storage.root, card.storage.storageId, card.id]);
 }
@@ -21,6 +24,11 @@ export interface TaskBoardSnapshot {
   /** The last refresh could not load ANY workspace — the host cannot serve the board. */
   readonly refreshFailed: boolean;
 }
+interface WorkspaceRefresh {
+  readonly cards: readonly BoardSummary[];
+  readonly cardIssues: readonly BoardWorkspaceIssue[];
+  readonly issue?: BoardWorkspaceIssue;
+}
 function unwrap<T>(result: BoardResult<T>): T {
   if (!result.ok) throw Object.assign(new Error(`${result.error.code}: ${result.error.message}`), { code: result.error.code });
   return result.value;
@@ -29,6 +37,32 @@ function errorMessage(error: unknown): string { return error instanceof Error ? 
 function errorCode(error: unknown): string {
   if (error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string') return error.code;
   return 'BOARD_REQUEST_FAILED';
+}
+function workspaceFailure(workspaceId: string, error: unknown): WorkspaceRefresh {
+  return { cards: [], cardIssues: [], issue: { workspaceId, code: errorCode(error), message: errorMessage(error) } };
+}
+function isOverviewMethodUnavailable(error: unknown): boolean {
+  if (error === null || typeof error !== 'object' || !('code' in error) || error.code !== 40001) return false;
+  const message = errorMessage(error).trim().toLowerCase();
+  return message === 'method not found: taskboardservice.overview'
+    || message === 'unknown klient procedure: taskboardservice.overview'
+    || message === 'service not available in app scope: taskboardservice';
+}
+
+const REFRESH_CONCURRENCY = 8;
+
+async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length) as R[];
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await fn(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 export class TaskBoardController {
@@ -39,8 +73,9 @@ export class TaskBoardController {
   private sources = new Map<string, BoardStorageRef>();
   private creating?: Promise<void>;
   private pending = new Map<string, Promise<void>>();
+  private overviewUnavailable = false;
 
-  constructor(private readonly client: BoardClient) {}
+  constructor(private readonly client: TaskBoardClient) {}
   readonly getSnapshot = (): TaskBoardSnapshot => this.state;
   readonly subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
   private publish(patch: Partial<TaskBoardSnapshot>): void {
@@ -54,40 +89,84 @@ export class TaskBoardController {
     this.epoch += 1;
     this.publish({ loading: false, cards: previous ? this.state.cards.map((entry) => boardCardKey(entry) === key ? card : entry) : [...this.state.cards, card], error: null });
   }
+  private pageRefresh(workspaceId: string, page: BoardPage): WorkspaceRefresh {
+    if (page.storage) this.sources.set(workspaceId, page.storage);
+    return {
+      cards: page.cards,
+      cardIssues: page.issues.map((issue) => ({ workspaceId, code: issue.code, message: issue.message })),
+      issue: undefined,
+    };
+  }
+  private async readWorkspace(workspaceId: string, sessionId?: string): Promise<WorkspaceRefresh> {
+    try {
+      const cards: BoardSummary[] = [];
+      const cardIssues: BoardWorkspaceIssue[] = [];
+      let cursor: string | undefined;
+      const seen = new Set<string>();
+      do {
+        const value = unwrap(await this.client.read({ action: 'list', workspaceId, storage: this.sources.get(workspaceId), sessionId, cursor, limit: 100 }));
+        if (!('cards' in value)) throw new Error('Invalid board list response.');
+        const page: BoardPage = value;
+        if (page.storage) this.sources.set(workspaceId, page.storage);
+        cards.push(...page.cards);
+        cardIssues.push(...page.issues.map((issue) => ({ workspaceId, code: issue.code, message: issue.message })));
+        cursor = page.nextCursor;
+        if (cursor && seen.has(cursor)) throw new Error('Board pagination did not advance.');
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+      return { cards, cardIssues, issue: undefined };
+    } catch (error) {
+      return workspaceFailure(workspaceId, error);
+    }
+  }
+  private async readOverview(workspaceIds: readonly string[]): Promise<WorkspaceRefresh[]> {
+    const entries = unwrap(await this.client.overview!());
+    const byWorkspace = new Map(entries.map((entry) => [entry.workspaceId, entry]));
+    return workspaceIds.map((workspaceId) => {
+      const entry = byWorkspace.get(workspaceId);
+      if (entry === undefined) {
+        return workspaceFailure(workspaceId, Object.assign(new Error('The board overview omitted this workspace.'), { code: 'BOARD_OVERVIEW_INCOMPLETE' }));
+      }
+      try {
+        const page = unwrap(entry.result);
+        if (page.workspaceId !== workspaceId || page.nextCursor !== undefined) {
+          throw Object.assign(new Error('The board overview returned an incomplete workspace page.'), { code: 'BOARD_OVERVIEW_INCOMPLETE' });
+        }
+        return this.pageRefresh(workspaceId, page);
+      } catch (error) {
+        return workspaceFailure(workspaceId, error);
+      }
+    });
+  }
 
   async refresh(workspaceIds: readonly string[], sessionId?: string): Promise<void> {
     const epoch = ++this.epoch;
     this.publish({ loading: true, error: null, issues: [], cardIssues: [], refreshFailed: false });
-    const cards: BoardSummary[] = [];
-    const issues: BoardWorkspaceIssue[] = [];
-    const cardIssues: BoardWorkspaceIssue[] = [];
-    let attempted = 0;
-    let failed = 0;
+    const unique = [...new Set(workspaceIds)];
     // One workspace's broken store must not take the whole board down: each
     // workspace is listed independently and its failure lands in `issues`,
-    // while per-card parse failures land separately in `cardIssues`.
-    for (const workspaceId of new Set(workspaceIds)) {
-      attempted += 1;
+    // while per-card parse failures land separately in `cardIssues`. Fan-out
+    // is bounded; results merge in `unique` order so the published snapshot is
+    // deterministic regardless of completion order.
+    let pages: WorkspaceRefresh[];
+    if (unique.length > 0 && sessionId === undefined && !this.overviewUnavailable && this.client.overview !== undefined) {
       try {
-        let cursor: string | undefined;
-        const seen = new Set<string>();
-        do {
-          const value = unwrap(await this.client.read({ action: 'list', workspaceId, storage: this.sources.get(workspaceId), sessionId, cursor, limit: 100 }));
-          if (!('cards' in value)) throw new Error('Invalid board list response.');
-          const page: BoardPage = value;
-          if (page.storage) this.sources.set(workspaceId, page.storage);
-          cards.push(...page.cards);
-          cardIssues.push(...page.issues.map((issue) => ({ workspaceId, code: issue.code, message: issue.message })));
-          cursor = page.nextCursor;
-          if (cursor && seen.has(cursor)) throw new Error('Board pagination did not advance.');
-          if (cursor) seen.add(cursor);
-        } while (cursor);
+        pages = await this.readOverview(unique);
       } catch (error) {
-        failed += 1;
-        issues.push({ workspaceId, code: errorCode(error), message: errorMessage(error) });
+        if (isOverviewMethodUnavailable(error)) {
+          this.overviewUnavailable = true;
+          pages = await mapBounded(unique, REFRESH_CONCURRENCY, (workspaceId) => this.readWorkspace(workspaceId, sessionId));
+        } else {
+          pages = unique.map((workspaceId) => workspaceFailure(workspaceId, error));
+        }
       }
+    } else {
+      pages = await mapBounded(unique, REFRESH_CONCURRENCY, (workspaceId) => this.readWorkspace(workspaceId, sessionId));
     }
-    if (epoch === this.epoch) this.publish({ cards, loading: false, issues, cardIssues, refreshFailed: attempted > 0 && failed === attempted });
+    const cards = pages.flatMap((page) => page.cards);
+    const cardIssues = pages.flatMap((page) => page.cardIssues);
+    const issues = pages.flatMap((page) => (page.issue === undefined ? [] : [page.issue]));
+    if (epoch === this.epoch) this.publish({ cards, loading: false, issues, cardIssues, refreshFailed: unique.length > 0 && issues.length === unique.length });
   }
 
   async open(key: string): Promise<void> {

@@ -197,7 +197,7 @@ export function SettingsNav({
   onSearchHit: (entry: SettingsSearchEntry) => void;
 }) {
   return (
-    <nav className="flex h-full w-full flex-col overflow-y-auto border-r border-hairline bg-panel p-2 lg:w-[232px]">
+    <nav className="flex h-full w-full flex-col overflow-y-auto overscroll-y-contain border-r border-hairline bg-panel p-2 lg:w-[232px]">
       <SettingsSearch
         focusToken={searchFocusToken}
         onSearchHit={onSearchHit}

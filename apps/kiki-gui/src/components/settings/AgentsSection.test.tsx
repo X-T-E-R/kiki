@@ -8,13 +8,13 @@ import { I18nProvider } from '../../i18n';
 import { NamedAgentProfilesCard } from './AgentsSection';
 import { AgentTaskSettings } from './AgentTaskSettings';
 
-const { client } = vi.hoisted(() => ({ client: {
+const { client, dirtyReporter } = vi.hoisted(() => ({ dirtyReporter: vi.fn(), client: {
   listNamedAgentProfiles: vi.fn(), listWorkspaces: vi.fn(), getConfig: vi.fn(),
   patchConfig: vi.fn(), updateNamedAgentProfile: vi.fn(), getAgentCapabilities: vi.fn(),
   readHostFile: vi.fn(), meta: vi.fn(),
 } }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, klient: { global: { agentPanel: { read: (query: unknown, options: { signal: AbortSignal }) => client.getAgentCapabilities(query, options.signal) } } } }) }));
-vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => vi.fn() }));
+vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => vi.fn(), useDirtyReporter: dirtyReporter }));
 const profile: NamedAgentProfile = {
   name: 'agent', description: 'Custom default', main: true, override: true,
   source: 'user', source_file: '/fixture/SYSTEM.md', workspace_id: 'ws-one',
@@ -120,10 +120,84 @@ describe('default main profile settings', () => {
     const row = container.querySelector('[data-default-agent="true"]')!;
     const edit = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
     await act(async () => { edit.click(); });
-    const effort = row.querySelector<HTMLSelectElement>('[data-agent-thinking-effort]')!;
+    // The editor is a dialog portaled to document.body, outside the row.
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('Edit profile: agent');
+    const effort = dialog.querySelector<HTMLSelectElement>('[data-agent-thinking-effort]')!;
     expect(effort.value).toBe('medium');
-    await setInputValue(row.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'fixture/model-b');
+    await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'fixture/model-b');
     expect(effort.value).toBe('');
+  });
+
+  it('opens the editor at the shared md width and reports unsaved edits to the dirty guard', async () => {
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    const edit = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
+    await act(async () => { edit.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    expect(dialog.className).toContain('max-w-[640px]');
+    const guardId = 'agent-profile-editor:user:agent';
+    expect(dirtyReporter).toHaveBeenLastCalledWith(guardId, false);
+    const description = dialog.querySelector<HTMLTextAreaElement>('textarea')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(description, 'Unsaved tweak');
+      description.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(dirtyReporter).toHaveBeenLastCalledWith(guardId, true);
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(description, 'Custom default');
+      description.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(dirtyReporter).toHaveBeenLastCalledWith(guardId, false);
+  });
+
+  it('saves the profile through the pop-up editor and closes it with a saved affirmation', async () => {
+    const echo = { ...profile, description: 'Updated default', pinned_model_alias: 'fixture/model-b' };
+    client.updateNamedAgentProfile.mockResolvedValue(echo);
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    const edit = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
+    await act(async () => { edit.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'fixture/model-b');
+    const description = dialog.querySelector<HTMLTextAreaElement>('textarea')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(description, 'Updated default');
+      description.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const save = [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
+    // The save invalidates the profile catalogs, so the follow-up refetch must
+    // answer with the echo (a real server persists the PATCH; the mock does not).
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [echo] });
+    await act(async () => { save.click(); });
+    await settle();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({
+      source_file: '/fixture/SYSTEM.md',
+      workspace_id: 'ws-one',
+      description: 'Updated default',
+      pinned_model_alias: 'fixture/model-b',
+      thinking_effort: null,
+    }));
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Updated default');
+    expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Agent profile saved and reloaded.');
+  });
+
+  it('keeps the dialog open with the error when the profile save fails', async () => {
+    client.updateNamedAgentProfile.mockRejectedValue(new Error('fixture failure'));
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    const edit = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
+    await act(async () => { edit.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    const save = [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
+    await act(async () => { save.click(); });
+    await settle();
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')!.textContent).toContain('fixture failure');
   });
 
   it('uses the effective source for the default entry and does not expose capabilities on a shadowed file', async () => {

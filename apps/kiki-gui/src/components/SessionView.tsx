@@ -1667,7 +1667,10 @@ export function SessionView({
           model: effectiveModel,
           thinking: effectiveEffort,
         });
-        void controller
+        // Returned to the composer: it holds its send latch until this round
+        // settles, which is what blocks a rapid duplicate send (and releases
+        // for a retry when the submit fails).
+        return controller
           .sendPrompt({
             text: echoText,
             content,
@@ -1735,7 +1738,8 @@ export function SessionView({
           draft: draftRef.current,
           attachments: composerAttachments,
         };
-        void activateSkillWithConditionalClear({
+        // Returned for the composer's send latch, same contract as `send`.
+        return activateSkillWithConditionalClear({
           prepare:
             goalObjectiveOverride !== undefined && goalObjectiveOverride !== ''
               ? () =>

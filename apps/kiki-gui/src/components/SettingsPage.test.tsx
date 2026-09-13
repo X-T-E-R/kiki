@@ -341,11 +341,56 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(scopeHeader(container).textContent).toContain('Server');
   });
 
-  it('mounts the runtime leaf without the tools card or MCP timeout fields', async () => {
+  it('redirects the retired runtime leaf to the tasks page', async () => {
     const container = await renderSettings('/settings/runtime');
-    expect(container.querySelector('#st-card-runtime')).not.toBeNull();
+    expect(container.querySelector('#st-card-runtime')).toBeNull();
+    expect(container.querySelector('#st-card-task-policy')).not.toBeNull();
+    expect(container.querySelector('#st-card-cron')).not.toBeNull();
     expect(container.querySelector('#st-card-tools')).toBeNull();
-    expect(container.querySelector('#st-card-runtime')!.textContent).toContain('Server-side knobs for scheduling, communication, resources, and identity.');
+  });
+
+  it('mounts the split runtime content on its new leaves', async () => {
+    const tasks = await renderSettings('/settings/tasks');
+    expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
+    expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Concurrency, timeouts, and printing for background tasks.');
+    expect(tasks.querySelector('#st-card-cron')).not.toBeNull();
+    expect(tasks.querySelector('#st-card-cron')!.textContent).toContain('KIMI_CRON_');
+    // The cron card is read-only: its toggles render disabled.
+    expect(tasks.querySelector<HTMLFieldSetElement>('#st-card-cron fieldset')!.disabled).toBe(true);
+
+    const advanced = await renderSettings('/settings/advanced');
+    expect(advanced.querySelector('#st-card-communication')).not.toBeNull();
+    expect(advanced.querySelector('#st-card-communication')!.textContent).toContain('Enable thread communication');
+    expect(advanced.querySelector('#st-card-resource-limits')).not.toBeNull();
+    expect(advanced.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle TTL');
+
+    const agents = await renderSettings('/settings/agents');
+    await flush();
+    expect(agents.querySelector('#st-card-agent-runtime')).not.toBeNull();
+    expect(agents.querySelector('#st-card-agent-runtime')!.textContent).toContain('Identity display name');
+    expect(agents.querySelector('#st-card-agent-runtime')!.textContent).toContain('Extra agent directories');
+  });
+
+  it('saves the task policy card with the narrow task-domain patch', async () => {
+    client.getConfig.mockResolvedValueOnce({ task: { maxRunningTasks: 4 } });
+    client.patchConfig.mockResolvedValueOnce({ task: { maxRunningTasks: 6 } });
+    client.patchConfig.mockClear();
+    const container = await renderSettings('/settings/tasks');
+    const card = container.querySelector('#st-card-task-policy')!;
+    const input = card.querySelector('input')!;
+    expect(input.value).toBe('4');
+    const save = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
+    expect(save.disabled).toBe(true);
+
+    await setInput(input, '6');
+    expect(save.disabled).toBe(false);
+    await click(save);
+    await flush();
+    expect(client.patchConfig).toHaveBeenCalledWith(expect.objectContaining({
+      task: expect.objectContaining({ max_running_tasks: 6 }),
+      replace_domains: ['task'],
+    }));
+    expect(card.textContent).toContain('Task policy saved and echoed by the server.');
   });
 
   it('omits an empty scoped task feature widget when the server reports no flag', async () => {

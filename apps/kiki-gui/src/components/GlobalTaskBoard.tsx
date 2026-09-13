@@ -5,7 +5,7 @@ import type { To } from 'react-router-dom';
 
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
-import { Dialog } from './Dialog';
+import { Dialog, DIALOG_PANEL_SIZES } from './Dialog';
 import { TaskBoardContainer } from './task-board/TaskBoardContainer';
 import type { BoardSessionOption, BoardWorkspaceOption } from './task-board/types';
 
@@ -110,32 +110,18 @@ export function GlobalTaskBoard({
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [railTarget, setRailTarget] = useState<HTMLElement | null>(null);
-  const [floatLift, setFloatLift] = useState(0);
+  // The launcher lives inside the session rail only: pages without a rail
+  // (/new, settings, a closed right panel) get no entry at all — the former
+  // fixed-position floating fallback leaked onto every one of them.
   useEffect(() => {
     const update = () => {
       setRailTarget(document.querySelector<HTMLElement>('[data-session-rail]'));
-      // Keep the floating fallback clear of sticky bottom action bars (e.g. the
-      // search settings save bar): when such a bar reaches the float's band,
-      // lift the float above the bar's top edge.
-      const bar = document.querySelector<HTMLElement>('[data-search-action-bar]');
-      if (!bar) {
-        setFloatLift(0);
-        return;
-      }
-      const rect = bar.getBoundingClientRect();
-      const base = window.innerWidth >= 640 ? 64 : 72;
-      const nearBottom = rect.bottom > window.innerHeight - 110 && rect.top < window.innerHeight;
-      setFloatLift(nearBottom ? Math.max(0, window.innerHeight - rect.top + 12 - base) : 0);
     };
     update();
     const observer = new MutationObserver(update);
     observer.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, { capture: true, passive: true });
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, { capture: true });
     };
   }, []);
   const scope = useMemo(
@@ -198,25 +184,22 @@ export function GlobalTaskBoard({
       aria-expanded={open}
       aria-label={t('st.agentBoard.title')}
       onClick={() => { setOpen(true); }}
-      style={railTarget ? undefined : { marginBottom: floatLift }}
-      className={railTarget
-        ? 'app-rail__board-launcher flex min-h-12 shrink-0 items-center justify-between gap-2 border-t border-hairline bg-panel px-4 py-2 text-left text-[12px] font-medium text-ink-soft transition-colors hover:bg-accent-soft hover:text-accent'
-        : 'fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom))] right-4 z-50 rounded-lg border border-hairline bg-panel px-3 py-2 text-[11.5px] font-medium text-ink-soft shadow-sm transition-colors hover:border-accent hover:text-accent sm:bottom-[calc(4rem+env(safe-area-inset-bottom))]'}
+      className="app-rail__board-launcher flex min-h-12 shrink-0 items-center justify-between gap-2 border-t border-hairline bg-panel px-4 py-2 text-left text-[12px] font-medium text-ink-soft transition-colors hover:bg-accent-soft hover:text-accent"
     >
       <span>{t('st.agentBoard.title')}</span>
-      {railTarget ? <span aria-hidden className="text-[16px] leading-none">↗</span> : null}
+      <span aria-hidden className="text-[16px] leading-none">↗</span>
     </button>
   );
 
   return (
     <>
-      {railTarget ? createPortal(launcher, railTarget) : launcher}
+      {railTarget ? createPortal(launcher, railTarget) : null}
       {open ? (
         <Dialog
           onClose={close}
           ariaLabel={t('st.agentBoard.title')}
           overlayId="global-task-board"
-          panelClassName="anim-enter flex h-[min(90vh,800px)] w-full max-w-[min(96vw,1280px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-0 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
+          panelClassName={`anim-enter flex h-[min(90vh,800px)] w-full ${DIALOG_PANEL_SIZES['2xl']} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-0 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]`}
         >
           {content}
         </Dialog>

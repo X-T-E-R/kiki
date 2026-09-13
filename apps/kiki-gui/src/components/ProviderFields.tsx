@@ -3,16 +3,18 @@
  * collapsible editor for configured ones, and their shared field set:
  * protocol/baseUrl/key, the remote /models probe, collapsible model rows
  * (unit-ed context stepper, chip multi-selects, inline default star), and
- * the millisecond unit input reused by the sidecar card.
+ * the millisecond unit input reused by the sidecar card. Also owns the
+ * server-aligned provider-form validation and save channel
+ * (validateProviderFormDraft / saveProviderForm) shared with the model
+ * catalog's row editor.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 
 import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 
-import { errorText, issueText } from '@kiki/session-core/i18n';
+import { errorText, issueText, LocalizedError, type ValidationIssue } from '@kiki/session-core/i18n';
 import {
-  createProvider,
   deleteProvider,
   fetchRemoteModels,
   humanizeMs,
@@ -24,7 +26,7 @@ import {
   PROVIDER_TEMPLATES,
   PROVIDER_WIRE_TYPES,
   providerDraftFromCatalog,
-  replaceProvider,
+  requestIdentityPolicyFromDraft,
   validateProviderDraft,
   type MsUnit,
   type ProviderDraft,
@@ -68,6 +70,127 @@ function blankModel(): ProviderModelDraft {
   };
 }
 
+// ---- provider-id validation & save channel aligned with the server ----
+
+/**
+ * The provider-id truth lives in kap-server, not in this form: create and
+ * rename must match `PROVIDER_ID_PATTERN`
+ * (agent-core-v2 src/app/kosongConfig/modelsDevImport.ts, surfaced as
+ * `providerIdSchema` in kap-server src/protocol/rest-modelCatalog.ts), while
+ * a replace whose id is unchanged bypasses the pattern entirely — kap-server
+ * src/routes/modelCatalog.ts validates `new_id` only when it differs from the
+ * path identity. That is how OAuth-managed ids such as `managed:kimi-code`
+ * stay editable. The shared `validateProviderDraft` applies the create-time
+ * pattern unconditionally (and ASCII-only), so the id rule is checked here
+ * against the server pattern and every other rule is delegated to it with a
+ * stand-in id.
+ */
+export const PROVIDER_ID_WIRE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}\-_ ]*$/u;
+
+/**
+ * Server-aligned validation for the provider form. `currentId` is the id the
+ * provider is stored under (null on create): an unchanged id is always
+ * accepted, a create or rename must match `PROVIDER_ID_WIRE_PATTERN`.
+ */
+export function validateProviderFormDraft(
+  draft: ProviderDraft,
+  currentId: string | null,
+): ValidationIssue | null {
+  const createOrRename = currentId === null || draft.id !== currentId;
+  if (createOrRename && !PROVIDER_ID_WIRE_PATTERN.test(draft.id)) {
+    return { key: 'val.providerId' };
+  }
+  return validateProviderDraft({ ...draft, id: 'provider' });
+}
+
+/**
+ * The single save channel for every provider-form surface (the Connections
+ * editor, the add-provider wizard, and the model-catalog row editor). It
+ * mirrors the wire contract of session-core's `createProvider` /
+ * `replaceProvider`, which this module no longer calls: they re-apply the
+ * create-time id pattern even to unchanged ids, rejecting OAuth-managed ids
+ * such as `managed:kimi-code` that the server explicitly accepts (see
+ * validateProviderFormDraft). `currentId` null creates; otherwise the
+ * provider stored under `currentId` is replaced, renaming to `draft.id` when
+ * it differs.
+ */
+export async function saveProviderForm(
+  connection: ServerConnection,
+  currentId: string | null,
+  draft: ProviderDraft,
+): Promise<ProviderCatalogItem> {
+  const validation = validateProviderFormDraft(draft, currentId);
+  if (validation !== null) throw new LocalizedError(validation);
+  if (currentId === null) {
+    return providerFormRequest<ProviderCatalogItem>(
+      connection,
+      'POST',
+      '/providers',
+      providerFormBody(draft, true),
+    );
+  }
+  const result = await providerFormRequest<{ provider: ProviderCatalogItem }>(
+    connection,
+    'PUT',
+    `/providers/${encodeURIComponent(currentId)}`,
+    {
+      ...providerFormBody(draft, false),
+      new_id: draft.id === currentId ? undefined : draft.id,
+    },
+  );
+  return result.provider;
+}
+
+/** Wire body of POST/PUT /providers — same mapping as session-core's providerBody. */
+function providerFormBody(draft: ProviderDraft, includeId: boolean): Record<string, unknown> {
+  const requestIdentity = requestIdentityPolicyFromDraft(draft);
+  return {
+    id: includeId ? draft.id : undefined,
+    type: draft.type,
+    api_key: draft.clearApiKey ? '' : draft.apiKey || undefined,
+    base_url: draft.baseUrl || undefined,
+    default_model: draft.defaultModel,
+    request_identity: requestIdentity ?? (includeId ? undefined : null),
+    models: draft.models.map((model) => {
+      const modelRequestIdentity = requestIdentityPolicyFromDraft(model);
+      return {
+        model: model.model,
+        max_context_size: model.maxContextSize,
+        display_name: model.displayName || undefined,
+        capabilities: model.capabilities.length > 0 ? model.capabilities : undefined,
+        support_efforts: model.supportEfforts.length > 0 ? model.supportEfforts : undefined,
+        request_identity: modelRequestIdentity ?? (includeId ? undefined : null),
+      };
+    }),
+  };
+}
+
+/** Envelope fetch against the server's /api surface — same contract as session-core's serverRequest. */
+async function providerFormRequest<T>(
+  connection: ServerConnection,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const base = connection.url.trim().replace(/\/+$/, '');
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (connection.token.trim() !== '') headers['Authorization'] = `Bearer ${connection.token.trim()}`;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const response = await fetch(`${base}/api${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (response.status === 204) return undefined as T;
+  const envelope = (await response.json()) as {
+    code: number;
+    msg: string;
+    data: T;
+  };
+  if (envelope.code !== 0) throw new Error(`${envelope.msg} (code ${envelope.code})`);
+  return envelope.data;
+}
+
 // ---- unit-ed numeric inputs ----
 
 function StepButton({
@@ -108,7 +231,7 @@ function autoContextUnit(value: number): ContextUnit {
 }
 
 /** Context-size stepper: numeric value paired with a tok/K/M unit select. */
-function ContextStepper({
+export function ContextStepper({
   value,
   onChange,
   ariaLabel,
@@ -549,7 +672,7 @@ export function ProviderEditor({
 
   const save = async (override?: Partial<ProviderDraft>) => {
     const next = { ...draft, ...override };
-    const validation = validateProviderDraft(next);
+    const validation = validateProviderFormDraft(next, provider.id);
     if (validation !== null) {
       setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
@@ -557,7 +680,7 @@ export function ProviderEditor({
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await replaceProvider(connection, provider.id, next);
+      const echoed = await saveProviderForm(connection, provider.id, next);
       setDraft({ ...next, apiKey: '', clearApiKey: false });
       await onSaved();
       setFeedback({ tone: 'success', text: t('st.providers.savedEcho', { id: echoed.id }) });
@@ -714,7 +837,7 @@ export function NewProviderWizard({
       ...draft,
       defaultModel: draft.defaultModel || (draft.models[0]?.model ?? ''),
     };
-    const validation = validateProviderDraft(normalized);
+    const validation = validateProviderFormDraft(normalized, null);
     if (validation !== null) {
       setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
@@ -722,7 +845,7 @@ export function NewProviderWizard({
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await createProvider(connection, normalized);
+      const echoed = await saveProviderForm(connection, null, normalized);
       setDraft(blank);
       setStep('template');
       await onSaved();

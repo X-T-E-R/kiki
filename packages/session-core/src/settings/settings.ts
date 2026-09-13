@@ -647,7 +647,7 @@ export function parseHooksJson(value: string): SettingsHook[] {
 /**
  * Narrow MCP timeout patch for the MCP settings card (redesign §8.3): the
  * `replace_domains` scope stays `['mcp']` so saving timeouts never rewrites
- * the other runtime domains. This is the only writer of the `mcp` domain.
+ * the other engine domains. This is the only writer of the `mcp` domain.
  */
 export function mcpTimeoutsPatch(startupTimeoutMs: string, toolTimeoutMs: string): KikiConfigPatch {
   const mcpMax = 2_147_483_647;
@@ -710,6 +710,13 @@ function optionalNumberDraft(value: number | null | undefined): string {
   return value === null ? 'null' : value === undefined ? '' : String(value);
 }
 
+/**
+ * Shared projection of the engine runtime config fields into editable drafts.
+ * After the runtime-leaf split each owning card (task policy under Tasks,
+ * resource limits and communication under Advanced, identity under Agents)
+ * reads the fields it edits and saves through its own narrow patch helper;
+ * cron stays read-only display data.
+ */
 export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft {
   const config = configObjectOrEmpty(value) as unknown as KikiConfigResponse;
   const task = config.task;
@@ -767,16 +774,34 @@ function normalizeStringList(values: readonly string[]): string[] {
   return normalizeTags(values);
 }
 
-export function runtimeConfigPatch(draft: RuntimeConfigDraft): KikiConfigPatch {
-  // cron is env-driven (KIMI_CRON_*) and intentionally never persisted — the
-  // editor shows it read-only, so the patch neither sends nor replaces it.
-  // The mcp and tools domains are likewise absent: the MCP timeouts card
-  // (mcpTimeoutsPatch) and the automation leaf's tool policy card
-  // (toolPolicyPatch) own them, so a runtime save can never roll back values
-  // edited on another leaf from a stale draft.
+/**
+ * The tasks leaf's background-task policy card (runtime split): only the
+ * `task` domain, so a save can never roll back the resource-limit or
+ * communication domains edited on other leaves from a stale draft. cron is
+ * env-driven (KIMI_CRON_*) and intentionally never persisted — its card is
+ * read-only, so no patch emits it.
+ */
+export function taskRuntimePatch(draft: RuntimeConfigDraft['task']): KikiConfigPatch {
   return {
-    thread_communication: { enabled: draft.threadCommunicationEnabled },
-    token_counting: { strategy: draft.tokenCountingStrategy },
+    task: {
+      max_running_tasks: parseOptionalInteger(draft.maxRunningTasks, 'task.max_running_tasks', 1),
+      keep_alive_on_exit: draft.keepAliveOnExit,
+      bash_auto_background_on_timeout: draft.bashAutoBackgroundOnTimeout,
+      bash_task_timeout_s: parseOptionalInteger(draft.bashTaskTimeoutS, 'task.bash_task_timeout_s', 0),
+      kill_grace_period_ms: parseOptionalInteger(draft.killGracePeriodMs, 'task.kill_grace_period_ms', 0),
+      print_wait_ceiling_s: parseOptionalInteger(draft.printWaitCeilingS, 'task.print_wait_ceiling_s', 1),
+      print_background_mode: draft.printBackgroundMode,
+      print_max_turns: parseOptionalInteger(draft.printMaxTurns, 'task.print_max_turns', 1),
+    },
+    replace_domains: ['task'],
+  };
+}
+
+/** The advanced leaf's workspace/image resource ceilings (runtime split). */
+export function resourceLimitPatch(
+  draft: Pick<RuntimeConfigDraft, 'workspaceIdleTtlMs' | 'imageMaxEdgePx' | 'imageReadByteBudget'>,
+): KikiConfigPatch {
+  return {
     workspace_instance: {
       idle_ttl_ms: parseOptionalInteger(draft.workspaceIdleTtlMs, 'workspace_instance.idle_ttl_ms', 0),
     },
@@ -784,32 +809,40 @@ export function runtimeConfigPatch(draft: RuntimeConfigDraft): KikiConfigPatch {
       max_edge_px: parseOptionalInteger(draft.imageMaxEdgePx, 'image.max_edge_px', 1),
       read_byte_budget: parseOptionalInteger(draft.imageReadByteBudget, 'image.read_byte_budget', 1),
     },
-    task: {
-      max_running_tasks: parseOptionalInteger(draft.task.maxRunningTasks, 'task.max_running_tasks', 1),
-      keep_alive_on_exit: draft.task.keepAliveOnExit,
-      bash_auto_background_on_timeout: draft.task.bashAutoBackgroundOnTimeout,
-      bash_task_timeout_s: parseOptionalInteger(draft.task.bashTaskTimeoutS, 'task.bash_task_timeout_s', 0),
-      kill_grace_period_ms: parseOptionalInteger(draft.task.killGracePeriodMs, 'task.kill_grace_period_ms', 0),
-      print_wait_ceiling_s: parseOptionalInteger(draft.task.printWaitCeilingS, 'task.print_wait_ceiling_s', 1),
-      print_background_mode: draft.task.printBackgroundMode,
-      print_max_turns: parseOptionalInteger(draft.task.printMaxTurns, 'task.print_max_turns', 1),
-    },
+    replace_domains: ['workspace_instance', 'image'],
+  };
+}
+
+/** The advanced leaf's thread-communication and token-counting card (runtime split). */
+export function communicationPatch(
+  draft: Pick<RuntimeConfigDraft, 'threadCommunicationEnabled' | 'tokenCountingStrategy'>,
+): KikiConfigPatch {
+  return {
+    thread_communication: { enabled: draft.threadCommunicationEnabled },
+    token_counting: { strategy: draft.tokenCountingStrategy },
+    replace_domains: ['thread_communication', 'token_counting'],
+  };
+}
+
+/**
+ * The agents leaf's identity and profile-loading card (runtime split): the
+ * server-facing identity plus which agent-profile sources load at startup.
+ * The mcp and tools domains are likewise absent here and above: the MCP
+ * timeouts card (mcpTimeoutsPatch) and the automation leaf's tool policy card
+ * (toolPolicyPatch) own them, so a save from any of these cards can never roll
+ * back values edited on another leaf from a stale draft.
+ */
+export function agentIdentityPatch(
+  draft: Pick<RuntimeConfigDraft, 'identityName' | 'identitySlug' | 'extraAgentDirs' | 'disabledBuiltinProfiles'>,
+): KikiConfigPatch {
+  return {
     identity: {
       name: draft.identityName.trim() || undefined,
       slug: draft.identitySlug.trim() || undefined,
     },
     extra_agent_dirs: normalizeStringList(draft.extraAgentDirs),
     disabled_builtin_profiles: normalizeStringList(draft.disabledBuiltinProfiles),
-    replace_domains: [
-      'thread_communication',
-      'token_counting',
-      'workspace_instance',
-      'image',
-      'task',
-      'identity',
-      'extra_agent_dirs',
-      'disabled_builtin_profiles',
-    ],
+    replace_domains: ['identity', 'extra_agent_dirs', 'disabled_builtin_profiles'],
   };
 }
 
@@ -829,8 +862,8 @@ export function toolPolicyDraftFromConfig(value: unknown): ToolPolicyDraft {
 
 /**
  * Narrow tool-policy patch (redesign §8.3): `replace_domains` stays
- * `['tools']` so saving the policy never rewrites the runtime domains the
- * runtime leaf owns.
+ * `['tools']` so saving the policy never rewrites the engine domains the
+ * tasks/advanced/agents cards own.
  */
 export function toolPolicyPatch(draft: ToolPolicyDraft): KikiConfigPatch {
   return {
@@ -1273,7 +1306,6 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'search', labelKey: 'st.section.search' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
   { id: 'connection', labelKey: 'st.section.connection' },
-  { id: 'runtime', labelKey: 'st.section.runtime' },
   { id: 'advanced', labelKey: 'st.section.advanced' },
   { id: 'about', labelKey: 'st.section.about' },
 ];
@@ -1286,8 +1318,11 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
  * no group — "About & updates" is one, per the adjudicated tree.
  *
  * Capability settings stay with the capability they govern; the task board and
- * agent-local todo page therefore live under "Capabilities & extensions".
- * Runtime and the remaining raw configuration fill "Data & advanced".
+ * agent-local todo page therefore live under "Capabilities & extensions". The
+ * retired runtime leaf was split across its semantic owners (task policy and
+ * cron under Tasks, engine resource/communication knobs under Advanced,
+ * identity and profile loading under Agents), leaving "Data & advanced" to
+ * the remaining raw configuration.
  */
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
@@ -1308,7 +1343,7 @@ export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'ai', labelKey: 'st.group.ai', sections: ['ai'] },
   { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents', 'subagents'] },
   { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'automation', 'tasks', 'search'] },
-  { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection', 'runtime'] },
+  { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection'] },
   { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['advanced'] },
   { kind: 'leaf', section: 'about' },
 ];
@@ -1345,7 +1380,6 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   search: { scopes: ['server'], purposeKey: 'st.purpose.search' },
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
-  runtime: { scopes: ['server'], purposeKey: 'st.purpose.runtime' },
   advanced: { scopes: ['server'], purposeKey: 'st.purpose.advanced' },
   about: { scopes: ['app', 'server'], purposeKey: 'st.purpose.about' },
 };
@@ -1375,7 +1409,11 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
   { section: 'skills', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs', 'st.sidecar.builtinSkills'], synonyms: ['能力', 'skills', '技能'] },
   { section: 'skills', cardId: 'st-card-skill-catalog', titleKey: 'st.skills.catalogTitle', keywordKeys: ['cap.filterPlaceholder'], synonyms: ['能力', 'capabilities', '技能目录', 'skill catalog'] },
-  { section: 'runtime', cardId: 'st-card-runtime', titleKey: 'st.runtime.title', keywordKeys: ['st.runtime.cron', 'st.runtime.communication', 'st.runtime.resources', 'st.runtime.task', 'st.runtime.agents'] },
+  { section: 'tasks', cardId: 'st-card-task-policy', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.hint', 'st.taskPolicy.maxRunningTasks', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive'], synonyms: ['runtime', '运行时', 'background tasks', '后台任务'] },
+  { section: 'tasks', cardId: 'st-card-cron', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务'] },
+  { section: 'advanced', cardId: 'st-card-communication', titleKey: 'st.communication.title', keywordKeys: ['st.communication.threadCommunication', 'st.communication.tokenCounting'], synonyms: ['thread communication', '线程通信', 'token counting', 'token 计数'] },
+  { section: 'advanced', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
+  { section: 'agents', cardId: 'st-card-agent-runtime', titleKey: 'st.agentIdentity.title', keywordKeys: ['st.agentIdentity.identityName', 'st.agentIdentity.extraAgentDirs', 'st.agentIdentity.disabledProfiles'], synonyms: ['identity', '身份', 'agent dirs', 'disabled profiles', '禁用 profile'] },
   { section: 'advanced', cardId: 'st-card-performance-storage', titleKey: 'st.advanced.performanceTitle', keywordKeys: ['st.experimental.searchWorker', 'st.experimental.readModel', 'st.experimental.unknownFeature'], synonyms: ['experimental features', '实验特性', 'performance', 'storage'] },
   { section: 'advanced', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
   { section: 'subagents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'], synonyms: ['子 agent', '子代理'] },
@@ -1476,24 +1514,30 @@ export type SettingsRouteResolution =
  * content instead of the "unknown setting" page. Batch 2 merged `models` and
  * `providers` into the `ai` entry (redesign §10.3); later splits keep each
  * capability flag with its owning leaf. The retired `experimental` leaf lands
- * on `advanced`, while precise card hashes still follow their current owner.
+ * on `advanced`; the retired `runtime` leaf lands on `tasks`, where its most
+ * visited content (task policy and cron) now lives, while precise card hashes
+ * still follow their current owner.
  */
 export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> = {
   models: 'ai',
   providers: 'ai',
   capabilities: 'skills',
   experimental: 'advanced',
+  runtime: 'tasks',
 };
 
 /**
  * Cards that were dissolved rather than moved whole (redesign §10.3). The
  * sidecar card mixed subagent timeout, builtin skills, and agents toggles
  * with no field-level hash, so it cannot disambiguate — it lands on the
- * subagent timeout card, the field that dominated the card.
+ * subagent timeout card, the field that dominated the card. The runtime card
+ * was split across four leaves; its deep links land on the task-policy card,
+ * the group that dominated it.
  */
 export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: string; readonly cardId: string }>> = {
   'st-card-sidecar': { section: 'subagents', cardId: 'st-card-subagent-timeout' },
   'st-card-experimental': { section: 'advanced', cardId: 'st-card-performance-storage' },
+  'st-card-runtime': { section: 'tasks', cardId: 'st-card-task-policy' },
 };
 
 /** Which tab a legacy section bookmark maps to (redesign §10.3's route table). */
@@ -1528,8 +1572,8 @@ export function resolveSettingsRoute(
 ): SettingsRouteResolution {
   const rawCard = hash.replace(/^#/, '');
   const requestedCard = rawCard.startsWith('st-card-') ? rawCard : undefined;
-  // A dissolved card (today only st-card-sidecar) has a hand-written target;
-  // anything else follows the search spec's canonical owner.
+  // A dissolved card (st-card-sidecar, st-card-runtime) has a hand-written
+  // target; anything else follows the search spec's canonical owner.
   const legacyCard = requestedCard === undefined ? undefined : LEGACY_CARD_ALIASES[requestedCard];
   const cardId = legacyCard?.cardId ?? requestedCard;
   const cardSection = cardId === undefined

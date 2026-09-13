@@ -2575,3 +2575,88 @@ describe('background task notification folding (TUI-01)', () => {
     expect(container.querySelectorAll('[data-system="task"]')).toHaveLength(3);
   });
 });
+
+describe('terminal pile-up folding (timeline tail)', () => {
+  function answeredQuestionBlock(id: string, question: string): Block {
+    return {
+      kind: 'question',
+      id,
+      request: {
+        question_id: id,
+        session_id: 'session_test',
+        questions: [{ id: 'choice', question, options: [{ id: 'a', label: 'A' }] }],
+        created_at: '2026-01-01T00:00:02.000Z',
+      },
+      outcome: { kind: 'answered', at: '2026-01-01T00:00:03.000Z' },
+    };
+  }
+
+  // The projection's terminal-prompt divider (mergeTranscriptPromptBlocks in
+  // session-core): neutral notice, id `notice-aborted-<promptId>`.
+  function abortedNoticeBlock(promptId: string): Block {
+    return {
+      kind: 'notice',
+      id: `notice-aborted-${promptId}`,
+      text: 'Prompt aborted',
+      tone: 'neutral',
+      i18n: { key: 'notice.promptAborted' },
+    };
+  }
+
+  it('folds the answered-question + aborted-divider pile at the timeline tail', async () => {
+    const container = await renderTranscript([
+      userBlock({ id: 'u1', text: 'kick off' }),
+      assistantBlock('a1', 'done with the first pass'),
+      answeredQuestionBlock('question-q1', 'Continue with the plan?'),
+      abortedNoticeBlock('prompt-1'),
+      answeredQuestionBlock('question-q2', 'Ship the second part?'),
+      abortedNoticeBlock('prompt-2'),
+    ]);
+    // The whole terminal pile folds behind ONE summary row…
+    const run = container.querySelector('[data-history-run]');
+    expect(run?.getAttribute('data-history-run-member-ids')?.split(' ')).toEqual([
+      'question-q1',
+      'notice-aborted-prompt-1',
+      'question-q2',
+      'notice-aborted-prompt-2',
+    ]);
+    // …leaving no answered-question line or aborted divider loose at the bottom.
+    expect(container.querySelectorAll('[data-history-line]')).toHaveLength(0);
+    expect(container.textContent).not.toContain('Prompt aborted');
+    // Expanding the run brings every member back, in order.
+    await act(async () => {
+      flushSync(() => {
+        click(run!.querySelector('button')!);
+      });
+    });
+    expect(container.querySelectorAll('[data-history-run-members] > div')).toHaveLength(4);
+    expect(container.querySelectorAll('[data-history-line]')).toHaveLength(2);
+    expect(container.textContent).toContain('Prompt aborted');
+  });
+
+  it('keeps a lone aborted divider as a single line (fold threshold is two)', async () => {
+    const container = await renderTranscript([
+      assistantBlock('a1', 'final answer'),
+      abortedNoticeBlock('prompt-1'),
+    ]);
+    expect(container.querySelector('[data-history-run]')).toBeNull();
+    expect(container.textContent).toContain('Prompt aborted');
+  });
+
+  it('keeps the pending question card in place while terminal neighbours fold', async () => {
+    const container = await renderTranscript([
+      assistantBlock('a1', 'working through it'),
+      answeredQuestionBlock('question-q1', 'First pick?'),
+      abortedNoticeBlock('prompt-1'),
+      virtualQuestionBlock('question-pending'),
+    ]);
+    const run = container.querySelector('[data-history-run]');
+    expect(run?.getAttribute('data-history-run-member-ids')?.split(' ')).toEqual([
+      'question-q1',
+      'notice-aborted-prompt-1',
+    ]);
+    // The pending card keeps its full interactive form, outside the fold.
+    expect(container.textContent).toContain('Pick one');
+    expect(container.querySelector('[data-history-line]')).toBeNull();
+  });
+});

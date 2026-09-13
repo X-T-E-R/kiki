@@ -1,4 +1,5 @@
 import { memo, useRef, useState } from 'react';
+import { DIALOG_PANEL_SIZES } from '../Dialog';
 import type { NewTaskFormData, TaskPriority, BoardWorkspaceOption, BoardSessionOption } from './types';
 
 export interface NewTaskModalProps {
@@ -9,6 +10,15 @@ export interface NewTaskModalProps {
   readonly onClose: () => void;
   readonly onCreate: (data: NewTaskFormData) => void | Promise<void>;
 }
+
+const FIELD_LABEL =
+  'block font-mono text-[11px] font-semibold text-ink-faint uppercase tracking-wider';
+const TEXT_INPUT =
+  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3.5 py-2.5 text-[14px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
+const SELECT_INPUT =
+  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[12.5px] text-ink focus:border-accent focus:outline-hidden';
+const AREA_INPUT =
+  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3.5 py-2.5 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
 
 export const NewTaskModal = memo(function NewTaskModal({
   workspaces = [], sessions = [], defaultWorkspaceId, showPrompt = true, onClose, onCreate,
@@ -54,11 +64,11 @@ export const NewTaskModal = memo(function NewTaskModal({
     >
       <form
         onSubmit={handleSubmit}
-        className="flex flex-col w-full max-w-lg rounded-2xl border border-hairline bg-panel shadow-xl overflow-hidden font-sans text-ink"
+        className={`flex max-h-[calc(100vh-3rem)] w-[calc(100vw-3rem)] ${DIALOG_PANEL_SIZES.lg} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_20px_60px_-20px_rgba(28,25,23,0.45)] font-sans text-ink`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-hairline px-5 py-3.5 bg-paper/50">
-          <span className="font-mono text-[11px] font-semibold text-accent uppercase tracking-wider">
+        <div className="flex shrink-0 items-center justify-between border-b border-hairline bg-paper/50 px-6 py-4">
+          <span className="font-mono text-[12px] font-semibold uppercase tracking-wider text-accent">
             Create Board Task / 新建需求
           </span>
           <button
@@ -66,22 +76,22 @@ export const NewTaskModal = memo(function NewTaskModal({
             onClick={close}
             disabled={pending}
             aria-label="Close modal"
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-ink-faint hover:bg-paper hover:text-ink transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink"
           >
             ✕
           </button>
         </div>
 
         {/* Form Body */}
-        <div inert={pending} className="p-5 space-y-3.5 text-[12px]">
+        <div inert={pending} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6 text-[13px]">
           {error ? (
-            <div className="rounded-md border border-danger/20 bg-danger/10 p-2 text-danger text-[11.5px]">
+            <div className="rounded-lg border border-danger/20 bg-danger/10 px-3.5 py-2.5 text-[12.5px] text-danger">
               {error}
             </div>
           ) : null}
 
           <div>
-            <label className="block font-mono text-[10.5px] font-semibold text-ink-faint uppercase">
+            <label className={FIELD_LABEL}>
               Task Title *
             </label>
             <input
@@ -93,19 +103,19 @@ export const NewTaskModal = memo(function NewTaskModal({
                 setTitle(e.target.value);
                 if (error) setError(null);
               }}
-              className="mt-1 w-full rounded-lg border border-hairline bg-paper px-3 py-1.5 text-[13px] text-ink focus:border-accent focus:outline-hidden"
+              className={TEXT_INPUT}
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block font-mono text-[10.5px] font-semibold text-ink-faint uppercase">
+              <label className={FIELD_LABEL}>
                 Priority
               </label>
               <select
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as TaskPriority)}
-                className="mt-1 w-full rounded-lg border border-hairline bg-paper px-3 py-1.5 text-ink focus:border-accent focus:outline-hidden"
+                className={SELECT_INPUT}
               >
                 <option value="urgent">P0 紧急</option>
                 <option value="high">P1 高</option>
@@ -115,13 +125,13 @@ export const NewTaskModal = memo(function NewTaskModal({
             </div>
 
             <div>
-              <label className="block font-mono text-[10.5px] font-semibold text-ink-faint uppercase">
+              <label className={FIELD_LABEL}>
                 Workspace Target
               </label>
               <select
                 value={workspaceId}
                 onChange={(e) => setWorkspaceId(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-hairline bg-paper px-3 py-1.5 text-ink focus:border-accent focus:outline-hidden"
+                className={SELECT_INPUT}
               >
                 <option value="">Current Workspace / 当前工作区</option>
                 {workspaces.map((ws) => (
@@ -134,40 +144,40 @@ export const NewTaskModal = memo(function NewTaskModal({
           </div>
 
           <div>
-            <label className="block font-mono text-[10.5px] font-semibold text-ink-faint uppercase">
+            <label className={FIELD_LABEL}>
               Description / Requirements Context
             </label>
             <textarea
-              rows={2}
+              rows={5}
               placeholder="Background context, acceptance criteria or notes..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-hairline bg-paper px-3 py-1.5 text-ink focus:border-accent focus:outline-hidden"
+              className={AREA_INPUT}
             />
           </div>
 
           <div>
-            <label className="block font-mono text-[10.5px] font-semibold text-ink-faint uppercase">
+            <label className={FIELD_LABEL}>
               {showPrompt ? 'Initial Agent Prompt (Optional)' : 'Category / 归类'}
             </label>
             <textarea
-              rows={showPrompt ? 3 : 1}
+              rows={showPrompt ? 7 : 2}
               maxLength={showPrompt ? undefined : 256}
               placeholder={showPrompt ? 'Prompt sent to agent when execution is triggered...' : 'Feature, idea, improvement...'}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-hairline bg-paper px-3 py-1.5 font-mono text-[11px] text-ink focus:border-accent focus:outline-hidden"
+              className={`${AREA_INPUT} font-mono text-[12.5px]`}
             />
           </div>
 
           <div>
-            <label className="block font-mono text-[10.5px] font-semibold text-ink-faint uppercase">
+            <label className={FIELD_LABEL}>
               Associate Existing Session (Optional)
             </label>
             <select
               value={associatedSessionId}
               onChange={(e) => setAssociatedSessionId(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-hairline bg-paper px-3 py-1.5 text-ink focus:border-accent focus:outline-hidden"
+              className={SELECT_INPUT}
             >
               <option value="">-- No session linked (decoupled) --</option>
               {sessions.map((s) => (
@@ -180,19 +190,19 @@ export const NewTaskModal = memo(function NewTaskModal({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 border-t border-hairline px-5 py-3 bg-paper/40">
+        <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-hairline bg-paper/40 px-6 py-4">
           <button
             type="button"
             onClick={close}
             disabled={pending}
-            className="rounded-lg border border-hairline px-3 py-1.5 text-[11.5px] font-medium text-ink-soft hover:bg-paper"
+            className="rounded-lg border border-hairline px-3.5 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-paper"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={pending}
-            className="rounded-lg bg-accent px-4 py-1.5 text-[11.5px] font-medium text-panel hover:bg-accent-deep transition-colors shadow-xs"
+            className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-panel shadow-xs transition-colors hover:bg-accent-deep"
           >
             Create Task Card
           </button>

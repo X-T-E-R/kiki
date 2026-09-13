@@ -584,4 +584,142 @@ describe('board container and controlled forms (mock transport, no persistence c
     expect(snapshot.issues).toHaveLength(2);
     expect(snapshot.cardIssues).toHaveLength(0);
   });
+
+  it('uses one overview call and preserves healthy cards when another workspace fails', async () => {
+    const overview = vi.fn(async () => ({
+      ok: true as const,
+      value: [
+        {
+          workspaceId: 'workspace-a',
+          result: {
+            ok: true as const,
+            value: {
+              workspaceId: 'workspace-a',
+              storage,
+              cards: [summary],
+              issues: [{ code: 'CARD_PARSE_FAILED', message: 'One card could not be parsed.' }],
+            },
+          },
+        },
+        {
+          workspaceId: 'workspace-b',
+          result: {
+            ok: false as const,
+            error: { code: 'BOARD_UNAVAILABLE', message: 'Workspace storage requires migration.' },
+          },
+        },
+      ],
+    }));
+    const read = vi.fn<BoardClient['read']>();
+    const write = vi.fn<BoardClient['write']>().mockResolvedValue({ ok: true, value: card });
+    const controller = new TaskBoardController({ read, write, overview });
+
+    await controller.refresh(['workspace-a', 'workspace-b']);
+
+    expect(overview).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      cards: [summary],
+      loading: false,
+      refreshFailed: false,
+      issues: [{ workspaceId: 'workspace-b', code: 'BOARD_UNAVAILABLE' }],
+      cardIssues: [{ workspaceId: 'workspace-a', code: 'CARD_PARSE_FAILED' }],
+    });
+  });
+
+  it.each([
+    'unknown klient procedure: taskBoardService.overview',
+    'method not found: taskBoardService.overview',
+    'service not available in app scope: taskBoardService',
+  ])('falls back once on an old server response: %s', async (unavailableMessage) => {
+    const overview = vi.fn(async () => {
+      throw Object.assign(new Error(unavailableMessage), { code: 40001 });
+    });
+    const read = vi.fn<BoardClient['read']>().mockImplementation(async (input) => {
+      if (input.action !== 'list' || input.workspaceId === undefined) {
+        throw new Error('This fixture only handles scoped list reads.');
+      }
+      return {
+        ok: true,
+        value: {
+          workspaceId: input.workspaceId,
+          storage,
+          cards: [{ ...summary, id: `task-${input.workspaceId}`, workspaceId: input.workspaceId }],
+          issues: [],
+        },
+      };
+    });
+    const write = vi.fn<BoardClient['write']>().mockResolvedValue({ ok: true, value: card });
+    const controller = new TaskBoardController({ read, write, overview });
+
+    await controller.refresh(['workspace-a', 'workspace-b']);
+    await controller.refresh(['workspace-a', 'workspace-b']);
+
+    expect(overview).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(read.mock.calls.map(([input]) => input.action === 'list' ? input.workspaceId : undefined)).toEqual([
+      'workspace-a',
+      'workspace-b',
+      'workspace-a',
+      'workspace-b',
+    ]);
+    expect(controller.getSnapshot().cards.map((entry) => entry.workspaceId)).toEqual(['workspace-a', 'workspace-b']);
+    expect(controller.getSnapshot().issues).toEqual([]);
+  });
+
+  it('does not treat another unavailable service as an overview compatibility error', async () => {
+    const overview = vi.fn(async () => {
+      throw Object.assign(new Error('service not available in app scope: agentPanelService'), { code: 40001 });
+    });
+    const read = vi.fn<BoardClient['read']>();
+    const write = vi.fn<BoardClient['write']>().mockResolvedValue({ ok: true, value: card });
+    const controller = new TaskBoardController({ read, write, overview });
+
+    await controller.refresh(['workspace-a', 'workspace-b']);
+
+    expect(overview).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().refreshFailed).toBe(true);
+    expect(controller.getSnapshot().issues).toHaveLength(2);
+  });
+
+  it('fans out workspace reads with bounded concurrency and merges snapshots in workspace order', async () => {
+    const workspaceIds = Array.from({ length: 20 }, (_, index) => `workspace-${index}`);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const resolvers = new Map<string, () => void>();
+    const read = vi.fn<BoardClient['read']>().mockImplementation(async (input) => {
+      if (input.action !== 'list' || input.workspaceId === undefined) {
+        throw new Error('This fixture only handles scoped list reads.');
+      }
+      const workspaceId = input.workspaceId;
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((resolve) => { resolvers.set(workspaceId, resolve); });
+      inFlight -= 1;
+      const cardInWorkspace = { ...summary, id: `task-${workspaceId}`, workspaceId, sessionIds: [] };
+      return { ok: true, value: { workspaceId, storage, cards: [cardInWorkspace], issues: [] } };
+    });
+    const write = vi.fn<BoardClient['write']>().mockResolvedValue({ ok: true, value: card });
+    const controller = new TaskBoardController({ read, write });
+    const refreshPromise = controller.refresh(workspaceIds);
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(resolvers.size).toBe(8);
+    expect(maxInFlight).toBe(8);
+    // Resolve LIFO so completion order deliberately disagrees with workspace order.
+    while (resolvers.size > 0) {
+      const key = [...resolvers.keys()].at(-1)!;
+      resolvers.get(key)!();
+      resolvers.delete(key);
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+    }
+    await refreshPromise;
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.loading).toBe(false);
+    expect(snapshot.refreshFailed).toBe(false);
+    expect(snapshot.error).toBeNull();
+    expect(snapshot.issues).toEqual([]);
+    expect(snapshot.cards.map((entry) => entry.workspaceId)).toEqual(workspaceIds);
+    expect(maxInFlight).toBe(8);
+  });
 });

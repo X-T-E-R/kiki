@@ -272,7 +272,7 @@ export function Composer({
       | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[]),
   ) => void;
   /** Skill activation — the wire path for slash commands (POST :activate). */
-  onActivateSkill?: (name: string, args: string, attachments: readonly ComposerAttachment[]) => void;
+  onActivateSkill?: (name: string, args: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
   /** Session-scoped shortcuts (/fork, /undo, /compact). */
   onSessionAction?: (action: 'fork' | 'undo' | 'compact') => void;
   /** The context meter's click target (asks the session to compact). */
@@ -288,7 +288,13 @@ export function Composer({
   onChangeGoalObjective: (objective: string) => void;
   onChangeGoalControl: (control: 'pause' | 'resume' | 'cancel' | undefined) => void;
   onChangeEffort: (effort: string | undefined) => void;
-  onSend: (text: string, attachments: readonly ComposerAttachment[]) => void;
+  /**
+   * Fire the prompt. Returning the submission's promise lets the composer
+   * hold its send latch until the round settles (accepted or failed), so a
+   * second click/Enter during the in-flight gap cannot double-send; a
+   * rejection restores the button for retry.
+   */
+  onSend: (text: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
   /** Marks the textarea as the dialog's initial-focus target (`data-autofocus`). */
@@ -902,6 +908,14 @@ export function Composer({
     void sendPrompt(text.trim());
   };
 
+  /**
+   * Send-intent latch: the ref flips synchronously on the first trigger, so a
+   * rapid second click/Enter during the submit round trip (before the parent
+   * clears the draft or `busy` arrives) is a no-op instead of a duplicate
+   * send. The latch releases once the handler's promise settles — failure
+   * included, so the button comes back for a retry. `canSend` reads the state
+   * twin, disabling the button in the same render.
+   */
   const runAgentTurn = (turn: () => Promise<void>) => {
     if (turnInFlightRef.current) return;
     turnInFlightRef.current = true;
@@ -918,27 +932,31 @@ export function Composer({
 
   const sendPrompt = (content: string) => {
     if (!vscodeRuntime) {
-      recordSubmission();
-      onSend(content, attachments);
+      runAgentTurn(async () => {
+        recordSubmission();
+        await onSend(content, attachments);
+      });
       return;
     }
     runAgentTurn(async () => {
       const prepared = await vscodeHost.preparePrompt(content, vscodeConversationId, true);
       recordSubmission();
-      onSend(prepared, attachments);
+      await onSend(prepared, attachments);
     });
   };
 
   const activateSkill = (name: string, args: string) => {
     if (!vscodeRuntime) {
-      recordSubmission();
-      onActivateSkill?.(name, args, attachments);
+      runAgentTurn(async () => {
+        recordSubmission();
+        await onActivateSkill?.(name, args, attachments);
+      });
       return;
     }
     runAgentTurn(async () => {
       await vscodeHost.preparePrompt('', vscodeConversationId, false);
       recordSubmission();
-      onActivateSkill?.(name, args, attachments);
+      await onActivateSkill?.(name, args, attachments);
     });
   };
 

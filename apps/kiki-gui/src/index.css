@@ -349,6 +349,22 @@ body {
   margin: -1.25rem -1rem -1rem;
 }
 
+/* Scroll chaining containment for the page-level scrollers: when the
+ * transcript, a settings pane, a sidebar list, or a rail reaches its end, the
+ * gesture must not leak to the scroller behind it (the "scrolls past the
+ * floor" symptom). Nested bounded lists inside the rail contain as well. */
+[data-transcript-scroll],
+[data-settings-scroll],
+[data-session-list],
+[data-search-results],
+[data-agent-panel-scroll],
+[data-tasks-scroll],
+[data-subagent-scroll],
+.app-rail,
+.conversation-shell[data-phase='hero'] .conversation-middle {
+  overscroll-behavior-y: contain;
+}
+
 @media (max-width: 767px) {
   .app-sidebar {
     position: fixed;

@@ -8,7 +8,6 @@ import {
   namedAgentNewSessionBlocked,
   namedAgentOverrideRelations,
   namedAgentSessionHref,
-  parseNamedAgentTools,
   partitionNamedAgentProfiles,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
@@ -33,6 +32,8 @@ import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../contr
 import { useGuardedNavigate } from '../dirtyGuard';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
+import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { ExperimentalSection } from './ExperimentalSection';
 import { PromptConfigCard } from './PromptConfigCard';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
@@ -191,67 +192,12 @@ function NamedAgentProfileRow({
     || (profile.model_profiles?.length ?? 0) > 0
     || spawnSummary !== ''
     || (profile.subagents?.length ?? 0) > 0;
-  const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [description, setDescription] = useState(profile.description ?? '');
-  const [whenToUse, setWhenToUse] = useState(profile.when_to_use ?? '');
-  const [modelAlias, setModelAlias] = useState(profile.pinned_model_alias ?? '');
-  const [thinkingEffort, setThinkingEffort] = useState(profile.thinking_effort ?? '');
-  const [serviceTier, setServiceTier] = useState<NamedAgentProfile['service_tier'] | ''>(profile.service_tier ?? '');
-  const [tools, setTools] = useState((profile.tools ?? []).join(', '));
-  const [disallowedTools, setDisallowedTools] = useState((profile.disallowed_tools ?? []).join(', '));
-  const [routeAliases, setRouteAliases] = useState<Record<string, string>>(() =>
-    Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])),
-  );
   const [rawOpen, setRawOpen] = useState(false);
   const [rawLoading, setRawLoading] = useState(false);
   const [rawSaving, setRawSaving] = useState(false);
   const [rawText, setRawText] = useState('');
-
-  const resetDraft = () => {
-    setDescription(profile.description ?? '');
-    setWhenToUse(profile.when_to_use ?? '');
-    setModelAlias(profile.pinned_model_alias ?? '');
-    setThinkingEffort(profile.thinking_effort ?? '');
-    setServiceTier(profile.service_tier ?? '');
-    setTools((profile.tools ?? []).join(', '));
-    setDisallowedTools((profile.disallowed_tools ?? []).join(', '));
-    setRouteAliases(Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])));
-    setFeedback(null);
-  };
-  const save = async () => {
-    if (!writable || profile.workspace_id === undefined) return;
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.updateNamedAgentProfile(profile.name, {
-        scope: profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra',
-        workspace_id: profile.workspace_id,
-        source_file: profile.source_file,
-        description: description.trim(),
-        when_to_use: whenToUse.trim() === '' ? null : whenToUse.trim(),
-        pinned_model_alias: modelAlias.trim() === '' ? null : modelAlias.trim(),
-        thinking_effort: thinkingEffort === '' ? null : thinkingEffort,
-        service_tier: serviceTier === '' ? null : serviceTier,
-        tools: parseNamedAgentTools(tools),
-        disallowed_tools: parseNamedAgentTools(disallowedTools),
-        routes: profile.routes.map((route) => ({
-          id: route.id,
-          model_alias: routeAliases[route.id]?.trim() === ''
-            ? null
-            : routeAliases[route.id]?.trim(),
-        })),
-      });
-      onUpdated(echoed);
-      setEditing(false);
-      setFeedback({ tone: 'success', text: t('st.namedAgents.saved') });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
-  };
   const toggleRaw = async () => {
     if (rawOpen) {
       setRawOpen(false);
@@ -373,7 +319,7 @@ function NamedAgentProfileRow({
           {profile.disabled && defaultMain ? (
             <p className="mt-0.5 text-[10.5px] text-ink-faint">{t('st.namedAgents.disabledMainHint')}</p>
           ) : null}
-          {!editing && profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
+          {profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
           {overrideRelation?.kind === 'overrides_builtin' ? (
             <p className="mt-0.5 text-[10.5px] text-ink-faint">{t('st.namedAgents.overridesBuiltin')}</p>
           ) : null}
@@ -408,77 +354,24 @@ function NamedAgentProfileRow({
           >
             {t('st.namedAgents.newSession')}
           </button>
-          {writable && !editing ? (
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => { resetDraft(); setEditing(true); }}>
+          {writable ? (
+            <button type="button" className={SECONDARY_BUTTON} onClick={() => { setFeedback(null); setEditorOpen(true); }}>
               {t('st.namedAgents.edit')}
             </button>
           ) : null}
         </div>
       </div>
-      {editing ? (
-        <fieldset disabled={saving} className="mt-3 space-y-3 disabled:opacity-60">
-          <label className="block text-[11px] font-medium text-ink-soft">
-            {t('st.namedAgents.description')}
-            <textarea className={`${INPUT} mt-1 min-h-20`} value={description} onChange={(event) => { setDescription(event.target.value); }} />
-          </label>
-          <label className="block text-[11px] font-medium text-ink-soft">
-            {t('st.namedAgents.whenToUse')}
-            <textarea className={`${INPUT} mt-1 min-h-16`} value={whenToUse} onChange={(event) => { setWhenToUse(event.target.value); }} />
-          </label>
-          <label className="block text-[11px] font-medium text-ink-soft">
-            {t('st.namedAgents.modelPin')}
-            <input data-agent-model-alias className={`${INPUT} mt-1 font-mono`} value={modelAlias} placeholder="provider/model" onChange={(event) => {
-              const next = event.target.value;
-              if (next.trim() !== modelAlias.trim()) setThinkingEffort('');
-              setModelAlias(next);
-            }} />
-          </label>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-[11px] font-medium text-ink-soft">
-              {t('st.namedAgents.defaultModelThinkingEffort')}
-              <select data-agent-thinking-effort className={`${INPUT} mt-1`} value={thinkingEffort} onChange={(event) => { setThinkingEffort(event.target.value); }}>
-                <option value="">{t('st.namedAgents.inherit')}</option>
-                {['low', 'medium', 'high', 'xhigh', 'max'].map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
-            </label>
-            <label className="block text-[11px] font-medium text-ink-soft">
-              {t('st.namedAgents.serviceTier')}
-              <select className={`${INPUT} mt-1`} value={serviceTier} onChange={(event) => { setServiceTier(event.target.value as typeof serviceTier); }}>
-                <option value="">{t('st.namedAgents.inherit')}</option>
-                {['auto', 'default', 'flex', 'priority'].map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
-            </label>
-          </div>
-          <label className="block text-[11px] font-medium text-ink-soft">
-            {t('st.namedAgents.tools')}
-            <textarea className={`${INPUT} mt-1 min-h-16 font-mono`} value={tools} placeholder={t('st.namedAgents.toolsPlaceholder')} onChange={(event) => { setTools(event.target.value); }} />
-          </label>
-          <label className="block text-[11px] font-medium text-ink-soft">
-            {t('st.namedAgents.disallowedTools')}
-            <textarea className={`${INPUT} mt-1 min-h-16 font-mono`} value={disallowedTools} placeholder={t('st.namedAgents.toolsPlaceholder')} onChange={(event) => { setDisallowedTools(event.target.value); }} />
-          </label>
-          {profile.routes.map((route) => (
-            <label key={route.id} className="block text-[11px] font-medium text-ink-soft">
-              {t('st.namedAgents.routeModel', { route: route.id })}
-              <input
-                className={`${INPUT} mt-1 font-mono`}
-                value={routeAliases[route.id] ?? ''}
-                placeholder="provider/model"
-                onChange={(event) => { setRouteAliases((current) => ({ ...current, [route.id]: event.target.value })); }}
-              />
-            </label>
-          ))}
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className={PRIMARY_BUTTON} disabled={description.trim() === '' || saving} onClick={() => void save()}>
-              {saving ? t('common.saving') : t('common.save')}
-            </button>
-            <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={() => { resetDraft(); setEditing(false); }}>
-              {t('common.cancel')}
-            </button>
-          </div>
-        </fieldset>
-      ) : (
-        <>
+      {editorOpen ? (
+        <AgentProfileEditorDialog
+          profile={profile}
+          onClose={() => { setEditorOpen(false); }}
+          onSaved={(updated) => {
+            onUpdated(updated);
+            setFeedback({ tone: 'success', text: t('st.namedAgents.saved') });
+          }}
+        />
+      ) : null}
+      <>
           {summaryChips.length > 0 ? (
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {summaryChips.map((chip) => (
@@ -610,7 +503,6 @@ function NamedAgentProfileRow({
             {hasProjection ? <Hint>{t('st.namedAgents.projectionHint')}</Hint> : null}
           </details>
         </>
-      )}
       {profile.source_file !== undefined ? (
         <div className="mt-3 border-t border-hairline pt-3">
           <button type="button" className={SECONDARY_BUTTON} onClick={() => void toggleRaw()}>
@@ -803,6 +695,7 @@ export function AgentsSection() {
   return (
     <div className="space-y-4">
       <NamedAgentProfilesCard bucket="main" />
+      <AgentRuntimeCard />
       <PromptConfigCard />
       <ExperimentalSection
         featureIds={['agent-profile-routes']}

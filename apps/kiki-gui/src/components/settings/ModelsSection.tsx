@@ -5,22 +5,34 @@ import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
+  KNOWN_CAPABILITIES,
+  KNOWN_EFFORTS,
   markRestartRequired,
+  providerDraftFromCatalog,
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
   validateDesktopConfigDraft,
   writeSettings,
+  type ProviderDraft,
+  type ProviderModelDraft,
   type RequestIdentityLayerDraft,
+  type ServerConnection,
   type ServerFileSettings,
 } from '@kiki/session-core/settings';
 import { formatTokens } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
+import { ChipSelect } from '../ChipSelect';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
-import { MsUnitInput } from '../ProviderFields';
+import {
+  ContextStepper,
+  MsUnitInput,
+  saveProviderForm,
+  validateProviderFormDraft,
+} from '../ProviderFields';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { useRestartRequirement } from '../RestartBanner';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
@@ -105,10 +117,13 @@ function shortModelId(alias: string, providerId: string): string {
  * catalog — search everything, grouped by provider, metadata per row. The
  * star picks the GLOBAL default model (and carries its provider along); the
  * per-provider default is a separate concept, shown as a group-header chip
- * and edited inside the provider editor on the Connections tab.
+ * and edited inside the provider editor on the Connections tab. A row also
+ * expands into an in-place parameter editor: model parameters are editable
+ * from BOTH this detail surface and the provider editor, through the same
+ * validation and save channel.
  */
 export function ModelCatalogCard() {
-  const { client } = useConnection();
+  const { client, config: connection } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
@@ -127,6 +142,15 @@ export function ModelCatalogCard() {
   );
   const defaultModel = configQuery.data?.default_model;
   const defaultProvider = configQuery.data?.default_provider ?? '';
+
+  // Row edits save through the provider form; every dependent read refreshes.
+  const refreshCatalog = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['models'] }),
+      queryClient.invalidateQueries({ queryKey: ['providers'] }),
+      queryClient.invalidateQueries({ queryKey: ['config'] }),
+    ]);
+  }, [queryClient]);
 
   // Provider grouping: default provider's group first, default model first
   // inside its group; the search box filters by id, name, provider, or chip.
@@ -202,6 +226,10 @@ export function ModelCatalogCard() {
           {groups.map((group) => {
             const provider: ProviderCatalogItem | undefined = providers.get(group.provider);
             const providerDefault = provider?.default_model;
+            // Only providers whose wire type round-trips through the provider
+            // form can offer the in-place row editor (same rule as the
+            // provider editor's cannot-rewrite branch).
+            const editable = provider !== undefined && providerDraftFromCatalog(provider, items) !== null;
             return (
               <div key={group.provider}>
                 <div className="mb-1.5 flex flex-wrap items-center gap-2">
@@ -223,9 +251,13 @@ export function ModelCatalogCard() {
                     <ModelRow
                       key={item.model}
                       item={item}
+                      provider={editable ? provider : undefined}
+                      models={items}
+                      connection={connection}
                       isDefault={item.model === defaultModel}
                       busy={busy}
                       onSetDefault={() => void selectDefaultModel(item)}
+                      onSaved={refreshCatalog}
                     />
                   ))}
                 </div>
@@ -542,48 +574,244 @@ export function DefaultsTab() {
 
 function ModelRow({
   item,
+  provider,
+  models,
+  connection,
   isDefault,
   busy,
   onSetDefault,
+  onSaved,
 }: {
   item: ModelCatalogItem;
+  /** Undefined when this provider cannot round-trip through the provider form. */
+  provider: ProviderCatalogItem | undefined;
+  models: readonly ModelCatalogItem[];
+  connection: ServerConnection;
   isDefault: boolean;
   busy: boolean;
   onSetDefault: () => void;
+  onSaved: () => Promise<void>;
 }) {
   const { t } = useI18n();
+  const [editing, setEditing] = useState(false);
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
-      <button
-        type="button"
-        onClick={onSetDefault}
-        disabled={busy || isDefault}
-        aria-label={t('st.models.starAria', { model: item.model })}
-        title={isDefault ? t('st.models.starredTitle') : t('st.models.unstarredTitle')}
-        className={`shrink-0 text-[15px] leading-none transition-colors disabled:cursor-default ${
-          isDefault ? 'text-accent' : 'text-hairline-strong hover:text-accent'
-        }`}
-      >
-        {isDefault ? '★' : '☆'}
-      </button>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] font-medium text-ink">
-          {item.display_name ?? item.model}
-          {isDefault ? (
-            <span className="ml-2 rounded-full border border-success/30 bg-success/10 px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-success">{t('st.models.default')}</span>
-          ) : null}
-        </p>
-        <p className="truncate font-mono text-[10.5px] text-ink-faint">
-          {item.model} · {formatTokens(item.max_context_size)} {t('st.models.context')}
-        </p>
-      </div>
-      {item.capabilities !== undefined && item.capabilities.length > 0 ? (
-        <div className="hidden shrink-0 flex-wrap justify-end gap-1 sm:flex">
-          {item.capabilities.map((capability) => (
-            <span key={capability} className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] text-ink-faint">{capability}</span>
-          ))}
+    <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onSetDefault}
+          disabled={busy || isDefault}
+          aria-label={t('st.models.starAria', { model: item.model })}
+          title={isDefault ? t('st.models.starredTitle') : t('st.models.unstarredTitle')}
+          className={`shrink-0 text-[15px] leading-none transition-colors disabled:cursor-default ${
+            isDefault ? 'text-accent' : 'text-hairline-strong hover:text-accent'
+          }`}
+        >
+          {isDefault ? '★' : '☆'}
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[13px] font-medium text-ink">
+            {item.display_name ?? item.model}
+            {isDefault ? (
+              <span className="ml-2 rounded-full border border-success/30 bg-success/10 px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-success">{t('st.models.default')}</span>
+            ) : null}
+          </p>
+          <p className="truncate font-mono text-[10.5px] text-ink-faint">
+            {item.model} · {formatTokens(item.max_context_size)} {t('st.models.context')}
+          </p>
         </div>
+        {item.capabilities !== undefined && item.capabilities.length > 0 ? (
+          <div className="hidden shrink-0 flex-wrap justify-end gap-1 sm:flex">
+            {item.capabilities.map((capability) => (
+              <span key={capability} className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] text-ink-faint">{capability}</span>
+            ))}
+          </div>
+        ) : null}
+        {provider !== undefined ? (
+          <button
+            type="button"
+            aria-label={t('st.models.editAria', { model: item.model })}
+            aria-expanded={editing}
+            title={t('st.models.editTitle')}
+            onClick={() => { setEditing((value) => !value); }}
+            className="shrink-0 text-[10px] text-ink-faint transition-colors hover:text-ink"
+          >
+            <span aria-hidden className={`inline-block transition-transform ${editing ? 'rotate-90' : ''}`}>▶</span>
+          </button>
+        ) : null}
+      </div>
+      {editing && provider !== undefined ? (
+        <ModelCatalogRowEditor
+          item={item}
+          provider={provider}
+          models={models}
+          connection={connection}
+          onSaved={onSaved}
+        />
       ) : null}
+    </div>
+  );
+}
+
+type CatalogModelDraft = Pick<
+  ProviderModelDraft,
+  | 'displayName'
+  | 'maxContextSize'
+  | 'capabilities'
+  | 'supportEfforts'
+  | 'requestIdentityChoice'
+  | 'requestIdentityOverridesJson'
+>;
+
+function catalogModelDraftFrom(model: ProviderModelDraft): CatalogModelDraft {
+  return {
+    displayName: model.displayName,
+    maxContextSize: model.maxContextSize,
+    capabilities: [...model.capabilities],
+    supportEfforts: [...model.supportEfforts],
+    requestIdentityChoice: model.requestIdentityChoice,
+    requestIdentityOverridesJson: model.requestIdentityOverridesJson,
+  };
+}
+
+function catalogModelDraftsEqual(a: CatalogModelDraft, b: CatalogModelDraft): boolean {
+  return a.displayName === b.displayName
+    && a.maxContextSize === b.maxContextSize
+    && a.requestIdentityChoice === b.requestIdentityChoice
+    && a.requestIdentityOverridesJson === b.requestIdentityOverridesJson
+    && a.capabilities.length === b.capabilities.length
+    && a.capabilities.every((value, index) => value === b.capabilities[index])
+    && a.supportEfforts.length === b.supportEfforts.length
+    && a.supportEfforts.every((value, index) => value === b.supportEfforts[index]);
+}
+
+/**
+ * In-place parameter editor for one catalog row: display name, context size,
+ * capabilities, effort levels and request identity — the same parameter set
+ * the provider editor's model rows expose (the model id itself stays an
+ * identity, renamed only from the provider editor). Saves through the SAME
+ * channel as the provider editor: the provider form is rebuilt from the
+ * catalog with just this row patched, validated by validateProviderFormDraft
+ * and written by saveProviderForm — no second data flow.
+ */
+function ModelCatalogRowEditor({
+  item,
+  provider,
+  models,
+  connection,
+  onSaved,
+}: {
+  item: ModelCatalogItem;
+  provider: ProviderCatalogItem;
+  models: readonly ModelCatalogItem[];
+  connection: ServerConnection;
+  onSaved: () => Promise<void>;
+}) {
+  const { t, locale } = useI18n();
+  const shortId = shortModelId(item.model, provider.id);
+  const base = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
+  const baseModel = base?.models.find((model) => model.model === shortId);
+  const [draft, setDraft] = useState<CatalogModelDraft | null>(() =>
+    baseModel === undefined ? null : catalogModelDraftFrom(baseModel));
+  const [baseline, setBaseline] = useState<CatalogModelDraft | null>(draft);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+
+  // Refetches re-sync a clean editor; a dirty draft is left untouched.
+  useEffect(() => {
+    if (baseModel === undefined) return;
+    if (draft !== null && baseline !== null && !catalogModelDraftsEqual(draft, baseline)) return;
+    const next = catalogModelDraftFrom(baseModel);
+    if (draft !== null && catalogModelDraftsEqual(draft, next)) return;
+    setDraft(next);
+    setBaseline(next);
+  }, [baseModel, draft, baseline]);
+
+  const dirty = draft !== null && baseline !== null && !catalogModelDraftsEqual(draft, baseline);
+  useDirtyReporter(`catalog-model:${item.model}`, dirty);
+
+  if (base === null || baseModel === undefined || draft === null) {
+    return <Hint>{t('st.providers.cannotRewrite')}</Hint>;
+  }
+
+  const save = async () => {
+    const next: ProviderDraft = {
+      ...base,
+      models: base.models.map((model) => (model.model === shortId ? { ...model, ...draft } : model)),
+    };
+    const validation = validateProviderFormDraft(next, provider.id);
+    if (validation !== null) {
+      setFeedback({ tone: 'error', text: issueText(locale, validation) });
+      return;
+    }
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await saveProviderForm(connection, provider.id, next);
+      await onSaved();
+      setBaseline(draft);
+      setFeedback({ tone: 'success', text: t('st.models.paramsSaved', { model: item.model }) });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 space-y-2.5 border-t border-hairline pt-3">
+      <div className="grid items-center gap-2 sm:grid-cols-2">
+        <input
+          className={INPUT}
+          aria-label={t('st.models.displayNameAria', { model: shortId })}
+          value={draft.displayName}
+          onChange={(event) => { setDraft({ ...draft, displayName: event.target.value }); }}
+          placeholder={t('st.providers.displayNamePlaceholder')}
+        />
+        <ContextStepper
+          value={draft.maxContextSize}
+          onChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
+          ariaLabel={t('st.models.contextAria', { model: shortId })}
+        />
+      </div>
+      <div className="space-y-1">
+        <p className="text-[10.5px] font-medium text-ink-faint">{t('st.chips.capabilities')}</p>
+        <ChipSelect
+          values={draft.capabilities}
+          knownOptions={KNOWN_CAPABILITIES}
+          onChange={(capabilities) => { setDraft({ ...draft, capabilities }); }}
+          ariaLabel={t('st.models.capsAria', { model: shortId })}
+          addPlaceholder={t('st.chips.addPlaceholder')}
+          removeLabel={(value) => t('st.chips.removeAria', { value })}
+        />
+      </div>
+      <div className="space-y-1">
+        <p className="text-[10.5px] font-medium text-ink-faint">{t('st.chips.efforts')}</p>
+        <ChipSelect
+          values={draft.supportEfforts}
+          knownOptions={KNOWN_EFFORTS}
+          onChange={(supportEfforts) => { setDraft({ ...draft, supportEfforts }); }}
+          ariaLabel={t('st.models.effortsAria', { model: shortId })}
+          addPlaceholder={t('st.chips.addPlaceholder')}
+          removeLabel={(value) => t('st.chips.removeAria', { value })}
+        />
+      </div>
+      <div className="border-t border-hairline pt-3">
+        <RequestIdentityLayerEditor
+          value={draft}
+          onChange={(identity) => { setDraft({ ...draft, ...identity }); }}
+          label={t('st.models.requestIdentity')}
+          inheritLabel={t('st.requestIdentity.inheritProvider')}
+          hint={t('st.models.requestIdentityHint')}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
+          {saving ? t('common.saving') : t('common.save')}
+        </button>
+        {dirty ? <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+      </div>
+      <FeedbackLine feedback={feedback} />
     </div>
   );
 }
