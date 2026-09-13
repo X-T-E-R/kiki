@@ -1,9 +1,9 @@
 // bench/import-kimi-code.js
 //
-// Import all workspaces + sessions from ~/.kimi-code into minidb and build a
+// Import all workspaces + sessions from ~/.kiki into minidb and build a
 // full-text index over the session content, then measure import + search speed.
 //
-// Run:  node bench/import-kimi-code.js [--data ~/.kimi-code] [--out <dir>]
+// Run:  node bench/import-kimi-code.js [--data ~/.kiki] [--out <dir>]
 
 import fs from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
@@ -16,7 +16,7 @@ const arg = (name, def) => {
   const i = argv.indexOf(`--${name}`);
   return i === -1 ? def : argv[i + 1];
 };
-const DATA = path.resolve(arg('data', path.join(os.homedir(), '.kimi-code')));
+const DATA = path.resolve(arg('data', path.join(os.homedir(), '.kiki')));
 const OUT = path.resolve(arg('out', path.join(os.tmpdir(), 'minidb-kimi-code-' + Date.now())));
 const FULL = argv.includes('--full'); // also index full tool results (stress test)
 

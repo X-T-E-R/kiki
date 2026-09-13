@@ -9,7 +9,7 @@ Gate not-yet-public features behind `IFlagService.enabled(id)`, per the reposito
 - `src/app/flag/flagRegistry.ts` — `IFlagRegistry` token + `FlagDefinitionInput` / `FlagId` / `FlagSurface` types + `registerFlagDefinition` / `getContributedFlags` (import-time contribution queue).
 - `src/app/flag/flagRegistryService.ts` — `FlagRegistryService` impl; in-memory catalog seeded from import-time contributions; App scope.
 - `src/app/flag/flag.ts` — `IFlagService` token + resolver types (`ExperimentalFlagMap`, `ExperimentalFlagConfig`, `ExperimentalFlagSource`, `ExperimentalFeatureState`) + `EXPERIMENTAL_SECTION` (`experimental`) / `ExperimentalConfigSchema` (zod) + the module-level `registerConfigSection(EXPERIMENTAL_SECTION, …)` call that owns the section.
-- `src/app/flag/flagService.ts` — `FlagService` impl + `MASTER_ENV` (`KIMI_CODE_EXPERIMENTAL_FLAG`); reads definitions from `IFlagRegistry` and overrides from `IConfigService`; self-registers at App scope.
+- `src/app/flag/flagService.ts` — `FlagService` impl + `MASTER_ENV` (`KIKI_EXPERIMENTAL_FLAG`); reads definitions from `IFlagRegistry` and overrides from `IConfigService`; self-registers at App scope.
 - `src/app/flag/index.ts` — **removed (no barrel)**; `src/index.ts` imports the `flag` leafs precisely instead (e.g. `import './app/flag/flagService'`).
 - `src/<domain>/flag.ts` — each domain that owns a flag declares it here and calls `registerFlagDefinition` at the module top level (e.g. `src/agent/toolSelect/flag.ts`). The directory already names the domain, so the file is just `flag.ts`.
 
@@ -24,9 +24,9 @@ Gate not-yet-public features behind `IFlagService.enabled(id)`, per the reposito
 
 Highest wins; env is read live on every call (nothing cached):
 
-1. Per-feature `def.env` (e.g. `KIMI_CODE_EXPERIMENTAL_MY_FEATURE`) → forces on/off.
+1. Per-feature `def.env` (e.g. `KIKI_EXPERIMENTAL_MY_FEATURE`) → forces on/off.
 2. `[experimental]` config section per-flag override.
-3. Master env `KIMI_CODE_EXPERIMENTAL_FLAG` truthy → every flag on.
+3. Master env `KIKI_EXPERIMENTAL_FLAG` truthy → every flag on.
 4. Registry `default`.
 
 `explain(id)` returns the winning `source` (`master-env` | `env` | `config` | `default`) plus the effective `configValue`. `explain(id)` returns `undefined` (and `enabled(id)` returns `false`) for an id that no domain has registered.
@@ -60,7 +60,7 @@ export const myFeatureFlag: FlagDefinitionInput = {
   id: 'my_feature',
   title: 'My feature',
   description: '...',
-  env: 'KIMI_CODE_EXPERIMENTAL_MY_FEATURE',
+  env: 'KIKI_EXPERIMENTAL_MY_FEATURE',
   default: false,
   surface: 'both',
 };
@@ -77,7 +77,7 @@ import './<domain>/flag';
 
 `src/index.ts` imports every domain's leaf files precisely (one line per leaf), so the contribution runs during bootstrap, before any scope is created — and therefore before any consumer resolves `IFlagService`.
 
-- `env` must start with `KIMI_CODE_EXPERIMENTAL_`, be unique, and not equal `KIMI_CODE_EXPERIMENTAL_FLAG`.
+- `env` must start with `KIKI_EXPERIMENTAL_`, be unique, and not equal `KIKI_EXPERIMENTAL_FLAG`.
 - `id` must not be `flag`. A duplicate `id` throws when `FlagRegistryService` drains the contributions.
 - `FlagId` is `string`, not a literal union: with no central catalog there is nothing to derive it from, so `enabled()` has no compile-time typo-checking. Cover gated behavior with tests instead.
 - `surface`: `core` | `tui` | `both` (documentation/grouping only; not used in resolution).
@@ -103,6 +103,6 @@ if (!this.flags.enabled('my_feature')) return;
 
 - Gate unreleased behavior behind a registered flag; no ad-hoc env toggles.
 - Contribute each flag from the **owning domain's** `flag.ts` (`src/<domain>/flag.ts`) via a top-level `registerFlagDefinition` call; there is no central catalog to edit. The directory names the domain, so the file is just `flag.ts`.
-- `env` must start with `KIMI_CODE_EXPERIMENTAL_`, be unique, and not equal `KIMI_CODE_EXPERIMENTAL_FLAG`; `id` must not be `flag`.
+- `env` must start with `KIKI_EXPERIMENTAL_`, be unique, and not equal `KIKI_EXPERIMENTAL_FLAG`; `id` must not be `flag`.
 - `FlagId` is `string` (decentralized registration) — do not reintroduce a central `FLAG_DEFINITIONS` array or a derived literal union.
 - `flag` lives at `App` scope — never in `_base`, never per-session.

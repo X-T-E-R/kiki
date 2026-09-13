@@ -17,8 +17,8 @@ There is no legacy `KimiTUI` runtime path or experimental selector.
 
 - `src/cli/run-shell.ts` owns trust ordering, daemon connection setup, process/signal cleanup, and terminal restoration. It must not contain session interaction logic.
 - `src/tui/daemon/daemon-tui.ts` is the coordinator. It wires `TUIState`, editor callbacks, `SessionController`, daemon commands, dialogs, session navigation, and lifecycle cleanup.
-- `src/tui/daemon/client.ts` implements the `SessionTransport` boundary and the small REST adapters not already represented by the public Klient facade.
-- `src/tui/daemon/socket.ts` adapts daemon WebSocket frames to the session-core socket contract.
+- `src/tui/daemon/client.ts` delegates session actions to the shared session-core Klient adapter and keeps small REST adapters not already represented by the public Klient facade.
+- `session(id).view` supplies ordered snapshots, transcript pages, and live recovery on the Klient event socket; there is no separate daemon session socket.
 - `src/tui/daemon/transcript-renderer.ts` projects session-core transcript blocks onto shared TUI message/media components.
 - `src/tui/daemon/commands.ts` is the interactive slash-command source of truth. Every catalog command is explicitly `supported` or `disabled`; `/help` and autocomplete are generated from the same table.
 - `src/tui/interactions/` owns neutral approval/question dialog types and request/response adapters.

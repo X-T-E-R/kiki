@@ -306,7 +306,7 @@ Before (literal, wordy):
 After (concise, idiomatic):
 
 ```markdown
-- `kimi web` 新增 `--allowed-host <host>` 选项，可将指定 Host 加入 DNS 重绑定白名单；403 错误会提示如何通过 `--allowed-host` 或 `KIMI_CODE_ALLOWED_HOSTS` 放行，例如 `kimi web --allowed-host example.com`。
+- `kimi web` 新增 `--allowed-host <host>` 选项，可将指定 Host 加入 DNS 重绑定白名单；403 错误会提示如何通过 `--allowed-host` 或 `KIKI_ALLOWED_HOSTS` 放行，例如 `kimi web --allowed-host example.com`。
 ```
 
 ### 7. Verify

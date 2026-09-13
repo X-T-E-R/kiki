@@ -1,6 +1,6 @@
 // bench/search-kimi-code.js
 //
-// Import ~/.kimi-code sessions (useful extraction) and full-text-search for a
+// Import ~/.kiki sessions (useful extraction) and full-text-search for a
 // query, printing hits with context snippets.
 //
 // Run:  node bench/search-kimi-code.js <query>  [--full]
@@ -19,7 +19,7 @@ if (!query) {
   process.exit(1);
 }
 
-const DATA = path.join(os.homedir(), '.kimi-code');
+const DATA = path.join(os.homedir(), '.kiki');
 const ARG_FIELDS = ['command', 'pattern', 'path', 'description', 'query', 'prompt', 'file_path'];
 
 function extractWireText(wirePath, full) {

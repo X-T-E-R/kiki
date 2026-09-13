@@ -54,7 +54,7 @@ tied to a specific upper domain (no `cron`, no `flags`, no feature-specific
 fields): that couples the foundational layer to an upstream one.
 
 Any value that belongs to a specific domain — including env-only operational
-toggles (`KIMI_CRON_*`, `KIMI_CODE_EXPERIMENTAL_*`), model parameters, or feature
+toggles (`KIMI_CRON_*`, `KIKI_EXPERIMENTAL_*`), model parameters, or feature
 flags — goes through **Config registration**: the owning domain registers a
 section with a declarative `envBindings` map (and a `stripEnv` when the value must
 not be persisted) and reads it via `config.get(...)`. Each config value declares
@@ -82,7 +82,7 @@ Default   registered defaultValue (and code constants promoted to a section)
    ↓
 User      config.toml (persisted user preferences)
    ↓
-Operational env overlay (e.g. KIMI_MODEL_*, KIMI_CODE_EXPERIMENTAL_*)
+Operational env overlay (e.g. KIMI_MODEL_*, KIKI_EXPERIMENTAL_*)
    ↓
 Memory    per-run intent (CLI flags); never persisted; highest
 ```
@@ -105,7 +105,7 @@ A domain that owns a section keeps the schema in its own `configSection.ts` (e.g
 
 ## Scope
 
-- `IConfigRegistry` / `IConfigService` — **App** scope, process-global. One registry of sections; one loader reading `~/.kimi-code/config.toml` (path from `IBootstrapService.configPath`).
+- `IConfigRegistry` / `IConfigService` — **App** scope, process-global. One registry of sections; one loader reading `~/.kiki/config.toml` (path from `IBootstrapService.configPath`).
 
 All config reads go through `IConfigService` (global config). Per-session runtime state (active model, thinking level, etc.) lives in the owning Session-scoped service (e.g. `IProfileService`), not in `config`.
 

@@ -36,7 +36,7 @@ interface Msg {
 }
 
 function loadRealMessages(): Msg[] {
-  const DATA = path.join(os.homedir(), '.kimi-code');
+  const DATA = path.join(os.homedir(), '.kiki');
   const lines = readFileSync(path.join(DATA, 'session_index.jsonl'), 'utf8').trim().split('\n');
   const out: Msg[] = [];
   for (const line of lines) {

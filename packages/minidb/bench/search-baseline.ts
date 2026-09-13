@@ -1,13 +1,13 @@
 // bench/search-baseline.ts
 //
-// "Without minidb" search baseline over the SAME real ~/.kimi-code sessions
+// "Without minidb" search baseline over the SAME real ~/.kiki sessions
 // used by import-kimi-code.ts. Loads every session's extracted text into an
 // in-memory array, then answers the same queries with a naive full scan
 // (substring token-AND for text, linear Array.filter for secondary index / dt
 // range). Paired with import-kimi-code.ts, this shows what minidb's indexes
 // buy you on real data.
 //
-// Run:  node --import tsx bench/search-baseline.ts [--data ~/.kimi-code]
+// Run:  node --import tsx bench/search-baseline.ts [--data ~/.kiki]
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -18,7 +18,7 @@ const arg = (name: string, def: string) => {
   const i = argv.indexOf(`--${name}`);
   return i === -1 ? def : argv[i + 1]!;
 };
-const DATA = path.resolve(arg('data', path.join(os.homedir(), '.kimi-code')));
+const DATA = path.resolve(arg('data', path.join(os.homedir(), '.kiki')));
 const FULL = argv.includes('--full'); // also index full tool results (matches import-kimi-code --full)
 
 const fmt = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 0 });
