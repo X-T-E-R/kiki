@@ -6,7 +6,7 @@ import type { VscodeIntegrationSettings } from "./settings";
 import { VscodeHostBridge } from "./vscode-host-bridge";
 import type { WebviewConnection } from "./webview-connection";
 
-export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+export class KikiWebviewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private readonly webviews = new Set<vscode.Webview>();
   private readonly bridge: VscodeHostBridge;
 
@@ -36,7 +36,7 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider, vscode.D
   }
 
   createPanel(): vscode.WebviewPanel {
-    const panel = vscode.window.createWebviewPanel("kimiPanel", "Kimi Code", vscode.ViewColumn.One, {
+    const panel = vscode.window.createWebviewPanel("kikiPanel", "Kiki", vscode.ViewColumn.One, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [this.guiRoot],

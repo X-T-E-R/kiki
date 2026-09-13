@@ -162,9 +162,17 @@ describe('server-v2 snapshot route enrichment', () => {
       .fn<() => ReadonlyMap<string, number>>()
       .mockReturnValueOnce(new Map([['agent-1', 2]]))
       .mockReturnValue(new Map());
-    const getSnapshotState = vi.fn(async () => ({
+    const getSnapshotState = vi.fn(async (_sessionId: string, options: { capture?: () => Promise<unknown> }) => ({
       seq: 1,
       epoch: 'ep_snapshot',
+      captured: await options.capture?.(),
+      pendingApprovals: [{
+        approval_id: 'approval-snapshot', session_id: sessionId, turn_id: 7,
+        tool_call_id: 'tc-approval', tool_name: 'Bash', action: 'run',
+        tool_input_display: { command: 'pwd' },
+        created_at: new Date(now).toISOString(), expires_at: new Date(now + 60_000).toISOString(),
+      }],
+      pendingQuestions: [],
       contextMessages: [
         {
           id: 'message-snapshot',
@@ -267,19 +275,18 @@ describe('server-v2 snapshot route enrichment', () => {
         thinking_effort: 'high',
         subagent_phase: 'working',
         label: 'Research API limits',
-        tool_call_count: 2,
+        tool_call_count: 3,
       }),
     ]);
-    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, { captureMessages: false });
-    expect(getMaterializedTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, [
-      'agent-1',
-    ]);
-    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
+    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: false, capture: expect.any(Function) }));
+    expect(getMaterializedTranscriptToolCallCounts).not.toHaveBeenCalled();
+    expect(getTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, ['agent-1']);
     expect(loadParts).not.toHaveBeenCalled();
 
+    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map());
     const unmaterialized = await invoke('transcript');
-    expect(unmaterialized.subagents?.[0]?.tool_call_count).toBe(5);
-    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
+    expect(unmaterialized.subagents?.[0]?.tool_call_count).toBeUndefined();
+    expect(getTranscriptToolCallCounts).toHaveBeenCalledTimes(2);
     expect(loadParts).not.toHaveBeenCalled();
 
     const legacy = await invoke();
@@ -292,8 +299,8 @@ describe('server-v2 snapshot route enrichment', () => {
       pending_approvals: compact.pending_approvals,
       pending_questions: compact.pending_questions,
     });
-    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, { captureMessages: true });
-    expect(getTranscriptToolCallCounts).toHaveBeenCalledOnce();
+    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: true, capture: expect.any(Function) }));
+    expect(getTranscriptToolCallCounts).toHaveBeenCalledTimes(3);
     expect(loadParts).toHaveBeenCalledOnce();
     expect(legacy.subagents).toEqual([
       expect.objectContaining({
@@ -303,7 +310,7 @@ describe('server-v2 snapshot route enrichment', () => {
         parent_agent_id: 'main',
         parent_tool_call_id: 'tc_swarm_1',
         label: 'Research API limits',
-        tool_call_count: 5,
+        tool_call_count: 3,
         swarm_index: 0,
         run_in_background: false,
       }),
@@ -313,7 +320,7 @@ describe('server-v2 snapshot route enrichment', () => {
   });
 });
 
-describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
+describe('server-v2 GET /api/sessions/:id/snapshot', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -336,7 +343,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
   });
 
   async function createSession(): Promise<string> {
-    const res = await fetch(`${base}/api/v1/sessions`, {
+    const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd: home } }),
@@ -358,8 +365,16 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     main!.accessor.get(IEventBus).publish(event);
   }
 
-  async function snapshot(sid: string) {
-    const res = await fetch(`${base}/api/v1/sessions/${sid}/snapshot`, {
+  function childWirePath(sessionId: string, agentId: string): string {
+    const session = getLiveSessionById(server!.core.accessor, sessionId);
+    if (session === undefined) throw new Error(`session ${sessionId} not found`);
+    const metaScope = session.accessor.get(ISessionContext).metaScope;
+    return join(home as string, metaScope, 'agents', agentId, 'wire.jsonl');
+  }
+
+  async function snapshot(sid: string, mode?: 'transcript') {
+    const query = mode === undefined ? '' : '?mode=transcript';
+    const res = await fetch(`${base}/api/sessions/${sid}/snapshot${query}`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     const body = (await res.json()) as { code: number; data: unknown };
@@ -383,9 +398,49 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     expect(snap.pending_questions).toEqual([]);
   });
 
+  it.each([
+    { label: 'missing', content: undefined, count: undefined },
+    {
+      label: 'corrupt',
+      content: ['not-json', '{}'].join(String.fromCodePoint(10)) + String.fromCodePoint(10),
+      count: undefined,
+    },
+    { label: 'empty', content: '', count: 0 },
+  ] as const)('[STAT-R3] compact snapshot keeps $label child count semantics', async ({
+    label,
+    content,
+    count,
+  }) => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    const session = getLiveSessionById(server!.core.accessor, sid);
+    if (session === undefined) throw new Error(`session ${sid} not found`);
+    const childId = `child-snapshot-r3-${label}`;
+    await session.accessor.get(IAgentLifecycleService).create({ agentId: childId });
+    const wirePath = childWirePath(sid, childId);
+    if (content === undefined) await rm(wirePath, { force: true });
+    else await writeFile(wirePath, content, 'utf8');
+    emit(sid, {
+      type: 'subagent.spawned',
+      subagentId: childId,
+      subagentName: 'snapshot-child',
+      parentAgentId: 'main',
+      parentToolCallId: 'tc-snapshot-r3',
+      description: `task ${childId}`,
+      userLabel: `task ${childId}`,
+      swarmIndex: 0,
+      runInBackground: false,
+    } as unknown as Event2<any>);
+
+    const snap = await snapshot(sid, 'transcript');
+    const child = (snap.subagents ?? []).find((subagent) => subagent.id === childId);
+    expect(child).toBeDefined();
+    expect(child?.tool_call_count).toBe(count);
+  });
+
   it('keeps the legacy snapshot readable and skips history work in transcript mode', async () => {
     const sid = await createSession();
-    const compactRes = await fetch(`${base}/api/v1/sessions/${sid}/snapshot?mode=transcript`, {
+    const compactRes = await fetch(`${base}/api/sessions/${sid}/snapshot?mode=transcript`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     const compactBody = (await compactRes.json()) as { code: number; data: unknown };
@@ -417,7 +472,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     });
 
     const snap = await snapshot(sid);
-    const res = await fetch(`${base}/api/v1/sessions/${sid}/messages?page_size=100`, {
+    const res = await fetch(`${base}/api/sessions/${sid}/messages?page_size=100`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     const body = (await res.json()) as {
@@ -570,7 +625,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
       step_id: stepId,
       assistant_text: '',
     });
-    const messageResponse = await fetch(`${base}/api/v1/sessions/${sid}/messages?page_size=100`, {
+    const messageResponse = await fetch(`${base}/api/sessions/${sid}/messages?page_size=100`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     const messageBody = (await messageResponse.json()) as {
@@ -849,7 +904,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
   });
 
   it('returns 404 for an unknown session', async () => {
-    const res = await fetch(`${base}/api/v1/sessions/sess_does_not_exist/snapshot`, {
+    const res = await fetch(`${base}/api/sessions/sess_does_not_exist/snapshot`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     const body = (await res.json()) as { code: number };

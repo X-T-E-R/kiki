@@ -6,6 +6,9 @@ import { deflateSync } from 'node:zlib';
 
 import {
   IAgentTitlePromptSource,
+  IAgentGoalService,
+  IAgentLoopService,
+  IAgentSwarmService,
   IAgentContextMemoryService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
@@ -24,7 +27,11 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
-import { projectPromptSnapshot, watchPromptSettlements } from '../src/routes/prompts';
+import {
+  PROMPT_BODY_LIMIT_BYTES,
+  projectPromptSnapshot,
+  watchPromptSettlements,
+} from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -148,6 +155,14 @@ function pngDimensions(bytes: Buffer): { width: number; height: number } {
   };
 }
 
+function paddedPng(extraBytes: number, marker: number): Buffer {
+  const keyword = Buffer.from(`kiki-${String(marker)}`, 'ascii');
+  const text = Buffer.concat([keyword, Buffer.from([0]), Buffer.alloc(extraBytes, 0x41 + marker)]);
+  const base = solidPng(10, 10);
+  const iend = base.subarray(base.length - 12);
+  return Buffer.concat([base.subarray(0, base.length - 12), pngChunk('tEXt', text), iend]);
+}
+
 async function readFileEventually(path: string): Promise<Buffer> {
   return vi.waitFor(() => readFile(path));
 }
@@ -177,13 +192,14 @@ async function writeConfigToml(dir: string, content: string): Promise<void> {
   await rename(tmpPath, join(dir, 'config.toml'));
 }
 
-describe('server-v2 /api/v1 prompts', () => {
+describe('server-v2 /api prompts', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-prompts-'));
+    await mkdir(join(home, '.git'));
     await writeConfigToml(home, PROMPT_TOML);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
@@ -222,7 +238,7 @@ describe('server-v2 /api/v1 prompts', () => {
   }
 
   async function createSession(cwd: string): Promise<string> {
-    const res = await fetch(`${base}/api/v1/sessions`, {
+    const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd } }),
@@ -238,11 +254,256 @@ describe('server-v2 /api/v1 prompts', () => {
     await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
   }
 
+  async function createHeldMainAgent(sessionId: string): Promise<void> {
+    await createMainAgent(sessionId);
+    const main = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(IAgentLifecycleService).get('main')!;
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub' });
+    main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-test-turn', async (ctx) => {
+      await new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      ctx.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+  }
+
+  it.each([undefined, 'stub-alt'])('authenticates the session or requested model rather than an unrelated default: %s', async (model) => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    await writeConfigToml(home as string, PROMPT_TOML.replace('default_model = "stub"', 'default_model = "kimi-unavailable"') + [
+      '', '[providers."managed:kimi-code"]', 'type = "kimi"',
+      '[providers."managed:kimi-code".oauth]', 'storage = "file"', 'key = "oauth/kimi-code"',
+      '[models.kimi-unavailable]', 'provider = "managed:kimi-code"', 'model = "kimi-unavailable"', 'max_context_size = 1000', '',
+    ].join('\n'));
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'Use the selected model, not the global default.' }], model,
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    expect(main.accessor.get(IAgentProfileService).getModel()).toBe(model ?? 'stub');
+    main.accessor.get(IAgentPromptService).abort(submitted.body.data.prompt_id);
+  });
+
+  it('rejects a credentialless requested model even when the current model is authenticated', async () => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    await writeConfigToml(home as string, PROMPT_TOML + [
+      '', '[providers."managed:kimi-code"]', 'type = "kimi"',
+      '[providers."managed:kimi-code".oauth]', 'storage = "file"', 'key = "oauth/kimi-code"',
+      '[models.kimi-unavailable]', 'provider = "managed:kimi-code"', 'model = "kimi-unavailable"', 'max_context_size = 1000', '',
+    ].join('\n'));
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'This model needs its own credential.' }], model: 'kimi-unavailable',
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(40111);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    expect(main.accessor.get(IAgentPromptService).list().active).toBeUndefined();
+    expect(main.accessor.get(IAgentProfileService).getModel()).toBe('stub');
+  });
+
+  it.each([false, true])('applies prompt-bound plan and swarm controls with skills=%s', async (skills) => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const plan = main.accessor.get(IAgentPlanService);
+    const swarm = main.accessor.get(IAgentSwarmService);
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'plan this work' }],
+      skills: skills ? [{ name: 'update-config' }] : undefined,
+      plan_mode: true, swarm_mode: true,
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+    expect(submitted.body.data.status).toBe('running');
+    expect(await plan.status()).not.toBeNull();
+    expect(swarm.isActive).toBe(true);
+    const prompt = main.accessor.get(IAgentPromptService);
+    const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'execute later' }], plan_mode: false, swarm_mode: false,
+    });
+    expect(queued.body.data.status).toBe('queued');
+    expect(await plan.status()).not.toBeNull();
+    expect(swarm.isActive).toBe(true);
+    const steer = await call('POST', `/api/sessions/${id}/prompts/${queued.body.data.prompt_id}:steer`);
+    expect(steer.body.code).toBe(40001);
+    prompt.abort(submitted.body.data.prompt_id);
+    await vi.waitFor(async () => {
+      expect(await plan.status()).toBeNull();
+      expect(swarm.isActive).toBe(false);
+    });
+  });
+
+  it.each([true, false])('allows Send now for the actual GUI mode and same-objective echo: %s', async (enabled) => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const goal = main.accessor.get(IAgentGoalService);
+    await goal.createGoal({ objective: 'same objective' });
+    await goal.pauseGoal({});
+    const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'active mode' }], plan_mode: enabled, swarm_mode: enabled,
+    });
+    expect(active.body.code, active.body.msg).toBe(0);
+    const followUp = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'ordinary follow-up' }], permission_mode: 'manual',
+      plan_mode: enabled, swarm_mode: enabled, goal_objective: 'same objective',
+    });
+    expect(followUp.body.code, followUp.body.msg).toBe(0);
+    expect(followUp.body.data.status).toBe('queued');
+    const sentNow = await call('POST', `/api/sessions/${id}/prompts/${followUp.body.data.prompt_id}:steer`);
+    expect(sentNow.body.code, sentNow.body.msg).toBe(0);
+    expect(main.accessor.get(IAgentPromptService).list().pending).toHaveLength(0);
+    expect((await main.accessor.get(IAgentPlanService).status()) !== null).toBe(enabled);
+    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(enabled);
+    expect(goal.getGoal().goal?.status).toBe('paused');
+  });
+
+  it.each(['pause', 'resume', 'cancel'] as const)('applies prompt-bound goal %s without autonomous resume', async (control) => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const goal = main.accessor.get(IAgentGoalService);
+    const initial = await goal.createGoal({ objective: 'finish the example' });
+    if (control === 'resume') await goal.pauseGoal({});
+    const resume = vi.spyOn(goal, 'resumeGoal');
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'user directed step' }],
+      goal_objective: 'finish the example', goal_control: control,
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+    expect(submitted.body.data.status).toBe('running');
+    if (control === 'cancel') expect(goal.getGoal().goal).toBeNull();
+    else {
+      expect(goal.getGoal().goal).toMatchObject({ goalId: initial.goalId, status: control === 'pause' ? 'paused' : 'active' });
+      if (control === 'resume') {
+        expect(resume).toHaveBeenCalledWith({});
+        await goal.pauseGoal({});
+      }
+    }
+    main.accessor.get(IAgentPromptService).abort(submitted.body.data.prompt_id);
+    resume.mockRestore();
+  });
+
+  it('creates a goal from the prompt and does not recreate it on repeated submissions', async () => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const goal = main.accessor.get(IAgentGoalService);
+    const prompt = main.accessor.get(IAgentPromptService);
+    const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'begin' }], goal_objective: 'finish the example', goal_control: 'pause',
+    });
+    expect(first.body.code, first.body.msg).toBe(0);
+    const goalId = goal.getGoal().goal!.goalId;
+    const later = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'next' }], goal_objective: 'finish the example',
+    });
+    expect(later.body.code).toBe(0);
+    prompt.abort(first.body.data.prompt_id);
+    await vi.waitFor(() => expect(prompt.list().active?.id).toBe(later.body.data.prompt_id));
+    expect(goal.getGoal().goal).toMatchObject({ goalId, status: 'paused' });
+  });
+
+  it('keeps cancelled queued controls and duplicate submissions free of runtime side effects', async () => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const prompt = main.accessor.get(IAgentPromptService);
+    const goal = main.accessor.get(IAgentGoalService);
+    await goal.createGoal({ objective: 'existing goal' });
+    await goal.pauseGoal({});
+    const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      prompt_id: 'stable-active', content: [{ type: 'text', text: 'active' }],
+    });
+    expect(active.body.code).toBe(0);
+    const duplicate = await call('POST', `/api/sessions/${id}/prompts`, {
+      prompt_id: 'stable-active', content: [{ type: 'text', text: 'duplicate' }],
+      plan_mode: true, swarm_mode: true, goal_control: 'cancel',
+    });
+    expect(duplicate.body.code).toBe(40938);
+    const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'cancel me' }],
+      plan_mode: true, swarm_mode: true, goal_control: 'cancel',
+    });
+    expect(queued.body.code).toBe(0);
+    expect(queued.body.data.status).toBe('queued');
+    prompt.abort(queued.body.data.prompt_id);
+    expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
+    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(false);
+    expect(goal.getGoal().goal).toMatchObject({ objective: 'existing goal', status: 'paused' });
+  });
+
+  it('rejects invalid goal controls before permission, plan and swarm side effects', async () => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const mode = main.accessor.get(IAgentPermissionModeService).mode;
+    for (const invalid of [{ goal_objective: '   ' }, { goal_objective: 'a'.repeat(4001) }, { goal_control: 'resume' }]) {
+      const result = await call('POST', `/api/sessions/${id}/prompts`, {
+        content: [{ type: 'text', text: 'invalid' }], ...invalid,
+        permission_mode: 'yolo', plan_mode: true, swarm_mode: true,
+      });
+      expect(result.body.code, result.body.msg).toBe(40001);
+    }
+    expect(main.accessor.get(IAgentPermissionModeService).mode).toBe(mode);
+    expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
+    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(false);
+    expect(main.accessor.get(IAgentGoalService).getGoal().goal).toBeNull();
+  });
+
+  it('rejects child-agent runtime controls rather than ignoring them', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const child = await session.accessor.get(IAgentLifecycleService).fork('main');
+    for (const control of [{ plan_mode: true }, { swarm_mode: true }, { goal_objective: 'child goal' }, { goal_control: 'pause' }]) {
+      const result = await call('POST', `/api/sessions/${id}/prompts`, {
+        content: [{ type: 'text', text: 'not supported' }], agent_id: child.id, ...control,
+      });
+      expect(result.body.code, result.body.msg).toBe(40001);
+    }
+  });
+
+  it.each([false, true])('does not apply runtime controls when the submit hook blocks, skills=%s', async (skills) => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const hook = main.accessor.get(IAgentPromptService).hooks.onBeforeSubmitPrompt.register('block-controls', async (ctx, next) => {
+      ctx.block = true; await next();
+    });
+    const submitted = await call<{ status: string }>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'blocked' }], plan_mode: true, swarm_mode: true, goal_objective: 'blocked goal',
+      skills: skills ? [{ name: 'update-config' }] : undefined,
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+    expect(submitted.body.data.status).toBe('blocked');
+    expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
+    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(false);
+    expect(main.accessor.get(IAgentGoalService).getGoal().goal).toBeNull();
+    hook.dispose();
+  });
+
+  it.each([false, true])('reports failed launch consistently, skills=%s', async (skills) => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const bind = vi.spyOn(main.accessor.get(IAgentProfileService), 'setModel').mockRejectedValueOnce(new Error('model unavailable'));
+    const submitted = await call('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'failed' }], model: 'stub-alt',
+      plan_mode: true, swarm_mode: true, goal_objective: 'failed goal',
+      skills: skills ? [{ name: 'update-config' }] : undefined,
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(50001);
+    expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
+    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(false);
+    expect(main.accessor.get(IAgentGoalService).getGoal().goal).toBeNull();
+    bind.mockRestore();
+  });
+
   it('submits a prompt and lists it as active', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
     });
     expect(submitted.body.code).toBe(0);
@@ -252,7 +513,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const list = await call<{ active: PromptItemWire | null; queued: PromptItemWire[] }>(
       'GET',
-      `/api/v1/sessions/${id}/prompts`,
+      `/api/sessions/${id}/prompts`,
     );
     expect(list.body.code).toBe(0);
     if (list.body.data.active !== null) {
@@ -265,7 +526,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'plan with approval' }],
       plan_gate: 'gated',
     });
@@ -280,7 +541,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const active = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'active' }],
       model: 'stub',
       thinking: 'low',
@@ -293,7 +554,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const prompt = main!.accessor.get(IAgentPromptService);
     const profile = main!.accessor.get(IAgentProfileService);
     const activeBinding = profile.data();
-    const queued = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'append now' }],
       model: 'stub-alt',
       thinking: 'high',
@@ -304,7 +565,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const steered = await call<{ steered: true; prompt_ids: string[] }>(
       'POST',
-      `/api/v1/sessions/${id}/prompts/${queued.body.data.prompt_id}:steer`,
+      `/api/sessions/${id}/prompts/${queued.body.data.prompt_id}:steer`,
     );
 
     expect(steered.body.code, JSON.stringify(steered.body)).toBe(0);
@@ -321,7 +582,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
       skills: [{ name: 'update-config' }, { name: 'check-kiki-docs' }],
     });
@@ -381,7 +642,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       prompt_id: 'submission-1',
     });
@@ -398,7 +659,7 @@ describe('server-v2 /api/v1 prompts', () => {
     if (session === undefined) throw new Error(`session ${id} not found`);
     const child = await session.accessor.get(IAgentLifecycleService).fork('main');
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'bundled side question' }],
       agent_id: child.id,
       skills: [{ name: 'update-config' }],
@@ -414,13 +675,13 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const first = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'first prompt' }],
       prompt_id: 'submission-1',
     });
     expect(first.body.code).toBe(0);
 
-    const duplicate = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const duplicate = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'must not become metadata' }],
       prompt_id: 'submission-1',
     });
@@ -432,7 +693,7 @@ describe('server-v2 /api/v1 prompts', () => {
     await closeSessionById(server!.core.accessor, id);
     expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
 
-    const afterResume = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const afterResume = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'must not survive a cold resume' }],
       prompt_id: 'submission-1',
     });
@@ -445,7 +706,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
       skills: [{ name: 'does-not-exist' }],
     });
@@ -461,7 +722,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
       permission_mode: 'yolo',
       plan_gate: 'gated',
@@ -480,7 +741,7 @@ describe('server-v2 /api/v1 prompts', () => {
   it('rejects an unknown bundled skill without materializing the main agent', async () => {
     const id = await createSession(home as string);
 
-    const submitted = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
       skills: [{ name: 'does-not-exist' }],
     });
@@ -493,7 +754,7 @@ describe('server-v2 /api/v1 prompts', () => {
   it('rejects a bundled prompt_id combination before any override or agent materialization', async () => {
     const id = await createSession(home as string);
 
-    const submitted = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
       permission_mode: 'yolo',
       prompt_id: 'submission-1',
@@ -561,7 +822,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const prompts = ['先搭一个 Vite 项目', '加上路由', '现在配一下 ESLint'];
     for (const text of prompts) {
-      const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
         content: [{ type: 'text', text }],
       });
       expect(submitted.body.code).toBe(0);
@@ -578,7 +839,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     const session = getLiveSessionById(server!.core.accessor, id);
 
-    const { body } = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const { body } = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       model: 'stub',
       content: [
         { type: 'text', text: 'look' },
@@ -596,7 +857,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const form = new FormData();
     form.set('file', new Blob([Buffer.from('%PDF-1.4 fake')], { type: 'application/pdf' }), 'spec.pdf');
-    const uploadRes = await fetch(`${base}/api/v1/files`, {
+    const uploadRes = await fetch(`${base}/api/files`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer),
       body: form,
@@ -604,7 +865,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const uploaded = (await uploadRes.json()) as Envelope<{ id: string }>;
     expect(uploaded.code).toBe(0);
 
-    const { body } = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const { body } = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       model: 'stub',
       content: [
         { type: 'text', text: 'watch this' },
@@ -621,7 +882,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const videoBytes = Buffer.from('tiny fake mp4 bytes');
     const form = new FormData();
     form.set('file', new Blob([videoBytes], { type: 'video/mp4' }), 'clip.mp4');
-    const uploadRes = await fetch(`${base}/api/v1/files`, {
+    const uploadRes = await fetch(`${base}/api/files`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer),
       body: form,
@@ -629,7 +890,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const uploaded = (await uploadRes.json()) as Envelope<{ id: string }>;
     expect(uploaded.code).toBe(0);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [
         { type: 'text', text: 'what happens in this video?' },
         { type: 'video', source: { kind: 'file', file_id: uploaded.data.id } },
@@ -655,7 +916,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const uploaded = await uploadFile(bigPng, 'image/png', 'big.png');
     expect(uploaded.size).toBe(bigPng.length);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
     });
     expect(submitted.body.code).toBe(0);
@@ -725,7 +986,7 @@ describe('server-v2 /api/v1 prompts', () => {
     });
 
     try {
-      const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
         content: [
           { type: 'image', source: { kind: 'file', file_id: first.id } },
           { type: 'image', source: { kind: 'file', file_id: second.id } },
@@ -750,7 +1011,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const smallPng = solidPng(10, 10);
     const uploaded = await uploadFile(smallPng, 'image/png', 'small.png');
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
     });
     expect(submitted.body.code).toBe(0);
@@ -810,7 +1071,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     try {
       const id = await createSession(home as string);
-      const active = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
         content: [{ type: 'text', text: 'active turn' }],
         model: 'stub',
       });
@@ -819,7 +1080,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
       const image = solidPng(10, 10);
       const uploaded = await uploadFile(image, 'image/png', 'queued.png');
-      const queued = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
         content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
       });
       expect(queued.body.data.status).toBe('queued');
@@ -847,14 +1108,14 @@ describe('server-v2 /api/v1 prompts', () => {
     const smallPng = solidPng(10, 10);
     const uploaded = await uploadFile(smallPng, 'image/png', 'small.png');
 
-    const first = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
     });
     expect(first.body.code).toBe(0);
     await expectSessionMedia(server!, id, `${uploaded.id}.png`, smallPng);
     await server!.core.accessor.get(IFileService).delete(uploaded.id);
 
-    const replayed = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const replayed = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [
         { type: 'text', text: 'replay the stored image' },
         { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },
@@ -902,7 +1163,7 @@ describe('server-v2 /api/v1 prompts', () => {
     await mkdir(mediaDir, { recursive: true });
     await chmod(mediaDir, 0o555);
     try {
-      const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
         content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
       });
       expect(submitted.body.code).toBe(0);
@@ -928,12 +1189,60 @@ describe('server-v2 /api/v1 prompts', () => {
     }
   });
 
+  it('accepts three inline images whose JSON exceeds Fastify default bodyLimit and keeps all attachments', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const images = [1, 2, 3].map((marker) => paddedPng(300 * 1024, marker));
+    const content = images.map((image) => ({
+      type: 'image' as const,
+      source: { kind: 'base64' as const, media_type: 'image/png', data: image.toString('base64') },
+    }));
+    expect(Buffer.byteLength(JSON.stringify({ content }), 'utf8')).toBeGreaterThan(1 << 20);
+
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, { content });
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+    const returned = submitted.body.data.content as Array<{ type: string }>;
+    expect(returned.filter((part) => part.type === 'image')).toHaveLength(3);
+
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+    await vi.waitFor(() => {
+      const message = main.accessor.get(IAgentContextMemoryService).get()
+        .find((item) => item.role === 'user' && item.content.filter((part) => part.type === 'image_url').length === 3);
+      expect(message).toBeDefined();
+    });
+  });
+
+  it('reports an oversized prompt body as a validation error without creating a prompt', async () => {
+    const id = await createSession(home as string);
+    const payload = JSON.stringify({
+      content: [{ type: 'text', text: 'x'.repeat(PROMPT_BODY_LIMIT_BYTES) }],
+    });
+    const response = await server!.app.inject({
+      method: 'POST',
+      url: `/api/sessions/${id}/prompts`,
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      payload,
+    });
+    const submitted = JSON.parse(response.body) as Envelope<PromptItemWire>;
+    expect(response.statusCode).toBe(413);
+    expect(submitted.code).toBe(40001);
+    expect(submitted.msg).toContain('request body exceeds');
+    const listed = await call<{ active: PromptItemWire | null; queued: PromptItemWire[] }>(
+      'GET',
+      `/api/sessions/${id}/prompts`,
+    );
+    expect(listed.body.code).toBe(0);
+    expect(listed.body.data.active).toBeNull();
+    expect(listed.body.data.queued).toHaveLength(0);
+  });
+
   it('compresses inline base64 image prompts into session media-originals', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
     const bigPng = solidPng(3600, 1800);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [
         {
           type: 'image',
@@ -980,7 +1289,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [
         {
           type: 'image',
@@ -1006,7 +1315,7 @@ describe('server-v2 /api/v1 prompts', () => {
     await createMainAgent(id);
     const form = new FormData();
     form.set('file', new Blob([avifBytes()], { type: 'image/avif' }), 'photo.avif');
-    const uploadRes = await fetch(`${base}/api/v1/files`, {
+    const uploadRes = await fetch(`${base}/api/files`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer),
       body: form,
@@ -1014,7 +1323,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const uploaded = (await uploadRes.json()) as Envelope<{ id: string }>;
     expect(uploaded.code).toBe(0);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.data.id } }],
     });
     expect(submitted.body.code).toBe(0);
@@ -1031,7 +1340,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'image', source: { kind: 'url', url: 'https://example.com/pic.avif' } }],
     });
     expect(submitted.body.code).toBe(0);
@@ -1051,7 +1360,7 @@ describe('server-v2 /api/v1 prompts', () => {
   ): Promise<{ id: string; size: number }> {
     const form = new FormData();
     form.set('file', new Blob([bytes], { type: mediaType }), name);
-    const uploadRes = await fetch(`${base}/api/v1/files`, {
+    const uploadRes = await fetch(`${base}/api/files`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer),
       body: form,
@@ -1073,7 +1382,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const pdfBytes = Buffer.from('%PDF-1.4 fake pdf bytes');
     const uploaded = await uploadFile(pdfBytes, 'application/pdf', 'report.pdf');
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [
         { type: 'text', text: 'summarize this' },
         { type: 'file', file_id: uploaded.id, name: 'report.pdf', media_type: 'application/pdf', size: pdfBytes.length },
@@ -1102,7 +1411,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const svgBytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>');
     const uploaded = await uploadFile(svgBytes, 'image/svg+xml', 'vector.svg');
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
     });
     expect(submitted.body.code).toBe(0);
@@ -1125,7 +1434,7 @@ describe('server-v2 /api/v1 prompts', () => {
     await createMainAgent(id);
     const data = avifBytes();
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [
         {
           type: 'image',
@@ -1158,7 +1467,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const scriptBytes = Buffer.from('#!/bin/sh\necho hi');
     const uploaded = await uploadFile(scriptBytes, 'text/plain', '../../etc/evil.sh');
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [
         { type: 'file', file_id: uploaded.id, name: '../../etc/evil.sh', media_type: 'text/plain', size: scriptBytes.length },
       ],
@@ -1224,7 +1533,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const replaced = await call<PromptItemWire>(
       'POST',
-      `/api/v1/sessions/${id}/prompts/${first.id}:replace`,
+      `/api/sessions/${id}/prompts/${first.id}:replace`,
       { content: [{ type: 'text', text: 'new text' }] },
     );
     expect(replaced.body.code).toBe(0);
@@ -1244,7 +1553,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const list = await call<{ active: PromptItemWire | null; queued: PromptItemWire[] }>(
       'GET',
-      `/api/v1/sessions/${id}/prompts`,
+      `/api/sessions/${id}/prompts`,
     );
     expect(list.body.data.queued[0]).toEqual(replaced.body.data);
   });
@@ -1273,7 +1582,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const replaced = await call<null>(
       'POST',
-      `/api/v1/sessions/${id}/prompts/${active.id}:replace`,
+      `/api/sessions/${id}/prompts/${active.id}:replace`,
       { content: [{ type: 'text', text: 'must not apply' }] },
     );
 
@@ -1289,14 +1598,14 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
     });
     const promptId = submitted.body.data.prompt_id;
 
     const aborted = await call<{ aborted: boolean }>(
       'POST',
-      `/api/v1/sessions/${id}/prompts/${promptId}:abort`,
+      `/api/sessions/${id}/prompts/${promptId}:abort`,
     );
     expect(aborted.body.code).toBe(40402);
   });
@@ -1307,13 +1616,13 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const { body } = await call<null>(
       'POST',
-      `/api/v1/sessions/${id}/prompts/prompt_does_not_exist:abort`,
+      `/api/sessions/${id}/prompts/prompt_does_not_exist:abort`,
     );
     expect(body.code).toBe(40402);
   });
 
   it('returns 40401 for an unknown session', async () => {
-    const { body } = await call<null>('POST', '/api/v1/sessions/nope/prompts', {
+    const { body } = await call<null>('POST', '/api/sessions/nope/prompts', {
       content: [{ type: 'text', text: 'hello' }],
     });
     expect(body.code).toBe(40401);
@@ -1326,7 +1635,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
     const list = await call<{ active: PromptItemWire | null; queued: PromptItemWire[] }>(
       'GET',
-      `/api/v1/sessions/${id}/prompts`,
+      `/api/sessions/${id}/prompts`,
     );
     expect(list.body.code).toBe(0);
     expect(list.body.data.active).toBeNull();
@@ -1342,7 +1651,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const lifecycle = session.accessor.get(IAgentLifecycleService);
     const child = await lifecycle.fork('main');
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'side question' }],
       agent_id: child.id,
     });
@@ -1372,7 +1681,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const { body } = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const { body } = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       agent_id: 'agent_does_not_exist',
     });
@@ -1383,7 +1692,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const { body } = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const { body } = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       profile: 'agent_does_not_exist',
       model: 'stub',
@@ -1417,14 +1726,14 @@ describe('server-v2 /api/v1 prompts', () => {
       spawnPolicy: binding.spawnPolicy,
     });
 
-    const active = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'active' }],
     });
     expect(active.body.code).toBe(0);
     const prompt = main.accessor.get(IAgentPromptService);
     expect(prompt.list().active?.id).toBe(active.body.data.prompt_id);
 
-    const rejected = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const rejected = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'queued' }],
       profile: 'coder',
     });
@@ -1457,7 +1766,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       profile: 'route-reviewer',
     });
@@ -1468,7 +1777,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const main = session.accessor.get(IAgentLifecycleService).get('main');
     expect(main?.accessor.get(IAgentProfileService).data().profileName).toBe('route-reviewer');
 
-    const again = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const again = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'again' }],
       profile: 'route-reviewer',
     });
@@ -1520,7 +1829,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const first = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       profile: 'agent',
       model: 'stub',
@@ -1536,7 +1845,7 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(prompt.abort(first.body.data.prompt_id)).toBe(true);
     await vi.waitFor(() => expect(prompt.list().active).toBeUndefined(), { timeout: 10_000 });
 
-    const rebound = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const rebound = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'use the pinned profile' }],
       profile: 'pinned-profile',
     });
@@ -1555,7 +1864,7 @@ describe('server-v2 /api/v1 prompts', () => {
     });
     const currentSession = await call<{ agent_config: { model: string; profile?: string } }>(
       'GET',
-      `/api/v1/sessions/${id}`,
+      `/api/sessions/${id}`,
     );
     expect(currentSession.body.data.agent_config).toEqual({
       model: 'stub-alt',
@@ -1574,7 +1883,7 @@ describe('server-v2 /api/v1 prompts', () => {
       thinkingLevel: 'low',
     });
 
-    const overridden = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const overridden = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'override the new pin' }],
       profile: 'override-profile',
       model: 'stub',
@@ -1596,7 +1905,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       profile: 'agent',
       model: 'stub',
@@ -1616,7 +1925,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       model: 'stub',
       disabled_tools: ['Bash'],
@@ -1630,7 +1939,7 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(toolPolicy?.isToolActive('Bash')).toBe(false);
     expect(toolPolicy?.isToolActive('Read')).toBe(true);
 
-    const replaced = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const replaced = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'again' }],
       disabled_tools: ['Write'],
     });
@@ -1638,7 +1947,7 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(toolPolicy?.isToolActive('Bash')).toBe(true);
     expect(toolPolicy?.isToolActive('Write')).toBe(false);
 
-    const cleared = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const cleared = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'once more' }],
       disabled_tools: [],
     });
@@ -1650,7 +1959,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       model: 'stub',
       disabled_tools: ['Bash'],
@@ -1675,7 +1984,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const { body } = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const { body } = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       disabled_tools: ['Bash'],
     });
@@ -1686,7 +1995,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
-    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       model: 'stub',
       disabled_tools: ['Bash'],
@@ -1696,7 +2005,7 @@ describe('server-v2 /api/v1 prompts', () => {
     await closeSessionById(server!.core.accessor, id);
     expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
 
-    const again = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+    const again = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'again' }],
     });
     expect(again.body.code).toBe(0);

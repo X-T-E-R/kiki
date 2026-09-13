@@ -149,7 +149,7 @@ describe('ToolManager SkillTool registration with inline skills', () => {
     expect(skillInfo).toMatchObject({ name: 'Skill', active: true, source: 'builtin' });
     expect(skillTool).toMatchObject({
       name: 'Skill',
-      description: expect.stringContaining('Invoke a registered skill'),
+      description: expect.stringContaining('Invoke a skill by its registered name'),
     });
   });
 });
@@ -244,7 +244,7 @@ describe('ToolManager SkillTool wire behavior', () => {
           {
             type: 'text',
             text: [
-              'Skill tool loaded instructions for this request. Follow them.',
+              'Skill loaded for this request.',
               '',
               '<skill-loaded name="review" trigger="model-tool" source="user" dir="/skills/review" args="">',
               'body of review',

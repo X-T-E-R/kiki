@@ -70,6 +70,8 @@ describe('global MCP configuration (persisted user entries)', () => {
   it('lists only user-global servers when project config also exists', async () => {
     const homeDir = await makeTempDir();
     const projectDir = await makeTempDir();
+    // Keep the root MCP layer in this fixture, not in an ancestor checkout.
+    await mkdir(join(projectDir, '.git'));
     await writeMcpConfig(homeDir, {
       mcpServers: { global: { command: 'global-command' } },
     });

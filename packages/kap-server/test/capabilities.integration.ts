@@ -19,7 +19,7 @@ interface Envelope<T> {
   request_id: string;
 }
 
-describe('server-v2 /api/v1 capabilities', () => {
+describe('server-v2 /api capabilities', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -64,7 +64,7 @@ describe('server-v2 /api/v1 capabilities', () => {
   }
 
   it('lists both built-in capabilities with the documented shape', async () => {
-    const { body } = await getJson<unknown>('/api/v1/capabilities');
+    const { body } = await getJson<unknown>('/api/capabilities');
     expect(body.code).toBe(0);
     const parsed = listCapabilitiesResponseSchema.parse(body.data);
     const ids = parsed.capabilities.map((c) => c.id).toSorted();
@@ -87,31 +87,31 @@ describe('server-v2 /api/v1 capabilities', () => {
   });
 
   it('gets a single capability and 40418s on an unknown id', async () => {
-    const { body } = await getJson<unknown>('/api/v1/capabilities/kimi-webbridge');
+    const { body } = await getJson<unknown>('/api/capabilities/kimi-webbridge');
     expect(body.code).toBe(0);
     expect(capabilityStatusSchema.parse(body.data).id).toBe('kimi-webbridge');
 
-    const missing = await getJson<unknown>('/api/v1/capabilities/nope');
+    const missing = await getJson<unknown>('/api/capabilities/nope');
     expect(missing.body.code).toBe(40418);
     expect(missing.body.data).toBeNull();
   });
 
   it('installs 40418 on an unknown id without side effects', async () => {
-    const { body } = await postJson<unknown>('/api/v1/capabilities/nope:install');
+    const { body } = await postJson<unknown>('/api/capabilities/nope:install');
     expect(body.code).toBe(40418);
   });
 
   it('rejects bare ids and unknown actions with 40001', async () => {
-    const bare = await postJson<unknown>('/api/v1/capabilities/kimi-cu');
+    const bare = await postJson<unknown>('/api/capabilities/kimi-cu');
     expect(bare.body.code).toBe(40001);
-    const bogus = await postJson<unknown>('/api/v1/capabilities/kimi-cu:uninstall');
+    const bogus = await postJson<unknown>('/api/capabilities/kimi-cu:uninstall');
     expect(bogus.body.code).toBe(40001);
   });
 
   it.skipIf(process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64'))(
     'rejects kimi-cu install on unsupported platforms with 40925',
     async () => {
-      const { body } = await postJson<unknown>('/api/v1/capabilities/kimi-cu:install');
+      const { body } = await postJson<unknown>('/api/capabilities/kimi-cu:install');
       expect(body.code).toBe(40925);
     },
   );

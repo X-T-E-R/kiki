@@ -28,7 +28,7 @@ describe('kimi-datasource MCP server', () => {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          KIMI_CODE_HOME: kimiHome,
+          KIKI_HOME: kimiHome,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -83,7 +83,7 @@ describe('kimi-datasource MCP server', () => {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          KIMI_CODE_HOME: kimiHome,
+          KIKI_HOME: kimiHome,
           KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -175,7 +175,7 @@ describe('kimi-datasource MCP server', () => {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          KIMI_CODE_HOME: kimiHome,
+          KIKI_HOME: kimiHome,
           KIMI_CODE_BASE_URL: baseUrl,
           KIMI_CODE_OAUTH_HOST: oauthHost,
           KIMI_DATASOURCE_API_URL: undefined,
@@ -249,7 +249,7 @@ describe('kimi-datasource MCP server', () => {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          KIMI_CODE_HOME: kimiHome,
+          KIKI_HOME: kimiHome,
           KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -294,7 +294,7 @@ describe('kimi-datasource MCP server', () => {
       );
       child = spawn(process.execPath, [SERVER_ENTRY], {
         cwd: REPO_ROOT,
-        env: { ...process.env, KIMI_CODE_HOME: kimiHome },
+        env: { ...process.env, KIKI_HOME: kimiHome },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       const client = createRpcClient(child);
@@ -381,7 +381,7 @@ describe('kimi-datasource MCP server', () => {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
-          KIMI_CODE_HOME: kimiHome,
+          KIKI_HOME: kimiHome,
           KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],

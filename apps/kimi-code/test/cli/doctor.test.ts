@@ -14,7 +14,7 @@ import {
 let dir: string;
 
 beforeEach(async () => {
-  vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '');
+  vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '');
   dir = join(tmpdir(), `kimi-doctor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   await mkdir(dir, { recursive: true });
 });
@@ -89,7 +89,7 @@ notification_condition = "unfocused"
 }
 
 async function writeAgentFile(fileName: string, frontmatter: string): Promise<string> {
-  const agentsDir = join(dir, '.kimi-code', 'agents');
+  const agentsDir = join(dir, '.kiki', 'agents');
   await mkdir(agentsDir, { recursive: true });
   const path = join(agentsDir, fileName);
   await writeFile(path, `---\n${frontmatter.trim()}\n---\n\nAgent prompt.\n`, 'utf-8');

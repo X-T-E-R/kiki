@@ -48,6 +48,10 @@ export interface IAgentLifecycleService {
   get(agentId: string): IAgentScopeHandle | undefined;
   list(filter?: AgentListFilter): readonly IAgentScopeHandle[];
   broadcastPermissionMode(mode: PermissionMode): void;
+  /** Pending tasks across live agents, including descendants. */
+  countPendingBackgroundTasks(): number;
+  /** Suppress terminal notifications and drain live tasks within the supplied deadline. */
+  drainBackgroundTasks(timeoutMs: number): Promise<void>;
   remove(agentId: string): Promise<void>;
 }
 

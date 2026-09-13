@@ -1,6 +1,6 @@
 /**
  * Self-tests for `DaemonClient` against a live server at
- * `process.env.KIMI_SERVER_URL ?? http://127.0.0.1:58627`.
+ * `process.env.KIKI_SERVER_URL ?? http://127.0.0.1:58627`.
  *
  * Every test gates on a `daemonReachable()` check so CI / dev machines
  * without a running server stay green. Run a server (`pnpm dev:server` from
@@ -29,12 +29,12 @@ import { DaemonClient, EnvelopeError } from '../harness/index.js';
 import { fetchWithReport } from '../harness/report.js';
 import { createCaseLogger, errorForLog } from './log.js';
 
-const BASE_URL = process.env['KIMI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
+const BASE_URL = process.env['KIKI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
 const PROMPT_TIMEOUT_MS = 120_000;
 
 async function daemonReachable(): Promise<boolean> {
   try {
-    const res = await fetchWithReport(`${BASE_URL}/api/v1/meta`, {
+    const res = await fetchWithReport(`${BASE_URL}/api/meta`, {
       signal: AbortSignal.timeout(500),
     });
     return res.ok;
@@ -69,7 +69,7 @@ describeLive('DaemonClient (live server required)', () => {
     const log = createCaseLogger('client: missing session envelope');
     const client = new DaemonClient({ baseUrl: BASE_URL });
     const sid = 'sess_does_not_exist_xxxxxxxx';
-    log('request', { method: 'GET', path: `/api/v1/sessions/${sid}` });
+    log('request', { method: 'GET', path: `/api/sessions/${sid}` });
 
     let caughtError: unknown;
     try {
@@ -87,7 +87,7 @@ describeLive('DaemonClient (live server required)', () => {
   it('completes handshake (server_hello + client_hello ack)', async () => {
     const log = createCaseLogger('client: ws handshake');
     const client = new DaemonClient({ baseUrl: BASE_URL });
-    log('connect request', { url: `${BASE_URL.replace(/^http/, 'ws')}/api/v1/ws` });
+    log('connect request', { url: `${BASE_URL.replace(/^http/, 'ws')}/api/ws` });
     const hello = await client.connect();
     log('server hello', hello);
     // heartbeat_ms is optional — kap-server omits it (no server heartbeat).
@@ -157,7 +157,7 @@ describeLive('DaemonClient (live server required)', () => {
     };
     log('request', {
       method: 'POST',
-      path: `/api/v1/sessions/${source.id}:fork`,
+      path: `/api/sessions/${source.id}:fork`,
       body: forkRequest,
     });
 
@@ -190,7 +190,7 @@ describeLive('DaemonClient (live server required)', () => {
       const compactRequest = { instruction: '  focus on decisions  ' };
       log('request', {
         method: 'POST',
-        path: `/api/v1/sessions/${session.id}:compact`,
+        path: `/api/sessions/${session.id}:compact`,
         body: compactRequest,
       });
 
@@ -249,7 +249,7 @@ describeLive('DaemonClient (live server required)', () => {
       };
       successLog('request', {
         method: 'POST',
-        path: `/api/v1/sessions/${populated.id}:compact`,
+        path: `/api/sessions/${populated.id}:compact`,
         body: populatedCompactRequest,
       });
 
@@ -349,7 +349,7 @@ describe('DaemonClient session action helpers', () => {
     log('unwrapped result', result);
     expect(result).toEqual(fork);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe('http://server.example.test/api/v1/sessions/sess_source:fork');
+    expect(calls[0]?.url).toBe('http://server.example.test/api/sessions/sess_source:fork');
     expect(calls[0]?.init.method).toBe('POST');
     expect(parseRecordedJsonBody(calls[0])).toEqual({
       title: 'Custom fork',
@@ -393,7 +393,7 @@ describe('DaemonClient session action helpers', () => {
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe('http://server.example.test/api/v1/sessions/sess_source:compact');
+    expect(calls[0]?.url).toBe('http://server.example.test/api/sessions/sess_source:compact');
     expect(calls[0]?.init.method).toBe('POST');
     expect(parseRecordedJsonBody(calls[0])).toEqual({
       instruction: '  focus on decisions  ',
@@ -419,7 +419,7 @@ describe('DaemonClient session action helpers', () => {
     log('unwrapped result', result);
     expect(result).toEqual(undoResponse);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe('http://server.example.test/api/v1/sessions/sess_source:undo');
+    expect(calls[0]?.url).toBe('http://server.example.test/api/sessions/sess_source:undo');
     expect(calls[0]?.init.method).toBe('POST');
     expect(parseRecordedJsonBody(calls[0])).toEqual({
       count: 2,
@@ -462,11 +462,11 @@ describe('DaemonClient session action helpers', () => {
 
     log('fetch calls', calls);
     expect(calls.map((call) => [call.init.method, call.url])).toEqual([
-      ['GET', 'http://server.example.test/api/v1/auth'],
-      ['GET', 'http://server.example.test/api/v1/models'],
-      ['POST', 'http://server.example.test/api/v1/models/kimi-code%2Fkimi-for-coding:set_default'],
-      ['GET', 'http://server.example.test/api/v1/providers'],
-      ['GET', 'http://server.example.test/api/v1/providers/kimi'],
+      ['GET', 'http://server.example.test/api/auth'],
+      ['GET', 'http://server.example.test/api/models'],
+      ['POST', 'http://server.example.test/api/models/kimi-code%2Fkimi-for-coding:set_default'],
+      ['GET', 'http://server.example.test/api/providers'],
+      ['GET', 'http://server.example.test/api/providers/kimi'],
     ]);
     expect(parseRecordedJsonBody(calls[2])).toEqual({});
   });
@@ -507,11 +507,11 @@ describe('DaemonClient session action helpers', () => {
 
     log('fetch calls', calls);
     expect(calls.map((call) => [call.init.method, call.url])).toEqual([
-      ['POST', 'http://server.example.test/api/v1/sessions/sess_parent/children'],
-      ['GET', 'http://server.example.test/api/v1/sessions/sess_parent/children?page_size=5&busy=false'],
-      ['GET', 'http://server.example.test/api/v1/sessions/sess_parent/approvals?status=pending'],
-      ['GET', 'http://server.example.test/api/v1/sessions/sess_parent/questions?status=pending'],
-      ['POST', 'http://server.example.test/api/v1/sessions/sess_parent/questions/question_1:dismiss'],
+      ['POST', 'http://server.example.test/api/sessions/sess_parent/children'],
+      ['GET', 'http://server.example.test/api/sessions/sess_parent/children?page_size=5&busy=false'],
+      ['GET', 'http://server.example.test/api/sessions/sess_parent/approvals?status=pending'],
+      ['GET', 'http://server.example.test/api/sessions/sess_parent/questions?status=pending'],
+      ['POST', 'http://server.example.test/api/sessions/sess_parent/questions/question_1:dismiss'],
     ]);
     expect(parseRecordedJsonBody(calls[0])).toEqual({
       title: 'Child session',
@@ -547,8 +547,8 @@ describe('DaemonClient session action helpers', () => {
 
     log('fetch calls', calls);
     expect(calls.map((call) => [call.init.method, call.url])).toEqual([
-      ['POST', 'http://server.example.test/api/v1/files'],
-      ['DELETE', 'http://server.example.test/api/v1/files/file_png'],
+      ['POST', 'http://server.example.test/api/files'],
+      ['DELETE', 'http://server.example.test/api/files/file_png'],
     ]);
     const form = calls[0]?.init.body;
     expect(form).toBeInstanceOf(FormData);

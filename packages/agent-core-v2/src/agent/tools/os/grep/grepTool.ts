@@ -246,10 +246,10 @@ export class GrepTool implements IGrepTool {
     if (paginationTruncated) {
       const total = afterOffset.length + offset;
       const nextOffset = offset + headLimit;
+      const partialResult = bufferTruncated || timedOut ? ' of a partial result set' : '';
       const paginationNotice =
-        bufferTruncated || timedOut
-          ? `Results truncated to ${String(headLimit)} lines (total: ${String(total)} of a partial result set). Use offset=${String(nextOffset)} to see more.`
-          : `Results truncated to ${String(headLimit)} lines (total: ${String(total)}). Use offset=${String(nextOffset)} to see more.`;
+        `Results truncated to ${String(headLimit)} lines (total: ${String(total)}${partialResult}). ` +
+        `Use offset=${String(nextOffset)} to see more.`;
       if (mode === 'count_matches') {
         headerLines.push(paginationNotice);
       } else {
@@ -258,12 +258,12 @@ export class GrepTool implements IGrepTool {
     }
     if (bufferTruncated) {
       messages.push(
-        `[Output truncated at ${String(MAX_OUTPUT_BYTES)} bytes of rg output — the result set is incomplete. Narrow the pattern, path, or glob filters and re-run to recover complete results.]`,
+        `[Output truncated at ${String(MAX_OUTPUT_BYTES)} bytes of rg output; the result set is incomplete.]`,
       );
     }
     if (timedOut) {
       messages.push(
-        `Grep timed out after ${String(DEFAULT_TIMEOUT_MS / 1000)}s; partial results returned. Narrow the path, glob, or pattern and retry for complete results.`,
+        `Grep timed out after ${String(DEFAULT_TIMEOUT_MS / 1000)}s; partial results returned.`,
       );
     }
 
@@ -278,16 +278,7 @@ export class GrepTool implements IGrepTool {
       ),
     );
     const contentBody = displayedLines.join('\n');
-    const visibleBody =
-      orderedLines.length === 0 && filteredSensitive.size > 0
-        ? 'No non-sensitive matches found'
-        : contentBody;
-    const emptyResultMessage =
-      SENSITIVE_GLOBS_TO_EXCLUDE.length > 0 ? 'No non-sensitive matches found' : 'No matches found';
-    const body =
-      visibleBody === '' && headerLines.length === 0 && messages.length === 0
-        ? emptyResultMessage
-        : visibleBody;
+    const body = contentBody === '' ? 'No matches found' : contentBody;
     const combined = [...headerLines, body, ...messages].filter((part) => part !== '').join('\n');
 
     const builder = new ToolOutputAccumulator();

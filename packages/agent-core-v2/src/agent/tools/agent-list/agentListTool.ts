@@ -8,6 +8,8 @@ import {
   type AgentTaskStatus,
 } from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import {
   directChildAgents,
@@ -37,6 +39,7 @@ export class AgentListTool implements IAgentListTool {
     @IAgentScopeContext private readonly scope: IAgentScopeContext,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
+    @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
   ) {}
 
   resolveExecution(args: AgentListInput): ToolExecution {
@@ -49,7 +52,15 @@ export class AgentListTool implements IAgentListTool {
         const session = await this.metadata.read();
         const latestRuns = latestAgentRuns(this.tasks.list(false));
         const entries = directChildAgents(session.agents, this.scope.agentId)
-          .map((child) => toEntry(child, statusOf(latestRuns.get(child.agentId)?.status)))
+          .map((child) => {
+            const execution = this.lifecycle.get(child.agentId)?.accessor.get(IAgentExecutionService).status();
+            const status = execution?.state === 'broken'
+              ? 'errored'
+              : execution !== undefined && execution.state !== 'idle'
+                ? 'running'
+                : statusOf(latestRuns.get(child.agentId)?.status);
+            return toEntry(child, status);
+          })
           .filter((entry) => includeFinished || !FINISHED_STATUSES.has(entry.status))
           .sort(byRunningFirst);
         const omitted = Math.max(0, entries.length - MAX_AGENT_LIST_ENTRIES);

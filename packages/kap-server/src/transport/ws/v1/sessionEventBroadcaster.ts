@@ -90,6 +90,8 @@ export interface SessionSnapshotState {
   contextMessageTimes: readonly (number | undefined)[];
   inFlightTurn: InFlightTurn | null;
   subagents: SnapshotSubagent[];
+  pendingApprovals: ReturnType<typeof toWireApproval>[];
+  pendingQuestions: ReturnType<typeof toWireQuestion>[];
   currentPromptId?: string;
   status?: NonNullable<ReturnType<typeof readLegacyStatus>>;
 }
@@ -100,7 +102,9 @@ export type BroadcastDelivery = 'subscription' | 'immediate';
 /** A connection (or test double) that receives sequenced envelopes. */
 export interface BroadcastTarget {
   send(envelope: EventEnvelope, delivery?: BroadcastDelivery): void;
+  sendDurableCursor?(cursor: SessionCursor): void;
   sendControl?(frame: unknown): void;
+  drain?(): Promise<void>;
 }
 
 /**
@@ -302,7 +306,7 @@ export class SessionEventBroadcaster {
     const seed: PendingTranscriptSeed = {
       generation,
       spec: transcriptGrades,
-      prev: deferred || streamChanged ? undefined : prev?.transcriptGrades,
+      prev: streamChanged ? undefined : prev?.transcriptGrades,
       transcriptSince: opts?.transcriptSince,
       store: liveStore,
       deferred,
@@ -363,11 +367,10 @@ export class SessionEventBroadcaster {
    * Send the transcript baseline deferred by `subscribe(deferTranscriptReset)`
    * — callers run it after their cursor replay so the reset never lands ahead
    * of the replayed (lower-seq) backlog. The baseline is forced for every
-   * admitted agent (no previous grades): volatile ops fanned out while the
-   * target sat unseeded were dropped, so only a full reset closes that gap —
-   * unless the subscription carried a `transcriptSince` cursor the journal
-   * still covers, in which case replaying exactly the missed batches closes
-   * it and no reset is sent for that agent.
+   * admitted agent: volatile ops fanned out while the target sat unseeded
+   * were dropped, so a full reset closes that gap unless a covered cursor
+   * permits replay. A grade upgrade still requires a reset because the
+   * cursor does not cover detail redacted by the previous grade.
    */
   async flushTranscriptSeed(sessionId: string, target: BroadcastTarget): Promise<void> {
     const state = this.sessions.get(sessionId);
@@ -449,81 +452,66 @@ export class SessionEventBroadcaster {
         return;
       }
       this.ensureTranscriptStream(state, seed.store);
-      for (const descriptor of seed.store.agents()) {
-        if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
-        const currentSpec = state.targets.get(target)?.transcriptGrades;
-        if (currentSpec === undefined) return;
-        const grade = gradeFor(currentSpec, descriptor.agentId);
-        if (grade === 'off') continue;
-        const transcript = seed.store.getAgent(descriptor.agentId);
-        if (transcript === undefined) continue;
-        const cursor = service.getTranscriptCursor(state.sessionId, descriptor.agentId);
-        const since =
-          seed.transcriptSince?.[descriptor.agentId] ?? seed.transcriptSince?.['*'];
-        const needsReset = needsResetOnTransition(
-          gradeFor(seed.prev, descriptor.agentId),
-          grade,
-        );
-        // A cursor only proves the client saw the *grade-filtered* stream up
-        // to that seq. On a same-target grade upgrade (seed.prev present) the
-        // history it received was redacted (e.g. 'turn' strips every
-        // step/frame), so replaying just the newer batches would leave the
-        // detail permanently missing — force the reset instead of trusting
-        // the cursor. A fresh target (reconnect) keeps the cursor fast path:
-        // its cursor was accumulated at these same grades before the drop.
-        const upgradeWithinTarget = seed.prev !== undefined && needsReset;
-        const catchup =
-          since === undefined || upgradeWithinTarget
+      const delivered = new Map<string, TranscriptCursor>();
+      await target.drain?.();
+      for (;;) {
+        for (const descriptor of seed.store.agents()) {
+          if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
+          const currentSpec = state.targets.get(target)?.transcriptGrades;
+          if (currentSpec === undefined) return;
+          const agentId = descriptor.agentId;
+          const grade = gradeFor(currentSpec, agentId);
+          if (grade === 'off') continue;
+          const transcript = seed.store.getAgent(agentId);
+          if (transcript === undefined) continue;
+          const cursor = service.getTranscriptCursor(state.sessionId, agentId);
+          const sent = delivered.get(agentId);
+          if (sent?.seq === cursor.seq && sent.epoch === cursor.epoch) continue;
+          const since = sent ?? seed.transcriptSince?.[agentId] ?? seed.transcriptSince?.['*'];
+          const gradeUpgrade = needsResetOnTransition(gradeFor(seed.prev, agentId), grade);
+          const needsReset = seed.deferred || gradeUpgrade;
+          const upgradeWithinTarget = sent === undefined && seed.prev !== undefined && gradeUpgrade;
+          const catchup = since === undefined || upgradeWithinTarget
             ? undefined
-            : service.getOpsSince(state.sessionId, descriptor.agentId, since);
-        if (catchup?.complete === true) {
-          const visible = catchup.batches
-            .map((batch) => ({ ...batch, ops: filterOpsForGrade(grade, batch.ops) }))
-            .filter((batch) => batch.ops.length > 0);
-          for (let index = 0; index < visible.length; index += 1) {
-            if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
-            const batch = visible[index]!;
-            if (
-              !this.sendTranscriptOps(
-                state,
-                target,
-                descriptor.agentId,
-                grade,
-                batch.ops,
+            : service.getOpsSince(state.sessionId, agentId, since);
+          if (catchup?.complete === true) {
+            const visible = catchup.batches
+              .map((batch) => ({ ...batch, ops: filterOpsForGrade(grade, batch.ops) }))
+              .filter((batch) => batch.ops.length > 0);
+            for (let index = 0; index < visible.length; index += 1) {
+              if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
+              const batch = visible[index]!;
+              if (!this.sendTranscriptOps(
+                state, target, agentId, grade, batch.ops,
                 { epoch: catchup.epoch, seq: batch.seq },
                 index === visible.length - 1 ? catchup.throughSeq : batch.seq,
                 seed.generation,
-              )
-            ) {
-              return;
+              )) return;
+              await target.drain?.();
             }
+            delivered.set(agentId, { seq: catchup.throughSeq, epoch: catchup.epoch });
+          } else {
+            if (since !== undefined || needsReset) {
+              if (!this.sendTranscriptReset(state, target, transcript, grade, cursor, seed.generation)) return;
+              await target.drain?.();
+            }
+            delivered.set(agentId, cursor);
           }
-          continue;
         }
-        if (since === undefined && !needsReset) {
-          continue;
-        }
-        if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
-        if (
-          !this.sendTranscriptReset(
-            state,
-            target,
-            transcript,
-            grade,
-            cursor,
-            seed.generation,
-          )
-        ) {
-          return;
+        if (!this.isTranscriptGeneration(state, target, seed.generation) ||
+            service.forSessionLive(state.sessionId) !== seed.store) return;
+        const currentSpec = state.targets.get(target)?.transcriptGrades;
+        const caughtUp = seed.store.agents().every(({ agentId }) => {
+          if (gradeFor(currentSpec, agentId) === 'off' || seed.store.getAgent(agentId) === undefined) return true;
+          const current = service.getTranscriptCursor(state.sessionId, agentId);
+          const sent = delivered.get(agentId);
+          return sent?.seq === current.seq && sent.epoch === current.epoch;
+        });
+        if (caughtUp) {
+          state.transcriptSeeded.add(target);
+          break;
         }
       }
-      if (
-        !this.isTranscriptGeneration(state, target, seed.generation) ||
-        service.forSessionLive(state.sessionId) !== seed.store
-      ) {
-        return;
-      }
-      state.transcriptSeeded.add(target);
     } finally {
       if (state.pendingTranscriptSeeds.get(target) === seed) {
         state.pendingTranscriptSeeds.delete(target);
@@ -861,34 +849,29 @@ export class SessionEventBroadcaster {
     );
   }
 
-  async getSnapshotState(
+  async getSnapshotState<T = undefined>(
     sessionId: string,
-    options: { captureMessages?: boolean } = {},
-  ): Promise<SessionSnapshotState> {
+    options: { captureMessages?: boolean; capture?: () => Promise<T> } = {},
+  ): Promise<SessionSnapshotState & { captured?: T }> {
     const state = await this.ensureState(sessionId);
     if (state === undefined) {
       const cold = await this.readColdWatermark(sessionId);
-      return cold !== undefined
-        ? {
-            ...cold,
-            contextMessages: [],
-            contextMessageTimes: [],
-            inFlightTurn: null,
-            subagents: [],
-          }
-        : {
-            seq: 0,
-            epoch: '',
-            contextMessages: [],
-            contextMessageTimes: [],
-            inFlightTurn: null,
-            subagents: [],
-          };
+      return {
+        seq: cold?.seq ?? 0,
+        epoch: cold?.epoch ?? '',
+        contextMessages: [],
+        contextMessageTimes: [],
+        inFlightTurn: null,
+        subagents: [],
+        pendingApprovals: [],
+        pendingQuestions: [],
+      };
     }
     const captureMessages = options.captureMessages !== false;
-    const barrier = state.queue.then(() => {
+    const barrier = state.queue.then(async () => {
       const contextMessages = captureMessages ? [...state.contextMessages] : [];
       const mainAgent = state.mainAgent;
+      const captured = await options.capture?.();
       return {
         seq: state.journal.seq,
         epoch: state.journal.epoch,
@@ -896,6 +879,9 @@ export class SessionEventBroadcaster {
         mainAgent,
         inFlightTurn: state.tracker.get(sessionId),
         subagents: state.roster.get(sessionId),
+        pendingApprovals: state.interactionService?.listPending('approval').map((interaction) => toWireApproval(interaction, sessionId)) ?? [],
+        pendingQuestions: state.interactionService?.listPending('question').map((interaction) => toWireQuestion(interaction, sessionId)) ?? [],
+        captured,
         currentPromptId: readCurrentPromptId(mainAgent),
         status: readSnapshotStatus(mainAgent),
       };
@@ -1533,8 +1519,11 @@ export class SessionEventBroadcaster {
     } else {
       for (const [target, sub] of targets) {
         if (!matchesAgentFilter(envelope, sub.agentFilter)) continue;
-        if (suppressedByTranscript(envelope, sub.transcriptGrades)) continue;
         try {
+          if (suppressedByTranscript(envelope, sub.transcriptGrades)) {
+            if (envelope.volatile !== true) target.sendDurableCursor?.({ seq: envelope.seq, epoch: envelope.epoch });
+            continue;
+          }
           target.send(envelope);
         } catch {
         }

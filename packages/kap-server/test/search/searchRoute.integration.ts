@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-process.env['KIMI_CODE_EXPERIMENTAL_SEARCH_WORKER'] = '1';
+process.env['KIKI_EXPERIMENTAL_SEARCH_WORKER'] = '1';
 
 import { ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
 import { Event } from '@kiki/agent-core-v2/_base/event';
@@ -60,7 +60,7 @@ function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
   };
 }
 
-describe('server-v2 /api/v1/search', () => {
+describe('server-v2 /api/search', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -131,7 +131,7 @@ describe('server-v2 /api/v1/search', () => {
   });
 
   async function postSearch(body: unknown): Promise<Envelope<SearchPageWire>> {
-    const res = await authedFetch(server!, base, '/api/v1/search', {
+    const res = await authedFetch(server!, base, '/api/search', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -258,24 +258,24 @@ describe('server-v2 session routes with the global search DB unavailable', () =>
 
   it('session list / create / get / cold resume pass with the search index down', { timeout: 30_000 }, async () => {
     await boot();
-    const created = await postJson<{ id: string }>('/api/v1/sessions', {
+    const created = await postJson<{ id: string }>('/api/sessions', {
       metadata: { cwd: home },
     });
     expect(created.code).toBe(0);
     const id = created.data.id;
-    const list = await getJson<{ items: { id: string }[] }>('/api/v1/sessions');
+    const list = await getJson<{ items: { id: string }[] }>('/api/sessions');
     expect(list.code).toBe(0);
     expect(list.data.items.map((item) => item.id)).toContain(id);
     await server!.close();
     server = undefined;
 
     await boot();
-    const coldList = await getJson<{ items: { id: string }[] }>('/api/v1/sessions');
+    const coldList = await getJson<{ items: { id: string }[] }>('/api/sessions');
     expect(coldList.code).toBe(0);
     expect(coldList.data.items.map((item) => item.id)).toContain(id);
-    const got = await getJson<{ id: string }>(`/api/v1/sessions/${id}`);
+    const got = await getJson<{ id: string }>(`/api/sessions/${id}`);
     expect(got.code).toBe(0);
-    const messages = await getJson<{ items: unknown[] }>(`/api/v1/sessions/${id}/messages`);
+    const messages = await getJson<{ items: unknown[] }>(`/api/sessions/${id}/messages`);
     expect(messages.code).toBe(0);
 
     const probe = await stat(join(home as string, 'search-index'));
@@ -284,22 +284,22 @@ describe('server-v2 session routes with the global search DB unavailable', () =>
 
   it('only the full-text search request reports the index outage', { timeout: 30_000 }, async () => {
     await boot();
-    const created = await postJson<{ id: string }>('/api/v1/sessions', {
+    const created = await postJson<{ id: string }>('/api/sessions', {
       metadata: { cwd: home },
     });
     expect(created.code).toBe(0);
 
     await expect
       .poll(
-        async () => (await postJson<SearchPageWire>('/api/v1/search', { query: 'anything' })).code,
+        async () => (await postJson<SearchPageWire>('/api/search', { query: 'anything' })).code,
         { timeout: 10_000, interval: 100 },
       )
       .toBe(50001);
-    const search = await postJson<SearchPageWire>('/api/v1/search', { query: 'anything' });
+    const search = await postJson<SearchPageWire>('/api/search', { query: 'anything' });
     expect(search.code).toBe(50001);
     expect(search.msg).toContain('search index failed to open');
 
-    const list = await getJson<{ items: unknown[] }>('/api/v1/sessions');
+    const list = await getJson<{ items: unknown[] }>('/api/sessions');
     expect(list.code).toBe(0);
   });
 });

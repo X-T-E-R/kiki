@@ -241,9 +241,9 @@ function appendTrace(text, trace) {
   return `${text}\n\n[kimi-datasource] ${parts.join(' · ')}`;
 }
 
-function resolveKimiHome() {
-  const explicit = process.env.KIMI_CODE_HOME?.trim();
-  return explicit && explicit.length > 0 ? explicit : path.join(homedir(), '.kimi-code');
+function resolveKikiHome() {
+  const explicit = process.env.KIKI_HOME?.trim();
+  return explicit && explicit.length > 0 ? explicit : path.join(homedir(), '.kiki');
 }
 
 function datasourceApiUrl() {
@@ -287,7 +287,7 @@ function resolveKimiCodeCredentialName() {
 }
 
 async function loadAccessToken() {
-  const kimiHome = resolveKimiHome();
+  const kimiHome = resolveKikiHome();
   const credentialsFile = path.join(
     kimiHome,
     'credentials',

@@ -334,20 +334,15 @@ async function listWorkspaceSkillsForRoot(
 type SkillElement = ReturnType<ISessionSkillCatalog['catalog']['listSkills']>[number];
 
 function toProtocolSkill(skill: SkillElement): SkillDescriptor {
-  const base: SkillDescriptor = {
+  return {
     name: skill.name,
     description: skill.description,
     path: skill.path,
     source: skill.source,
-  };
-  const type = skill.metadata.type;
-  const disableModelInvocation = skill.metadata.disableModelInvocation;
-  return {
-    ...base,
-    ...(type !== undefined ? { type } : {}),
-    ...(disableModelInvocation !== undefined
-      ? { disable_model_invocation: disableModelInvocation }
-      : {}),
+    type: skill.metadata.type,
+    disable_model_invocation: skill.metadata.disableModelInvocation,
+    prompt_command: skill.metadata.promptCommand,
+    argument_hint: skill.metadata.argumentHint,
   };
 }
 

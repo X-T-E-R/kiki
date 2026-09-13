@@ -63,6 +63,7 @@ export const usageTokensSchema = z.object({
 
 export const usageAggregateSchema = z.object({
   tokens: usageTokensSchema,
+  tokens_unknown: z.boolean().optional().describe('Some records lack token accounting or zero-record provenance; numeric tokens remain the recorded subtotal, not an inferred total.'),
   cost_usd_estimated: z.number().nonnegative(),
   cost_unknown: z.boolean(),
 });
@@ -134,6 +135,11 @@ export const usageResponseSchema = z.object({
   }),
   reliability: z.object({
     complete: z.boolean(),
+    usage_coverage: z.object({
+      known_records: z.number().int().nonnegative(),
+      missing_records: z.number().int().nonnegative(),
+      legacy_zero_records: z.number().int().nonnegative().describe('Unmarked historical zero records whose provenance is unknown; not classified as confirmed missing usage.'),
+    }).optional(),
     coverage: z.object({
       earliest_at: z.number().int().nonnegative().nullable(),
       latest_at: z.number().int().nonnegative().nullable(),

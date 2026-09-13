@@ -51,6 +51,21 @@ function response() {
 }
 
 describe('usage REST schemas', () => {
+  it('accepts additive usage knowledge without requiring it from older servers', () => {
+    const baseline = response();
+    const enriched = {
+      ...baseline,
+      summary: { ...baseline.summary, tokens_unknown: true },
+      reliability: {
+        ...baseline.reliability,
+        usage_coverage: { known_records: 2, missing_records: 1, legacy_zero_records: 1 },
+      },
+    };
+    expect(usageResponseSchema.parse(enriched).summary.tokens_unknown).toBe(true);
+    expect(usageResponseSchema.parse(enriched).reliability.usage_coverage?.missing_records).toBe(1);
+    expect(usageResponseSchema.safeParse(baseline).success).toBe(true);
+    expect(usageResponseSchema.safeParse({ ...enriched, reliability: { ...enriched.reliability, usage_coverage: { known_records: 0, missing_records: -1, legacy_zero_records: 0 } } }).success).toBe(false);
+  });
   it('parses repeated attribution and workspace filters', () => {
     expect(
       usageQuerySchema.parse({

@@ -2,21 +2,16 @@
  * v2 import-context construction — pure functions that replicate, byte for
  * byte, the user message v1's `ContextMemory.importContext`
  * (`packages/agent-core/src/agent/context/index.ts`) appends for an
- * `importContext` RPC, plus its validation and overflow rejection.
+ * `importContext` RPC. Message validation stays here; the atomic core
+ * operation owns busy, capacity, and append admission.
  *
- * Why a replica exists: the v2 engine has no import-context capability of its
- * own (nothing under `agent-core-v2` builds this message), but all of its
- * primitives — the same wire `context.append_message` Op, the same token
- * estimator, the same model capabilities — are available, so the SDK composes
- * the v1 behavior on top of them. The wrapper format, the guidance text, and
- * the two XML escapers below are copied from v1 (`agent/core/src/agent/context`
- * and `agent-core/src/utils/xml-escape.ts`); keep them byte-identical with
- * those sources so a v1-written and a v2-written import reduce to the same
- * history.
+ * The wrapper format, guidance text, and XML escapers below are copied from
+ * v1 (`agent/core/src/agent/context` and `agent-core/src/utils/xml-escape.ts`);
+ * keep them byte-identical with those sources so a v1-written and a
+ * v2-written import reduce to the same history.
  */
 import { ErrorCodes, KimiError } from '#/errors';
 import type { ContextMessage } from '@kiki/agent-core-v2';
-import { estimateTokensForMessages } from '@kiki/agent-core-v2/kosong/contract/tokens';
 
 /** Byte-identical with v1's `IMPORT_CONTEXT_GUIDANCE`. */
 const IMPORT_CONTEXT_GUIDANCE =
@@ -74,37 +69,4 @@ export function buildImportContextMessage(content: string, source: string): Cont
     toolCalls: [],
     origin: { kind: 'user' },
   };
-}
-
-/**
- * v1's overflow gate: the import estimate plus the current context must fit
- * the model window (unknown window = `0` skips the check on both engines).
- * The estimator is the same character heuristic on both sides, so the counts
- * — and therefore the rejection — agree.
- */
-export function assertImportFits(
-  message: ContextMessage,
-  currentTokenCount: number,
-  maxContextTokens: number,
-): void {
-  const importTokenCount = estimateTokensForMessages([message]);
-  const totalTokenCount = currentTokenCount + importTokenCount;
-  if (maxContextTokens > 0 && totalTokenCount > maxContextTokens) {
-    throw new KimiError(
-      ErrorCodes.CONTEXT_OVERFLOW,
-      'Imported content is too large for the current model context ' +
-        `(~${String(importTokenCount)} import tokens + ~${String(currentTokenCount)} existing ` +
-        `= ~${String(totalTokenCount)} total > ${String(maxContextTokens)} token limit). ` +
-        'Please import a smaller file or session.',
-      {
-        details: {
-          reason: 'import_context_overflow',
-          importTokenCount,
-          currentTokenCount,
-          totalTokenCount,
-          maxContextTokens,
-        },
-      },
-    );
-  }
 }

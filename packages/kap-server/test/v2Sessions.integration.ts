@@ -157,7 +157,7 @@ const gitStub: IGitService = {
   findWorkTree: async () => null,
 };
 
-describe('server /api/v2/sessions', () => {
+describe('server /api/sessions/query', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -193,7 +193,7 @@ describe('server /api/v2/sessions', () => {
   });
 
   async function getPage(query = ''): Promise<{ status: number; body: EnvelopeWire }> {
-    const res = await authedFetch(server as RunningServer, base, `/api/v2/sessions${query}`);
+    const res = await authedFetch(server as RunningServer, base, `/api/sessions/query${query}`);
     return { status: res.status, body: (await res.json()) as EnvelopeWire };
   }
 
@@ -510,8 +510,8 @@ describe('server /api/v2/sessions', () => {
     }
   });
 
-  it('answers 401 with the shared envelope on v1 and v2 paths alike', async () => {
-    for (const path of ['/api/v1/sessions', '/api/v2/sessions']) {
+  it('answers 401 with the shared envelope on both session list paths', async () => {
+    for (const path of ['/api/sessions', '/api/sessions/query']) {
       const res = await fetch(`${base}${path}`);
       expect(res.status).toBe(401);
       const body = (await res.json()) as { code: number; msg: string };
@@ -519,15 +519,15 @@ describe('server /api/v2/sessions', () => {
     }
   });
 
-  it('requires auth on /api/v2/sessions (bearer accepted)', async () => {
-    const res = await fetch(`${base}/api/v2/sessions`, {
+  it('requires auth on /api/sessions/query (bearer accepted)', async () => {
+    const res = await fetch(`${base}/api/sessions/query`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     expect(res.status).toBe(200);
   });
 });
 
-describe('server /api/v2/sessions batch archive/restore', () => {
+describe('server /api/sessions batch archive/restore', () => {
   interface BatchItemWire {
     id: string;
     ok: boolean;
@@ -593,7 +593,7 @@ describe('server /api/v2/sessions batch archive/restore', () => {
   }
 
   async function createSession(): Promise<{ id: string; workspace_id: string }> {
-    const res = await authedFetch(server as RunningServer, base, '/api/v1/sessions', {
+    const res = await authedFetch(server as RunningServer, base, '/api/sessions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ metadata: { cwd: home } }),
@@ -626,7 +626,7 @@ describe('server /api/v2/sessions batch archive/restore', () => {
   }
 
   async function listedIds(query = ''): Promise<string[]> {
-    const res = await authedFetch(server as RunningServer, base, `/api/v2/sessions${query}`);
+    const res = await authedFetch(server as RunningServer, base, `/api/sessions/query${query}`);
     const body = (await res.json()) as { code: number; data: { items: { id: string }[] } };
     expect(body.code).toBe(0);
     return body.data.items.map((item) => item.id);
@@ -640,7 +640,7 @@ describe('server /api/v2/sessions batch archive/restore', () => {
     const { events, dispose } = collectEvents();
     const before = await readStateJson(created.workspace_id, created.id);
 
-    const body = await postBatch('/api/v2/sessions:archive', { ids: [created.id] });
+    const body = await postBatch('/api/sessions:archive', { ids: [created.id] });
     expect(body.code).toBe(0);
     expect(body.data).toMatchObject({
       succeeded: 1,
@@ -677,7 +677,7 @@ describe('server /api/v2/sessions batch archive/restore', () => {
     expect(getLiveSessionById(core(), created.id)).toBeDefined();
     const { events, dispose } = collectEvents();
 
-    const body = await postBatch('/api/v2/sessions:archive', { ids: [created.id] });
+    const body = await postBatch('/api/sessions:archive', { ids: [created.id] });
     expect(body.code).toBe(0);
     expect(body.data?.results).toEqual([{ id: created.id, ok: true }]);
 
@@ -699,7 +699,7 @@ describe('server /api/v2/sessions batch archive/restore', () => {
     await closeSessionById(core(), created.id);
 
     const resumePromise = resumeSessionById(core(), created.id);
-    const batchPromise = postBatch('/api/v2/sessions:archive', { ids: [created.id] });
+    const batchPromise = postBatch('/api/sessions:archive', { ids: [created.id] });
 
     const handle = await resumePromise;
     expect(handle).toBeDefined();
@@ -716,7 +716,7 @@ describe('server /api/v2/sessions batch archive/restore', () => {
     const cold = await createSession();
     await closeSessionById(core(), cold.id);
 
-    const body = await postBatch('/api/v2/sessions:archive', {
+    const body = await postBatch('/api/sessions:archive', {
       ids: [live.id, cold.id, 'sess_missing'],
     });
     expect(body.code).toBe(0);
@@ -738,13 +738,13 @@ describe('server /api/v2/sessions batch archive/restore', () => {
   it('restores a cold session without materializing it and publishes no archived event', async () => {
     const created = await createSession();
     await closeSessionById(core(), created.id);
-    await postBatch('/api/v2/sessions:archive', { ids: [created.id] });
+    await postBatch('/api/sessions:archive', { ids: [created.id] });
     expect(await indexArchived(created.id)).toBe(true);
 
     const { events, dispose } = collectEvents();
     const before = await readStateJson(created.workspace_id, created.id);
 
-    const body = await postBatch('/api/v2/sessions:restore', { ids: [created.id] });
+    const body = await postBatch('/api/sessions:restore', { ids: [created.id] });
     expect(body.code).toBe(0);
     expect(body.data?.results).toEqual([{ id: created.id, ok: true }]);
 
@@ -763,10 +763,10 @@ describe('server /api/v2/sessions batch archive/restore', () => {
 
   it('restores a live session through the lifecycle chain and keeps it live', async () => {
     const created = await createSession();
-    await postBatch('/api/v2/sessions:archive', { ids: [created.id] });
+    await postBatch('/api/sessions:archive', { ids: [created.id] });
     expect(await resumeSessionById(core(), created.id)).toBeDefined();
 
-    const body = await postBatch('/api/v2/sessions:restore', { ids: [created.id] });
+    const body = await postBatch('/api/sessions:restore', { ids: [created.id] });
     expect(body.code).toBe(0);
     expect(body.data?.results).toEqual([{ id: created.id, ok: true }]);
 
@@ -776,17 +776,17 @@ describe('server /api/v2/sessions batch archive/restore', () => {
 
   it('validates the batch body: empty, missing, over the unique cap, duplicates', async () => {
     for (const body of [{ ids: [] }, {}]) {
-      const rejected = await postBatch('/api/v2/sessions:archive', body);
+      const rejected = await postBatch('/api/sessions:archive', body);
       expect(rejected.code).toBe(40001);
       expect(rejected.data).toBeNull();
     }
 
-    const tooMany = await postBatch('/api/v2/sessions:archive', {
+    const tooMany = await postBatch('/api/sessions:archive', {
       ids: Array.from({ length: 5001 }, (_, i) => `sess_${i}`),
     });
     expect(tooMany.code).toBe(40001);
 
-    const deduped = await postBatch('/api/v2/sessions:archive', {
+    const deduped = await postBatch('/api/sessions:archive', {
       ids: Array.from({ length: 5001 }, () => 'sess_dup'),
     });
     expect(deduped.code).toBe(0);

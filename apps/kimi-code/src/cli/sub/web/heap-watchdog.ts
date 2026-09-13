@@ -14,9 +14,9 @@
 import { totalmem } from 'node:os';
 import { getHeapStatistics } from 'node:v8';
 
-export const HEAP_RESTART_ENV = 'KIMI_CODE_SERVER_HEAP_RESTART_MB';
-export const RSS_RESTART_ENV = 'KIMI_CODE_SERVER_RSS_RESTART_MB';
-export const EXTERNAL_RESTART_ENV = 'KIMI_CODE_SERVER_EXTERNAL_RESTART_MB';
+export const HEAP_RESTART_ENV = 'KIKI_SERVER_HEAP_RESTART_MB';
+export const RSS_RESTART_ENV = 'KIKI_SERVER_RSS_RESTART_MB';
+export const EXTERNAL_RESTART_ENV = 'KIKI_SERVER_EXTERNAL_RESTART_MB';
 export const DESKTOP_BUNDLED_ENV = 'KIKI_DESKTOP_BUNDLED';
 
 const MB = 1024 * 1024;

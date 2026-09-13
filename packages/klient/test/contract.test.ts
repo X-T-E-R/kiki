@@ -28,6 +28,24 @@ import {
 } from '../src/contract/global/config.js';
 import { modelConfigSchema } from '../src/contract/global/models.js';
 
+import { sessionViewSubscribeInputSchema, sessionViewTranscriptPageInputSchema, sessionViewSignalSchema } from '../src/contract/session/view.js';
+
+describe('session view contract', () => {
+  it('keeps durable and transcript checkpoints independent', () => {
+    const parsed = sessionViewSubscribeInputSchema.parse({
+      sessionCursor: { seq: 7, epoch: 'session-epoch' }, transcriptGrades: { main: 'delta' },
+      transcriptSince: { main: { seq: 31, epoch: 'transcript-epoch' } },
+    });
+    expect(parsed.sessionCursor).toEqual({ seq: 7, epoch: 'session-epoch' });
+    expect(parsed.transcriptSince).toEqual({ main: { seq: 31, epoch: 'transcript-epoch' } });
+  });
+  it('rejects unsafe agent ids, ambiguous paging, and negative generations', () => {
+    expect(sessionViewTranscriptPageInputSchema.safeParse({ agentId: '../main' }).success).toBe(false);
+    expect(sessionViewTranscriptPageInputSchema.safeParse({ agentId: 'main', beforeTurn: 't1', afterTurn: 't2' }).success).toBe(false);
+    expect(sessionViewSignalSchema.safeParse({ type: 'status', status: 'open', generation: -1 }).success).toBe(false);
+  });
+});
+
 type McpTimeoutField = 'startupTimeoutMs' | 'toolTimeoutMs';
 
 const timeoutCases = [

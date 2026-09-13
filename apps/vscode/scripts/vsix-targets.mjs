@@ -15,7 +15,7 @@ export const defaultVsixOutputDir = join(extensionRoot, 'artifacts', 'vsix');
 
 export function vsixFileName(target) {
   assertVsixTarget(target);
-  return `kimi-code-${target}.vsix`;
+  return `kiki-${target}.vsix`;
 }
 
 export function normalizeVsixTargets(values) {

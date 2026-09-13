@@ -110,7 +110,7 @@ function buildMultipart(parts: {
 async function createSession(r: RunningServer): Promise<string> {
   const res = await appOf(r).inject({
     method: 'POST',
-    url: '/api/v1/sessions',
+    url: '/api/sessions',
     payload: { metadata: { cwd: home } },
     headers: { 'content-type': 'application/json' },
   });
@@ -132,7 +132,7 @@ async function uploadFile(
   });
   const res = await appOf(r).inject({
     method: 'POST',
-    url: '/api/v1/files',
+    url: '/api/files',
     payload: multipart.body,
     headers: { 'content-type': multipart.contentType },
   });
@@ -165,7 +165,7 @@ async function materializeUploadedFile(
   });
 }
 
-describe('POST /api/v1/files (server-v2)', () => {
+describe('POST /api/files (server-v2)', () => {
   it('upload → GET stream → DELETE → re-GET 40407', async () => {
     const r = await boot();
     const data = Buffer.from('hello server v2 files');
@@ -175,7 +175,7 @@ describe('POST /api/v1/files (server-v2)', () => {
 
     const upRes = await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/files',
+      url: '/api/files',
       payload: mp.body,
       headers: { 'content-type': mp.contentType },
     });
@@ -195,7 +195,7 @@ describe('POST /api/v1/files (server-v2)', () => {
 
     const getRes = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/files/${meta.id}`,
+      url: `/api/files/${meta.id}`,
     });
     expect(getRes.statusCode).toBe(200);
     expect(getRes.headers['content-type']).toBe('text/plain');
@@ -208,7 +208,7 @@ describe('POST /api/v1/files (server-v2)', () => {
 
     const delRes = await appOf(r).inject({
       method: 'DELETE',
-      url: `/api/v1/files/${meta.id}`,
+      url: `/api/files/${meta.id}`,
     });
     expect(delRes.statusCode).toBe(200);
     const delEnv = delRes.json() as Envelope<{ deleted: true }>;
@@ -217,7 +217,7 @@ describe('POST /api/v1/files (server-v2)', () => {
 
     const get2Res = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/files/${meta.id}`,
+      url: `/api/files/${meta.id}`,
     });
     expect(get2Res.statusCode).toBe(404);
     expect((get2Res.json() as Envelope).code).toBe(40407);
@@ -236,7 +236,7 @@ describe('POST /api/v1/files (server-v2)', () => {
     });
     const res = await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/files',
+      url: '/api/files',
       payload: mp.body,
       headers: { 'content-type': mp.contentType },
     });
@@ -247,7 +247,7 @@ describe('POST /api/v1/files (server-v2)', () => {
 
     const getRes = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/files/${env.data!.id}`,
+      url: `/api/files/${env.data!.id}`,
     });
     expect(getRes.statusCode).toBe(200);
     expect(getRes.rawPayload.equals(big)).toBe(true);
@@ -257,14 +257,14 @@ describe('POST /api/v1/files (server-v2)', () => {
     const r = await boot();
     const getRes = await appOf(r).inject({
       method: 'GET',
-      url: '/api/v1/files/f_does_not_exist',
+      url: '/api/files/f_does_not_exist',
     });
     expect(getRes.statusCode).toBe(404);
     expect((getRes.json() as Envelope).code).toBe(40407);
 
     const delRes = await appOf(r).inject({
       method: 'DELETE',
-      url: '/api/v1/files/f_does_not_exist',
+      url: '/api/files/f_does_not_exist',
     });
     expect(delRes.statusCode).toBe(404);
     expect((delRes.json() as Envelope).code).toBe(40407);
@@ -278,7 +278,7 @@ describe('POST /api/v1/files (server-v2)', () => {
     });
     const upRes = await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/files',
+      url: '/api/files',
       payload: mp.body,
       headers: { 'content-type': mp.contentType },
     });
@@ -291,7 +291,7 @@ describe('POST /api/v1/files (server-v2)', () => {
 
     const getRes = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/files/${meta.id}`,
+      url: `/api/files/${meta.id}`,
     });
     expect(getRes.statusCode).toBe(200);
     expect(getRes.rawPayload).toEqual(data);
@@ -310,7 +310,7 @@ describe('POST /api/v1/files (server-v2)', () => {
     });
     const res = await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/files',
+      url: '/api/files',
       payload: mp.body,
       headers: { 'content-type': mp.contentType },
     });
@@ -331,7 +331,7 @@ describe('POST /api/v1/files (server-v2)', () => {
     });
     const upRes = await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/files',
+      url: '/api/files',
       payload: mp.body,
       headers: { 'content-type': mp.contentType },
     });
@@ -339,7 +339,7 @@ describe('POST /api/v1/files (server-v2)', () => {
 
     const full = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/files/${meta.id}`,
+      url: `/api/files/${meta.id}`,
     });
     expect(full.statusCode).toBe(200);
     expect(full.headers['accept-ranges']).toBe('bytes');
@@ -349,7 +349,7 @@ describe('POST /api/v1/files (server-v2)', () => {
 
     const part = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/files/${meta.id}`,
+      url: `/api/files/${meta.id}`,
       headers: { range: 'bytes=4-9' },
     });
     expect(part.statusCode).toBe(206);
@@ -359,7 +359,7 @@ describe('POST /api/v1/files (server-v2)', () => {
 
     const tail = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/files/${meta.id}`,
+      url: `/api/files/${meta.id}`,
       headers: { range: 'bytes=30-' },
     });
     expect(tail.statusCode).toBe(206);
@@ -376,7 +376,7 @@ describe('POST /api/v1/files (server-v2)', () => {
     );
     const res = await appOf(r).inject({
       method: 'POST',
-      url: '/api/v1/files',
+      url: '/api/files',
       payload: body,
       headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
     });
@@ -385,7 +385,7 @@ describe('POST /api/v1/files (server-v2)', () => {
   });
 });
 
-describe('GET /api/v1/sessions/{session_id}/media/{file_id} (server-v2)', () => {
+describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
   it('serves the session copy after the transient upload is deleted', async () => {
     const r = await boot();
     const data = Buffer.from('canonical image bytes');
@@ -393,10 +393,10 @@ describe('GET /api/v1/sessions/{session_id}/media/{file_id} (server-v2)', () => 
     const meta = await uploadFile(r, data, 'pasted image.png', 'image/png');
     await materializeUploadedFile(r, sessionId, meta);
 
-    await appOf(r).inject({ method: 'DELETE', url: `/api/v1/files/${meta.id}` });
+    await appOf(r).inject({ method: 'DELETE', url: `/api/files/${meta.id}` });
     const res = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/sessions/${sessionId}/media/${meta.id}`,
+      url: `/api/sessions/${sessionId}/media/${meta.id}`,
     });
 
     expect(res.statusCode).toBe(200);
@@ -416,7 +416,7 @@ describe('GET /api/v1/sessions/{session_id}/media/{file_id} (server-v2)', () => 
 
     const res = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/sessions/${sessionId}/media/${meta.id}`,
+      url: `/api/sessions/${sessionId}/media/${meta.id}`,
     });
 
     expect(res.statusCode).toBe(200);
@@ -431,7 +431,7 @@ describe('GET /api/v1/sessions/{session_id}/media/{file_id} (server-v2)', () => 
 
     const res = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/sessions/${sessionId}/media/f_does_not_exist`,
+      url: `/api/sessions/${sessionId}/media/f_does_not_exist`,
     });
 
     expect(res.statusCode).toBe(404);
@@ -447,7 +447,7 @@ describe('GET /api/v1/sessions/{session_id}/media/{file_id} (server-v2)', () => 
 
     const res = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/sessions/${sessionId}/media/${meta.id}`,
+      url: `/api/sessions/${sessionId}/media/${meta.id}`,
       headers: { range: 'bytes=4-9' },
     });
 
@@ -464,14 +464,14 @@ describe('GET /api/v1/sessions/{session_id}/media/{file_id} (server-v2)', () => 
     const sessionId = await createSession(r);
     const meta = await uploadFile(r, data, 'restart.png', 'image/png');
     await materializeUploadedFile(r, sessionId, meta);
-    await appOf(r).inject({ method: 'DELETE', url: `/api/v1/files/${meta.id}` });
+    await appOf(r).inject({ method: 'DELETE', url: `/api/files/${meta.id}` });
 
     await r.close();
     server = undefined;
     r = await boot();
     const res = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/sessions/${sessionId}/media/${meta.id}`,
+      url: `/api/sessions/${sessionId}/media/${meta.id}`,
     });
 
     expect(res.statusCode).toBe(200);
@@ -491,7 +491,7 @@ describe('GET /api/v1/sessions/{session_id}/media/{file_id} (server-v2)', () => 
 
     const res = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/sessions/${fork.id}/media/${meta.id}`,
+      url: `/api/sessions/${fork.id}/media/${meta.id}`,
     });
 
     expect(res.statusCode).toBe(200);
@@ -510,7 +510,7 @@ describe('GET /api/v1/sessions/{session_id}/media/{file_id} (server-v2)', () => 
 
     const res = await appOf(r).inject({
       method: 'GET',
-      url: `/api/v1/sessions/${sessionId}/media/${meta.id}`,
+      url: `/api/sessions/${sessionId}/media/${meta.id}`,
     });
 
     expect(res.statusCode).toBe(404);

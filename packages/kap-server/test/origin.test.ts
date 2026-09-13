@@ -76,7 +76,7 @@ describe('parseCorsOrigins', () => {
   it('splits, trims, and drops empties', () => {
     expect(
       parseCorsOrigins({
-        KIMI_CODE_CORS_ORIGINS: ' https://a.example.com, https://b.example.com, ',
+        KIKI_CORS_ORIGINS: ' https://a.example.com, https://b.example.com, ',
       }),
     ).toEqual(['https://a.example.com', 'https://b.example.com']);
   });
@@ -92,8 +92,8 @@ describe('createOriginHook (onRequest hook)', () => {
   beforeEach(async () => {
     app = Fastify();
     app.addHook('onRequest', createOriginHook({ allowedOrigins: ['https://foo.example.com'] }));
-    app.get('/api/v1/probe', async () => ({ ok: true }));
-    app.options('/api/v1/probe', async () => ({ ok: true }));
+    app.get('/api/probe', async () => ({ ok: true }));
+    app.options('/api/probe', async () => ({ ok: true }));
     await app.ready();
   });
 
@@ -104,7 +104,7 @@ describe('createOriginHook (onRequest hook)', () => {
   it('echoes CORS headers for a same-origin request', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/probe',
+      url: '/api/probe',
       headers: { origin: 'http://localhost:80', host: 'localhost:80' },
     });
     expect(res.statusCode).toBe(200);
@@ -114,7 +114,7 @@ describe('createOriginHook (onRequest hook)', () => {
   it('echoes the whitelisted cross-origin and short-circuits OPTIONS to 204', async () => {
     const res = await app.inject({
       method: 'OPTIONS',
-      url: '/api/v1/probe',
+      url: '/api/probe',
       headers: { origin: 'https://foo.example.com', host: 'localhost:80' },
     });
     expect(res.statusCode).toBe(204);
@@ -127,7 +127,7 @@ describe('createOriginHook (onRequest hook)', () => {
   it('withholds CORS headers for a non-whitelisted cross-origin', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/probe',
+      url: '/api/probe',
       headers: { origin: 'http://evil.example.test', host: 'localhost:80' },
     });
     expect(res.statusCode).toBe(200);
@@ -137,7 +137,7 @@ describe('createOriginHook (onRequest hook)', () => {
   it('returns 204 without CORS headers for a non-whitelisted OPTIONS', async () => {
     const res = await app.inject({
       method: 'OPTIONS',
-      url: '/api/v1/probe',
+      url: '/api/probe',
       headers: { origin: 'http://evil.example.test', host: 'localhost:80' },
     });
     expect(res.statusCode).toBe(204);
@@ -147,7 +147,7 @@ describe('createOriginHook (onRequest hook)', () => {
   it('emits no CORS headers when Origin is absent', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/probe',
+      url: '/api/probe',
       headers: { host: 'localhost:80' },
     });
     expect(res.statusCode).toBe(200);
@@ -157,7 +157,7 @@ describe('createOriginHook (onRequest hook)', () => {
   it('reflects Access-Control-Request-Headers in Allow-Headers for an allowed origin', async () => {
     const res = await app.inject({
       method: 'OPTIONS',
-      url: '/api/v1/probe',
+      url: '/api/probe',
       headers: {
         origin: 'https://foo.example.com',
         host: 'localhost:80',
@@ -175,7 +175,7 @@ describe('createOriginHook (onRequest hook)', () => {
   it('falls back to CORS_ALLOW_HEADERS for non-preflight responses', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/probe',
+      url: '/api/probe',
       headers: { origin: 'https://foo.example.com', host: 'localhost:80' },
     });
     expect(res.statusCode).toBe(200);

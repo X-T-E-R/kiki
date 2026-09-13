@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { gt, valid } from 'semver';
 
-export const KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV = 'KIMI_CODE_PLUGIN_MARKETPLACE_URL';
+export const KIKI_PLUGIN_MARKETPLACE_URL_ENV = 'KIKI_PLUGIN_MARKETPLACE_URL';
 
 export interface ResolvePluginMarketplaceSourceOptions {
   readonly optionUrl?: string;
@@ -89,7 +89,7 @@ export function computeUpdateStatus(
 export function resolveMarketplaceLocation(source: string, workDir: string): MarketplaceLocation {
   const trimmed = source.trim();
   if (trimmed.length === 0) {
-    throw new Error(`${KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV} cannot be empty.`);
+    throw new Error(`${KIKI_PLUGIN_MARKETPLACE_URL_ENV} cannot be empty.`);
   }
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     return { raw: trimmed, kind: 'remote', resolved: trimmed };

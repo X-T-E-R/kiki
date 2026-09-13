@@ -422,8 +422,8 @@ describe('`kimi web` option threading', () => {
     const { handleWebCommand } = await import('#/cli/sub/web/run');
     const { stdout, stderr } = makeIo();
     const dir = mkdtempSync(join(tmpdir(), 'kimi-web-non-loopback-'));
-    const previousHome = process.env['KIMI_CODE_HOME'];
-    process.env['KIMI_CODE_HOME'] = dir;
+    const previousHome = process.env['KIKI_HOME'];
+    process.env['KIKI_HOME'] = dir;
 
     try {
       await expect(
@@ -435,8 +435,8 @@ describe('`kimi web` option threading', () => {
         'Refusing to bind 0.0.0.0 (public) without TLS; terminate TLS at a reverse proxy or pass --insecure-no-tls.',
       );
     } finally {
-      if (previousHome === undefined) delete process.env['KIMI_CODE_HOME'];
-      else process.env['KIMI_CODE_HOME'] = previousHome;
+      if (previousHome === undefined) delete process.env['KIKI_HOME'];
+      else process.env['KIKI_HOME'] = previousHome;
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -637,7 +637,7 @@ describe('server web asset directory resolution', () => {
     try {
       writeFileSync(join(dir, 'index.html'), '<html></html>');
       expect(serverWebAssetsDir({}, dir)).toBe(dir);
-      expect(serverWebAssetsDir({ KIMI_CODE_DEV_SERVER: '1' }, dir)).toBe(dir);
+      expect(serverWebAssetsDir({ KIKI_DEV_SERVER: '1' }, dir)).toBe(dir);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
@@ -657,7 +657,7 @@ describe('server web asset directory resolution', () => {
     const { serverWebAssetsDir } = await import('#/cli/sub/web/run');
     const dir = mkdtempSync(join(tmpdir(), 'kimi-web-assets-'));
     try {
-      expect(serverWebAssetsDir({ KIMI_CODE_DEV_SERVER: '1' }, dir)).toBeUndefined();
+      expect(serverWebAssetsDir({ KIKI_DEV_SERVER: '1' }, dir)).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
@@ -759,16 +759,16 @@ describe('`kimi web rotate-token`', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'kimi-rotate-'));
-    prevHome = process.env['KIMI_CODE_HOME'];
-    process.env['KIMI_CODE_HOME'] = dir;
+    prevHome = process.env['KIKI_HOME'];
+    process.env['KIKI_HOME'] = dir;
     vi.resetModules();
   });
 
   afterEach(() => {
     if (prevHome === undefined) {
-      delete process.env['KIMI_CODE_HOME'];
+      delete process.env['KIKI_HOME'];
     } else {
-      process.env['KIMI_CODE_HOME'] = prevHome;
+      process.env['KIKI_HOME'] = prevHome;
     }
     rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });

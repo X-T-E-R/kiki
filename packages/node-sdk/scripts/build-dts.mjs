@@ -12,7 +12,6 @@ const providerClientShimPath = path.join(dtsRoot, 'provider-clients.d.ts');
 const tscBinPath = packageBinPath('typescript', 'bin/tsc');
 const apiExtractorBinPath = packageBinPath('@microsoft/api-extractor', 'bin/api-extractor');
 
-const packageDirs = new Set(['agent-core-v2', 'agent-profiles', 'acp-client', 'codex-client', 'kaos', 'klient', 'node-sdk', 'oauth', 'protocol']);
 const workspacePackages = new Map([
   ['@kiki/agent-core-v2', 'agent-core-v2'],
   ['@kiki/agent-profiles', 'agent-profiles'],
@@ -22,7 +21,9 @@ const workspacePackages = new Map([
   ['@kiki/oauth', 'oauth'],
   ['@kiki/klient', 'klient'],
   ['@kiki/protocol', 'protocol'],
+  ['@kiki/transcript', 'transcript'],
 ]);
+const packageDirs = new Set(['node-sdk', ...workspacePackages.values()]);
 
 try {
   await rm(tempDir, { recursive: true, force: true });
@@ -109,7 +110,7 @@ async function rewriteWorkspaceSpecifiers() {
           `import { GoogleGenAI as GenAIClient } from '${providerClientSpecifier}';`,
         );
       const updated = providerClientText.replaceAll(
-        /(["'])(#\/[^"']+|@kiki\/(?:agent-core-v2|agent-profiles|acp-client|codex-client|kaos|oauth|klient|protocol)(?:\/[^"']+)?)\1/g,
+        /(["'])(#\/[^"']+|@kiki\/(?:agent-core-v2|agent-profiles|acp-client|codex-client|kaos|oauth|klient|protocol|transcript)(?:\/[^"']+)?)\1/g,
         (_match, quote, specifier) => {
           const resolved = resolveSpecifier({
             currentFile: file,

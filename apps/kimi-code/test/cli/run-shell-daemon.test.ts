@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isTerminalOutputError, isTuiDaemonEnabled, runShell } from '#/cli/run-shell';
+import { isTerminalOutputError, runShell } from '#/cli/run-shell';
 
 const uncaughtExceptionListeners = new Set(process.listeners('uncaughtException'));
 const unhandledRejectionListeners = new Set(process.listeners('unhandledRejection'));
@@ -204,24 +204,14 @@ describe('runShell daemon startup', () => {
     });
   });
 
-  it('uses the legacy TUI when the daemon override is disabled', async () => {
+  it('cannot bypass the daemon or workspace trust through retired experimental overrides', async () => {
     vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '0');
-
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
     await runShell(options, '1.0.0');
-
-    expect(mocks.order).toEqual(['agent', 'legacy', 'start']);
-    expect(mocks.legacyConstructor).toHaveBeenCalledOnce();
-    expect(mocks.trust).not.toHaveBeenCalled();
-    expect(mocks.daemonConstructor).not.toHaveBeenCalled();
-  });
-
-  it('honors config and explicit environment precedence', () => {
-    expect(isTuiDaemonEnabled({ tui_daemon: false }, {})).toBe(false);
-    expect(isTuiDaemonEnabled({ tui_daemon: false }, { KIMI_CODE_EXPERIMENTAL_TUI_DAEMON: '1' })).toBe(
-      true,
-    );
-    expect(isTuiDaemonEnabled(undefined, { KIMI_CODE_EXPERIMENTAL_FLAG: '0' })).toBe(false);
-    expect(isTuiDaemonEnabled(undefined, {})).toBe(true);
+    expect(mocks.order).toEqual(['trust', 'agent', 'discover', 'daemon', 'start']);
+    expect(mocks.legacyConstructor).not.toHaveBeenCalled();
+    expect(mocks.harnessEnsureConfigFile).not.toHaveBeenCalled();
+    expect(mocks.harnessGetConfig).not.toHaveBeenCalled();
   });
 
   it('passes plan mode through to the daemon TUI', async () => {

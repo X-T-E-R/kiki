@@ -141,7 +141,7 @@ describe('tower flag — hard-disabled (no declaration registered)', () => {
 
   it('cannot be enabled by the dedicated or master env while no tower flag is registered', () => {
     const { flags } = makeFlags({
-      KIMI_CODE_EXPERIMENTAL_TOWER: 'true',
+      KIKI_EXPERIMENTAL_TOWER: 'true',
       [MASTER_ENV]: 'true',
     });
     expect(flags.explain(TOWER_FLAG_ID)).toBeUndefined();

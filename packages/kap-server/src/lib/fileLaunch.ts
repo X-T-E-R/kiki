@@ -216,7 +216,7 @@ export async function launchDetached(cmd: LaunchCommand): Promise<void> {
 }
 
 function resolveEditorCommand(env: Record<string, string | undefined>): string | undefined {
-  for (const key of ['KIMI_CODE_EDITOR', 'VISUAL', 'EDITOR']) {
+  for (const key of ['KIKI_EDITOR', 'VISUAL', 'EDITOR']) {
     const value = env[key];
     if (typeof value === 'string' && value.trim().length > 0) return value.trim();
   }

@@ -8,6 +8,8 @@ export interface HostFileStat {
   readonly size: number;
   readonly mtimeMs?: number;
   readonly ino?: number;
+  readonly mode?: number;
+  readonly uid?: number;
 }
 
 export interface HostDirEntry {

@@ -15,9 +15,11 @@ import { z } from 'zod';
 
 import { buildContentDisposition } from '../lib/contentDisposition';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
+import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
+import { openApiDocumentJsonSchema } from '../middleware/schema';
 import { ErrorCode } from '../protocol/error-codes';
-import { errEnvelope } from '../protocol/envelope';
+import { envelopeSchema, errEnvelope } from '../protocol/envelope';
 
 interface SessionMediaRouteHost {
   get(
@@ -29,6 +31,7 @@ interface SessionMediaRouteHost {
 
 interface SessionMediaRequest {
   readonly id: string;
+  readonly body: unknown;
   readonly params: { readonly session_id: string; readonly file_id: string };
   readonly headers: Record<string, unknown>;
 }
@@ -46,15 +49,17 @@ const sessionMediaParamSchema = z.object({
 });
 
 export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Scope): void {
+  const errorResponse = openApiDocumentJsonSchema(envelopeSchema(z.null()), 'output');
   const route = defineRoute(
     {
       method: 'GET',
       path: '/sessions/{session_id}/media/{file_id}',
       params: sessionMediaParamSchema,
-      rawResponse: { 200: { type: 'string', format: 'binary' } },
-      errors: {
-        [ErrorCode.SESSION_NOT_FOUND]: {},
-        [ErrorCode.FILE_NOT_FOUND]: {},
+      rawResponse: {
+        200: { type: 'string', format: 'binary' },
+        206: { type: 'string', format: 'binary' },
+        404: errorResponse,
+        500: errorResponse,
       },
       description: 'Download session-canonical prompt media by file ID',
       tags: ['files'],
@@ -105,7 +110,18 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
   app.get(
     route.path,
     route.options,
-    route.handler as unknown as Parameters<SessionMediaRouteHost['get']>[2],
+    async (req, reply) => {
+      try {
+        await route.handler(req, reply);
+      } catch (error) {
+        requestLog(req)?.error({ err: error }, 'session media download failed');
+        reply.code(500).send(errEnvelope(
+          ErrorCode.INTERNAL_ERROR,
+          error instanceof Error ? error.message : 'file download failed',
+          req.id,
+        ));
+      }
+    },
   );
 }
 

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { readPrivateFile, writePrivateFile } from './privateFiles';
 
-/** On-disk filename for the persistent token, relative to KIMI_CODE_HOME. */
+/** On-disk filename for the persistent token, relative to KIKI_HOME. */
 export const SERVER_TOKEN_FILE = 'server.token';
 
 /** Absolute path of the persistent token file for a given home dir. */

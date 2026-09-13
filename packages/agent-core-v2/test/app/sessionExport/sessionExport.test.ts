@@ -1012,6 +1012,12 @@ function stubAgentLifecycle(agents: readonly IAgentScopeHandle[]): IAgentLifecyc
     list: () => agents,
     remove: async () => {},
     broadcastPermissionMode: () => {},
+    countPendingBackgroundTasks: () => {
+      throw new Error('IAgentLifecycleService.countPendingBackgroundTasks is not supported in the session export test');
+    },
+    drainBackgroundTasks: async () => {
+      throw new Error('IAgentLifecycleService.drainBackgroundTasks is not supported in the session export test');
+    },
   };
 }
 function testManifest(sessionId: string): ExportSessionManifest {

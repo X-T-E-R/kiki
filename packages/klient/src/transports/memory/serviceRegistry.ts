@@ -38,13 +38,21 @@ import { ISessionTitleService } from '@kiki/agent-core-v2/session/sessionTitle/s
 import { IAgentPromptService } from '@kiki/agent-core-v2/agent/prompt/prompt';
 import { IAgentSkillService } from '@kiki/agent-core-v2/agent/skill/skill';
 import { IAgentLoopService } from '@kiki/agent-core-v2/agent/loop/loop';
+import { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/contextInjector/contextInjector';
+import { IAgentConversationUndoService } from '@kiki/agent-core-v2/agent/undo/undo';
+import { IAgentPluginCommandService } from '@kiki/agent-core-v2/agent/pluginCommand/pluginCommand';
+import { IAgentPluginService } from '@kiki/agent-core-v2/agent/plugin/agentPlugin';
 import { IAgentPermissionModeService } from '@kiki/agent-core-v2/agent/permissionMode/permissionMode';
 import { IAgentCommandService } from '@kiki/agent-core-v2/agent/command/agentCommand';
 import { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
-import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
+import {
+  IAgentContextMemoryService,
+  IAgentContextMutationService,
+} from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentTokenCountingService } from '@kiki/agent-core-v2/agent/tokenCounting/tokenCounting';
 import { IAgentActivityView } from '@kiki/agent-core-v2/agent/activityView/activityView';
 import { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
+import { IAgentSwarmService } from '@kiki/agent-core-v2/features/swarm/agent/swarm';
 import { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
 import { IAgentShellCommandService } from '@kiki/agent-core-v2/agent/shellCommand/shellCommand';
 import { IAgentTaskService } from '@kiki/agent-core-v2/agent/task/task';
@@ -53,6 +61,7 @@ import { IAgentMcpService } from '@kiki/agent-core-v2/agent/mcp/mcp';
 import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
 import { IThreadCommunicationService } from '@kiki/agent-core-v2/app/threadCommunication/threadCommunication';
 import { IMcpManagementService } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
+import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
 import { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
@@ -61,6 +70,7 @@ import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTod
 
 /** Wire service name (decorator id string) → token. */
 export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {
+  agentGoalService: IAgentGoalService,
   agentLifecycleService: IAgentLifecycleService,
   sessionCronService: ISessionCronService,
   taskBoardService: ITaskBoardService,
@@ -96,6 +106,11 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   agentPromptService: IAgentPromptService,
   agentSkillService: IAgentSkillService,
   agentLoopService: IAgentLoopService,
+  agentContextInjectorService: IAgentContextInjectorService,
+  agentContextMutationService: IAgentContextMutationService,
+  agentConversationUndoService: IAgentConversationUndoService,
+  agentPluginCommandService: IAgentPluginCommandService,
+  agentPluginService: IAgentPluginService,
   agentPermissionModeService: IAgentPermissionModeService,
   agentCommandService: IAgentCommandService,
   agentRuntimeBindingService: IAgentRuntimeBindingService,
@@ -106,6 +121,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   agentProfileService: IAgentProfileService,
   agentUsageService: IAgentUsageService,
   agentPlanService: IAgentPlanService,
+  agentSwarmService: IAgentSwarmService,
   agentTaskService: IAgentTaskService,
   agentMcpService: IAgentMcpService,
   agentFullCompactionService: IAgentFullCompactionService,

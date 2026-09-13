@@ -23,14 +23,14 @@ function fixedImpl(): IAuthTokenService {
 function buildApp(limiter?: AuthFailureLimiter): FastifyInstance {
   const app = Fastify({ trustProxy: true });
   app.addHook('onRequest', createAuthHook(fixedImpl(), { limiter }));
-  app.get('/api/v1/sessions', async () => ({ ok: true }));
+  app.get('/api/sessions', async () => ({ ok: true }));
   return app;
 }
 
 function badToken(ip: string): { method: 'GET'; url: string; headers: Record<string, string> } {
   return {
     method: 'GET',
-    url: '/api/v1/sessions',
+    url: '/api/sessions',
     headers: { 'x-forwarded-for': ip, authorization: 'Bearer wrong-token' },
   };
 }
@@ -78,7 +78,7 @@ describe('createAuthHook rate limiting', () => {
 
     const valid = await app.inject({
       method: 'GET',
-      url: '/api/v1/sessions',
+      url: '/api/sessions',
       headers: { 'x-forwarded-for': IP_A, authorization: `Bearer ${TOKEN}` },
     });
     expect(valid.statusCode).toBe(429);
@@ -110,7 +110,7 @@ describe('createAuthHook bypass policy (URL encoding)', () => {
   });
 
   it('requires a token for percent-encoded /api/ paths', async () => {
-    for (const url of ['/%61pi/v1/sessions', '/%61%70%69/v1/sessions']) {
+    for (const url of ['/%61pi/sessions', '/%61%70%69/sessions']) {
       const res = await app.inject({ method: 'GET', url });
       expect(res.statusCode).toBe(401);
     }
@@ -119,7 +119,7 @@ describe('createAuthHook bypass policy (URL encoding)', () => {
   it('serves percent-encoded /api/ paths with a valid token', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/%61pi/v1/sessions',
+      url: '/%61pi/sessions',
       headers: { authorization: `Bearer ${TOKEN}` },
     });
     expect(res.statusCode).toBe(200);
@@ -136,7 +136,7 @@ describe('createAuthHook bypass policy (URL encoding)', () => {
   });
 
   it('still bypasses the healthz probe when percent-encoded', async () => {
-    const res = await app.inject({ method: 'GET', url: '/%61pi/v1/healthz' });
+    const res = await app.inject({ method: 'GET', url: '/%61pi/healthz' });
     expect(res.statusCode).toBe(404);
   });
 });

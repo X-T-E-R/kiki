@@ -128,7 +128,7 @@ function usageRecord(
   };
 }
 
-describe('server /api/v2/usage', () => {
+describe('server /api/usage', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base = '';
@@ -197,7 +197,7 @@ describe('server /api/v2/usage', () => {
   });
 
   async function get(query = ''): Promise<{ status: number; body: EnvelopeWire }> {
-    const response = await authedFetch(server as RunningServer, base, `/api/v2/usage${query}`);
+    const response = await authedFetch(server as RunningServer, base, `/api/usage${query}`);
     return { status: response.status, body: (await response.json()) as EnvelopeWire };
   }
 
@@ -208,6 +208,30 @@ describe('server /api/v2/usage', () => {
     expect(typeof body.request_id).toBe('string');
     return usageResponseSchema.parse(body.data);
   }
+
+  it('carries wire accounting provenance through the public response without hiding unpriced tokens', async () => {
+    const at = BASE_TIME + 100 * DAY;
+    await writeWire(home!, WS_A, 'session-high', 'main', [
+      usageRecord(at, 'billing-a', 0, { usageKnown: false }),
+      usageRecord(at + 1, 'billing-a', 0),
+      usageRecord(at + 2, 'billing-a', 0, { usageKnown: true }),
+      usageRecord(at + 3, 'billing-a', 5, { usageKnown: true }),
+      usageRecord(at + 4, 'unknown-price', 2, { usageKnown: true }),
+    ]);
+    const data = await getData(`?range=custom&start_at=${at}&end_at=${at + 10}`);
+    expect(data.summary).toMatchObject({
+      tokens: { input_other: 7, output: 7, input_cache_read: 7, input_cache_creation: 7 },
+      tokens_unknown: true,
+      cost_unknown: true,
+      cost_usd_estimated: 0.02,
+    });
+    expect(data.reliability.usage_coverage).toEqual({ known_records: 3, missing_records: 1, legacy_zero_records: 1 });
+    expect(data.reliability.unknown_price_models).toEqual(['unknown-price']);
+    expect(data.sessions.items[0]?.usage.tokens_unknown).toBe(true);
+    const knownZero = await getData(`?range=custom&start_at=${at + 2}&end_at=${at + 3}`);
+    expect(knownZero.summary).toMatchObject({ tokens_unknown: false, cost_unknown: false, cost_usd_estimated: 0 });
+    expect(knownZero.reliability.usage_coverage).toEqual({ known_records: 1, missing_records: 0, legacy_zero_records: 0 });
+  });
 
   it('defaults to all history, attributes legacy records to unknown, and ignores context usage events', async () => {
     const data = await getData();

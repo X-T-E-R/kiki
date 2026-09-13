@@ -15,8 +15,6 @@ import TASK_OUTPUT_DESCRIPTION from './task-output.md?raw';
 
 const OUTPUT_PREVIEW_BYTES = 32 * 1024;
 
-const PAGING_HINT_LINES = 300;
-
 function retrievalStatus(status: AgentTaskStatus): 'success' | 'not_ready' {
   return TERMINAL_STATUSES.has(status) ? 'success' : 'not_ready';
 }
@@ -29,21 +27,8 @@ function terminalReason(info: AgentTaskInfo): 'timed_out' | 'stopped' | 'failed'
 }
 
 function fullOutputHint(output: AgentTaskOutputSnapshot): string | undefined {
-  if (!output.fullOutputAvailable || output.outputPath === undefined) return undefined;
-  if (output.truncated) {
-    return (
-      `Only the last ${String(OUTPUT_PREVIEW_BYTES)} bytes are shown above. ` +
-      'Use the Read tool with the output_path to page through the full log ' +
-      `(parameters: path, line_offset, n_lines; read about ${String(PAGING_HINT_LINES)} ` +
-      'lines per page).'
-    );
-  }
-  return (
-    'The preview above is the complete output. Use the Read tool with the output_path ' +
-    'if you need to re-read the full log later ' +
-    `(parameters: path, line_offset, n_lines; read about ${String(PAGING_HINT_LINES)} ` +
-    'lines per page).'
-  );
+  if (!output.truncated || !output.fullOutputAvailable || output.outputPath === undefined) return undefined;
+  return 'Truncated tail; Read output_path for the full log.';
 }
 
 export class TaskOutputTool implements ITaskOutputTool {

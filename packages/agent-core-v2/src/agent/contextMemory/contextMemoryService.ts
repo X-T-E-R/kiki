@@ -1,4 +1,5 @@
 import { Disposable } from '#/_base/di/lifecycle';
+import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import {
@@ -8,10 +9,15 @@ import {
 } from '#/agent/tokenCounting/tokenCountingOps';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { ErrorCodes, Error2 } from '#/errors';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import {
   IAgentContextMemoryService,
+  IAgentContextMutationService,
   type ContextCompactionInput,
   type ContextCompactionResult,
 } from './contextMemory';
@@ -26,6 +32,7 @@ import {
   type ContextSplicedPayload,
 } from './contextEvents';
 import {
+  assertContextImportFits,
   computeUndoCut,
   contextMemoryKey,
   isFullyUndoable,
@@ -161,10 +168,48 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
   }
 }
 
+export class AgentContextMutationService extends Service implements IAgentContextMutationService {
+  declare readonly _serviceBrand: undefined;
+
+  constructor(
+    @IAgentLoopService private readonly loop: IAgentLoopService,
+    @IAgentFullCompactionService private readonly fullCompaction: IAgentFullCompactionService,
+    @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IAgentTokenCountingService private readonly tokenCounting: IAgentTokenCountingService,
+    @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
+  ) {
+    super();
+  }
+
+  appendImported(message: ContextMessage): void {
+    if (this.loop.status().state === 'running' || this.fullCompaction.isCompacting()) {
+      throw new Error2(
+        ErrorCodes.TURN_AGENT_BUSY,
+        'Cannot import context while the agent is busy',
+      );
+    }
+    const capability = this.profile.getModelCapabilities();
+    assertContextImportFits(
+      message,
+      this.tokenCounting.get().size,
+      capability.max_input_tokens ?? capability.max_context_tokens,
+    );
+    this.context.append(message);
+  }
+}
+
 registerScopedService(
   LifecycleScope.Agent,
   IAgentContextMemoryService,
   AgentContextMemoryService,
   ScopeActivation.OnScopeCreated,
   'contextMemory',
+);
+
+registerScopedService(
+  LifecycleScope.Agent,
+  IAgentContextMutationService,
+  AgentContextMutationService,
+  ScopeActivation.OnScopeCreated,
+  'contextMutation',
 );

@@ -1,7 +1,7 @@
 /**
  * Probe the `SelectTools` (progressive tool disclosure) capability of the
  * kimi-type providers, based on the real providers/auth in
- * `~/.kimi-code/config.toml`.
+ * `~/.kiki/config.toml`.
  *
  * Feature recap (from the Tool Select guide): with the `tool-select`
  * experimental flag + `tool_use` + `dynamically_loaded_tools` capabilities,
@@ -42,7 +42,7 @@
  *     --import ../../build/register-raw-text-loader.mjs examples/kimi-select-tools.ts
  *
  * Env:
- *   KIMI_CODE_HOME              — default `~/.kimi-code`
+ *   KIKI_HOME              — default `~/.kiki`
  *   KIMI_SELECT_TOOLS_MODELS    — comma-separated model ids for the live parts (default: all kimi-type)
  *   KIMI_SELECT_TOOLS_SKIP_LIVE — set to `1` to skip part B (no real API calls)
  *   KIMI_SELECT_TOOLS_TAP       — set to `1` to run part C instead of B: route
@@ -516,7 +516,7 @@ async function step2UseLoadedTool(
 }
 
 async function probeLiveKimiProviders(): Promise<void> {
-  const homeDir = process.env['KIMI_CODE_HOME'] ?? join(homedir(), '.kimi-code');
+  const homeDir = process.env['KIKI_HOME'] ?? join(homedir(), '.kiki');
   console.log(`\n=== part B: live SelectTools flow on real kimi providers (${homeDir}) ===`);
   const { app } = bootstrap({ homeDir, clientIdentity: EXAMPLE_CLIENT_IDENTITY }, [
     ...logSeed(resolveLoggingConfig({ homeDir, env: process.env })),
@@ -624,7 +624,7 @@ function describeWireBody(raw: Buffer): string[] {
 }
 
 async function probeTappedContext(): Promise<void> {
-  const homeDir = process.env['KIMI_CODE_HOME'] ?? join(homedir(), '.kimi-code');
+  const homeDir = process.env['KIKI_HOME'] ?? join(homedir(), '.kiki');
   console.log(`\n=== part C: tapped wire context (${homeDir}) ===`);
   const { app } = bootstrap({ homeDir, clientIdentity: EXAMPLE_CLIENT_IDENTITY }, [
     ...logSeed(resolveLoggingConfig({ homeDir, env: process.env })),

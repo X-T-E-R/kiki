@@ -16,8 +16,8 @@ export const IdentityConfigSchema = z.object({
 
 export type IdentityConfig = z.infer<typeof IdentityConfigSchema>;
 
-export const IDENTITY_NAME_ENV = 'KIMI_CODE_IDENTITY_NAME';
-export const IDENTITY_SLUG_ENV = 'KIMI_CODE_IDENTITY_SLUG';
+export const IDENTITY_NAME_ENV = 'KIKI_IDENTITY_NAME';
+export const IDENTITY_SLUG_ENV = 'KIKI_IDENTITY_SLUG';
 
 function parseIdentityEnv(raw: string): string | undefined {
   const trimmed = raw.trim();

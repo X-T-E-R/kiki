@@ -6,7 +6,7 @@ import type { Tool as KosongTool } from '#/kosong/contract/tool';
 
 import { type IDisposable } from "#/_base/di/lifecycle";
 import { Service } from "#/_base/di/service";
-import { ErrorCodes, makeErrorPayload } from "#/errors";
+import { ErrorCodes, Error2, makeErrorPayload } from "#/errors";
 import { abortable } from '#/_base/utils/abort';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -19,6 +19,7 @@ import { createMcpTool } from '#/agent/mcp/tools/mcp';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import type { McpServerEntry } from '#/mcpCore/connection-manager';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
 import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
@@ -122,6 +123,17 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     signal?.throwIfAborted();
     await this.mcpHandle.connectionManager.reconnect(name);
     signal?.throwIfAborted();
+  }
+
+  async connect(name: string, config: McpServerConfig): Promise<void> {
+    const manager = this.mcpHandle.connectionManager;
+    if (manager.connect === undefined) {
+      throw new Error2(
+        ErrorCodes.NOT_IMPLEMENTED,
+        'Connecting an explicit MCP config is not supported for sessions with ephemeral MCP servers',
+      );
+    }
+    await manager.connect(name, config);
   }
 
   private reconnectForToolCall(

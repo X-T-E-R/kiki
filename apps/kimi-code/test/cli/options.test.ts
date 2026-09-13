@@ -545,7 +545,7 @@ describe('CLI options parsing', () => {
 
   describe('sub-commands', () => {
     it('registers the visible sub-commands', () => {
-      vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
+      vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
       onTestFinished(() => { vi.unstubAllEnvs(); });
       const program = createProgram(
         '0.0.0',
@@ -560,9 +560,25 @@ describe('CLI options parsing', () => {
         'provider',
         'acp',
         'web',
-        'server',
         'login',
         'doctor',
+        'serve',
+        'seat',
+        'mcp',
+        'agents',
+        'list',
+        'dispatch',
+        'continue',
+        'send',
+        'interactions',
+        'respond',
+        'status',
+        'wait',
+        'result',
+        'events',
+        'transcript',
+        'cancel',
+        'migrate-config',
       ]);
     });
 

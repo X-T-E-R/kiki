@@ -89,8 +89,8 @@ read -r -d '' container_script <<'EOS' || true
 set -euo pipefail
 
 cd /workspace/kimi-code
-mkdir -p "${KIMI_CODE_HOME}/server" "${KIMI_SERVER_E2E_REPORT_DIR}" "${TMPDIR}" /data/server-e2e-reports/docker
-rm -f "${KIMI_CODE_HOME}/server/lock"
+mkdir -p "${KIKI_HOME}/server" "${KIMI_SERVER_E2E_REPORT_DIR}" "${TMPDIR}" /data/server-e2e-reports/docker
+rm -f "${KIKI_HOME}/server/lock"
 
 if [[ ! -e /workspace/kimi-code/node_modules/.modules.yaml || ! -e /workspace/kimi-code/packages/klient/node_modules/ws ]]; then
   echo "[server-e2e:docker] installing pnpm deps"
@@ -102,7 +102,7 @@ fi
 server_log="/data/server-e2e-reports/docker/server.log"
 : > "${server_log}"
 
-echo "[server-e2e:docker] starting server on container-local ${KIMI_SERVER_URL}"
+echo "[server-e2e:docker] starting server on container-local ${KIKI_SERVER_URL}"
 pnpm dev:server -- \
   --host 127.0.0.1 \
   --port "${KIMI_SERVER_E2E_PORT}" \
@@ -123,7 +123,7 @@ trap cleanup EXIT INT TERM
 
 ready=0
 for attempt in $(seq 1 90); do
-  if curl -fsS "${KIMI_SERVER_URL}/api/v1/meta" >/tmp/server-meta.json 2>/tmp/server-curl.err; then
+  if curl -fsS "${KIKI_SERVER_URL}/api/v1/meta" >/tmp/server-meta.json 2>/tmp/server-curl.err; then
     ready=1
     echo "[server-e2e:docker] server ready: $(cat /tmp/server-meta.json)"
     break
@@ -153,9 +153,9 @@ docker_args=(
   --init
   --name "${CONTAINER}"
   --workdir /workspace/kimi-code/packages/klient
-  --env "KIMI_CODE_HOME=${KIMI_HOME_CONTAINER}"
+  --env "KIKI_HOME=${KIMI_HOME_CONTAINER}"
   --env "KIMI_SERVER_E2E_PORT=${PORT}"
-  --env "KIMI_SERVER_URL=http://127.0.0.1:${PORT}"
+  --env "KIKI_SERVER_URL=http://127.0.0.1:${PORT}"
   --env "KIMI_SERVER_E2E_REPORT_DIR=${REPORT_DIR_CONTAINER}"
   --env "TMPDIR=${TMPDIR_CONTAINER}"
   --env "TERM=xterm-256color"

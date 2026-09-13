@@ -20,7 +20,7 @@ import type { AuthMethod } from '@agentclientprotocol/sdk';
  *
  * Optional inputs:
  *  - `env`: extra env vars forwarded to the spawned login subprocess (e.g.
- *    `{ KIMI_CODE_HOME: '/tmp/sandbox' }` so the token lands under the same
+ *    `{ KIKI_HOME: '/tmp/sandbox' }` so the token lands under the same
  *    data root the server reads from).
  *  - `legacyCommand`: absolute path of the agent binary, used to populate
  *    `_meta['terminal-auth'].command` so legacy clients can spawn it directly.

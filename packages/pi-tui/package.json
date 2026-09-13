@@ -5,14 +5,14 @@
 	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
 	"license": "MIT",
 	"author": "Moonshot AI",
-	"homepage": "https://github.com/MoonshotAI/kimi-code/tree/main/packages/pi-tui#readme",
+	"homepage": "https://github.com/X-T-E-R/kiki/releases",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/MoonshotAI/kimi-code.git",
+		"url": "git+https://github.com/X-T-E-R/kiki.git",
 		"directory": "packages/pi-tui"
 	},
 	"bugs": {
-		"url": "https://github.com/MoonshotAI/kimi-code/issues"
+		"url": "https://github.com/X-T-E-R/kiki/issues"
 	},
 	"keywords": [
 		"tui",

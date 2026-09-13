@@ -43,6 +43,7 @@ async function discoverRuntimeSkills(
         skillMdPath: input.skillMdPath,
         skillDirName: input.skillDirName,
         source: input.root.source,
+        promptCommand: input.root.scanMode === 'commands',
         text,
       });
       const skill = input.subSkillParentName === undefined
@@ -53,9 +54,10 @@ async function discoverRuntimeSkills(
             metadata: { ...parsed.metadata, isSubSkill: true },
           };
       const discovered = input.root.plugin === undefined ? skill : { ...skill, plugin: input.root.plugin };
-      const key = input.root.plugin === undefined
+      const scopeKey = input.root.plugin === undefined
         ? normalizeSkillName(discovered.name)
         : `${input.root.plugin.id}\0${normalizeSkillName(discovered.name)}`;
+      const key = `${discovered.metadata.promptCommand === true ? 'command\0' : ''}${scopeKey}`;
       if (!byDiscoveryKey.has(key)) byDiscoveryKey.set(key, discovered);
       return discovered;
     } catch (error) {
@@ -113,6 +115,16 @@ async function discoverRuntimeSkills(
       return;
     }
     scannedDirectories.push(dirPath);
+
+    if (root.scanMode === 'commands') {
+      for (const entry of entries) {
+        if (!entry.name.endsWith('.md') || entry.name.startsWith('.')) continue;
+        const skillMdPath = path.join(dirPath, entry.name);
+        if (!(await isFile(skillMdPath))) continue;
+        await register({ skillMdPath, skillDirName: entry.name.slice(0, -'.md'.length), root });
+      }
+      return;
+    }
 
     const directorySkills = new Set<string>();
     const subdirs: string[] = [];

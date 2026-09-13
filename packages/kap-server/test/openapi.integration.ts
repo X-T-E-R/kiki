@@ -49,32 +49,35 @@ describe('server-v2 OpenAPI', () => {
     expect(typeof info['version']).toBe('string');
   });
 
-  it('covers the core /api/v1 routes v2 registers', async () => {
+  it('covers the core /api routes v2 registers', async () => {
     const doc = await fetchOpenApi();
     const paths = asRecord(doc['paths']);
 
-    expect(paths['/api/v1/healthz']).toBeDefined();
-    expect(paths['/api/v1/meta']).toBeDefined();
-    expect(paths['/api/v1/sessions']).toBeDefined();
-    expect(paths['/api/v1/files']).toBeDefined();
-    expect(paths['/api/v1/sessions/{session_id}/fs/{*}']).toBeDefined();
-    expect(paths['/api/v1/threads']).toBeDefined();
-    expect(paths['/api/v1/threads:read']).toBeDefined();
-    expect(paths['/api/v1/threads:send']).toBeDefined();
-    expect(paths['/api/v1/threads:wait']).toBeDefined();
-    expect(paths['/api/v1/workspaces/{workspace_id}/thread-communication']).toBeDefined();
+    expect(paths['/api/healthz']).toBeDefined();
+    expect(paths['/api/meta']).toBeDefined();
+    expect(paths['/api/sessions']).toBeDefined();
+    expect(paths['/api/sessions/query']).toBeDefined();
+    expect(paths['/api/mcp/servers']).toBeDefined();
+    expect(paths['/api/mcp/runtime/servers']).toBeDefined();
+    expect(paths['/api/files']).toBeDefined();
+    expect(paths['/api/sessions/{session_id}/fs/{*}']).toBeDefined();
+    expect(paths['/api/threads']).toBeDefined();
+    expect(paths['/api/threads:read']).toBeDefined();
+    expect(paths['/api/threads:send']).toBeDefined();
+    expect(paths['/api/threads:wait']).toBeDefined();
+    expect(paths['/api/workspaces/{workspace_id}/thread-communication']).toBeDefined();
   });
 
   it('projects the session-action dispatcher into archive only', async () => {
     const doc = await fetchOpenApi();
     const paths = asRecord(doc['paths']);
 
-    expect(paths['/api/v1/sessions/{tail}']).toBeUndefined();
-    expect(paths['/api/v1/sessions/{session_id}:archive']).toBeDefined();
-    expect(paths['/api/v1/sessions/{session_id}:fork']).toBeUndefined();
-    expect(paths['/api/v1/sessions/{session_id}:undo']).toBeUndefined();
+    expect(paths['/api/sessions/{tail}']).toBeUndefined();
+    expect(paths['/api/sessions/{session_id}:archive']).toBeDefined();
+    expect(paths['/api/sessions/{session_id}:fork']).toBeUndefined();
+    expect(paths['/api/sessions/{session_id}:undo']).toBeUndefined();
 
-    const archiveOp = operation(doc, '/api/v1/sessions/{session_id}:archive', 'post');
+    const archiveOp = operation(doc, '/api/sessions/{session_id}:archive', 'post');
     expect(archiveOp['operationId']).toBe('runSessionArchiveAction');
     const params = archiveOp['parameters'] as Array<Record<string, unknown>>;
     expect(params.some((p) => p['in'] === 'path' && p['name'] === 'session_id')).toBe(true);
@@ -83,7 +86,7 @@ describe('server-v2 OpenAPI', () => {
 
   it('documents the agent-list expand query', async () => {
     const doc = await fetchOpenApi();
-    const listAgentsOp = operation(doc, '/api/v1/agents', 'get');
+    const listAgentsOp = operation(doc, '/api/agents', 'get');
     const params = listAgentsOp['parameters'] as Array<Record<string, unknown>>;
 
     expect(params).toEqual(expect.arrayContaining([
@@ -93,7 +96,7 @@ describe('server-v2 OpenAPI', () => {
 
   it('describes the file upload as multipart/form-data', async () => {
     const doc = await fetchOpenApi();
-    const uploadOp = operation(doc, '/api/v1/files', 'post');
+    const uploadOp = operation(doc, '/api/files', 'post');
     const requestBody = asRecord(uploadOp['requestBody']);
     const content = asRecord(requestBody['content']);
     expect(content['multipart/form-data']).toBeDefined();
@@ -101,7 +104,7 @@ describe('server-v2 OpenAPI', () => {
 
   it('describes session export as a ZIP or JSON error envelope', async () => {
     const doc = await fetchOpenApi();
-    const exportOp = operation(doc, '/api/v1/sessions/{session_id}/export', 'post');
+    const exportOp = operation(doc, '/api/sessions/{session_id}/export', 'post');
     const responses = asRecord(exportOp['responses']);
     const response = asRecord(responses['200']);
     const content = asRecord(response['content']);
@@ -124,7 +127,7 @@ describe('server-v2 OpenAPI', () => {
 
   it('documents thread send as a strict target-only request', async () => {
     const doc = await fetchOpenApi();
-    const sendOp = operation(doc, '/api/v1/threads:send', 'post');
+    const sendOp = operation(doc, '/api/threads:send', 'post');
     const requestBody = asRecord(sendOp['requestBody']);
     const content = asRecord(requestBody['content']);
     const schema = asRecord(asRecord(content['application/json'])['schema']);
@@ -138,7 +141,7 @@ describe('server-v2 OpenAPI', () => {
 
   it('represents the fs-action dispatcher as a oneOf union', async () => {
     const doc = await fetchOpenApi();
-    const fsActionOp = operation(doc, '/api/v1/sessions/{session_id}/{tail}', 'post');
+    const fsActionOp = operation(doc, '/api/sessions/{session_id}/{tail}', 'post');
     const requestBody = asRecord(fsActionOp['requestBody']);
     const content = asRecord(requestBody['content']);
     const json = asRecord(content['application/json']);
@@ -148,7 +151,7 @@ describe('server-v2 OpenAPI', () => {
 
   it('documents MCP OAuth failures for auth completion', async () => {
     const doc = await fetchOpenApi();
-    const authCompleteOp = operation(doc, '/api/v2/mcp/auth:complete', 'post');
+    const authCompleteOp = operation(doc, '/api/mcp/auth:complete', 'post');
     const responses = asRecord(authCompleteOp['responses']);
     const response = asRecord(responses['200']);
     const content = asRecord(response['content']);

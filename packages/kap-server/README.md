@@ -51,7 +51,7 @@ orchestration:
   (`key`, `workspacePath`, `port`, `endpoint`, `recordedPid`, `processAlive`,
   `listening`, `status`).
 - `-RuntimeDir <dir> -StopWorkspace <key>`: stop one workspace KAP. It first
-  tries a graceful `POST /api/v1/shutdown` with the workspace bearer token,
+  tries a graceful `POST /api/shutdown` with the workspace bearer token,
   then falls back to terminating the recorded owner PID, and verifies the port
   is released before reporting success.
 - `-RuntimeDir <dir> -StopAllKap`: stop every recorded workspace KAP under the

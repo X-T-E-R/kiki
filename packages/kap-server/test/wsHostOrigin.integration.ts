@@ -62,7 +62,7 @@ describe('WS upgrade Host/Origin checks', () => {
       logLevel: 'silent',
       authTokenService: fixedTokenAuth(TOKEN),
     });
-    v1Url = `ws://127.0.0.1:${server.port}/api/v1/ws`;
+    v1Url = `ws://127.0.0.1:${server.port}/api/ws`;
   });
 
   afterEach(async () => {
@@ -82,7 +82,7 @@ describe('WS upgrade Host/Origin checks', () => {
     }
   });
 
-  describe('/api/v1/ws', () => {
+  describe('/api/ws', () => {
     const url = (): string => v1Url;
 
     it('rejects a spoofed Host before token validation', async () => {
@@ -111,7 +111,7 @@ describe('WS upgrade Host/Origin checks', () => {
       authTokenService: fixedTokenAuth(TOKEN),
       corsOrigins: ['https://app.example.test'],
     });
-    const url = `ws://127.0.0.1:${server.port}/api/v1/ws`;
+    const url = `ws://127.0.0.1:${server.port}/api/ws`;
     const ws = await openConn(url, { headers: { origin: 'https://app.example.test' } });
     sockets.push(ws);
     expect(ws.readyState).toBe(WebSocket.OPEN);

@@ -234,6 +234,10 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     return this._compacting;
   }
 
+  isCompacting(): boolean {
+    return this._compacting !== null;
+  }
+
   cancel(): void {
     const active = this._compacting;
     if (active !== null) {

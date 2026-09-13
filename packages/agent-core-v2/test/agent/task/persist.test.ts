@@ -2,7 +2,7 @@ import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -185,6 +185,51 @@ describe('AgentTaskPersistence', () => {
 
     it('readTaskOutputBytes returns empty string when output.log is absent', async () => {
       expect(await persistence.readTaskOutputBytes('bash-none0001', 0, 100)).toBe('');
+    });
+  });
+
+  describe('readTaskOutputSnapshot bounded access', () => {
+    it('uses only the output size when no preview bytes are requested', async () => {
+      const taskId = 'bash-zero0000';
+      await persistence.appendTaskOutput(taskId, 'some output');
+      const readSpy = vi.spyOn(bytes, 'read');
+      const readStreamSpy = vi.spyOn(bytes, 'readStream');
+
+      await expect(persistence.readTaskOutputSnapshot(taskId, 0)).resolves.toEqual({
+        outputPath: join(sessionDir, 'tasks', taskId, 'output.log'),
+        outputSizeBytes: 11,
+        previewBytes: 0,
+        truncated: true,
+        preview: '',
+      });
+
+      expect(readSpy).not.toHaveBeenCalled();
+      expect(readStreamSpy).not.toHaveBeenCalled();
+    });
+
+    it('reads a bounded UTF-8 tail range and skips a leading continuation byte', async () => {
+      const taskId = 'bash-range000';
+      const output = 'prefix🙂tail';
+      const outputSizeBytes = Buffer.byteLength(output, 'utf8');
+      await persistence.appendTaskOutput(taskId, output);
+      const readSpy = vi.spyOn(bytes, 'read');
+      const readStreamSpy = vi.spyOn(bytes, 'readStream');
+
+      await expect(persistence.readTaskOutputSnapshot(taskId, 5)).resolves.toEqual({
+        outputPath: join(sessionDir, 'tasks', taskId, 'output.log'),
+        outputSizeBytes,
+        previewBytes: 4,
+        truncated: true,
+        preview: 'tail',
+      });
+
+      expect(readSpy).not.toHaveBeenCalled();
+      expect(readStreamSpy).toHaveBeenCalledTimes(1);
+      expect(readStreamSpy).toHaveBeenCalledWith(
+        `${SESSION_SCOPE}/tasks/${taskId}`,
+        'output.log',
+        { start: outputSizeBytes - 5, end: outputSizeBytes - 1 },
+      );
     });
   });
 

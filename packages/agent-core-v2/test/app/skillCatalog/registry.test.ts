@@ -92,6 +92,28 @@ describe('InMemorySkillCatalog skill listing', () => {
     expect(rendered).not.toContain('builtin version');
   });
 
+  it('qualifies prompt commands only when they collide with an existing skill', () => {
+    const command = makeSkill('brainstorm', 'user', 'Discuss options', '/home/commands/brainstorm.md', {
+      promptCommand: true, disableModelInvocation: true,
+    });
+    for (const reverse of [false, true]) {
+      const registry = new InMemorySkillCatalog();
+      const entries = [command, makeSkill('brainstorm', 'project')];
+      for (const entry of reverse ? entries.toReversed() : entries) registry.register(entry, { replace: true });
+      expect(registry.getSkill('brainstorm')?.metadata.promptCommand).not.toBe(true);
+      expect(registry.getSkill('command:brainstorm')?.path).toBe(command.path);
+      expect(registry.listSkills()).toHaveLength(2);
+      expect(registry.getModelSkillListing()).not.toContain('Discuss options');
+      const sessionCatalog = makeRegistry(registry.listSkills());
+      sessionCatalog.register({ ...command, source: 'project', content: 'Project override' }, { replace: true });
+      expect(sessionCatalog.listSkills()).toHaveLength(2);
+      expect(sessionCatalog.getSkill('command:brainstorm')?.content).toBe('Project override');
+    }
+    const registry = makeRegistry([command]);
+    expect(registry.getSkill('brainstorm')?.path).toBe(command.path);
+    expect(registry.getSkill('command:brainstorm')).toBeUndefined();
+  });
+
   it('registerBuiltinSkill stamps non-builtin skills as builtin', () => {
     const registry = new InMemorySkillCatalog();
     registry.registerBuiltinSkill(makeSkill('theme', 'user'));
@@ -212,6 +234,15 @@ describe('InMemorySkillCatalog prompt rendering', () => {
     expect(rendered).toBe(
       String.raw`raw=\src/app.ts careful zero=\src/app.ts indexed=\careful target=\src/app.ts`,
     );
+  });
+
+  it('expands only original placeholders and preserves dollar syntax in argument values', () => {
+    const registry = new InMemorySkillCatalog();
+    expect(registry.renderSkillPrompt(stubSkill('review', {
+      content: '$target | $ARGUMENTS[0] | $0 | $ARGUMENTS', metadata: { arguments: ['target'] },
+    }), '$ARGUMENTS')).toBe('$ARGUMENTS | $ARGUMENTS | $ARGUMENTS | $ARGUMENTS');
+    expect(registry.renderSkillPrompt(stubSkill('review', { content: '$ARGUMENTS' }), '$& $$ ${KIMI_SKILL_DIR}'))
+      .toBe('$& $$ ${KIMI_SKILL_DIR}');
   });
 
   it('appends ARGUMENTS when the body has no argument placeholders', () => {

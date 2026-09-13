@@ -70,6 +70,9 @@ describe('RestGateway', () => {
       _serviceBrand: undefined,
       enqueue: () => Promise.resolve({ id: 'p', launched: Promise.resolve(undefined) } as never),
       submit: () => Promise.resolve(undefined),
+      submitAndWait: async () => {
+        throw new Error('IAgentPromptService.submitAndWait is not supported in the gateway test');
+      },
       submitSteer: () => Promise.resolve(undefined),
       steer: () => Promise.resolve([]),
       list: () => ({ active: undefined, pending: [] }),
@@ -110,6 +113,12 @@ describe('RestGateway', () => {
       list: () => [agentHandle],
       remove: () => Promise.resolve(),
       broadcastPermissionMode: () => {},
+      countPendingBackgroundTasks: () => {
+        throw new Error('IAgentLifecycleService.countPendingBackgroundTasks is not supported in the gateway test');
+      },
+      drainBackgroundTasks: async () => {
+        throw new Error('IAgentLifecycleService.drainBackgroundTasks is not supported in the gateway test');
+      },
     };
     const sessionHandle: ISessionScopeHandle = {
       id: 's1',

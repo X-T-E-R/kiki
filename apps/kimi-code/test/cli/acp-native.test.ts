@@ -84,9 +84,9 @@ describe('kimi acp', () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 
-  it('forwards KIMI_CODE_HOME to terminalAuthEnv and homeDir when set', async () => {
-    const previous = process.env['KIMI_CODE_HOME'];
-    process.env['KIMI_CODE_HOME'] = '/tmp/kimi-debug';
+  it('forwards KIKI_HOME to terminalAuthEnv and homeDir when set', async () => {
+    const previous = process.env['KIKI_HOME'];
+    process.env['KIKI_HOME'] = '/tmp/kimi-debug';
     try {
       const program = new Command('kimi').exitOverride();
       registerNativeAcpCommand(program);
@@ -96,22 +96,22 @@ describe('kimi acp', () => {
       const optsArg = vi.mocked(runAcpServer).mock.calls[0]?.[0];
       expect(optsArg).toEqual(
         expect.objectContaining({
-          homeDir: '/tmp/kimi-debug',
-          terminalAuthEnv: { KIMI_CODE_HOME: '/tmp/kimi-debug' },
+          homeDir: getDataDir(),
+          terminalAuthEnv: { KIKI_HOME: '/tmp/kimi-debug' },
         }),
       );
     } finally {
       if (previous === undefined) {
-        delete process.env['KIMI_CODE_HOME'];
+        delete process.env['KIKI_HOME'];
       } else {
-        process.env['KIMI_CODE_HOME'] = previous;
+        process.env['KIKI_HOME'] = previous;
       }
     }
   });
 
-  it('omits terminalAuthEnv when KIMI_CODE_HOME is unset', async () => {
-    const previous = process.env['KIMI_CODE_HOME'];
-    delete process.env['KIMI_CODE_HOME'];
+  it('omits terminalAuthEnv when KIKI_HOME is unset', async () => {
+    const previous = process.env['KIKI_HOME'];
+    delete process.env['KIKI_HOME'];
     try {
       const program = new Command('kimi').exitOverride();
       registerNativeAcpCommand(program);
@@ -124,9 +124,9 @@ describe('kimi acp', () => {
       expect(optsArg.terminalAuthEnv).toBeUndefined();
     } finally {
       if (previous === undefined) {
-        delete process.env['KIMI_CODE_HOME'];
+        delete process.env['KIKI_HOME'];
       } else {
-        process.env['KIMI_CODE_HOME'] = previous;
+        process.env['KIKI_HOME'] = previous;
       }
     }
   });

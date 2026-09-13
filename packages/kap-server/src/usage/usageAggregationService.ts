@@ -51,6 +51,7 @@ interface NormalizedUsageRecord {
   readonly time: number;
   readonly model: string;
   readonly usage: TokenUsage;
+  readonly usageKnown?: boolean;
   readonly turnId?: number;
   readonly agentId?: string;
   readonly parentAgentId?: string;
@@ -108,6 +109,9 @@ interface AggregateAccumulator {
   usage: TokenUsage;
   cost: number;
   costUnknown: boolean;
+  knownRecords: number;
+  missingRecords: number;
+  legacyZeroRecords: number;
 }
 
 interface GroupAccumulator extends AggregateAccumulator {
@@ -390,7 +394,7 @@ export class UsageAggregationService {
         }
         if (!inRange(record.time, query.range) || !matchesFilters(record, query)) continue;
         const cost = pricing.calculate(record.model, record.usage);
-        addAggregate(total, record.usage, cost);
+        addAggregate(total, record, cost);
         if (cost === undefined) unknownPriceModels.add(record.model);
         earliestAt = earliestAt === undefined ? record.time : Math.min(earliestAt, record.time);
         latestAt = latestAt === undefined ? record.time : Math.max(latestAt, record.time);
@@ -425,7 +429,7 @@ export class UsageAggregationService {
           };
           bucketAcc.groups.set(groupKey, group);
         }
-        addAggregate(group, record.usage, cost);
+        addAggregate(group, record, cost);
         group.providers.add(record.provider ?? null);
         group.modelAliases.add(record.modelAlias ?? null);
         group.agentIds.add(record.agentId ?? null);
@@ -461,7 +465,7 @@ export class UsageAggregationService {
           };
           sessionAccumulators.set(session.summary.id, sessionAcc);
         }
-        addAggregate(sessionAcc, record.usage, cost);
+        addAggregate(sessionAcc, record, cost);
         if (cost === undefined) sessionAcc.unknownPriceModels.add(record.model);
       }
     }
@@ -546,6 +550,11 @@ export class UsageAggregationService {
           budget.incompleteReason === null &&
           incompleteSessionIds.size === 0,
         coverage: { earliest_at: earliestAt ?? null, latest_at: latestAt ?? null },
+        usage_coverage: {
+          known_records: total.knownRecords,
+          missing_records: total.missingRecords,
+          legacy_zero_records: total.legacyZeroRecords,
+        },
         scanned_sessions: sessions.length,
         incomplete_sessions: incompleteSessionIds.size,
         unknown_price_models: [...unknownPriceModels].toSorted(),
@@ -635,10 +644,13 @@ function normalizeRecord(raw: WireRecord): NormalizedUsageRecord | undefined {
     inputCacheRead === undefined ||
     inputCacheCreation === undefined
   ) return undefined;
+  const usageKnown = raw['usageKnown'];
+  if (usageKnown !== undefined && typeof usageKnown !== 'boolean') return undefined;
   return {
     time: raw.time,
     model,
     usage: { inputOther, output, inputCacheRead, inputCacheCreation },
+    usageKnown,
     turnId: nonnegativeInteger(raw['turnId']),
     agentId: optionalString(raw['agentId']),
     parentAgentId: optionalString(raw['parentAgentId']),
@@ -653,6 +665,7 @@ function normalizeRetainedRecord(record: RetainedUsageRecord): NormalizedUsageRe
     time: record.time,
     model: record.model,
     usage: record.usage,
+    usageKnown: record.usageKnown,
     turnId: record.turnId,
     agentId: record.agentId,
     parentAgentId: record.parentAgentId,
@@ -744,15 +757,22 @@ function emptyUsage(): TokenUsage {
 }
 
 function emptyAggregate(): AggregateAccumulator {
-  return { usage: emptyUsage(), cost: 0, costUnknown: false };
+  return { usage: emptyUsage(), cost: 0, costUnknown: false, knownRecords: 0, missingRecords: 0, legacyZeroRecords: 0 };
 }
 
-function addAggregate(target: AggregateAccumulator, usage: TokenUsage, cost: number | undefined): void {
+function addAggregate(target: AggregateAccumulator, record: NormalizedUsageRecord, cost: number | undefined): void {
+  const { usage, usageKnown } = record;
+  const legacyZero = usageKnown === undefined &&
+    usage.inputOther + usage.output + usage.inputCacheRead + usage.inputCacheCreation === 0;
+  const tokensUnknown = usageKnown === false || legacyZero;
+  if (usageKnown === false) target.missingRecords += 1;
+  else if (legacyZero) target.legacyZeroRecords += 1;
+  else target.knownRecords += 1;
   target.usage.inputOther += usage.inputOther;
   target.usage.output += usage.output;
   target.usage.inputCacheRead += usage.inputCacheRead;
   target.usage.inputCacheCreation += usage.inputCacheCreation;
-  if (cost === undefined) {
+  if (cost === undefined || tokensUnknown) {
     target.costUnknown = true;
   } else {
     target.cost += cost;
@@ -767,6 +787,7 @@ function aggregateWire(value: AggregateAccumulator): UsageAggregateWire {
       input_cache_read: value.usage.inputCacheRead,
       input_cache_creation: value.usage.inputCacheCreation,
     },
+    tokens_unknown: value.missingRecords > 0 || value.legacyZeroRecords > 0,
     cost_usd_estimated: value.cost,
     cost_unknown: value.costUnknown,
   };

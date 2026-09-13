@@ -15,10 +15,10 @@ const DEFAULT_PLUGINS_ROOT = resolve(REPO_ROOT, 'plugins');
 
 export async function startPluginMarketplaceServer(options = {}) {
   const pluginsRoot = resolve(
-    options.pluginsRoot ?? process.env.KIMI_CODE_PLUGIN_MARKETPLACE_DEV_ROOT ?? DEFAULT_PLUGINS_ROOT,
+    options.pluginsRoot ?? process.env.KIKI_PLUGIN_MARKETPLACE_DEV_ROOT ?? DEFAULT_PLUGINS_ROOT,
   );
-  const host = options.host ?? process.env.KIMI_CODE_PLUGIN_MARKETPLACE_DEV_HOST ?? '127.0.0.1';
-  const port = Number(options.port ?? process.env.KIMI_CODE_PLUGIN_MARKETPLACE_DEV_PORT ?? 0);
+  const host = options.host ?? process.env.KIKI_PLUGIN_MARKETPLACE_DEV_HOST ?? '127.0.0.1';
+  const port = Number(options.port ?? process.env.KIKI_PLUGIN_MARKETPLACE_DEV_PORT ?? 0);
   const server = createServer((req, res) => {
     void handleRequest(req, res, pluginsRoot);
   });

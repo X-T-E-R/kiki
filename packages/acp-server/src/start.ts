@@ -32,7 +32,7 @@ import {
   IWorkspaceInstanceManager,
   logSeed,
   resolveConfigPath,
-  resolveKimiHome,
+  resolveKikiHome,
   resolveLoggingConfig,
   type Scope,
   type ScopeSeed,
@@ -97,7 +97,7 @@ export async function runAcpServerWithStream(
   stream: Stream,
   opts: RunAcpServerOptions = {},
 ): Promise<RunningAcpServer> {
-  const homeDir = resolveKimiHome(opts.homeDir);
+  const homeDir = resolveKikiHome(opts.homeDir);
   const configPath = resolveConfigPath({ homeDir, configPath: opts.configPath });
   // `ILogOptions` (logSeed) is required by the Session-scoped log writer; any
   // session creation would otherwise fail to instantiate the Session scope.

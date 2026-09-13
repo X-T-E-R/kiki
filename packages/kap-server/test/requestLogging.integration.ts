@@ -53,7 +53,7 @@ describe('requestLogging', () => {
     const { logger, lines } = captureLogger();
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logger });
 
-    const res = await fetch(`http://127.0.0.1:${String(server.port)}/api/v1/healthz`);
+    const res = await fetch(`http://127.0.0.1:${String(server.port)}/api/healthz`);
     expect(res.status).toBe(200);
     expect(((await res.json()) as { code: number }).code).toBe(0);
 
@@ -67,7 +67,7 @@ describe('requestLogging', () => {
     expect(entry['code']).toBe(0);
     expect(entry).not.toHaveProperty('statusCode');
     expect(entry['res']).toBeUndefined();
-    expect(entry['req']).toMatchObject({ method: 'GET', url: '/api/v1/healthz' });
+    expect(entry['req']).toMatchObject({ method: 'GET', url: '/api/healthz' });
     expect(typeof entry['responseTime']).toBe('number');
   });
 });

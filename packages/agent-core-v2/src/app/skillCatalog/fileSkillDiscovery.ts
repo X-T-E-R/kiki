@@ -66,6 +66,19 @@ export async function discoverFileSkills(
     }
     scannedDirectories.push(dirPath);
 
+    if (root.scanMode === 'commands') {
+      for (const entry of entries) {
+        if (!entry.endsWith('.md') || isSkillScanExcludedEntry(entry)) continue;
+        const skillMdPath = path.join(dirPath, entry);
+        if (!(await isFile(skillMdPath))) continue;
+        await parseAndRegister({
+          byDiscoveryKey, skipped, warn, skillMdPath,
+          skillDirName: entry.slice(0, -'.md'.length), root,
+        });
+      }
+      return;
+    }
+
     const directorySkills = new Set<string>();
     const subdirs: string[] = [];
     for (const entry of entries) {
@@ -166,6 +179,7 @@ async function parseAndRegister(input: {
       skillMdPath: input.skillMdPath,
       skillDirName: input.skillDirName,
       source: input.root.source,
+      promptCommand: input.root.scanMode === 'commands',
       text,
     });
     const subSkillParentName = input.subSkillParentName;
@@ -182,7 +196,7 @@ async function parseAndRegister(input: {
         : parsed;
     const discovered =
       input.root.plugin === undefined ? skill : { ...skill, plugin: input.root.plugin };
-    const key = skillDiscoveryKey(input.root, discovered.name);
+    const key = `${discovered.metadata.promptCommand === true ? 'command\0' : ''}${skillDiscoveryKey(input.root, discovered.name)}`;
     if (!input.byDiscoveryKey.has(key)) {
       input.byDiscoveryKey.set(key, discovered);
     }

@@ -25,7 +25,7 @@ import {
   PluginChanged,
   logSeed,
   resolveConfigPath,
-  resolveKimiHome,
+  resolveKikiHome,
   resolveLoggingConfig,
   type ConfigDiagnostic,
   type Scope,
@@ -140,7 +140,7 @@ export interface ServerStartOptions {
   readonly env?: NodeJS.ProcessEnv;
   /**
    * Plugin marketplace catalog URL for `GET /api/plugins/marketplace`.
-   * Takes precedence over `KIMI_CODE_PLUGIN_MARKETPLACE_URL` and
+   * Takes precedence over `KIKI_PLUGIN_MARKETPLACE_URL` and
    * `[plugins] marketplace_url` in config.toml. An empty or omitted value
    * means the marketplace is unconfigured and is not fetched.
    */
@@ -237,7 +237,7 @@ const DEFAULT_PORT = 58627;
 export async function startServer(opts: ServerStartOptions): Promise<RunningServer> {
   const host = opts.host ?? DEFAULT_HOST;
   const port = opts.port ?? DEFAULT_PORT;
-  const homeDir = resolveKimiHome(opts.homeDir);
+  const homeDir = resolveKikiHome(opts.homeDir);
   const serverVersion = opts.serverVersion ?? getServerVersion();
   const startedAt = Date.now();
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
@@ -315,7 +315,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     if (!passwordConfigured) {
       logger.warn(
         { host, exposureClass },
-        'binding non-loopback host with token-only auth (no KIMI_CODE_PASSWORD) — the bearer token printed in the startup banner is the only credential protecting this server',
+        'binding non-loopback host with token-only auth (no KIKI_PASSWORD) — the bearer token printed in the startup banner is the only credential protecting this server',
       );
     }
   }
@@ -623,7 +623,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     pluginMarketplaceUrl: () =>
       resolvePluginMarketplaceSource({
         optionUrl: opts.pluginMarketplaceUrl,
-        envUrl: process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'],
+        envUrl: process.env['KIKI_PLUGIN_MARKETPLACE_URL'],
         configUrl: core.accessor.get(IConfigService).get<{ marketplaceUrl?: string }>('plugins')
           ?.marketplaceUrl,
       }),

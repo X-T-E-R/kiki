@@ -1,6 +1,6 @@
-import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { createDecorator, IInstantiationService, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { Emitter, type Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import type { Runtime, RuntimeBinding, RuntimeCapability, RuntimeLease } from '#/runtime/runtime';
@@ -58,21 +58,24 @@ export function snapshotAgentRuntimeBinding(
 export class AgentRuntimeService implements IAgentRuntimeService {
   declare readonly _serviceBrand: undefined;
   private readonly changeEmitter = new Emitter<void>();
-  readonly onDidChange = this.changeEmitter.event;
+  readonly onDidChange = Event.filter(this.changeEmitter.event, () => !this.changeEmitter.isDisposed);
   private readonly bindingSubscription: IDisposable;
   private readonly workspaceSubscription: IDisposable;
+  private readonly scopeSubscription: IDisposable;
   private registrySubscription: IDisposable | undefined;
 
   constructor(
     @IAgentRuntimeBindingService private readonly binding: IAgentRuntimeBindingService,
     @IRuntimeResolver private readonly resolver: IRuntimeResolver,
     @IWorkspaceInstanceManager private readonly workspaces: IWorkspaceInstanceManager,
+    @IInstantiationService instantiation: IInstantiationService,
   ) {
     this.bindingSubscription = this.binding.onDidChange(() => this.rebind());
     this.workspaceSubscription = this.workspaces.onDidChange((change) => {
       if (change.workspaceId === this.binding.current.workspaceId) this.rebind();
     });
     this.bindRegistry();
+    this.scopeSubscription = instantiation.onWillDispose(() => this.dispose());
   }
 
   inspect(): Runtime {
@@ -93,13 +96,16 @@ export class AgentRuntimeService implements IAgentRuntimeService {
   }
 
   dispose(): void {
+    if (this.changeEmitter.isDisposed) return;
+    this.changeEmitter.dispose();
+    this.scopeSubscription.dispose();
     this.registrySubscription?.dispose();
     this.workspaceSubscription.dispose();
     this.bindingSubscription.dispose();
-    this.changeEmitter.dispose();
   }
 
   private rebind(): void {
+    if (this.changeEmitter.isDisposed) return;
     this.bindRegistry();
     this.changeEmitter.fire();
   }

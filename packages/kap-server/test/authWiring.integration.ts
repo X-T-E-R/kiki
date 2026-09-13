@@ -124,7 +124,7 @@ describe('production auth wiring', () => {
 
   it('gates WS: server_hello with the token, rejected without', async () => {
     const token = (await readFile(join(home as string, 'server.token'), 'utf8')).trim();
-    const wsUrl = `ws://127.0.0.1:${(server as RunningServer).port}/api/v1/ws`;
+    const wsUrl = `ws://127.0.0.1:${(server as RunningServer).port}/api/ws`;
 
     const { ws, firstFrame } = await openConn(wsUrl, [`kimi-code.bearer.${token}`]);
     sockets.push(ws);

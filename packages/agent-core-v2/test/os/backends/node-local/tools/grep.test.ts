@@ -524,7 +524,7 @@ describe('GrepTool', () => {
 
     const result = await executeTool(tool, context({ pattern: 'missing' }));
 
-    expect(result.output).toBe('No non-sensitive matches found');
+    expect(result.output).toBe('No matches found');
   });
 
   it('sorts files_with_matches by mtime before pagination after sensitive filtering', async () => {
@@ -1169,7 +1169,7 @@ describe('GrepTool', () => {
 
     expect(toolContentString(result)).toBe(
       [
-        'No non-sensitive matches found',
+        'No matches found',
         'Filtered 2 sensitive file(s): .env, .aws/credentials',
       ].join('\n'),
     );
@@ -1298,7 +1298,7 @@ describe('GrepTool', () => {
     const result = await resultPromise;
 
     expect(toolContentString(result)).toBe(
-      ['src/a.ts', 'Grep timed out after 20s; partial results returned. Narrow the path, glob, or pattern and retry for complete results.'].join('\n'),
+      ['src/a.ts', 'Grep timed out after 20s; partial results returned.'].join('\n'),
     );
     expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
   });
@@ -1314,7 +1314,7 @@ describe('GrepTool', () => {
     const result = await resultPromise;
 
     expect(toolContentString(result)).toBe(
-      ['src/a.ts', 'Grep timed out after 20s; partial results returned. Narrow the path, glob, or pattern and retry for complete results.'].join('\n'),
+      ['src/a.ts', 'Grep timed out after 20s; partial results returned.'].join('\n'),
     );
   });
 
@@ -1330,7 +1330,7 @@ describe('GrepTool', () => {
     const result = await resultPromise;
 
     expect(toolContentString(result)).toBe(
-      ['src/a.ts', 'Grep timed out after 20s; partial results returned. Narrow the path, glob, or pattern and retry for complete results.'].join('\n'),
+      ['src/a.ts', 'Grep timed out after 20s; partial results returned.'].join('\n'),
     );
   });
 
@@ -1349,7 +1349,7 @@ describe('GrepTool', () => {
     const result = await resultPromise;
 
     expect(toolContentString(result)).toBe(
-      ['src/a.ts:1:hit', 'Grep timed out after 20s; partial results returned. Narrow the path, glob, or pattern and retry for complete results.'].join('\n'),
+      ['src/a.ts:1:hit', 'Grep timed out after 20s; partial results returned.'].join('\n'),
     );
   });
 
@@ -1379,7 +1379,7 @@ describe('GrepTool', () => {
         'src/b.ts:2:hit',
         '--',
         'src/c.ts:3:hit',
-        'Grep timed out after 20s; partial results returned. Narrow the path, glob, or pattern and retry for complete results.',
+        'Grep timed out after 20s; partial results returned.',
       ].join('\n'),
     );
   });
@@ -1400,7 +1400,7 @@ describe('GrepTool', () => {
     expect(toolContentString(result)).toBe(
       [
         displayedCompleteLine,
-        '[Output truncated at 10485760 bytes of rg output — the result set is incomplete. Narrow the pattern, path, or glob filters and re-run to recover complete results.]',
+        '[Output truncated at 10485760 bytes of rg output; the result set is incomplete.]',
       ].join('\n'),
     );
   });
@@ -1516,7 +1516,7 @@ describe('GrepTool', () => {
 
     expect(toolContentString(result)).toBe(
       [
-        'No non-sensitive matches found',
+        'No matches found',
         'Filtered 2 sensitive file(s): .env, .aws/credentials',
       ].join('\n'),
     );
@@ -1768,7 +1768,7 @@ describe('GrepTool', () => {
     );
 
     expect(result.output).toContain('the result set is incomplete');
-    expect(result.output).toContain('Narrow the pattern, path, or glob filters');
+    expect(result.output).toContain('Output truncated at');
   });
 
   it('matches a pattern spanning a newline when multiline is set', async () => {
@@ -1940,7 +1940,7 @@ describe('GrepTool', () => {
     );
 
     const output = toolContentString(result);
-    expect(output).toContain('No non-sensitive matches found');
+    expect(output).toContain('No matches found');
     expect(output).toContain('Filtered 1 sensitive file(s): .env');
   });
 

@@ -29,7 +29,7 @@ export const BUILTIN_PRODUCT_SKILLS_SECTION = 'builtinProductSkills';
 export const BuiltinProductSkillsConfigSchema = z.boolean().optional();
 export type BuiltinProductSkillsConfig = z.infer<typeof BuiltinProductSkillsConfigSchema>;
 
-export const BUILTIN_PRODUCT_SKILLS_ENV = 'KIMI_CODE_BUILTIN_PRODUCT_SKILLS';
+export const BUILTIN_PRODUCT_SKILLS_ENV = 'KIKI_BUILTIN_PRODUCT_SKILLS';
 
 export const builtinProductSkillsEnvBindings: EnvBindings<BuiltinProductSkillsConfig> =
   envBindings(BuiltinProductSkillsConfigSchema, {

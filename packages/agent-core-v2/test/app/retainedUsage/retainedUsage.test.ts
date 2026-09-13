@@ -197,6 +197,56 @@ describe('RetainedUsageService', () => {
     ]);
   });
 
+  it('preserves known, unknown, and absent usage provenance across retention restart', async () => {
+    const first = build();
+    const sessionScope = 'sessions/workspace-1/session-1';
+    const zeroUsage = {
+      inputOther: 0,
+      output: 0,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    };
+    for (const record of [
+      {
+        type: 'usage.record',
+        time: 150,
+        model: 'missing-usage',
+        usage: zeroUsage,
+        usageKnown: false,
+      },
+      {
+        type: 'usage.record',
+        time: 160,
+        model: 'provider-zero',
+        usage: zeroUsage,
+        usageKnown: true,
+      },
+      {
+        type: 'usage.record',
+        time: 170,
+        model: 'legacy-zero',
+        usage: zeroUsage,
+      },
+    ]) {
+      first.appendLog.append(`${sessionScope}/agents/main`, AGENT_WIRE_RECORD_KEY, record);
+    }
+    await first.appendLog.flush();
+
+    const retained = await first.service.retainDeletedSession(summary);
+    expect(retained.records).toEqual([
+      { time: 150, model: 'missing-usage', usage: zeroUsage, usageKnown: false },
+      { time: 160, model: 'provider-zero', usage: zeroUsage, usageKnown: true },
+      { time: 170, model: 'legacy-zero', usage: zeroUsage },
+    ]);
+    expect(retained.records[2]).not.toHaveProperty('usageKnown');
+
+    await fsp.rm(join(homeDir, sessionScope), { recursive: true, force: true });
+    const restarted = build();
+    const items = await listItems(restarted.service);
+    expect(items[0]?.records).toEqual(retained.records);
+    expect(items[0]?.records[2]).not.toHaveProperty('usageKnown');
+  });
+
   it('does not fail when no retained ledger exists', async () => {
     const { service } = build();
 

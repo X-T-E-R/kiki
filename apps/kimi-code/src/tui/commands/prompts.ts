@@ -60,7 +60,7 @@ export function promptLogoutProviderSelection(
 export function promptApiKey(
   host: SlashCommandHost,
   platformName: string,
-  subtitleLines: readonly string[] = ['Your key will be saved to ~/.kimi-code/config.toml'],
+  subtitleLines: readonly string[] = ['Your key will be saved to ~/.kiki/config.toml'],
 ): Promise<string | undefined> {
   return new Promise((resolve) => {
     const dialog = new ApiKeyInputDialogComponent(

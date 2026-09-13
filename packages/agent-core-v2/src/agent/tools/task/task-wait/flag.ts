@@ -1,7 +1,7 @@
 import { type FlagDefinitionInput, registerFlagDefinition } from '#/app/flag/flagRegistry';
 
 export const TASK_WAIT_FLAG_ID = 'task_wait';
-export const TASK_WAIT_FLAG_ENV = 'KIMI_CODE_EXPERIMENTAL_TASK_WAIT';
+export const TASK_WAIT_FLAG_ENV = 'KIKI_EXPERIMENTAL_TASK_WAIT';
 
 export const taskWaitFlag: FlagDefinitionInput = {
   id: TASK_WAIT_FLAG_ID,

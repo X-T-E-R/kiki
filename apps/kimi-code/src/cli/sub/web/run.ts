@@ -134,12 +134,12 @@ export function buildWebCommand(cmd: Command): Command {
     )
     .option(
       '--allow-remote-shutdown',
-      'On a non-loopback bind, keep POST /api/v1/shutdown enabled (default: route is disabled → 404).',
+      'On a non-loopback bind, keep POST /api/shutdown enabled (default: route is disabled → 404).',
       false,
     )
     .option(
       '--dangerous-bypass-auth',
-      'Disable bearer-token auth on every REST and WebSocket route, and advertise it via /api/v1/meta so the web UI connects without a token. Only use on a trusted network or behind your own authenticating proxy.',
+      'Disable bearer-token auth on every REST and WebSocket route, and advertise it via /api/meta so the web UI connects without a token. Only use on a trusted network or behind your own authenticating proxy.',
       false,
     )
     .option(
@@ -148,7 +148,7 @@ export function buildWebCommand(cmd: Command): Command {
     )
     .option(
       '--debug-endpoints',
-      'Mount /api/v1/debug/* routes for test introspection. OFF by default; production callers leave this unset.',
+      'Mount /api/debug/* routes for test introspection. OFF by default; production callers leave this unset.',
       false,
     )
     .option(
@@ -415,7 +415,7 @@ export function desktopInheritanceSourceFromEnv(
 
 /**
  * Resolve the web assets directory passed to kap-server. In dev mode
- * (`KIMI_CODE_DEV_SERVER=1`, set by the repo's `dev:server` / `dev:kap-server*`
+ * (`KIKI_DEV_SERVER=1`, set by the repo's `dev:server` / `dev:kap-server*`
  * scripts) a missing GUI build is tolerated: the server starts API-only
  * and the web UI is expected to come from the GUI Vite dev server.
  * Outside dev mode the directory is always returned and kap-server keeps
@@ -426,7 +426,7 @@ export function serverWebAssetsDir(
   nativeWebAssetsDir: string | null = getNativeWebAssetsDir(),
 ): string | undefined {
   const dir = resolveServerWebAssetsDir(nativeWebAssetsDir);
-  if (env['KIMI_CODE_DEV_SERVER'] === '1' && !existsSync(join(dir, 'index.html'))) {
+  if (env['KIKI_DEV_SERVER'] === '1' && !existsSync(join(dir, 'index.html'))) {
     return undefined;
   }
   return dir;

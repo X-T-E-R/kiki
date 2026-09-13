@@ -15,6 +15,9 @@ import {
   type PluginMarketplace,
 } from '#/utils/plugin-marketplace';
 import { readPluginUpdateNoticeState } from '#/utils/plugin-update-notice-state';
+import { writeJsonFile } from '#/utils/persistence';
+
+vi.mock('#/utils/persistence', { spy: true });
 
 function makePluginSummary(overrides: Partial<PluginSummary> = {}): PluginSummary {
   return {
@@ -288,11 +291,16 @@ describe('PluginUpdateNotifier', () => {
     });
     const notifier = makeNotifier(harness);
 
+    const writes = vi.mocked(writeJsonFile).mockClear();
     await Promise.all([
       notifier.handlePluginCommandCompleted('kimi-datasource'),
       notifier.handlePluginCommandCompleted('another-plugin'),
     ]);
 
+    expect(writes.mock.settledResults).toEqual([
+      { type: 'fulfilled', value: undefined },
+      { type: 'fulfilled', value: undefined },
+    ]);
     expect(harness.notify).toHaveBeenCalledTimes(2);
     // Both entries must survive in the persisted state — no lost update.
     const state = await readPluginUpdateNoticeState(stateFile);

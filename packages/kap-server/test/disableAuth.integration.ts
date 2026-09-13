@@ -71,7 +71,7 @@ describe('server-v2 disableAuth (--dangerous-bypass-auth)', () => {
   it('disableAuth:true lets REST through without a token and advertises it in /meta', async () => {
     const { base } = await boot(true);
 
-    const meta = await fetch(`${base}/api/v1/meta`);
+    const meta = await fetch(`${base}/api/meta`);
     expect(meta.status).toBe(200);
     const metaBody = (await meta.json()) as {
       code: number;
@@ -80,14 +80,14 @@ describe('server-v2 disableAuth (--dangerous-bypass-auth)', () => {
     expect(metaBody.code).toBe(0);
     expect(metaBody.data.dangerous_bypass_auth).toBe(true);
 
-    const auth = await fetch(`${base}/api/v1/auth`);
+    const auth = await fetch(`${base}/api/auth`);
     expect(auth.status).toBe(200);
   });
 
   it('disableAuth:true lets WebSocket upgrades through without a token', async () => {
     const { port } = await boot(true);
 
-    const v1 = await openConn(`ws://127.0.0.1:${port}/api/v1/ws`);
+    const v1 = await openConn(`ws://127.0.0.1:${port}/api/ws`);
     sockets.push(v1.ws);
     expect(v1.firstFrame).toMatchObject({ type: 'server_hello' });
   });
@@ -95,10 +95,10 @@ describe('server-v2 disableAuth (--dangerous-bypass-auth)', () => {
   it('default boot keeps the gate closed and reports dangerous_bypass_auth: false', async () => {
     const { base } = await boot(undefined);
 
-    const unauthed = await fetch(`${base}/api/v1/meta`);
+    const unauthed = await fetch(`${base}/api/meta`);
     expect(unauthed.status).toBe(401);
 
-    const meta = await fetch(`${base}/api/v1/meta`, {
+    const meta = await fetch(`${base}/api/meta`, {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
     expect(meta.status).toBe(200);

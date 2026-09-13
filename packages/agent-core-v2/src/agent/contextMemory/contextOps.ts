@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { ErrorCodes, Error2 } from '#/errors';
 import type { ContentPart } from '#/kosong/contract/message';
+import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { defineState } from '#/state/state';
 import type { PartsTransformer } from '#/wire/record';
 import type { WireRecord } from '#/wire/record';
@@ -315,5 +316,32 @@ export function formatUndoUnavailableMessage(
       return `Nothing to undo: only ${precheck.undoable} of ${precheck.requested} requested turn(s) available`;
     case 'checkpoint_lost':
       return 'Nothing to undo: conversation state checkpoints are incomplete';
+  }
+}
+
+export function assertContextImportFits(
+  message: ContextMessage,
+  currentTokenCount: number,
+  maxContextTokens: number,
+): void {
+  const importTokenCount = estimateTokensForMessages([message]);
+  const totalTokenCount = currentTokenCount + importTokenCount;
+  if (maxContextTokens > 0 && totalTokenCount > maxContextTokens) {
+    throw new Error2(
+      ErrorCodes.CONTEXT_OVERFLOW,
+      'Imported content is too large for the current model context ' +
+        `(~${String(importTokenCount)} import tokens + ~${String(currentTokenCount)} existing ` +
+        `= ~${String(totalTokenCount)} total > ${String(maxContextTokens)} token limit). ` +
+        'Please import a smaller file or session.',
+      {
+        details: {
+          reason: 'import_context_overflow',
+          importTokenCount,
+          currentTokenCount,
+          totalTokenCount,
+          maxContextTokens,
+        },
+      },
+    );
   }
 }

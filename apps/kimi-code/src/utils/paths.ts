@@ -6,54 +6,44 @@
  */
 
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { resolveKikiHome } from '@kiki/oauth';
 
 import {
-  KIMI_CODE_BANNER_DIR_NAME,
-  KIMI_CODE_BANNER_STATE_FILE_NAME,
-  KIMI_CODE_BIN_DIR_NAME,
-  KIMI_CODE_CACHE_DIR_NAME,
-  KIMI_CODE_DATA_DIR_NAME,
-  KIMI_CODE_HOME_ENV,
-  KIMI_CODE_INPUT_HISTORY_DIR_NAME,
-  KIMI_CODE_LOG_DIR_NAME,
-  KIMI_CODE_PLUGIN_UPDATE_NOTICE_STATE_FILE_NAME,
-  KIMI_CODE_UPDATE_DIR_NAME,
+  KIKI_BANNER_DIR_NAME,
+  KIKI_BANNER_STATE_FILE_NAME,
+  KIKI_BIN_DIR_NAME,
+  KIKI_CACHE_DIR_NAME,
+  KIKI_INPUT_HISTORY_DIR_NAME,
+  KIKI_LOG_DIR_NAME,
+  KIKI_PLUGIN_UPDATE_NOTICE_STATE_FILE_NAME,
+  KIKI_UPDATE_DIR_NAME,
 } from '#/constant/app';
 
-/**
- * Return the root data directory for Kimi Code.
- *
- * Priority: `KIMI_CODE_HOME` env var > `~/.kimi-code`.
- */
+/** Returns the same Kiki home used by the daemon and provider credential store. */
 export function getDataDir(): string {
-  const envDir = process.env[KIMI_CODE_HOME_ENV];
-  if (envDir) {
-    return envDir;
-  }
-  return join(homedir(), KIMI_CODE_DATA_DIR_NAME);
+  return resolveKikiHome();
 }
 
 /**
  * Return the diagnostic log directory: `<dataDir>/logs/`.
  */
 export function getLogDir(): string {
-  return join(getDataDir(), KIMI_CODE_LOG_DIR_NAME);
+  return join(getDataDir(), KIKI_LOG_DIR_NAME);
 }
 
 /**
  * Return the CLI cache directory: `<dataDir>/cache/`.
  */
 export function getCacheDir(): string {
-  return join(getDataDir(), KIMI_CODE_CACHE_DIR_NAME);
+  return join(getDataDir(), KIKI_CACHE_DIR_NAME);
 }
 
 /**
  * Return the managed tools directory: `<dataDir>/bin/`.
  */
 export function getBinDir(): string {
-  return join(getDataDir(), KIMI_CODE_BIN_DIR_NAME);
+  return join(getDataDir(), KIKI_BIN_DIR_NAME);
 }
 
 /**
@@ -62,8 +52,8 @@ export function getBinDir(): string {
 export function getPluginUpdateNoticeStateFile(): string {
   return join(
     getDataDir(),
-    KIMI_CODE_UPDATE_DIR_NAME,
-    KIMI_CODE_PLUGIN_UPDATE_NOTICE_STATE_FILE_NAME,
+    KIKI_UPDATE_DIR_NAME,
+    KIKI_PLUGIN_UPDATE_NOTICE_STATE_FILE_NAME,
   );
 }
 
@@ -71,7 +61,7 @@ export function getPluginUpdateNoticeStateFile(): string {
  * Return the banner display state file: `<dataDir>/cache/banner/state.json`.
  */
 export function getBannerStateFile(): string {
-  return join(getCacheDir(), KIMI_CODE_BANNER_DIR_NAME, KIMI_CODE_BANNER_STATE_FILE_NAME);
+  return join(getCacheDir(), KIKI_BANNER_DIR_NAME, KIKI_BANNER_STATE_FILE_NAME);
 }
 
 /**
@@ -80,5 +70,5 @@ export function getBannerStateFile(): string {
  */
 export function getInputHistoryFile(workDir: string): string {
   const hash = createHash('md5').update(workDir, 'utf-8').digest('hex');
-  return join(getDataDir(), KIMI_CODE_INPUT_HISTORY_DIR_NAME, `${hash}.jsonl`);
+  return join(getDataDir(), KIKI_INPUT_HISTORY_DIR_NAME, `${hash}.jsonl`);
 }

@@ -17,7 +17,7 @@ let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'kimi-banner-state-'));
-  process.env['KIMI_CODE_HOME'] = dir;
+  process.env['KIKI_HOME'] = dir;
 });
 
 afterEach(() => {

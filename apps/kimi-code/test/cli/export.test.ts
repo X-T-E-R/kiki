@@ -27,7 +27,7 @@ const mocks = vi.hoisted(() => ({
   kimiHarnessConstructor: vi.fn(),
   harnessExportSession: vi.fn(),
   harnessClose: vi.fn(async () => {}),
-  resolveKimiHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-export-home'),
+  resolveKikiHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-export-home'),
 }));
 
 vi.mock('@kiki/node-sdk', async (importOriginal) => {
@@ -39,7 +39,7 @@ vi.mock('@kiki/node-sdk', async (importOriginal) => {
   });
   return {
     ...actual,
-    resolveKimiHome: mocks.resolveKimiHome,
+    resolveKikiHome: mocks.resolveKikiHome,
     createKimiHarness: (...args: unknown[]) => {
       mocks.kimiHarnessConstructor(...args);
       return createFakeHarness(args[0] as { readonly homeDir?: string } | undefined);
@@ -54,7 +54,7 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   vi.clearAllMocks();
-  mocks.resolveKimiHome.mockImplementation(
+  mocks.resolveKikiHome.mockImplementation(
     (homeDir?: string) => homeDir ?? '/tmp/kimi-export-home',
   );
 });

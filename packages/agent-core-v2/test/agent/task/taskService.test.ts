@@ -45,6 +45,8 @@ import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { EventDispatcherService } from '#/state/eventDispatcherService';
 import { ITaskService } from '#/app/task/task';
+import { TaskService } from '#/app/task/taskService';
+import { QuestionBackgroundTask } from '#/agent/tools/ask-user-question/question-background-task';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
@@ -269,6 +271,292 @@ describe('AgentTaskService', () => {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
   }
+
+  it('bounds output retained across simultaneous active tasks without evicting execution records', async () => {
+    ix.set(IFileSystemStorageService, new InMemoryStorageService());
+    const svc = ix.get(IAgentTaskService);
+    const output = 'x'.repeat(256 * 1024);
+    const ids = Array.from({ length: 12 }, () => svc.registerTask({
+      ...fakeProcessTask(),
+      start: (sink) => sink.appendOutput(output),
+    }, { detached: false }));
+    const internals = svc as unknown as { tasks: Map<string, { retainedOutputBytes: number; outputSizeBytes: number }> };
+    await vi.waitFor(() => {
+      expect(internals.tasks.size).toBe(12);
+      const entries = [...internals.tasks.values()];
+      expect(entries.every((entry) => entry.outputSizeBytes === output.length)).toBe(true);
+      expect(entries.reduce((sum, entry) => sum + entry.retainedOutputBytes, 0)).toBeLessThanOrEqual(1024 * 1024);
+    });
+    for (const taskId of ids) {
+      expect(svc.getTask(taskId)?.status).toBe('running');
+      expect(await svc.readOutput(taskId)).toBe(output);
+    }
+    await svc.stopAll();
+    await vi.waitFor(() => expect(internals.tasks.size).toBe(0));
+  });
+
+  it('archives process, subagent, question and tracked executions while preserving output and notification deduplication', async () => {
+    ix.set(IFileSystemStorageService, new InMemoryStorageService());
+    ix.set(ITaskService, new SyncDescriptor(TaskService));
+    const svc = ix.get(IAgentTaskService);
+    const internals = svc as unknown as { tasks: Map<string, unknown>; cachedOutputs: Map<string, unknown> };
+    const ids: string[] = [];
+    for (let batch = 0; batch < 3; batch++) {
+      for (let i = 0; i < 8; i++) {
+        const tasks: AgentTask[] = [
+          outputtingTask('process-output'),
+          new SubagentTask({ agentId: 'child', profileName: 'coder', completion: Promise.resolve({ result: 'agent-output' }) }, 'child', new AbortController()),
+          new QuestionBackgroundTask(async () => ({ output: '{"answers":{"choice":"yes"}}' }), 'question', { questionCount: 1 }),
+        ];
+        for (const task of tasks) {
+          const taskId = svc.registerTask(task);
+          ids.push(taskId);
+          await svc.wait(taskId);
+        }
+        const handle = disposables.add(ix.get(ITaskService).run(async (_signal, output) => {
+          await Promise.resolve();
+          output('tracked-output');
+        }));
+        const entry = svc.track(handle, {
+          description: 'tracked',
+          toInfo: (base) => ({ ...base, kind: 'question', questionCount: 1 }),
+        });
+        ids.push(entry.taskId);
+        await svc.wait(entry.taskId);
+      }
+      await vi.waitFor(() => expect(internals.tasks.size).toBe(0));
+      expect(internals.cachedOutputs.size).toBe(0);
+    }
+    expect(svc.list(false).map((info) => info.taskId)).toEqual(ids);
+    for (let i = 0; i < ids.length; i++) {
+      expect(await svc.readOutput(ids[i]!)).toBe([
+        'process-output', 'agent-output', '{"answers":{"choice":"yes"}}', 'tracked-output',
+      ][i % 4]);
+      expect(await svc.wait(ids[i]!)).toMatchObject({ status: 'completed' });
+    }
+    const requests = stubLoop().queue.drain();
+    expect(requests).toHaveLength(ids.length);
+    for (const request of requests) stubLoop().queue.enqueue(request);
+    await (svc as TaskServiceTestManager).reconcile();
+    expect(stubLoop().queue.drain()).toEqual(requests);
+    svc.markTasksDeliveredViaWait(ids.map((taskId) => ({ taskId, status: 'completed' })));
+    await (svc as TaskServiceTestManager).reconcile();
+    expect(requests.every((request) => request.aborted)).toBe(true);
+    expect(stubLoop().hasPendingRequests()).toBe(false);
+  });
+
+  it('retains all unpersisted output after an append failure rather than advertising a partial file as complete', async () => {
+    const storage = new InMemoryStorageService();
+    ix.set(IFileSystemStorageService, storage);
+    const append = vi.spyOn(storage, 'append');
+    const svc = ix.get(IAgentTaskService);
+    const prefix = 'persisted-prefix\n';
+    const failed = 'not-on-disk\n' + 'x'.repeat(2 * 1024 * 1024);
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => {
+        sink.appendOutput(prefix);
+        await vi.waitFor(() => expect(append).toHaveBeenCalledTimes(1));
+        append.mockRejectedValue(new Error('storage unavailable'));
+        sink.appendOutput(failed);
+        sink.appendOutput('after-failure');
+        await sink.settle({ status: 'completed' });
+      },
+    });
+    await svc.wait(taskId);
+    const internals = svc as unknown as { tasks: Map<string, unknown>; cachedOutputs: Map<string, unknown> };
+    await vi.waitFor(() => expect(internals.tasks.size).toBe(0));
+    expect(internals.cachedOutputs.has(taskId)).toBe(true);
+    expect(await svc.readOutput(taskId)).toBe(prefix + failed + 'after-failure');
+    expect(await svc.getOutputSnapshot(taskId, 13)).toMatchObject({
+      fullOutputAvailable: false,
+      outputSizeBytes: Buffer.byteLength(prefix + failed + 'after-failure'),
+      truncated: true,
+      preview: 'after-failure',
+    });
+    vi.spyOn(storage, 'read').mockRejectedValue(new Error('prefix unavailable'));
+    expect(await svc.getOutputSnapshot(taskId, Number.MAX_SAFE_INTEGER)).toMatchObject({
+      preview: failed + 'after-failure',
+      outputSizeBytes: Buffer.byteLength(prefix + failed + 'after-failure'),
+      truncated: true,
+      fullOutputAvailable: false,
+    });
+  });
+
+  it('retains ownership when a spill replaces the output queue after archive has read the old queue', async () => {
+    const storage = new InMemoryStorageService();
+    ix.set(IFileSystemStorageService, storage);
+    let failWrite!: () => void;
+    const writeGate = new Promise<void>((_resolve, reject) => {
+      failWrite = () => reject(new Error('late spill failed'));
+    });
+    const append = vi.spyOn(storage, 'append').mockImplementation(() => writeGate);
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => {
+        sink.appendOutput('only-output');
+        await sink.settle({ status: 'completed' });
+        await cleanupGate;
+      },
+    }, { detached: false });
+    const internals = svc as unknown as {
+      tasks: Map<string, { outputWriteQueue: Promise<void> }>;
+      cachedOutputs: Map<string, unknown>;
+    };
+    const entry = internals.tasks.get(taskId)!;
+    let queue = entry.outputWriteQueue;
+    let oldQueueRead = false;
+    Object.defineProperty(entry, 'outputWriteQueue', {
+      get: () => {
+        if (!oldQueueRead) {
+          oldQueueRead = true;
+          queueMicrotask(() => svc.persistOutput(taskId));
+        }
+        return queue;
+      },
+      set: (value: Promise<void>) => { queue = value; },
+    });
+    await svc.wait(taskId);
+    releaseCleanup();
+    await vi.waitFor(() => expect(append).toHaveBeenCalledTimes(1));
+    expect(oldQueueRead).toBe(true);
+    expect(internals.tasks.has(taskId)).toBe(true);
+    failWrite();
+    await vi.waitFor(() => expect(internals.tasks.has(taskId)).toBe(false));
+    expect(internals.cachedOutputs.has(taskId)).toBe(true);
+    expect(await svc.getOutputSnapshot(taskId, 1_000)).toMatchObject({
+      preview: 'only-output',
+      outputSizeBytes: 11,
+      fullOutputAvailable: false,
+      truncated: false,
+    });
+  });
+
+  it.each(['commit', 'rollback'] as const)('keeps pressure-spilled private metadata unpublished through settlement until %s', async (action) => {
+    const docs = mapBackedDocs();
+    const storage = new InMemoryStorageService();
+    ix.set(IAtomicDocumentStore, docs);
+    ix.set(IFileSystemStorageService, storage);
+    const svc = ix.get(IAgentTaskService);
+    let finish!: () => void;
+    const completion = new Promise<void>((resolve) => { finish = resolve; });
+    const output = 'p'.repeat(600 * 1024);
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => {
+        sink.appendOutput(output);
+        await completion;
+        await sink.settle({ status: 'completed' });
+      },
+    }, { deferVisibility: true });
+    const otherId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: (sink) => sink.appendOutput('q'.repeat(600 * 1024)),
+    }, { detached: false });
+    const scope = 'sessions/test-ws/test-session/agents/main/tasks';
+    await vi.waitFor(async () => {
+      expect(await storage.read(`${scope}/${taskId}`, 'output.log')).toHaveLength(output.length);
+    });
+    finish();
+    await svc.wait(taskId);
+    expect(await docs.get(scope, `${taskId}.json`)).toBeUndefined();
+    expect(svc.getTask(taskId)).toBeUndefined();
+    expect(stubLoop().hasPendingRequests()).toBe(false);
+    const freshIx = buildAgentIx('main', docs, storage);
+    const fresh = freshIx.get(IAgentTaskService) as TaskServiceTestManager;
+    await fresh.loadFromDisk();
+    await fresh.reconcile();
+    expect(fresh.getTask(taskId)).toBeUndefined();
+    expect(freshIx.get(IAgentContextMemoryService).get()).toEqual([]);
+    if (action === 'commit') {
+      svc.commitTaskRegistration!(taskId);
+      await vi.waitFor(async () => {
+        expect(await docs.get(scope, `${taskId}.json`)).toMatchObject({ taskId, status: 'completed' });
+      });
+      await fresh.loadFromDisk();
+      await fresh.reconcile();
+      expect(fresh.getTask(taskId)).toMatchObject({ taskId, status: 'completed' });
+      expect(await fresh.readOutput(taskId)).toBe(output);
+      expect(freshIx.get(IAgentContextMemoryService).get()).toHaveLength(1);
+      await fresh.reconcile();
+      expect(freshIx.get(IAgentContextMemoryService).get()).toHaveLength(1);
+    } else {
+      await svc.rollbackTaskRegistration!(taskId);
+      expect(await storage.read(`${scope}/${taskId}`, 'output.log')).toBeUndefined();
+      await fresh.loadFromDisk();
+      await fresh.reconcile();
+      expect(fresh.getTask(taskId)).toBeUndefined();
+    }
+    await svc.stop(otherId);
+  });
+
+  it('keeps the execution record until lifecycle cleanup and output persistence have both finished', async () => {
+    const storage = new InMemoryStorageService();
+    ix.set(IFileSystemStorageService, storage);
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const append = storage.append.bind(storage);
+    vi.spyOn(storage, 'append').mockImplementation(async (...args) => {
+      await writeGate;
+      await append(...args);
+    });
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => {
+        sink.appendOutput('held output');
+        await sink.settle({ status: 'completed' });
+        await cleanupGate;
+      },
+    });
+    await svc.wait(taskId);
+    const internals = svc as unknown as { tasks: Map<string, unknown> };
+    expect(internals.tasks.has(taskId)).toBe(true);
+    releaseWrite();
+    expect(await svc.readOutput(taskId)).toBe('held output');
+    expect(internals.tasks.has(taskId)).toBe(true);
+    releaseCleanup();
+    await vi.waitFor(() => expect(internals.tasks.has(taskId)).toBe(false));
+  });
+
+  it('keeps a completed private registration invisible until commit and then archives it once', async () => {
+    ix.set(IFileSystemStorageService, new InMemoryStorageService());
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask(outputtingTask('private result'), { deferVisibility: true });
+    await svc.wait(taskId);
+    const internals = svc as unknown as { tasks: Map<string, unknown> };
+    expect(svc.getTask(taskId)).toBeUndefined();
+    expect(svc.list(false)).toEqual([]);
+    expect(stubLoop().hasPendingRequests()).toBe(false);
+    expect(internals.tasks.has(taskId)).toBe(true);
+    svc.commitTaskRegistration!(taskId);
+    await vi.waitFor(() => expect(internals.tasks.has(taskId)).toBe(false));
+    expect(await svc.readOutput(taskId)).toBe('private result');
+    expect(stubLoop().queue.drain()).toHaveLength(1);
+    svc.commitTaskRegistration!(taskId);
+    expect(stubLoop().hasPendingRequests()).toBe(false);
+  });
+
+  it('rolls back a completed private registration without leaving an output cache or notification', async () => {
+    const storage = new InMemoryStorageService();
+    ix.set(IFileSystemStorageService, storage);
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask(outputtingTask('private result'), { deferVisibility: true });
+    await svc.wait(taskId);
+    await svc.rollbackTaskRegistration!(taskId);
+    expect(svc.getTask(taskId)).toBeUndefined();
+    expect(await svc.readOutput(taskId)).toBe('');
+    expect(stubLoop().hasPendingRequests()).toBe(false);
+    expect(await storage.read(`sessions/test-ws/test-session/agents/main/tasks/${taskId}`, 'output.log')).toBeUndefined();
+    const internals = svc as unknown as { tasks: Map<string, unknown>; cachedOutputs: Map<string, unknown> };
+    expect(internals.tasks.size).toBe(0);
+    expect(internals.cachedOutputs.size).toBe(0);
+  });
 
   it('enqueues a terminal notification for a finished detached task', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -897,6 +1185,19 @@ describe('AgentTaskService', () => {
     });
   });
 
+  it('keeps a buffered UTF-8 tail within the byte limit without splitting a character', async () => {
+    ix.set(IFileSystemStorageService, new InMemoryStorageService());
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask(outputtingTask('prefix🙂tail'), { detached: false });
+    await svc.wait(taskId);
+    expect(await svc.getOutputSnapshot(taskId, 5)).toMatchObject({
+      preview: 'tail',
+      previewBytes: 4,
+      truncated: true,
+      fullOutputAvailable: false,
+    });
+  });
+
   it('subagent restore does not claim previous v2 session tasks', async () => {
     const docs = mapBackedDocs();
     const bytes = new InMemoryStorageService();
@@ -963,15 +1264,10 @@ describe('AgentTaskService', () => {
     publishCompactionSplice();
 
     const reminder = await backgroundTaskReminder();
-    expect(reminder).toContain('The conversation was compacted');
-    expect(reminder).toContain(
-      'gone — but the tasks are still running from before. Do not start duplicates. Use TaskList to list them, TaskOutput for a non-blocking status/output snapshot',
-    );
+    expect(reminder).toContain('still running after compaction. Do not start duplicates.');
+    expect(reminder).toContain('Completion arrives via automatic notification.');
     expect(reminder).toContain('active_background_tasks: 1');
     expect(reminder).toContain(taskId);
-    expect(reminder).toContain('TaskOutput');
-    expect(reminder).toContain('TaskList');
-    expect(reminder).toContain('TaskStop');
     expect(await backgroundTaskReminder()).toBeUndefined();
 
     await svc.stop(taskId);

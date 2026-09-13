@@ -42,6 +42,33 @@ function scriptedTurnEndings(entries: ScriptedEntry[]): PrintTurnEndings {
 }
 
 describe('applyPrintBackgroundPolicy', () => {
+  it('awaits remote resource reads in goal, cron, then background order', async () => {
+    const order: string[] = [];
+    let active = true;
+    let fireAt: number | null = 10;
+    await applyPrintBackgroundPolicy({
+      mode: 'steer', ceilingS: 60, maxTurns: 5, skipTurnId: 1,
+      now: () => 0, warn: () => {}, drain: async () => {},
+      goalActive: async () => { order.push('goal'); return active; },
+      cronNextFireAt: async () => { order.push('cron'); return fireAt; },
+      countPending: async () => { order.push('tasks'); return 0; },
+      turnEndings: scriptedTurnEndings([
+        { event: ending(2, 'failed'), apply: () => { active = false; } },
+        { event: ending(3), apply: () => { fireAt = null; } },
+      ]),
+    });
+    expect(order).toEqual(['goal', 'goal', 'cron', 'goal', 'cron', 'tasks']);
+  });
+
+  it('propagates a resource read failure rather than inventing idle state', async () => {
+    await expect(applyPrintBackgroundPolicy({
+      mode: 'steer', ceilingS: 60, maxTurns: 5, skipTurnId: 1,
+      now: () => 0, warn: () => {}, drain: async () => {},
+      countPending: async () => { throw new Error('resource unavailable'); },
+      turnEndings: scriptedTurnEndings([]),
+    })).rejects.toThrow('resource unavailable');
+  });
+
   it('exit returns immediately without draining or waiting', async () => {
     const drain = vi.fn(async () => {});
     const countPending = vi.fn(() => 1);

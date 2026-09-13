@@ -68,7 +68,7 @@ describe('vendor-name gates', () => {
         '// v1 `provider.type === \'kimi\'` gate restored.',
         ' * `provider.type === \'kimi\'` parity): strict validation',
         '/* legacy: provider.type === \'kimi\' */',
-        'const home = process.env.KIMI_CODE_HOME;',
+        'const home = process.env.KIKI_HOME;',
         `const event = { provider_type: 'kimi' };`,
         `const provider = { type: 'kimi', oauth };`,
         `registerProviderDefinition({ id: 'kimi', ...rest });`,

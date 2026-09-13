@@ -6,7 +6,14 @@
  * status event (mirrors kap-server's broadcaster bridge).
  * Run: pnpm exec vitest run test/session-event-wiring.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import { describe, expect, it, vi } from 'vitest';
+
+import { createKimiHarness } from '#/index';
+import { makeTempDir, removeTempDirs } from './session-runtime-helpers';
+import { TEST_IDENTITY } from './test-identity';
 
 import type { Event } from '@kiki/protocol';
 import {
@@ -114,6 +121,66 @@ function bindStatusServices(agent: FakeAgentHandle, model: string): void {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe('SessionEventWiring disposal', () => {
+  it('releases the consumer and every subscription after the scope accessor is disposed', () => {
+    const agent = new FakeAgentHandle('agent-1');
+    const session = makeSession([agent]);
+    const interactions = session.accessor.get(ISessionInteractionService);
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const release = vi.spyOn(interactions, 'releaseConsumer');
+    const acquire = vi.spyOn(interactions, 'acquireConsumer');
+    const disposePending = vi.fn();
+    const disposeCreated = vi.fn();
+    const disposeRemoved = vi.fn();
+    vi.spyOn(interactions, 'onDidChangePending').mockReturnValue({ dispose: disposePending });
+    vi.spyOn(lifecycle, 'onDidCreate').mockReturnValue({ dispose: disposeCreated });
+    vi.spyOn(lifecycle, 'onDidDispose').mockReturnValue({ dispose: disposeRemoved });
+    const { sink, events } = collectingSink();
+    const wiring = new SessionEventWiring(session, sink);
+    vi.spyOn(session.accessor, 'get').mockImplementation(() => {
+      throw new Error('InstantiationService has been disposed');
+    });
+
+    expect(() => wiring.dispose()).not.toThrow();
+    expect(() => wiring.dispose()).not.toThrow();
+    expect(release).toHaveBeenCalledExactlyOnceWith(acquire.mock.calls[0]![0]);
+    expect(disposePending).toHaveBeenCalledTimes(1);
+    expect(disposeCreated).toHaveBeenCalledTimes(1);
+    expect(disposeRemoved).toHaveBeenCalledTimes(1);
+    agent.bus.emit({ type: 'assistant.delta', delta: 'after close', time: 1 });
+    expect(events).toEqual([]);
+  });
+
+  it.each(['session', 'harness'] as const)('closes a real %s without a disposed-scope error', async (target) => {
+    const tempDirs: string[] = [];
+    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-wiring-home-');
+    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-wiring-work-');
+    await mkdir(join(workDir, '.git'));
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const errors = vi.spyOn(console, 'error');
+    let harnessClosed = false;
+    try {
+      const session = await harness.createSession({ workDir });
+      if (target === 'session') {
+        await session.close();
+        await session.close();
+      } else {
+        await harness.close();
+        harnessClosed = true;
+      }
+      expect(harness.sessions.size).toBe(0);
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      try {
+        if (!harnessClosed) await harness.close();
+      } finally {
+        errors.mockRestore();
+        await removeTempDirs(tempDirs);
+      }
+    }
+  });
+});
 
 describe('SessionEventWiring status snapshot fold', () => {
   it('folds a consistent usage + context + model snapshot into every status event', () => {

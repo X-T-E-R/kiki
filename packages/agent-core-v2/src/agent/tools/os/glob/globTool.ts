@@ -244,7 +244,7 @@ export class GlobTool implements IGlobTool {
     if (limited.length === 0 && !timedOut) {
       if (filteredSensitive > 0) {
         return {
-          output: `No non-sensitive matches found (${String(filteredSensitive)} sensitive file(s) filtered).`,
+          output: `No matches found (${String(filteredSensitive)} sensitive file(s) filtered).`,
         };
       }
       return { output: 'No matches found' };
@@ -271,8 +271,9 @@ export class GlobTool implements IGlobTool {
       lines.push(traversalWarning);
     }
     if (truncated) {
-      lines.push(`[Truncated at ${String(MAX_MATCHES)} matches — use a more specific pattern]`);
-      lines.push(`Only the first ${String(MAX_MATCHES)} matches are returned.`);
+      lines.push(
+        `[Truncated at ${String(MAX_MATCHES)} matches; showing the first ${String(MAX_MATCHES)}. Use a more specific pattern.]`,
+      );
     }
     lines.push(...displayLines);
     if (filteredSensitive > 0) {

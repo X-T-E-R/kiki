@@ -14,20 +14,20 @@ import {
 import { darkColors, lightColors } from '#/tui/theme';
 
 let home: string;
-const originalHome = process.env['KIMI_CODE_HOME'];
+const originalHome = process.env['KIKI_HOME'];
 
 beforeEach(() => {
   home = join(tmpdir(), `kimi-themes-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(join(home, 'themes'), { recursive: true });
-  process.env['KIMI_CODE_HOME'] = home;
+  process.env['KIKI_HOME'] = home;
 });
 
 afterEach(() => {
   rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   if (originalHome === undefined) {
-    delete process.env['KIMI_CODE_HOME'];
+    delete process.env['KIKI_HOME'];
   } else {
-    process.env['KIMI_CODE_HOME'] = originalHome;
+    process.env['KIKI_HOME'] = originalHome;
   }
 });
 

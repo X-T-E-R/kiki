@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 
 import { dirname, join } from 'pathe';
 
-import type { KimiHostIdentity } from '@kiki/oauth';
+import { resolveKikiHome, type KimiHostIdentity } from '@kiki/oauth';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -124,7 +124,7 @@ export interface BootstrapInput {
 export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOptions {
   const env = input.env ?? process.env;
   const osHomeDir = input.osHomeDir ?? homedir();
-  const homeDir = resolveKimiHome(input.homeDir, env, osHomeDir);
+  const homeDir = resolveKikiHome(input.homeDir, env, osHomeDir);
   const configPath = input.configPath ?? join(homeDir, 'config.toml');
   return {
     homeDir,
@@ -233,21 +233,15 @@ function skillSeed(): ScopeSeed {
   ];
 }
 
-export function resolveKimiHome(
-  homeDir?: string,
-  env: NodeJS.ProcessEnv = process.env,
-  osHomeDir: string = homedir(),
-): string {
-  return homeDir ?? env['KIMI_CODE_HOME'] ?? join(osHomeDir, '.kimi-code');
-}
+export { resolveKikiHome };
 
 export function resolveConfigPath(input: {
   readonly homeDir?: string;
   readonly configPath?: string;
 }): string {
-  return input.configPath ?? join(resolveKimiHome(input.homeDir), 'config.toml');
+  return input.configPath ?? join(resolveKikiHome(input.homeDir), 'config.toml');
 }
 
-export function ensureKimiHome(homeDir: string): void {
+export function ensureKikiHome(homeDir: string): void {
   mkdirSync(homeDir, { recursive: true, mode: 0o700 });
 }

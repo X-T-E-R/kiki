@@ -32,19 +32,19 @@ export function readEnvInt(name: string, fallback: number): number {
 export const TRANSCRIPT_WINDOW_ENABLED = true;
 
 /** Keep the most recent N turns. `0` disables trimming. */
-export const TRANSCRIPT_MAX_TURNS = readEnvInt('KIMI_CODE_TUI_MAX_TURNS', 15);
+export const TRANSCRIPT_MAX_TURNS = readEnvInt('KIKI_TUI_MAX_TURNS', 15);
 
 /** Only the most recent E turns are allowed to expand (Ctrl+O). `0` disables expanding. */
-export const TRANSCRIPT_EXPAND_TURNS = readEnvInt('KIMI_CODE_TUI_EXPAND_TURNS', 3);
+export const TRANSCRIPT_EXPAND_TURNS = readEnvInt('KIKI_TUI_EXPAND_TURNS', 3);
 
 /** Only trim once the window exceeds maxTurns by this much (avoids churn). */
-export const TRANSCRIPT_HYSTERESIS = readEnvInt('KIMI_CODE_TUI_HYSTERESIS', 5);
+export const TRANSCRIPT_HYSTERESIS = readEnvInt('KIKI_TUI_HYSTERESIS', 5);
 
 /** Keep this many recent steps untouched inside a turn; older steps are merged into a summary. `0` disables merging. */
-export const TRANSCRIPT_KEEP_RECENT_STEPS = readEnvInt('KIMI_CODE_TUI_KEEP_RECENT_STEPS', 30);
+export const TRANSCRIPT_KEEP_RECENT_STEPS = readEnvInt('KIKI_TUI_KEEP_RECENT_STEPS', 30);
 
 /** Keep this many recent assistant messages mounted inside the active turn; older ones fold into the step summary. `0` disables folding. */
-export const TRANSCRIPT_KEEP_RECENT_ASSISTANT = readEnvInt('KIMI_CODE_TUI_KEEP_RECENT_ASSISTANT', 20);
+export const TRANSCRIPT_KEEP_RECENT_ASSISTANT = readEnvInt('KIKI_TUI_KEEP_RECENT_ASSISTANT', 20);
 
 /**
  * Once a turn ends, fold all but its last few assistant messages into the
@@ -52,7 +52,7 @@ export const TRANSCRIPT_KEEP_RECENT_ASSISTANT = readEnvInt('KIMI_CODE_TUI_KEEP_R
  * usually holds the conclusion. `0` disables folding.
  */
 export const TRANSCRIPT_KEEP_RECENT_ASSISTANT_COMPLETED = readEnvInt(
-  'KIMI_CODE_TUI_KEEP_RECENT_ASSISTANT_COMPLETED',
+  'KIKI_TUI_KEEP_RECENT_ASSISTANT_COMPLETED',
   2,
 );
 

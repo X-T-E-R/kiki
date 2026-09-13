@@ -4,7 +4,7 @@
  *
  * Defines `IWorkspaceMcpConfigService`, the single source of truth for "which
  * MCP servers should this workspace run": it resolves the MCP config files
- * (user `mcp.json`, project-root `.mcp.json`, `.kimi-code/mcp.json`) and the
+ * (user `mcp.json`, project-root `.mcp.json`, `.kiki/mcp.json`) and the
  * enabled plugins' contributions — on a name collision the file config wins —
  * with the two project-level files gated by `workspaceTrust` (an untrusted
  * workspace gets the user file and plugin contributions only), then tracks

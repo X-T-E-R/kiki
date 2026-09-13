@@ -10,7 +10,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'pathe';
 import { stringify as stringifyToml } from 'smol-toml';
 
-import { ensureKimiHome } from './path';
+import { ensureKikiHome } from './path';
 import { configToTomlData, readConfigFileForUpdate } from './toml';
 import { validateConfig } from './schema';
 
@@ -31,7 +31,7 @@ function readMigrationMarkers(homeDir: string): Record<string, string> {
 
 function writeMigrationMarker(homeDir: string, key: string): void {
   try {
-    ensureKimiHome(homeDir);
+    ensureKikiHome(homeDir);
     const markers = readMigrationMarkers(homeDir);
     markers[key] = new Date().toISOString();
     writeFileSync(join(homeDir, MIGRATIONS_FILE), `${JSON.stringify(markers, null, 2)}\n`, {

@@ -9,6 +9,21 @@ import {
 } from '../index';
 
 describe('named agent profile REST protocol', () => {
+  it('keeps unknown panel metrics nullable and strips dynamic prompt and credential fields', () => {
+    const parsed = agentCapabilitiesResponseSchema.parse({
+      context: 'live', owner: { agent_id: 'child' }, available: false, targets: [],
+      profile: { name: 'researcher', source: 'workspace', systemPrompt: 'private dynamic context', executor_options: { api_key: 'PRIVATE' } },
+      tools: [{ name: 'Read', source: 'builtin', category: 'read', state: 'approval-required' }],
+      skills: [{ name: 'workspace-skill', description: 'Example', source: 'project', scope: 'workspace', path: 'skills/example', state: 'disabled' }],
+      metrics: { child: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null,
+        totalTokens: null, totalCostUsd: null, contextTokens: null, contextLimit: null, compactionCount: null } },
+    });
+    expect(parsed.profile).toEqual({ name: 'researcher', source: 'workspace' });
+    expect(parsed.metrics?.['child']?.totalTokens).toBeNull();
+    expect(JSON.stringify(parsed)).not.toContain('PRIVATE');
+    expect(JSON.stringify(parsed)).not.toContain('private dynamic context');
+  });
+
   it('parses merged workspace applicability and the expanded-list query flag', () => {
     expect(listNamedAgentProfilesQuerySchema.parse({
       expand: '1',

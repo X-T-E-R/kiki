@@ -59,6 +59,7 @@ export interface McpConnectionView {
     | undefined;
   getRemoteServerUrl(name: string): string | undefined;
   reconnect(name: string): Promise<void>;
+  readonly connect?: (name: string, config: McpServerConfig) => Promise<void>;
   reconnectAndJoin(name: string): Promise<void>;
   waitForInitialLoad(signal?: AbortSignal): Promise<void>;
   initialLoadDurationMs(): number;

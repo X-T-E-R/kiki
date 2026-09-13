@@ -104,6 +104,23 @@ describe('FileSkillDiscovery', () => {
     expect(result.skills.map((s) => s.name)).toEqual(['summarize']);
   });
 
+  it('discovers only flat Markdown commands, keeps skill collisions, and reloads edits', async () => {
+    await writeSkill('skills/brainstorm/SKILL.md', 'name: brainstorm\ndescription: Existing skill');
+    await mkdir(join(root, 'commands'), { recursive: true });
+    await writeFile(join(root, 'commands/brainstorm.md'), 'Discuss $ARGUMENTS.');
+    await writeSkill('commands/nested/SKILL.md', 'name: nested\ndescription: Not a command');
+    await writeFile(join(root, 'commands/.hidden.md'), 'Hidden');
+    const roots: SkillRoot[] = [skillRoot('skills'), { ...skillRoot('commands'), scanMode: 'commands' }];
+    const result = await discover(roots);
+    expect(result.skills).toHaveLength(2);
+    const command = result.skills.find((skill) => skill.metadata.promptCommand);
+    expect(command).toMatchObject({ name: 'brainstorm', content: 'Discuss $ARGUMENTS.', metadata: { disableModelInvocation: true } });
+    await writeFile(join(root, 'commands/brainstorm.md'), 'Updated $ARGUMENTS.');
+    expect((await discover(roots)).skills.find((skill) => skill.metadata.promptCommand)?.content).toBe('Updated $ARGUMENTS.');
+    await rm(join(root, 'commands/brainstorm.md'));
+    expect((await discover(roots)).skills).toHaveLength(1);
+  });
+
   it('discovers only the root SKILL.md for a root-skill-only plugin root', async () => {
     await writeSkill('plugin/SKILL.md', 'name: root-skill\ndescription: at plugin root');
     await writeFile(join(root, 'plugin', 'CHANGELOG.md'), '# Changelog\n');

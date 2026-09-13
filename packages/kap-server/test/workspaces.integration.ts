@@ -36,7 +36,7 @@ interface ListWire {
   items: WorkspaceWire[];
 }
 
-describe('server-v2 /api/v1/workspaces', () => {
+describe('server-v2 /api/workspaces', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -109,7 +109,7 @@ describe('server-v2 /api/v1/workspaces', () => {
 
   it('creates a workspace with the full wire shape', async () => {
     const root = home as string;
-    const { status, body } = await postJson<WorkspaceWire>('/api/v1/workspaces', {
+    const { status, body } = await postJson<WorkspaceWire>('/api/workspaces', {
       root,
       name: 'proj',
     });
@@ -126,44 +126,44 @@ describe('server-v2 /api/v1/workspaces', () => {
 
   it('derives the default name from the root when name is omitted', async () => {
     const root = home as string;
-    const { body } = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const { body } = await postJson<WorkspaceWire>('/api/workspaces', { root });
     expect(body.code).toBe(0);
     expect(body.data.name.length).toBeGreaterThan(0);
   });
 
   it('is idempotent on root (createOrTouch)', async () => {
     const root = home as string;
-    const first = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
-    const second = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const first = await postJson<WorkspaceWire>('/api/workspaces', { root });
+    const second = await postJson<WorkspaceWire>('/api/workspaces', { root });
     expect(first.body.data.id).toBe(second.body.data.id);
   });
 
   it('rejects a relative root (40001)', async () => {
-    const { body } = await postJson<null>('/api/v1/workspaces', { root: 'relative/path' });
+    const { body } = await postJson<null>('/api/workspaces', { root: 'relative/path' });
     expect(body.code).toBe(40001);
     expect(body.details?.[0]?.path).toBe('root');
   });
 
   it('rejects a nonexistent root (40409)', async () => {
     const missing = join(home as string, 'does-not-exist');
-    const { body } = await postJson<null>('/api/v1/workspaces', { root: missing });
+    const { body } = await postJson<null>('/api/workspaces', { root: missing });
     expect(body.code).toBe(40409);
   });
 
   it('lists registered workspaces', async () => {
     const root = home as string;
-    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
-    const { body } = await getJson<ListWire>('/api/v1/workspaces');
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
+    const { body } = await getJson<ListWire>('/api/workspaces');
     expect(body.code).toBe(0);
     expect(body.data.items.some((w) => w.id === created.body.data.id)).toBe(true);
   });
 
   it('renames a workspace via PATCH', async () => {
     const root = home as string;
-    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
     const id = created.body.data.id;
 
-    const updated = await patchJson<WorkspaceWire>(`/api/v1/workspaces/${id}`, { name: 'renamed' });
+    const updated = await patchJson<WorkspaceWire>(`/api/workspaces/${id}`, { name: 'renamed' });
     expect(updated.body.code).toBe(0);
     expect(updated.body.data.name).toBe('renamed');
     expect(updated.body.data.id).toBe(id);
@@ -171,33 +171,33 @@ describe('server-v2 /api/v1/workspaces', () => {
 
   it('pins and unpins a workspace via PATCH without touching the name', async () => {
     const root = home as string;
-    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root, name: 'proj' });
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root, name: 'proj' });
     const id = created.body.data.id;
 
-    const pinned = await patchJson<WorkspaceWire>(`/api/v1/workspaces/${id}`, { pinned: true });
+    const pinned = await patchJson<WorkspaceWire>(`/api/workspaces/${id}`, { pinned: true });
     expect(pinned.body.code).toBe(0);
     expect(pinned.body.data.pinned).toBe(true);
     expect(pinned.body.data.name).toBe('proj');
 
-    const listed = await getJson<ListWire>('/api/v1/workspaces');
+    const listed = await getJson<ListWire>('/api/workspaces');
     expect(listed.body.data.items.find((w) => w.id === id)?.pinned).toBe(true);
 
-    const unpinned = await patchJson<WorkspaceWire>(`/api/v1/workspaces/${id}`, { pinned: false });
+    const unpinned = await patchJson<WorkspaceWire>(`/api/workspaces/${id}`, { pinned: false });
     expect(unpinned.body.data.pinned).toBe(false);
   });
 
   it('rejects a PATCH with neither name nor pinned (40001)', async () => {
     const root = home as string;
-    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
-    const { body } = await patchJson<null>(`/api/v1/workspaces/${created.body.data.id}`, {});
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
+    const { body } = await patchJson<null>(`/api/workspaces/${created.body.data.id}`, {});
     expect(body.code).toBe(40001);
   });
 
   it('persists `pinned` across a server restart', async () => {
     const root = home as string;
-    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
     const id = created.body.data.id;
-    await patchJson<WorkspaceWire>(`/api/v1/workspaces/${id}`, { pinned: true });
+    await patchJson<WorkspaceWire>(`/api/workspaces/${id}`, { pinned: true });
 
     await (server as RunningServer).close();
     server = await startServer({
@@ -209,12 +209,12 @@ describe('server-v2 /api/v1/workspaces', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const { body } = await getJson<ListWire>('/api/v1/workspaces');
+    const { body } = await getJson<ListWire>('/api/workspaces');
     expect(body.data.items.find((w) => w.id === id)?.pinned).toBe(true);
   });
 
   it('returns 40410 when patching an unknown workspace', async () => {
-    const { body } = await patchJson<null>('/api/v1/workspaces/wd_missing_000000000000', {
+    const { body } = await patchJson<null>('/api/workspaces/wd_missing_000000000000', {
       name: 'nope',
     });
     expect(body.code).toBe(40410);
@@ -222,22 +222,22 @@ describe('server-v2 /api/v1/workspaces', () => {
 
   it('deletes a workspace and 40410 on a second delete', async () => {
     const root = home as string;
-    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
     const id = created.body.data.id;
 
-    const deleted = await deleteJson<{ deleted: boolean }>(`/api/v1/workspaces/${id}`);
+    const deleted = await deleteJson<{ deleted: boolean }>(`/api/workspaces/${id}`);
     expect(deleted.body.code).toBe(0);
     expect(deleted.body.data).toEqual({ deleted: true });
 
-    const again = await deleteJson<null>(`/api/v1/workspaces/${id}`);
+    const again = await deleteJson<null>(`/api/workspaces/${id}`);
     expect(again.body.code).toBe(40410);
   });
 
   it('force-closes live sessions and disposes the workspace instance on delete', async () => {
     const root = home as string;
-    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
     const workspaceId = created.body.data.id;
-    const session = await postJson<{ id: string }>('/api/v1/sessions', {
+    const session = await postJson<{ id: string }>('/api/sessions', {
       metadata: { cwd: root },
     });
     const sessionId = session.body.data.id;
@@ -249,7 +249,7 @@ describe('server-v2 /api/v1/workspaces', () => {
     expect(instances.get(workspaceId)).toBeDefined();
     expect(sessions.get(sessionId)).toBeDefined();
 
-    const deleted = await deleteJson<{ deleted: boolean }>(`/api/v1/workspaces/${workspaceId}`);
+    const deleted = await deleteJson<{ deleted: boolean }>(`/api/workspaces/${workspaceId}`);
     expect(deleted.body.code).toBe(0);
     expect(instances.referenceCount(workspaceId)).toBe(0);
     expect(instances.get(workspaceId)).toBeUndefined();
@@ -258,12 +258,12 @@ describe('server-v2 /api/v1/workspaces', () => {
 
   it('releases the workspace reference when a live session closes', async () => {
     const root = home as string;
-    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
     const workspaceId = created.body.data.id;
-    const first = await postJson<{ id: string }>('/api/v1/sessions', {
+    const first = await postJson<{ id: string }>('/api/sessions', {
       metadata: { cwd: root },
     });
-    const second = await postJson<{ id: string }>('/api/v1/sessions', {
+    const second = await postJson<{ id: string }>('/api/sessions', {
       metadata: { cwd: root },
     });
     const core = (server as RunningServer).core;
@@ -280,13 +280,13 @@ describe('server-v2 /api/v1/workspaces', () => {
 
   it('reflects session_count for sessions created in the workspace', async () => {
     const root = home as string;
-    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
     expect(created.body.data.session_count).toBe(0);
 
-    const session = await postJson<{ id: string }>('/api/v1/sessions', { metadata: { cwd: root } });
+    const session = await postJson<{ id: string }>('/api/sessions', { metadata: { cwd: root } });
     expect(session.body.code).toBe(0);
 
-    const { body } = await getJson<ListWire>('/api/v1/workspaces');
+    const { body } = await getJson<ListWire>('/api/workspaces');
     const ws = body.data.items.find((w) => w.id === created.body.data.id);
     expect(ws?.session_count).toBe(1);
   });
@@ -343,7 +343,7 @@ describe('server-v2 /api/v1/workspaces', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const { body } = await getJson<ListWire>('/api/v1/workspaces');
+    const { body } = await getJson<ListWire>('/api/workspaces');
     expect(body.code).toBe(0);
     expect(body.data.items).toHaveLength(1);
     expect([typedId, lowerId]).toContain(body.data.items[0]?.id);

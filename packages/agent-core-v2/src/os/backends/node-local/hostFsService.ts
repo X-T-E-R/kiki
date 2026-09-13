@@ -318,6 +318,8 @@ export class HostFileSystem implements IHostFileSystem {
         size: s.size,
         mtimeMs: s.mtimeMs,
         ino: s.ino,
+        mode: s.mode,
+        uid: s.uid,
       };
     } catch (error) {
       throw toHostFsError(error, { path, op: 'stat' });
@@ -334,6 +336,8 @@ export class HostFileSystem implements IHostFileSystem {
         size: s.size,
         mtimeMs: s.mtimeMs,
         ino: s.ino,
+        mode: s.mode,
+        uid: s.uid,
       };
     } catch (error) {
       throw toHostFsError(error, { path, op: 'lstat' });

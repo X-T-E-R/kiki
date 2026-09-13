@@ -10,7 +10,6 @@ import {
   IModelCatalog,
   type ExecutableTool,
 } from '@kiki/agent-core-v2';
-import { listMcpJsonServersResponseSchema } from '../src/protocol/rest-mcpConfig';
 import {
   listMcpServersResponseSchema,
   listToolsResponseSchema,
@@ -37,7 +36,7 @@ interface ToolWire {
   active?: boolean;
 }
 
-describe('server-v2 /api/v1 tools + mcp', () => {
+describe('server-v2 /api tools + mcp', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -109,28 +108,8 @@ describe('server-v2 /api/v1 tools + mcp', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
-  async function putJson<T>(
-    path: string,
-    body: unknown,
-  ): Promise<{ status: number; body: Envelope<T> }> {
-    const res = await fetch(`${base}${path}`, {
-      method: 'PUT',
-      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
-      body: JSON.stringify(body),
-    } as never);
-    return { status: res.status, body: (await res.json()) as Envelope<T> };
-  }
-
-  async function deleteJson<T>(path: string): Promise<{ status: number; body: Envelope<T> }> {
-    const res = await fetch(`${base}${path}`, {
-      method: 'DELETE',
-      headers: authHeaders(server as RunningServer),
-    } as never);
-    return { status: res.status, body: (await res.json()) as Envelope<T> };
-  }
-
   async function createWorkspaceSession(): Promise<{ id: string; workspace_id: string }> {
-    const { body } = await postJson<{ id: string; workspace_id: string }>('/api/v1/sessions', {
+    const { body } = await postJson<{ id: string; workspace_id: string }>('/api/sessions', {
       metadata: { cwd: home as string },
     });
     expect(body.code).toBe(0);
@@ -161,9 +140,9 @@ describe('server-v2 /api/v1 tools + mcp', () => {
     } as ExecutableTool;
   }
 
-  describe('GET /api/v1/tools', () => {
+  describe('GET /api/tools', () => {
     it('returns an empty list before any session exists', async () => {
-      const { status, body } = await getJson<{ tools: ToolWire[] }>('/api/v1/tools');
+      const { status, body } = await getJson<{ tools: ToolWire[] }>('/api/tools');
       expect(status).toBe(200);
       expect(body.code).toBe(0);
       expect(listToolsResponseSchema.parse(body.data).tools).toEqual([]);
@@ -171,7 +150,7 @@ describe('server-v2 /api/v1 tools + mcp', () => {
 
     it('returns builtin tools after the session creates its main agent', async () => {
       await createSession();
-      const { body } = await getJson<{ tools: ToolWire[] }>('/api/v1/tools');
+      const { body } = await getJson<{ tools: ToolWire[] }>('/api/tools');
       expect(body.code).toBe(0);
       expect(listToolsResponseSchema.parse(body.data).tools.length).toBeGreaterThan(0);
     });
@@ -185,7 +164,7 @@ describe('server-v2 /api/v1 tools + mcp', () => {
       registry.register(makeTool('MySkill'), { source: 'user' });
       registry.register(makeTool('mcp__myserver__search'), { source: 'mcp' });
 
-      const { body } = await getJson<{ tools: ToolWire[] }>('/api/v1/tools');
+      const { body } = await getJson<{ tools: ToolWire[] }>('/api/tools');
       expect(body.code).toBe(0);
       const tools = listToolsResponseSchema.parse(body.data).tools;
 
@@ -204,7 +183,7 @@ describe('server-v2 /api/v1 tools + mcp', () => {
       const sid = await createSession();
       await ensureMainAgent(sid);
       const { body } = await getJson<{ tools: ToolWire[] }>(
-        `/api/v1/tools?session_id=${sid}`,
+        `/api/tools?session_id=${sid}`,
       );
       expect(body.code).toBe(0);
       expect(listToolsResponseSchema.safeParse(body.data).success).toBe(true);
@@ -218,7 +197,7 @@ describe('server-v2 /api/v1 tools + mcp', () => {
       if (session === undefined) throw new Error(`session ${id} not found`);
       await session.accessor.get(ISessionToolPolicy).setDisabledTools(['Bash']);
 
-      const { body } = await getJson<{ tools: ToolWire[] }>(`/api/v1/tools?session_id=${id}`);
+      const { body } = await getJson<{ tools: ToolWire[] }>(`/api/tools?session_id=${id}`);
       expect(body.code).toBe(0);
       const tools = listToolsResponseSchema.parse(body.data).tools;
       expect(tools.find((t) => t.name === 'Bash')).toMatchObject({ active: false });
@@ -226,14 +205,14 @@ describe('server-v2 /api/v1 tools + mcp', () => {
     });
 
     it('rejects an empty session_id with 40001', async () => {
-      const { body } = await getJson<null>('/api/v1/tools?session_id=');
+      const { body } = await getJson<null>('/api/tools?session_id=');
       expect(body.code).toBe(40001);
     });
   });
 
-  describe('GET /api/v1/mcp/servers', () => {
+  describe('GET /api/mcp/runtime/servers', () => {
     it('returns an empty list before any session exists', async () => {
-      const { status, body } = await getJson<{ servers: unknown[] }>('/api/v1/mcp/servers');
+      const { status, body } = await getJson<{ servers: unknown[] }>('/api/mcp/runtime/servers');
       expect(status).toBe(200);
       expect(body.code).toBe(0);
       expect(listMcpServersResponseSchema.parse(body.data).servers).toEqual([]);
@@ -241,7 +220,7 @@ describe('server-v2 /api/v1 tools + mcp', () => {
 
     it('returns an empty list when the session has no main agent yet', async () => {
       await createSession();
-      const { body } = await getJson<{ servers: unknown[] }>('/api/v1/mcp/servers');
+      const { body } = await getJson<{ servers: unknown[] }>('/api/mcp/runtime/servers');
       expect(body.code).toBe(0);
       expect(listMcpServersResponseSchema.parse(body.data).servers).toEqual([]);
     });
@@ -249,101 +228,38 @@ describe('server-v2 /api/v1 tools + mcp', () => {
     it('returns a parseable servers list once the main agent exists', async () => {
       const id = await createSession();
       await ensureMainAgent(id);
-      const { body } = await getJson<{ servers: unknown[] }>('/api/v1/mcp/servers');
+      const { body } = await getJson<{ servers: unknown[] }>('/api/mcp/runtime/servers');
       expect(body.code).toBe(0);
       expect(listMcpServersResponseSchema.parse(body.data).servers).toEqual([]);
     });
   });
 
-  describe('POST /api/v1/mcp/servers/{id}:restart', () => {
+  describe('POST /api/mcp/runtime/servers/{id}:restart', () => {
     it('returns 40408 for an unknown server id', async () => {
       const id = await createSession();
       await ensureMainAgent(id);
-      const { body } = await postJson<null>('/api/v1/mcp/servers/does-not-exist:restart');
+      const { body } = await postJson<null>('/api/mcp/runtime/servers/does-not-exist:restart');
       expect(body.code).toBe(40408);
       expect(body.msg).toMatch(/does not exist/);
     });
 
     it('returns 40408 even before any session is created', async () => {
-      const { body } = await postJson<null>('/api/v1/mcp/servers/x:restart');
+      const { body } = await postJson<null>('/api/mcp/runtime/servers/x:restart');
       expect(body.code).toBe(40408);
     });
 
     it('rejects an unsupported action with 40001', async () => {
       await createSession();
-      const { body } = await postJson<null>('/api/v1/mcp/servers/foo:bogus');
+      const { body } = await postJson<null>('/api/mcp/runtime/servers/foo:bogus');
       expect(body.code).toBe(40001);
       expect(body.msg).toMatch(/unsupported action/);
     });
 
     it('rejects a bare {id} (no action) with 40001', async () => {
       await createSession();
-      const { body } = await postJson<null>('/api/v1/mcp/servers/foo');
+      const { body } = await postJson<null>('/api/mcp/runtime/servers/foo');
       expect(body.code).toBe(40001);
     });
   });
 
-  describe('editable MCP JSON entries', () => {
-    it('lists, upserts, and deletes entries with authoritative echoes', async () => {
-      const created = await createWorkspaceSession();
-      const workspaceId = encodeURIComponent(created.workspace_id);
-
-      const initial = await getJson<unknown>(
-        `/api/v1/mcp/config/servers?workspace_id=${workspaceId}`,
-      );
-      expect(initial.body.code).toBe(0);
-      expect(listMcpJsonServersResponseSchema.parse(initial.body.data).entries).toEqual([]);
-
-      const upserted = await putJson<unknown>('/api/v1/mcp/servers/local', {
-        workspace_id: created.workspace_id,
-        scope: 'project',
-        config: {
-          transport: 'stdio',
-          command: 'node',
-          args: ['server.js'],
-          env: { TOKEN: 'value' },
-          enabled: false,
-        },
-      });
-      expect(upserted.body.code).toBe(0);
-      expect(listMcpJsonServersResponseSchema.parse(upserted.body.data).entries).toEqual([{
-        name: 'local',
-        scope: 'project',
-        config: {
-          transport: 'stdio',
-          command: 'node',
-          args: ['server.js'],
-          env: { TOKEN: 'value' },
-          enabled: false,
-        },
-      }]);
-
-      const removed = await deleteJson<unknown>(
-        `/api/v1/mcp/servers/local?workspace_id=${workspaceId}&scope=project`,
-      );
-      expect(removed.body.code).toBe(0);
-      expect(listMcpJsonServersResponseSchema.parse(removed.body.data).entries).toEqual([]);
-    });
-
-    it('rejects unknown MCP config fields with 40001', async () => {
-      const created = await createWorkspaceSession();
-      const response = await putJson<null>('/api/v1/mcp/servers/unsafe', {
-        workspace_id: created.workspace_id,
-        scope: 'user',
-        config: { transport: 'stdio', command: 'node', shell: true },
-      });
-
-      expect(response.body.code).toBe(40001);
-    });
-
-    it('returns 40408 when deleting a missing editable entry', async () => {
-      const created = await createWorkspaceSession();
-      const response = await deleteJson<null>(
-        `/api/v1/mcp/servers/missing?workspace_id=${encodeURIComponent(created.workspace_id)}&scope=user`,
-      );
-
-      expect(response.body.code).toBe(40408);
-      expect(response.body.msg).toContain('not found');
-    });
-  });
 });

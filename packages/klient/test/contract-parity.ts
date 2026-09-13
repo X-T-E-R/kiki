@@ -86,6 +86,8 @@ import type {
   SessionMetaPatch,
 } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { ISessionTitleService } from '@kiki/agent-core-v2/session/sessionTitle/sessionTitle';
+import type { SessionActivityState } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
+import { sessionActivityStateSchema } from '../src/contract/session/activity.js';
 import type {
   AuthStatus,
   IOAuthService,
@@ -204,6 +206,7 @@ import {
   getTasksPayloadSchema,
   planDataSchema,
   promptLaunchResultSchema,
+  promptTerminalResultSchema,
   promptPartSchema,
   promptPayloadSchema,
   promptSkillActivationSchema,
@@ -236,6 +239,11 @@ import {
   toolResultEventSchema,
   turnEndedEventSchema,
   turnStartedEventSchema,
+  turnStepStartedEventSchema,
+  turnStepInterruptedEventSchema,
+  turnStepRetryingEventSchema,
+  hookResultEventSchema,
+  goalUpdatedEventSchema,
   warningEventSchema,
 } from '../src/contract/agent/events.js';
 import {
@@ -406,6 +414,7 @@ type ConfigTargetValues = `${ConfigTarget}`;
 // sessions.ts
 const _sessionSummary: AssertWire<typeof sessionSummarySchema, SessionSummary> = true;
 const _sessionListQuery: AssertWire<typeof sessionListQuerySchema, SessionListQuery> = true;
+const _sessionActivity: AssertWire<typeof sessionActivityStateSchema, SessionActivityState> = true;
 
 // workspaces.ts
 const _workspace: AssertWire<typeof workspaceSchema, Workspace> = true;
@@ -739,6 +748,8 @@ const _steerPayload: AssertWireToEngine<typeof steerPayloadSchema, SteerPayload>
 const _activateSkillPayload: AssertWire<typeof activateSkillPayloadSchema, ActivateSkillPayload> =
   true;
 const _promptLaunchResult: AssertWire<typeof promptLaunchResultSchema, PromptLaunchResult> = true;
+type PromptTerminalResult = Awaited<ReturnType<IAgentPromptService['submitAndWait']>>;
+const _promptTerminalResult: AssertEngineToWire<typeof promptTerminalResultSchema, PromptTerminalResult> = true;
 type PromptWithSkillsResult = Awaited<ReturnType<IAgentSkillService['promptWithSkills']>>;
 const _promptWithSkillsResult: AssertWire<
   typeof promptWithSkillsResultSchema,
@@ -786,6 +797,12 @@ const _fullCompactionInput: AssertWire<typeof fullCompactionInputSchema, FullCom
 // Parity against the protocol event types (the stream carries flat
 // `{ type, ... }` events; schemas keep the `type` literal). One-directional
 // where a field is mirrored as `unknown`.
+type FlatEvent<C extends { readonly type: string; readonly prototype: object }> = Omit<C['prototype'], 'type' | 'serialize'> & { type: C['type'] };
+const _turnStepStarted: AssertEngineToWire<typeof turnStepStartedEventSchema, FlatEvent<typeof import('@kiki/agent-core-v2/agent/loop/turnEvents').TurnStepStarted>> = true;
+const _turnStepInterrupted: AssertEngineToWire<typeof turnStepInterruptedEventSchema, FlatEvent<typeof import('@kiki/agent-core-v2/agent/loop/turnEvents').TurnStepInterrupted>> = true;
+const _turnStepRetrying: AssertEngineToWire<typeof turnStepRetryingEventSchema, FlatEvent<typeof import('@kiki/agent-core-v2/agent/stepRetry/stepRetryService').TurnStepRetrying>> = true;
+const _hookResult: AssertEngineToWire<typeof hookResultEventSchema, FlatEvent<typeof import('@kiki/agent-core-v2/features/externalHooks/agent/agentExternalHooksService').HookResult>> = true;
+const _goalUpdated: AssertEngineToWire<typeof goalUpdatedEventSchema, FlatEvent<typeof import('@kiki/agent-core-v2/agent/goal/goalOps').GoalUpdated>> = true;
 const _turnStartedEvent: AssertEngineToWire<typeof turnStartedEventSchema, TurnStartedEvent> = true;
 const _turnEndedEvent: AssertEngineToWire<typeof turnEndedEventSchema, TurnEndedEvent> = true;
 const _assistantDeltaEvent: AssertWire<typeof assistantDeltaEventSchema, AssistantDeltaEvent> =

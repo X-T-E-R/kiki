@@ -1,7 +1,7 @@
 /**
  * `DaemonClient` — wire-level test client for the kimi-code server.
  *
- * Wraps the server's HTTP REST + WS surfaces (`/api/v1/...` + `/api/v1/ws`)
+ * Wraps the server's HTTP REST + WS surfaces (`/api/...` + `/api/ws`)
  * into a single, typed object that scenarios can drive. Handles:
  *   - Envelope unwrap + typed REST helpers
  *   - WS `server_hello` → `client_hello` → ack handshake
@@ -67,7 +67,7 @@ import { type AnyFrame, WsClient } from './ws.js';
 export interface DaemonClientOptions {
   /** Default `http://127.0.0.1:58627`. */
   baseUrl?: string;
-  /** Default `/api/v1`. WS endpoint is `${apiPrefix}/ws`. */
+  /** Default `/api`. WS endpoint is `${apiPrefix}/ws`. */
   apiPrefix?: string;
   /** Default `server-e2e-<ulid>` — used as the `client_hello.client_id`. */
   clientId?: string;
@@ -90,7 +90,7 @@ export interface SubmitAndWaitOptions {
 type UploadFileData = Blob | ArrayBuffer | Uint8Array | string;
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:58627';
-const DEFAULT_API_PREFIX = '/api/v1';
+const DEFAULT_API_PREFIX = '/api';
 const DEFAULT_CONTROL_ACK_TIMEOUT_MS = 5_000;
 
 /**

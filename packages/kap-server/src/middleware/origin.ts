@@ -11,13 +11,13 @@ export interface OriginHookOptions {
 }
 
 /**
- * Parse `KIMI_CODE_CORS_ORIGINS` into an allowlist.
+ * Parse `KIKI_CORS_ORIGINS` into an allowlist.
  *
  * Comma-separated, trimmed, empties dropped. No `*` wildcard — every entry is
  * an explicit origin (PLAN §3.4).
  */
 export function parseCorsOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
-  const raw = env['KIMI_CODE_CORS_ORIGINS'];
+  const raw = env['KIKI_CORS_ORIGINS'];
   if (raw === undefined) {
     return [];
   }

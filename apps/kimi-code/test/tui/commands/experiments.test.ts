@@ -19,7 +19,7 @@ function feature(
     title: 'Micro compaction',
     description: 'Trim older tool results.',
     surface: 'core',
-    env: 'KIMI_CODE_EXPERIMENTAL_MICRO_COMPACTION',
+    env: 'KIKI_EXPERIMENTAL_MICRO_COMPACTION',
     defaultEnabled: true,
     enabled: true,
     source: 'default',

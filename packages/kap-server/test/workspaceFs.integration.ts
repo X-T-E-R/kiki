@@ -2,7 +2,9 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createKlient } from '@kiki/klient/http';
+import { IHostFileSystem } from '@kiki/agent-core-v2';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -33,7 +35,7 @@ interface HomeWire {
   recent_roots: string[];
 }
 
-describe('server-v2 /api/v1 fs folder picker', () => {
+describe('server-v2 /api fs folder picker', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let instancesDir: string | undefined;
@@ -92,7 +94,7 @@ describe('server-v2 /api/v1 fs folder picker', () => {
   }
 
   it('defaults browse to $HOME when path is omitted', async () => {
-    const { status, body } = await getJson<BrowseWire>('/api/v1/fs:browse');
+    const { status, body } = await getJson<BrowseWire>('/api/fs:browse');
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(body.data.path).toBe(await realpath(homedir()));
@@ -101,7 +103,7 @@ describe('server-v2 /api/v1 fs folder picker', () => {
   });
 
   it('does not serve the double-colon URL (v1 parity: only /fs:browse is valid)', async () => {
-    const res = await fetch(`${base}/api/v1/fs::browse`, {
+    const res = await fetch(`${base}/api/fs::browse`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     expect(res.status).toBe(404);
@@ -114,7 +116,7 @@ describe('server-v2 /api/v1 fs folder picker', () => {
     await writeFile(join(root, 'README.md'), 'hi');
 
     const { body } = await getJson<BrowseWire>(
-      `/api/v1/fs:browse?path=${encodeURIComponent(root)}`,
+      `/api/fs:browse?path=${encodeURIComponent(root)}`,
     );
     expect(body.code).toBe(0);
     expect(body.data.path).toBe(await realpath(root));
@@ -132,14 +134,14 @@ describe('server-v2 /api/v1 fs folder picker', () => {
     await mkdir(join(root, 'alpha'));
 
     const { body } = await getJson<BrowseWire>(
-      `/api/v1/fs:browse?path=${encodeURIComponent(root)}`,
+      `/api/fs:browse?path=${encodeURIComponent(root)}`,
     );
     expect(body.code).toBe(0);
     expect(body.data.entries.map((e) => e.name)).toEqual(['alpha', '.zeta']);
   });
 
   it('returns parent=null for the filesystem root', async () => {
-    const { body } = await getJson<BrowseWire>('/api/v1/fs:browse?path=%2F');
+    const { body } = await getJson<BrowseWire>('/api/fs:browse?path=%2F');
     expect(body.code).toBe(0);
     expect(body.data.path).toBe('/');
     expect(body.data.parent).toBeNull();
@@ -147,19 +149,19 @@ describe('server-v2 /api/v1 fs folder picker', () => {
 
   it('rejects a relative path (40001)', async () => {
     const { body } = await getJson<null>(
-      `/api/v1/fs:browse?path=${encodeURIComponent('relative/path')}`,
+      `/api/fs:browse?path=${encodeURIComponent('relative/path')}`,
     );
     expect(body.code).toBe(40001);
   });
 
   it('rejects a nonexistent path (40409)', async () => {
     const missing = join(home as string, 'does-not-exist');
-    const { body } = await getJson<null>(`/api/v1/fs:browse?path=${encodeURIComponent(missing)}`);
+    const { body } = await getJson<null>(`/api/fs:browse?path=${encodeURIComponent(missing)}`);
     expect(body.code).toBe(40409);
   });
 
   it('returns an empty recent_roots when no workspaces are registered', async () => {
-    const { status, body } = await getJson<HomeWire>('/api/v1/fs:home');
+    const { status, body } = await getJson<HomeWire>('/api/fs:home');
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(body.data.home).toBe(homedir());
@@ -168,16 +170,16 @@ describe('server-v2 /api/v1 fs folder picker', () => {
 
   it('reflects registered workspace roots in recent_roots', async () => {
     const root = home as string;
-    const created = await postJson<{ id: string }>('/api/v1/workspaces', { root });
+    const created = await postJson<{ id: string }>('/api/workspaces', { root });
     expect(created.body.code).toBe(0);
 
-    const { body } = await getJson<HomeWire>('/api/v1/fs:home');
+    const { body } = await getJson<HomeWire>('/api/fs:home');
     expect(body.code).toBe(0);
     expect(body.data.recent_roots).toContain(root);
   });
 });
 
-describe('server-v2 /api/v1 fs:mkdir', () => {
+describe('server-v2 /api fs:mkdir', () => {
   let server: RunningServer | undefined;
   let dir: string | undefined;
   let instancesDir: string | undefined;
@@ -227,7 +229,7 @@ describe('server-v2 /api/v1 fs:mkdir', () => {
   it('creates a directory that fs:browse then lists', async () => {
     const target = join(dir as string, 'fresh-folder');
 
-    const { status, body } = await postJson<{ path: string }>('/api/v1/fs:mkdir', {
+    const { status, body } = await postJson<{ path: string }>('/api/fs:mkdir', {
       path: target,
     });
     expect(status).toBe(200);
@@ -235,7 +237,7 @@ describe('server-v2 /api/v1 fs:mkdir', () => {
     expect(body.data.path).toBe(target);
 
     const browse = await fetch(
-      `${base}/api/v1/fs:browse?path=${encodeURIComponent(dir as string)}`,
+      `${base}/api/fs:browse?path=${encodeURIComponent(dir as string)}`,
       { headers: authHeaders(server as RunningServer) } as never,
     );
     const browseBody = (await browse.json()) as Envelope<BrowseWire>;
@@ -243,7 +245,7 @@ describe('server-v2 /api/v1 fs:mkdir', () => {
   });
 
   it('rejects a relative path (40001)', async () => {
-    const { body } = await postJson<null>('/api/v1/fs:mkdir', { path: 'relative/folder' });
+    const { body } = await postJson<null>('/api/fs:mkdir', { path: 'relative/folder' });
     expect(body.code).toBe(40001);
   });
 
@@ -251,7 +253,7 @@ describe('server-v2 /api/v1 fs:mkdir', () => {
     const target = join(dir as string, 'already-here');
     await mkdir(target);
 
-    const { body } = await postJson<null>('/api/v1/fs:mkdir', { path: target });
+    const { body } = await postJson<null>('/api/fs:mkdir', { path: target });
     expect(body.code).toBe(40919);
   });
 
@@ -259,18 +261,18 @@ describe('server-v2 /api/v1 fs:mkdir', () => {
     const target = join(dir as string, 'file.txt');
     await writeFile(target, 'hi');
 
-    const { body } = await postJson<null>('/api/v1/fs:mkdir', { path: target });
+    const { body } = await postJson<null>('/api/fs:mkdir', { path: target });
     expect(body.code).toBe(40919);
   });
 
   it('rejects a missing parent (40409)', async () => {
     const target = join(dir as string, 'no-such-parent', 'child');
-    const { body } = await postJson<null>('/api/v1/fs:mkdir', { path: target });
+    const { body } = await postJson<null>('/api/fs:mkdir', { path: target });
     expect(body.code).toBe(40409);
   });
 
   it('does not serve the double-colon URL', async () => {
-    const res = await fetch(`${base}/api/v1/fs::mkdir`, {
+    const res = await fetch(`${base}/api/fs::mkdir`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ path: join(dir as string, 'x') }),
@@ -279,7 +281,7 @@ describe('server-v2 /api/v1 fs:mkdir', () => {
   });
 });
 
-describe('server-v2 /api/v1 fs:content', () => {
+describe('server-v2 /api fs:content', () => {
   let server: RunningServer | undefined;
   let dir: string | undefined;
   let instancesDir: string | undefined;
@@ -315,7 +317,7 @@ describe('server-v2 /api/v1 fs:content', () => {
   });
 
   function contentUrl(path: string): string {
-    return `${base}/api/v1/fs:content?path=${encodeURIComponent(path)}`;
+    return `${base}/api/fs:content?path=${encodeURIComponent(path)}`;
   }
 
   async function getContent(
@@ -404,6 +406,38 @@ describe('server-v2 /api/v1 fs:content', () => {
     expect(await res.text()).toBe('2345');
   });
 
+  it('shared facade distinguishes file documents from download error envelopes', async () => {
+    const client = createKlient({ endpoint: base, token: server!.authTokenService.getToken() });
+    try {
+      const document = '{"code":40409,"msg":"this is a document","data":null}\n';
+      const file = join(dir as string, 'document.json');
+      await writeFile(file, document);
+      expect(await client.rest!.filesystem.readHostFile(file)).toBe(document);
+      expect(new TextDecoder().decode((await client.rest!.filesystem.readHostFileBytes(file)).bytes)).toBe(document);
+      for (const [path, code] of [
+        [join(dir as string, 'missing.json'), 40409],
+        [dir as string, 40906],
+        ['relative.json', 40001],
+        ['', 40001],
+      ] as const) {
+        const response = await getContent(path);
+        expect(response.ok, path).toBe(false);
+        expect((await response.json() as Envelope<null>).code).toBe(code);
+        await expect(client.rest!.filesystem.readHostFileBytes(path)).rejects.toMatchObject({ code });
+        await expect(client.rest!.filesystem.readHostFile(path)).rejects.toMatchObject({ code });
+      }
+      const failingRead = vi.spyOn(server!.core.accessor.get(IHostFileSystem), 'realpath')
+        .mockRejectedValueOnce(new Error('synthetic filesystem failure'));
+      try {
+        await expect(client.rest!.filesystem.readHostFileBytes(file)).rejects.toMatchObject({ code: 50001 });
+      } finally {
+        failingRead.mockRestore();
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
   it('rejects a relative path (40001)', async () => {
     const res = await getContent('relative/path.txt');
     const body = (await res.json()) as Envelope<null>;
@@ -429,7 +463,7 @@ describe('server-v2 /api/v1 fs:content', () => {
   });
 
   it('does not serve the double-colon URL', async () => {
-    const res = await fetch(`${base}/api/v1/fs::content?path=%2Ftmp`, {
+    const res = await fetch(`${base}/api/fs::content?path=%2Ftmp`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     expect(res.status).toBe(404);

@@ -129,7 +129,7 @@ async function probeInstance(
 ): Promise<ServerConnection | undefined> {
   const url = instanceUrl(instance);
   try {
-    const response = await fetch(`${url}/api/v1/meta`, {
+    const response = await fetch(`${url}/api/meta`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(5_000),
     });
@@ -195,7 +195,7 @@ async function runServeForeground(
 async function stopServer(homeDir: string): Promise<void> {
   const connection = await findReachableServer(homeDir);
   if (connection === undefined) throw new Error('No reachable Kiki server was found.');
-  const response = await fetch(`${connection.url}/api/v1/shutdown`, {
+  const response = await fetch(`${connection.url}/api/shutdown`, {
     method: 'POST',
     headers: { authorization: `Bearer ${connection.token}` },
   });

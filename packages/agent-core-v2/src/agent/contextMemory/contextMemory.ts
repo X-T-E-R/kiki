@@ -54,3 +54,13 @@ export interface IAgentContextMemoryService {
 }
 
 export const IAgentContextMemoryService = createDecorator<IAgentContextMemoryService>('agentContextMemoryService');
+
+export interface IAgentContextMutationService {
+  readonly _serviceBrand: undefined;
+
+  appendImported(message: ContextMessage): void;
+}
+
+export const IAgentContextMutationService = createDecorator<IAgentContextMutationService>(
+  'agentContextMutationService',
+);

@@ -378,7 +378,7 @@ describe('Kiki MCP HTTP daemon mount', () => {
       logLevel: 'silent',
     });
     running.push(bootstrap);
-    const created = await fetch(`http://127.0.0.1:${String(bootstrap.port)}/api/v1/sessions`, {
+    const created = await fetch(`http://127.0.0.1:${String(bootstrap.port)}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(bootstrap, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd: home } }),

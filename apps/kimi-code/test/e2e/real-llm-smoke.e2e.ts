@@ -1,14 +1,14 @@
 /**
- * Real-LLM smoke. Opt-in only — runs when `KIMI_E2E_REAL=1` is set, so
+ * Real-LLM smoke. Opt-in only — runs when `KIKI_E2E_REAL=1` is set, so
  * `make test` / CI never touches the network. Goes through the SDK's
  * `KimiHarness` entry and round-trips one real prompt. Requires provider
  * credentials on disk.
  *
  * Env knobs:
- *   KIMI_E2E_REAL     — set to "1" to enable this suite
- *   KIMI_E2E_MODEL    — model alias override (default: config's default)
- *   KIMI_E2E_PROMPT   — prompt text (default: "Reply with a single word: hi")
- *   KIMI_E2E_WORKDIR  — workspace directory (default: /tmp/kimi-e2e)
+ *   KIKI_E2E_REAL     — set to "1" to enable this suite
+ *   KIKI_E2E_MODEL    — model alias override (default: config's default)
+ *   KIKI_E2E_PROMPT   — prompt text (default: "Reply with a single word: hi")
+ *   KIKI_E2E_WORKDIR  — workspace directory (default: /tmp/kiki-e2e)
  */
 
 import { mkdirSync } from 'node:fs';
@@ -20,19 +20,19 @@ import { describe, expect, test } from 'vitest';
 import { createKimiCodeHostIdentity, getVersion } from '#/cli/version';
 
 const DEFAULT_PROMPT = 'Reply with a single word: hi';
-const DEFAULT_WORKDIR = '/tmp/kimi-e2e';
+const DEFAULT_WORKDIR = '/tmp/kiki-e2e';
 const TURN_TIMEOUT_MS = 60_000;
 
-const ENABLED = process.env['KIMI_E2E_REAL'] === '1';
+const ENABLED = process.env['KIKI_E2E_REAL'] === '1';
 type TurnEndedEvent = Extract<Event, { readonly type: 'turn.ended' }>;
 
 describe.skipIf(!ENABLED)('SDK e2e — real LLM smoke', () => {
   test(
     'round-trips a single prompt through KimiHarness',
     async () => {
-      const workDir = process.env['KIMI_E2E_WORKDIR'] ?? DEFAULT_WORKDIR;
-      const prompt = process.env['KIMI_E2E_PROMPT'] ?? DEFAULT_PROMPT;
-      const modelAlias = process.env['KIMI_E2E_MODEL'];
+      const workDir = process.env['KIKI_E2E_WORKDIR'] ?? DEFAULT_WORKDIR;
+      const prompt = process.env['KIKI_E2E_PROMPT'] ?? DEFAULT_PROMPT;
+      const modelAlias = process.env['KIKI_E2E_MODEL'];
       mkdirSync(workDir, { recursive: true });
 
       const version = getVersion();

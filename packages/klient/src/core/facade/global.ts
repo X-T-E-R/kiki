@@ -141,15 +141,18 @@ export interface GlobalSessionsFacade {
   countActive(workspaceIds: readonly string[]): Promise<number>;
   /**
    * Create a session rooted at `workDir` (the workspace is registered
-   * implicitly), optionally titled. Returns the persisted metadata. No agent
-   * is created — `session(id).agent('main')` materializes it on first use.
+   * implicitly), optionally titled or given an explicit `sessionId`. Returns
+   * the persisted metadata. `mainAgentBinding` materializes the main agent;
+   * otherwise it is materialized on first use.
    * `mcpServers` injects ephemeral per-session MCP servers: connected only
    * for this session, never persisted.
    */
   create(input: {
+    sessionId?: string;
     workDir: string;
     additionalDirs?: readonly string[];
     title?: string;
+    mainAgentBinding?: { profile?: string; model?: string; thinking?: string };
     mcpServers?: Readonly<Record<string, McpServerConfig>>;
   }): Promise<SessionMeta>;
 }
@@ -471,9 +474,9 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       get: (id) => call('sessionIndex', 'get', [id]) as Promise<SessionSummary | undefined>,
       countActive: (workspaceIds) =>
         call('sessionIndex', 'count', [{ workspaceIds }]) as Promise<number>,
-      create: async ({ workDir, additionalDirs, title, mcpServers }) => {
+      create: async ({ sessionId, workDir, additionalDirs, title, mcpServers, mainAgentBinding }) => {
         const handle = (await scoped({}, 'sessionManager', 'create', [
-          { workDir, additionalDirs, mcpServers },
+          { sessionId, workDir, additionalDirs, mcpServers, mainAgentBinding },
         ])) as { id: string };
         const scope = { sessionId: handle.id };
         if (title !== undefined) {

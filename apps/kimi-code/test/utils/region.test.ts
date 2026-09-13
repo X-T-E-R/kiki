@@ -12,7 +12,7 @@ let home: string;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'kimi-region-test-'));
-  process.env['KIMI_CODE_HOME'] = home;
+  process.env['KIKI_HOME'] = home;
   delete process.env['KIMI_CODE_OAUTH_HOST'];
   delete process.env['KIMI_OAUTH_HOST'];
   delete process.env['KIMI_CODE_REGION_MARKER'];

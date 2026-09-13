@@ -220,7 +220,7 @@ async function withSkillCatalogWorkspace(
   run: (fixture: { readonly workDir: string; readonly skillRoot: string }) => Promise<void>,
 ): Promise<void> {
   const workDir = await mkdtemp(join(tmpdir(), 'skill-catalog-'));
-  const skillRoot = join(workDir, '.kimi-code', 'skills');
+  const skillRoot = join(workDir, '.kiki', 'skills');
   await mkdir(skillRoot, { recursive: true });
   try {
     await run({ workDir, skillRoot: (await realpath(skillRoot)).replaceAll('\\', '/') });
@@ -598,7 +598,7 @@ describe('WorkspaceSkillCatalogService', () => {
   it('feeds skipped skills from file sources into the merged catalog', async () => {
     await withSkillCatalogWorkspace(async ({ workDir }) => {
       const skippedEntry = {
-        path: join(workDir, '.kimi-code', 'skills', 'bad', 'SKILL.md'),
+        path: join(workDir, '.kiki', 'skills', 'bad', 'SKILL.md'),
         type: 'nope',
         reason: 'unsupported skill type "nope"',
       };
@@ -960,7 +960,7 @@ describe('WorkspaceSkillCatalogService', () => {
     const workDir = await mkdtemp(join(tmpdir(), 'skill-watch-'));
     const host = createScopedTestHost([
       stubPair(IFlagService, stubFlag(true)),
-      stubPair(IBootstrapService, bootstrapStub),
+      stubPair(IBootstrapService, { ...bootstrapStub, homeDir: workDir }),
       stubPair(IConfigService, configStub()),
       stubPair(IPluginService, pluginStub()),
       stubPair(ILogService, stubLog()),
@@ -1112,7 +1112,7 @@ describe('WorkspaceSkillCatalogService', () => {
     const workDir = await mkdtemp(join(tmpdir(), 'skill-watch-dot-'));
     const host = createScopedTestHost([
       stubPair(IFlagService, stubFlag(true)),
-      stubPair(IBootstrapService, bootstrapStub),
+      stubPair(IBootstrapService, { ...bootstrapStub, homeDir: workDir }),
       stubPair(IConfigService, configStub()),
       stubPair(IPluginService, pluginStub()),
       stubPair(ILogService, stubLog()),

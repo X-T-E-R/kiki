@@ -1,4 +1,5 @@
 import type { Kaos } from '@kiki/kaos';
+import { KIKI_CONFIG_MIGRATION_MARKER } from '@kiki/oauth';
 import { dirname, isAbsolute, join, normalize, resolve } from 'pathe';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { z } from 'zod';
@@ -109,7 +110,7 @@ export function normalizeAdditionalDirs(additionalDirs: readonly string[]): stri
 }
 
 function getWorkspaceLocalConfigPath(projectRoot: string): string {
-  return join(projectRoot, '.kimi-code', 'local.toml');
+  return join(projectRoot, '.kiki', 'local.toml');
 }
 
 async function findProjectRoot(kaos: Kaos, workDir: string): Promise<string> {
@@ -136,7 +137,13 @@ async function readWorkspaceLocalToml(
   try {
     text = await kaos.readText(configPath);
   } catch (error: unknown) {
-    if (isPathMissing(error)) return undefined;
+    if (isPathMissing(error)) {
+      const projectRoot = dirname(dirname(configPath));
+      if (!await pathExists(kaos, join(dirname(configPath), KIKI_CONFIG_MIGRATION_MARKER)) && await pathExists(kaos, join(projectRoot, '.kimi-code', 'local.toml'))) {
+        throw new KimiError(ErrorCodes.CONFIG_INVALID, `Legacy project configuration requires explicit migration: kiki migrate-config --workspace ${JSON.stringify(projectRoot)}`);
+      }
+      return undefined;
+    }
     throw new KimiError(
       ErrorCodes.CONFIG_INVALID,
       `Failed to read ${configPath}: ${describeError(error)}`,

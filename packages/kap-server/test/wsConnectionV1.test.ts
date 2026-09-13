@@ -1,4 +1,5 @@
-import type { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
+import { once } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { IConnectionRegistry } from '../src/transport/ws/connectionRegistry';
@@ -26,8 +27,20 @@ class FakeSocket {
     return this;
   }
 
-  send(data: string): void {
-    this.sent.push(data);
+  readonly fragmentBytes: number[] = [];
+  private fragments: Buffer[] = [];
+
+  send(data: string | Buffer, options?: { fin: boolean }, callback?: (error?: Error) => void): void {
+    if (options === undefined) this.sent.push(data.toString());
+    else {
+      this.fragmentBytes.push(Buffer.byteLength(data));
+      this.fragments.push(Buffer.from(data));
+      if (options.fin) {
+        this.sent.push(Buffer.concat(this.fragments).toString());
+        this.fragments = [];
+      }
+    }
+    callback?.();
   }
 
   close(code?: number, reason?: string): void {
@@ -117,6 +130,120 @@ function durable(type: string, sessionId: string, seq: number) {
     payload: { type, agentId: 'main', sessionId },
   };
 }
+
+describe('large transcript transfers', () => {
+  it('keeps a progressing real socket alive across heartbeat cycles', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    const address = server.address();
+    if (typeof address === 'string' || address === null) throw new Error('Expected TCP listener');
+    const accepted = once(server, 'connection');
+    const client = new WebSocket(`ws://127.0.0.1:${address.port}`);
+    const messages: Array<{ type: string; payload?: unknown }> = [];
+    client.on('message', (data) => {
+      const message = JSON.parse(data.toString());
+      messages.push(message);
+      if (message.type === 'ping') client.send(JSON.stringify({ type: 'pong' }));
+    });
+    const [socket] = await accepted as [WebSocket];
+    const original = socket.send.bind(socket);
+    const fragmentSend = vi.spyOn(socket, 'send').mockImplementation(((data: Buffer, options: { fin?: boolean }, callback?: (error?: Error) => void) => {
+      if (typeof options?.fin === 'boolean') original(data, options, (error) => setTimeout(() => callback?.(error), 25));
+      else original(data);
+    }) as typeof socket.send);
+    const conn = new WsConnectionV1({ socket, broadcaster: makeBroadcaster(), connectionRegistry: makeRegistry(), remoteAddress: null, userAgent: null, heartbeatIntervalMs: 10 });
+    try {
+      const frame = { ...durable('transcript.reset', 's1', 1), payload: { text: 'x'.repeat(256 * 1024) } };
+      conn.send(frame);
+      await conn.drain();
+      await vi.waitFor(() => expect(messages).toContainEqual(frame));
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      expect(fragmentSend.mock.calls.filter((call) => typeof call[1] === 'object' && call[1]?.fin !== undefined).length).toBeGreaterThan(2);
+    } finally {
+      client.close();
+      conn.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('fragments queued transcripts after another fragmented message and after backpressure', async () => {
+    const socket = new FakeSocket();
+    const conn = makeConn(socket, { heartbeatIntervalMs: 0 });
+    const a = { ...durable('transcript.reset', 's1', 1), payload: { text: 'a'.repeat(128 * 1024) } };
+    const b = { ...durable('transcript.ops', 's2', 2), payload: { text: 'b'.repeat(128 * 1024) } };
+    conn.send(a);
+    conn.send(b);
+    await conn.drain();
+    expect(socket.frames().slice(1)).toEqual([a, b]);
+    expect(socket.fragmentBytes.length).toBe(6);
+    expect(Math.max(...socket.fragmentBytes)).toBeLessThanOrEqual(65536);
+    socket.bufferedAmount = 2 << 20;
+    conn.send(durable('before-transcript', 's1', 3));
+    conn.send(b);
+    socket.bufferedAmount = 0;
+    conn.send(a);
+    await conn.drain();
+    expect(socket.fragmentBytes.length).toBe(12);
+    expect(socket.frames().slice(-3)).toEqual([durable('before-transcript', 's1', 3), b, a]);
+    expect(socket.terminateCalls).toBe(0);
+    conn.close();
+  });
+
+  it('terminates a truly stalled fragment without injecting a JSON heartbeat', async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const conn = makeConn(socket, { heartbeatIntervalMs: 10_000 });
+    const original = socket.send.bind(socket);
+    socket.send = (data, options) => original(data, options);
+    try {
+      conn.send({ ...durable('transcript.reset', 's1', 1), payload: { text: 'x'.repeat(128 * 1024) } });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(socket.closeCalls).toHaveLength(0);
+      expect(socket.terminateCalls).toBe(0);
+      expect(socket.frames().some((frame) => (frame as { type: string }).type === 'ping')).toBe(false);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(socket.terminateCalls).toBeGreaterThan(0);
+    } finally {
+      conn.close();
+      vi.useRealTimers();
+    }
+  });
+  it('drains a single oversized item atomically with bounded fragments and ordered following traffic', async () => {
+    const socket = new FakeSocket();
+    const conn = makeConn(socket, { heartbeatIntervalMs: 0 });
+    const envelope = { ...durable('transcript.reset', 'example-session', 1), payload: { text: '恢复😀'.repeat(600_000) } };
+    expect(Buffer.byteLength(JSON.stringify(envelope))).toBeGreaterThan(4 << 20);
+    conn.send(envelope);
+    conn.send(durable('after-reset', 'example-session', 2));
+    expect(socket.frames().some((frame) => (frame as { type: string }).type === 'transcript.reset')).toBe(false);
+    await conn.drain();
+    expect(socket.terminateCalls).toBe(0);
+    expect(Math.max(...socket.fragmentBytes)).toBeLessThanOrEqual(64 * 1024);
+    expect(socket.frames().slice(1)).toEqual([envelope, durable('after-reset', 'example-session', 2)]);
+    conn.close();
+  });
+
+  it('does not enqueue the next fragment until the socket write completes', async () => {
+    const socket = new FakeSocket();
+    const conn = makeConn(socket, { heartbeatIntervalMs: 0 });
+    const original = socket.send.bind(socket);
+    let complete: (() => void) | undefined;
+    socket.send = (data, options, callback) => {
+      original(data, options);
+      complete = () => callback?.();
+    };
+    conn.send({ ...durable('transcript.reset', 'example-session', 1), payload: { text: 'x'.repeat(5 << 20) } });
+    expect(socket.fragmentBytes).toHaveLength(1);
+    await Promise.resolve();
+    expect(socket.fragmentBytes).toHaveLength(1);
+    complete?.();
+    await Promise.resolve();
+    expect(socket.fragmentBytes).toHaveLength(2);
+    expect(socket.terminateCalls).toBe(0);
+    conn.close();
+    complete?.();
+  });
+});
 
 describe('coalesceFrames', () => {
   it('merges adjacent compatible assistant deltas', () => {

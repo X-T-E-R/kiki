@@ -93,29 +93,29 @@ describe('kap-server cold start', () => {
     home = await mkdtemp(join(tmpdir(), 'kap-server-cold-start-'));
     const initialServer = await boot();
 
-    const healthResponse = await fetch(`${base}/api/v1/healthz`);
+    const healthResponse = await fetch(`${base}/api/healthz`);
     const health = (await healthResponse.json()) as Envelope<{ ok: boolean }>;
     expect(healthResponse.status).toBe(200);
     expect(health).toMatchObject({ code: 0, data: { ok: true } });
     expect(health.request_id).toEqual(expect.any(String));
 
-    const unauthorizedMeta = await fetch(`${base}/api/v1/meta`);
+    const unauthorizedMeta = await fetch(`${base}/api/meta`);
     expect(unauthorizedMeta.status).toBe(401);
 
-    const metaResponse = await authedFetch(initialServer, base, '/api/v1/meta');
+    const metaResponse = await authedFetch(initialServer, base, '/api/meta');
     const meta = (await metaResponse.json()) as Envelope<{ server_id: string }>;
     expect(metaResponse.status).toBe(200);
     expect(meta.code).toBe(0);
     expect(meta.data.server_id).toEqual(expect.any(String));
 
-    const authResponse = await authedFetch(initialServer, base, '/api/v1/auth');
+    const authResponse = await authedFetch(initialServer, base, '/api/auth');
     const auth = (await authResponse.json()) as Envelope<{ ready: boolean; providers_count: number }>;
     expect(authResponse.status).toBe(200);
     expect(auth.code).toBe(0);
     expect(auth.data.ready).toEqual(expect.any(Boolean));
     expect(auth.data.providers_count).toBeGreaterThanOrEqual(0);
 
-    const createResponse = await fetch(`${base}/api/v1/sessions`, {
+    const createResponse = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(initialServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd: home } }),
@@ -135,7 +135,7 @@ describe('kap-server cold start', () => {
     const sessionId = created.data.id;
     const firstRead = await getJson<SessionContract>(
       initialServer,
-      `/api/v1/sessions/${sessionId}`,
+      `/api/sessions/${sessionId}`,
     );
     expect(firstRead.status).toBe(200);
     expect(firstRead.body).toMatchObject({
@@ -173,7 +173,7 @@ describe('kap-server cold start', () => {
 
     const recoveredSession = await getJson<SessionContract>(
       recoveredServer,
-      `/api/v1/sessions/${sessionId}`,
+      `/api/sessions/${sessionId}`,
     );
     expect(recoveredSession.status).toBe(200);
     expect(recoveredSession.body).toMatchObject({
@@ -189,7 +189,7 @@ describe('kap-server cold start', () => {
 
     const recoveredTranscript = await getJson<TranscriptContract>(
       recoveredServer,
-      `/api/v1/sessions/${sessionId}/transcript?agent_id=main`,
+      `/api/sessions/${sessionId}/transcript?agent_id=main`,
     );
     expect(recoveredTranscript.status).toBe(200);
     expect(recoveredTranscript.body.code).toBe(0);

@@ -1,10 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { TestInstantiationService } from '#/_base/di/test';
+import type { IAgentScopeHandle } from '#/_base/di/scope';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import type { AgentExecutionStatus } from '#/app/agentExecutor/agentExecutor';
 import { AgentListTool } from '#/agent/tools/agent-list/agentListTool';
-import type { AgentListOutput } from '#/agent/tools/agent-list/agent-list';
-import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import type { IAgentTaskService } from '#/agent/task/task';
-import type { ISessionMetadata, AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentListTool, type AgentListOutput } from '#/agent/tools/agent-list/agent-list';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentTaskService } from '#/agent/task/task';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
   COLLABORATION_AGENT_TYPE_LABEL,
   COLLABORATION_TASK_NAME_LABEL,
@@ -12,6 +19,8 @@ import {
 import { executeTool } from '../../../tools/fixtures/execute-tool';
 
 const signal = new AbortController().signal;
+const disposables = new DisposableStore();
+afterEach(() => disposables.clear());
 
 function childMeta(options: {
   readonly parent?: string;
@@ -31,33 +40,49 @@ function childMeta(options: {
 function makeTool(options: {
   readonly callerAgentId?: string;
   readonly agents?: Readonly<Record<string, AgentMeta>>;
+  readonly execution?: Readonly<Record<string, AgentExecutionStatus['state']>>;
   readonly tasks?: readonly {
     readonly agentId: string;
     readonly status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
     readonly startedAt?: number;
   }[];
-}): AgentListTool {
-  return new AgentListTool(
-    { agentId: options.callerAgentId ?? 'main' } as IAgentScopeContext,
-    {
-      read: async () => ({ agents: options.agents ?? {} }),
-    } as ISessionMetadata,
-    {
-      list: () => (options.tasks ?? []).map((task, index) => ({
+}): IAgentListTool {
+  const services = disposables.add(new TestInstantiationService());
+  services.stub(IAgentScopeContext, { agentId: options.callerAgentId ?? 'main' });
+  services.stub(ISessionMetadata, {
+    read: async () => ({ agents: options.agents ?? {} }),
+  } as ISessionMetadata);
+  services.stub(IAgentTaskService, {
+    list: () => (options.tasks ?? []).map((task, index) => ({
+      kind: 'agent',
+      taskId: `task-${String(index + 1)}`,
+      description: '',
+      agentId: task.agentId,
+      status: task.status,
+      startedAt: task.startedAt ?? index,
+      endedAt: task.status === 'running' ? null : index,
+    })),
+  } as unknown as IAgentTaskService);
+  services.stub(IAgentLifecycleService, {
+    get: (agentId) => {
+      const state = options.execution?.[agentId];
+      if (state === undefined) return undefined;
+      const child = disposables.add(new TestInstantiationService());
+      child.stub(IAgentExecutionService, { status: () => ({ state }) });
+      return {
+        id: agentId,
         kind: 'agent',
-        taskId: `task-${String(index + 1)}`,
-        description: '',
-        agentId: task.agentId,
-        status: task.status,
-        startedAt: task.startedAt ?? index,
-        endedAt: task.status === 'running' ? null : index,
-      })),
-    } as unknown as IAgentTaskService,
-  );
+        accessor: child,
+        dispose: () => child.dispose(),
+      } satisfies IAgentScopeHandle;
+    },
+  });
+  services.set(IAgentListTool, new SyncDescriptor(AgentListTool));
+  return services.get(IAgentListTool);
 }
 
 async function listAgents(
-  tool: AgentListTool,
+  tool: IAgentListTool,
   args: { include_finished?: boolean } = {},
 ): Promise<AgentListOutput> {
   const result = await executeTool(tool, {
@@ -73,6 +98,54 @@ async function listAgents(
 }
 
 describe('AgentListTool', () => {
+  it.each(['timed_out', 'completed', 'failed', 'killed', 'lost'] as const)(
+    'keeps a live child visible after its background task is %s',
+    async (status) => {
+      const tool = makeTool({
+        agents: { worker: childMeta({ name: 'worker' }) },
+        execution: { worker: 'running' },
+        tasks: [{ agentId: 'worker', status }],
+      });
+      expect((await listAgents(tool)).agents).toEqual([
+        { agent_id: 'worker', name: 'worker', status: 'running' },
+      ]);
+    },
+  );
+
+  it.each(['starting', 'running', 'cancelling'] as const)(
+    'reports an untracked %s execution as running',
+    async (state) => {
+      const tool = makeTool({
+        agents: { worker: childMeta({ swarmItem: 'src/a.ts' }) },
+        execution: { worker: state },
+      });
+      expect((await listAgents(tool)).agents[0]).toMatchObject({
+        agent_id: 'worker', status: 'running', swarm_item: 'src/a.ts',
+      });
+    },
+  );
+
+  it('uses the settled task status after the live execution becomes idle', async () => {
+    const execution: Record<string, AgentExecutionStatus['state']> = { worker: 'running' };
+    const tool = makeTool({
+      agents: { worker: childMeta({}) },
+      execution,
+      tasks: [{ agentId: 'worker', status: 'timed_out' }],
+    });
+    expect((await listAgents(tool)).agents[0]?.status).toBe('running');
+    execution['worker'] = 'idle';
+    expect((await listAgents(tool)).agents).toEqual([]);
+    expect((await listAgents(tool, { include_finished: true })).agents[0]?.status).toBe('interrupted');
+  });
+
+  it('reports a broken live executor as errored, not running', async () => {
+    const tool = makeTool({
+      agents: { worker: childMeta({}) },
+      execution: { worker: 'broken' },
+    });
+    expect((await listAgents(tool)).agents).toEqual([]);
+    expect((await listAgents(tool, { include_finished: true })).agents[0]?.status).toBe('errored');
+  });
   it('lists a swarm child that has no background task', async () => {
     const tool = makeTool({
       agents: {

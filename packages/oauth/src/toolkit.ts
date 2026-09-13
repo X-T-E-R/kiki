@@ -1,4 +1,4 @@
-import { homedir } from 'node:os';
+import { resolveKikiHome } from './home';
 import { join } from 'node:path';
 
 import { KIMI_CODE_FLOW_CONFIG } from './constants';
@@ -110,7 +110,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
   constructor(options: KimiOAuthToolkitOptions<TConfig>) {
     this.identity =
       options.identity === undefined ? undefined : assertKimiHostIdentity(options.identity);
-    this.homeDir = options.homeDir ?? defaultKimiHome();
+    this.homeDir = options.homeDir ?? defaultKikiHome();
     const credentialsDir = options.credentialsDir ?? join(this.homeDir, 'credentials');
     this.storage = options.storage ?? new FileTokenStorage(credentialsDir);
     this.flowConfig = options.flowConfig ?? KIMI_CODE_FLOW_CONFIG;
@@ -404,10 +404,8 @@ export function resolveKimiTokenStorageName(input: {
   throw new Error(`Invalid Kimi OAuth token key: "${key}".`);
 }
 
-function defaultKimiHome(): string {
-  const override = process.env['KIMI_CODE_HOME'];
-  if (override !== undefined && override.length > 0) return override;
-  return join(homedir(), '.kimi-code');
+function defaultKikiHome(): string {
+  return resolveKikiHome();
 }
 
 function managedUsageUrl(baseUrl: string | undefined): string {

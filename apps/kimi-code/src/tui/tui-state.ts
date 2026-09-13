@@ -92,8 +92,8 @@ export function createTUIState(options: KimiTUIOptions): TUIState {
 
   const terminal = new ProcessTerminal();
   setMarkdownRenderLatex(initialAppState.renderLatex ?? DEFAULT_TUI_CONFIG.renderLatex ?? true);
-  // Fullscreen is experimental and env-gated for now: KIMI_CODE_TUI_FULL_SCREEN=1.
-  const fullscreen = process.env['KIMI_CODE_TUI_FULL_SCREEN'] === '1';
+  // Fullscreen is experimental and env-gated for now: KIKI_TUI_FULL_SCREEN=1.
+  const fullscreen = process.env['KIKI_TUI_FULL_SCREEN'] === '1';
   const ui =
     fullscreen
       ? new TuiAltScreen(terminal, undefined, undefined, {

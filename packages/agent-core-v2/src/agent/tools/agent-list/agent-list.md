@@ -15,18 +15,21 @@ Each entry carries:
   parameter of the `AgentRun` tool. Use that name in place of `agent_id`
   when addressing the same child.
 - `profile` — the child's agent type.
-- `status` — `running` while a background task is in progress;
-  `completed`, `interrupted`, or `errored` once that task has settled;
-  `untracked` when no background task is tracking the child (the usual
-  case for retained historical swarm children and for foreground `AgentRun` calls);
-  `unknown` when a task id is recorded but cannot be resolved.
+- `status` — `running` while the child is starting, running, or cancelling,
+  even if its previous background task has settled. A broken live executor
+  is `errored`. Otherwise the latest background task determines `running`,
+  `completed`, `interrupted`, or `errored`; without one, the child is
+  `untracked`. An unrecognized task state is `unknown`.
+  `running` does not guarantee an active background task or a future task
+  completion notification; use `TaskList` to inspect tracked background work.
 - `swarm_item` — present when a retained historical swarm child carries an
   item label.
 
 Guidelines:
 
-- Prefer the default `include_finished=false`, which lists running children and
-  children with no tracking task. Pass `include_finished=true` only when you need
+- Prefer the default `include_finished=false`, which lists running
+  children and children that are idle because no background task is
+  tracking them. Pass `include_finished=true` only when you need
   children whose latest background task has already finished or failed.
 - At most 50 entries are returned, running children first. If more
   children matched, `omitted` is the count that did not fit.

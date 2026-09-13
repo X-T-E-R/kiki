@@ -74,12 +74,12 @@ function rpc(
   method: string,
   ids: { sid?: string; aid?: string } = {},
 ): string {
-  if (scope === 'core') return `/api/v1/debug/${String(service)}/${method}`;
-  if (scope === 'session') return `/api/v1/debug/session/${ids.sid}/${String(service)}/${method}`;
-  return `/api/v1/debug/session/${ids.sid}/agent/${ids.aid}/${String(service)}/${method}`;
+  if (scope === 'core') return `/api/debug/${String(service)}/${method}`;
+  if (scope === 'session') return `/api/debug/session/${ids.sid}/${String(service)}/${method}`;
+  return `/api/debug/session/${ids.sid}/agent/${ids.aid}/${String(service)}/${method}`;
 }
 
-describe('server-v2 /api/v1/debug RPC', () => {
+describe('server-v2 /api/debug RPC', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -126,7 +126,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
   }
 
   async function createSession(cwd: string): Promise<string> {
-    const res = await fetch(`${base}/api/v1/sessions`, {
+    const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd } }),
@@ -148,7 +148,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
     await session.accessor.get(IAgentLifecycleService).create({ agentId });
   }
 
-  it('describes all channels via GET /api/v1/debug/channels', async () => {
+  it('describes all channels via GET /api/debug/channels', async () => {
     const { status, body } = await call<
       readonly {
         name: string;
@@ -160,7 +160,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
           params: string;
         }[];
       }[]
-    >('GET', '/api/v1/debug/channels');
+    >('GET', '/api/debug/channels');
     expect(status).toBe(200);
     expect(body.code).toBe(0);
 
@@ -192,7 +192,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
   it('reaches a runtime-contributed Service absent from /channels (decorator-name fallback)', async () => {
     const channels = await call<readonly { name: string }[]>(
       'GET',
-      '/api/v1/debug/channels',
+      '/api/debug/channels',
     );
     expect(channels.body.data.some((c) => c.name === String(IDebugEventsService))).toBe(false);
 
@@ -251,7 +251,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
     const workspace = await call<WorkspaceInstanceSnapshot>(
       'GET',
-      `/api/v1/debug/workspace/${workspaceId}/snapshot`,
+      `/api/debug/workspace/${workspaceId}/snapshot`,
     );
     expect(workspace.body.data).toMatchObject({
       metadata: { id: workspaceId, root: home },
@@ -269,7 +269,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
     const association = await call<SessionWorkspaceAssociationSnapshot>(
       'GET',
-      `/api/v1/debug/session/${sessionId}/association`,
+      `/api/debug/session/${sessionId}/association`,
     );
     expect(association.body.data).toEqual({
       sessionId,
@@ -279,7 +279,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
     const binding = await call<AgentRuntimeBindingSnapshot>(
       'GET',
-      `/api/v1/debug/session/${sessionId}/agent/main/runtime-binding`,
+      `/api/debug/session/${sessionId}/agent/main/runtime-binding`,
     );
     expect(binding.body.data).toMatchObject({
       binding: { workspaceId, runtimeId: 'local' },
@@ -288,7 +288,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
     });
 
     const legacy = await fetch(
-      `${base}/api/v1/debug/workspace/${workspaceId}/workspaceTrust/get`,
+      `${base}/api/debug/workspace/${workspaceId}/workspaceTrust/get`,
       { headers: authHeaders(server as RunningServer) },
     );
     expect(legacy.status).toBe(404);
@@ -379,20 +379,20 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
     const current = await call<{ workspace_id: string; runtime_id: string }>(
       'GET',
-      `/api/v1/sessions/${id}/runtime`,
+      `/api/sessions/${id}/runtime`,
     );
     expect(current.body.data).toMatchObject({ runtime_id: 'local' });
 
     const invalid = await call<null>(
       'POST',
-      `/api/v1/sessions/${id}/runtime`,
+      `/api/sessions/${id}/runtime`,
       { runtime_id: 'missing-runtime' },
     );
     expect(invalid.body.code).toBe(40420);
 
     const unchanged = await call<{ workspace_id: string; runtime_id: string }>(
       'GET',
-      `/api/v1/sessions/${id}/runtime`,
+      `/api/sessions/${id}/runtime`,
     );
     expect(unchanged.body.data).toEqual(current.body.data);
 
@@ -411,13 +411,13 @@ describe('server-v2 /api/v1/debug RPC', () => {
     try {
       const switched = await call<{ workspace_id: string; runtime_id: string }>(
         'POST',
-        `/api/v1/sessions/${id}/runtime`,
+        `/api/sessions/${id}/runtime`,
         { runtime_id: 'remote' },
       );
       expect(switched.body.data.runtime_id).toBe('remote');
       const snapshot = await call<AgentRuntimeBindingSnapshot>(
         'GET',
-        `/api/v1/debug/session/${id}/agent/main/runtime-binding`,
+        `/api/debug/session/${id}/agent/main/runtime-binding`,
       );
       expect(snapshot.body.data).toMatchObject({
         binding: { workspaceId: current.body.data.workspace_id, runtimeId: 'remote' },
@@ -723,12 +723,12 @@ describe('server-v2 /api/v1/debug RPC', () => {
   });
 
   it('rejects unknown service (40001)', async () => {
-    const { body } = await call<null>('POST', '/api/v1/debug/does-not-exist/list');
+    const { body } = await call<null>('POST', '/api/debug/does-not-exist/list');
     expect(body.code).toBe(40001);
   });
 
   it('does not serve a missing method segment', async () => {
-    const { status, body } = await call<null>('POST', '/api/v1/debug/sessionIndex');
+    const { status, body } = await call<null>('POST', '/api/debug/sessionIndex');
     expect(status === 404 || body.code !== 0).toBe(true);
   });
 
@@ -766,7 +766,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
   });
 });
 
-describe('server-v2 /api/v1/debug RPC auth', () => {
+describe('server-v2 /api/debug RPC auth', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -813,7 +813,7 @@ describe('server-v2 /api/v1/debug RPC auth', () => {
     expect(body.code).toBe(0);
   });
 
-  it('accepts the persistent token on /api/v1/debug', async () => {
+  it('accepts the persistent token on /api/debug', async () => {
     const persistent = (server as RunningServer).authTokenService.getToken();
     const res = await fetch(`${base}${rpc('core', ISessionIndex, 'listRecent')}`, {
       method: 'POST',
@@ -835,7 +835,7 @@ describe('server-v2 /api/v1/debug RPC auth', () => {
   });
 });
 
-describe('server-v2 /api/v1/debug RPC (dev-only, whitelist-free)', () => {
+describe('server-v2 /api/debug RPC (dev-only, whitelist-free)', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -884,10 +884,10 @@ describe('server-v2 /api/v1/debug RPC (dev-only, whitelist-free)', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
-  it('describes every scoped Service via GET /api/v1/debug/channels', async () => {
+  it('describes every scoped Service via GET /api/debug/channels', async () => {
     const { status, body } = await call<readonly { name: string; scope: string }[]>(
       'GET',
-      '/api/v1/debug/channels',
+      '/api/debug/channels',
     );
     expect(status).toBe(200);
     expect(body.code).toBe(0);
@@ -900,7 +900,7 @@ describe('server-v2 /api/v1/debug RPC (dev-only, whitelist-free)', () => {
   it('calls a non-whitelisted Service method', async () => {
     const { status, body } = await call(
       'POST',
-      `/api/v1/debug/${String(IAppendLogStore)}/flush`,
+      `/api/debug/${String(IAppendLogStore)}/flush`,
       [],
     );
     expect(status).toBe(200);
@@ -910,7 +910,7 @@ describe('server-v2 /api/v1/debug RPC (dev-only, whitelist-free)', () => {
   it('also reaches whitelisted Services by the same wire names', async () => {
     const { body } = await call<{ items: unknown[] }>(
       'POST',
-      `/api/v1/debug/${String(ISessionIndex)}/listRecent`,
+      `/api/debug/${String(ISessionIndex)}/listRecent`,
       [{ limit: 1 }],
     );
     expect(body.code).toBe(0);
@@ -918,12 +918,12 @@ describe('server-v2 /api/v1/debug RPC (dev-only, whitelist-free)', () => {
   });
 
   it('rejects an unknown service with 40001', async () => {
-    const { body } = await call('POST', '/api/v1/debug/noSuchService/whatever', []);
+    const { body } = await call('POST', '/api/debug/noSuchService/whatever', []);
     expect(body.code).toBe(40001);
   });
 
   it('is gated by the same bearer auth as the rest of /api/*', async () => {
-    const res = await fetch(`${base}/api/v1/debug/channels`);
+    const res = await fetch(`${base}/api/debug/channels`);
     expect(res.status).toBe(401);
   });
 });

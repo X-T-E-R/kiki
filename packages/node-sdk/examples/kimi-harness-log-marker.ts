@@ -7,7 +7,7 @@ import {
   flushDiagnosticLogs,
   log,
   resolveGlobalLogPath,
-  resolveKimiHome,
+  resolveKikiHome,
 } from '@kiki/node-sdk';
 
 type MarkerLevel = 'error' | 'warn';
@@ -32,7 +32,7 @@ const USAGE = `Usage:
 
 Options:
   -s, --session <id>   Existing session id to resume and mark
-      --home <dir>     Kimi home dir; defaults to KIMI_CODE_HOME or ~/.kimi-code
+      --home <dir>     Kimi home dir; defaults to KIKI_HOME or ~/.kiki
       --level <level>  error | warn; defaults to error
   -m, --message <text> Marker text; defaults to MANUAL_SESSION_LOG_MARKER_<timestamp>
   -h, --help           Show this help
@@ -40,7 +40,7 @@ Options:
 
 async function main(): Promise<void> {
   const options = parseCliArgs();
-  const resolvedHome = resolveKimiHome(options.homeDir);
+  const resolvedHome = resolveKikiHome(options.homeDir);
   const harness = createKimiHarness({
     identity: { productName: 'kimi-code-cli', version: 'log-marker', platform: 'kimi_code_cli' },
     homeDir: options.homeDir,
@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     process.stderr.write(
       [
         'error: marker was not found in the session log.',
-        'Check that KIMI_LOG_LEVEL is not "off" and that the session id exists in this KIMI_CODE_HOME.',
+        'Check that KIMI_LOG_LEVEL is not "off" and that the session id exists in this KIKI_HOME.',
         '',
       ].join('\n'),
     );

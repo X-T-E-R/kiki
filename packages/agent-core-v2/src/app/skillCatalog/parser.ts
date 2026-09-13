@@ -35,6 +35,7 @@ export interface ParseSkillOptions {
   readonly skillMdPath: string;
   readonly skillDirName: string;
   readonly source: SkillSource;
+  readonly promptCommand?: boolean;
 }
 
 export interface ParseSkillTextOptions extends ParseSkillOptions {
@@ -47,10 +48,18 @@ const METADATA_ALIASES: Readonly<Record<string, string>> = {
   when_to_use: 'whenToUse',
   'disable-model-invocation': 'disableModelInvocation',
   disable_model_invocation: 'disableModelInvocation',
+  'argument-hint': 'argumentHint',
+  argument_hint: 'argumentHint',
 };
 
+export function isPromptCommandPath(filePath: string): boolean {
+  const normalized = filePath.replaceAll('\\', '/');
+  return /\/commands\/[^/]+\.md$/i.test(normalized);
+}
+
 export function parseSkillText(options: ParseSkillTextOptions): SkillDefinition {
-  const isDirectorySkill = path.basename(options.skillMdPath) === 'SKILL.md';
+  const promptCommand = options.promptCommand === true || isPromptCommandPath(options.skillMdPath);
+  const isDirectorySkill = !promptCommand && path.basename(options.skillMdPath) === 'SKILL.md';
   if (isDirectorySkill && options.text.split(/\r?\n/, 1)[0]?.trim() !== FENCE) {
     throw new SkillParseError(`Missing frontmatter in ${options.skillMdPath}`);
   }
@@ -75,12 +84,18 @@ export function parseSkillText(options: ParseSkillTextOptions): SkillDefinition 
     );
   }
 
-  const metadata = normalizeMetadata(frontmatter);
+  const normalizedMetadata = normalizeMetadata(frontmatter);
+  const metadata: SkillMetadata = promptCommand
+    ? { ...normalizedMetadata, type: 'prompt', promptCommand: true, disableModelInvocation: true }
+    : normalizedMetadata;
   if (!isSupportedSkillType(metadata.type)) {
     throw new UnsupportedSkillTypeError(metadata.type ?? String(frontmatter['type']));
   }
 
   const name = nonEmptyString(metadata.name);
+  if (promptCommand && !/^[^\s/:\\]+$/u.test(name ?? options.skillDirName)) {
+    throw new SkillParseError(`Invalid prompt command name in ${options.skillMdPath}`);
+  }
   const description = nonEmptyString(metadata.description);
   if (isDirectorySkill && (name === undefined || description === undefined)) {
     const field = name === undefined ? '"name"' : '"description"';
@@ -136,6 +151,7 @@ function normalizeMetadata(raw: Record<string, unknown>): SkillMetadata {
 
   const description = nonEmptyString(out['description']);
   if (description !== undefined) out['description'] = description;
+  out['argumentHint'] = nonEmptyString(out['argumentHint']);
 
   return out as SkillMetadata;
 }

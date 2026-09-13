@@ -14,7 +14,11 @@ export class NativeAgentExecutorSession implements AgentExecutorSession {
     'onWillRun',
   ]);
 
-  constructor(private readonly agent: AgentExecutorAgentContext) {}
+  constructor(
+    private readonly agent: AgentExecutorAgentContext,
+    private readonly loop: IAgentLoopService,
+    private readonly prompt: IAgentPromptService,
+  ) {}
 
   async run(
     request: AgentRunRequest,
@@ -25,23 +29,22 @@ export class NativeAgentExecutorSession implements AgentExecutorSession {
   }
 
   status() {
-    const status = this.agent.accessor.get(IAgentLoopService).status();
+    const status = this.loop.status();
     return status.state === 'running'
       ? { state: 'running' as const, turnId: status.activeTurnId }
       : { state: 'idle' as const };
   }
 
   cancel(reason?: unknown): boolean {
-    const loop = this.agent.accessor.get(IAgentLoopService);
     let cancelled = false;
-    for (const turnId of loop.status().pendingTurnIds) {
-      cancelled = loop.cancel(turnId, reason) || cancelled;
+    for (const turnId of this.loop.status().pendingTurnIds) {
+      cancelled = this.loop.cancel(turnId, reason) || cancelled;
     }
-    return loop.cancel(undefined, reason) || cancelled;
+    return this.loop.cancel(undefined, reason) || cancelled;
   }
 
   settled(): Promise<void> {
-    return this.agent.accessor.get(IAgentLoopService).settled();
+    return this.loop.settled();
   }
 
   async shutdown(reason?: unknown): Promise<void> {
@@ -49,7 +52,7 @@ export class NativeAgentExecutorSession implements AgentExecutorSession {
     const promptReason = reason instanceof Error ? reason : new Error(String(reason ?? 'Agent executor shutdown'));
     await Promise.all([
       this.settled(),
-      this.agent.accessor.get(IAgentPromptService).drain(promptReason),
+      this.prompt.drain(promptReason),
     ]);
   }
 }

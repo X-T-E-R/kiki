@@ -98,8 +98,8 @@ enabled = true
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     keep_alive_on_exit <- KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT (custom parse)
-#     max_running_tasks <- KIMI_CODE_BACKGROUND_MAX_RUNNING_TASKS (custom parse)
+#     keep_alive_on_exit <- KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT (custom parse)
+#     max_running_tasks <- KIKI_BACKGROUND_MAX_RUNNING_TASKS (custom parse)
 # ##########################################################################
 
 [background]
@@ -118,7 +118,7 @@ enabled = true
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#      <- KIMI_CODE_BUILTIN_PRODUCT_SKILLS (custom parse)
+#      <- KIKI_BUILTIN_PRODUCT_SKILLS (custom parse)
 # ##########################################################################
 
 builtin_product_skills = true
@@ -224,8 +224,8 @@ extra_skill_dirs = []
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     name <- KIMI_CODE_IDENTITY_NAME (custom parse)
-#     slug <- KIMI_CODE_IDENTITY_SLUG (custom parse)
+#     name <- KIKI_IDENTITY_NAME (custom parse)
+#     slug <- KIKI_IDENTITY_SLUG (custom parse)
 # ##########################################################################
 
 [identity]
@@ -274,8 +274,8 @@ compaction_soft_context_size = 0
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     startup_timeout_ms <- KIMI_MCP_STARTUP_TIMEOUT_MS (custom parse)
-#     tool_timeout_ms <- KIMI_MCP_TOOL_TIMEOUT_MS (custom parse)
+#     startup_timeout_ms <- KIKI_MCP_STARTUP_TIMEOUT_MS (custom parse)
+#     tool_timeout_ms <- KIKI_MCP_TOOL_TIMEOUT_MS (custom parse)
 # ##########################################################################
 
 [mcp]
@@ -434,7 +434,7 @@ enter_approval_timeout_ms = 60000
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     marketplace_url <- KIMI_CODE_PLUGIN_MARKETPLACE_URL
+#     marketplace_url <- KIKI_PLUGIN_MARKETPLACE_URL
 # ##########################################################################
 
 [plugins]
@@ -554,8 +554,8 @@ max_total_subagents = 0
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     keep_alive_on_exit <- KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT (custom parse)
-#     max_running_tasks <- KIMI_CODE_BACKGROUND_MAX_RUNNING_TASKS (custom parse)
+#     keep_alive_on_exit <- KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT (custom parse)
+#     max_running_tasks <- KIKI_BACKGROUND_MAX_RUNNING_TASKS (custom parse)
 # ##########################################################################
 
 [task]
@@ -620,7 +620,7 @@ strategy = "measured+estimated"
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     idle_ttl_ms <- KIMI_CODE_WORKSPACE_IDLE_TTL_MS (custom parse)
+#     idle_ttl_ms <- KIKI_WORKSPACE_IDLE_TTL_MS (custom parse)
 # ##########################################################################
 
 [workspace_instance]

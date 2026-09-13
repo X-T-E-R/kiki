@@ -339,7 +339,7 @@ export class Program {
       const agentProfiles = own(new WorkspaceAgentProfileLoaderService(this.context, runtime.fs!, this.dependencies.log, userAgentProfiles, runtime.watch!, this.dependencies.flags, this.dependencies.agentExecutors, trust, this.dependencies.agentProfiles));
       const agentProfileWriter = new AgentProfileWriterService(runtime.fs!, this.dependencies.agentProfiles, this.context, userAgentProfiles, agentProfiles, extraAgentProfiles);
       const skillDiscovery = new RuntimeSkillDiscovery(this.dependencies.log, runtime.fs!);
-      const userSkills = own(new UserFileSkillSource(skillDiscovery, this.dependencies.bootstrap, this.dependencies.config));
+      const userSkills = own(new UserFileSkillSource(skillDiscovery, this.dependencies.bootstrap, this.dependencies.config, runtime.watch!));
       const explicitSkills = new ExplicitFileSkillSource(skillDiscovery, this.context, this.dependencies.bootstrap);
       const extraSkills = own(new ExtraFileSkillSource(skillDiscovery, this.dependencies.config, this.context, this.dependencies.bootstrap));
       const workspaceSkills = own(new WorkspaceRootSkillSource(skillDiscovery, this.context, this.dependencies.config, this.dependencies.bootstrap, runtime.watch!));

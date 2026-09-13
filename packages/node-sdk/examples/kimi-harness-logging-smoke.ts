@@ -53,7 +53,7 @@ async function describeFiles(dir: string, files: readonly string[]): Promise<str
 }
 
 async function main(): Promise<void> {
-  process.env['KIMI_CODE_HOME'] = TEST_HOME;
+  process.env['KIKI_HOME'] = TEST_HOME;
   process.env['KIMI_LOG_LEVEL'] = 'warn';
   process.env['KIMI_LOG_SESSION_MAX_BYTES'] = String(MAX_LOG_BYTES);
   process.env['KIMI_LOG_SESSION_FILES'] = '2';

@@ -2,7 +2,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { IAuthSummaryService } from '@kiki/agent-core-v2';
 import { authSummarySchema, type AuthSummary } from '@kiki/agent-core-v2/app/authLegacy/authLegacy';
+import { FileTokenStorage } from '@kiki/oauth';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -16,7 +18,7 @@ interface Envelope<T> {
   request_id: string;
 }
 
-describe('server-v2 GET /api/v1/auth', () => {
+describe('server-v2 GET /api/auth', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -36,7 +38,7 @@ describe('server-v2 GET /api/v1/auth', () => {
     }
   });
 
-  async function boot(toml?: string): Promise<void> {
+  async function boot(toml?: string, modelAccountHomeDir?: string): Promise<void> {
     if (toml !== undefined) {
       await writeFile(join(home as string, 'config.toml'), toml, 'utf-8');
     }
@@ -45,13 +47,14 @@ describe('server-v2 GET /api/v1/auth', () => {
       host: '127.0.0.1',
       port: 0,
       homeDir: home,
+      modelAccountHomeDir,
       logLevel: 'silent',
     });
     base = `http://127.0.0.1:${server.port}`;
   }
 
   async function getAuth(): Promise<AuthSummary> {
-    const res = await authedFetch(server as RunningServer, base, '/api/v1/auth');
+    const res = await authedFetch(server as RunningServer, base, '/api/auth');
     expect(res.status).toBe(200);
     const body = (await res.json()) as Envelope<AuthSummary>;
     expect(body.code).toBe(0);
@@ -111,6 +114,35 @@ describe('server-v2 GET /api/v1/auth', () => {
     expect(summary.providers_count).toBe(1);
     expect(summary.default_model).toBeNull();
     expect(summary.managed_provider).toBeNull();
+  });
+
+  it('reads the selected official account home across restart without copying tokens into the runtime home', async () => {
+    const accountHome = join(home as string, 'official-kimi-home');
+    const storage = new FileTokenStorage(join(accountHome, 'credentials'));
+    await storage.save('kimi-code', {
+      accessToken: 'synthetic-shared-access', refreshToken: 'synthetic-shared-refresh',
+      expiresAt: Math.floor(Date.now() / 1000) + 7200,
+      expiresIn: 7200, tokenType: 'Bearer', scope: '',
+    });
+    const toml = [
+      'default_model = "shared-kimi"',
+      '[providers."managed:kimi-code"]', 'type = "kimi"',
+      '[providers."managed:kimi-code".oauth]', 'storage = "file"', 'key = "oauth/kimi-code"',
+      '[models.shared-kimi]', 'provider = "managed:kimi-code"', 'model = "shared-kimi"', 'max_context_size = 1000', '',
+    ].join('\n');
+    await boot(toml, accountHome);
+    await expect(server!.core.accessor.get(IAuthSummaryService).ensureReady('shared-kimi')).resolves.toBeUndefined();
+    expect((await getAuth()).managed_provider?.status).toBe('authenticated');
+    await server!.close();
+    server = undefined;
+    await boot(undefined, accountHome);
+    await expect(server!.core.accessor.get(IAuthSummaryService).ensureReady('shared-kimi')).resolves.toBeUndefined();
+    expect(await new FileTokenStorage(join(home as string, 'credentials')).load('kimi-code')).toBeUndefined();
+    await server!.close();
+    server = undefined;
+    await boot(undefined, join(home as string, 'isolated-account'));
+    await expect(server!.core.accessor.get(IAuthSummaryService).ensureReady('shared-kimi')).rejects.toMatchObject({ code: 'auth.token_missing' });
+    expect((await getAuth()).managed_provider?.status).toBe('unauthenticated');
   });
 
   it('surfaces managed_provider.unauthenticated without a cached token', async () => {

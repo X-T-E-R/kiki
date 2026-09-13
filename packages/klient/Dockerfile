@@ -14,7 +14,7 @@ ARG BASE_IMAGE=kimi-server:dev
 FROM ${BASE_IMAGE}
 
 ENV KIMI_CODE_HOME=/data/docker-e2e/kimi-code-home \
-    KIMI_SERVER_URL=http://127.0.0.1:7878 \
+    KIKI_SERVER_URL=http://127.0.0.1:7878 \
     KIMI_SERVER_E2E_REPORT_DIR=/data/server-e2e-reports/docker/latest \
     TMPDIR=/data/docker-e2e/tmp \
     TERM=xterm-256color \

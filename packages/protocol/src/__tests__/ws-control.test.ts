@@ -96,7 +96,7 @@ describe('ws-control — AsyncAPI document', () => {
     const doc = createAsyncApiDocument({
       version: '1.2.3',
       serverHost: '127.0.0.1:14567',
-      wsPath: '/api/v1/ws',
+      wsPath: '/api/ws',
     });
 
     expect(doc['asyncapi']).toBe('3.1.0');
@@ -110,7 +110,7 @@ describe('ws-control — AsyncAPI document', () => {
     expect(servers['local']).toMatchObject({
       host: '127.0.0.1:14567',
       protocol: 'ws',
-      pathname: '/api/v1/ws',
+      pathname: '/api/ws',
     });
 
     const channels = doc['channels'] as Record<string, unknown>;
@@ -118,7 +118,7 @@ describe('ws-control — AsyncAPI document', () => {
       address: string;
       messages: Record<string, { $ref: string }>;
     };
-    expect(wsChannel.address).toBe('/api/v1/ws');
+    expect(wsChannel.address).toBe('/api/ws');
     expect(wsChannel.messages['client_hello']).toEqual({
       $ref: '#/components/messages/client_hello',
     });

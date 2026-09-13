@@ -78,9 +78,9 @@ await rm(smokeHome, { recursive: true, force: true });
 await mkdir(smokeCache, { recursive: true });
 try {
   const nativeAssetOutput = await runKimiWithEnv(['--version'], {
-    KIMI_CODE_CACHE_DIR: smokeCache,
-    KIMI_CODE_HOME: smokeHome,
-    KIMI_CODE_NATIVE_ASSET_SMOKE: '1',
+    KIKI_CACHE_DIR: smokeCache,
+    KIKI_HOME: smokeHome,
+    KIKI_NATIVE_ASSET_SMOKE: '1',
   });
   assertIncludes(nativeAssetOutput, `Native asset smoke passed: ${target}`, 'native asset smoke');
   assertIncludes(nativeAssetOutput, 'MiniDb worker build passed', 'MiniDb worker smoke');

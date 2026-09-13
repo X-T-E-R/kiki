@@ -2,13 +2,25 @@ import {
   CodexClientError,
   CodexRemoteError,
   type CodexServerRequestHandler,
+  type CodexTurnCompletion,
   type CodexTurnHandle,
   type NormalizedExecutorEvent,
 } from '@kiki/codex-client';
 import { describe, expect, it, vi } from 'vitest';
+import { coldPromptFixture } from './coldPromptFixture';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { AgentExecutionService } from '#/agent/execution/executionService';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { appendSharedPrompt } from '@kiki/agent-profiles/promptConfig';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { CodexAppServerExecutorSession } from '#/agent/execution/codexAppServerExecutorSession';
 import {
   ExecutorSessionUpdated,
@@ -21,6 +33,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import {
   agentExecutorBindingFingerprint,
+  IAgentExecutorRegistry,
   type AgentExecutorContext,
 } from '#/app/agentExecutor/agentExecutor';
 import type { Event2 } from '#/app/event/event2';
@@ -49,6 +62,7 @@ interface HarnessOptions {
   readonly turnEvents?: readonly NormalizedExecutorEvent[];
   readonly questionAnswer?: string;
   readonly questionAnswers?: Readonly<Record<string, string>>;
+  readonly deferTurnCompletion?: boolean;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -111,9 +125,12 @@ function createHarness(options: HarnessOptions = {}) {
     append: () => {},
     appendLoopEvent: () => {},
   } as unknown as IAgentContextMemoryService;
+  const pendingTurns = new Set<number>();
   const interaction = {
     _serviceBrand: undefined,
-    cancelPendingForTurn: vi.fn(),
+    cancelPendingForTurn: vi.fn((turnId: number) => {
+      pendingTurns.delete(turnId);
+    }),
   } as unknown as ISessionInteractionService;
   const approval = {
     _serviceBrand: undefined,
@@ -203,6 +220,16 @@ function createHarness(options: HarnessOptions = {}) {
     });
   }
   let serverHandler: CodexServerRequestHandler | undefined;
+  let resolveTurnCompletion: ((result: CodexTurnCompletion) => void) | undefined;
+  const turnCancel = vi.fn(async () => {
+    resolveTurnCompletion?.({
+      threadId: 'thread-new',
+      turnId: 'turn-1',
+      status: 'interrupted',
+      stderrTail: '',
+    });
+    return true;
+  });
   const client = {
     status: () => ({ state: 'ready' as const }),
     connect: async () => {},
@@ -268,6 +295,16 @@ function createHarness(options: HarnessOptions = {}) {
           new AbortController().signal,
         );
       }
+      const completed: CodexTurnCompletion = {
+        threadId: String(params['threadId']),
+        turnId: 'turn-1',
+        status: 'completed',
+        stderrTail: '',
+        usage: { inputTokens: 4, cachedInputTokens: 1, outputTokens: 2 },
+      };
+      const completion = options.deferTurnCompletion === true
+        ? new Promise<CodexTurnCompletion>((resolve) => { resolveTurnCompletion = resolve; })
+        : Promise.resolve(completed);
       return {
         events: asyncEvents(options.turnEvents ?? [
           {
@@ -277,27 +314,28 @@ function createHarness(options: HarnessOptions = {}) {
             content: { type: 'text', text: 'done' },
           },
         ]),
-        completion: Promise.resolve({
-          threadId: String(params['threadId']),
-          turnId: 'turn-1',
-          status: 'completed',
-          stderrTail: '',
-          usage: { inputTokens: 4, cachedInputTokens: 1, outputTokens: 2 },
-        }),
-        cancel: async () => true,
+        completion,
+        cancel: turnCancel,
       };
     },
-    shutdown: async () => {},
+    shutdown: vi.fn(async () => {}),
   };
-  const session = new CodexAppServerExecutorSession(
-    context,
+  const createSession = (executorContext: AgentExecutorContext) => new CodexAppServerExecutorSession(
+    executorContext,
     (_process, handler) => {
       serverHandler = handler;
       return client;
     },
   );
+  let session: CodexAppServerExecutorSession | undefined;
+  const getSession = (): CodexAppServerExecutorSession => session ??= createSession(context);
   return {
-    session,
+    get session(): CodexAppServerExecutorSession {
+      return getSession();
+    },
+    createSession,
+    context,
+    states,
     client,
     events,
     starts,
@@ -306,8 +344,70 @@ function createHarness(options: HarnessOptions = {}) {
     prompts,
     serverResults,
     interaction,
+    pendingTurns,
     questionRequest,
+    question,
+    runtime,
+    runtimeLease,
+    workspace,
+    wire,
+    usage,
+    modelCatalog,
+    memory,
+    approval,
+    dispatcher,
     usageRecords,
+    turnCancel,
+  };
+}
+
+function createExecutionHarness(options: HarnessOptions = {}) {
+  const harness = createHarness({ ...options, deferTurnCompletion: true });
+  const ix = new TestInstantiationService();
+  const agentId = harness.context.agent.id;
+  ix.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
+  ix.set(IAgentContextMemoryService, harness.memory);
+  ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
+  ix.set(IAgentExecutorRegistry, {
+    resolveExecutable: async () => ({
+      descriptor: harness.context.descriptor,
+      options: {},
+      provider: { create: harness.createSession },
+    }),
+  } as unknown as IAgentExecutorRegistry);
+  ix.set(IAgentProfileService, {
+    _serviceBrand: undefined,
+    data: () => harness.context.binding,
+    preparePromptConfiguration: async () => false,
+    getSystemPrompt: () => appendSharedPrompt(harness.context.binding.systemPrompt, { shared: 'ALL_EXECUTORS_SHARED' }),
+  } as unknown as IAgentProfileService);
+  ix.set(IAgentRuntimeService, harness.runtime);
+  ix.set(IAgentScopeContext, {
+    _serviceBrand: undefined,
+    agentId,
+    scope: (subKey) => subKey === undefined ? agentId : `${agentId}/${subKey}`,
+  });
+  ix.set(IAgentStateService, harness.states);
+  ix.set(IAgentUsageService, harness.usage);
+  ix.set(IEventDispatcher, harness.dispatcher);
+  ix.set(IModelCatalog, harness.modelCatalog);
+  ix.set(IWireService, harness.wire);
+  ix.set(ISessionApprovalService, harness.approval);
+  ix.set(ISessionInteractionService, harness.interaction);
+  ix.set(ISessionQuestionService, harness.question);
+  ix.set(ISessionWorkspaceContext, harness.workspace);
+  ix.provide(IAgentLoopService, {} as IAgentLoopService);
+  ix.stub(IAgentPromptService, {});
+  const execution = ix.get(IAgentExecutionService) as AgentExecutionService;
+  return {
+    ix,
+    execution,
+    starts: harness.starts,
+    pendingTurns: harness.pendingTurns,
+    interaction: harness.interaction,
+    client: harness.client,
+    runtimeLease: harness.runtimeLease,
+    turnCancel: harness.turnCancel,
   };
 }
 
@@ -667,4 +767,73 @@ describe('Codex app-server external executor', () => {
     expect(transport.starts).toHaveLength(0);
     await transport.session.shutdown();
   });
+
+  it.each(['sub', 'independent'] as const)('sends the refreshed cold %s identity through Codex developer instructions', async (position) => {
+    const harness = createExecutionHarness();
+    const adapter = harness.ix.get(IAgentProfileService);
+    const cold = await coldPromptFixture(position, adapter.data(), harness.ix.get(IAgentExecutorRegistry));
+    vi.spyOn(adapter, 'data').mockImplementation(() => cold.profile.data());
+    vi.spyOn(adapter, 'preparePromptConfiguration').mockImplementation(() => cold.profile.preparePromptConfiguration());
+    vi.spyOn(adapter, 'getSystemPrompt').mockImplementation(() => cold.profile.getSystemPrompt());
+    try {
+      const run = await harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      const sent = String(harness.starts[0]?.['developerInstructions']);
+      expect(sent).toContain('Role NEW');
+      expect(sent).not.toContain('Role OLD');
+      expect(sent.split('SHARED_NEW')).toHaveLength(2);
+      const snippet = cold.before.boundProfile?.promptBase?.delegationSnippet;
+      expect(snippet).toBeTruthy();
+      expect(sent.split(snippet!)).toHaveLength(2);
+      expect(cold.profile.data().executorId).toBe(cold.before.executorId);
+      await harness.execution.shutdown();
+      await expect(run.completion).rejects.toBeDefined();
+    } finally { harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
+  });
+
+  it.each(['scope-close', 'shutdown', 'dispose', 'replacement'] as const)(
+    'cancels a deferred Codex turn and closes the real DI-owned session during %s',
+    async (close) => {
+      const harness = createExecutionHarness();
+      const errors = vi.spyOn(console, 'error');
+      const executionDispose = vi.spyOn(harness.execution, 'dispose');
+      try {
+        const run = await harness.execution.run(
+          { kind: 'prompt', prompt: 'work' },
+          { signal: new AbortController().signal },
+        );
+        expect(harness.starts[0]?.['developerInstructions']).toBe('Frozen profile instructions\n\nALL_EXECUTORS_SHARED');
+        harness.pendingTurns.add(run.turn.id);
+        if (close === 'scope-close') harness.ix.dispose();
+        if (close === 'replacement') {
+          harness.ix.provide(IAgentLoopService, {} as IAgentLoopService);
+          await harness.ix.cascade.whenIdle();
+          expect(executionDispose).toHaveBeenCalledTimes(1);
+        }
+        if (close === 'shutdown') await harness.execution.shutdown('test shutdown');
+        if (close === 'dispose') await harness.execution.dispose();
+        if (close === 'scope-close') expect(executionDispose).toHaveBeenCalledTimes(1);
+
+        await expect(run.completion).rejects.toBeDefined();
+        await harness.execution.settled();
+        await harness.execution.shutdown();
+        await harness.execution.dispose();
+
+        if (close === 'replacement') {
+          expect(harness.ix.get(IAgentExecutionService)).not.toBe(harness.execution);
+        }
+        expect(run.turn.signal.aborted).toBe(true);
+        expect(harness.turnCancel).toHaveBeenCalled();
+        expect(harness.pendingTurns.has(run.turn.id)).toBe(false);
+        expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id);
+        expect(harness.client.shutdown).toHaveBeenCalledTimes(1);
+        expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
+        expect(harness.execution.status()).toEqual({ state: 'idle' });
+      } finally {
+        harness.ix.dispose();
+        await harness.execution.shutdown();
+        expect(errors).not.toHaveBeenCalled();
+        errors.mockRestore();
+      }
+    },
+  );
 });

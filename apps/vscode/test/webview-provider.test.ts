@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { KimiWebviewProvider } from "../src/KimiWebviewProvider";
+import { KikiWebviewProvider } from "../src/KikiWebviewProvider";
 
 const host = vi.hoisted(() => {
   class Uri {
@@ -65,7 +65,7 @@ describe("GUI webview carrier", () => {
       webview,
       onDidDispose: vi.fn(),
     };
-    const provider = new KimiWebviewProvider(
+    const provider = new KikiWebviewProvider(
       new host.Uri(root) as never,
       {
         url: "https://remote-tunnel.example.test/forwarded/8123",

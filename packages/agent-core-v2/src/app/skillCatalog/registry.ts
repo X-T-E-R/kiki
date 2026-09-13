@@ -23,6 +23,7 @@ export class SkillNotFoundError extends Error {
 
 export class InMemorySkillCatalog implements SkillCatalog {
   private readonly byName = new Map<string, SkillDefinition>();
+  private readonly commands = new Map<string, SkillDefinition>();
   private readonly byPluginAndName = new Map<string, SkillDefinition>();
   private readonly roots: string[] = [];
   private readonly skipped: SkippedSkill[] = [];
@@ -32,9 +33,12 @@ export class InMemorySkillCatalog implements SkillCatalog {
   }
 
   register(skill: SkillDefinition, options: { readonly replace?: boolean } = {}): void {
-    const key = normalizeSkillName(skill.name);
-    if (options.replace === true || !this.byName.has(key)) {
-      this.byName.set(key, skill);
+    const command = skill.metadata.promptCommand === true;
+    const name = command ? skill.metadata.name ?? skill.name : skill.name;
+    const key = normalizeSkillName(name);
+    const target = command ? this.commands : this.byName;
+    if (options.replace === true || !target.has(key)) {
+      target.set(key, name === skill.name ? skill : { ...skill, name });
     }
     this.indexPluginSkill(skill, options);
   }
@@ -50,7 +54,8 @@ export class InMemorySkillCatalog implements SkillCatalog {
   }
 
   getSkill(name: string): SkillDefinition | undefined {
-    return this.byName.get(normalizeSkillName(name));
+    const key = normalizeSkillName(name);
+    return this.byName.get(key) ?? this.commandEntries().find((skill) => normalizeSkillName(skill.name) === key);
   }
 
   getPluginSkill(pluginId: string, name: string): SkillDefinition | undefined {
@@ -80,7 +85,19 @@ export class InMemorySkillCatalog implements SkillCatalog {
   }
 
   listSkills(): readonly SkillDefinition[] {
-    return [...this.byName.values()].toSorted((a, b) => a.name.localeCompare(b.name));
+    return [...this.byName.values(), ...this.commandEntries()].toSorted((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private commandEntries(): SkillDefinition[] {
+    const occupied = new Set([...this.byName.keys(), ...this.commands.keys()]);
+    return [...this.commands.values()].map((skill) => {
+      let name = skill.name;
+      if (this.byName.has(normalizeSkillName(name))) {
+        do { name = `command:${name}`; } while (occupied.has(normalizeSkillName(name)));
+        occupied.add(normalizeSkillName(name));
+      }
+      return name === skill.name ? skill : { ...skill, name, metadata: { ...skill.metadata, name: skill.name } };
+    });
   }
 
   listInvocableSkills(): readonly SkillDefinition[] {
@@ -139,33 +156,22 @@ function expandSkillParameters(
   context: SkillExpandContext,
 ): string {
   const tokens = tokenizeArgs(rawArgs);
-  let content = body;
-
-  for (let index = 0; index < (context.argumentNames?.length ?? 0); index++) {
-    const name = context.argumentNames?.[index];
-    if (name === undefined) continue;
-    const escaped = escapeRegExp(name);
-    content = content.replaceAll(
-      new RegExp(`\\$${escaped}(?![\\[\\w])`, 'g'),
-      escapeXmlTags(tokens[index] ?? ''),
-    );
-  }
-
-  content = content
-    .replaceAll(/\$ARGUMENTS\[(\d+)\]/g, (_match, indexText: string) => {
-      const index = Number.parseInt(indexText, 10);
-      return escapeXmlTags(tokens[index] ?? '');
-    })
-    .replaceAll(/\$(\d+)(?!\w)/g, (_match, indexText: string) => {
-      const index = Number.parseInt(indexText, 10);
-      return escapeXmlTags(tokens[index] ?? '');
-    })
-    .replaceAll('$ARGUMENTS', escapeXmlTags(rawArgs));
-
-  const hasArgumentPlaceholder = content !== body;
-  content = content
-    .replaceAll('${KIMI_SKILL_DIR}', context.skillDir)
-    .replaceAll('${KIMI_SESSION_ID}', context.sessionId ?? '');
+  const named = new Map((context.argumentNames ?? []).map((name, index) => [name, tokens[index] ?? '']));
+  const names = [...named.keys()].map(escapeRegExp).join('|');
+  const pattern = new RegExp(
+    '\\$\\{KIMI_SKILL_DIR\\}|\\$\\{KIMI_SESSION_ID\\}|\\$ARGUMENTS\\[(\\d+)\\]|\\$ARGUMENTS(?![\\w\\[])|\\$(\\d+)(?!\\w)'
+      + (names === '' ? '' : `|\\$(${names})(?![\\[\\w])`),
+    'g',
+  );
+  let hasArgumentPlaceholder = false;
+  const content = body.replaceAll(pattern, (match: string, indexed: string | undefined, positional: string | undefined, name: string | undefined) => {
+    if (match === '${KIMI_SKILL_DIR}') return context.skillDir;
+    if (match === '${KIMI_SESSION_ID}') return context.sessionId ?? '';
+    hasArgumentPlaceholder = true;
+    if (match === '$ARGUMENTS') return escapeXmlTags(rawArgs);
+    const index = indexed ?? positional;
+    return escapeXmlTags(index !== undefined ? tokens[Number.parseInt(index, 10)] ?? '' : named.get(name ?? '') ?? '');
+  });
 
   if (!hasArgumentPlaceholder && rawArgs.length > 0) {
     return `${content}\n\nARGUMENTS: ${escapeXmlTags(rawArgs)}`;

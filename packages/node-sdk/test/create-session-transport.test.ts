@@ -63,7 +63,9 @@ max_context_size = 1000
 }
 
 async function writeReviewerAgent(workDir: string): Promise<void> {
-  const agentDir = join(workDir, '.kimi-code', 'agents');
+  // Bound project discovery even when the temporary workspace is inside a checkout.
+  await mkdir(join(workDir, '.git'), { recursive: true });
+  const agentDir = join(workDir, '.kiki', 'agents');
   await mkdir(agentDir, { recursive: true });
   await writeFile(
     join(agentDir, 'reviewer.md'),

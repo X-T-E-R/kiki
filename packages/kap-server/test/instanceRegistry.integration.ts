@@ -340,7 +340,7 @@ describe('startServer — instance registry wiring', () => {
     });
     servers.push(running);
     const base = `http://127.0.0.1:${running.port}`;
-    const lease = await fetch(`${base}/api/v1/leases`, {
+    const lease = await fetch(`${base}/api/leases`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${running.authTokenService.getToken()}`,
@@ -350,7 +350,7 @@ describe('startServer — instance registry wiring', () => {
     });
     expect(await lease.json()).toMatchObject({ code: 0, data: { lease_id: expect.any(String) } });
     await sleep(150);
-    expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+    expect((await fetch(`${base}/api/healthz`)).status).toBe(200);
     await running.closed;
     servers.splice(servers.indexOf(running), 1);
     expect(await listLiveServerInstances(home)).toHaveLength(0);

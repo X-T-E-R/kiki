@@ -1285,6 +1285,12 @@ export class AgentTestContext {
               broadcastPermissionMode: (mode: PermissionMode) => {
                 this.agent.accessor.get(IAgentPermissionModeService).setMode(mode);
               },
+              countPendingBackgroundTasks: () => {
+                throw new Error('IAgentLifecycleService.countPendingBackgroundTasks is not supported in the test harness');
+              },
+              drainBackgroundTasks: async () => {
+                throw new Error('IAgentLifecycleService.drainBackgroundTasks is not supported in the test harness');
+              },
             } satisfies IAgentLifecycleService);
             reg.defineDescriptor(
               ISessionWorkspaceContext,

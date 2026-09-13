@@ -7,7 +7,7 @@ export const subagentReleaseIdleFlag: FlagDefinitionInput = {
   title: 'release idle subagents',
   description:
     'Release the in-memory scope of a subagent once its run has completed and it has stayed idle; the agent remains listed and is restored from its persisted history when resumed or messaged.',
-  env: 'KIMI_CODE_EXPERIMENTAL_SUBAGENT_RELEASE_IDLE',
+  env: 'KIKI_EXPERIMENTAL_SUBAGENT_RELEASE_IDLE',
   default: true,
   surface: 'core',
 };

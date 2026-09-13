@@ -2,9 +2,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { ProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/provider/protocolAdapterRegistry';
+import type { ProtocolAdapterConfig } from '@kiki/agent-core-v2/kosong/protocol/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createKimiConfigRpc, createKimiHarness, KimiError } from '#/index';
+import { createKimiConfigRpc, createKimiHarness, ErrorCodes, KimiError } from '#/index';
 
 import { parseConfigString, readConfigFile, writeConfigFile } from '#/config';
 import { TEST_IDENTITY } from './test-identity';
@@ -100,7 +102,61 @@ enabled = true
 effort = "high"
 `;
 
+const LOCAL_RELOAD_TOML = `
+default_model = "reload-test-model"
+
+[providers.local]
+type = "openai"
+base_url = "http://127.0.0.1:9/v1"
+api_key = "YOUR_API_KEY"
+
+[models.reload-test-model]
+provider = "local"
+model = "reload-test-model"
+max_context_size = 200000
+`;
+
 describe('SDK config TOML', () => {
+  it('round-trips model parameter overrides and preserves wire parameter spelling', async () => {
+    const path = join(await makeTempDir(), 'config.toml');
+    const text = `
+[models.example]
+provider = "example"
+model = "example-model"
+max_context_size = 128000
+default_effort = "medium"
+[models.example.cognition]
+overlay = "cognition/example.md"
+overlay_mode = "prepend"
+[models.example.overrides]
+default_effort = "max"
+context_budget = 64000
+max_completion_tokens = 4000
+service_tier = "flex"
+[models.example.overrides.request_params]
+temperature = 0.4
+top_p = 0.8
+`;
+    const config = parseConfigString(text);
+    expect(config.models?.['example']?.overrides).toEqual({
+      defaultEffort: 'max', contextBudget: 64000, maxCompletionTokens: 4000,
+      serviceTier: 'flex', requestParams: { temperature: 0.4, top_p: 0.8 },
+    });
+    await writeConfigFile(path, config);
+    expect(readConfigFile(path).models).toEqual(config.models);
+    expect(await readFile(path, 'utf8')).toContain('top_p = 0.8');
+  });
+
+  it('round-trips the separate nb-search source preference without changing canonical settings', async () => {
+    const dir = await makeTempDir();
+    const path = join(dir, 'config.toml');
+    const value = { providers: {}, nbSearchSource: { reuse_local_config: false } };
+    await writeConfigFile(path, value);
+    expect(readConfigFile(path).nbSearchSource).toEqual({ reuse_local_config: false });
+    expect(parseConfigString('[nb_search_source]\nreuse_local_config = true\n').nbSearchSource).toEqual({ reuse_local_config: true });
+    expect(await readFile(path, 'utf8')).toContain('reuse_local_config = false');
+  });
+
   it('resolves config paths through the config RPC wrapper', async () => {
     const dir = await makeTempDir();
     const rpc = createKimiConfigRpc();
@@ -449,11 +505,12 @@ describe('KimiHarness config API', () => {
       models: {},
       thinking: {},
       defaultPlanMode: false,
+      nbSearchSource: { reuse_local_config: true },
       mergeAllAvailableSkills: true,
       extraSkillDirs: [],
       loopControl: { compactionSoftContextSize: 0 },
       background: {},
-      subagent: { timeoutMs: 7_200_000 },
+      subagent: { timeoutMs: 7_200_000, maxDirectChildren: 16, maxTotalSubagents: 0 },
       mcp: {},
       image: {},
     });
@@ -461,11 +518,11 @@ describe('KimiHarness config API', () => {
 
   it('returns experimental feature metadata through the harness', async () => {
     // The master switch off, so every flag reports its own resolution.
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
     // A flag turned on against its default, and one turned off against a
     // default-on flag: both must report `env` as the deciding source.
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TOOL_SELECT', '1');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TASK_WAIT', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', '1');
+    vi.stubEnv('KIKI_EXPERIMENTAL_TASK_WAIT', '0');
     const homeDir = await makeTempDir();
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
@@ -490,7 +547,7 @@ describe('KimiHarness config API', () => {
         title: expect.any(String),
         description: expect.any(String),
         surface: expect.stringMatching(/^(core|cli|both)$/),
-        env: expect.stringMatching(/^KIMI_CODE_EXPERIMENTAL_[A-Z0-9_]+$/),
+        env: expect.stringMatching(/^KIKI_EXPERIMENTAL_[A-Z0-9_]+$/),
         defaultEnabled: expect.any(Boolean),
         enabled: expect.any(Boolean),
         source: expect.stringMatching(/^(default|config|env|master-env)$/),
@@ -500,9 +557,9 @@ describe('KimiHarness config API', () => {
       id: 'tool-select',
       title: 'Tool select (progressive tool disclosure)',
       description:
-        'Keep MCP tool schemas out of the immutable top-level tools[]; the model loads them on demand via the select_tools tool. Only takes effect on models whose capability catalog declares dynamically loaded tools.',
+        'Keep MCP tool schemas out of the immutable top-level tools[]; the model loads them on demand via the SelectTools tool. Only takes effect on models whose capability catalog declares dynamically loaded tools.',
       surface: 'core',
-      env: 'KIMI_CODE_EXPERIMENTAL_TOOL_SELECT',
+      env: 'KIKI_EXPERIMENTAL_TOOL_SELECT',
       defaultEnabled: false,
       enabled: true,
       source: 'env',
@@ -522,7 +579,7 @@ describe('KimiHarness config API', () => {
     await harness.ensureConfigFile();
 
     const text = await readFile(configPath, 'utf-8');
-    expect(text).toContain('Runtime settings for Kimi Code.');
+    expect(text).toContain('Runtime settings for Kiki.');
     expect(text).not.toMatch(/^default_thinking =/m);
     expect(text).not.toMatch(/^default_model =/m);
 
@@ -553,6 +610,115 @@ describe('KimiHarness config API', () => {
     expect(harness.getSession(session.id)).toBe(session);
     expect(session.getResumeState()?.agents['main']).toBeDefined();
     await expect(session.getStatus()).resolves.toMatchObject({ model: 'kimi-for-coding' });
+  });
+
+  it('reloads a cold session through the facade and materializes real state', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = join(homeDir, 'work');
+    await mkdir(workDir, { recursive: true });
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(configPath, LOCAL_RELOAD_TOML, 'utf-8');
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const session = await harness.createSession({
+      id: 'session-sdk-reload-cold',
+      workDir,
+      model: 'reload-test-model',
+    });
+
+    await session.close();
+    expect(harness.getSession(session.id)).toBeUndefined();
+
+    const reloaded = await harness.reloadSession({ id: session.id });
+
+    expect(reloaded).not.toBe(session);
+    expect(harness.getSession(session.id)).toBe(reloaded);
+    expect(reloaded.getResumeState()?.agents['main']).toBeDefined();
+    await expect(reloaded.getStatus()).resolves.toMatchObject({ model: 'reload-test-model' });
+  });
+
+  it('returns session.not_found when reloading a missing session', async () => {
+    const homeDir = await makeTempDir();
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+
+    await expect(harness.reloadSession({ id: 'session-sdk-reload-missing' })).rejects.toMatchObject({
+      name: 'KimiError',
+      code: ErrorCodes.SESSION_NOT_FOUND,
+      details: { sessionId: 'session-sdk-reload-missing' },
+    } satisfies Partial<KimiError>);
+  });
+
+  it('rejects a busy reload without closing the live session', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = join(homeDir, 'work');
+    await mkdir(workDir, { recursive: true });
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(configPath, LOCAL_RELOAD_TOML, 'utf-8');
+    let releaseGeneration: (() => void) | undefined;
+    const generationGate = new Promise<void>((resolve) => {
+      releaseGeneration = resolve;
+    });
+    const provider = vi
+      .spyOn(ProtocolAdapterRegistry.prototype, 'createChatProvider')
+      .mockImplementation(
+        (config: ProtocolAdapterConfig) =>
+          ({
+            name: config.providerType ?? 'fake',
+            modelName: config.modelName,
+            thinkingEffort: null,
+            async generate() {
+              await generationGate;
+              return {
+                id: 'reload-busy-response',
+                usage: {
+                  inputOther: 0,
+                  output: 1,
+                  inputCacheRead: 0,
+                  inputCacheCreation: 0,
+                },
+                finishReason: 'completed',
+                rawFinishReason: 'stop',
+                traceId: null,
+                async *[Symbol.asyncIterator]() {
+                  yield { type: 'text', text: 'reload busy response' };
+                },
+              };
+            },
+          }) as ReturnType<ProtocolAdapterRegistry['createChatProvider']>,
+      );
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    let stopListening: (() => void) | undefined;
+    let prompt: Promise<void> | undefined;
+
+    try {
+      const session = await harness.createSession({
+        id: 'session-sdk-reload-busy',
+        workDir,
+        model: 'reload-test-model',
+      });
+      let startedResolve!: () => void;
+      const started = new Promise<void>((resolve) => {
+        startedResolve = resolve;
+      });
+      stopListening = session.onEvent((event) => {
+        if (event.type === 'turn.started') startedResolve();
+      });
+      prompt = session.prompt('hold this turn open');
+      await started;
+
+      await expect(harness.reloadSession({ id: session.id })).rejects.toMatchObject({
+        name: 'KimiError',
+        code: ErrorCodes.TURN_AGENT_BUSY,
+      } satisfies Partial<KimiError>);
+      expect(session.isClosed).toBe(false);
+      expect(harness.getSession(session.id)).toBe(session);
+      await expect(session.getStatus()).resolves.toMatchObject({ model: 'reload-test-model' });
+    } finally {
+      releaseGeneration?.();
+      await prompt?.catch(() => undefined);
+      stopListening?.();
+      provider.mockRestore();
+      await harness.close();
+    }
   });
 
   it('forwards forcePluginSessionStartReminder to the active session reload', async () => {

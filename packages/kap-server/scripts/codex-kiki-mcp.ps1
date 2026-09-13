@@ -788,8 +788,8 @@ function Start-WorkspaceKap {
   Remove-DeadInstanceRecords $Binding
   $prior = @{}
   foreach ($name in @(
-    'KIMI_CODE_HOME', 'KIKI_MCP_CONFIG_PATH', 'KIKI_MCP_AGENT_PROFILE_HOME',
-    'KIKI_MCP_CONFIG_READ_ONLY', 'KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP',
+    'KIKI_HOME', 'KIKI_MCP_CONFIG_PATH', 'KIKI_MCP_AGENT_PROFILE_HOME',
+    'KIKI_MCP_CONFIG_READ_ONLY', 'KIKI_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP',
     'KIKI_EXTERNAL_PRINCIPAL_ID', 'KIKI_EXTERNAL_SESSION_ID',
     'KIKI_EXTERNAL_DELEGATION_TOKEN', 'KIKI_EXTERNAL_WORKSPACE_PATH',
     'KIKI_EXTERNAL_MODEL_ALIAS', 'KIKI_EXTERNAL_THINKING_EFFORT',
@@ -799,11 +799,11 @@ function Start-WorkspaceKap {
   }
   $started = $null
   try {
-    $env:KIMI_CODE_HOME = [string]$Binding.homeDir
+    $env:KIKI_HOME = [string]$Binding.homeDir
     $env:KIKI_MCP_CONFIG_PATH = [string]$Binding.configPath
     $env:KIKI_MCP_AGENT_PROFILE_HOME = [string]$Binding.agentProfileHomeDir
     $env:KIKI_MCP_CONFIG_READ_ONLY = '1'
-    $env:KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP = 'true'
+    $env:KIKI_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP = 'true'
     $env:KIKI_EXTERNAL_PRINCIPAL_ID = [string]$Binding.principalId
     $env:KIKI_EXTERNAL_SESSION_ID = [string]$Binding.sessionId
     $env:KIKI_EXTERNAL_DELEGATION_TOKEN = $DelegationToken
@@ -920,7 +920,7 @@ function Resolve-WorkspaceKap {
       Remove-Item -LiteralPath $statePath -Force
     }
     $started = Start-WorkspaceKap $Binding $Install $Secret $statePath
-    $metaProbe = Invoke-KapJson 'GET' "$($Binding.endpoint)/api/v1/meta" `
+    $metaProbe = Invoke-KapJson 'GET' "$($Binding.endpoint)/api/meta" `
       ((Get-Content -LiteralPath (Join-Path ([string]$Binding.homeDir) 'server.token') -Raw).Trim()) '' $null
     if (
       $metaProbe.code -ne 0 -or
@@ -967,7 +967,7 @@ function Invoke-KapShutdownEndpoint {
   param([string]$Endpoint, [string]$Token)
   if ([string]::IsNullOrWhiteSpace($Token)) { return $false }
   try {
-    $response = Invoke-RestMethod -Uri "$Endpoint/api/v1/shutdown" -Method Post `
+    $response = Invoke-RestMethod -Uri "$Endpoint/api/shutdown" -Method Post `
       -Headers @{ Authorization = "Bearer $Token" } -TimeoutSec 5
     return ($null -ne $response -and [int]$response.code -eq 0)
   } catch {
@@ -1472,7 +1472,7 @@ function Assert-WorkspaceAuthority {
   if ([string]::IsNullOrWhiteSpace($kapToken)) {
     Stop-KikiMcp 'the workspace KAP bearer credential is empty'
   }
-  $meta = Invoke-KapJson 'GET' "$($binding.endpoint)/api/v1/meta" $kapToken '' $null
+  $meta = Invoke-KapJson 'GET' "$($binding.endpoint)/api/meta" $kapToken '' $null
   if (
     $meta.code -ne 0 -or
     $meta.data.backend -cne 'v2' -or
@@ -1482,7 +1482,7 @@ function Assert-WorkspaceAuthority {
     Stop-KikiMcp 'the workspace KAP identity probe does not match the recorded owner'
   }
   $session = Invoke-KapJson 'GET' `
-    "$($binding.endpoint)/api/v1/sessions/$([Uri]::EscapeDataString([string]$binding.sessionId))" `
+    "$($binding.endpoint)/api/sessions/$([Uri]::EscapeDataString([string]$binding.sessionId))" `
     $kapToken '' $null
   if (
     $session.code -ne 0 -or
@@ -1497,7 +1497,7 @@ function Assert-WorkspaceAuthority {
     Stop-KikiMcp 'the delegated Session is rooted in another workspace'
   }
   $status = Invoke-KapJson 'GET' `
-    "$($binding.endpoint)/api/v1/sessions/$([Uri]::EscapeDataString([string]$binding.sessionId))/status" `
+    "$($binding.endpoint)/api/sessions/$([Uri]::EscapeDataString([string]$binding.sessionId))/status" `
     $kapToken '' $null
   if (
     $status.code -ne 0 -or
@@ -1507,7 +1507,7 @@ function Assert-WorkspaceAuthority {
     Stop-KikiMcp 'the delegated Session main binding does not match'
   }
   $list = Invoke-KapJson 'POST' `
-    "$($binding.endpoint)/api/v2/sessions/$([Uri]::EscapeDataString([string]$binding.sessionId))/external-delegation/list" `
+    "$($binding.endpoint)/api/sessions/$([Uri]::EscapeDataString([string]$binding.sessionId))/external-delegation/list" `
     $kapToken $BindingRecord.secret @{}
   $observedDelegationId = [string]$list.data.delegationId
   if ($list.code -ne 0 -or [string]::IsNullOrWhiteSpace($observedDelegationId)) {

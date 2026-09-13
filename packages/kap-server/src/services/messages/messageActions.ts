@@ -25,7 +25,6 @@ import {
   IAgentPromptService,
   IAgentSwarmService,
   IAgentToolPolicyService,
-  IAuthSummaryService,
   IEventService,
   ISessionActivityView,
   ISessionHistoryMutationService,
@@ -52,6 +51,7 @@ import type {
   PromptSubmission,
 } from '../../protocol/rest-prompt';
 import { contentToCoreParts } from '../../lib/promptMedia';
+import { ensurePromptAuthReady } from '../../lib/promptAuth';
 import type { TranscriptService } from '../transcript/transcriptService';
 import type { SessionEventBroadcaster } from '../../transport/ws/v1/sessionEventBroadcaster';
 import { loadMessageHistoryEntries, type MessageHistoryEntry } from './messageHistory';
@@ -70,7 +70,7 @@ export async function editAndResendMessage(
   body: EditMessageRequest,
   resolvedContent: PromptSubmission['content'],
 ): Promise<PromptHandle> {
-  await agent.accessor.get(IAuthSummaryService).ensureReady();
+  await ensurePromptAuthReady(session, agent.accessor, body);
   const gate = session.accessor.get(ISessionHistoryMutationService);
   const lease = await gate.acquire();
   try {
@@ -119,7 +119,7 @@ export async function regenerateMessage(
   targetMessageId: string,
   body: RegenerateMessageRequest,
 ): Promise<PromptHandle> {
-  await agent.accessor.get(IAuthSummaryService).ensureReady();
+  await ensurePromptAuthReady(session, agent.accessor, body);
   const gate = session.accessor.get(ISessionHistoryMutationService);
   const lease = await gate.acquire();
   try {

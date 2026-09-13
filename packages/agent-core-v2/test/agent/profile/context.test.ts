@@ -39,8 +39,8 @@ afterEach(async () => {
 
 describe('loadAgentsMd user-level discovery', () => {
   it('loads user-level branded and generic files before project-level', async () => {
-    await mkdir(join(homeDir, '.kimi-code'), { recursive: true });
-    await writeFile(join(homeDir, '.kimi-code', 'AGENTS.md'), 'user branded', 'utf-8');
+    await mkdir(join(homeDir, '.kiki'), { recursive: true });
+    await writeFile(join(homeDir, '.kiki', 'AGENTS.md'), 'user branded', 'utf-8');
     await mkdir(join(homeDir, '.agents'), { recursive: true });
     await writeFile(join(homeDir, '.agents', 'AGENTS.md'), 'user generic', 'utf-8');
     await writeFile(join(workDir, 'AGENTS.md'), 'project instructions', 'utf-8');
@@ -73,8 +73,8 @@ describe('loadAgentsMd user-level discovery', () => {
   });
 
   it('does not load the same file twice when the work dir is the home dir', async () => {
-    await mkdir(join(homeDir, '.kimi-code'), { recursive: true });
-    await writeFile(join(homeDir, '.kimi-code', 'AGENTS.md'), 'home branded', 'utf-8');
+    await mkdir(join(homeDir, '.kiki'), { recursive: true });
+    await writeFile(join(homeDir, '.kiki', 'AGENTS.md'), 'home branded', 'utf-8');
 
     const result = await loadAgentsMd({ fs, homeDir }, homeDir);
 
@@ -91,8 +91,8 @@ describe('loadAgentsMd symlinked files', () => {
     await writeFile(brandTarget, 'brand via symlink', 'utf-8');
     await writeFile(projectTarget, 'project via symlink', 'utf-8');
 
-    await mkdir(join(homeDir, '.kimi-code'), { recursive: true });
-    await symlink(brandTarget, join(homeDir, '.kimi-code', 'AGENTS.md'));
+    await mkdir(join(homeDir, '.kiki'), { recursive: true });
+    await symlink(brandTarget, join(homeDir, '.kiki', 'AGENTS.md'));
     await symlink(projectTarget, join(workDir, 'AGENTS.md'));
 
     const result = await loadAgentsMd({ fs, homeDir }, workDir);
@@ -116,7 +116,7 @@ describe('loadAgentsMd unreadable paths', () => {
   });
 });
 
-describe('loadAgentsMd brand home (KIMI_CODE_HOME)', () => {
+describe('loadAgentsMd brand home (KIKI_HOME)', () => {
   let brandHome: string;
 
   beforeEach(async () => {
@@ -138,10 +138,10 @@ describe('loadAgentsMd brand home (KIMI_CODE_HOME)', () => {
     expect(result).toContain('real home generic');
   });
 
-  it('ignores the real-home .kimi-code/AGENTS.md when the brand home is elsewhere', async () => {
+  it('ignores the real-home .kiki/AGENTS.md when the brand home is elsewhere', async () => {
     await writeFile(join(brandHome, 'AGENTS.md'), 'brand wins', 'utf-8');
-    await mkdir(join(homeDir, '.kimi-code'), { recursive: true });
-    await writeFile(join(homeDir, '.kimi-code', 'AGENTS.md'), 'stale real-home brand', 'utf-8');
+    await mkdir(join(homeDir, '.kiki'), { recursive: true });
+    await writeFile(join(homeDir, '.kiki', 'AGENTS.md'), 'stale real-home brand', 'utf-8');
 
     const result = await loadAgentsMd({ fs, homeDir }, workDir, brandHome);
 
@@ -149,9 +149,9 @@ describe('loadAgentsMd brand home (KIMI_CODE_HOME)', () => {
     expect(result).not.toContain('stale real-home brand');
   });
 
-  it('falls back to the real-home .kimi-code/AGENTS.md when no brand home is given', async () => {
-    await mkdir(join(homeDir, '.kimi-code'), { recursive: true });
-    await writeFile(join(homeDir, '.kimi-code', 'AGENTS.md'), 'fallback branded', 'utf-8');
+  it('falls back to the real-home .kiki/AGENTS.md when no brand home is given', async () => {
+    await mkdir(join(homeDir, '.kiki'), { recursive: true });
+    await writeFile(join(homeDir, '.kiki', 'AGENTS.md'), 'fallback branded', 'utf-8');
 
     const result = await loadAgentsMd({ fs, homeDir }, workDir);
 
@@ -278,17 +278,17 @@ describe('loadAgentsMdDetailed discovered paths', () => {
   });
 
   it('returns the normalized paths of every injected file in collection order', async () => {
-    await mkdir(join(homeDir, '.kimi-code'), { recursive: true });
-    await writeFile(join(homeDir, '.kimi-code', 'AGENTS.md'), 'user branded', 'utf-8');
-    await mkdir(join(workDir, '.kimi-code'), { recursive: true });
-    await writeFile(join(workDir, '.kimi-code', 'AGENTS.md'), 'dot kimi', 'utf-8');
+    await mkdir(join(homeDir, '.kiki'), { recursive: true });
+    await writeFile(join(homeDir, '.kiki', 'AGENTS.md'), 'user branded', 'utf-8');
+    await mkdir(join(workDir, '.kiki'), { recursive: true });
+    await writeFile(join(workDir, '.kiki', 'AGENTS.md'), 'dot kiki', 'utf-8');
     await writeFile(join(workDir, 'AGENTS.md'), 'project instructions', 'utf-8');
 
     const result = await loadAgentsMdDetailed({ fs, homeDir }, workDir);
 
     expect(result.paths).toEqual([
-      normalize(join(homeDir, '.kimi-code', 'AGENTS.md')),
-      normalize(join(workDir, '.kimi-code', 'AGENTS.md')),
+      normalize(join(homeDir, '.kiki', 'AGENTS.md')),
+      normalize(join(workDir, '.kiki', 'AGENTS.md')),
       normalize(join(workDir, 'AGENTS.md')),
     ]);
   });

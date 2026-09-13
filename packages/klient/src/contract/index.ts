@@ -12,17 +12,24 @@ import { agentPanelContract } from './global/agentPanel.js';
 import { agentActivityViewContract } from './agent/activity.js';
 import {
   agentCommandContract,
+  agentContextInjectorContract,
   agentContextMemoryContract,
+  agentContextMutationContract,
+  agentConversationUndoContract,
   agentFullCompactionContract,
+  agentGoalContract,
   agentLoopContract,
   agentMcpContract,
   agentPermissionModeContract,
   agentPlanContract,
-  agentRuntimeBindingContract,
+  agentPluginCommandContract,
+  agentPluginContract,
   agentProfileContract,
   agentPromptContract,
+  agentRuntimeBindingContract,
   agentShellCommandContract,
   agentSkillContract,
+  agentSwarmContract,
   agentTaskContract,
   agentTokenCountingContract,
   agentUsageContract,
@@ -55,8 +62,8 @@ import { sessionBtwContract } from './session/btw.js';
 import { sessionCronContract } from './session/cron.js';
 import { sessionInitContract } from './session/init.js';
 import { sessionTodoContract } from './session/todo.js';
-
 export const globalContract: KlientContract = {
+  agentGoalService: agentGoalContract,
   agentLifecycleService: agentLifecycleContract,
   sessionCronService: sessionCronContract,
   sessionBtwService: sessionBtwContract,
@@ -95,10 +102,16 @@ export const globalContract: KlientContract = {
   agentPromptService: agentPromptContract,
   agentSkillService: agentSkillContract,
   agentLoopService: agentLoopContract,
+  agentContextInjectorService: agentContextInjectorContract,
+  agentContextMemoryService: agentContextMemoryContract,
+  agentContextMutationService: agentContextMutationContract,
+  agentConversationUndoService: agentConversationUndoContract,
+  agentPluginCommandService: agentPluginCommandContract,
+  agentPluginService: agentPluginContract,
+  agentSwarmService: agentSwarmContract,
   agentPermissionModeService: agentPermissionModeContract,
   agentCommandService: agentCommandContract,
   agentRuntimeBindingService: agentRuntimeBindingContract,
-  agentContextMemoryService: agentContextMemoryContract,
   agentTokenCountingService: agentTokenCountingContract,
   agentActivityView: agentActivityViewContract,
   agentShellCommandService: agentShellCommandContract,

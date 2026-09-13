@@ -186,11 +186,11 @@ class WorkspaceFsWatchSubscription implements IWorkspaceFsWatchSubscription {
   private disposed = false;
 
   private readonly debounceMs = readPositiveIntEnv(
-    'KIMI_CODE_FS_WATCH_DEBOUNCE_MS',
+    'KIKI_FS_WATCH_DEBOUNCE_MS',
     DEFAULT_DEBOUNCE_MS,
   );
   private readonly maxChangesPerWindow = readPositiveIntEnv(
-    'KIMI_CODE_FS_WATCH_MAX_CHANGES_PER_WINDOW',
+    'KIKI_FS_WATCH_MAX_CHANGES_PER_WINDOW',
     DEFAULT_MAX_CHANGES_PER_WINDOW,
   );
 

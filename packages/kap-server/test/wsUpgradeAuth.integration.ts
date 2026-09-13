@@ -93,7 +93,7 @@ describe('WS upgrade auth', () => {
       authTokenService: fixedTokenAuth(TOKEN),
     });
     klientUrl = `ws://127.0.0.1:${server.port}${KLIENT_EVENTS_PATH}`;
-    v1Url = `ws://127.0.0.1:${server.port}/api/v1/ws`;
+    v1Url = `ws://127.0.0.1:${server.port}/api/ws`;
   });
 
   afterEach(async () => {
@@ -113,7 +113,7 @@ describe('WS upgrade auth', () => {
     }
   });
 
-  describe('/api/v1/ws', () => {
+  describe('/api/ws', () => {
     const firstType = 'server_hello';
     const url = (): string => v1Url;
 
@@ -204,7 +204,7 @@ describe('WS upgrade auth', () => {
   });
 
   it('rejects upgrades to a non-WS path', async () => {
-    const badUrl = `ws://127.0.0.1:${(server as RunningServer).port}/api/v1/other`;
+    const badUrl = `ws://127.0.0.1:${(server as RunningServer).port}/api/other`;
     await expectRejected(badUrl, { protocols: [`kimi-code.bearer.${TOKEN}`] });
   });
 });

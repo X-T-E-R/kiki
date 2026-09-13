@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createKlient } from '@kiki/klient/http';
 
 import { DaemonClient } from '#/tui/daemon/client';
 
@@ -122,14 +123,14 @@ describe('DaemonClient', () => {
     await client.setThinking('session-1', 'high');
 
     expect(fetch.mock.calls.map(([input]) => requestUrl(input))).toEqual([
-      'http://127.0.0.1:57580/api/v1/models',
-      'http://127.0.0.1:57580/api/v1/agents?expand=true',
-      'http://127.0.0.1:57580/api/v1/sessions/session-1/skills',
-      'http://127.0.0.1:57580/api/v1/sessions/session-1/skills/review:activate',
-      'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
-      'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
-      'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
-      'http://127.0.0.1:57580/api/v1/sessions/session-1/profile',
+      'http://127.0.0.1:57580/api/models',
+      'http://127.0.0.1:57580/api/agents?expand=true',
+      'http://127.0.0.1:57580/api/sessions/session-1/skills',
+      'http://127.0.0.1:57580/api/sessions/session-1/skills/review:activate',
+      'http://127.0.0.1:57580/api/sessions/session-1/profile',
+      'http://127.0.0.1:57580/api/sessions/session-1/profile',
+      'http://127.0.0.1:57580/api/sessions/session-1/profile',
+      'http://127.0.0.1:57580/api/sessions/session-1/profile',
     ]);
     expect(fetch.mock.calls.slice(3).map(([, init]) => jsonRequestBody(init))).toEqual([
       { args: 'staged changes' },
@@ -174,7 +175,7 @@ describe('DaemonClient', () => {
 
     await expect(client.getGoal('session 1')).resolves.toEqual(goal);
     expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
-      'http://127.0.0.1:57580/api/v1/sessions/session%201/goal',
+      'http://127.0.0.1:57580/api/sessions/session%201/goal',
     );
     expect(fetch.mock.calls[0]?.[1]).toMatchObject({
       method: 'GET',
@@ -203,7 +204,7 @@ describe('DaemonClient', () => {
 
     await client.renewServerLease('lease-1');
 
-    expect(requestUrl(fetch.mock.calls[0]![0])).toBe('http://127.0.0.1:57580/api/v1/leases');
+    expect(requestUrl(fetch.mock.calls[0]![0])).toBe('http://127.0.0.1:57580/api/leases');
     expect(jsonRequestBody(fetch.mock.calls[0]?.[1])).toEqual({ lease_id: 'lease-1' });
   });
 
@@ -229,37 +230,24 @@ describe('DaemonClient', () => {
       skills: 2,
     });
     expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
-      'http://127.0.0.1:57580/api/v1/sessions/session%201/source-overlay',
+      'http://127.0.0.1:57580/api/sessions/session%201/source-overlay',
     );
     expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' });
     expect(jsonRequestBody(fetch.mock.calls[0]?.[1])).toEqual(body);
   });
 
-  it('loads transcript snapshots through authenticated kap-server REST', async () => {
-    const fake = fakeKlient();
+  it('loads transcript snapshots through the authenticated Klient view', async () => {
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
       json: async () => ({ code: 0, msg: 'ok', data: { as_of_seq: 4, epoch: 'e1' } }),
     }) as Response);
-    const client = new DaemonClient({
-      url: 'http://127.0.0.1:57580/',
-      token: 'secret',
-      fetch: fetch as typeof globalThis.fetch,
-      klient: fake.klient as never,
-    });
-
-    await expect(client.snapshot('session 1', { transcript: true })).resolves.toMatchObject({
-      as_of_seq: 4,
-      epoch: 'e1',
-    });
-    expect(requestUrl(fetch.mock.calls[0]![0])).toBe(
-      'http://127.0.0.1:57580/api/v1/sessions/session%201/snapshot?mode=transcript',
-    );
-    expect(fetch.mock.calls[0]?.[1]).toMatchObject({
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: 'Bearer secret',
-      },
-    });
+    const klient = createKlient({ endpoint: 'http://127.0.0.1:57580', token: 'secret', fetch: fetch as typeof globalThis.fetch, validate: false });
+    const client = new DaemonClient({ url: 'http://127.0.0.1:57580', token: 'secret', klient });
+    try {
+      await expect(client.klient.session('session 1').view.snapshot()).resolves.toMatchObject({ as_of_seq: 4, epoch: 'e1' });
+      expect(requestUrl(fetch.mock.calls[0]![0])).toBe('http://127.0.0.1:57580/api/klient/session-view/session%201/snapshot');
+      expect(fetch.mock.calls[0]?.[1]).toMatchObject({ headers: { accept: 'application/json', authorization: 'Bearer secret' } });
+    } finally {
+      await client.close();
+    }
   });
 });

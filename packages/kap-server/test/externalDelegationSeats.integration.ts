@@ -52,7 +52,7 @@ afterEach(async () => {
 
 async function createSeat() {
   const base = `http://127.0.0.1:${server!.port}`;
-  const response = await authedFetch(server!, base, '/api/v2/external-delegation/seats', {
+  const response = await authedFetch(server!, base, '/api/external-delegation/seats', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ workspace, principal: 'cursor', mode: 'auto' }),
@@ -65,7 +65,7 @@ async function invokeSeat(sessionId: string, delegationToken: string) {
   const response = await authedFetch(
     server!,
     base,
-    `/api/v2/sessions/${encodeURIComponent(sessionId)}/external-delegation/list`,
+    `/api/sessions/${encodeURIComponent(sessionId)}/external-delegation/list`,
     {
       method: 'POST',
       headers: {
@@ -116,7 +116,7 @@ describe('external delegation seats', () => {
       mode: 'auto',
     });
 
-    const listed = await authedFetch(server!, base, '/api/v2/external-delegation/seats');
+    const listed = await authedFetch(server!, base, '/api/external-delegation/seats');
     const listBody = await listed.json() as { code: number; data: Record<string, unknown>[] };
     expect(listBody.code).toBe(0);
     expect(listBody.data).toHaveLength(1);
@@ -146,7 +146,7 @@ describe('external delegation seats', () => {
     const revoked = await authedFetch(
       server!,
       base,
-      `/api/v2/external-delegation/seats/${encodeURIComponent(seatId)}`,
+      `/api/external-delegation/seats/${encodeURIComponent(seatId)}`,
       { method: 'DELETE' },
     );
     expect(await revoked.json()).toMatchObject({ code: 0, data: { seatId } });

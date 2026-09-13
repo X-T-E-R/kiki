@@ -54,7 +54,7 @@ describe('workspaceSchema', () => {
   });
 });
 
-describe('createWorkspaceRequestSchema (POST /api/v1/workspaces)', () => {
+describe('createWorkspaceRequestSchema (POST /api/workspaces)', () => {
   it('accepts a root-only body', () => {
     expect(createWorkspaceRequestSchema.parse({ root: '/Users/foo/code' })).toEqual({
       root: '/Users/foo/code',
@@ -93,7 +93,7 @@ describe('createWorkspaceRequestSchema (POST /api/v1/workspaces)', () => {
   });
 });
 
-describe('updateWorkspaceRequestSchema (PATCH /api/v1/workspaces/{id})', () => {
+describe('updateWorkspaceRequestSchema (PATCH /api/workspaces/{id})', () => {
   it('accepts a name patch', () => {
     expect(updateWorkspaceRequestSchema.parse({ name: 'Renamed' })).toEqual({
       name: 'Renamed',

@@ -25,7 +25,7 @@ async function waitForShutdown(server: RunningServer, homeDir: string): Promise<
   throw new Error('shutdown did not release the listener and instance registration within 10s');
 }
 
-describe('POST /api/v1/shutdown', () => {
+describe('POST /api/shutdown', () => {
   it('returns 200 before gracefully closing the real server', async () => {
     const home = await mkdtemp(join(tmpdir(), 'kap-shutdown-route-'));
     let server: RunningServer | undefined;
@@ -62,7 +62,7 @@ describe('POST /api/v1/shutdown', () => {
       const response = await authedFetch(
         running,
         `http://127.0.0.1:${running.port}`,
-        '/api/v1/shutdown',
+        '/api/shutdown',
         { method: 'POST' },
       );
       shutdownRequested = true;

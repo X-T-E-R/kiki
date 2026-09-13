@@ -25,22 +25,22 @@ afterEach(async () => {
 
 describe('VSIX package CLI (target planning and validation)', () => {
   it('plans all six supported targets when no target is supplied', async () => {
-    const outputDir = await makeTempDir('kimi-package-plan-');
+    const outputDir = await makeTempDir('kiki-package-plan-');
 
     const result = runNode(packageScript, ['--dry-run', '--out-dir', outputDir]);
 
     expect(result.status).toBe(0);
     expect(result.stdout.match(/Would package /g)).toHaveLength(6);
-    expect(result.stdout).toContain('kimi-code-darwin-x64.vsix');
-    expect(result.stdout).toContain('kimi-code-darwin-arm64.vsix');
-    expect(result.stdout).toContain('kimi-code-linux-x64.vsix');
-    expect(result.stdout).toContain('kimi-code-linux-arm64.vsix');
-    expect(result.stdout).toContain('kimi-code-win32-x64.vsix');
-    expect(result.stdout).toContain('kimi-code-win32-arm64.vsix');
+    expect(result.stdout).toContain('kiki-darwin-x64.vsix');
+    expect(result.stdout).toContain('kiki-darwin-arm64.vsix');
+    expect(result.stdout).toContain('kiki-linux-x64.vsix');
+    expect(result.stdout).toContain('kiki-linux-arm64.vsix');
+    expect(result.stdout).toContain('kiki-win32-x64.vsix');
+    expect(result.stdout).toContain('kiki-win32-arm64.vsix');
   });
 
   it('accepts a Windows ARM target when the output path contains spaces', async () => {
-    const root = await makeTempDir('kimi-package-windows-');
+    const root = await makeTempDir('kiki-package-windows-');
     const outputDir = join(root, 'output with spaces');
 
     const result = runNode(packageScript, [
@@ -54,7 +54,7 @@ describe('VSIX package CLI (target planning and validation)', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.match(/Would package /g)).toHaveLength(1);
-    expect(result.stdout).toContain('kimi-code-win32-arm64.vsix');
+    expect(result.stdout).toContain('kiki-win32-arm64.vsix');
   });
 
   it('rejects an unknown target before a build starts', () => {
@@ -186,22 +186,22 @@ describe('VSIX verifier CLI (package contract and failure details)', () => {
 
 describe('Extension Development Host setup (isolated local state)', () => {
   it('creates the complete isolated directory layout for a debug launch', async () => {
-    const parent = await makeTempDir('kimi-dev-profile-');
+    const parent = await makeTempDir('kiki-dev-profile-');
     const baseDir = join(parent, 'vscode-extension-dev');
 
     const result = runNode(prepareDevScript, ['--base-dir', baseDir]);
 
     expect(result.status).toBe(0);
     await expect(readFile(join(baseDir, 'workspace', 'README.md'), 'utf8')).resolves.toContain(
-      'Isolated Kimi Code extension development workspace',
+      'Isolated Kiki extension development workspace',
     );
     await expect(directoryExists(join(baseDir, 'user-data'))).resolves.toBe(true);
     await expect(directoryExists(join(baseDir, 'extensions'))).resolves.toBe(true);
-    await expect(directoryExists(join(baseDir, 'kimi-home'))).resolves.toBe(true);
+    await expect(directoryExists(join(baseDir, 'kiki-home'))).resolves.toBe(true);
   });
 
   it('refuses to clear a directory without the dedicated safety suffix', async () => {
-    const unsafeDir = await makeTempDir('kimi-dev-unsafe-');
+    const unsafeDir = await makeTempDir('kiki-dev-unsafe-');
     await writeFile(join(unsafeDir, 'keep.txt'), 'keep');
 
     const result = runNode(prepareDevScript, ['--base-dir', unsafeDir]);
@@ -219,7 +219,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 }
 
 async function makeVsixFixture(target: string): Promise<string> {
-  const root = await makeTempDir('kimi-vsix-fixture-');
+  const root = await makeTempDir('kiki-vsix-fixture-');
   const extensionDir = join(root, 'extension');
   const distDir = join(extensionDir, 'dist');
   const guiDir = join(extensionDir, 'media', 'gui');

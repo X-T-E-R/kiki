@@ -1,11 +1,11 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, type Event, type KimiError } from '#/index';
 
-import { makeTempDir, removeTempDirs } from './session-runtime-helpers';
+import { makeTempDir, removeTempDirs, waitForSDKEvent } from './session-runtime-helpers';
 import { TEST_IDENTITY } from './test-identity';
 
 // node-sdk/agent-core normalize paths to forward slashes (pathe). Mirror that
@@ -29,12 +29,12 @@ describe('Session plan, compact, usage, and resume APIs', () => {
     try {
       const session = await harness.createSession({ id: 'ses_plan_runtime', workDir });
 
-      const planOn = waitForSessionEvent(
+      const planOn = await waitForSessionEvent(
         session,
         (event) => event.type === 'agent.status.updated' && event.planMode === true,
+        () => session.setPlanMode(true),
       );
-      await session.setPlanMode(true);
-      await expect(planOn).resolves.toMatchObject({
+      expect(planOn).toMatchObject({
         type: 'agent.status.updated',
         planMode: true,
       });
@@ -45,12 +45,12 @@ describe('Session plan, compact, usage, and resume APIs', () => {
       });
       await session.cancel();
 
-      const planOff = waitForSessionEvent(
+      const planOff = await waitForSessionEvent(
         session,
         (event) => event.type === 'agent.status.updated' && event.planMode === false,
+        () => session.setPlanMode(false),
       );
-      await session.setPlanMode(false);
-      await expect(planOff).resolves.toMatchObject({
+      expect(planOff).toMatchObject({
         type: 'agent.status.updated',
         planMode: false,
       });
@@ -327,23 +327,102 @@ async function removeManualPlanIds(sessionDir: string): Promise<void> {
   await writeFile(wirePath, `${lines.join('\n')}\n`, 'utf-8');
 }
 
-function waitForSessionEvent(
+async function waitForSessionEvent(
   session: { onEvent(listener: (event: Event) => void): () => void },
   predicate: (event: Event) => boolean,
+  operation: () => Promise<unknown>,
 ): Promise<Event> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      unsubscribe();
-      reject(new Error('Timed out waiting for session event'));
-    }, 1_000);
-    const unsubscribe = session.onEvent((event) => {
-      if (!predicate(event)) return;
-      clearTimeout(timeout);
-      unsubscribe();
-      resolve(event);
-    });
-  });
+  const controller = new AbortController();
+  try {
+    const [event] = await Promise.all([
+      waitForSDKEvent(session, predicate, undefined, controller.signal),
+      Promise.resolve().then(operation),
+    ]);
+    return event;
+  } finally {
+    controller.abort();
+  }
 }
+
+describe('session event waiting', () => {
+  it('preserves a synchronous subscription failure without leaking timers', async () => {
+    vi.useFakeTimers();
+    const failure = new Error('subscription failed');
+    const controller = new AbortController();
+    try {
+      await expect(waitForSDKEvent(
+        { onEvent: () => { throw failure; } },
+        () => true,
+        undefined,
+        controller.signal,
+      )).rejects.toBe(failure);
+      expect(vi.getTimerCount()).toBe(0);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleans up when a real closed session rejects subscription synchronously', async () => {
+    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-closed-event-home-');
+    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-closed-event-work-');
+    await mkdir(join(workDir, '.git'));
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    try {
+      const session = await harness.createSession({ workDir });
+      await session.close();
+      vi.useFakeTimers();
+      const controller = new AbortController();
+      try {
+        await expect(waitForSDKEvent(session, () => true, undefined, controller.signal))
+          .rejects.toMatchObject({ code: 'session.closed' });
+        expect(vi.getTimerCount()).toBe(0);
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('unsubscribes immediately when the operation rejects', async () => {
+    const unsubscribe = vi.fn();
+    const failure = new Error('operation failed');
+    await expect(waitForSessionEvent(
+      { onEvent: () => unsubscribe },
+      () => true,
+      () => Promise.reject(failure),
+    )).rejects.toBe(failure);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles an event timeout before the operation rejects', async () => {
+    vi.useFakeTimers();
+    const unsubscribe = vi.fn();
+    let rejectOperation!: (reason: Error) => void;
+    const operation = new Promise<never>((_resolve, reject) => { rejectOperation = reject; });
+    try {
+      const result = expect(waitForSessionEvent(
+        { onEvent: () => unsubscribe },
+        () => true,
+        () => operation,
+      )).rejects.toThrow('Timed out waiting for session event');
+      await vi.advanceTimersByTimeAsync(20_000);
+      await result;
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
+      rejectOperation(new Error('late operation failure'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 async function writeTestConfig(homeDir: string): Promise<void> {
   await writeFile(

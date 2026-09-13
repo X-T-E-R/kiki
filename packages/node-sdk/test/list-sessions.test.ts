@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Scenario: Node SDK sessions persist and list through the public harness.
  * Responsibilities: workDir scoping, index recovery, fork metadata, and native path-safe listing.
  * Wiring: real in-process harness/session storage; no remote provider calls.
@@ -153,8 +153,8 @@ describe('KimiHarness.listSessions', () => {
 
 describe('SDKRpcClient.listSessionsPage', () => {
   it('pages through the listing with keyset cursors (read model off)', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '0');
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
@@ -191,8 +191,8 @@ describe('SDKRpcClient.listSessionsPage', () => {
   });
 
   it('answers an empty terminal page for an unknown cursor', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '0');
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
@@ -211,8 +211,8 @@ describe('SDKRpcClient.listSessionsPage', () => {
   });
 
   it('drains follow-up pages when the mapping drops entries (read model on)', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '1');
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '1');
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
@@ -266,8 +266,8 @@ describe('SDKRpcClient search-index separation', () => {
   // preparing.
 
   it('listSessions / resumeSession never open the global search index (read model off)', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '0');
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
@@ -291,8 +291,8 @@ describe('SDKRpcClient search-index separation', () => {
   });
 
   it('listSessions / resumeSession never open the global search index (read model on)', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '1');
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL', '1');
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });

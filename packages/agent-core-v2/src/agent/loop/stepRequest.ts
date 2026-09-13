@@ -59,7 +59,8 @@ export abstract class StepRequest {
 
   onWillMaterialize(): void {}
 
-  abstract resolveContextMessages(): readonly ContextMessage[];
+  /** The loop shares one identity per materialized batch for domain-owned delivery budgets. */
+  abstract resolveContextMessages(batch?: object): readonly ContextMessage[];
 
   markMaterialized(): void {
     if (this._state !== 'pending') return;

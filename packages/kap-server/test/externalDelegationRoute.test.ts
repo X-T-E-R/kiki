@@ -26,7 +26,7 @@ describe('external delegation REST facade', () => {
   let base: string;
   let admittedSessionId: string;
   let otherSessionId: string;
-  const priorFlag = process.env['KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP'];
+  const priorFlag = process.env['KIKI_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP'];
   const priorPrincipal = process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
   const priorSession = process.env['KIKI_EXTERNAL_SESSION_ID'];
   const priorDelegationToken = process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
@@ -37,7 +37,7 @@ describe('external delegation REST facade', () => {
   const priorTitle = process.env['KIKI_EXTERNAL_SESSION_TITLE'];
 
   beforeEach(async () => {
-    process.env['KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP'] = 'true';
+    process.env['KIKI_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP'] = 'true';
     delete process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
     delete process.env['KIKI_EXTERNAL_SESSION_ID'];
     delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
@@ -81,7 +81,7 @@ describe('external delegation REST facade', () => {
   afterEach(async () => {
     await server?.close();
     if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    restoreEnv('KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP', priorFlag);
+    restoreEnv('KIKI_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP', priorFlag);
     restoreEnv('KIKI_EXTERNAL_PRINCIPAL_ID', priorPrincipal);
     restoreEnv('KIKI_EXTERNAL_SESSION_ID', priorSession);
     restoreEnv('KIKI_EXTERNAL_DELEGATION_TOKEN', priorDelegationToken);
@@ -94,7 +94,7 @@ describe('external delegation REST facade', () => {
 
   it('admits only the configured credential, principal source, and Session', async () => {
     const call = (sessionId: string, extraHeaders: Record<string, string> = {}) =>
-      fetch(`${base}/api/v2/sessions/${sessionId}/external-delegation/list`, {
+      fetch(`${base}/api/sessions/${sessionId}/external-delegation/list`, {
         method: 'POST',
         headers: authHeaders(server!, {
           'content-type': 'application/json',
@@ -140,7 +140,7 @@ describe('external delegation REST facade', () => {
 
     const dispatched = await envelope(
       await fetch(
-        `${base}/api/v2/sessions/${admittedSessionId}/external-delegation/dispatch`,
+        `${base}/api/sessions/${admittedSessionId}/external-delegation/dispatch`,
         {
           method: 'POST',
           headers: authHeaders(server!, {
@@ -155,7 +155,7 @@ describe('external delegation REST facade', () => {
   });
 
   async function createSession(): Promise<string> {
-    const response = await fetch(`${base}/api/v1/sessions`, {
+    const response = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server!, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd: home } }),
@@ -167,17 +167,17 @@ describe('external delegation REST facade', () => {
 describe('external delegation Session bootstrap', () => {
   let root: string | undefined;
   const servers: RunningServer[] = [];
-  const priorFlag = process.env['KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP'];
+  const priorFlag = process.env['KIKI_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP'];
 
   beforeEach(async () => {
-    process.env['KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP'] = 'true';
+    process.env['KIKI_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP'] = 'true';
     root = await mkdtemp(join(tmpdir(), 'kiki-external-bootstrap-'));
   });
 
   afterEach(async () => {
     await Promise.all(servers.splice(0).map((server) => server.close()));
     if (root !== undefined) await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    restoreEnv('KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP', priorFlag);
+    restoreEnv('KIKI_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP', priorFlag);
   });
 
   it('creates one exact bound Session and reuses its authority after restart', async () => {
@@ -198,17 +198,17 @@ describe('external delegation Session bootstrap', () => {
     let base = `http://127.0.0.1:${server.port}`;
     const meta = await getEnvelope<{
       external_delegation: { state: string; reason?: string; message?: string };
-    }>(server, `${base}/api/v1/meta`);
+    }>(server, `${base}/api/meta`);
     expect(meta.data.external_delegation).toEqual({ state: 'active' });
     const session = await getEnvelope<{ metadata: { cwd: string } }>(
       server,
-      `${base}/api/v1/sessions/session_workspace_a`,
+      `${base}/api/sessions/session_workspace_a`,
     );
     expect(session.code).toBe(0);
     expect(session.data.metadata.cwd).toBe(workspace);
     const status = await getEnvelope<{ model?: string; thinking_level: string }>(
       server,
-      `${base}/api/v1/sessions/session_workspace_a/status`,
+      `${base}/api/sessions/session_workspace_a/status`,
     );
     expect(status.data).toMatchObject({ model: 'stub', thinking_level: 'high' });
     const first = await listRoot(server, base, 'session_workspace_a');
@@ -264,7 +264,7 @@ describe('external delegation Session bootstrap', () => {
     const base = `http://127.0.0.1:${server.port}`;
     const status = await getEnvelope<{ model?: string; thinking_level: string }>(
       server,
-      `${base}/api/v1/sessions/${sessionId}/status`,
+      `${base}/api/sessions/${sessionId}/status`,
     );
     expect(status.data).toMatchObject({ model: 'stub-alt', thinking_level: 'low' });
     expect((await listRoot(server, base, sessionId)).code).toBe(0);
@@ -338,10 +338,10 @@ describe('external delegation Session bootstrap', () => {
     servers.push(server);
     const base = `http://127.0.0.1:${server.port}`;
 
-    expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+    expect((await fetch(`${base}/api/healthz`)).status).toBe(200);
     const meta = await getEnvelope<{
       external_delegation: { state: string; reason?: string; message?: string };
-    }>(server, `${base}/api/v1/meta`);
+    }>(server, `${base}/api/meta`);
     expect(meta.data.external_delegation).toMatchObject({
       state: 'disabled',
       reason: 'workspace_drift',
@@ -430,7 +430,7 @@ describe('external delegation Session bootstrap', () => {
       { version: 1, ownership: 'attached' },
       null,
     ]) {
-      const response = await fetch(`${base}/api/v1/sessions/${sessionId}/profile`, {
+      const response = await fetch(`${base}/api/sessions/${sessionId}/profile`, {
         method: 'POST',
         headers: authHeaders(server, { 'content-type': 'application/json' }),
         body: JSON.stringify({
@@ -515,7 +515,7 @@ describe('external delegation Session bootstrap', () => {
     });
     servers.push(server);
     const base = `http://127.0.0.1:${server.port}`;
-    const profile = await fetch(`${base}/api/v1/sessions/${sessionId}/profile`, {
+    const profile = await fetch(`${base}/api/sessions/${sessionId}/profile`, {
       method: 'POST',
       headers: authHeaders(server, { 'content-type': 'application/json' }),
       body: JSON.stringify({
@@ -609,7 +609,7 @@ async function listRoot(
   credentialSessionId = sessionId,
 ) {
   const response = await fetch(
-    `${base}/api/v2/sessions/${sessionId}/external-delegation/list`,
+    `${base}/api/sessions/${sessionId}/external-delegation/list`,
     {
       method: 'POST',
       headers: authHeaders(server, {
@@ -628,7 +628,7 @@ async function listRoot(
 
 async function dispatchMain(server: RunningServer, base: string, sessionId: string) {
   const response = await fetch(
-    `${base}/api/v2/sessions/${sessionId}/external-delegation/dispatch`,
+    `${base}/api/sessions/${sessionId}/external-delegation/dispatch`,
     {
       method: 'POST',
       headers: authHeaders(server, {

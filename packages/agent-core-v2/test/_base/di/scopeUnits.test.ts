@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+import { Ledger } from '#/_base/lifecycle/ledger';
+import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { ScopeUnits } from '#/_base/di/fiber';
 import { createDecorator } from '#/_base/di/instantiation';
+import type { InstantiationService } from '#/_base/di/instantiationService';
 import { Scope } from '#/_base/di/scope';
 import { Service } from '#/_base/di/service';
 
@@ -93,6 +97,121 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
     app.instantiation.unprovide(IPack);
     expect(log).toEqual(['feature up', 'feature down']);
     app.dispose();
+  });
+
+  it('finishes provider teardown after withdrawing a late contribution from two live scopes', () => {
+    const cleanup: string[] = [];
+    const unexpected: unknown[] = [];
+    let nextUnit = 0;
+    class LateFeature extends Service {
+      constructor() {
+        super();
+        const id = ++nextUnit;
+        this.effect(() => () => { cleanup.push(`unit-${id}:first`); });
+        this.effect(() => () => { cleanup.push(`unit-${id}:second`); });
+      }
+    }
+    class LatePack extends Service {
+      constructor() {
+        super();
+        this.effect(() => () => { cleanup.push('provider:first'); });
+        this.effect(() => () => { cleanup.push('provider:second'); });
+        this.provide(ScopeUnits('agent'), LateFeature);
+      }
+    }
+    const app = Scope.createApp({ id: 'late-provider-app' });
+    const first = app.createChild('agent', 'first');
+    const second = app.createChild('agent', 'second');
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      app.instantiation.provide(IPack, new SyncDescriptor(LatePack));
+      app.accessor.get(IPack);
+      const [record] = (app.instantiation as InstantiationService).collectionStore.storedRecordsFor(
+        ScopeUnits('agent'), app.instantiation,
+      );
+      const book = record!.providerBook;
+      expect(nextUnit).toBe(2);
+      expect(() => app.instantiation.unprovide(IPack)).not.toThrow();
+      expect(unexpected).toEqual([]);
+      expect(book.state).toBe('disposed');
+      expect(book.size).toBe(0);
+      expect(book.entries()).toEqual([]);
+      expect(cleanup).toEqual([
+        'unit-1:second', 'unit-1:first',
+        'unit-2:second', 'unit-2:first',
+        'provider:second', 'provider:first',
+      ]);
+      book.teardown();
+      first.dispose();
+      second.dispose();
+      app.dispose();
+      expect(cleanup).toHaveLength(6);
+      expect(unexpected).toEqual([]);
+    } finally {
+      app.dispose();
+      resetUnexpectedErrorHandler();
+    }
+  });
+
+  it('releases provider entries across repeated target scope lifetimes', () => {
+    const app = appWithPack();
+    try {
+      const [record] = (app.instantiation as InstantiationService).collectionStore.storedRecordsFor(
+        ScopeUnits('agent'), app.instantiation,
+      );
+      const book = record!.providerBook;
+      const baseline = book.size;
+      for (let index = 0; index < 100; index++) {
+        const agent = app.createChild('agent', `agent-${index}`);
+        expect(book.size).toBe(baseline + 1);
+        agent.dispose();
+        expect(book.size).toBe(baseline);
+      }
+      expect(log.filter((entry) => entry === 'feature down')).toHaveLength(100);
+      app.instantiation.unprovide(IPack);
+      expect(book.size).toBe(0);
+    } finally {
+      app.dispose();
+    }
+  });
+
+  it('releases both registrations when a live contribution is withdrawn repeatedly', () => {
+    const registrations = vi.spyOn(Ledger.prototype, 'register');
+    const app = appWithPack();
+    const agent = app.createChild('agent', 'agent');
+    try {
+      const fold = registrations.mock.contexts.find(
+        (ledger): ledger is Ledger => ledger instanceof Ledger && ledger.label === 'scope-units:agent',
+      )!;
+      const [record] = (app.instantiation as InstantiationService).collectionStore.storedRecordsFor(
+        ScopeUnits('agent'), app.instantiation,
+      );
+      const book = record!.providerBook;
+      const baseline = book.size;
+      const foldBaseline = fold.size;
+      expect(foldBaseline).toBe(2);
+      for (let index = 0; index < 100; index++) {
+        const withdraw = (app.instantiation as InstantiationService).collectionStore.addRecord(
+          ScopeUnits('agent'), app.instantiation, 'dynamic', 'app', book, () => {},
+        );
+        expect(book.size).toBe(baseline + 1);
+        expect(fold.size).toBe(foldBaseline + 1);
+        withdraw();
+        withdraw();
+        expect(book.size).toBe(baseline);
+        expect(fold.size).toBe(foldBaseline);
+      }
+      app.instantiation.unprovide(IPack);
+      expect(book.size).toBe(0);
+      expect(fold.size).toBe(1);
+      expect(log).toEqual(['feature up', 'feature down']);
+      agent.dispose();
+      expect(fold.size).toBe(0);
+      expect(log).toEqual(['feature up', 'feature down']);
+    } finally {
+      app.dispose();
+      registrations.mockRestore();
+    }
   });
 
   it('does not materialize records of a different kind', () => {

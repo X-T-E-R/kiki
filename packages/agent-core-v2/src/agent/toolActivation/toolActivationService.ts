@@ -51,6 +51,16 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     return Promise.resolve();
   }
 
+  capabilities(): ReturnType<IAgentToolActivationService['capabilities']> {
+    return this.instantiationService.invokeFunction((accessor) => this.contributions.items.map((record) => ({
+      name: record.options.name,
+      source: record.options.source ?? 'builtin',
+      category: record.options.domain ?? 'other',
+      runtimeAvailable: this.runtimeAllows(record),
+      conditionAvailable: record.options.when?.(accessor) ?? true,
+    })));
+  }
+
   private activateRecords(records: readonly AgentToolContribution[]): void {
     if (records.length === 0) return;
     const data = this.profile.data();

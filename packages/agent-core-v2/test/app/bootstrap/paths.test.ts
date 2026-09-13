@@ -1,25 +1,26 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { resolve } from 'node:path';
+import { join } from 'pathe';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ensureKimiHome, resolveConfigPath, resolveKimiHome } from '#/app/bootstrap/bootstrap';
+import { ensureKikiHome, resolveConfigPath, resolveKikiHome } from '#/app/bootstrap/bootstrap';
 
 describe('bootstrap path helpers', () => {
-  describe('resolveKimiHome', () => {
+  describe('resolveKikiHome', () => {
     it('uses explicit homeDir when provided', () => {
-      expect(resolveKimiHome('/tmp/kimi')).toBe('/tmp/kimi');
+      expect(resolveKikiHome('/tmp/kimi')).toBe(resolve('/tmp/kimi'));
     });
 
-    it('falls back to KIMI_CODE_HOME env', () => {
-      const prev = process.env['KIMI_CODE_HOME'];
-      process.env['KIMI_CODE_HOME'] = '/env/kimi';
+    it('falls back to KIKI_HOME env', () => {
+      const prev = process.env['KIKI_HOME'];
+      process.env['KIKI_HOME'] = '/env/kimi';
       try {
-        expect(resolveKimiHome()).toBe('/env/kimi');
+        expect(resolveKikiHome()).toBe(resolve('/env/kimi'));
       } finally {
-        if (prev === undefined) delete process.env['KIMI_CODE_HOME'];
-        else process.env['KIMI_CODE_HOME'] = prev;
+        if (prev === undefined) delete process.env['KIKI_HOME'];
+        else process.env['KIKI_HOME'] = prev;
       }
     });
   });
@@ -30,11 +31,13 @@ describe('bootstrap path helpers', () => {
     });
 
     it('joins homeDir with config.toml', () => {
-      expect(resolveConfigPath({ homeDir: '/tmp/kimi' })).toBe('/tmp/kimi/config.toml');
+      expect(resolveConfigPath({ homeDir: '/tmp/kimi' })).toBe(
+        join(resolve('/tmp/kimi'), 'config.toml'),
+      );
     });
   });
 
-  describe('ensureKimiHome', () => {
+  describe('ensureKikiHome', () => {
     let dir: string | undefined;
     afterEach(() => {
       if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -42,7 +45,7 @@ describe('bootstrap path helpers', () => {
 
     it('creates the directory with 0700 permissions', () => {
       dir = join(mkdtempSync(join(tmpdir(), 'kimi-home-')), 'nested');
-      ensureKimiHome(dir);
+      ensureKikiHome(dir);
       expect(existsSync(dir)).toBe(true);
     });
   });

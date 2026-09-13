@@ -1,3 +1,5 @@
+import { buildSkillSlashItems } from '@kiki/session-core/commands/slashCommands';
+import type { SkillDescriptor } from '@kiki/protocol';
 import type { SlashAutocompleteCommand } from '#/tui/components/editor/file-mention-provider';
 
 export type DaemonCommandName =
@@ -62,6 +64,19 @@ export interface DaemonSkillCommand {
   readonly commandName: string;
   readonly name: string;
   readonly description: string;
+  readonly argumentHint?: string;
+}
+
+export function daemonSkillCommands(skills: readonly SkillDescriptor[]): DaemonSkillCommand[] {
+  return buildSkillSlashItems(
+    skills,
+    DAEMON_COMMANDS.flatMap((command) => [command.name, ...command.aliases]),
+  ).filter((item) => item.disabled !== true).map((item) => ({
+    commandName: item.name,
+    name: item.skill!.name,
+    description: `[${item.skill!.source}] ${item.description}`,
+    argumentHint: item.skill!.argument_hint,
+  }));
 }
 
 export interface DaemonSlashInput {
@@ -191,7 +206,7 @@ export function daemonAutocompleteCommands(
       name: skill.commandName,
       aliases: [],
       description: skill.description,
-      argumentHint: '[arguments]',
+      argumentHint: skill.argumentHint ?? '[arguments]',
     })),
     ...[...agentProfiles.values()].map((name) => ({
       name,

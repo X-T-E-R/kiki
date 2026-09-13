@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { configResponseSchema, type ConfigResponse } from '../src/protocol/rest-config';
 import { ErrorCode } from '../src/protocol/error-codes';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -17,16 +17,21 @@ interface Envelope<T> {
   request_id: string;
 }
 
-describe('server-v2 /api/v1/config', () => {
+describe('server-v2 /api/config', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-config-'));
+    for (const key of Object.keys(process.env)) {
+      if (key.toUpperCase().startsWith('NB_SEARCH_')) vi.stubEnv(key, undefined);
+    }
+    vi.stubEnv('NB_SEARCH_HOME', join(home, 'local-nb-search'));
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -52,7 +57,7 @@ describe('server-v2 /api/v1/config', () => {
   }
 
   async function getConfig(): Promise<ConfigResponse> {
-    const res = await authedFetch(server as RunningServer, base, '/api/v1/config');
+    const res = await authedFetch(server as RunningServer, base, '/api/config');
     expect(res.status).toBe(200);
     const body = (await res.json()) as Envelope<ConfigResponse>;
     expect(body.code).toBe(0);
@@ -60,7 +65,7 @@ describe('server-v2 /api/v1/config', () => {
   }
 
   async function patchConfig(patch: Record<string, unknown>): Promise<ConfigResponse> {
-    const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+    const res = await authedFetch(server as RunningServer, base, '/api/config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),
@@ -71,13 +76,46 @@ describe('server-v2 /api/v1/config', () => {
     return configResponseSchema.parse(body.data);
   }
 
+  it('round trips prompt variable names, merges references, validates saves and removes replaced entries', async () => {
+    await boot();
+    const prompt = { shared: 'Shared ${team_note}', variables: { team_note: 'Team note', search_guidance: 'Use native GMA SSE.' }, tools: { WebSearch: '${search_guidance}' } };
+    expect((await patchConfig({ prompt })).prompt).toEqual(prompt);
+    expect((await getConfig()).prompt).toEqual(prompt);
+    expect((await patchConfig({ prompt: { tools: { FetchURL: '${team_note}' } } })).prompt?.tools).toEqual({ WebSearch: '${search_guidance}', FetchURL: '${team_note}' });
+    const path = join(home as string, 'config.toml');
+    const before = await readFile(path, 'utf8');
+    expect(before).toContain('search_guidance');
+    expect(before).toContain('WebSearch');
+    for (const invalid of [{ variables: { cwd: 'override' } }, { shared: '${missing}' }, { variables: { 'bad-name': 'text' } }]) {
+      const response = await authedFetch(server as RunningServer, base, '/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: invalid }) });
+      expect((await response.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(await readFile(path, 'utf8')).toBe(before);
+    }
+    expect((await patchConfig({ prompt: {}, replace_domains: ['prompt'] })).prompt).toEqual({});
+    expect((await getConfig()).prompt).toEqual({});
+  });
+
+  it('round trips board storage modes and subagent limits without retaining a stale fixed path', async () => {
+    await boot();
+    const fixed = await patchConfig({ task_board: { storage: { mode: 'fixed', path: 'ordinary/board-data' } }, subagent: { timeout_ms: 0, max_direct_children: 16, max_total_subagents: 0 } });
+    expect(fixed.task_board).toEqual({ storage: { mode: 'fixed', path: 'ordinary/board-data' } });
+    expect(fixed.subagent).toMatchObject({ timeoutMs: 0, maxDirectChildren: 16, maxTotalSubagents: 0 });
+    expect((await patchConfig({ task_board: { storage: { mode: 'global' } } })).task_board).toEqual({ storage: { mode: 'global' } });
+    expect((await patchConfig({ task_board: { storage: { mode: 'auto' } } })).task_board).toEqual({ storage: { mode: 'auto' } });
+    const saved = await readFile(join(home as string, 'config.toml'), 'utf8');
+    expect(saved).not.toContain('ordinary/board-data');
+    const invalid = await authedFetch(server as RunningServer, base, '/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ task_board: { storage: { mode: 'fixed', path: '' } } }) });
+    expect((await invalid.json() as Envelope<unknown>).code).not.toBe(0);
+    expect((await getConfig()).task_board).toEqual({ storage: { mode: 'auto' } });
+  });
+
   it('omits legacy telemetry config and rejects telemetry patches without persisting them', async () => {
     await boot('telemetry = true\n');
     expect(await getConfig()).not.toHaveProperty('telemetry');
     const configPath = join(home as string, 'config.toml');
     const before = await readFile(configPath, 'utf-8');
 
-    const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+    const res = await authedFetch(server as RunningServer, base, '/api/config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ telemetry: false }),
@@ -112,7 +150,7 @@ describe('server-v2 /api/v1/config', () => {
     expect(before).toContain('[nb_search.defaults]');
     expect(before).toContain('env = "TEAM_EXA_API_KEY"');
 
-    const response = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+    const response = await authedFetch(server as RunningServer, base, '/api/config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -131,7 +169,7 @@ describe('server-v2 /api/v1/config', () => {
     expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
     expect(await readFile(configPath, 'utf-8')).toBe(before);
 
-    const optionResponse = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+    const optionResponse = await authedFetch(server as RunningServer, base, '/api/config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -249,7 +287,7 @@ describe('server-v2 /api/v1/config', () => {
   it('rejects empty authored global request_identity layers', async () => {
     await boot();
     for (const request_identity of [{}, { overrides: {} }, { overrides: { client: {} } }]) {
-      const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+      const res = await authedFetch(server as RunningServer, base, '/api/config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ request_identity }),
@@ -492,7 +530,7 @@ describe('server-v2 /api/v1/config', () => {
     ];
 
     for (const patch of invalidPatches) {
-      const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+      const res = await authedFetch(server as RunningServer, base, '/api/config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch),
@@ -510,7 +548,7 @@ describe('server-v2 /api/v1/config', () => {
       { cron: { disabled: true } },
       { replace_domains: ['cron'] },
     ]) {
-      const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+      const res = await authedFetch(server as RunningServer, base, '/api/config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch),

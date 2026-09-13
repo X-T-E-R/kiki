@@ -7,9 +7,14 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { IAgentContextMutationService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
+import type { ProtocolAdapterConfig } from '@kiki/agent-core-v2/kosong/protocol/protocol';
+import { ProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/provider/protocolAdapterRegistry';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createKimiHarness, type KimiError } from '#/index';
+import { createKimiHarness, ErrorCodes, SDKRpcClient, type KimiError } from '#/index';
 
 import {
   makeTempDir,
@@ -207,6 +212,108 @@ describe('Session context', () => {
       await expect(session.getContext()).resolves.toEqual(contextBeforeRejectedImport);
     } finally {
       await harness.close();
+    }
+  });
+
+  it('rejects an import when a turn starts during atomic admission', async () => {
+    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-context-race-home-');
+    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-context-race-work-');
+    await writeTestConfig(homeDir, 200_000);
+    let releaseGeneration: (() => void) | undefined;
+    const generationGate = new Promise<void>((resolve) => {
+      releaseGeneration = resolve;
+    });
+    const provider = vi.spyOn(ProtocolAdapterRegistry.prototype, 'createChatProvider').mockImplementation(
+      (config: ProtocolAdapterConfig) => ({
+        name: config.providerType ?? 'fake',
+        modelName: config.modelName,
+        thinkingEffort: null,
+        async generate() {
+          await generationGate;
+          return {
+            id: 'race-response',
+            usage: {
+              inputOther: 0,
+              output: 1,
+              inputCacheRead: 0,
+              inputCacheCreation: 0,
+            },
+            finishReason: 'completed',
+            rawFinishReason: 'stop',
+            traceId: null,
+            async *[Symbol.asyncIterator]() {
+              yield { type: 'text', text: 'race response' };
+            },
+          };
+        },
+      }) as ReturnType<ProtocolAdapterRegistry['createChatProvider']>,
+    );
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
+    let releaseMutation: (() => void) | undefined;
+    let mutationSpy: { mockRestore(): void } | undefined;
+
+    try {
+      const sessionId = 'ses_context_atomic_import';
+      await client.createSession({ id: sessionId, workDir });
+      await client.getContext({ sessionId });
+      const live = getLiveSessionById(client.engineAccessor, sessionId);
+      const main = live?.accessor.get(IAgentLifecycleService).get('main');
+      expect(main).toBeDefined();
+      const mutation = main!.accessor.get(IAgentContextMutationService);
+      const appendImported = mutation.appendImported.bind(mutation);
+      let mutationEntered!: () => void;
+      const mutationRead = new Promise<void>((resolve) => {
+        mutationEntered = resolve;
+      });
+      const mutationGate = new Promise<void>((resolve) => {
+        releaseMutation = resolve;
+      });
+      mutationSpy = vi.spyOn(mutation, 'appendImported').mockImplementation((message) =>
+        (async () => {
+          mutationEntered();
+          await mutationGate;
+          appendImported(message);
+        })() as unknown as void,
+      );
+
+      const importPromise = client.importContext({
+        sessionId,
+        content: 'context must not race a turn',
+        source: "file 'race.md'",
+      });
+      await mutationRead;
+
+      const started = waitForSDKEvent(client, (event) => event.type === 'turn.started');
+      const ended = waitForSDKEvent(client, (event) => event.type === 'turn.ended');
+      const promptPromise = client.prompt({
+        sessionId,
+        input: [{ type: 'text', text: 'hold the turn open' }],
+      });
+      await started;
+      releaseMutation?.();
+
+      await expect(importPromise).rejects.toMatchObject({
+        name: 'KimiError',
+        code: ErrorCodes.TURN_AGENT_BUSY,
+      } satisfies Partial<KimiError>);
+      const context = await client.getContext({ sessionId });
+      expect(
+        context.history.some((message) =>
+          message.content.some(
+            (part) => part.type === 'text' && part.text.includes('<imported_context'),
+          ),
+        ),
+      ).toBe(false);
+
+      releaseGeneration?.();
+      await promptPromise;
+      await ended;
+    } finally {
+      releaseMutation?.();
+      releaseGeneration?.();
+      mutationSpy?.mockRestore();
+      provider.mockRestore();
+      await client.close();
     }
   });
 });

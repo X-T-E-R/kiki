@@ -9,7 +9,7 @@ import type { JournalLogger } from './sessionEventJournal';
 import { WsConnectionV1 } from './wsConnectionV1';
 import { selectWsBearerProtocol } from '../bearerProtocol';
 
-export const WS_PATH = '/api/v1/ws';
+export const WS_PATH = '/api/ws';
 /** Bound parse work and memory for one inbound message; `ws` closes excess with 1009. */
 export const WS_V1_MAX_PAYLOAD_BYTES = 8 << 20; // 8 MiB
 

@@ -7,7 +7,7 @@ const BCRYPT_COST = 12;
 export async function resolvePasswordHash(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string | undefined> {
-  const plaintext = env['KIMI_CODE_PASSWORD'];
+  const plaintext = env['KIKI_PASSWORD'];
   if (!plaintext) {
     return undefined;
   }

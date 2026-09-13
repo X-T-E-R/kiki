@@ -26,7 +26,7 @@ interface Envelope<T> {
   request_id: string;
 }
 
-describe('server-v2 GET /api/v1/oauth/usage', () => {
+describe('server-v2 GET /api/oauth/usage', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -82,7 +82,7 @@ describe('server-v2 GET /api/v1/oauth/usage', () => {
   }
 
   async function getUsage(query = ''): Promise<ManagedUsageResult> {
-    const res = await fetch(`${base}/api/v1/oauth/usage${query}`, {
+    const res = await fetch(`${base}/api/oauth/usage${query}`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     expect(res.status).toBe(200);
@@ -157,7 +157,7 @@ describe('server-v2 GET /api/v1/oauth/usage', () => {
   });
 });
 
-describe('server-v2 GET /api/v1/oauth/userinfo', () => {
+describe('server-v2 GET /api/oauth/userinfo', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -213,7 +213,7 @@ describe('server-v2 GET /api/v1/oauth/userinfo', () => {
   }
 
   async function getUserInfo(query = ''): Promise<ManagedUserInfoResult> {
-    const res = await fetch(`${base}/api/v1/oauth/userinfo${query}`, {
+    const res = await fetch(`${base}/api/oauth/userinfo${query}`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     expect(res.status).toBe(200);

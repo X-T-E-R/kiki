@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, join } from 'pathe';
+import { dirname } from 'pathe';
 
 import { type IDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
-import { unwrapErrorCause } from '#/_base/errors/errors';
+import { planFilePath, readPlanData } from './planRead';
 import { Error2, ErrorCodes } from '#/errors';
 import { generateHeroSlug } from '#/_base/utils/hero-slug';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -151,6 +151,17 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       return;
     }
 
+    if (toolName === 'BoardWrite') {
+      event.veto(
+        denyToolExecution(
+          this.toolApproval.formatDenyMessage(
+            'BoardWrite is not available in plan mode. Call ExitPlanMode to exit plan mode before changing requirements.',
+          ),
+        ),
+      );
+      return;
+    }
+
     if (toolName === 'Write' || toolName === 'Edit') {
       if (writesOnlyPlanFile(event, plan.path)) return;
       event.veto(
@@ -284,24 +295,11 @@ export class AgentPlanService extends Service implements IAgentPlanService {
   }
 
   async status(): Promise<PlanData> {
-    const state = this.agentState.get(planKey);
-    if (!state.active || state.id === undefined) return null;
-    const path = this.planFilePathFor(state.id);
-    let content = '';
-    try {
-      content = await this.hostFs.readText(path);
-    } catch (error) {
-      if (!isMissingFileError(error)) throw error;
-    }
-    return {
-      id: state.id,
-      content,
-      path,
-    };
+    return readPlanData(this.hostFs, this.sessionCtx.sessionDir, this.agentCtx.agentId, this.agentState.get(planKey));
   }
 
   private planFilePathFor(id: string): string {
-    return join(this.sessionCtx.sessionDir, 'agents', this.agentCtx.agentId, 'plans', `${id}.md`);
+    return planFilePath(this.sessionCtx.sessionDir, this.agentCtx.agentId, id);
   }
 
   private async writeEmptyPlanFile(path: string): Promise<void> {
@@ -312,13 +310,6 @@ export class AgentPlanService extends Service implements IAgentPlanService {
   private async ensurePlanDirectory(path: string): Promise<void> {
     await this.hostFs.mkdir(dirname(path), { recursive: true });
   }
-}
-
-function isMissingFileError(error: unknown): boolean {
-  const unwrapped = unwrapErrorCause(error);
-  if (unwrapped === null || typeof unwrapped !== 'object') return false;
-  const code = (unwrapped as { readonly code?: unknown }).code;
-  return code === 'ENOENT';
 }
 
 function planModeWriteDeniedMessage(planFilePath: string | null): string {

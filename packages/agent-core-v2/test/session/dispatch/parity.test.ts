@@ -1551,15 +1551,17 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(external.probe.agentIds).toEqual(internal.probe.agentIds);
   });
 
-  it('P2 returns a receipt with the same observable fields as background AgentRun', async () => {
+  it('P2 preserves receipt identity parity while AgentRun omits repeated tutorials', async () => {
     const internal = createLane(disposables, 'internal');
     const external = createLane(disposables, 'external');
 
     const { internalResult, externalView } = await spawnPair(internal, external);
-
-    expect(external.probe.externalReceipt(externalView)).toEqual(
-      internal.probe.internalReceipt(outputText(internalResult.output)),
-    );
+    const internalReceipt = internal.probe.internalReceipt(outputText(internalResult.output));
+    const externalReceipt = external.probe.externalReceipt(externalView);
+    expect(externalReceipt.slice(0, 5)).toEqual(internalReceipt.slice(0, 5));
+    expect(internalReceipt.slice(5)).toEqual([false, false]);
+    expect(externalReceipt.slice(5)).toEqual([true, true]);
+    expect(fieldMap(outputText(internalResult.output))['automatic_notification']).toBe('true');
   });
 
   it('P3 replays a dispatch key without starting a second run', async () => {

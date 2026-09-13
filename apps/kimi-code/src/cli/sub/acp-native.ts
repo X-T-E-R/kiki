@@ -9,7 +9,7 @@
  *  - `--login` pivots into the shared device-code login flow (the entry point
  *    ACP clients hit via the first-class `AuthMethodTerminal` path, re-invoking
  *    the agent binary with the advertised `args:['--login']`).
- *  - `KIMI_CODE_HOME` (if set) is forwarded into `authMethods[0].env` so the
+ *  - `KIKI_HOME` (if set) is forwarded into `authMethods[0].env` so the
  *    login subprocess writes its token under the same data root the server
  *    reads from, and `process.argv[1]` is advertised as the legacy
  *    `_meta['terminal-auth'].command` fallback.
@@ -22,7 +22,7 @@
 import type { Command } from 'commander';
 
 import { getVersion } from '#/cli/version';
-import { KIMI_CODE_HOME_ENV } from '#/constant/app';
+import { KIKI_HOME_ENV } from '#/constant/app';
 import { getDataDir } from '#/utils/paths';
 
 import { parseRegionFlag, runLoginFlow } from './login-flow';
@@ -44,13 +44,13 @@ export function registerNativeAcpCommand(parent: Command): void {
         });
         return;
       }
-      // Forward `KIMI_CODE_HOME` (if set) into `authMethods[0].env` so the
+      // Forward `KIKI_HOME` (if set) into `authMethods[0].env` so the
       // login subprocess clients spawn for terminal-auth writes its token
       // under the same data root the ACP server reads from.
-      const sandboxHome = process.env[KIMI_CODE_HOME_ENV];
+      const sandboxHome = process.env[KIKI_HOME_ENV];
       const terminalAuthEnv =
         sandboxHome !== undefined && sandboxHome.length > 0
-          ? { [KIMI_CODE_HOME_ENV]: sandboxHome }
+          ? { [KIKI_HOME_ENV]: sandboxHome }
           : undefined;
       // Legacy `_meta.terminal-auth` fallback for clients that don't yet
       // honor the first-class `type:'terminal'`. `command` is the absolute

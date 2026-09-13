@@ -132,6 +132,8 @@ export class WsConnectionV1 implements BroadcastTarget {
   private gotClientHello = false;
   /** Per-session subscription state: legacy agent allowlist + opt-in transcript grades. */
   readonly subscriptions = new Map<string, SessionSubscription>();
+  private readonly pendingAttaches = new Set<string>();
+  private lastFragmentProgressAt = 0;
   /**
    * Serializes control-frame handling in receive order. Frames arrive
    * back-to-back (e.g. `client_hello` immediately followed by
@@ -228,6 +230,65 @@ export class WsConnectionV1 implements BroadcastTarget {
     else this.sendSubscribedFrame(envelope);
   }
 
+  private fragmenting = false;
+
+  async drain(): Promise<void> {
+    this.flush();
+    while (!this.closed && (this.fragmenting || this.outbound.length > 0 || this.socket.bufferedAmount > this.highWaterMarkBytes)) {
+      if (this.socket.bufferedAmount > this.maxOutboundBufferBytes) {
+        this.terminateSlowOrSilent('slow_consumer', { cause: 'socket_buffered_bytes' });
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, DEFAULT_BACKPRESSURE_RETRY_MS));
+      this.flush();
+    }
+    if (this.closed) throw new Error('WebSocket connection closed during transcript transfer');
+  }
+
+  private async sendFragments(text: string): Promise<void> {
+    this.fragmenting = true;
+    this.lastFragmentProgressAt = Date.now();
+    const data = Buffer.from(text);
+    const chunkSize = Math.max(1, Math.min(64 * 1024, this.highWaterMarkBytes, this.maxOutboundBufferBytes));
+    try {
+      for (let offset = 0; offset < data.length; offset += chunkSize) {
+        while (!this.closed && this.socket.bufferedAmount > this.highWaterMarkBytes) {
+          if (this.socket.bufferedAmount > this.maxOutboundBufferBytes) {
+            this.terminateSlowOrSilent('slow_consumer', { cause: 'socket_buffered_bytes' });
+            break;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, DEFAULT_BACKPRESSURE_RETRY_MS));
+        }
+        if (this.closed) return;
+        const end = Math.min(offset + chunkSize, data.length);
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('WebSocket fragment write timed out')), 30_000);
+          timer.unref?.();
+          try {
+            this.socket.send(data.subarray(offset, end), { binary: false, fin: end === data.length }, (error) => {
+              clearTimeout(timer);
+              if (error != null) reject(error);
+              else {
+                this.lastFragmentProgressAt = Date.now();
+                resolve();
+              }
+            });
+          } catch (error) {
+            clearTimeout(timer);
+            reject(error);
+          }
+        });
+      }
+    } catch (error) {
+      this.logger?.warn({ err: error }, 'transcript transfer failed');
+      this.socket.terminate();
+      this.onClose();
+    } finally {
+      this.fragmenting = false;
+      this.flush();
+    }
+  }
+
   sendControl(frame: unknown): void {
     this.sendImmediateFrame(frame);
   }
@@ -291,7 +352,13 @@ export class WsConnectionV1 implements BroadcastTarget {
    * ping a dead pipe. The close also fires the client's reconnect path.
    */
   private onHeartbeat(): void {
-    if (Date.now() - this.lastInboundAt >= this.heartbeatIntervalMs * HEARTBEAT_MISS_LIMIT) {
+    if (this.fragmenting) {
+      if (Date.now() - this.lastFragmentProgressAt >= 30_000) {
+        this.terminateSlowOrSilent('slow_consumer', { cause: 'fragment_stalled' });
+      }
+      return;
+    }
+    if (Date.now() - Math.max(this.lastInboundAt, this.lastFragmentProgressAt) >= this.heartbeatIntervalMs * HEARTBEAT_MISS_LIMIT) {
       this.close(1001, 'heartbeat timeout');
       return;
     }
@@ -676,24 +743,37 @@ export class WsConnectionV1 implements BroadcastTarget {
       notFound?: string[];
     },
   ): Promise<void> {
+    if (this.closed) return;
     const { accepted, resyncRequired, serverCursors, notFound } = collectors;
-    const ok = await this.broadcaster.subscribe(sid, this, filter, transcriptGrades, {
-      deferTranscriptReset: cursor !== undefined,
-      transcriptSince,
-    });
-    if (!ok) {
-      if (notFound !== undefined) notFound.push(sid);
-      else resyncRequired.push(sid);
-      return;
-    }
-    this.subscriptions.set(sid, { agentFilter: filter, transcriptGrades });
-    accepted.push(sid);
-    if (cursor !== undefined) {
-      await this.replay(sid, cursor, filter, transcriptGrades, resyncRequired, serverCursors);
-      await this.broadcaster.flushTranscriptSeed(sid, this);
-    } else {
-      const cur = await this.broadcaster.getCursor(sid);
-      serverCursors[sid] = cur;
+    this.pendingAttaches.add(sid);
+    let attached = false;
+    try {
+      const ok = await this.broadcaster.subscribe(sid, this, filter, transcriptGrades, {
+        deferTranscriptReset: cursor !== undefined,
+        transcriptSince,
+      });
+      if (this.closed) return;
+      if (!ok) {
+        if (notFound !== undefined) notFound.push(sid);
+        else resyncRequired.push(sid);
+        return;
+      }
+      if (cursor !== undefined) {
+        await this.replay(sid, cursor, filter, transcriptGrades, resyncRequired, serverCursors);
+        await this.broadcaster.flushTranscriptSeed(sid, this);
+      } else {
+        serverCursors[sid] = await this.broadcaster.getCursor(sid);
+      }
+      if (this.closed) return;
+      this.subscriptions.set(sid, { agentFilter: filter, transcriptGrades });
+      accepted.push(sid);
+      attached = true;
+    } finally {
+      this.pendingAttaches.delete(sid);
+      if (!attached) {
+        this.broadcaster.unsubscribe(sid, this);
+        this.subscriptions.delete(sid);
+      }
     }
   }
 
@@ -757,6 +837,16 @@ export class WsConnectionV1 implements BroadcastTarget {
   private enqueueOutbound(msg: unknown): boolean {
     if (this.closed) return false;
     const serialized = serializeOutboundFrame(msg);
+    const type = typeof msg === 'object' && msg !== null && 'type' in msg ? msg.type : undefined;
+    if ((type === 'transcript.reset' || type === 'transcript.ops') &&
+        serialized.bytes > Math.min(64 * 1024, this.maxOutboundBufferBytes) &&
+        serialized.text !== undefined && !this.fragmenting) {
+      this.flush();
+      if (this.outbound.length === 0 && !this.fragmenting) {
+        void this.sendFragments(serialized.text);
+        return false;
+      }
+    }
     this.outbound.push(msg);
     this.outboundSerialized.push(serialized.text);
     this.outboundBytes += serialized.bytes;
@@ -789,6 +879,7 @@ export class WsConnectionV1 implements BroadcastTarget {
    * cap for several retry rounds is terminated as a slow consumer.
    */
   private flush(force = false): void {
+    if (this.fragmenting) return;
     if (this.flushTimer !== undefined) {
       clearTimeout(this.flushTimer);
       this.flushTimer = undefined;
@@ -813,15 +904,27 @@ export class WsConnectionV1 implements BroadcastTarget {
       const text = this.outboundSerialized[i];
       if (text !== undefined) serializedByFrame.set(this.outbound[i], text);
     }
-    const frames = coalesceFrames(this.outbound);
-    this.outbound = [];
-    this.outboundSerialized = [];
-    this.outboundBytes = 0;
-    for (const frame of frames) {
+    this.outbound = coalesceFrames(this.outbound);
+    this.outboundSerialized = this.outbound.map((frame) => serializedByFrame.get(frame) ?? JSON.stringify(frame));
+    this.outboundBytes = this.outboundSerialized.reduce((total, text) => total + (text === undefined ? 0 : Buffer.byteLength(text)), 0);
+    while (this.outbound.length > 0) {
       if (this.closed || this.socket.readyState !== this.socket.OPEN) return;
+      if (!force && this.socket.bufferedAmount > this.highWaterMarkBytes) {
+        this.deferForBackpressure();
+        return;
+      }
+      const frame = this.outbound.shift();
+      const text = this.outboundSerialized.shift();
+      if (text === undefined) continue;
+      this.outboundBytes -= Buffer.byteLength(text);
+      const type = typeof frame === 'object' && frame !== null && 'type' in frame ? frame.type : undefined;
+      if ((type === 'transcript.reset' || type === 'transcript.ops') &&
+          Buffer.byteLength(text) > Math.min(64 * 1024, this.maxOutboundBufferBytes)) {
+        void this.sendFragments(text);
+        return;
+      }
       try {
-        const text = serializedByFrame.get(frame) ?? JSON.stringify(frame);
-        if (text !== undefined) this.socket.send(text);
+        this.socket.send(text);
       } catch {
       }
     }
@@ -904,7 +1007,11 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.backpressureSince = undefined;
     this.overLimitBackpressureRounds = 0;
     this.broadcaster.removeGlobalTarget(this);
-    for (const sid of this.subscriptions.keys()) this.broadcaster.unsubscribe(sid, this);
+    for (const sid of new Set([...this.subscriptions.keys(), ...this.pendingAttaches])) {
+      this.broadcaster.unsubscribe(sid, this);
+    }
+    this.subscriptions.clear();
+    this.pendingAttaches.clear();
     this.fsWatchBridge?.detachConnection(this);
     const terminalServices = new Set(this.terminalAttachments.values());
     for (const service of terminalServices) {

@@ -1,7 +1,7 @@
 /**
  * `kimi web rotate-token` — generate a new persistent server token.
  *
- * Rewrites `<KIMI_CODE_HOME>/server.token` (0600, atomic). The previous token
+ * Rewrites `<KIKI_HOME>/server.token` (0600, atomic). The previous token
  * stops working immediately: a running server re-reads the file on its next
  * auth check, so rotation takes effect without a restart.
  */

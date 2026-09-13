@@ -845,7 +845,8 @@ export function registerSessionsRoutes(
               `session ${parsed.id} does not exist`,
             );
           }
-          await core.accessor.get(IAuthSummaryService).ensureReady();
+          const main = await ensureMainAgent(session);
+          await core.accessor.get(IAuthSummaryService).ensureReady(main.accessor.get(IAgentProfileService).getModel());
           const agentId = await session.accessor.get(ISessionBtwService).start();
           reply.send(okEnvelope({ agent_id: agentId }, req.id));
           return;

@@ -137,18 +137,38 @@ export class AgentTaskPersistence {
     taskId: string,
     maxPreviewBytes: number,
   ): Promise<AgentTaskStoredOutputSnapshot | undefined> {
-    const output = await this.readTaskOutputData(taskId);
-    if (output === undefined) return undefined;
-    const previewLimit = Math.max(0, Math.trunc(maxPreviewBytes));
-    const previewBytes = Math.min(previewLimit, output.data.byteLength);
-    const previewOffset = output.data.byteLength - previewBytes;
-    return {
-      outputPath: this.taskOutputFileAt(taskId, output.root),
-      outputSizeBytes: output.data.byteLength,
-      previewBytes,
-      truncated: previewOffset > 0,
-      preview: textDecoder.decode(output.data.subarray(previewOffset)),
-    };
+    const roots = [this.primaryRoot(), this.fallbackRoot];
+    for (const root of roots) {
+      if (root === undefined) continue;
+      const scope = this.taskOutputScope(taskId, root);
+      const size = await this.bytes.size(scope, OUTPUT_LOG_KEY);
+      if (size === undefined) continue;
+      const limit = Math.min(size, Math.max(0, Math.trunc(maxPreviewBytes)));
+      const data = new Uint8Array(limit);
+      let length = 0;
+      if (limit > 0) {
+        for await (const chunk of this.bytes.readStream(scope, OUTPUT_LOG_KEY, { start: size - limit, end: size - 1 })) {
+          const retained = chunk.subarray(0, limit - length);
+          data.set(retained, length);
+          length += retained.byteLength;
+          if (length === limit) break;
+        }
+      }
+      let start = 0;
+      if (size > limit) {
+        while (start < length && (data[start]! & 0xc0) === 0x80) start++;
+      }
+      const preview = textDecoder.decode(data.subarray(start, length));
+      const previewBytes = textEncoder.encode(preview).byteLength;
+      return {
+        outputPath: this.taskOutputFileAt(taskId, root),
+        outputSizeBytes: size,
+        previewBytes,
+        truncated: size > previewBytes,
+        preview,
+      };
+    }
+    return undefined;
   }
 
   async listTasks(): Promise<readonly PersistedTask[]> {

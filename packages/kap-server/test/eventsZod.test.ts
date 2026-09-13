@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import {
   agentEventSchema,
   assistantDeltaEventSchema,
+  kimiErrorPayloadSchema,
   thinkingDeltaEventSchema,
 } from '../src/protocol/events-zod';
 
@@ -29,6 +30,18 @@ const ENGINE_PROMPT_EVENTS = [
   PromptCompleted,
   PromptAborted,
 ];
+
+describe('events-zod dispatch capacity errors', () => {
+  it('preserves the code and structured rejection details', () => {
+    const payload = {
+      code: 'dispatch.limit_exceeded',
+      message: 'capacity exhausted',
+      retryable: false,
+      details: { layer: 'direct', current: 16, limit: 16, owner: 'main' },
+    };
+    expect(kimiErrorPayloadSchema.parse(payload)).toEqual(payload);
+  });
+});
 
 describe('events-zod prompt lifecycle coverage', () => {
   it('declares every prompt event type the engine emits', () => {

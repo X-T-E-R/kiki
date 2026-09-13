@@ -44,13 +44,13 @@ function envelopeOf<T>(body: unknown): Envelope<T> {
 }
 
 function getItem(api: AppLike, key: string) {
-  return api.inject({ method: 'GET', url: `/api/v1/gui/store/getItem?key=${key}` });
+  return api.inject({ method: 'GET', url: `/api/gui/store/getItem?key=${key}` });
 }
 
 function setItem(api: AppLike, key: string, value: string) {
   return api.inject({
     method: 'POST',
-    url: '/api/v1/gui/store/setItem',
+    url: '/api/gui/store/setItem',
     payload: { key, value },
   });
 }
@@ -111,7 +111,7 @@ describe('server-v2 gui store routes', () => {
     await setItem(api, 'b', '2');
     const rmRes = await api.inject({
       method: 'POST',
-      url: '/api/v1/gui/store/removeItem',
+      url: '/api/gui/store/removeItem',
       payload: { key: 'a' },
     });
     expect(envelopeOf<null>(rmRes.json()).code).toBe(0);
@@ -123,7 +123,7 @@ describe('server-v2 gui store routes', () => {
   it('removeItem on a missing key is a no-op', async () => {
     const res = await appOf(server as RunningServer).inject({
       method: 'POST',
-      url: '/api/v1/gui/store/removeItem',
+      url: '/api/gui/store/removeItem',
       payload: { key: 'nope' },
     });
     expect(envelopeOf<null>(res.json()).code).toBe(0);
@@ -135,15 +135,15 @@ describe('server-v2 gui store routes', () => {
     await setItem(api, 'b', '2');
 
     const before = envelopeOf<{ length: number }>(
-      (await api.inject({ method: 'GET', url: '/api/v1/gui/store/length' })).json(),
+      (await api.inject({ method: 'GET', url: '/api/gui/store/length' })).json(),
     );
     expect(before.data?.length).toBe(2);
 
-    const clearRes = await api.inject({ method: 'POST', url: '/api/v1/gui/store/clear' });
+    const clearRes = await api.inject({ method: 'POST', url: '/api/gui/store/clear' });
     expect(envelopeOf<null>(clearRes.json()).code).toBe(0);
 
     const after = envelopeOf<{ length: number }>(
-      (await api.inject({ method: 'GET', url: '/api/v1/gui/store/length' })).json(),
+      (await api.inject({ method: 'GET', url: '/api/gui/store/length' })).json(),
     );
     expect(after.data?.length).toBe(0);
   });
@@ -162,7 +162,7 @@ describe('server-v2 gui store routes', () => {
   it('rejects an empty key', async () => {
     const res = await appOf(server as RunningServer).inject({
       method: 'POST',
-      url: '/api/v1/gui/store/setItem',
+      url: '/api/gui/store/setItem',
       payload: { key: '', value: 'x' },
     });
     expect(envelopeOf(res.json()).code).toBe(40001);

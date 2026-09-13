@@ -309,6 +309,21 @@ function outputString(result: { readonly output: string | readonly unknown[] }):
   return typeof result.output === 'string' ? result.output : JSON.stringify(result.output);
 }
 
+function utf8SizedOutput(totalBytes: number, marker: string): string {
+  const fillerBytes = totalBytes - Buffer.byteLength(marker, 'utf8');
+  if (fillerBytes < 0) throw new Error('Marker exceeds requested output size');
+  return `${'x'.repeat(fillerBytes)}${marker}`;
+}
+
+function utf8SizedQuestionAnswer(totalBytes: number, marker: string): string {
+  const prefix = '{"answers":{"Which database?":"';
+  const suffix = '"}}';
+  const fixedBytes = Buffer.byteLength(`${prefix}${marker}${suffix}`, 'utf8');
+  const fillerBytes = totalBytes - fixedBytes;
+  if (fillerBytes < 0) throw new Error('Marker exceeds requested answer size');
+  return `${prefix}${'x'.repeat(fillerBytes)}${marker}${suffix}`;
+}
+
 function registerProcess(
   manager: IAgentTaskService,
   proc: IHostProcess,
@@ -501,8 +516,83 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).toContain('Background agent completed');
     expect(text).toContain('agent task completed.');
     expect(text).toContain('<output-file');
-    expect(text).not.toContain('final subagent summary');
+    expect(text).toContain('final subagent summary');
+    expect(text).toContain('complete="true"');
+    expect(text).toContain('Final agent receipt.');
+    expect(text).not.toContain('no need to read the same result again');
+    const hook = ctx.allEvents.find((event) => event.event === 'task.notified');
+    expect(JSON.stringify(hook)).not.toContain('final subagent summary');
   });
+
+  it.each([
+    { totalBytes: 16_000, previewBytes: 16_000, truncated: 'false', complete: 'true' },
+    { totalBytes: 16_001, previewBytes: 16_000, truncated: 'true', complete: 'false' },
+  ])(
+    'uses the UTF-8 byte boundary for agent output at $totalBytes bytes',
+    async ({ totalBytes, previewBytes, truncated, complete }) => {
+      const { agent, ctx, manager } = createAgentTaskService();
+      ctx.mockNextResponse({ type: 'text', text: 'notification ack' });
+      const turnEnd = ctx.untilTurnEnd();
+      const marker = '<unsafe & "quoted"> 🙂';
+      const output = utf8SizedOutput(totalBytes, marker);
+      expect(Buffer.byteLength(output, 'utf8')).toBe(totalBytes);
+      const taskId = manager.registerTask(
+        agentTask(Promise.resolve({ result: output }), 'boundary agent'),
+      );
+
+      await manager.wait(taskId);
+      await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+      await turnEnd;
+
+      const text = notificationMessageFor(agent, taskId).content[0]!.text;
+      expect(text).toContain(
+        `<output-preview bytes="${previewBytes}" total_bytes="${totalBytes}" truncated="${truncated}" complete="${complete}">`,
+      );
+      expect(text).toContain('&lt;unsafe &amp; &quot;quoted&quot;&gt; 🙂');
+      expect(text).not.toContain(marker);
+      expect(text).toContain('<output-file');
+    },
+  );
+
+  it.each([
+    { totalBytes: 16_000, previewBytes: 16_000, truncated: false },
+    { totalBytes: 16_001, previewBytes: 16_000, truncated: true },
+  ])(
+    'uses the UTF-8 byte boundary for question output at $totalBytes bytes',
+    async ({ totalBytes, previewBytes, truncated }) => {
+      const { agent, ctx, manager } = createAgentTaskService();
+      ctx.mockNextResponse({ type: 'text', text: 'notification ack' });
+      const turnEnd = ctx.untilTurnEnd();
+      const answer = utf8SizedQuestionAnswer(totalBytes, '<unsafe 🙂>');
+      expect(Buffer.byteLength(answer, 'utf8')).toBe(totalBytes);
+      const taskId = manager.registerTask(
+        new QuestionBackgroundTask(
+          async () => ({ isError: false, output: answer }),
+          'Which database?',
+          { questionCount: 1, toolCallId: 'call-question-boundary' },
+        ),
+        { detached: true },
+      );
+
+      await manager.wait(taskId);
+      await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+      await turnEnd;
+
+      const text = notificationMessageFor(agent, taskId).content[0]!.text;
+      expect(text).toContain('&lt;unsafe 🙂&gt;');
+      if (truncated) {
+        expect(text).toContain(
+          `<output-preview bytes="${previewBytes}" total_bytes="${totalBytes}" truncated="true" complete="false">`,
+        );
+        expect(text).not.toContain('<answer>');
+        expect(text).toContain('<output-file');
+      } else {
+        expect(text).toContain(`<answer>\n${answer.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}\n</answer>`);
+        expect(text).not.toContain('<output-preview');
+        expect(text).not.toContain('<output-file');
+      }
+    },
+  );
 
   it('inlines a short completed question answer in its notification', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -578,6 +668,8 @@ describe('AgentTaskService — notification delivery', () => {
 
     const text = notificationMessageFor(agent, taskId).content[0]!.text;
     expect(text).toContain('Title: Background question completed');
+    expect(text).toContain('<output-preview');
+    expect(text).toContain('truncated="true" complete="false"');
     expect(text).toContain('<output-file');
     expect(text).not.toContain('<answer>');
     expect(text).not.toContain('"details"');
@@ -611,9 +703,36 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).not.toContain('<output-file');
   });
 
+  it.each([0, 2])('delivers process exit %s with useful output or an explicit empty result', async (exitCode) => {
+    const { agent, ctx, manager } = createAgentTaskService();
+    const output = exitCode === 0 ? '' : `early marker${'x'.repeat(4_000)}\nfailure detail`;
+    const taskId = registerProcess(manager, immediateProcess(exitCode, output), 'example', 'process result');
+    await manager.wait(taskId);
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await drainNotifications(ctx);
+    const text = notificationMessageFor(agent, taskId).content[0]!.text;
+    expect(text).toContain(`Exit code: ${exitCode}. Duration:`);
+    if (exitCode === 0) {
+      expect(text).toContain('No output was captured.');
+      expect(text).not.toContain('<output-file');
+      expect(text).not.toContain('<output-preview');
+    } else {
+      expect(text).toContain('task.failed');
+      expect(text).toContain('failure detail');
+      expect(text).not.toContain('early marker');
+      expect(text).toContain('truncated="true" complete="false"');
+      expect(text).toContain('<output-file');
+    }
+  });
+
   it('enqueues completed process task notifications into the turn flow', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
-    const taskId = registerProcess(manager, immediateProcess(0), 'echo ok', 'shell task');
+    const taskId = registerProcess(
+      manager,
+      immediateProcess(0, 'shell output'),
+      'echo ok',
+      'shell task',
+    );
 
     await manager.wait(taskId);
 
@@ -631,7 +750,10 @@ describe('AgentTaskService — notification delivery', () => {
     });
     const text = message.content[0]!.text;
     expect(text).toContain('Background process completed');
-    expect(text).toContain('shell task completed.');
+    expect(text).toContain('shell task completed. Exit code: 0. Duration: ');
+    expect(text).toContain('<output-preview bytes="12" total_bytes="12" truncated="false" complete="true">');
+    expect(text).toContain('shell output');
+    expect(text).toContain('<output-file');
   });
 
   it('enqueues stopped process task notifications into the turn flow', async () => {
@@ -652,7 +774,11 @@ describe('AgentTaskService — notification delivery', () => {
       status: 'killed',
       notificationId: `task:${taskId}:killed`,
     });
-    expect(message.content[0]!.text).toContain('long shell task was stopped by user.');
+    const text = message.content[0]!.text;
+    expect(text).toContain('long shell task was stopped by user. Exit code: 143. Duration: ');
+    expect(text).toContain('No output was captured.');
+    expect(text).not.toContain('<output-preview');
+    expect(text).not.toContain('<output-file');
   });
 
   it('TaskStopTool suppresses the real terminal notification for model-requested stops', async () => {
@@ -741,7 +867,9 @@ describe('AgentTaskService — notification delivery', () => {
       });
       const text = message.content[0]!.text;
       expect(text).toContain('Background agent completed');
-      expect(text).not.toContain('restored subagent summary');
+      expect(text).toContain('restored subagent summary');
+      expect(text).toContain('<output-preview');
+      expect(text).toContain('complete="true"');
       expect(text).toContain('<output-file');
       expect(text).toContain(persistence.taskOutputFile('agent-done0000'));
     } finally {
@@ -774,7 +902,9 @@ describe('AgentTaskService — notification delivery', () => {
       });
       const text = message.content[0]!.text;
       expect(text).toContain('Background process completed');
-      expect(text).not.toContain('restored shell output');
+      expect(text).toContain('restored shell output');
+      expect(text).toContain('<output-preview');
+      expect(text).toContain('complete="true"');
       expect(text).toContain('<output-file');
       expect(text).toContain(persistence.taskOutputFile('bash-done0000'));
     } finally {
@@ -821,7 +951,8 @@ describe('AgentTaskService — notification delivery', () => {
     let fixture: TaskServiceFixture | undefined;
     try {
       const taskId = 'bash-large000';
-      const largeOutput = `early-output-marker\n${'x'.repeat(8_000)}\nfinal output line`;
+      const largeOutput = `early-output-marker\n${'x'.repeat(8_000)}\nfinal output line <unsafe & "quoted">`;
+      const outputSizeBytes = Buffer.byteLength(largeOutput, 'utf8');
       const persistence = createAgentTaskPersistence(sessionDir);
       await persistence.writeTask(persistedProcess({ taskId }));
       await persistence.appendTaskOutput(taskId, largeOutput);
@@ -836,10 +967,15 @@ describe('AgentTaskService — notification delivery', () => {
       });
       const message = firstAppendedContextMessage(agent);
       const text = message.content[0]!.text;
+      expect(text).toContain(
+        `<output-preview bytes="3000" total_bytes="${outputSizeBytes}" truncated="true" complete="false">`,
+      );
+      expect(text).toContain('final output line');
+      expect(text).toContain('&lt;unsafe &amp; &quot;quoted&quot;&gt;');
+      expect(text).not.toContain('<unsafe & "quoted">');
+      expect(text).not.toContain('early-output-marker');
       expect(text).toContain('<output-file');
       expect(text).toContain(persistence.taskOutputFile(taskId));
-      expect(text).not.toContain('final output line');
-      expect(text).not.toContain('early-output-marker');
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
@@ -878,6 +1014,34 @@ describe('AgentTaskService — notification delivery', () => {
       expect(agent.context.appendUserMessage).not.toHaveBeenCalled();
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
+    }
+  });
+
+  it('restores notification delivery after undo for a locally archived execution without restarting it', async () => {
+    const fixture = createAgentTaskService();
+    const { ctx, manager } = fixture;
+    try {
+      ctx.appendUserTurn('start background work');
+      ctx.mockNextResponse({ type: 'text', text: 'completion received' });
+      const taskId = manager.registerTask(agentTask(Promise.resolve({ result: 'archived result' }), 'work'));
+      await manager.wait(taskId);
+      const internals = manager as unknown as { tasks: Map<string, unknown> };
+      await vi.waitFor(() => {
+        expect(internals.tasks.has(taskId)).toBe(false);
+        expect(ctx.get(IAgentLoopService).status().state).toBe('idle');
+        expect(ctx.context.get().filter((message) => message.origin?.kind === 'task')).toHaveLength(1);
+      });
+      const before = manager.getTask(taskId);
+      await ctx.get(IAgentConversationUndoService).undo(1);
+      expect(manager.getTask(taskId)).toEqual(before);
+      expect(internals.tasks.has(taskId)).toBe(false);
+      expect(await manager.readOutput(taskId)).toBe('archived result');
+      expect(ctx.context.get().filter((message) => message.origin?.kind === 'task')).toHaveLength(1);
+      await manager.reconcile();
+      expect(ctx.context.get().filter((message) => message.origin?.kind === 'task')).toHaveLength(1);
+      expect(notifiedCount(ctx)).toBe(2);
+    } finally {
+      await ctx.dispose();
     }
   });
 
@@ -1100,7 +1264,7 @@ describe('AgentTaskService — notification delivery', () => {
         sink: 'context',
         notificationType: 'task.completed',
         title: 'Background process completed',
-        body: 'done completed.',
+        body: expect.stringMatching(/^done completed\. Exit code: 0\. Duration: \d+ ms\.$/),
         severity: 'info',
         sourceKind: 'background_task',
         sourceId: taskId,
@@ -1111,7 +1275,10 @@ describe('AgentTaskService — notification delivery', () => {
 
 describe('AgentTaskService — agent recovery notification bodies', () => {
   it('failed agent task body includes resume instructions with the correct agent_id', async () => {
-    const { agent, ctx, manager } = createAgentTaskService();
+    const fireAndForgetTrigger = vi.fn<FireAndForgetTrigger>(async () => []);
+    const { agent, ctx, manager } = createAgentTaskService({
+      hooks: { fireAndForgetTrigger },
+    });
     const taskId = manager.registerTask(
       agentTask(
         Promise.reject(new Error('subagent crashed')),
@@ -1128,8 +1295,49 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     await drainNotifications(ctx);
     const text = notificationMessageFor(agent, taskId).content[0]!.text;
     expect(text).toContain('agent_id="agent-7"');
-    expect(text).toMatch(/Agent\(resume="agent-7"/);
+    expect(text).toMatch(/AgentRun\(resume="agent-7"/);
+    expect(text).toContain('background=true');
+    expect(text).toContain('inspect the existing work and side effects');
     expect(text).toMatch(/agent_id.*NOT source_id|source_id.*NOT agent_id/);
+    expect(fireAndForgetTrigger).toHaveBeenCalledWith('Notification', expect.objectContaining({
+      matcherValue: 'task.failed',
+      inputData: expect.objectContaining({
+        body: 'inspect repository failed. Reason: subagent crashed',
+      }),
+    }));
+    const notificationHook = fireAndForgetTrigger.mock.calls.find(
+      ([name]) => name === 'Notification',
+    );
+    expect(JSON.stringify(notificationHook)).not.toContain('AgentRun');
+  });
+
+  it('stopped agent task body forbids automatic resume', async () => {
+    const controller = new AbortController();
+    const completion = new Promise<{ result: string }>((_resolve, reject) => {
+      controller.signal.addEventListener(
+        'abort',
+        () => reject(controller.signal.reason),
+        { once: true },
+      );
+    });
+    const { agent, ctx, manager } = createAgentTaskService();
+    const taskId = manager.registerTask(
+      agentTask(completion, 'inspect repository', {
+        agentId: 'agent-stopped',
+        abortController: controller,
+      }),
+    );
+
+    const stopped = await manager.stopByUser(taskId);
+    expect(stopped).toMatchObject({ status: 'killed' });
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await drainNotifications(ctx);
+
+    const text = notificationMessageFor(agent, taskId).content[0]!.text;
+    expect(text).toContain('inspect repository was stopped by user.');
+    expect(text).toContain('Do not resume automatically');
+    expect(text).not.toContain('AgentRun(');
+    expect(text).not.toContain('background=true');
   });
 
   it('completed agent task body does not add resume instructions', async () => {
@@ -1150,7 +1358,7 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     await drainNotifications(ctx);
     const text = notificationMessageFor(agent, taskId).content[0]!.text;
     expect(text).toContain('agent_id="agent-8"');
-    expect(text).not.toMatch(/Agent\(resume="agent-8"/);
+    expect(text).not.toMatch(/AgentRun\(resume="agent-8"/);
   });
 
   it('process task body never mentions resume', async () => {
@@ -1165,7 +1373,7 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     await drainNotifications(ctx);
     const text = notificationMessageFor(agent, taskId).content[0]!.text;
     expect(text).not.toContain('agent_id=');
-    expect(text).not.toMatch(/Agent\(resume=/);
+    expect(text).not.toMatch(/AgentRun\(resume=/);
     expect(text).toContain(`source_id="${taskId}"`);
   });
 });

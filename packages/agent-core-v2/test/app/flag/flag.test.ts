@@ -26,7 +26,7 @@ const exampleFlag: FlagDefinitionInput = {
   id: 'example_flag',
   title: 'Example flag',
   description: 'Example experimental flag used to exercise the flag registry.',
-  env: 'KIMI_CODE_EXPERIMENTAL_EXAMPLE_FLAG',
+  env: 'KIKI_EXPERIMENTAL_EXAMPLE_FLAG',
   default: true,
   surface: 'core',
 };
@@ -36,7 +36,7 @@ describe('FlagRegistryService', () => {
     const reg = new FlagRegistryService();
     reg.register(exampleFlag);
     expect(reg.list().map((d) => d.id)).toEqual(['example_flag']);
-    expect(reg.get('example_flag')?.env).toBe('KIMI_CODE_EXPERIMENTAL_EXAMPLE_FLAG');
+    expect(reg.get('example_flag')?.env).toBe('KIKI_EXPERIMENTAL_EXAMPLE_FLAG');
   });
 
   it('returns undefined for an unknown id', () => {
@@ -119,7 +119,7 @@ describe('FlagService', () => {
 
   it('lets per-feature env override config and the master env', async () => {
     const { config, flags } = makeFlags({
-      KIMI_CODE_EXPERIMENTAL_EXAMPLE_FLAG: 'true',
+      KIKI_EXPERIMENTAL_EXAMPLE_FLAG: 'true',
       [MASTER_ENV]: '1',
     });
     await config.set(EXPERIMENTAL_SECTION, { example_flag: false });
@@ -131,7 +131,7 @@ describe('FlagService', () => {
 
   it('lets per-feature env force a flag off against config and the master env', async () => {
     const { config, flags } = makeFlags({
-      KIMI_CODE_EXPERIMENTAL_EXAMPLE_FLAG: 'false',
+      KIKI_EXPERIMENTAL_EXAMPLE_FLAG: 'false',
       [MASTER_ENV]: '1',
     });
     await config.set(EXPERIMENTAL_SECTION, { example_flag: true });
@@ -195,22 +195,22 @@ describe('FlagService', () => {
   });
 
   it('treats truthy env values case-insensitively', () => {
-    const { flags } = makeFlags({ KIMI_CODE_EXPERIMENTAL_EXAMPLE_FLAG: 'YES' });
+    const { flags } = makeFlags({ KIKI_EXPERIMENTAL_EXAMPLE_FLAG: 'YES' });
     expect(flags.enabled('example_flag')).toBe(true);
   });
 
   it('treats falsy env values case-insensitively', () => {
-    const { flags } = makeFlags({ KIMI_CODE_EXPERIMENTAL_EXAMPLE_FLAG: 'off' });
+    const { flags } = makeFlags({ KIKI_EXPERIMENTAL_EXAMPLE_FLAG: 'off' });
     expect(flags.enabled('example_flag')).toBe(false);
   });
 
   it('reads only the env name declared in the registry', () => {
-    const { flags } = makeFlags({ KIMI_CODE_EXPERIMENTAL_UNKNOWN: 'false' });
+    const { flags } = makeFlags({ KIKI_EXPERIMENTAL_UNKNOWN: 'false' });
     expect(flags.enabled('example_flag')).toBe(true);
   });
 
   it('ignores garbage env values', () => {
-    const { flags } = makeFlags({ KIMI_CODE_EXPERIMENTAL_EXAMPLE_FLAG: 'maybe' });
+    const { flags } = makeFlags({ KIKI_EXPERIMENTAL_EXAMPLE_FLAG: 'maybe' });
     expect(flags.enabled('example_flag')).toBe(true);
   });
 

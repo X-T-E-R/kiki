@@ -10,12 +10,23 @@ import type {
   NormalizedExecutorEvent,
 } from '@kiki/acp-client';
 import { describe, expect, it, vi } from 'vitest';
+import { coldPromptFixture } from './coldPromptFixture';
 
 import { buildModeOption } from '../../../../acp-server/src/config-options';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { AgentExecutionService } from '#/agent/execution/executionService';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { appendSharedPrompt } from '@kiki/agent-profiles/promptConfig';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { AcpAgentExecutorProvider } from '#/agent/execution/acpAgentExecutorProvider';
 import {
   AcpAgentExecutorSession,
@@ -36,6 +47,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import {
   agentExecutorBindingFingerprint,
+  IAgentExecutorRegistry,
   type AgentExecutorContext,
 } from '#/app/agentExecutor/agentExecutor';
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptors';
@@ -70,6 +82,7 @@ interface FakeHarnessOptions {
   readonly modelArgs?: readonly string[];
   readonly args?: readonly string[];
   readonly priorBindingFingerprint?: string;
+  readonly deferTurnCompletion?: boolean;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -189,9 +202,12 @@ function createHarness(options: FakeHarnessOptions = {}) {
       return options.approval();
     },
   } as unknown as ISessionApprovalService;
+  const pendingTurns = new Set<number>();
   const interaction = {
     _serviceBrand: undefined,
-    cancelPendingForTurn: vi.fn(),
+    cancelPendingForTurn: vi.fn((turnId: number) => {
+      pendingTurns.delete(turnId);
+    }),
   } as unknown as ISessionInteractionService;
   const processService = { spawn: vi.fn() };
   const runtimeLease = {
@@ -256,6 +272,15 @@ function createHarness(options: FakeHarnessOptions = {}) {
     loadReplayObserved: options.loadReplayObserved ?? false,
     quarantinedUpdateCount: options.loadReplayObserved === true ? 2 : 0,
   });
+  let resolveTurnCompletion: ((result: AcpTurnResult) => void) | undefined;
+  const turnCancel = vi.fn(async () => {
+    resolveTurnCompletion?.({
+      response: { stopReason: 'cancelled' },
+      session: openResult(),
+      stderrTail: '',
+    });
+    return true;
+  });
   const client = {
     status: () => ({ state: 'ready' as const, sessionId: 'remote-2' }),
     openSession: async (input: AcpOpenSessionOptions) => {
@@ -313,14 +338,17 @@ function createHarness(options: FakeHarnessOptions = {}) {
         session: openResult(),
         stderrTail: '',
       };
+      const completion = options.deferTurnCompletion === true
+        ? new Promise<AcpTurnResult>((resolve) => { resolveTurnCompletion = resolve; })
+        : Promise.resolve(result);
       return {
         events: asyncEvents(options.events ?? []),
-        completion: Promise.resolve(result),
-        cancel: async () => true,
+        completion,
+        cancel: turnCancel,
       };
     },
     cancel: async () => true,
-    shutdown: async () => {},
+    shutdown: vi.fn(async () => {}),
   };
   const executorContext: AgentExecutorContext = {
     agent: {
@@ -367,16 +395,22 @@ function createHarness(options: FakeHarnessOptions = {}) {
         agentExecutorBindingFingerprint(executorContext.binding),
     });
   }
-  const session = new AcpAgentExecutorSession(
-    executorContext,
+  const createSession = (context: AgentExecutorContext) => new AcpAgentExecutorSession(
+    context,
     (_process, handler) => {
       permissionHandler = handler;
       return client;
     },
   );
+  let session: AcpAgentExecutorSession | undefined;
+  const getSession = (): AcpAgentExecutorSession => session ??= createSession(executorContext);
   return {
-    session,
+    get session(): AcpAgentExecutorSession {
+      return getSession();
+    },
+    createSession,
     executorContext,
+    state: state.state,
     events,
     loopEvents,
     appendedMessages,
@@ -385,8 +419,70 @@ function createHarness(options: FakeHarnessOptions = {}) {
     selections,
     permissionDecisions,
     interaction,
-    usageRecords,
+    pendingTurns,
+    runtime,
+    runtimeLease,
+    workspace,
+    permissionMode,
+    usage,
+    modelCatalog,
+    contextMemory,
+    approval,
+    dispatcher,
     wire,
+    client,
+    turnCancel,
+    usageRecords,
+  };
+}
+
+function createExecutionHarness(options: FakeHarnessOptions = {}) {
+  const harness = createHarness({ ...options, deferTurnCompletion: true });
+  const ix = new TestInstantiationService();
+  const agentId = harness.executorContext.agent.id;
+  ix.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
+  ix.set(IAgentContextMemoryService, harness.contextMemory);
+  ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
+  ix.set(IAgentExecutorRegistry, {
+    resolveExecutable: async () => ({
+      descriptor: harness.executorContext.descriptor,
+      options: {},
+      provider: { create: harness.createSession },
+    }),
+  } as unknown as IAgentExecutorRegistry);
+  ix.set(IAgentPermissionModeService, harness.permissionMode);
+  ix.set(IAgentProfileService, {
+    _serviceBrand: undefined,
+    data: () => harness.executorContext.binding,
+    preparePromptConfiguration: async () => false,
+    getSystemPrompt: () => appendSharedPrompt(harness.executorContext.binding.systemPrompt, { shared: 'ALL_EXECUTORS_SHARED' }),
+  } as unknown as IAgentProfileService);
+  ix.set(IAgentRuntimeService, harness.runtime);
+  ix.set(IAgentScopeContext, {
+    _serviceBrand: undefined,
+    agentId,
+    scope: (subKey) => subKey === undefined ? agentId : `${agentId}/${subKey}`,
+  });
+  ix.set(IAgentStateService, harness.state);
+  ix.set(IAgentUsageService, harness.usage);
+  ix.set(IEventDispatcher, harness.dispatcher);
+  ix.set(IModelCatalog, harness.modelCatalog);
+  ix.set(IWireService, harness.wire);
+  ix.set(ISessionApprovalService, harness.approval);
+  ix.set(ISessionInteractionService, harness.interaction);
+  ix.set(ISessionWorkspaceContext, harness.workspace);
+  ix.provide(IAgentLoopService, {} as IAgentLoopService);
+  ix.stub(IAgentPromptService, {});
+  const execution = ix.get(IAgentExecutionService) as AgentExecutionService;
+  return {
+    ix,
+    execution,
+    starts: harness.starts,
+    pendingTurns: harness.pendingTurns,
+    interaction: harness.interaction,
+    client: harness.client,
+    runtimeLease: harness.runtimeLease,
+    turnCancel: harness.turnCancel,
   };
 }
 
@@ -1132,4 +1228,74 @@ describe('ACP external executor', () => {
     expect(harness.selections).toContainEqual({ configId: 'mode', value });
     expect(harness.starts).toHaveLength(1);
   });
+
+  it.each(['sub', 'independent'] as const)('sends the refreshed cold %s identity through the ACP preamble', async (position) => {
+    const harness = createExecutionHarness();
+    const adapter = harness.ix.get(IAgentProfileService);
+    const cold = await coldPromptFixture(position, adapter.data(), harness.ix.get(IAgentExecutorRegistry));
+    vi.spyOn(adapter, 'data').mockImplementation(() => cold.profile.data());
+    vi.spyOn(adapter, 'preparePromptConfiguration').mockImplementation(() => cold.profile.preparePromptConfiguration());
+    vi.spyOn(adapter, 'getSystemPrompt').mockImplementation(() => cold.profile.getSystemPrompt());
+    try {
+      const run = await harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      const sent = JSON.stringify(harness.starts[0]);
+      expect(sent).toContain('Role NEW');
+      expect(sent).not.toContain('Role OLD');
+      expect(sent.split('SHARED_NEW')).toHaveLength(2);
+      const snippet = cold.before.boundProfile?.promptBase?.delegationSnippet;
+      expect(snippet).toBeTruthy();
+      expect(sent.split(snippet!)).toHaveLength(2);
+      expect(cold.profile.data().executorId).toBe(cold.before.executorId);
+      await harness.execution.shutdown();
+      await expect(run.completion).rejects.toBeDefined();
+    } finally { harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
+  });
+
+  it.each(['scope-close', 'shutdown', 'dispose', 'replacement'] as const)(
+    'cancels a deferred ACP turn and closes the real DI-owned session during %s',
+    async (close) => {
+      const harness = createExecutionHarness();
+      const errors = vi.spyOn(console, 'error');
+      const executionDispose = vi.spyOn(harness.execution, 'dispose');
+      try {
+        const run = await harness.execution.run(
+          { kind: 'prompt', prompt: 'work' },
+          { signal: new AbortController().signal },
+        );
+        expect(JSON.stringify(harness.starts[0])).toContain('Frozen profile');
+        expect(JSON.stringify(harness.starts[0]).split('ALL_EXECUTORS_SHARED')).toHaveLength(2);
+        harness.pendingTurns.add(run.turn.id);
+        if (close === 'scope-close') harness.ix.dispose();
+        if (close === 'replacement') {
+          harness.ix.provide(IAgentLoopService, {} as IAgentLoopService);
+          await harness.ix.cascade.whenIdle();
+          expect(executionDispose).toHaveBeenCalledTimes(1);
+        }
+        if (close === 'shutdown') await harness.execution.shutdown('test shutdown');
+        if (close === 'dispose') await harness.execution.dispose();
+        if (close === 'scope-close') expect(executionDispose).toHaveBeenCalledTimes(1);
+
+        await expect(run.completion).rejects.toBeDefined();
+        await harness.execution.settled();
+        await harness.execution.shutdown();
+        await harness.execution.dispose();
+
+        if (close === 'replacement') {
+          expect(harness.ix.get(IAgentExecutionService)).not.toBe(harness.execution);
+        }
+        expect(run.turn.signal.aborted).toBe(true);
+        expect(harness.turnCancel).toHaveBeenCalled();
+        expect(harness.pendingTurns.has(run.turn.id)).toBe(false);
+        expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id);
+        expect(harness.client.shutdown).toHaveBeenCalledTimes(1);
+        expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
+        expect(harness.execution.status()).toEqual({ state: 'idle' });
+      } finally {
+        harness.ix.dispose();
+        await harness.execution.shutdown();
+        expect(errors).not.toHaveBeenCalled();
+        errors.mockRestore();
+      }
+    },
+  );
 });

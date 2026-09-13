@@ -2,7 +2,16 @@
   "name": "@kiki/kap-server",
   "version": "0.2.2",
   "private": true,
-  "description": "Kimi Code server backed by the DI × Scope agent engine (agent-core-v2)",
+  "description": "Kiki server backed by the DI × Scope agent engine (agent-core-v2)",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
+    "directory": "packages/kap-server"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/kiki/issues"
+  },
   "type": "module",
   "bin": {
     "kiki-mcp": "dist/mcp/stdio.mjs"
@@ -49,6 +58,7 @@
     "@kiki/transcript": "workspace:^",
     "bcryptjs": "^2.4.3",
     "fastify": "^5.1.0",
+    "own-work": "file:../../vendor/own-work-0.1.1-kiki-034a4314.tgz",
     "pino": "^9.5.0",
     "semver": "^7.7.4",
     "smol-toml": "^1.6.1",

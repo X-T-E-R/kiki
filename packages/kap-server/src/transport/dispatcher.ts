@@ -16,7 +16,7 @@ import { MAIN_AGENT_ID, ensureMainAgent } from './mainAgent';
 
 /**
  * Channel name → identifier resolution used to gate which Services are
- * reachable. The single RPC surface (`/api/v1/debug`) resolves against the
+ * reachable. The single RPC surface (`/api/debug`) resolves against the
  * full scoped DI registry (default).
  */
 export type ChannelLookup = (name: string) => ServiceIdentifier<unknown> | undefined;

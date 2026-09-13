@@ -2799,9 +2799,12 @@ describe('AgentGoalService TaskWait guidance gating', () => {
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start work' }] });
       await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(3));
 
-      const allCalls = JSON.stringify(ctx.llmCalls);
-      expect(allCalls).not.toContain('TaskWait');
-      expect(allCalls).not.toContain('re-invoked again and again');
+      for (const call of ctx.llmCalls) {
+        expect(call.tools.map((tool) => tool.name)).not.toContain('TaskWait');
+        expect(JSON.stringify(call.history)).not.toContain('TaskWait');
+        expect(call.systemPrompt).not.toContain('TaskWait');
+      }
+      expect(JSON.stringify(ctx.llmCalls)).not.toContain('re-invoked again and again');
       expect((await ctx.rpc.getGoal({})).goal).toBeNull();
     } finally {
       await ctx.dispose();

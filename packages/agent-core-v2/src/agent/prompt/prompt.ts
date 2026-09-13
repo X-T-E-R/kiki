@@ -105,6 +105,17 @@ export interface PromptLaunchResult {
   readonly turn_id: number;
 }
 
+/** A serializable terminal receipt for this submission, including prompts that never launch. */
+export interface PromptTerminalResult {
+  readonly promptId: string;
+  readonly turnId?: number;
+  readonly state: PromptCompletion['state'];
+  readonly result?:
+    | Extract<TurnResult, { type: 'completed' }>
+    | { readonly type: 'failed'; readonly steps: number; readonly error: import('#/_base/errors/serialize').ErrorPayload }
+    | { readonly type: 'cancelled'; readonly steps: number; readonly reason: import('#/_base/errors/serialize').ErrorPayload };
+}
+
 export interface PromptReservation extends IDisposable {
   readonly id: string;
   submit(
@@ -128,6 +139,8 @@ export interface IAgentPromptService {
   readonly _serviceBrand: undefined;
   enqueue(input: PromptInput): Promise<PromptHandle>;
   submit(payload: PromptPayload): Promise<PromptLaunchResult | undefined>;
+  /** Abort cancels only the wait; use abort(promptId) to cancel the submitted prompt. */
+  submitAndWait(payload: PromptPayload, signal?: AbortSignal): Promise<PromptTerminalResult>;
   submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined>;
   list(): PromptQueueSnapshot;
   /** Replaces caller-visible content in place; text-only edits retain existing non-text attachments. */

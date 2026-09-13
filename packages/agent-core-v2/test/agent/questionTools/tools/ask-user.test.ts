@@ -403,7 +403,7 @@ describe('AskUserQuestionTool', () => {
       return { sink, outputs, settlements };
     }
 
-    it('returns a task_id immediately without awaiting the answer', async () => {
+    it('returns concise task metadata immediately without awaiting the answer', async () => {
       const { tool, request, registerTask, getTask } = makeTool();
       const result = await executeTool(tool, {
         turnId: 0,
@@ -413,9 +413,20 @@ describe('AskUserQuestionTool', () => {
       });
 
       expect(result.isError).toBe(false);
-      expect(result.output).toContain('task_id: q_test_task_id');
-      expect(result.output).toContain('automatic_notification: true');
-      expect(result.output).toContain('/tasks');
+      expect(typeof result.output).toBe('string');
+      const output = result.output as string;
+      expect(output).toContain('task_id: q_test_task_id');
+      expect(output).toContain('description: Which database?');
+      expect(output).toContain('status: running');
+      expect(output).toContain('automatic_notification: true');
+      expect(output).toContain(
+        'next_step: Continue your current work; the answer will arrive automatically when the user responds.',
+      );
+      expect(output.match(/^next_step:/gm)).toHaveLength(1);
+      expect(output).not.toContain('TaskOutput');
+      expect(output).not.toContain('TaskStop');
+      expect(output).not.toContain('human_shell_hint:');
+      expect(output).not.toContain('/tasks');
       expect(registerTask).toHaveBeenCalledOnce();
       expect(registerTask.mock.calls[0]![1]).toMatchObject({ detached: true });
       expect(getTask).toHaveBeenCalledWith('q_test_task_id');

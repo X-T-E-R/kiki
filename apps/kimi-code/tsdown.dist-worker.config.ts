@@ -32,6 +32,7 @@ export default defineConfig({
   minify: false,
   silent: true,
   deps: {
+    alwaysBundle: [/^@kiki\//],
     onlyBundle: false,
   },
   outputOptions: {

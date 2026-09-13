@@ -2,7 +2,7 @@
  * Probe the ModelRequester problem boundary, in two parts.
  *
  * Part 1 — real config: bootstraps the agent-core-v2 App scope on the REAL
- * Kimi home (`KIMI_CODE_HOME` or `~/.kimi-code`), resolves `IModelCatalog`
+ * Kimi home (`KIKI_HOME` or `~/.kiki`), resolves `IModelCatalog`
  * with the providers/auth from `config.toml`, lists every provider/model, and
  * pings every configured model through its `ModelRequester` (one tiny live
  * request per model, real credentials). This is the "does the assembled
@@ -33,7 +33,7 @@
  *   pnpm -C packages/klient smoke:boundary
  *
  * Env:
- *   KIMI_CODE_HOME        — default `~/.kimi-code`
+ *   KIKI_HOME        — default `~/.kiki`
  *   KIMI_BOUNDARY_MODELS  — comma-separated model ids to ping (default: all)
  *   KIMI_BOUNDARY_SKIP_LIVE — set to `1` to skip part 1 (no real API calls)
  */
@@ -81,7 +81,7 @@ const tick = (ms: number): Promise<void> =>
 // ---------------------------------------------------------------------------
 
 async function probeRealConfig(): Promise<void> {
-  const homeDir = process.env['KIMI_CODE_HOME'] ?? join(homedir(), '.kimi-code');
+  const homeDir = process.env['KIKI_HOME'] ?? join(homedir(), '.kiki');
   console.log(`\n=== part 1: real config (${homeDir}/config.toml) ===`);
   const { app } = bootstrap({ homeDir, clientIdentity: EXAMPLE_CLIENT_IDENTITY }, [
     ...logSeed(resolveLoggingConfig({ homeDir, env: process.env })),

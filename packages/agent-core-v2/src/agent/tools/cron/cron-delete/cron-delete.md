@@ -18,18 +18,14 @@ Not-found is reported as an error (not a silent no-op) so you can
 correct yourself — typically by calling `CronList` to see which ids
 are actually live, rather than re-trying with the same stale id.
 
-Refresh pattern (use when you want a stale recurring schedule to
-continue):
+Refresh pattern (use when you want a stale recurring schedule to continue):
 
-Stale recurring tasks are auto-deleted by the system after their final
-fire — there is nothing for `CronDelete` to remove at that point. To
-keep the schedule running, just call `CronCreate` with the same `cron`
-and `prompt`. Use `CronList`'s `prompt` field to recall the original
-text after a context compaction.
+Stale recurring tasks auto-delete after their final fire. Recreate one with
+`CronCreate` using the same `cron` and `prompt`; `CronList`'s `prompt` field
+helps recover the original text after a context compaction.
 
-`CronDelete` remains the right call when you want to cancel a task
-that is still live (recurring not yet stale, or a one-shot still
-pending).
+`CronDelete` is for live tasks: recurring tasks not yet stale and pending
+one-shots.
 
 Guidelines:
 

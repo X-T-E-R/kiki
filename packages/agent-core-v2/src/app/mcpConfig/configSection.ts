@@ -13,8 +13,8 @@ export const McpSectionSchema = z.object({
 
 export type McpSection = z.infer<typeof McpSectionSchema>;
 
-export const MCP_STARTUP_TIMEOUT_ENV = 'KIMI_MCP_STARTUP_TIMEOUT_MS';
-export const MCP_TOOL_TIMEOUT_ENV = 'KIMI_MCP_TOOL_TIMEOUT_MS';
+export const MCP_STARTUP_TIMEOUT_ENV = 'KIKI_MCP_STARTUP_TIMEOUT_MS';
+export const MCP_TOOL_TIMEOUT_ENV = 'KIKI_MCP_TOOL_TIMEOUT_MS';
 
 function parseTimeoutMsEnv(raw: string): number | undefined {
   const parsed = Number(raw);

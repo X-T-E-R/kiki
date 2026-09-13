@@ -23,7 +23,7 @@ function feature(
     title: 'Micro compaction',
     description: 'Trim older tool results.',
     surface: 'core',
-    env: 'KIMI_CODE_EXPERIMENTAL_MICRO_COMPACTION',
+    env: 'KIKI_EXPERIMENTAL_MICRO_COMPACTION',
     defaultEnabled: true,
     enabled: true,
     source: 'default',
@@ -50,7 +50,7 @@ describe('ExperimentsSelectorComponent', () => {
     expect(out).toContain(' Experimental features  (type to search)');
     expect(out).toContain(' ↑↓ navigate · Space toggle · Enter apply · Esc cancel');
     expect(out).toContain('  ❯ Micro compaction  enabled');
-    expect(out).toContain('    id micro_compaction · config · KIMI_CODE_EXPERIMENTAL_MICRO_COMPACTION');
+    expect(out).toContain('    id micro_compaction · config · KIKI_EXPERIMENTAL_MICRO_COMPACTION');
     expect(out).toContain('    Trim older tool results.');
     expect(out).toContain(' [ Apply changes and reload ]  no changes');
   });
@@ -69,7 +69,7 @@ describe('ExperimentsSelectorComponent', () => {
     expect(onApply).not.toHaveBeenCalled();
     expect(text(selector)).toContain('  ❯ Micro compaction  disabled');
     expect(text(selector)).toContain(
-      '    id micro_compaction · default · KIMI_CODE_EXPERIMENTAL_MICRO_COMPACTION · modified',
+      '    id micro_compaction · default · KIKI_EXPERIMENTAL_MICRO_COMPACTION · modified',
     );
     expect(text(selector)).toContain(' [ Apply changes and reload ]  1 change');
 

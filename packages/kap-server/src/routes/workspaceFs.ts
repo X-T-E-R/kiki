@@ -30,6 +30,9 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
+import { validateQuery } from '../middleware/validate';
+import { openApiDocumentJsonSchema } from '../middleware/schema';
+import { envelopeSchema } from '../protocol/envelope';
 import { ErrorCode } from '../protocol/error-codes';
 
 interface FsContentReply {
@@ -108,6 +111,7 @@ export function registerWorkspaceFsRoutes(app: WorkspaceFsRouteHost, core: Scope
     homeRoute.handler as unknown as Parameters<WorkspaceFsRouteHost['get']>[2],
   );
 
+  const contentErrorSchema = openApiDocumentJsonSchema(envelopeSchema(z.null()), 'output');
   const contentRoute = defineRoute(
     {
       method: 'GET',
@@ -116,12 +120,11 @@ export function registerWorkspaceFsRoutes(app: WorkspaceFsRouteHost, core: Scope
       rawResponse: {
         200: { type: 'string', format: 'binary' },
         206: { type: 'string', format: 'binary' },
-      },
-      errors: {
-        [ErrorCode.VALIDATION_FAILED]: {},
-        [ErrorCode.FS_PATH_NOT_FOUND]: {},
-        [ErrorCode.FS_PERMISSION_DENIED]: {},
-        [ErrorCode.FS_IS_DIRECTORY]: {},
+        400: contentErrorSchema,
+        403: contentErrorSchema,
+        404: contentErrorSchema,
+        409: contentErrorSchema,
+        500: contentErrorSchema,
       },
       description:
         'Serve the raw content of any file on the host filesystem by absolute path. Supports ETag caching and single-range requests.',
@@ -129,12 +132,30 @@ export function registerWorkspaceFsRoutes(app: WorkspaceFsRouteHost, core: Scope
       operationId: 'fsContent',
     },
     async (req, reply) => {
-      return handleFsContent(core, req, reply as unknown as FsContentReply);
+      const response = reply as unknown as FsContentReply;
+      try {
+        await handleFsContent(core, req, response);
+      } catch (error) {
+        requestLog(req)?.error({ err: error }, 'fs content failed');
+        response.code(500).send(errEnvelope(
+          ErrorCode.INTERNAL_ERROR,
+          error instanceof Error ? error.message : 'file download failed',
+          req.id,
+        ));
+      }
     },
   );
   app.get(
     contentRoute.path,
-    contentRoute.options,
+    {
+      ...contentRoute.options,
+      preHandler: [
+        (req: { id: string; query?: unknown }, reply: FsContentReply, done: (err?: Error) => void) =>
+          validateQuery(fsContentQuerySchema)(req, {
+            send: (payload) => reply.code(400).send(payload),
+          }, done),
+      ],
+    },
     contentRoute.handler as unknown as Parameters<WorkspaceFsRouteHost['get']>[2],
   );
 
@@ -184,7 +205,7 @@ async function handleFsContent(
   const requestId = req.id;
   const { path } = req.query;
   if (!isAbsolute(path)) {
-    reply.send(
+    reply.code(400).send(
       errEnvelope(ErrorCode.VALIDATION_FAILED, `path must be absolute: ${path}`, requestId),
     );
     return;
@@ -203,13 +224,13 @@ async function handleFsContent(
   }
 
   if (st.isDirectory) {
-    reply.send(
+    reply.code(409).send(
       errEnvelope(ErrorCode.FS_IS_DIRECTORY, `path is a directory: ${path}`, requestId),
     );
     return;
   }
   if (!st.isFile) {
-    reply.send(
+    reply.code(400).send(
       errEnvelope(
         ErrorCode.VALIDATION_FAILED,
         `path is not a regular file: ${path}`,
@@ -324,7 +345,7 @@ async function handleFsMkdir(
 }
 
 function sendOsFsError(
-  reply: { send(payload: unknown): unknown },
+  reply: FsContentReply,
   requestId: string,
   err: unknown,
   path: string,
@@ -333,12 +354,12 @@ function sendOsFsError(
     switch (err.code) {
       case ErrorCodes.OS_FS_NOT_FOUND:
       case ErrorCodes.OS_FS_NOT_DIRECTORY:
-        reply.send(
+        reply.code(404).send(
           errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, `path not found: ${path}`, requestId),
         );
         return;
       case ErrorCodes.OS_FS_PERMISSION_DENIED:
-        reply.send(
+        reply.code(403).send(
           errEnvelope(ErrorCode.FS_PERMISSION_DENIED, `permission denied: ${path}`, requestId),
         );
         return;

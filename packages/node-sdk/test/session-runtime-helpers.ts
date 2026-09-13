@@ -65,18 +65,39 @@ export function waitForSDKEvent(
   },
   predicate: (event: Event) => boolean,
   timeoutMs = 20_000,
+  signal?: AbortSignal,
 ): Promise<Event> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      unsubscribe();
-      reject(new Error('Timed out waiting for session event'));
-    }, timeoutMs);
-    const unsubscribe = session.onEvent((event) => {
-      if (!predicate(event)) return;
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const cleanup = () => {
       clearTimeout(timeout);
       unsubscribe();
-      resolve(event);
-    });
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(signal?.reason);
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('Timed out waiting for session event'));
+    }, timeoutMs);
+    let unsubscribe: () => void;
+    try {
+      unsubscribe = session.onEvent((event) => {
+        if (!predicate(event)) return;
+        cleanup();
+        resolve(event);
+      });
+    } catch (error) {
+      clearTimeout(timeout);
+      reject(error);
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 

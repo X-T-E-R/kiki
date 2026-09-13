@@ -176,12 +176,12 @@ describe('persistentToken', () => {
 describe('password', () => {
   it('resolvePasswordHash returns undefined when env is unset or empty', async () => {
     expect(await resolvePasswordHash({})).toBeUndefined();
-    expect(await resolvePasswordHash({ KIMI_CODE_PASSWORD: '' })).toBeUndefined();
+    expect(await resolvePasswordHash({ KIKI_PASSWORD: '' })).toBeUndefined();
   });
 
   it('hashes a set password with bcrypt and verifies correctly', async () => {
     const passwordHash = await resolvePasswordHash({
-      KIMI_CODE_PASSWORD: 'correct-horse-battery-staple',
+      KIKI_PASSWORD: 'correct-horse-battery-staple',
     });
     expect(passwordHash?.startsWith('$2')).toBe(true);
     expect(await verifyPassword('correct-horse-battery-staple', passwordHash)).toBe(true);
@@ -211,7 +211,7 @@ describe('createAuthTokenService', () => {
   it('isValid accepts the password when a hash is configured', async () => {
     const store = await createTokenStore(join(tmpDir, 'home'));
     const passwordHash = await resolvePasswordHash({
-      KIMI_CODE_PASSWORD: 'correct horse battery staple',
+      KIKI_PASSWORD: 'correct horse battery staple',
     });
     const svc = createAuthTokenService({ tokenStore: store, passwordHash });
     expect(await svc.isValid('correct horse battery staple')).toBe(true);
@@ -221,7 +221,7 @@ describe('createAuthTokenService', () => {
   it('isValid rejects a wrong candidate', async () => {
     const store = await createTokenStore(join(tmpDir, 'home'));
     const passwordHash = await resolvePasswordHash({
-      KIMI_CODE_PASSWORD: 'correct horse battery staple',
+      KIKI_PASSWORD: 'correct horse battery staple',
     });
     const svc = createAuthTokenService({ tokenStore: store, passwordHash });
     expect(await svc.isValid('wrong')).toBe(false);

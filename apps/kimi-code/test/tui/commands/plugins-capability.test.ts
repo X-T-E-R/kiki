@@ -179,13 +179,13 @@ describe('plugins command capability surface', () => {
     // repo's own catalog — it counts as default, not as a user override.
     expect(
       isDefaultMarketplaceCatalog(undefined, undefined, {
-        KIMI_CODE_PLUGIN_MARKETPLACE_URL: 'http://127.0.0.1:60056/marketplace.json',
-        KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER: '1',
+        KIKI_PLUGIN_MARKETPLACE_URL: 'http://127.0.0.1:60056/marketplace.json',
+        KIKI_PLUGIN_MARKETPLACE_FROM_DEV_SERVER: '1',
       }),
     ).toBe(true);
     expect(
       isDefaultMarketplaceCatalog(undefined, undefined, {
-        KIMI_CODE_PLUGIN_MARKETPLACE_URL: 'https://example.test/marketplace.json',
+        KIKI_PLUGIN_MARKETPLACE_URL: 'https://example.test/marketplace.json',
       }),
     ).toBe(false);
     expect(

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat as nodeStat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
@@ -21,6 +21,14 @@ afterEach(async () => {
 });
 
 describe('HostFileSystem stat / lstat', () => {
+  it('retains native ownership and permission metadata for protected file readers', async () => {
+    const path = join(dir, 'private.txt');
+    await writeFile(path, 'fixture-value', { mode: 0o600 });
+    const expected = await nodeStat(path);
+    expect(await fs.stat(path)).toMatchObject({ mode: expected.mode, uid: expected.uid });
+    expect(await fs.lstat(path)).toMatchObject({ mode: expected.mode, uid: expected.uid });
+  });
+
   it.skipIf(windowsSymlinksUnavailable)('stat follows a symlink to a regular file while lstat stats the link', async () => {
     const target = join(dir, 'target.txt');
     await writeFile(target, 'hello', 'utf-8');

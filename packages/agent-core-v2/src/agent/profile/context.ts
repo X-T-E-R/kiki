@@ -78,12 +78,12 @@ export interface LoadedAgentsMd {
 
 export const AGENTS_MD_PLAIN_NAMES = ['AGENTS.md', 'agents.md'] as const;
 
-export function dotKimiAgentsMdPath(dir: string): string {
-  return join(dir, '.kimi-code', 'AGENTS.md');
+export function dotKikiAgentsMdPath(dir: string): string {
+  return join(dir, '.kiki', 'AGENTS.md');
 }
 
 export function agentsMdCandidatePaths(dir: string): string[] {
-  return [dotKimiAgentsMdPath(dir), ...AGENTS_MD_PLAIN_NAMES.map((name) => join(dir, name))];
+  return [dotKikiAgentsMdPath(dir), ...AGENTS_MD_PLAIN_NAMES.map((name) => join(dir, name))];
 }
 
 export function extractAgentsMdPathsFromSystemPrompt(systemPrompt: string): string[] {
@@ -110,8 +110,8 @@ export async function findAgentsMdInDir(
   dir: string,
 ): Promise<string[]> {
   const found: string[] = [];
-  const dotKimi = dotKimiAgentsMdPath(dir);
-  if (await isNonEmptyFile(deps, dotKimi)) found.push(dotKimi);
+  const dotKiki = dotKikiAgentsMdPath(dir);
+  if (await isNonEmptyFile(deps, dotKiki)) found.push(dotKiki);
   for (const fileName of AGENTS_MD_PLAIN_NAMES) {
     const candidate = join(dir, fileName);
     if (await isNonEmptyFile(deps, candidate)) {
@@ -157,7 +157,7 @@ export async function loadAgentsMdForRoots(
   };
 
   const realHome = deps.homeDir;
-  const brandDir = brandHome ?? join(realHome, '.kimi-code');
+  const brandDir = brandHome ?? join(realHome, '.kiki');
   await collect(join(brandDir, 'AGENTS.md'));
 
   const genericDirs = [join(realHome, '.agents')];
@@ -174,7 +174,7 @@ export async function loadAgentsMdForRoots(
     const dirs = dirsRootToLeaf(rootWorkDir, projectRoot);
 
     for (const dir of dirs) {
-      await collect(dotKimiAgentsMdPath(dir));
+      await collect(dotKikiAgentsMdPath(dir));
       for (const fileName of AGENTS_MD_PLAIN_NAMES) {
         if (await collect(join(dir, fileName))) break;
       }
@@ -206,7 +206,7 @@ export async function agentsMdWatchRoots(
   brandHome?: string,
 ): Promise<readonly AgentsMdWatchRoot[]> {
   const realHome = deps.homeDir;
-  const brandDir = brandHome ?? join(realHome, '.kimi-code');
+  const brandDir = brandHome ?? join(realHome, '.kiki');
   const plan: AgentsMdWatchRoot[] = [
     { root: brandDir, candidates: [join(brandDir, 'AGENTS.md')] },
     {
@@ -219,7 +219,7 @@ export async function agentsMdWatchRoots(
   const projectCandidates: string[] = [];
   for (const dir of dirsRootToLeaf(rootWorkDir, projectRoot)) {
     projectCandidates.push(
-      join(dir, '.kimi-code', 'AGENTS.md'),
+      join(dir, '.kiki', 'AGENTS.md'),
       join(dir, 'AGENTS.md'),
       join(dir, 'agents.md'),
     );

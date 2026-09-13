@@ -414,7 +414,7 @@ describe('GlobTool', () => {
 
     const result = await execute(tool, { pattern: '*.txt' });
 
-    expect(result.output).toContain(`Only the first ${String(MAX_MATCHES)} matches are returned`);
+    expect(result.output).toContain(`showing the first ${String(MAX_MATCHES)}.`);
   });
 
   it('returns a "Found N matches" footer at exactly MAX_MATCHES without truncation', async () => {

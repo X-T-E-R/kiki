@@ -11,22 +11,22 @@ describe('renderSkillLoadedBlock skill directory', () => {
     skillArgs: '',
     skillContent: 'body',
     skillSource: 'user' as const,
-    skillDir: '/home/user/.kimi-code/skills/review',
+    skillDir: '/home/user/.kiki/skills/review',
   };
 
   it('includes the skill directory for model-tool activations', () => {
     const text = renderModelToolSkillPrompt({ ...base, trigger: 'model-tool' });
-    expect(text).toContain('dir="/home/user/.kimi-code/skills/review"');
+    expect(text).toContain('dir="/home/user/.kiki/skills/review"');
   });
 
   it('includes the skill directory for nested-skill activations', () => {
     const text = renderModelToolSkillPrompt({ ...base, trigger: 'nested-skill' });
-    expect(text).toContain('dir="/home/user/.kimi-code/skills/review"');
+    expect(text).toContain('dir="/home/user/.kiki/skills/review"');
   });
 
   it('includes the skill directory for user-slash activations', () => {
     const text = renderUserSlashSkillPrompt(base);
-    expect(text).toContain('dir="/home/user/.kimi-code/skills/review"');
+    expect(text).toContain('dir="/home/user/.kiki/skills/review"');
   });
 
   it('XML-escapes the skill directory', () => {

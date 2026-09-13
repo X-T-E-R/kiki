@@ -31,7 +31,7 @@ function capturingLogger(): { logger: Logger; lines: string[] } {
 }
 
 beforeEach(() => {
-  prevPassword = process.env['KIMI_CODE_PASSWORD'];
+  prevPassword = process.env['KIKI_PASSWORD'];
 });
 
 afterEach(async () => {
@@ -45,9 +45,9 @@ afterEach(async () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
   if (prevPassword === undefined) {
-    delete process.env['KIMI_CODE_PASSWORD'];
+    delete process.env['KIKI_PASSWORD'];
   } else {
-    process.env['KIMI_CODE_PASSWORD'] = prevPassword;
+    process.env['KIKI_PASSWORD'] = prevPassword;
   }
 });
 
@@ -60,7 +60,7 @@ describe('public-bind gate', () => {
   });
 
   it('boots 0.0.0.0 token-only and logs the token-only warning', async () => {
-    delete process.env['KIMI_CODE_PASSWORD'];
+    delete process.env['KIKI_PASSWORD'];
     const home = await tmpHome();
     const { logger, lines } = capturingLogger();
     const server = await startServer({
@@ -74,7 +74,7 @@ describe('public-bind gate', () => {
     });
     running.push(server);
     const token = server.authTokenService.getToken();
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/healthz`, {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/healthz`, {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(200);
@@ -84,7 +84,7 @@ describe('public-bind gate', () => {
 
 describe('real password path (verifyPassword)', () => {
   async function bootPublic(): Promise<RunningServer> {
-    process.env['KIMI_CODE_PASSWORD'] = 'test-pw';
+    process.env['KIKI_PASSWORD'] = 'test-pw';
     const home = await tmpHome();
     const server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -100,7 +100,7 @@ describe('real password path (verifyPassword)', () => {
 
   it('accepts the password as a bearer token and sets security headers', async () => {
     const server = await bootPublic();
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/sessions`, {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
       headers: { authorization: 'Bearer test-pw' },
     });
     expect(res.status).toBe(200);
@@ -113,7 +113,7 @@ describe('real password path (verifyPassword)', () => {
   it('accepts the persistent token on a public bind', async () => {
     const server = await bootPublic();
     const token = server.authTokenService.getToken();
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/sessions`, {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(200);
@@ -121,11 +121,11 @@ describe('real password path (verifyPassword)', () => {
 
   it('rejects wrong and missing credentials with 401', async () => {
     const server = await bootPublic();
-    const wrong = await fetch(`http://127.0.0.1:${server.port}/api/v1/sessions`, {
+    const wrong = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
       headers: { authorization: 'Bearer wrong-password' },
     });
     expect(wrong.status).toBe(401);
-    const missing = await fetch(`http://127.0.0.1:${server.port}/api/v1/sessions`);
+    const missing = await fetch(`http://127.0.0.1:${server.port}/api/sessions`);
     expect(missing.status).toBe(401);
   });
 });
@@ -147,7 +147,7 @@ describe('auth-failure rate limit on a real bind', () => {
       },
     });
     running.push(server);
-    const url = `http://127.0.0.1:${server.port}/api/v1/sessions`;
+    const url = `http://127.0.0.1:${server.port}/api/sessions`;
     let lastStatus = 0;
     for (let i = 0; i < 11; i += 1) {
       const res = await fetch(url, { headers: { authorization: 'Bearer wrong' } });

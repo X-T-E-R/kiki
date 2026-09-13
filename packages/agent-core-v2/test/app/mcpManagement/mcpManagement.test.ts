@@ -84,7 +84,7 @@ describe('McpManagementService', () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-home-'));
-    vi.stubEnv('KIMI_CODE_HOME', home);
+    vi.stubEnv('KIKI_HOME', home);
     disposables = new DisposableStore();
     tempDirs = [home];
     httpServers = [];
@@ -127,7 +127,7 @@ describe('McpManagementService', () => {
           osVersion: 'test',
           shellName: 'bash',
           shellPath: '/bin/bash',
-          pathClass: 'posix',
+          pathClass: hostProcessPathClass,
           homeDir: home,
           ready: Promise.resolve(),
         });
@@ -415,16 +415,16 @@ describe('McpManagementService', () => {
     ])('rejects %s when a trusted project-layer entry is read-only', async (_operation, mutate) => {
       const project = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-read-only-'));
       tempDirs.push(project);
-      await mkdir(join(project, '.kimi-code'), { recursive: true });
+      await mkdir(join(project, '.kiki'), { recursive: true });
       await writeFile(
-        join(project, '.kimi-code', 'mcp.json'),
+        join(project, '.kiki', 'mcp.json'),
         JSON.stringify({ mcpServers: { local: { command: process.execPath } } }),
         'utf8',
       );
 
       await expect(mutate(project)).rejects.toMatchObject({
         code: ErrorCodes.REQUEST_INVALID,
-        message: `MCP server "local" is read-only: it is defined in ${join(project, '.kimi-code', 'mcp.json')} — edit that file instead`,
+        message: `MCP server "local" is read-only: it is defined in ${join(project, '.kiki', 'mcp.json')} — edit that file instead`,
       });
       await expect(store.list()).resolves.toEqual([]);
     });
@@ -621,9 +621,9 @@ describe('McpManagementService', () => {
     it('lists project-layer entries as read-only redacted views when a cwd is given', async () => {
       const project = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-proj-'));
       tempDirs.push(project);
-      await mkdir(join(project, '.kimi-code'), { recursive: true });
+      await mkdir(join(project, '.kiki'), { recursive: true });
       await writeFile(
-        join(project, '.kimi-code', 'mcp.json'),
+        join(project, '.kiki', 'mcp.json'),
         JSON.stringify({
           mcpServers: {
             local: {
@@ -642,7 +642,7 @@ describe('McpManagementService', () => {
       expect(local).toMatchObject({
         source: 'global',
         mutable: false,
-        origin: join(project, '.kimi-code', 'mcp.json'),
+        origin: join(project, '.kiki', 'mcp.json'),
       });
       expect(local?.config).toMatchObject({ headerKeys: ['X-Key'] });
       expect(local?.config).not.toHaveProperty('headers');
@@ -655,9 +655,9 @@ describe('McpManagementService', () => {
     it('hides project-layer entries when the workspace is untrusted', async () => {
       const project = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-untrusted-'));
       tempDirs.push(project);
-      await mkdir(join(project, '.kimi-code'), { recursive: true });
+      await mkdir(join(project, '.kiki'), { recursive: true });
       await writeFile(
-        join(project, '.kimi-code', 'mcp.json'),
+        join(project, '.kiki', 'mcp.json'),
         JSON.stringify({ mcpServers: { local: { command: process.execPath } } }),
         'utf8',
       );
@@ -682,7 +682,7 @@ describe('McpManagementService', () => {
         server: { name: 'unsaved-probe', transport: 'http', url: server.url },
       });
 
-      expect(result.success).toBe(true);
+      expect(result.success, result.output).toBe(true);
       expect(result.output).toContain('Connected to MCP server "unsaved-probe".');
       expect(result.output).toContain('Available tools: 1');
       expect(result.output).toContain('- echo: Echoes text');
@@ -708,6 +708,8 @@ describe('McpManagementService', () => {
     it('probes an inline stdio config without retaining the probe cwd workspace', async () => {
       const cwd = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-cwd-'));
       tempDirs.push(cwd);
+      const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+      disposables.add({ dispose: () => spawn.mockRestore() });
 
       const result = await management.testServer({
         server: {
@@ -719,7 +721,8 @@ describe('McpManagementService', () => {
         cwd,
       });
 
-      expect(result.success).toBe(true);
+      expect(spawn.mock.calls[0]?.[2]?.cwd?.replaceAll('\\', '/')).toBe(cwd);
+      expect(result.success, result.output).toBe(true);
       expect(result.output).toContain('Available tools: 4');
       expect(result.output).toContain('- echo: Echoes input text');
       expect(findContaining).toHaveBeenCalledWith(cwd);
@@ -741,7 +744,7 @@ describe('McpManagementService', () => {
         cwd,
       });
 
-      expect(result.success).toBe(true);
+      expect(result.success, result.output).toBe(true);
       expect(result.output).toContain('Available tools: 4');
       expect(findContaining).toHaveBeenCalledWith(cwd);
       expect(getOrCreate).not.toHaveBeenCalled();
@@ -786,7 +789,7 @@ describe('McpManagementService', () => {
         cwd,
       });
 
-      expect(result.success).toBe(true);
+      expect(result.success, result.output).toBe(true);
       expect(findContaining).toHaveBeenCalledWith(cwd);
       expect(getOrCreate).not.toHaveBeenCalled();
     }, 20000);
@@ -806,7 +809,7 @@ describe('McpManagementService', () => {
         cwd,
       });
 
-      expect(result.success).toBe(true);
+      expect(result.success, result.output).toBe(true);
       expect(findContaining).toHaveBeenCalledWith(cwd);
       expect(getOrCreate).not.toHaveBeenCalled();
     }, 20000);
@@ -834,9 +837,9 @@ describe('McpManagementService', () => {
     it('does not execute a project server while the workspace is untrusted', async () => {
       const project = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-untrusted-probe-'));
       tempDirs.push(project);
-      await mkdir(join(project, '.kimi-code'), { recursive: true });
+      await mkdir(join(project, '.kiki'), { recursive: true });
       await writeFile(
-        join(project, '.kimi-code', 'mcp.json'),
+        join(project, '.kiki', 'mcp.json'),
         JSON.stringify({
           mcpServers: {
             local: { command: process.execPath, args: [stdioFixture] },
@@ -925,7 +928,7 @@ describe('McpManagementService', () => {
 
       const result = await management.testServer({ name: 'plugin-demo:api' });
 
-      expect(result.success).toBe(true);
+      expect(result.success, result.output).toBe(true);
       expect(result.output).toContain('echo');
     }, 20000);
 
@@ -942,7 +945,7 @@ describe('McpManagementService', () => {
 
       const result = await management.testServer({ name: 'plugin-demo:api' });
 
-      expect(result.success).toBe(true);
+      expect(result.success, result.output).toBe(true);
       expect(result.output).toContain('Connected to MCP server "plugin-demo:api".');
       expect(result.output).toContain('echo');
     }, 20000);
@@ -1063,9 +1066,9 @@ describe('McpManagementService', () => {
     it('includes trusted project-layer entries when cwd is provided', async () => {
       const project = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-inspect-project-'));
       tempDirs.push(project);
-      await mkdir(join(project, '.kimi-code'), { recursive: true });
+      await mkdir(join(project, '.kiki'), { recursive: true });
       await writeFile(
-        join(project, '.kimi-code', 'mcp.json'),
+        join(project, '.kiki', 'mcp.json'),
         JSON.stringify({
           mcpServers: {
             local: {
@@ -1235,9 +1238,9 @@ describe('McpManagementService', () => {
     it('resolves a project-layer-only name when cwd is provided', async () => {
       const project = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-resolve-project-'));
       tempDirs.push(project);
-      await mkdir(join(project, '.kimi-code'), { recursive: true });
+      await mkdir(join(project, '.kiki'), { recursive: true });
       await writeFile(
-        join(project, '.kimi-code', 'mcp.json'),
+        join(project, '.kiki', 'mcp.json'),
         JSON.stringify({ mcpServers: { local: { command: process.execPath } } }),
         'utf8',
       );
@@ -1314,9 +1317,9 @@ describe('McpManagementService', () => {
     it('begins authorization against the project-layer URL when cwd is provided', async () => {
       const project = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-begin-project-'));
       tempDirs.push(project);
-      await mkdir(join(project, '.kimi-code'), { recursive: true });
+      await mkdir(join(project, '.kiki'), { recursive: true });
       await writeFile(
-        join(project, '.kimi-code', 'mcp.json'),
+        join(project, '.kiki', 'mcp.json'),
         JSON.stringify({
           mcpServers: {
             oauthable: {
@@ -1349,9 +1352,9 @@ describe('McpManagementService', () => {
     it('resets credentials for the project-layer URL when cwd is provided', async () => {
       const project = mkdtempSync(join(tmpdir(), 'kimi-mcp-management-reset-project-'));
       tempDirs.push(project);
-      await mkdir(join(project, '.kimi-code'), { recursive: true });
+      await mkdir(join(project, '.kiki'), { recursive: true });
       await writeFile(
-        join(project, '.kimi-code', 'mcp.json'),
+        join(project, '.kiki', 'mcp.json'),
         JSON.stringify({
           mcpServers: {
             oauthable: {

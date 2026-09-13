@@ -1,11 +1,7 @@
 List all cron jobs currently scheduled in this session.
 
-Use this tool to see every pending cron task — both recurring jobs and
-one-shot reminders — that you (or the user) have scheduled with
-`CronCreate`. The output is the entry point for inspecting scheduled
-work: it returns a stable id, the original cron expression, a human
-rendering, the next post-jitter fire time, the recurring flag, the
-task's age in days, and a stale indicator.
+Use this tool to inspect pending recurring and one-shot jobs scheduled with
+`CronCreate`.
 
 Each record carries:
 
@@ -19,23 +15,15 @@ Each record carries:
   `…(truncated)` if longer. Use this to recall what a task is for
   after a context compaction, and as the source for the
   `CronCreate` refresh ritual.
-- `nextFireAt` — local ISO timestamp with an explicit numeric offset
-  for the next fire **after jitter has been applied**. The actual fire
-  may land slightly before or after a round `:00` / `:30` minute mark
-  due to herd-avoidance jitter; this is the value the scheduler will
-  compare against, so it reflects what will really happen. `null` if
-  the expression has no fire in the next 5 years (should not happen
-  for tasks created through `CronCreate`, which validates).
+- `nextFireAt` — local ISO timestamp with an explicit numeric offset for the
+  next fire after jitter, or `null` if none occurs within 5 years.
 - `recurring` — `true` for cadenced jobs, `false` for one-shots.
 - `ageDays` — `(now - createdAt) / day`, two decimal places. Useful
   when deciding whether a long-running cron is still relevant.
-- `stale` — `true` when a recurring task is older than 7 days. The
-  system **auto-deletes the task after this fire** to bound session
-  lifetime; the `stale: true` flag is the model's notice that this is
-  the final delivery. To resume the same schedule, call `CronCreate`
-  again with the original `cron` and `prompt` (the `prompt` row above
-  carries it for exactly this purpose). One-shots are never marked
-  stale — they fire at most once by construction.
+- `stale` — `true` when a recurring task is older than 7 days. The system
+  auto-deletes it after this final fire; `stale: true` marks that delivery.
+  Recreate it with `CronCreate` using the original `cron` and `prompt` to
+  resume. One-shots are never stale.
 
 Guidelines:
 

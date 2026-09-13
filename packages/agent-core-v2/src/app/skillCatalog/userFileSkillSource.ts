@@ -5,6 +5,10 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
+import { subtreeWatchFilter } from '#/_base/utils/paths';
+import { TimeoutTimer } from '#/_base/utils/timer';
+import path from 'pathe';
 
 import {
   MERGE_ALL_AVAILABLE_SKILLS_SECTION,
@@ -28,11 +32,13 @@ export class UserFileSkillSource extends Disposable implements IUserFileSkillSou
   readonly priority = SKILL_SOURCE_PRIORITY.user;
   private readonly onDidChangeEmitter = this._register(new Emitter<void>());
   readonly onDidChange: Event<void> = this.onDidChangeEmitter.event;
+  private readonly watchReady: Promise<void>;
 
   constructor(
     @ISkillDiscovery private readonly discovery: ISkillDiscovery,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IConfigService private readonly config: IConfigService,
+    @IHostFsWatchService fsWatch: IHostFsWatchService,
   ) {
     super();
     this._register(
@@ -40,9 +46,23 @@ export class UserFileSkillSource extends Disposable implements IUserFileSkillSou
         if (event.domain === MERGE_ALL_AVAILABLE_SKILLS_SECTION) this.onDidChangeEmitter.fire();
       }),
     );
+    if ((bootstrap.args.skillDirs?.length ?? 0) > 0 || bootstrap.args.userSkillDir !== undefined) {
+      this.watchReady = Promise.resolve();
+    } else {
+      const watch = this._register(fsWatch.watch(bootstrap.homeDir, {
+        ignored: subtreeWatchFilter(bootstrap.homeDir, [path.join(bootstrap.homeDir, 'commands')], { maxDepth: 1 }),
+        signal: true,
+      }));
+      const debounce = this._register(new TimeoutTimer());
+      this._register(watch.onDidChange(() => {
+        debounce.cancelAndSet(() => this.onDidChangeEmitter.fire(), 200);
+      }));
+      this.watchReady = watch.ready;
+    }
   }
 
   async load(): Promise<SkillContribution> {
+    await this.watchReady;
     if ((this.bootstrap.args.skillDirs?.length ?? 0) > 0) {
       return { skills: [] };
     }

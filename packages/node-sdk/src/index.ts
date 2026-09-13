@@ -4,6 +4,8 @@ export type { KimiHarnessRuntimeOptions } from '#/kimi-harness';
 export { Session } from '#/session';
 export { KimiAuthFacade } from '#/auth';
 export { createKimiHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';
+export { createPrintClient, PRINT_MAX_TURNS_DEFAULT, PRINT_WAIT_CEILING_S_DEFAULT, setClampedTimeout } from '#/print-client';
+export type { PrintClientHost, AgentTaskConfig, PrintBackgroundMode } from '#/print-client';
 export {
   createKimiConfigRpc,
   KimiConfigRpcClient,
@@ -63,7 +65,7 @@ export {
   resolveGlobalLogPath,
 } from '#/logging';
 export type { LogContext, LogLevel, LogPayload, Logger } from '#/logging';
-export { resolveKimiHome } from '@kiki/agent-core-v2';
+export { resolveKikiHome } from '@kiki/agent-core-v2';
 
 // Host-side config helpers — safe config reader + config path resolution, used
 // by hosts (e.g. the CLI's server telemetry bootstrap) that need to inspect

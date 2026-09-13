@@ -5,7 +5,9 @@
  * differs per file.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { IMcpManagementService } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
+import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,7 +18,10 @@ import { CommandContribution } from '@kiki/agent-core-v2/agent/command/commandCo
 import { IFeatureManager } from '@kiki/agent-core-v2/app/feature/featureManager';
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
 import { IAgentPromptService, reservePrompt } from '@kiki/agent-core-v2/agent/prompt/prompt';
+import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
+import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
 
 import type { Klient } from '../../src/index.js';
 import type { TestEngine } from './engine.js';
@@ -57,6 +62,15 @@ export function defineKlientConformance(
     afterAll(async () => {
       await target.cleanup();
     });
+
+    if (transport === 'memory' || transport === 'ipc') {
+      it('explicitly rejects the HTTP-only terminal capability', async () => {
+        await expect(target.klient.terminal.listTerminals('s1')).rejects.toThrow('unsupported');
+        await expect(target.klient.terminal.createTerminal('s1')).rejects.toThrow('unsupported');
+        await expect(target.klient.terminal.terminalAttach('s1', 't1')).rejects.toThrow('unsupported');
+        expect(() => target.klient.terminal.onTerminalSignal(() => undefined)).toThrow('unsupported');
+      });
+    }
 
     it('env() aggregates the host snapshot', async () => {
       const env = await target.klient.global.env();
@@ -191,6 +205,22 @@ export function defineKlientConformance(
           archived: false,
         });
         expect(created.id.length).toBeGreaterThan(0);
+        const facade = target.klient.session(created.id);
+        expect(await facade.status()).toBe('idle');
+        const live = getLiveSessionById(target.app.accessor, created.id)!;
+        const interactions = live.accessor.get(ISessionInteractionService);
+        const activity = live.accessor.get(ISessionActivityView);
+        const question = interactions.enqueue({ kind: 'question', payload: {} });
+        expect(activity.state().pendingInteraction).toBe('question');
+        expect(await facade.status()).toBe('awaiting_question');
+        const approval = interactions.enqueue({ kind: 'approval', payload: {} });
+        expect(activity.state().pendingInteraction).toBe('approval');
+        expect(await facade.status()).toBe('awaiting_approval');
+        interactions.respond(approval.id, {});
+        expect(await facade.status()).toBe('awaiting_question');
+        interactions.respond(question.id, {});
+        expect(activity.state().pendingInteraction).toBe('none');
+        expect(await facade.status()).toBe('idle');
         expect(await target.klient.global.sessions.get(created.id)).toMatchObject({
           id: created.id,
           title: 'conformance session',
@@ -200,27 +230,71 @@ export function defineKlientConformance(
       }
     });
 
+    it('observes an authoritative baseline and changes without a caller-side subscribe delay', async () => {
+      const created = await target.klient.global.sessions.create({
+        workDir: process.cwd(), title: 'observe baseline',
+      });
+      const session = target.klient.session(created.id);
+      const live = getLiveSessionById(target.app.accessor, created.id)!;
+      const interactions = live.accessor.get(ISessionInteractionService);
+      const initial = interactions.enqueue({ kind: 'question', payload: {} });
+      const snapshots: Array<{ title: string | undefined; ids: string[] }> = [];
+      const errors: Error[] = [];
+      const errorSub = session.events.onError((error) => errors.push(error));
+      const observation = session.events.observe({
+        events: ['metadata.changed', 'interactions.changed'],
+        read: async () => {
+          const [meta, pending] = await Promise.all([session.get(), session.interactions.list()]);
+          return { title: meta.title, ids: pending.map((item) => item.id) };
+        },
+      }, (snapshot) => snapshots.push(snapshot));
+      try {
+        await waitFor(() => snapshots.length > 0, 5_000);
+        expect(snapshots.at(-1)).toEqual({ title: 'observe baseline', ids: [initial.id] });
+        interactions.respond(initial.id, {});
+        const next = interactions.enqueue({ kind: 'approval', payload: {} });
+        await session.setTitle('observe latest');
+        await waitFor(() => snapshots.at(-1)?.title === 'observe latest' &&
+          snapshots.at(-1)?.ids.join() === next.id, 5_000);
+        expect(errors).toEqual([]);
+        interactions.respond(next.id, {});
+        await waitFor(() => snapshots.at(-1)?.ids.length === 0, 5_000);
+      } finally {
+        observation.dispose();
+        errorSub.dispose();
+        await session.close();
+      }
+    });
+
     it('session createChild tags child markers while fork stays untagged', async () => {
       const parent = await target.klient.global.sessions.create({
+        sessionId: 'conformance-parent',
         workDir: process.cwd(),
         title: 'conformance parent',
       });
       try {
-        const child = await target.klient.session(parent.id).createChild();
+        expect(parent.id).toBe('conformance-parent');
+        const child = await target.klient.session(parent.id).createChild({ newSessionId: 'conformance-child' });
         try {
+          expect(child.id).toBe('conformance-child');
           expect(child.custom?.['parent_session_id']).toBe(parent.id);
           expect(child.custom?.['child_session_kind']).toBe('child');
           expect(child.title).toBe('Child: conformance parent');
         } finally {
           await target.klient.session(child.id).close();
         }
-        const forked = await target.klient.session(parent.id).fork();
+        const forked = await target.klient.session(parent.id).fork({
+          newSessionId: 'conformance-fork', metadata: { label: 'fork metadata' },
+        });
         try {
+          expect(forked.id).toBe('conformance-fork');
+          expect(forked.custom?.['label']).toBe('fork metadata');
           expect(forked.custom?.['parent_session_id']).toBeUndefined();
           expect(forked.custom?.['child_session_kind']).toBeUndefined();
         } finally {
           await target.klient.session(forked.id).close();
         }
+        await expect(target.klient.session(parent.id).fork({ turnIndex: -1 })).rejects.toThrow();
       } finally {
         await target.klient.session(parent.id).close();
       }
@@ -229,9 +303,10 @@ export function defineKlientConformance(
     it('session skills.list returns the workspace skills as summaries', async () => {
       const workDir = await mkdtemp(join(tmpdir(), 'klient-conf-skills-'));
       try {
-        await mkdir(join(workDir, '.kimi-code', 'skills', 'conf-skill'), { recursive: true });
+        await mkdir(join(workDir, '.git'), { recursive: true });
+        await mkdir(join(workDir, '.kiki', 'skills', 'conf-skill'), { recursive: true });
         await writeFile(
-          join(workDir, '.kimi-code', 'skills', 'conf-skill', 'SKILL.md'),
+          join(workDir, '.kiki', 'skills', 'conf-skill', 'SKILL.md'),
           '---\nname: conf-skill\ndescription: conformance fixture skill\n---\n\n# Conf\n',
         );
         const created = await target.klient.global.sessions.create({ workDir });
@@ -546,6 +621,57 @@ export function defineKlientConformance(
       }
     });
 
+    it('cancels only the MCP authorization waiter through the transport', async () => {
+      const management = target.app.accessor.get(IMcpManagementService);
+      const controller = new AbortController();
+      let entered!: () => void;
+      let release!: () => void;
+      let observedSignal: AbortSignal | undefined;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const waiting = new Promise<void>((resolve) => { release = resolve; });
+      const complete = vi.spyOn(management, 'completeServerAuth').mockImplementation(async (_input, options) => {
+        observedSignal = options?.signal;
+        observedSignal?.addEventListener('abort', release, { once: true });
+        entered();
+        await waiting;
+        observedSignal?.removeEventListener('abort', release);
+        observedSignal?.throwIfAborted();
+      });
+      const cancel = vi.spyOn(management, 'cancelServerAuth');
+      const result = target.klient.global.mcp.completeAuth(
+        { flowId: 'synthetic-waiter' }, { signal: controller.signal },
+      ).then(() => undefined, (error: unknown) => error);
+      try {
+        await started;
+        expect(observedSignal).toBeDefined();
+        controller.abort();
+        expect(await result).toBeInstanceOf(Error);
+        await waitFor(() => observedSignal?.aborted === true, 2_000);
+        expect(cancel).not.toHaveBeenCalled();
+      } finally {
+        controller.abort();
+        release();
+        await result;
+        complete.mockRestore();
+        cancel.mockRestore();
+      }
+    });
+
+    it('does not start an already aborted MCP authorization wait', async () => {
+      const management = target.app.accessor.get(IMcpManagementService);
+      const complete = vi.spyOn(management, 'completeServerAuth').mockResolvedValue(undefined);
+      const controller = new AbortController();
+      controller.abort();
+      try {
+        await expect(target.klient.global.mcp.completeAuth(
+          { flowId: 'synthetic-aborted-waiter' }, { signal: controller.signal },
+        )).rejects.toBeDefined();
+        expect(complete).not.toHaveBeenCalled();
+      } finally {
+        complete.mockRestore();
+      }
+    });
+
     it('global mcp completeAuth rejects an unknown flowId with 40001', async () => {
       const mcp = target.klient.global.mcp;
       await expect(mcp.completeAuth({ flowId: 'conf-unknown-flow' })).rejects.toMatchObject({
@@ -609,6 +735,166 @@ export function defineKlientConformance(
         ).rejects.toMatchObject({ name: 'RPCError', code: 40001 });
       } finally {
         await mcp.remove({ name: 'conf-stdio' });
+      }
+    });
+
+    it('preserves archive state on resume and exposes live resource reads', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      try {
+        await session.archive();
+        expect(await session.resume()).toBe(true);
+        expect((await session.get()).archived).toBe(true);
+        expect(await session.countPendingBackgroundTasks()).toBe(0);
+        expect(await session.nextCronFireAt()).toBeNull();
+        await session.drainBackgroundTasks(100);
+        await expect(session.drainBackgroundTasks(0)).rejects.toThrow();
+        expect(await session.restore()).toBe(true);
+        expect((await session.get()).archived).toBe(false);
+      } finally {
+        await session.close();
+      }
+      expect(await target.klient.session('missing-resume-session').resume()).toBe(false);
+    });
+
+    it('keeps local permission changes local and default changes broadcast', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      const main = session.agent('main');
+      await main.getRuntime();
+      const live = getLiveSessionById(target.app.accessor, created.id)!;
+      const child = await live.accessor.get(IAgentLifecycleService).create({ agentId: 'permission-child' });
+      const other = session.agent(child.id);
+      try {
+        await main.setPermission('manual');
+        expect(await other.getPermission()).toBe('manual');
+        await main.setPermission('auto', { broadcast: false });
+        expect(await main.getPermission()).toBe('auto');
+        expect(await other.getPermission()).toBe('manual');
+        await main.setPermission('yolo');
+        expect(await other.getPermission()).toBe('yolo');
+      } finally {
+        await session.close();
+      }
+    });
+
+    it('keeps todo state isolated per agent across the transport', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      const live = getLiveSessionById(target.app.accessor, created.id)!;
+      const lifecycle = live.accessor.get(IAgentLifecycleService);
+      const main = await lifecycle.create({ agentId: 'main' });
+      const child = await lifecycle.create({ agentId: 'todo-child' });
+      const todos = live.accessor.get(ISessionTodoService);
+      todos.setTodos([{ title: 'main-only', status: 'in_progress' }], main.id);
+      todos.setTodos([{ title: 'child-only', status: 'done' }], child.id);
+      try {
+        await expect(session.todos.get()).resolves.toEqual([
+          { title: 'main-only', status: 'in_progress' },
+        ]);
+        await expect(session.todos.get(child.id)).resolves.toEqual([
+          { title: 'child-only', status: 'done' },
+        ]);
+      } finally {
+        await session.close();
+      }
+    });
+
+    it('pauses, resumes and cancels goals across the transport', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      const agent = session.agent('main');
+      try {
+        const goal = await agent.createGoal({ objective: 'example lifecycle goal', replace: false });
+        expect(await agent.pauseGoal()).toMatchObject({ goalId: goal.goalId, status: 'paused' });
+        expect((await agent.getGoal()).goal).toMatchObject({ goalId: goal.goalId, status: 'paused' });
+        expect(await agent.resumeGoal()).toMatchObject({ goalId: goal.goalId, status: 'active' });
+        expect((await agent.getGoal()).goal).toMatchObject({ goalId: goal.goalId, status: 'active' });
+        // Cancellation returns the last snapshot and clears the stored goal.
+        expect(await agent.cancelGoal()).toMatchObject({ goalId: goal.goalId, status: 'active' });
+        expect((await agent.getGoal()).goal).toBeNull();
+      } finally {
+        await session.close();
+      }
+    });
+
+    it('retains the completion snapshot when the engine clears the finished goal', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      const agent = session.agent('main');
+      await agent.getRuntime();
+      const goals: unknown[] = [];
+      const sub = agent.events.on('goal.updated', (event) => {
+        if (event.change?.kind === 'completion') goals.push(event.snapshot);
+      });
+      try {
+        await sub.ready;
+        const goal = await agent.createGoal({ objective: 'example goal', replace: false });
+        expect((await agent.getGoal()).goal?.goalId).toBe(goal.goalId);
+        const live = getLiveSessionById(target.app.accessor, created.id)!;
+        await live.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentGoalService).markComplete({}, 'system');
+        await waitFor(() => goals.length > 0, 2_000);
+        expect(goals[0]).toMatchObject({ goalId: goal.goalId, status: 'complete' });
+        expect((await agent.getGoal()).goal).toBeNull();
+      } finally {
+        sub.dispose(); await session.close();
+      }
+    });
+
+    it('does not silently discard an invalid main binding during session creation', async () => {
+      await expect(target.klient.global.sessions.create({
+        workDir: process.cwd(), mainAgentBinding: { profile: 'missing-main-profile' },
+      })).rejects.toThrow();
+    });
+
+    it('attaches prompt events before a terminal submission across the transport', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const agent = target.klient.session(created.id).agent('main');
+      await agent.getRuntime();
+      const live = getLiveSessionById(target.app.accessor, created.id)!;
+      const prompts = live.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
+      const hook = prompts.hooks.onBeforeSubmitPrompt.register('conformance-terminal-block', async (event, next) => {
+        event.block = true; await next();
+      });
+      const seen: string[] = [];
+      const sub = agent.events.on('prompt.completed', (event) => seen.push(event.promptId));
+      try {
+        await sub.ready;
+        const receipt = await agent.prompt({ input: [{ type: 'text', text: 'blocked example' }], promptId: 'terminal-wire' }, { waitFor: 'terminal' });
+        expect(receipt).toMatchObject({ promptId: 'terminal-wire', state: 'blocked' });
+        expect(receipt.turnId).toBeUndefined();
+        await waitFor(() => seen.includes('terminal-wire'), 2_000);
+      } finally {
+        sub.dispose(); hook.dispose();
+        await target.klient.session(created.id).close();
+      }
+    });
+
+    it('preserves structured terminal launch errors across the transport', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const agent = target.klient.session(created.id).agent('main');
+      await agent.getRuntime();
+      const live = getLiveSessionById(target.app.accessor, created.id)!;
+      const prompts = live.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
+      const hook = prompts.hooks.onBeforeSubmitPrompt.register('conformance-terminal-error', async () => {
+        throw new Error('launch failed', { cause: new Error('underlying cause') });
+      });
+      try {
+        const receipt = await agent.prompt({ input: [{ type: 'text', text: 'failure example' }] }, { waitFor: 'terminal' });
+        expect(receipt).toMatchObject({ state: 'failed', result: { type: 'failed', error: {
+          message: 'launch failed', cause: { message: 'underlying cause' },
+        } } });
+      } finally {
+        hook.dispose(); await target.klient.session(created.id).close();
+      }
+    });
+
+    it('cancels idle compaction through the shared agent contract', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      try {
+        await expect(target.klient.session(created.id).agent('main').cancelCompaction()).resolves.toBeUndefined();
+      } finally {
+        await target.klient.session(created.id).close();
       }
     });
 

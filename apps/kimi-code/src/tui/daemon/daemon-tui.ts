@@ -70,13 +70,13 @@ import { DaemonClient } from './client';
 import {
   daemonAutocompleteCommands,
   daemonCommandHelp,
+  daemonSkillCommands,
   parseDaemonSlashInput,
   resolveDaemonCommand,
   validateDaemonCommandArgs,
   type DaemonSkillCommand,
 } from './commands';
 import type { DaemonConnection } from './discovery';
-import { DaemonSocket } from './socket';
 import { DaemonTranscriptRenderer } from './transcript-renderer';
 
 export interface DaemonTUIStartupInput {
@@ -131,7 +131,6 @@ export class DaemonTUI {
   public onExit?: (exitCode?: number) => Promise<void>;
 
   private readonly client: DaemonClient;
-  private readonly socket: DaemonSocket;
   private readonly renderer: DaemonTranscriptRenderer;
   private readonly startup: DaemonTUIStartupInput;
   private controller: SessionController | undefined;
@@ -166,32 +165,6 @@ export class DaemonTUI {
     this.startup = startup;
     this.state = createTUIState(createOptions(startup));
     this.client = new DaemonClient(connection);
-    this.socket = new DaemonSocket({
-      ...connection,
-      events: {
-        onStatus: (status) => {
-          if (status !== 'closed') return;
-          this.controller?.handleWsDrop();
-          for (const controller of this.sideControllers) controller.handleWsDrop();
-        },
-        onFrame: (frame) =>
-          (frame.session_id === undefined ? this.controller : this.controllerFor(frame.session_id))
-            ?.handleFrame(frame),
-        onTranscript: (event, generation) =>
-          this.controllerFor(event.session_id)?.handleTranscript(event, generation),
-        onResyncRequired: (payload) =>
-          this.controllerFor(payload.session_id)?.handleResyncRequired(payload),
-        onSubscribeAck: (_accepted, rejected, reconnected, generation) => {
-          for (const sessionId of rejected) {
-            this.controllerFor(sessionId)?.handleSubscribeRejected(generation);
-          }
-          if (reconnected) {
-            this.controller?.handleReconnectAck();
-            for (const controller of this.sideControllers) controller.handleReconnectAck();
-          }
-        },
-      },
-    });
     this.renderer = new DaemonTranscriptRenderer(
       this.state.transcriptContainer,
       this.state.ui,
@@ -202,14 +175,8 @@ export class DaemonTUI {
     this.setupAutocomplete();
   }
 
-  private controllerFor(sessionId: string): SessionController | undefined {
-    if (this.controller?.sessionId === sessionId) return this.controller;
-    return [...this.sideControllers].find((controller) => controller.sessionId === sessionId);
-  }
-
   async start(): Promise<void> {
     this.state.ui.start();
-    this.socket.connect();
     this.state.transcriptContainer.addChild(new WelcomeComponent(this.state.appState));
     this.state.editorContainer.addChild(this.state.editor);
     this.state.ui.setFocus(this.state.editor);
@@ -271,9 +238,6 @@ export class DaemonTUI {
     await cleanup(() => {
       this.renderer.dispose();
     });
-    await cleanup(() => {
-      this.socket.close();
-    });
     await cleanup(() => this.clearAttachments());
     await cleanup(() => this.releaseSettledAttachmentLeases());
     await cleanup(() => {
@@ -319,6 +283,7 @@ export class DaemonTUI {
     editor.onSubmit = (text) => {
       this.clearPendingExit();
       void this.handleInput(text).catch((error: unknown) => {
+        if (text.startsWith('/') && editor.getText() === '') editor.setText(text);
         this.showStatus(formatErrorMessage(error), 'error');
       });
     };
@@ -663,21 +628,8 @@ export class DaemonTUI {
   private async refreshSkillCommands(sessionId: string): Promise<void> {
     const response = await this.client.listSkills(sessionId);
     this.skillCommands.clear();
-    for (const skill of response.skills) {
-      if (
-        skill.type !== undefined &&
-        skill.type !== 'prompt' &&
-        skill.type !== 'inline' &&
-        skill.type !== 'flow'
-      ) {
-        continue;
-      }
-      const commandName = skill.source === 'builtin' ? skill.name : `skill:${skill.name}`;
-      this.skillCommands.set(commandName.toLowerCase(), {
-        commandName,
-        name: skill.name,
-        description: skill.description,
-      });
+    for (const skill of daemonSkillCommands(response.skills)) {
+      this.skillCommands.set(skill.commandName.toLowerCase(), skill);
     }
     this.setupAutocomplete();
   }
@@ -744,7 +696,7 @@ export class DaemonTUI {
     }
     this.releaseAttachmentSettlementController(sessionId);
     this.focusedAgentId = 'main';
-    const controller = new SessionController(this.client, this.socket, sessionId);
+    const controller = new SessionController(this.client, this.client.klient.session(sessionId).view, sessionId);
     this.controller = controller;
     this.mainControllerDispose = controller.subscribe(() => {
       this.renderSession(controller.getState());
@@ -1310,14 +1262,25 @@ export class DaemonTUI {
     const { token, rawToken, args } = parseDaemonSlashInput(text);
     const resolved = resolveDaemonCommand(token, args);
     if (resolved === undefined) {
-      const skill = this.skillCommands.get(token);
+      const skill = this.skillCommands.get(token) ?? (token.startsWith('skill:')
+        ? [...this.skillCommands.values()].find((entry) => entry.name.toLowerCase() === token.slice(6))
+        : undefined);
       if (skill !== undefined) {
         const controller = await this.ensureSession();
+        const prepared = await prepareDaemonPrompt(args, this.imageAttachments, this.fileAttachments, {
+          refreshMedia: (attachment) => this.refreshMediaAttachment(attachment),
+          refreshFile: (attachment) => this.refreshFileAttachment(attachment),
+        });
+        const skillArgs = prepared === undefined ? args : prepared.content
+          .filter((part) => part.type === 'text').map((part) => part.text).join('');
+        const attachments = prepared?.content.filter((part) => part.type !== 'text');
         await this.client.activateSkill(
           controller.sessionId,
           skill.name,
-          args === '' ? undefined : args,
+          skillArgs === '' ? undefined : skillArgs,
+          attachments,
         );
+        if (prepared !== undefined) this.handoffPreparedMediaToExpiry(prepared);
         return;
       }
       const profile = this.agentProfileCommands.get(token);
@@ -1329,6 +1292,7 @@ export class DaemonTUI {
         await this.sendPrompt(args, profile);
         return;
       }
+      if (this.state.editor.getText() === '') this.state.editor.setText(text);
       this.showStatus(`Unknown daemon TUI command: /${rawToken}`, 'error');
       return;
     }
@@ -1823,7 +1787,7 @@ export class DaemonTUI {
     if (question === '') throw new Error('/btw requires a question.');
     const controller = await this.ensureSession();
     const child = await this.client.klient.session(controller.sessionId).fork({ title: 'BTW' });
-    const side = new SessionController(this.client, this.socket, child.id);
+    const side = new SessionController(this.client, this.client.klient.session(child.id).view, child.id);
     this.sideControllers.add(side);
     await side.open();
     let turnId: string | undefined;

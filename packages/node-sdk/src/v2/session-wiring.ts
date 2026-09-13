@@ -108,15 +108,16 @@ export class SessionEventWiring {
   /** Pending interactions already handed to the sink (the kernel re-fires the full pending set on every change). */
   private readonly bridgedInteractionIds = new Set<string>();
   private disposed = false;
+  private readonly interactions: ISessionInteractionService;
 
   constructor(
     private readonly session: ISessionScopeHandle,
     private readonly sink: SessionEventSink,
   ) {
-    const interactions = session.accessor.get(ISessionInteractionService);
-    interactions.acquireConsumer(this.interactionConsumerId);
+    this.interactions = session.accessor.get(ISessionInteractionService);
+    this.interactions.acquireConsumer(this.interactionConsumerId);
     this.disposables.push(
-      interactions.onDidChangePending(() => {
+      this.interactions.onDidChangePending(() => {
         this.bridgeNewPendingInteractions();
       }),
     );
@@ -137,16 +138,17 @@ export class SessionEventWiring {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.session.accessor
-      .get(ISessionInteractionService)
-      .releaseConsumer(this.interactionConsumerId);
-    for (const disposable of this.disposables) {
+    // Detach before releasing the consumer, which can resolve pending approvals.
+    for (const disposable of this.disposables.splice(0)) {
       disposable.dispose();
     }
     for (const subscription of this.agentSubscriptions.values()) {
       subscription.dispose();
     }
     this.agentSubscriptions.clear();
+    this.bridgedInteractionIds.clear();
+    // The session scope may already be disposed by the close notification.
+    this.interactions.releaseConsumer(this.interactionConsumerId);
   }
 
   private attachAgent(agent: IAgentScopeHandle): void {

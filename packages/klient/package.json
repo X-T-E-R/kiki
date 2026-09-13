@@ -2,7 +2,16 @@
   "name": "@kiki/klient",
   "version": "0.1.2",
   "private": true,
-  "description": "Kimi client SDK — contract-driven facade over agent-core-v2, routable over http, ipc, or in-memory transports.",
+  "description": "Kiki client SDK — contract-driven facade over agent-core-v2, routable over http, ipc, or in-memory transports.",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
+    "directory": "packages/klient"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/kiki/issues"
+  },
   "license": "MIT",
   "type": "module",
   "imports": {
@@ -62,10 +71,11 @@
   },
   "dependencies": {
     "@kiki/agent-core-v2": "workspace:^",
+    "@kiki/protocol": "workspace:^",
+    "@kiki/transcript": "workspace:^",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@kiki/protocol": "workspace:^",
     "@types/ws": "^8.18.0",
     "ulid": "^3.0.1",
     "ws": "^8.18.0"

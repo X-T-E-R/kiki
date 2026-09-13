@@ -6,6 +6,7 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
 import {
   NB_SEARCH_SECTION,
@@ -124,7 +125,9 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         delete camelPatch[NB_SEARCH_SECTION];
         delete camelPatch[NB_SEARCH_SOURCE_SECTION];
         for (const domain of Object.keys(camelPatch)) {
-          if (domain === 'prompt' && replaceDomains.has(domain)) {
+          if (domain === TASK_BOARD_SECTION) {
+            await config.replaceSections({ [TASK_BOARD_SECTION]: camelPatch[domain] }, ConfigTarget.User);
+          } else if (domain === 'prompt' && replaceDomains.has(domain)) {
             await config.replaceSections({ [domain]: camelPatch[domain] }, ConfigTarget.User);
           } else if (replaceDomains.has(domain)) {
             await config.replace(domain, null);

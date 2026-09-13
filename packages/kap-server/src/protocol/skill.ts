@@ -10,5 +10,7 @@ export const skillDescriptorSchema = z.object({
   source: skillSourceSchema,
   type: z.string().optional(),
   disable_model_invocation: z.boolean().optional(),
+  prompt_command: z.boolean().optional(),
+  argument_hint: z.string().optional(),
 });
 export type SkillDescriptor = z.infer<typeof skillDescriptorSchema>;

@@ -6,6 +6,7 @@ import type {
   GoalSnapshot,
   ListModelsResponse,
   ListNamedAgentProfilesResponse,
+  MessageContent,
   PromptAbortResponse,
   PromptReplaceRequest,
   PromptReplaceResult,
@@ -16,20 +17,19 @@ import type {
   QuestionResolveRequest,
   QuestionResolveResult,
   Session,
-  SessionSnapshotResponse,
   UpdateSessionProfileRequest,
 } from '@kiki/protocol';
 
 import {
   API_CODES,
   ApiError,
-  type AgentTranscriptResponse,
   type EditMessageRequest,
   type KikiForkSessionRequest,
   type RegenerateMessageRequest,
   type SessionTransport,
 } from '@kiki/session-core/transport';
 
+import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
 import type { DaemonConnection } from './discovery';
 
 interface Envelope<T> {
@@ -61,6 +61,7 @@ export interface DaemonSessionPage {
 
 export class DaemonClient implements SessionTransport {
   readonly klient: Klient;
+  readonly sessions = createSessionTransport({ session: (id) => this.klient.session(id) });
   private readonly url: string;
   private readonly token: string;
   private readonly fetchImpl: typeof fetch;
@@ -75,6 +76,7 @@ export class DaemonClient implements SessionTransport {
         endpoint: this.url,
         token: this.token,
         WebSocket: options.WebSocket,
+        fetch: options.fetch,
       });
   }
 
@@ -114,7 +116,10 @@ export class DaemonClient implements SessionTransport {
       readonly name: string;
       readonly description: string;
       readonly source: 'project' | 'user' | 'extra' | 'builtin';
+      readonly path: string;
       readonly type?: string;
+      readonly prompt_command?: boolean;
+      readonly argument_hint?: string;
     }[];
   }> {
     return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/skills`);
@@ -124,11 +129,12 @@ export class DaemonClient implements SessionTransport {
     sessionId: string,
     name: string,
     args?: string,
+    attachments?: readonly MessageContent[],
   ): Promise<{ readonly activated: true; readonly skill_name: string }> {
     return this.request(
       'POST',
       `/sessions/${encodeURIComponent(sessionId)}/skills/${encodeURIComponent(name)}:activate`,
-      { args },
+      { args, attachments },
     );
   }
 
@@ -172,14 +178,8 @@ export class DaemonClient implements SessionTransport {
     return this.klient.session(sessionId).agents();
   }
 
-  snapshot(sessionId: string, options?: { readonly transcript?: boolean }): Promise<SessionSnapshotResponse> {
-    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/snapshot`, undefined, {
-      mode: options?.transcript === true ? 'transcript' : undefined,
-    });
-  }
-
   getSession(sessionId: string): Promise<Session> {
-    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}`);
+    return this.sessions.getSession(sessionId);
   }
 
   getGoal(sessionId: string): Promise<GoalSnapshot | null> {
@@ -204,70 +204,20 @@ export class DaemonClient implements SessionTransport {
     return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}/source-overlay`, body);
   }
 
-  getAgentTranscript(
-    sessionId: string,
-    agentId: string,
-    options?: { readonly beforeTurn?: string; readonly afterTurn?: string; readonly pageSize?: number },
-  ): Promise<AgentTranscriptResponse> {
-    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/transcript`, undefined, {
-      agent_id: agentId,
-      before_turn: options?.beforeTurn,
-      after_turn: options?.afterTurn,
-      page_size: options?.pageSize ?? 100,
-    });
-  }
-
-  getTranscriptOps(
-    sessionId: string,
-    agentId: string,
-    since: { readonly seq: number; readonly epoch?: string },
-    grade: 'turn' | 'block' | 'delta' = 'delta',
-  ): Promise<{
-    readonly session_id: string;
-    readonly agent_id: string;
-    readonly epoch: string;
-    readonly batches: readonly { readonly seq: number; readonly ops: readonly unknown[] }[];
-    readonly through_seq: number;
-    readonly complete: boolean;
-  }> {
-    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/transcript/ops`, undefined, {
-      agent_id: agentId,
-      since_seq: since.seq,
-      epoch: since.epoch,
-      grade,
-    });
-  }
-
   submitPrompt(sessionId: string, body: PromptSubmission): Promise<PromptSubmitResult> {
-    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}/prompts`, body);
+    return this.sessions.submitPrompt(sessionId, body);
   }
 
-  editMessage(
-    sessionId: string,
-    messageId: string,
-    body: EditMessageRequest,
-  ): Promise<unknown> {
-    return this.request(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}:edit`,
-      body,
-    );
+  editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult> {
+    return this.sessions.editMessage(sessionId, messageId, body);
   }
 
-  regenerateMessage(
-    sessionId: string,
-    messageId: string,
-    body: RegenerateMessageRequest,
-  ): Promise<unknown> {
-    return this.request(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}:regenerate`,
-      body,
-    );
+  regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult> {
+    return this.sessions.regenerateMessage(sessionId, messageId, body);
   }
 
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session> {
-    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}:fork`, body);
+    return this.sessions.forkSession(sessionId, body);
   }
 
   undoSession(sessionId: string): Promise<unknown> {
@@ -275,77 +225,31 @@ export class DaemonClient implements SessionTransport {
   }
 
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse> {
-    return this.request(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:abort`,
-      {},
-      undefined,
-      [API_CODES.SUCCESS, API_CODES.PROMPT_ALREADY_COMPLETED],
-    );
+    return this.sessions.abortPrompt(sessionId, promptId);
   }
 
-  replacePrompt(
-    sessionId: string,
-    promptId: string,
-    body: PromptReplaceRequest,
-  ): Promise<PromptReplaceResult> {
-    return this.request(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:replace`,
-      body,
-    );
+  replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult> {
+    return this.sessions.replacePrompt(sessionId, promptId, body);
   }
 
   steerPrompt(sessionId: string, promptId: string): Promise<PromptSteerResult> {
-    return this.request(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:steer`,
-      {},
-    );
+    return this.sessions.steerPrompt(sessionId, promptId);
   }
 
-  resolveApproval(
-    sessionId: string,
-    approvalId: string,
-    body: ApprovalResolveRequest & { readonly selected_option_id?: string },
-  ): Promise<ApprovalResolveResult> {
-    return this.request(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}`,
-      body,
-    );
+  resolveApproval(sessionId: string, approvalId: string, body: ApprovalResolveRequest): Promise<ApprovalResolveResult> {
+    return this.sessions.resolveApproval(sessionId, approvalId, body);
   }
 
-  resolveQuestion(
-    sessionId: string,
-    questionId: string,
-    body: QuestionResolveRequest,
-  ): Promise<QuestionResolveResult> {
-    return this.request(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(questionId)}`,
-      body,
-    );
+  resolveQuestion(sessionId: string, questionId: string, body: QuestionResolveRequest): Promise<QuestionResolveResult> {
+    return this.sessions.resolveQuestion(sessionId, questionId, body);
   }
 
   dismissQuestion(sessionId: string, questionId: string): Promise<QuestionDismissResult> {
-    return this.request(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(questionId)}:dismiss`,
-      {},
-      undefined,
-      [API_CODES.SUCCESS, API_CODES.QUESTION_DISMISSED],
-    );
+    return this.sessions.dismissQuestion(sessionId, questionId);
   }
 
-  cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: true }> {
-    return this.request(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}:cancel`,
-      {},
-      undefined,
-      [API_CODES.SUCCESS, API_CODES.TASK_ALREADY_FINISHED],
-    );
+  cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: boolean }> {
+    return this.sessions.cancelTask(sessionId, taskId);
   }
 
   close(): Promise<void> {
@@ -359,7 +263,7 @@ export class DaemonClient implements SessionTransport {
     query?: Record<string, string | number | undefined>,
     okCodes: readonly number[] = [API_CODES.SUCCESS],
   ): Promise<T> {
-    const url = new URL(`${this.url}/api/v1${path}`);
+    const url = new URL(`${this.url}/api${path}`);
     for (const [key, value] of Object.entries(query ?? {})) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }

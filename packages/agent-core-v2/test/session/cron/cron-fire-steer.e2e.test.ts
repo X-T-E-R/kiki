@@ -48,6 +48,12 @@ describe('cron-fired steer turn context', () => {
       get: (agentId) => (agentId === 'main' ? mainHandle : undefined),
       list: () => (mainHandle === undefined ? [] : [mainHandle]),
       broadcastPermissionMode: () => {},
+      countPendingBackgroundTasks: () => {
+        throw new Error('IAgentLifecycleService.countPendingBackgroundTasks is not supported in this test');
+      },
+      drainBackgroundTasks: async () => {
+        throw new Error('IAgentLifecycleService.drainBackgroundTasks is not supported in this test');
+      },
       remove: () => Promise.resolve(),
     };
     ctx = createTestAgent(sessionService(IAgentLifecycleService, lifecycleStub));

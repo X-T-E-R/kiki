@@ -119,15 +119,15 @@ function catalogFetchFail(): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
+describe('server-v2 /api catalog browse + import endpoints', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-catalog-'));
-    process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START'] = '0';
-    process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
+    process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'] = '0';
+    process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
     resetModelsDevUpstreamForTest();
     setModelsDevUpstreamForTest({ fetchImpl: catalogFetchOk() });
   });
@@ -142,8 +142,8 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
-    delete process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START'];
-    delete process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
+    delete process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'];
+    delete process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
   });
 
   async function boot(toml?: string): Promise<void> {
@@ -199,7 +199,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
   it('lists pruned directory entries with import eligibility resolved', async () => {
     await boot();
     const { status, body } = await getJson<{ items: Array<Record<string, unknown>> }>(
-      '/api/v1/catalog/providers',
+      '/api/catalog/providers',
     );
     expect(status).toBe(200);
     expect(body.code).toBe(0);
@@ -242,8 +242,8 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     setModelsDevUpstreamForTest({ fetchImpl: counting });
 
     await boot();
-    const first = await getJson('/api/v1/catalog/providers');
-    const second = await getJson('/api/v1/catalog/providers');
+    const first = await getJson('/api/catalog/providers');
+    const second = await getJson('/api/catalog/providers');
     expect(first.body.code).toBe(0);
     expect(second.body.code).toBe(0);
     expect(calls).toBe(1);
@@ -255,12 +255,12 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     setModelsDevUpstreamForTest({ now: () => now });
 
     await boot();
-    const first = await getJson<{ items: unknown[] }>('/api/v1/catalog/providers');
+    const first = await getJson<{ items: unknown[] }>('/api/catalog/providers');
     expect(first.body.code).toBe(0);
 
     now = t0 + 11 * 60 * 1000;
     setModelsDevUpstreamForTest({ fetchImpl: catalogFetchFail() });
-    const second = await getJson<{ items: unknown[] }>('/api/v1/catalog/providers');
+    const second = await getJson<{ items: unknown[] }>('/api/catalog/providers');
     expect(second.body.code).toBe(0);
     expect(second.body.data.items.length).toBe(first.body.data.items.length);
   });
@@ -268,7 +268,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
   it('answers 50004 when the fetch fails and no cache or snapshot exists', async () => {
     setModelsDevUpstreamForTest({ fetchImpl: catalogFetchFail() });
     await boot();
-    const { status, body } = await getJson('/api/v1/catalog/providers');
+    const { status, body } = await getJson('/api/catalog/providers');
     expect(status).toBe(200);
     expect(body.code).toBe(50004);
     expect(body.msg).toContain('unavailable');
@@ -277,7 +277,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
   it('gets a single directory entry by id', async () => {
     await boot();
     const { status, body } = await getJson<Record<string, unknown>>(
-      '/api/v1/catalog/providers/openai',
+      '/api/catalog/providers/openai',
     );
     expect(status).toBe(200);
     expect(body.code).toBe(0);
@@ -287,7 +287,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('answers 40417 for an unknown catalog id', async () => {
     await boot();
-    const { body } = await getJson('/api/v1/catalog/providers/nope');
+    const { body } = await getJson('/api/catalog/providers/nope');
     expect(body.code).toBe(40417);
   });
 
@@ -296,7 +296,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     const { status, body } = await postJson<{
       provider: Record<string, unknown>;
       models_imported: number;
-    }>('/api/v1/providers:import_catalog', { catalog_id: 'openai', api_key: 'sk-imported' });
+    }>('/api/providers:import_catalog', { catalog_id: 'openai', api_key: 'sk-imported' });
     expect(status).toBe(201);
     expect(body.code).toBe(0);
     expect(body.data.models_imported).toBe(2);
@@ -329,7 +329,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('never touches the global default pointers on import', async () => {
     await boot(DEFAULTED_TOML);
-    const { status } = await postJson('/api/v1/providers:import_catalog', {
+    const { status } = await postJson('/api/providers:import_catalog', {
       catalog_id: 'openai',
       api_key: 'sk-imported',
     });
@@ -341,7 +341,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('seeds the global default_model from the first catalog model on a fresh setup', async () => {
     await boot();
-    const { status } = await postJson('/api/v1/providers:import_catalog', {
+    const { status } = await postJson('/api/providers:import_catalog', {
       catalog_id: 'openai',
       api_key: 'sk-imported',
     });
@@ -352,7 +352,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('re-imports an existing id as a refresh: credentials replaced, stale aliases dropped', async () => {
     await boot(DEFAULTED_TOML);
-    const first = await postJson('/api/v1/providers:import_catalog', {
+    const first = await postJson('/api/providers:import_catalog', {
       catalog_id: 'openai',
       api_key: 'sk-one',
     });
@@ -364,11 +364,11 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     const { stringify: stringifyToml } = await import('smol-toml');
     await writeFile(join(home as string, 'config.toml'), stringifyToml(before), 'utf-8');
     await waitForServerState(async () => {
-      const cfg = await getJson<{ models: Record<string, unknown> }>('/api/v1/config');
+      const cfg = await getJson<{ models: Record<string, unknown> }>('/api/config');
       return 'openai/retired' in (cfg.body.data.models ?? {});
     });
 
-    const second = await postJson('/api/v1/providers:import_catalog', {
+    const second = await postJson('/api/providers:import_catalog', {
       catalog_id: 'openai',
       api_key: 'sk-two',
     });
@@ -385,14 +385,14 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('keeps the stored api_key when a re-import omits it (tri-state like PUT)', async () => {
     await boot(DEFAULTED_TOML);
-    const first = await postJson('/api/v1/providers:import_catalog', {
+    const first = await postJson('/api/providers:import_catalog', {
       catalog_id: 'openai',
       api_key: 'sk-one',
     });
     expect(first.status).toBe(201);
 
     const second = await postJson<{ provider: { has_api_key: boolean } }>(
-      '/api/v1/providers:import_catalog',
+      '/api/providers:import_catalog',
       { catalog_id: 'openai' },
     );
     expect(second.status).toBe(201);
@@ -405,7 +405,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('clears stale on-disk alias fields the upstream no longer lists (two-pass swap)', async () => {
     await boot(DEFAULTED_TOML);
-    const first = await postJson('/api/v1/providers:import_catalog', {
+    const first = await postJson('/api/providers:import_catalog', {
       catalog_id: 'openai',
       api_key: 'sk-one',
     });
@@ -422,12 +422,12 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     await writeFile(join(home as string, 'config.toml'), stringifyToml(before), 'utf-8');
     await waitForServerState(async () => {
       const cfg = await getJson<{ models: Record<string, Record<string, unknown>> }>(
-        '/api/v1/config',
+        '/api/config',
       );
       return cfg.body.data.models['openai/gpt-4o-mini']?.['betaApi'] === true;
     });
 
-    const second = await postJson('/api/v1/providers:import_catalog', {
+    const second = await postJson('/api/providers:import_catalog', {
       catalog_id: 'openai',
     });
     expect(second.status).toBe(201);
@@ -445,16 +445,16 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('answers 40417 for prototype-chain catalog ids (constructor/__proto__)', async () => {
     await boot();
-    const first = await getJson('/api/v1/catalog/providers/constructor');
+    const first = await getJson('/api/catalog/providers/constructor');
     expect(first.body.code).toBe(40417);
-    const second = await getJson('/api/v1/catalog/providers/__proto__');
+    const second = await getJson('/api/catalog/providers/__proto__');
     expect(second.body.code).toBe(40417);
   });
 
   it('honors the id override for the local provider id', async () => {
     await boot();
     const { status, body } = await postJson<{ provider: Record<string, unknown> }>(
-      '/api/v1/providers:import_catalog',
+      '/api/providers:import_catalog',
       { catalog_id: 'openai', api_key: 'sk-x', id: 'my-oai' },
     );
     expect(status).toBe(201);
@@ -469,7 +469,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('answers 40004 for a rejected catalog entry', async () => {
     await boot();
-    const { body } = await postJson('/api/v1/providers:import_catalog', {
+    const { body } = await postJson('/api/providers:import_catalog', {
       catalog_id: 'bedrock',
       api_key: 'sk-x',
     });
@@ -479,7 +479,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('answers 40004 when a needs-base-url entry is imported without one, 201 with one', async () => {
     await boot();
-    const missing = await postJson('/api/v1/providers:import_catalog', {
+    const missing = await postJson('/api/providers:import_catalog', {
       catalog_id: 'gateway',
       api_key: 'sk-x',
     });
@@ -487,7 +487,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     expect(missing.body.msg).toContain('base_url');
 
     const ok = await postJson<{ provider: Record<string, unknown> }>(
-      '/api/v1/providers:import_catalog',
+      '/api/providers:import_catalog',
       { catalog_id: 'gateway', api_key: 'sk-x', base_url: 'https://gw.example/v1' },
     );
     expect(ok.status).toBe(201);
@@ -496,7 +496,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('answers 40004 for an entry with no importable models', async () => {
     await boot();
-    const { body } = await postJson('/api/v1/providers:import_catalog', {
+    const { body } = await postJson('/api/providers:import_catalog', {
       catalog_id: 'empty-models',
       api_key: 'sk-x',
     });
@@ -506,7 +506,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('answers 40003 when the target id is OAuth-managed', async () => {
     await boot(MANAGED_OPENAI_TOML);
-    const { body } = await postJson('/api/v1/providers:import_catalog', {
+    const { body } = await postJson('/api/providers:import_catalog', {
       catalog_id: 'openai',
       api_key: 'sk-x',
     });
@@ -515,7 +515,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('answers 40417 when importing an unknown catalog id', async () => {
     await boot();
-    const { body } = await postJson('/api/v1/providers:import_catalog', {
+    const { body } = await postJson('/api/providers:import_catalog', {
       catalog_id: 'nope',
       api_key: 'sk-x',
     });
@@ -525,7 +525,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
   it('answers 50004 when the catalog is unavailable', async () => {
     setModelsDevUpstreamForTest({ fetchImpl: catalogFetchFail() });
     await boot();
-    const { body } = await postJson('/api/v1/providers:import_catalog', {
+    const { body } = await postJson('/api/providers:import_catalog', {
       catalog_id: 'openai',
       api_key: 'sk-x',
     });
@@ -583,7 +583,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     const { status, body } = await postJson<{
       providers: Array<Record<string, unknown>>;
       models_imported: number;
-    }>('/api/v1/providers:import_registry', { url: REGISTRY_URL, api_key: 'tok-1' });
+    }>('/api/providers:import_registry', { url: REGISTRY_URL, api_key: 'tok-1' });
     expect(status).toBe(201);
     expect(body.code).toBe(0);
     expect(body.data.models_imported).toBe(2);
@@ -622,7 +622,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
   it('never touches the global default pointers on registry import', async () => {
     setModelsDevUpstreamForTest({ fetchImpl: registryFetch(REGISTRY_DOC) });
     await boot(DEFAULTED_TOML);
-    const { status } = await postJson('/api/v1/providers:import_registry', {
+    const { status } = await postJson('/api/providers:import_registry', {
       url: REGISTRY_URL,
       api_key: 'tok-1',
     });
@@ -635,7 +635,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
   it('seeds the global default_model from the first registry model on a fresh setup', async () => {
     setModelsDevUpstreamForTest({ fetchImpl: registryFetch(REGISTRY_DOC) });
     await boot();
-    const { status } = await postJson('/api/v1/providers:import_registry', {
+    const { status } = await postJson('/api/providers:import_registry', {
       url: REGISTRY_URL,
       api_key: 'tok-1',
     });
@@ -647,7 +647,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
   it('re-imports the same URL as a refresh: vanished providers dropped, survivors rebuilt', async () => {
     setModelsDevUpstreamForTest({ fetchImpl: registryFetch(REGISTRY_DOC) });
     await boot(DEFAULTED_TOML);
-    const first = await postJson('/api/v1/providers:import_registry', {
+    const first = await postJson('/api/providers:import_registry', {
       url: REGISTRY_URL,
       api_key: 'tok-1',
     });
@@ -665,7 +665,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
     const slimDoc = { 'acme-gpt': REGISTRY_DOC['acme-gpt'] };
     setModelsDevUpstreamForTest({ fetchImpl: registryFetch(slimDoc) });
-    const second = await postJson('/api/v1/providers:import_registry', {
+    const second = await postJson('/api/providers:import_registry', {
       url: REGISTRY_URL,
       api_key: 'tok-2',
     });
@@ -706,7 +706,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
     ].join('\n');
     setModelsDevUpstreamForTest({ fetchImpl: registryFetch(managed) });
     await boot(managedToml);
-    const { body } = await postJson('/api/v1/providers:import_registry', {
+    const { body } = await postJson('/api/providers:import_registry', {
       url: REGISTRY_URL,
       api_key: 'tok-1',
     });
@@ -720,7 +720,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
       }) as unknown as typeof fetch,
     });
     await boot();
-    const { body } = await postJson('/api/v1/providers:import_registry', {
+    const { body } = await postJson('/api/providers:import_registry', {
       url: REGISTRY_URL,
       api_key: 'tok-1',
     });
@@ -730,7 +730,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
   it('answers 40005 when the document has no valid entries', async () => {
     setModelsDevUpstreamForTest({ fetchImpl: registryFetch({ bad: { id: 'bad' } }) });
     await boot();
-    const { body } = await postJson('/api/v1/providers:import_registry', {
+    const { body } = await postJson('/api/providers:import_registry', {
       url: REGISTRY_URL,
       api_key: 'tok-1',
     });
@@ -740,7 +740,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
 
   it('answers 40001 when url is missing', async () => {
     await boot();
-    const { body } = await postJson('/api/v1/providers:import_registry', { api_key: 'tok-1' });
+    const { body } = await postJson('/api/providers:import_registry', { api_key: 'tok-1' });
     expect(body.code).toBe(40001);
     expect(body.msg).toContain('url');
   });

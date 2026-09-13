@@ -1,6 +1,6 @@
 import { dirname, join, normalize } from 'pathe';
 
-import { resolveKimiHome } from '#/app/bootstrap/bootstrap';
+import { resolveKikiHome } from '#/app/bootstrap/bootstrap';
 import { findGitWorkTree } from '#/app/git/workTree';
 import { resolvePath } from '#/_base/utils/paths';
 import { ErrorCodes, Error2 } from '#/errors';
@@ -25,9 +25,9 @@ export async function resolveMcpJsonPaths(input: ResolveMcpJsonPathsInput): Prom
   const projectRoot = (await findGitWorkTree(input.fs, start))?.root ?? start;
 
   return {
-    user: join(resolveKimiHome(input.homeDir), 'mcp.json'),
+    user: join(resolveKikiHome(input.homeDir), 'mcp.json'),
     projectRoot: join(projectRoot, '.mcp.json'),
-    project: join(input.cwd, '.kimi-code', 'mcp.json'),
+    project: join(input.cwd, '.kiki', 'mcp.json'),
   };
 }
 

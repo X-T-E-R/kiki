@@ -30,14 +30,14 @@ function stubExternalDelegationEnv(): void {
   for (const name of EXTERNAL_DELEGATION_ENV_NAMES) vi.stubEnv(name, undefined);
 }
 
-describe('/api/v1/meta experimental_flags', () => {
+describe('/api/meta experimental_flags', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
 
   beforeEach(() => {
     stubExternalDelegationEnv();
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TOOL_SELECT', undefined);
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
+    vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', undefined);
   });
 
   afterEach(async () => {
@@ -68,7 +68,7 @@ describe('/api/v1/meta experimental_flags', () => {
   }
 
   async function getMetaFlags(base: string): Promise<Record<string, boolean>> {
-    const res = await authedFetch(server as RunningServer, base, '/api/v1/meta');
+    const res = await authedFetch(server as RunningServer, base, '/api/meta');
     expect(res.status).toBe(200);
     const body = (await res.json()) as MetaBody;
     expect(body.code).toBe(0);
@@ -88,8 +88,8 @@ describe('/api/v1/meta experimental_flags', () => {
     expect(flags['tool-select']).toBe(true);
   });
 
-  it('reflects a flag enabled via its KIMI_CODE_EXPERIMENTAL_* env var', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TOOL_SELECT', '1');
+  it('reflects a flag enabled via its KIKI_EXPERIMENTAL_* env var', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', '1');
     const base = await boot();
     const flags = await getMetaFlags(base);
     expect(flags['tool-select']).toBe(true);
@@ -99,7 +99,7 @@ describe('/api/v1/meta experimental_flags', () => {
     const base = await boot();
     expect((await getMetaFlags(base))['tool-select']).toBe(false);
 
-    const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+    const res = await authedFetch(server as RunningServer, base, '/api/config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ experimental: { 'tool-select': true } }),
@@ -110,10 +110,10 @@ describe('/api/v1/meta experimental_flags', () => {
   });
 
   it('keeps an env-forced flag on when the config section disables it', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TOOL_SELECT', '1');
+    vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', '1');
     const base = await boot();
 
-    const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+    const res = await authedFetch(server as RunningServer, base, '/api/config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ experimental: { 'tool-select': false } }),
@@ -124,7 +124,7 @@ describe('/api/v1/meta experimental_flags', () => {
   });
 });
 
-describe('/api/v1/meta external_delegation', () => {
+describe('/api/meta external_delegation', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
 
@@ -152,7 +152,7 @@ describe('/api/v1/meta external_delegation', () => {
       logLevel: 'silent',
     });
     const base = `http://127.0.0.1:${server.port}`;
-    const response = await authedFetch(server, base, '/api/v1/meta');
+    const response = await authedFetch(server, base, '/api/meta');
     expect(await response.json()).toMatchObject({
       code: 0,
       data: { external_delegation: { state: 'active' } },
@@ -160,7 +160,7 @@ describe('/api/v1/meta external_delegation', () => {
   });
 
   it('reports feature_disabled when the external delegation flag is off', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP', 'false');
+    vi.stubEnv('KIKI_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP', 'false');
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-meta-delegation-disabled-'));
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -170,7 +170,7 @@ describe('/api/v1/meta external_delegation', () => {
       logLevel: 'silent',
     });
     const base = `http://127.0.0.1:${server.port}`;
-    const response = await authedFetch(server, base, '/api/v1/meta');
+    const response = await authedFetch(server, base, '/api/meta');
     expect(await response.json()).toMatchObject({
       code: 0,
       data: { external_delegation: { state: 'disabled', reason: 'feature_disabled' } },
@@ -178,7 +178,7 @@ describe('/api/v1/meta external_delegation', () => {
   });
 });
 
-describe('/api/v1/meta web_title', () => {
+describe('/api/meta web_title', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
 
@@ -209,7 +209,7 @@ describe('/api/v1/meta web_title', () => {
       webTitle,
     });
     const base = `http://127.0.0.1:${server.port}`;
-    const res = await authedFetch(server, base, '/api/v1/meta');
+    const res = await authedFetch(server, base, '/api/meta');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { code: number; data: { web_title?: string } };
     expect(body.code).toBe(0);
@@ -227,7 +227,7 @@ describe('/api/v1/meta web_title', () => {
   });
 });
 
-describe('/api/v1/meta features', () => {
+describe('/api/meta features', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
 
@@ -264,7 +264,7 @@ describe('/api/v1/meta features', () => {
   }
 
   async function getMetaFeatures(base: string): Promise<FeatureWire[]> {
-    const res = await authedFetch(server as RunningServer, base, '/api/v1/meta');
+    const res = await authedFetch(server as RunningServer, base, '/api/meta');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { code: number; data: { features?: FeatureWire[] } };
     expect(body.code).toBe(0);

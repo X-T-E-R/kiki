@@ -68,7 +68,7 @@ const { Session } = await import('#/index');
 const tempDirs: string[] = [];
 
 const CONFIG_ENV_PATTERN =
-  /^(KIMI_MODEL_|KIMI_LOOP_|KIMI_MCP_|KIMI_IMAGE_|KIMI_CODE_BACKGROUND_|KIMI_CODE_MODEL_CATALOG_|NB_SEARCH_)/;
+  /^(KIMI_MODEL_|KIMI_LOOP_|KIMI_MCP_|KIMI_IMAGE_|KIKI_BACKGROUND_|KIKI_MODEL_CATALOG_|NB_SEARCH_)/;
 
 /** Keep ambient env from injecting providers/models into the v2 engine. */
 function scrubConfigEnv(): () => void {
@@ -176,7 +176,7 @@ describe('Session skills', () => {
         source: 'project',
         disableModelInvocation: true,
       });
-      expect(listed?.path.endsWith('/.kimi-code/skills/review/SKILL.md')).toBe(true);
+      expect(listed?.path.endsWith('/.kiki/skills/review/SKILL.md')).toBe(true);
       expect(JSON.stringify(skills)).not.toContain('Review the requested file.');
     } finally {
       await harness.close();
@@ -250,7 +250,7 @@ describe('Session skills', () => {
       expect(state['lastPrompt']).toBe('/review src/app.ts');
 
       const skillDir = resolvePosix(
-        await realpath(join(workDir, '.kimi-code', 'skills', 'review')),
+        await realpath(join(workDir, '.kiki', 'skills', 'review')),
       );
       await expect(
         waitForAgentWireEvent(
@@ -286,12 +286,12 @@ describe('Session skills', () => {
     }
   });
 
-  it('resolves user brand skills from KIMI_CODE_HOME, not the OS home', async () => {
+  it('resolves user brand skills from KIKI_HOME, not the OS home', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-home-');
     const processHome = await makeTempDir(tempDirs, 'kimi-sdk-skills-process-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-work-');
     vi.stubEnv('HOME', processHome);
-    vi.stubEnv('KIMI_CODE_HOME', homeDir);
+    vi.stubEnv('KIKI_HOME', homeDir);
     await writeLegacyUserSkill(processHome, 'sdk-real-home-only', 'SDK real home skill');
     await writeBrandUserSkill(homeDir, 'sdk-sandbox-only', 'SDK sandbox skill');
     const harness = createKimiHarness({ identity: TEST_IDENTITY });
@@ -436,7 +436,9 @@ describe('KimiHarness workspace skills', () => {
 });
 
 async function writeSkill(workDir: string, name: string, lines: readonly string[]): Promise<void> {
-  const dir = join(workDir, '.kimi-code', 'skills', name);
+  // Bound project discovery even when the temporary workspace is inside a checkout.
+  await mkdir(join(workDir, '.git'), { recursive: true });
+  const dir = join(workDir, '.kiki', 'skills', name);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'SKILL.md'), lines.join('\n'));
 }

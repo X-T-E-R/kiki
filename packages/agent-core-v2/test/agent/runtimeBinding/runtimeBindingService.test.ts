@@ -1,15 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { createDecorator } from '#/_base/di/instantiation';
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { createServices } from '#/_base/di/test';
 import { Emitter } from '#/_base/event';
-import { AgentRuntimeService, snapshotAgentRuntimeBinding } from '#/agent/runtimeBinding/agentRuntime';
+import { AgentRuntimeService, IAgentRuntimeService, snapshotAgentRuntimeBinding } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeBindingSeed, IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
 import { AgentRuntimeBindingService, agentRuntimeBindingKey } from '#/agent/runtimeBinding/runtimeBindingService';
+import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import type { Runtime, RuntimeBinding, RuntimeCapability, RuntimeLease } from '#/runtime/runtime';
 import { RuntimeError, RuntimeRegistry } from '#/runtime/runtimeRegistry';
-import { makeSessionContext } from '#/session/sessionContext/sessionContext';
-import type { IEventDispatcher } from '#/state/eventDispatcher';
-import type {
+import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
+import { IEventDispatcher } from '#/state/eventDispatcher';
+import {
   IRuntimeResolver,
   IWorkspaceInstanceManager,
 } from '#/workspace/workspaceInstance/workspaceInstanceManager';
@@ -57,20 +63,39 @@ function setup() {
     dispatch: () => Promise.resolve(),
     hooks: { onDidRestore: { register: () => ({ dispose: () => {} }) } },
   } as unknown as IEventDispatcher;
-  const binding = new AgentRuntimeBindingService(
-    state,
-    { _serviceBrand: undefined, binding: { workspaceId: 'workspace', runtimeId: 'local' } },
-    session,
-    resolver,
-    dispatcher,
-  );
-  const workspaceChanges = new Emitter<{ workspaceId: string }>();
+  const workspaceChanges = disposables.add(new Emitter<{ workspaceId: string }>());
+  disposables.add(registry);
   const workspaces = {
     _serviceBrand: undefined,
     onDidChange: workspaceChanges.event,
     get: () => ({ runtimes: registry }),
   } as unknown as IWorkspaceInstanceManager;
+  const ix = createServices(disposables, {
+    strict: true,
+    additionalServices: (reg) => {
+      reg.defineInstance(IAgentStateService, state);
+      reg.defineInstance(IAgentRuntimeBindingSeed, {
+        _serviceBrand: undefined,
+        binding: { workspaceId: 'workspace', runtimeId: 'local' },
+      });
+      reg.defineInstance(ISessionContext, session);
+      reg.defineInstance(IRuntimeResolver, resolver);
+      reg.defineInstance(IEventDispatcher, dispatcher);
+      reg.defineInstance(IWorkspaceInstanceManager, workspaces);
+      reg.define(IAgentRuntimeBindingService, AgentRuntimeBindingService);
+      reg.define(IAgentRuntimeService, AgentRuntimeService);
+    },
+  });
+  const binding = ix.get(IAgentRuntimeBindingService);
+  const bindingSubscribe = vi.spyOn(binding, 'onDidChange');
+  const workspaceSubscribe = vi.spyOn(workspaces, 'onDidChange');
+  const registrySubscribe = vi.spyOn(registry, 'onDidChange');
+  const agentRuntime = ix.get(IAgentRuntimeService);
+  const subscriptionDisposals = [bindingSubscribe, workspaceSubscribe, registrySubscribe].map(
+    (subscribe) => vi.spyOn(subscribe.mock.results[0]!.value, 'dispose'),
+  );
   return {
+    ix,
     registry,
     resolver,
     state,
@@ -79,9 +104,21 @@ function setup() {
     remote,
     localRegistration,
     workspaceChanges,
-    agentRuntime: new AgentRuntimeService(binding, resolver, workspaces),
+    agentRuntime,
+    subscriptionDisposals,
   };
 }
+
+let disposables: DisposableStore;
+
+beforeEach(() => {
+  disposables = new DisposableStore();
+});
+
+afterEach(() => {
+  disposables.dispose();
+  vi.restoreAllMocks();
+});
 
 describe('AgentRuntimeBindingService', () => {
   it('switches only after the target can be acquired and emits the committed binding', () => {
@@ -222,5 +259,60 @@ describe('AgentRuntimeBindingService', () => {
     expect(agentRuntime.isAvailable(['process'])).toBe(true);
     local.setStatus('ready');
     expect(changes).toHaveLength(1);
+  });
+
+  it('stops an in-flight runtime notification when a listener closes the scope', () => {
+    const { ix, local, agentRuntime } = setup();
+    agentRuntime.onDidChange(() => ix.dispose());
+    const invoke = vi.spyOn(ix, 'invokeFunction');
+    agentRuntime.onDidChange(() => ix.invokeFunction(() => {}));
+
+    local.setStatus('disconnected');
+
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('detaches runtime events before asynchronous scope teardown can invoke disposed DI', async () => {
+    const { ix, binding, local, localRegistration, workspaceChanges, agentRuntime, subscriptionDisposals } = setup();
+    let finishShutdown = (): void => {};
+    const shutdown = new Promise<void>((resolve) => { finishShutdown = resolve; });
+    const phases: string[] = [];
+    const IShutdown = createDecorator<AsyncShutdown>('runtimeBindingTestShutdown');
+    class AsyncShutdown {
+      async dispose(): Promise<void> {
+        phases.push('draining');
+        await shutdown;
+        phases.push('drained');
+      }
+    }
+    ix.set(IShutdown, new SyncDescriptor(AsyncShutdown));
+    ix.get(IShutdown);
+    ix.onWillDispose(() => phases.push('closing'));
+    const refresh = vi.fn();
+    agentRuntime.onDidChange(() => ix.invokeFunction(refresh));
+    const invoke = vi.spyOn(ix, 'invokeFunction');
+
+    local.setStatus('disconnected');
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    invoke.mockClear();
+
+    try {
+      ix.dispose();
+      expect(phases).toEqual(['closing', 'draining']);
+      await localRegistration.remove();
+      binding.switch('remote');
+      workspaceChanges.fire({ workspaceId: 'workspace' });
+      expect(invoke).not.toHaveBeenCalled();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(workspaceChanges.listenerCount).toBe(0);
+      for (const dispose of subscriptionDisposals) expect(dispose).toHaveBeenCalledTimes(1);
+      ix.dispose();
+      expect(phases).toEqual(['closing', 'draining']);
+    } finally {
+      finishShutdown();
+      await shutdown;
+    }
+    expect(phases).toEqual(['closing', 'draining', 'drained']);
   });
 });

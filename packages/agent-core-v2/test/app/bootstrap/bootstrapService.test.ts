@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { resolve } from 'node:path';
+import { join } from 'pathe';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { LifecycleScope } from '#/app/scopes';
@@ -36,11 +37,12 @@ describe('BootstrapService (scoped)', () => {
       bootstrapSeed({ homeDir: '/tmp/kimi-home', clientIdentity: stubClientIdentity }),
     );
     const svc = host.app.accessor.get(IBootstrapService);
-    expect(svc.homeDir).toBe('/tmp/kimi-home');
-    expect(svc.configPath).toBe('/tmp/kimi-home/config.toml');
+    const homeDir = resolve('/tmp/kimi-home');
+    expect(svc.homeDir).toBe(homeDir);
+    expect(svc.configPath).toBe(join(homeDir, 'config.toml'));
     expect(svc.configReadOnly).toBe(false);
-    expect(svc.userAgentProfileHomeDir).toBe('/tmp/kimi-home');
-    expect(svc.modelAccountHomeDir).toBe('/tmp/kimi-home');
+    expect(svc.userAgentProfileHomeDir).toBe(homeDir);
+    expect(svc.modelAccountHomeDir).toBe(homeDir);
     expect(svc.scope('sessions')).toBe('sessions');
     host.dispose();
   });
@@ -66,21 +68,21 @@ describe('BootstrapService (scoped)', () => {
 });
 
 describe('resolveBootstrapOptions', () => {
-  it('prefers explicit homeDir over KIMI_CODE_HOME over osHomeDir', () => {
+  it('prefers explicit homeDir over KIKI_HOME over osHomeDir', () => {
     expect(
       resolveBootstrapOptions({ homeDir: '/a', osHomeDir: '/b', env: {}, clientIdentity: stubClientIdentity })
         .homeDir,
-    ).toBe('/a');
+    ).toBe(resolve('/a'));
     expect(
       resolveBootstrapOptions({
         osHomeDir: '/b',
-        env: { KIMI_CODE_HOME: '/c' },
+        env: { KIKI_HOME: '/c' },
         clientIdentity: stubClientIdentity,
       }).homeDir,
-    ).toBe('/c');
+    ).toBe(resolve('/c'));
     expect(
       resolveBootstrapOptions({ osHomeDir: '/b', env: {}, clientIdentity: stubClientIdentity }).homeDir,
-    ).toBe('/b/.kimi-code');
+    ).toBe(resolve('/b', '.kiki'));
   });
 
   it('passes through an explicit clientIdentity', () => {
@@ -100,7 +102,7 @@ describe('resolveBootstrapOptions', () => {
       clientIdentity: stubClientIdentity,
     });
     expect(options).toMatchObject({
-      homeDir: '/runtime',
+      homeDir: resolve('/runtime'),
       configPath: '/active/config.toml',
       configReadOnly: true,
       userAgentProfileHomeDir: '/active',

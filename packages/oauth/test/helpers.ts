@@ -66,7 +66,7 @@ export async function spawnInlineWorkers(
     const child = spawn(process.execPath, [tsxCli, scriptPath, String(id)], {
       env: {
         ...process.env,
-        KIMI_CODE_HOME: opts.shareDir,
+        KIKI_HOME: opts.shareDir,
         KIMI_WORKER_ID: String(id),
         ...opts.env,
       },

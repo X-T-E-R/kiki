@@ -1,3 +1,4 @@
+export { resolveKikiHome, migrateLegacyKikiConfiguration, migrateLegacyKikiProject, KIKI_CONFIG_MIGRATION_MARKER, type HomeMigrationResult } from './home';
 export {
   DeviceCodeExpiredError,
   DeviceCodeTimeoutError,

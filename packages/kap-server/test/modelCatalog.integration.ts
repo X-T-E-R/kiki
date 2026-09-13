@@ -65,15 +65,15 @@ const CATALOG_TOML = [
   '',
 ].join('\n');
 
-describe('server-v2 /api/v1 model/provider catalog', () => {
+describe('server-v2 /api model/provider catalog', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-model-catalog-'));
-    process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START'] = '0';
-    process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
+    process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'] = '0';
+    process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
   });
 
   afterEach(async () => {
@@ -85,8 +85,8 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
-    delete process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START'];
-    delete process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
+    delete process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'];
+    delete process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
   });
 
   async function boot(toml?: string, seeds?: ScopeSeed): Promise<void> {
@@ -221,7 +221,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
 
   it('lists configured models as selectable aliases', async () => {
     await boot(CATALOG_TOML);
-    const { status, body } = await getJson<{ items: unknown[] }>('/api/v1/models');
+    const { status, body } = await getJson<{ items: unknown[] }>('/api/models');
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(body.data.items).toEqual([
@@ -260,7 +260,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
     ] as unknown as ScopeSeed;
     await boot(CATALOG_TOML, seeds);
 
-    const { status, body } = await getJson<{ items: unknown[] }>('/api/v1/models');
+    const { status, body } = await getJson<{ items: unknown[] }>('/api/models');
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(body.data.items).toEqual([]);
@@ -269,7 +269,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
 
   it('lists providers and returns a single provider by id', async () => {
     await boot(CATALOG_TOML);
-    const list = await getJson<{ items: unknown[] }>('/api/v1/providers');
+    const list = await getJson<{ items: unknown[] }>('/api/providers');
     expect(list.body.code).toBe(0);
     expect(list.body.data.items).toEqual([
       {
@@ -291,7 +291,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       },
     ]);
 
-    const single = await getJson<unknown>('/api/v1/providers/kimi');
+    const single = await getJson<unknown>('/api/providers/kimi');
     expect(single.body.code).toBe(0);
     expect(single.body.data).toEqual({
       id: 'kimi',
@@ -305,14 +305,14 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       api_key: 'sk-test',
     });
 
-    const noKey = await getJson<Record<string, unknown>>('/api/v1/providers/openai');
+    const noKey = await getJson<Record<string, unknown>>('/api/providers/openai');
     expect(noKey.body.code).toBe(0);
     expect(noKey.body.data).not.toHaveProperty('api_key');
   });
 
   it('sets the global default model and reflects it in /auth', async () => {
     await boot(CATALOG_TOML);
-    const { body } = await postJson<unknown>('/api/v1/models/turbo:set_default', {});
+    const { body } = await postJson<unknown>('/api/models/turbo:set_default', {});
     expect(body.code).toBe(0);
     expect(body.data).toEqual({
       default_model: 'turbo',
@@ -324,17 +324,17 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       },
     });
 
-    const auth = await getJson<{ default_model: string | null }>('/api/v1/auth');
+    const auth = await getJson<{ default_model: string | null }>('/api/auth');
     expect(auth.body.code).toBe(0);
     expect(auth.body.data.default_model).toBe('turbo');
   });
 
   it('maps unknown provider and model ids to catalog not-found codes', async () => {
     await boot(CATALOG_TOML);
-    const provider = await getJson<unknown>('/api/v1/providers/missing');
+    const provider = await getJson<unknown>('/api/providers/missing');
     expect(provider.body.code).toBe(40412);
 
-    const model = await postJson<unknown>('/api/v1/models/missing:set_default', {});
+    const model = await postJson<unknown>('/api/models/missing:set_default', {});
     expect(model.body.code).toBe(40413);
   });
 
@@ -344,7 +344,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       changed: unknown[];
       unchanged: unknown[];
       failed: unknown[];
-    }>('/api/v1/providers:refresh_oauth', {});
+    }>('/api/providers:refresh_oauth', {});
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(body.data).toEqual({ changed: [], unchanged: [], failed: [] });
@@ -356,7 +356,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       changed: unknown[];
       unchanged: unknown[];
       failed: unknown[];
-    }>('/api/v1/providers:refresh', {});
+    }>('/api/providers:refresh', {});
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(body.data).toEqual({ changed: [], unchanged: [], failed: [] });
@@ -435,7 +435,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       changed: unknown[];
       unchanged: unknown[];
       failed: unknown[];
-    }>('/api/v1/providers:refresh_oauth', {});
+    }>('/api/providers:refresh_oauth', {});
 
     expect(status).toBe(200);
     expect(body.code).toBe(0);
@@ -460,7 +460,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
     const seeds = [[IProviderDiscoveryService, discoveryStub(refreshProviderModels)]] as unknown as ScopeSeed;
     await boot(CATALOG_TOML, seeds);
 
-    const { status, body } = await postJson('/api/v1/providers:refresh', {});
+    const { status, body } = await postJson('/api/providers:refresh', {});
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(refreshProviderModels).toHaveBeenCalledWith({ scope: 'all' });
@@ -475,7 +475,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
     const seeds = [[IProviderDiscoveryService, discoveryStub(refreshProviderModels)]] as unknown as ScopeSeed;
     await boot(CATALOG_TOML, seeds);
 
-    const { status, body } = await postJson('/api/v1/providers/managed%3Akimi-code:refresh', {});
+    const { status, body } = await postJson('/api/providers/managed%3Akimi-code:refresh', {});
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(refreshProviderModels).toHaveBeenCalledWith({ providerId: 'managed:kimi-code' });
@@ -490,7 +490,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
     const seeds = [[IProviderDiscoveryService, discoveryStub(refreshProviderModels)]] as unknown as ScopeSeed;
     await boot(CATALOG_TOML, seeds);
 
-    const { body } = await postJson('/api/v1/providers/foo:bogus', {});
+    const { body } = await postJson('/api/providers/foo:bogus', {});
     expect(body.code).toBe(40001);
     expect(refreshProviderModels).not.toHaveBeenCalled();
   });

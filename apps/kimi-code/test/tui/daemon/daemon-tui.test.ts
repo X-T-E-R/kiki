@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -392,7 +393,7 @@ describe('DaemonTUI commands', () => {
     } = driver();
     const openSession = vi.fn();
     internal.openSession = openSession;
-    const marketplacePath = resolve(process.cwd(), '../../plugins/marketplace.json');
+    const marketplacePath = fileURLToPath(new URL('../../../../../plugins/marketplace.json', import.meta.url));
 
     await internal.handleSlash('/compact keep decisions');
     await internal.handleSlash('/tasks stop task-1');
@@ -1231,8 +1232,8 @@ describe('DaemonTUI commands', () => {
     await internal.refreshSkillCommands('session-1');
     await internal.refreshAgentCommands();
 
-    expect(internal.skillCommands.get('skill:reviewskill')).toMatchObject({
-      commandName: 'skill:ReviewSkill',
+    expect(internal.skillCommands.get('reviewskill')).toMatchObject({
+      commandName: 'ReviewSkill',
       name: 'ReviewSkill',
     });
     expect(internal.agentProfileCommands.get('reviewer')).toBe('Reviewer');
@@ -1244,6 +1245,7 @@ describe('DaemonTUI commands', () => {
       'session-1',
       'ReviewSkill',
       'staged  \t changes',
+      undefined,
     );
     expect(controller.sendPrompt).toHaveBeenCalledWith({
       text: 'inspect  \t tests',
@@ -1254,6 +1256,29 @@ describe('DaemonTUI commands', () => {
       planMode: false,
       swarmMode: false,
     });
+  });
+
+  it('sends command attachments once and retains the failed command draft for retry', async () => {
+    const { tui, internal } = driver();
+    internal.client.listSkills.mockResolvedValue({ skills: [{
+      name: 'brainstorm', description: 'Discuss options', path: '/workspace/.kiki/commands/brainstorm.md',
+      source: 'project', prompt_command: true, argument_hint: '<topic>',
+    }] });
+    await internal.refreshSkillCommands('session-1');
+    const image = internal.imageAttachments.addImage(Buffer.from('image'), 'image/png', 2, 2, undefined, 'file-image');
+    const text = `/brainstorm menu ${image.placeholder}`;
+    internal.client.activateSkill.mockRejectedValueOnce(new Error('Command unavailable'));
+    tui.state.editor.onSubmit?.(text);
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('Command unavailable', 'error'));
+    expect(tui.state.editor.getText()).toBe(text);
+    expect(internal.imageAttachments.get(image.id)).toBeDefined();
+    internal.client.activateSkill.mockResolvedValueOnce({ activated: true, skill_name: 'brainstorm' });
+    await internal.handleSlash(text);
+    expect(internal.client.activateSkill).toHaveBeenLastCalledWith('session-1', 'brainstorm', 'menu ', [{
+      type: 'image', source: { kind: 'file', file_id: 'file-image' },
+    }]);
+    expect(internal.imageAttachments.get(image.id)).toBeUndefined();
+    expect(internal.client.setPlanMode).not.toHaveBeenCalled();
   });
 
   it('submits inline skills through the bundled prompt contract', async () => {

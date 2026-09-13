@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 
 import { parseDaemonFileUrl } from '@kiki/node-sdk';
 
-import { KIMI_CODE_HOME_ENV } from '#/constant/app';
+import { KIKI_HOME_ENV } from '#/constant/app';
 import { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 import {
   extractMediaAttachments,
@@ -37,12 +37,12 @@ function storeWith(
 /** Point `getCacheDir()` at a fresh temp home for the duration of a test. */
 function setupTempCache(): { cleanup: () => void } {
   const home = mkdtempSync(join(tmpdir(), 'kimi-home-'));
-  const prev = process.env[KIMI_CODE_HOME_ENV];
-  process.env[KIMI_CODE_HOME_ENV] = home;
+  const prev = process.env[KIKI_HOME_ENV];
+  process.env[KIKI_HOME_ENV] = home;
   return {
     cleanup: () => {
-      if (prev === undefined) delete process.env[KIMI_CODE_HOME_ENV];
-      else process.env[KIMI_CODE_HOME_ENV] = prev;
+      if (prev === undefined) delete process.env[KIKI_HOME_ENV];
+      else process.env[KIKI_HOME_ENV] = prev;
       rmSync(home, { recursive: true, force: true });
     },
   };

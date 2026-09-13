@@ -18,6 +18,8 @@ class FakeChannel implements KlientChannel {
     scope: ScopeRef;
     source: EventSourceRef;
     dispose: ReturnType<typeof vi.fn>;
+    onReady?: () => void;
+    onError?: (error: Error) => void;
   }> = [];
   result: unknown;
   /** Keyed `${service}.${method}` result overrides. */
@@ -36,14 +38,20 @@ class FakeChannel implements KlientChannel {
     // stub — streaming is not exercised in facade tests
   }
 
-  listen(scope: ScopeRef, source: EventSourceRef, handler: (data: unknown) => void): IDisposable {
+  listen(
+    scope: ScopeRef,
+    source: EventSourceRef,
+    handler: (data: unknown) => void,
+    onError?: (error: Error) => void,
+    onReady?: () => void,
+  ): IDisposable {
     const id = this.nextSub;
     this.nextSub += 1;
     this.handlers.set(id, handler);
     const dispose = vi.fn(() => {
       this.handlers.delete(id);
     });
-    this.subscriptions.push({ scope, source, dispose });
+    this.subscriptions.push({ scope, source, dispose, onError, onReady });
     return { dispose };
   }
 
@@ -66,6 +74,44 @@ const SUMMARY = {
 };
 
 describe('facade routing', () => {
+  it.each([
+    { pendingInteraction: 'none', busy: false, expected: 'idle' },
+    { pendingInteraction: 'none', busy: true, expected: 'running' },
+    { pendingInteraction: 'approval', busy: true, expected: 'awaiting_approval' },
+    { pendingInteraction: 'question', busy: true, expected: 'awaiting_question' },
+    { pendingInteraction: 'approval', busy: false, expected: 'awaiting_approval' },
+    { pendingInteraction: 'question', busy: false, expected: 'awaiting_question' },
+  ])('maps one session activity snapshot to $expected ($pendingInteraction, $busy)', async ({
+    pendingInteraction, busy, expected,
+  }) => {
+    const channel = new FakeChannel();
+    channel.result = { pendingInteraction, busy, mainTurnActive: false };
+    const klient = createKlientFromChannel(channel);
+
+    await expect(klient.session('s1').status()).resolves.toBe(expected);
+    expect(channel.calls).toEqual([
+      { scope: { sessionId: 's1' }, service: 'sessionActivityView', method: 'state', args: [] },
+    ]);
+  });
+
+  it('does not report idle when the session activity request fails', async () => {
+    const channel = new FakeChannel();
+    const failure = new Error('transport disconnected');
+    vi.spyOn(channel, 'call').mockRejectedValue(failure);
+    const klient = createKlientFromChannel(channel);
+
+    await expect(klient.session('s1').status()).rejects.toBe(failure);
+    expect(channel.call).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects malformed session activity instead of deriving an idle result', async () => {
+    const channel = new FakeChannel();
+    channel.result = { busy: false, mainTurnActive: false, pendingInteraction: 'unknown' };
+    const klient = createKlientFromChannel(channel);
+
+    await expect(klient.session('s1').status()).rejects.toBeInstanceOf(KlientValidationError);
+  });
+
   it('reshapes single-object params into positional wire args', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
@@ -437,6 +483,14 @@ describe('session skills routing', () => {
 });
 
 describe('agent mcp / compaction routing', () => {
+  it('cancels compaction through the agent-scoped contract', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    await expect(klient.session('s1').agent('child').cancelCompaction()).resolves.toBeUndefined();
+    expect(channel.calls).toEqual([
+      { scope: { sessionId: 's1', agentId: 'child' }, service: 'agentFullCompactionService', method: 'cancel', args: [] },
+    ]);
+  });
   it('getMcpServers returns the live snapshot with the agent scope', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
@@ -478,6 +532,126 @@ describe('agent mcp / compaction routing', () => {
       method: 'begin',
       args: [{ source: 'manual', instruction: 'keep the plan' }],
     });
+  });
+});
+
+describe('agent domain routing', () => {
+  it('routes context, undo, plugin, swarm, task, MCP, and status reads through contracts', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('child');
+    const scope = { sessionId: 's1', agentId: 'child' };
+    channel.results.set('agentLoopService.status', {
+      state: 'idle',
+      pendingTurnIds: [],
+      hasPendingRequests: false,
+    });
+    channel.results.set('agentProfileService.getModelCapabilities', {
+      image_in: false,
+      video_in: false,
+      audio_in: false,
+      thinking: false,
+      tool_use: true,
+      max_context_tokens: 1000,
+    });
+    channel.results.set('agentProfileService.getAgentsMdWarning', 'warning');
+    channel.results.set('agentPermissionModeService.mode', 'manual');
+    channel.results.set('agentSwarmService.isActive', true);
+    channel.results.set('agentMcpService.list', []);
+    channel.results.set('agentMcpService.initialLoadDurationMs', 3);
+    channel.results.set('agentConversationUndoService.undo', 1);
+    channel.results.set('agentTaskService.detach', undefined);
+    channel.results.set('agentFullCompactionService.isCompacting', false);
+
+    await agent.activatePluginCommand({ pluginId: 'plugin', commandName: 'command', args: 'arg' });
+    await agent.refreshPluginSessionStart();
+    await expect(agent.getLoopStatus()).resolves.toMatchObject({ state: 'idle' });
+    await expect(agent.getModelCapabilities()).resolves.toMatchObject({ max_context_tokens: 1000 });
+    await expect(agent.getAgentsMdWarning()).resolves.toBe('warning');
+    await agent.appendContext({ role: 'user', content: [], toolCalls: [] });
+    await agent.clearContext();
+    await expect(agent.undo(1)).resolves.toBe(1);
+    await agent.enterSwarm('manual');
+    await agent.exitSwarm();
+    await expect(agent.getSwarmMode()).resolves.toBe(true);
+    await agent.reconcileContextWhenIdle('swarm_mode');
+    await agent.stopTaskWithReason({ taskId: 'task-1' });
+    await expect(agent.detachTask('task-1')).resolves.toBeUndefined();
+    await agent.waitForMcpInitialLoad();
+    await expect(agent.getMcpStartupDuration()).resolves.toBe(3);
+    await agent.reconnectMcpServer('server');
+    await agent.connectMcpServer({
+      name: 'server',
+      config: { transport: 'stdio', command: 'node' },
+    });
+    await expect(agent.isCompacting()).resolves.toBe(false);
+
+    expect(channel.calls).toEqual([
+      { scope, service: 'agentPluginCommandService', method: 'activate', args: [{ pluginId: 'plugin', commandName: 'command', args: 'arg' }] },
+      { scope, service: 'agentPluginService', method: 'refreshSessionStart', args: [] },
+      { scope, service: 'agentLoopService', method: 'status', args: [] },
+      { scope, service: 'agentProfileService', method: 'getModelCapabilities', args: [] },
+      { scope, service: 'agentProfileService', method: 'getAgentsMdWarning', args: [] },
+      { scope, service: 'agentContextMemoryService', method: 'append', args: [{ role: 'user', content: [], toolCalls: [] }] },
+      { scope, service: 'agentContextMemoryService', method: 'clear', args: [] },
+      { scope, service: 'agentConversationUndoService', method: 'undo', args: [1] },
+      { scope, service: 'agentSwarmService', method: 'enter', args: ['manual'] },
+      { scope, service: 'agentSwarmService', method: 'exit', args: [] },
+      { scope, service: 'agentSwarmService', method: 'isActive', args: [] },
+      { scope, service: 'agentContextInjectorService', method: 'reconcileWhenIdle', args: ['swarm_mode'] },
+      { scope, service: 'agentTaskService', method: 'stop', args: ['task-1'] },
+      { scope, service: 'agentTaskService', method: 'detach', args: ['task-1'] },
+      { scope, service: 'agentMcpService', method: 'waitForInitialLoad', args: [] },
+      { scope, service: 'agentMcpService', method: 'initialLoadDurationMs', args: [] },
+      { scope, service: 'agentMcpService', method: 'reconnect', args: ['server'] },
+      { scope, service: 'agentMcpService', method: 'connect', args: ['server', { transport: 'stdio', command: 'node' }] },
+      { scope, service: 'agentFullCompactionService', method: 'isCompacting', args: [] },
+    ]);
+  });
+
+  it('keeps the convenience stopTask user reason distinct from the explicit stop path', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('main');
+
+    await agent.stopTask({ taskId: 'user-task' });
+    await agent.stopTaskWithReason({ taskId: 'rpc-task' });
+
+    expect(channel.calls).toEqual([
+      { scope: { sessionId: 's1', agentId: 'main' }, service: 'agentTaskService', method: 'stopByUser', args: ['user-task'] },
+      { scope: { sessionId: 's1', agentId: 'main' }, service: 'agentTaskService', method: 'stop', args: ['rpc-task'] },
+    ]);
+  });
+});
+
+describe('session domain routing', () => {
+  it('routes todos, init, btw, and cron through their session contracts', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const session = klient.session('s1');
+    const todos = [{ title: 'child task', status: 'in_progress' as const }];
+    channel.results.set('sessionTodoService.getTodos', todos);
+    channel.results.set('sessionBtwService.start', 'btw-child');
+    channel.results.set('sessionCronService.list', [{ id: 'cron-1', cron: '* * * * *', prompt: 'tick', createdAt: 1 }]);
+    channel.results.set('sessionCronService.getNextFireForTask', 42);
+
+    await expect(session.todos.get('child')).resolves.toEqual(todos);
+    await expect(session.todos.get()).resolves.toEqual(todos);
+    await session.init.generateAgentsMd();
+    await session.init.cancelInit();
+    await expect(session.btw.start()).resolves.toBe('btw-child');
+    await expect(session.cron.list()).resolves.toEqual([{ id: 'cron-1', cron: '* * * * *', prompt: 'tick', createdAt: 1 }]);
+    await expect(session.cron.nextFireAt('cron-1')).resolves.toBe(42);
+
+    expect(channel.calls).toEqual([
+      { scope: { sessionId: 's1' }, service: 'sessionTodoService', method: 'getTodos', args: ['child'] },
+      { scope: { sessionId: 's1' }, service: 'sessionTodoService', method: 'getTodos', args: [] },
+      { scope: { sessionId: 's1' }, service: 'sessionInitService', method: 'generateAgentsMd', args: [] },
+      { scope: { sessionId: 's1' }, service: 'sessionInitService', method: 'cancelInit', args: [] },
+      { scope: { sessionId: 's1' }, service: 'sessionBtwService', method: 'start', args: [] },
+      { scope: { sessionId: 's1' }, service: 'sessionCronService', method: 'list', args: [] },
+      { scope: { sessionId: 's1' }, service: 'sessionCronService', method: 'getNextFireForTask', args: ['cron-1'] },
+    ]);
   });
 });
 
@@ -584,6 +758,177 @@ describe('contract validation', () => {
 });
 
 describe('event hub', () => {
+  it('waits for shared source attachment before submitting a fast prompt', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('main');
+    const seen: string[] = [];
+    const delta = agent.events.on('assistant.delta', (event) => seen.push(event.delta));
+    const ended = agent.events.on('turn.ended', () => seen.push('ended'));
+    let submitted = false;
+    const run = Promise.all([delta.ready, ended.ready]).then(async () => {
+      submitted = true;
+      channel.emit(0, { type: 'assistant.delta', turnId: 0, delta: 'first token' });
+      channel.emit(0, { type: 'turn.ended', turnId: 0, reason: 'completed' });
+      channel.result = { promptId: 'fast', turnId: 0, state: 'completed', result: { type: 'completed', steps: 1, truncated: false } };
+      return agent.prompt({ input: [{ type: 'text', text: 'hello' }] }, { waitFor: 'terminal' });
+    });
+    await tick();
+    expect(submitted).toBe(false);
+    expect(channel.subscriptions).toHaveLength(1);
+    channel.subscriptions[0]!.onReady!();
+    expect(await run).toMatchObject({ state: 'completed', turnId: 0 });
+    expect(channel.calls[0]!.method).toBe('submitAndWait');
+    expect(seen).toEqual(['first token', 'ended']);
+    const later = agent.events.on('assistant.delta', () => {});
+    await later.ready;
+    delta.dispose(); ended.dispose(); later.dispose();
+    expect(channel.subscriptions[0]!.dispose).toHaveBeenCalledOnce();
+  });
+
+  it.each(['dispose', 'close', 'error'] as const)('rejects attachment when %s happens before readiness', async (action) => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const sub = klient.session('s1').agent('main').events.on('assistant.delta', () => {});
+    const rejected = expect(sub.ready).rejects.toThrow();
+    if (action === 'dispose') sub.dispose();
+    else if (action === 'close') await klient.close();
+    else channel.subscriptions[0]!.onError!(new Error('attachment failed'));
+    await rejected;
+    sub.dispose();
+  });
+
+  it('rejects a synchronous source attachment error', async () => {
+    const channel = new FakeChannel();
+    const listen = channel.listen.bind(channel);
+    vi.spyOn(channel, 'listen').mockImplementation((scope, source, handler, onError, onReady) => {
+      const subscription = listen(scope, source, handler, onError, onReady);
+      onError?.(new Error('synchronous attachment failure'));
+      return subscription;
+    });
+    const klient = createKlientFromChannel(channel);
+    const sub = klient.session('s1').agent('main').events.on('assistant.delta', () => {});
+    await expect(sub.ready).rejects.toThrow('synchronous attachment failure');
+    sub.dispose();
+  });
+
+  it('requires a fresh attachment for a listener added during disconnection', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const events = klient.session('s1').agent('main').events;
+    const first = events.on('assistant.delta', () => {});
+    channel.subscriptions[0]!.onReady!();
+    await first.ready;
+    channel.subscriptions[0]!.onError!(new Error('disconnected'));
+    const second = events.on('turn.ended', () => {});
+    let ready = false;
+    const attached = second.ready.then(() => { ready = true; });
+    await tick();
+    expect(ready).toBe(false);
+    channel.subscriptions[0]!.onReady!();
+    await attached;
+    first.dispose(); second.dispose();
+  });
+
+  it('observes only after every source ack and discards initial-read races and late results', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const reads: Array<{ signal: AbortSignal; resolve: (value: number) => void }> = [];
+    const read = vi.fn((signal: AbortSignal) => new Promise<number>((resolve) => {
+      reads.push({ signal, resolve });
+    }));
+    const seen: number[] = [];
+    const observation = klient.events.observe({
+      events: ['config.changed', 'kosong.providers.changed', 'config.changed'], read,
+    }, (value) => seen.push(value));
+    expect(channel.subscriptions).toHaveLength(2);
+    channel.subscriptions[0]?.onReady?.();
+    await tick();
+    expect(read).not.toHaveBeenCalled();
+    channel.subscriptions[1]?.onReady?.();
+    await tick();
+    expect(read).toHaveBeenCalledTimes(1);
+    channel.emit(0, {});
+    await tick();
+    expect(reads[0]?.signal.aborted).toBe(true);
+    reads[1]?.resolve(2);
+    await tick();
+    reads[0]?.resolve(1);
+    await tick();
+    expect(seen).toEqual([2]);
+    channel.emit(1, {});
+    await tick();
+    observation.dispose();
+    expect(reads[2]?.signal.aborted).toBe(true);
+    reads[2]?.resolve(3);
+    await tick();
+    expect(seen).toEqual([2]);
+    expect(channel.subscriptions.every((sub) => sub.dispose.mock.calls.length === 1)).toBe(true);
+    await klient.close();
+  });
+
+  it('invalidates on disconnect, waits for restored ack and cancels on hub close', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const reads: Array<{ signal: AbortSignal; resolve: (value: number) => void }> = [];
+    const seen: number[] = [];
+    const errors: Error[] = [];
+    klient.events.onError((error) => errors.push(error));
+    klient.events.observe({ events: ['config.changed'], read: (signal) => new Promise<number>((resolve) => {
+      reads.push({ signal, resolve });
+    }) }, (value) => seen.push(value));
+    const source = channel.subscriptions[0]!;
+    source.onReady?.();
+    await tick();
+    source.onError?.(new Error('disconnected'));
+    reads[0]?.resolve(1);
+    await tick();
+    expect(seen).toEqual([]);
+    expect(reads).toHaveLength(1);
+    source.onReady?.();
+    await tick();
+    source.onError?.(new Error('disconnected again'));
+    source.onReady?.();
+    await tick();
+    reads[2]?.resolve(3);
+    reads[1]?.resolve(2);
+    await tick();
+    expect(seen).toEqual([3]);
+    expect(errors).toHaveLength(2);
+    channel.emit(0, {});
+    await tick();
+    await klient.close();
+    expect(reads[3]?.signal.aborted).toBe(true);
+    reads[3]?.resolve(4);
+    source.onReady?.();
+    await tick();
+    expect(seen).toEqual([3]);
+    expect(reads).toHaveLength(4);
+  });
+
+  it('reports failed readers and failed subscriptions without publishing an idle snapshot', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const errors: Error[] = [];
+    const listener = vi.fn();
+    klient.events.onError((error) => errors.push(error));
+    const read = vi.fn(() => Promise.reject(new Error('unsupported state GET')));
+    klient.events.observe({ events: ['config.changed'], read }, listener);
+    channel.subscriptions[0]?.onReady?.();
+    await tick();
+    expect(errors[0]?.message).toBe('unsupported state GET');
+    expect(channel.subscriptions[0]?.dispose).toHaveBeenCalledTimes(1);
+    expect(listener).not.toHaveBeenCalled();
+    const blockedRead = vi.fn(() => Promise.resolve('idle'));
+    klient.events.observe({ events: ['config.changed'], read: blockedRead }, listener);
+    channel.subscriptions[1]?.onError?.(new Error('unauthorized'));
+    await tick();
+    expect(blockedRead).not.toHaveBeenCalled();
+    expect(errors[1]?.message).toBe('unauthorized');
+    expect(() => klient.events.observe({ events: [], read }, listener)).toThrow('at least one event');
+    await klient.close();
+  });
+
   it('maps public names to emitter sources and validates payloads', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);

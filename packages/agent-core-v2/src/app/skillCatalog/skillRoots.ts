@@ -7,8 +7,9 @@ import type { SkillRoot, SkillSource } from './types';
 
 const USER_BRAND_DIRS = ['skills'] as const;
 const USER_GENERIC_DIRS = ['.agents/skills'] as const;
-const PROJECT_BRAND_DIRS = ['.kimi-code/skills'] as const;
+const PROJECT_BRAND_DIRS = ['.kiki/skills'] as const;
 const PROJECT_GENERIC_DIRS = ['.agents/skills'] as const;
+const PROJECT_COMMAND_DIRS = ['.kiki/commands'] as const;
 
 export interface SkillRootsOptions {
   readonly mergeAllAvailableSkills?: boolean;
@@ -23,6 +24,7 @@ export async function userRoots(
   const mergeAllAvailableSkills = options.mergeAllAvailableSkills ?? true;
   await pushBrandGroup(roots, USER_BRAND_DIRS, homeDir, 'user', mergeAllAvailableSkills);
   await pushFirstExisting(roots, USER_GENERIC_DIRS, osHomeDir, 'user');
+  await pushExistingRoot(roots, path.join(homeDir, 'commands'), 'user');
   return roots;
 }
 
@@ -35,6 +37,7 @@ export async function projectRoots(
   const mergeAllAvailableSkills = options.mergeAllAvailableSkills ?? true;
   await pushBrandGroup(roots, PROJECT_BRAND_DIRS, projectRoot, 'project', mergeAllAvailableSkills);
   await pushFirstExisting(roots, PROJECT_GENERIC_DIRS, projectRoot, 'project');
+  await pushBrandGroup(roots, PROJECT_COMMAND_DIRS, projectRoot, 'project', mergeAllAvailableSkills);
   return roots;
 }
 
@@ -49,7 +52,7 @@ export async function projectSkillRootCandidates(
   const projectRoot = await realpathOrSelf(await findProjectRoot(workDir));
   return {
     projectRoot,
-    candidates: [...PROJECT_BRAND_DIRS, ...PROJECT_GENERIC_DIRS].map((dir) =>
+    candidates: [...PROJECT_BRAND_DIRS, ...PROJECT_GENERIC_DIRS, ...PROJECT_COMMAND_DIRS].map((dir) =>
       path.join(projectRoot, dir),
     ),
   };
@@ -107,7 +110,9 @@ async function pushExistingRoot(
 ): Promise<boolean> {
   if (!(await isDir(dir))) return false;
   const resolved = await realpath(dir);
-  if (!out.some((root) => root.path === resolved)) out.push({ path: resolved, source });
+  if (!out.some((root) => root.path === resolved)) {
+    out.push({ path: resolved, source, scanMode: path.basename(dir) === 'commands' ? 'commands' : undefined });
+  }
   return true;
 }
 

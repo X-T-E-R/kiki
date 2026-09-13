@@ -6,7 +6,7 @@ const ASYNCAPI_VERSION = '3.1.0';
 const DEFAULT_TITLE = 'Kimi Code WebSocket API';
 const DEFAULT_VERSION = '0.1.0';
 const DEFAULT_SERVER_HOST = 'localhost';
-const DEFAULT_WS_PATH = '/api/v1/ws';
+const DEFAULT_WS_PATH = '/api/ws';
 const CHANNEL_ID = 'kimiCodeWebSocket';
 const ASYNCAPI_OPERATIONS: readonly WsOperationDefinition[] = wsOperations;
 

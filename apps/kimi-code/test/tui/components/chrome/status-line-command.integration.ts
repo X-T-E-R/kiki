@@ -1,8 +1,9 @@
+import * as childProcess from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { FooterComponent } from '#/tui/components/chrome/footer';
 import {
@@ -12,6 +13,9 @@ import {
   type StatusLinePayload,
 } from '#/tui/utils/status-line-command';
 import type { AppState } from '#/tui/types';
+
+// Spy through to real subprocesses; ESM's native namespace cannot be redefined.
+vi.mock('node:child_process', { spy: true });
 
 const baseState: AppState = {
   version: '1.2.3',
@@ -77,6 +81,7 @@ describe('runStatusLineCommand', () => {
     const line = await runStatusLineCommand(
       nodeCommand(`process.stdin.pipe(process.stdout)`),
       payload,
+      5_000, // IO contract, not a benchmark of a second Node runtime's startup.
     );
 
     expect(line).not.toBeNull();
@@ -87,11 +92,13 @@ describe('runStatusLineCommand', () => {
   });
 
   it('returns null on a nonzero exit', async () => {
-    expect(await runStatusLineCommand(nodeCommand(`process.exit(3)`), payload)).toBeNull();
+    const command = process.platform === 'win32' ? 'echo rejected & exit /b 3' : 'echo rejected; exit 3';
+    expect(await runStatusLineCommand(command, payload, 5_000)).toBeNull();
   });
 
   it('returns null on empty output', async () => {
-    expect(await runStatusLineCommand(nodeCommand(`0`), payload)).toBeNull();
+    const command = process.platform === 'win32' ? 'exit /b 0' : 'exit 0';
+    expect(await runStatusLineCommand(command, payload, 5_000)).toBeNull();
   });
 
   it('returns null when the command overruns the timeout', async () => {
@@ -104,6 +111,7 @@ describe('runStatusLineCommand', () => {
     const line = await runStatusLineCommand(
       nodeCommand(`process.stdout.write('first\\nsecond\\n')`),
       payload,
+      5_000, // IO contract, not a benchmark of a second Node runtime's startup.
     );
 
     expect(line).toBe('first');
@@ -114,6 +122,7 @@ describe('runStatusLineCommand', () => {
     const line = await runStatusLineCommand(
       nodeCommand(`process.stdout.write('a'.repeat(200000))`),
       payload,
+      5_000, // IO contract, not a benchmark of a second Node runtime's startup.
     );
 
     expect(line).not.toBeNull();
@@ -125,46 +134,65 @@ describe('FooterComponent status_line command', () => {
   it('swaps line 1 to the command output once it lands', async () => {
     const state: AppState = {
       ...baseState,
-      statusLine: {
-        items: null,
-        command: nodeCommand(`process.stdout.write('my-custom-status')`),
-      },
+      // Shell builtins exercise real subprocess IO without starting another Node runtime.
+      statusLine: { items: null, command: 'echo my-custom-status' },
     };
-    const footer = new FooterComponent(state);
-
-    // Before the first run completes the built-in layout is still shown.
-    expect(plain(footer.render(120)[0]!)).toContain('kimi-k2');
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    expect(plain(footer.render(120)[0]!)).toContain('my-custom-status');
+    const onRefresh = vi.fn();
+    const footer = new FooterComponent(state, onRefresh);
+    try {
+      expect(plain(footer.render(120)[0]!)).toContain('kimi-k2');
+      await vi.waitFor(() => expect(onRefresh).toHaveBeenCalled());
+      expect(plain(footer.render(120)[0]!)).toContain('my-custom-status');
+    } finally {
+      footer.setState(baseState); // Disposes the runner, including any queued refresh.
+      footer.dispose();
+    }
   });
 
   it('keeps the built-in layout when the command fails', async () => {
-    const state: AppState = {
+    const command = process.platform === 'win32' ? 'echo rejected & exit /b 1' : 'echo rejected; exit 1';
+    const footer = new FooterComponent({
       ...baseState,
-      statusLine: { items: null, command: nodeCommand(`process.exit(1)`) },
-    };
-    const footer = new FooterComponent(state);
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    expect(plain(footer.render(120)[0]!)).toContain('kimi-k2');
+      statusLine: { items: null, command },
+    });
+    // Observe the real child closing: rendering before execution proved only the initial fallback.
+    const spawn = vi.mocked(childProcess.spawn).mockClear();
+    try {
+      footer.render(120);
+      const child = spawn.mock.results[0]!.value as childProcess.ChildProcess;
+      const closed = vi.fn();
+      child.once('close', closed);
+      await vi.waitFor(() => expect(closed).toHaveBeenCalledWith(1, null));
+      const line = plain(footer.render(120)[0]!);
+      expect(line).toContain('kimi-k2');
+      expect(line).not.toContain('rejected');
+    } finally {
+      footer.setState(baseState);
+      footer.dispose();
+      spawn.mockRestore();
+    }
   });
 });
 
 describe('StatusLineCommandRunner', () => {
   it('caches the last good line and coalesces refreshes in the same interval', async () => {
-    const runner = new StatusLineCommandRunner(
-      nodeCommand(`process.stdout.write('x')`),
-      () => {},
-    );
+    const spawn = vi.mocked(childProcess.spawn).mockClear();
+    const onUpdate = vi.fn();
+    const runner = new StatusLineCommandRunner('echo x', onUpdate);
 
-    runner.maybeRefresh(payload);
-    runner.maybeRefresh(payload);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-
-    expect(runner.current()).toBe('x');
+    try {
+      expect(runner.current()).toBeNull();
+      runner.maybeRefresh(payload);
+      runner.maybeRefresh(payload);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+      expect(runner.current()).toBe('x');
+      expect(runner.current()).toBe('x');
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      runner.dispose();
+      spawn.mockRestore();
+    }
   });
 
   // POSIX shell 专属行为：这一例靠 `#!/bin/sh` 脚本自增计数器来观察节流补跑，
@@ -180,17 +208,18 @@ describe('StatusLineCommandRunner', () => {
         scriptFile,
         '#!/bin/sh\nn=$(cat "$1")\necho $((n+1)) > "$1"\nprintf "run-%s" "$n"\n',
       );
-      const runner = new StatusLineCommandRunner(`sh ${scriptFile} ${counterFile}`, () => {});
+      const runner = new StatusLineCommandRunner(`sh "${scriptFile}" "${counterFile}"`, () => {});
+      try {
+        runner.maybeRefresh(payload);
+        await vi.waitFor(() => expect(runner.current()).toBe('run-0'));
+        runner.maybeRefresh(payload); // throttled: must defer, not drop
+        expect(readFileSync(counterFile, 'utf-8').trim()).toBe('1');
 
-      runner.maybeRefresh(payload);
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      runner.maybeRefresh(payload); // throttled: must defer, not drop
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      expect(readFileSync(counterFile, 'utf-8').trim()).toBe('1');
-
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      expect(readFileSync(counterFile, 'utf-8').trim()).toBe('2');
-      runner.dispose();
+        await vi.waitFor(() => expect(runner.current()).toBe('run-1'), { timeout: 2_000 });
+        expect(readFileSync(counterFile, 'utf-8').trim()).toBe('2');
+      } finally {
+        runner.dispose();
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
@@ -199,22 +228,30 @@ describe('StatusLineCommandRunner', () => {
   it('recreates the runner when the command changes', async () => {
     const state: AppState = {
       ...baseState,
-      statusLine: { items: null, command: nodeCommand(`process.stdout.write('aaa')`) },
+      statusLine: { items: null, command: 'echo aaa' },
     };
-    const footer = new FooterComponent(state);
-    footer.render(120); // kicks the first run
-    await new Promise((resolve) => setTimeout(resolve, 450));
-    expect(plain(footer.render(120)[0]!)).toContain('aaa');
+    const onRefresh = vi.fn();
+    const footer = new FooterComponent(state, onRefresh);
+    try {
+      footer.render(120);
+      await vi.waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+      expect(plain(footer.render(120)[0]!)).toContain('aaa');
 
-    footer.setState({
-      ...state,
-      statusLine: { items: null, command: nodeCommand(`process.stdout.write('bbb')`) },
-    });
-    footer.render(120); // kicks the replacement run
-    await new Promise((resolve) => setTimeout(resolve, 450));
+      footer.setState({
+        ...state,
+        statusLine: { items: null, command: 'echo bbb' },
+      });
+      const pending = plain(footer.render(120)[0]!);
+      expect(pending).toContain('kimi-k2');
+      expect(pending).not.toContain('aaa');
+      await vi.waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(2));
 
-    const line1 = plain(footer.render(120)[0]!);
-    expect(line1).toContain('bbb');
-    expect(line1).not.toContain('aaa');
+      const line1 = plain(footer.render(120)[0]!);
+      expect(line1).toContain('bbb');
+      expect(line1).not.toContain('aaa');
+    } finally {
+      footer.setState(baseState);
+      footer.dispose();
+    }
   });
 });

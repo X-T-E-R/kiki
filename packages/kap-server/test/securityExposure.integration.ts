@@ -31,7 +31,7 @@ describe('server-v2 exposure hardening hooks', () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const res = await server.app.inject({
       method: 'GET',
-      url: '/api/v1/healthz',
+      url: '/api/healthz',
       headers: { host: 'evil.com' },
     });
     expect(res.statusCode).toBe(403);
@@ -41,7 +41,7 @@ describe('server-v2 exposure hardening hooks', () => {
 
   it('allows the default loopback Host header', async () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
-    const res = await server.app.inject({ method: 'GET', url: '/api/v1/healthz' });
+    const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
     expect(res.statusCode).toBe(200);
   });
 
@@ -49,7 +49,7 @@ describe('server-v2 exposure hardening hooks', () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const res = await server.app.inject({
       method: 'GET',
-      url: '/api/v1/healthz',
+      url: '/api/healthz',
       headers: { origin: 'http://localhost:80', host: 'localhost:80' },
     });
     expect(res.statusCode).toBe(200);
@@ -71,7 +71,7 @@ describe('server-v2 exposure hardening hooks', () => {
       logLevel: 'silent',
       insecureNoTls: true,
     });
-    const res = await server.app.inject({ method: 'GET', url: '/api/v1/healthz' });
+    const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.headers['referrer-policy']).toBe('no-referrer');
@@ -83,7 +83,7 @@ describe('server-v2 exposure hardening hooks', () => {
 
   it('does not set security headers on a loopback bind', async () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
-    const res = await server.app.inject({ method: 'GET', url: '/api/v1/healthz' });
+    const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['x-content-type-options']).toBeUndefined();
     expect(res.headers['referrer-policy']).toBeUndefined();
@@ -103,21 +103,21 @@ describe('server-v2 exposure hardening hooks', () => {
     const token = server.authTokenService.getToken();
     const shutdown = await server.app.inject({
       method: 'POST',
-      url: '/api/v1/shutdown',
+      url: '/api/shutdown',
       headers: { authorization: `Bearer ${token}` },
     });
     expect(shutdown.statusCode).toBe(404);
 
     const terminals = await server.app.inject({
       method: 'GET',
-      url: '/api/v1/sessions/missing/terminals',
+      url: '/api/sessions/missing/terminals',
       headers: { authorization: `Bearer ${token}` },
     });
     expect(terminals.statusCode).toBe(404);
 
     const meta = await server.app.inject({
       method: 'GET',
-      url: '/api/v1/meta',
+      url: '/api/meta',
       headers: { authorization: `Bearer ${token}` },
     });
     const capabilities = (meta.json() as { data: { capabilities: Record<string, unknown> } }).data
@@ -138,7 +138,7 @@ describe('server-v2 exposure hardening hooks', () => {
     expect(JSON.stringify(disabledDocument)).not.toContain('terminal_');
 
     const ws = new WebSocket(
-      `ws://127.0.0.1:${server.port}/api/v1/ws`,
+      `ws://127.0.0.1:${server.port}/api/ws`,
       [`kimi-code.bearer.${token}`],
     );
     const ack = await new Promise<Record<string, unknown>>((resolve, reject) => {

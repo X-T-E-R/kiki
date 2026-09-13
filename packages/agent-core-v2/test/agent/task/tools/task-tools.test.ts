@@ -494,7 +494,7 @@ describe('TaskOutputTool', () => {
     expect(output).toContain('output_path: /tmp/session/tasks/bash-persist1/output.log');
     expect(output).toContain('full_output_available: true');
     expect(output).toContain('full_output_tool: Read');
-    expect(output).toContain('full_output_hint:');
+    expect(output).not.toContain('full_output_hint:');
     expect(output).toContain('[output]\nSTDOUT-PAYLOAD-LINE');
   });
 
@@ -606,6 +606,26 @@ describe('TaskOutputTool', () => {
     expect(output).toContain('output_size_bytes: 0');
     expect(output).toContain('full_output_available: false');
     expect(output).toContain('[output]\n[no output available]');
+  });
+
+  it.each(['output', 'wait'] as const)('only adds retrieval guidance for an available truncated log via %s', async (kind) => {
+    for (const truncated of [false, true]) {
+      for (const fullOutputAvailable of [false, true]) {
+        const tasks = new FakeTaskService();
+        const taskId = tasks.add(processTask({ status: 'completed', exitCode: 0 }), outputSnapshot('tail', {
+          truncated,
+          fullOutputAvailable,
+          outputPath: fullOutputAvailable ? '/tmp/task/output.log' : undefined,
+        }));
+        const result = kind === 'output'
+          ? await executeTool(new TaskOutputTool(tasks), context('retrieval_hint', { task_id: taskId }))
+          : await executeTool(new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)), context('retrieval_hint', { task_id: taskId, timeout: 1 }));
+        const output = outputString(result);
+        expect(output.includes('full_output_hint:')).toBe(truncated && fullOutputAvailable);
+        expect(output).not.toContain('lines per page');
+        if (truncated && fullOutputAvailable) expect(output).toContain('Truncated tail; Read output_path for the full log.');
+      }
+    }
   });
 
   it('renders a truncation banner and tail preview when the snapshot is truncated', async () => {
@@ -956,10 +976,9 @@ describe('TaskWait tool', () => {
 
     expect(result.isError ?? false).toBe(false);
     expect(output).toContain('wait_status: timed_out');
-    expect(output).toContain('not an error');
-    expect(output).toContain('end the turn normally');
-    expect(output).toContain('when root is idle');
-    expect(output).toContain('subagent must handle its dependencies');
+    expect(output).toContain('The wait timed out, not the task.');
+    expect(output).toContain('still running');
+    expect(output).not.toContain('when root is idle');
     expect(output).not.toContain('Call TaskWait again to keep waiting');
     expect(output).toContain('[still_running]');
     expect(output).toContain('bash-running9');

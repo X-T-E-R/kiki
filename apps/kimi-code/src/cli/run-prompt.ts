@@ -1,4 +1,4 @@
-﻿import type { CLIOptions } from './options';
+import type { CLIOptions } from './options';
 
 /**
  * Await `promise`, but stop waiting after `timeoutMs`.
@@ -59,9 +59,8 @@ export interface PromptProcess {
 }
 
 /**
- * `kimi -p`. The whole print run belongs to the engine's native service
- * runtime; this entry point only defers the import so the engine's module
- * graph stays off the interactive startup path.
+ * `kiki -p`. Loads the shared-client print runner lazily to keep the
+ * in-process host's module graph off the interactive startup path.
  */
 export async function runPrompt(
   opts: CLIOptions,
@@ -76,7 +75,7 @@ export function requireConfiguredModel(...models: readonly (string | undefined)[
   const model = configuredModel(...models);
   if (model === undefined) {
     throw new Error(
-      'No model configured. Run `kimi` and use /login to sign in, then retry; or set default_model in config.toml.',
+      'No model configured. Run `kiki` and use /login to sign in, then retry; or set default_model in config.toml.',
     );
   }
   return model;

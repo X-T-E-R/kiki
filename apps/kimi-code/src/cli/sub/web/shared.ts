@@ -15,7 +15,7 @@ export const DEFAULT_SERVER_HOST = LOCAL_SERVER_HOST;
 export const DEFAULT_SERVER_PORT = 58627;
 export const DEFAULT_SERVER_ORIGIN = serverOrigin(DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT);
 
-/** Filename (under KIMI_CODE_HOME) of the persistent server bearer token. */
+/** Filename (under KIKI_HOME) of the persistent server bearer token. */
 export const SERVER_TOKEN_FILE = 'server.token';
 
 export const DEFAULT_LOG_LEVEL: ServerLogLevel = 'info';
@@ -38,7 +38,7 @@ export interface ParsedServerOptions {
   debugEndpoints: boolean;
   /** Allow a non-loopback bind without a TLS-terminating reverse proxy. */
   insecureNoTls: boolean;
-  /** Allow `POST /api/v1/shutdown` on a non-loopback bind. */
+  /** Allow `POST /api/shutdown` on a non-loopback bind. */
   allowRemoteShutdown: boolean;
   /** Disable bearer-token auth on every route (`--dangerous-bypass-auth`). */
   dangerousBypassAuth: boolean;
@@ -116,10 +116,10 @@ export function serverOrigin(host: string, port: number): string {
   return `http://${host}:${port}`;
 }
 
-/** Strip `/api/v1` and trailing slashes so user-supplied origins are uniform. */
+/** Strip an API prefix and trailing slashes so user-supplied origins are uniform. */
 export function normalizeServerOrigin(value: string): string {
   const url = new URL(value);
-  url.pathname = url.pathname.replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
+  url.pathname = url.pathname.replace(/\/api(?:\/v[12])?\/?$/, '').replace(/\/$/, '');
   url.search = '';
   url.hash = '';
   return url.toString().replace(/\/$/, '');
@@ -131,7 +131,7 @@ export function normalizeServerOrigin(value: string): string {
  * The server writes `<homeDir>/server.token` (0600) on first boot and reuses
  * it across restarts (ROADMAP M5.1); CLI commands that hit a gated REST route
  * read it back here and send it as `Authorization: Bearer <token>`. `homeDir`
- * is the CLI's own KIMI_CODE_HOME resolution (`getDataDir()`).
+ * is the CLI's own KIKI_HOME resolution (`getDataDir()`).
  *
  * Throws a clear error when the file is missing/unreadable — the usual cause
  * is a server that has never been started (no token file yet), or an older

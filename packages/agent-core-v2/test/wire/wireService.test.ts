@@ -189,25 +189,32 @@ describe('WireService appendRecord', () => {
     ]);
   });
 
-  it('reports a synchronous append failure through onUnexpectedError instead of throwing', () => {
+  it.each([false, true])('retains synchronous append failures without blocking later records (queued: %s)', async (queued) => {
     const expected = new Error('append exploded');
-    const failing = recordingWireLog([]);
-    failing.append = () => {
-      throw expected;
+    const records: WireRecord[] = [];
+    const failing = recordingWireLog(records);
+    const append = failing.append.bind(failing);
+    failing.append = (scope, key, record, options) => {
+      if ((record as WireRecord).type === 'wire.test.fail') throw expected;
+      append(scope, key, record, options);
     };
     const stub = wireOverLog(failing, 'failing');
 
     const unexpected: unknown[] = [];
     setUnexpectedErrorHandler((error) => unexpected.push(error));
     try {
-      stub.appendRecord({ type: 'wire.test.fail', time: 1 });
+      stub.appendRecord({ type: 'wire.test.fail', time: 1 }, queued ? async (record) => record : undefined);
+      stub.appendRecord({ type: 'wire.test.good', time: 2 });
+      await expect(stub.flush()).rejects.toBe(expected);
+      await expect(stub.flush()).rejects.toBe(expected);
       expect(unexpected).toEqual([expected]);
+      expect(records).toEqual([{ type: 'wire.test.good', time: 2 }]);
     } finally {
       resetUnexpectedErrorHandler();
     }
   });
 
-  it('reports a dehydrate failure and keeps the queue usable for later appends', async () => {
+  it('reports a dehydrate gap to every barrier while later appends remain usable', async () => {
     const expected = new Error('dehydrate exploded');
     const records: WireRecord[] = [];
     const stub = wireOverLog(recordingWireLog(records), 'dehydrate-fail');
@@ -219,10 +226,52 @@ describe('WireService appendRecord', () => {
         throw expected;
       });
       stub.appendRecord({ type: 'wire.test.good', time: 2 });
-      await stub.flush();
+      await Promise.all([
+        expect(stub.flush()).rejects.toBe(expected),
+        expect(stub.flush()).rejects.toBe(expected),
+      ]);
+      stub.appendRecord({ type: 'wire.test.later', time: 3 }, async (record) => record);
+      await expect(stub.flush()).rejects.toBe(expected);
+      await expect(stub.flush()).rejects.toBe(expected);
 
       expect(unexpected).toEqual([expected]);
-      expect(records).toEqual([{ type: 'wire.test.good', time: 2 }]);
+      expect(records).toEqual([
+        { type: 'wire.test.good', time: 2 },
+        { type: 'wire.test.later', time: 3 },
+      ]);
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
+
+  it('keeps asynchronous storage failures sticky until an explicit store recovery drains retained records', async () => {
+    const expected = new Error('disk full');
+    const append = storage.append.bind(storage);
+    let writes = 0;
+    storage.append = async () => {
+      writes++;
+      throw expected;
+    };
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      wire.appendRecord({ type: 'wire.test.first', time: 1 });
+      await expect(wire.flush()).rejects.toBe(expected);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unexpected).toContain(expected);
+      storage.append = append;
+      wire.appendRecord({ type: 'wire.test.second', time: 2 });
+      await expect(wire.flush()).rejects.toBe(expected);
+      await expect(wire.flush()).rejects.toBe(expected);
+      expect(writes).toBe(1);
+      expect(await storage.read(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY)).toBeUndefined();
+
+      await log.rewrite(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY, []);
+      await wire.flush();
+      expect(await readRecords()).toEqual([
+        { type: 'wire.test.first', time: 1 },
+        { type: 'wire.test.second', time: 2 },
+      ]);
     } finally {
       resetUnexpectedErrorHandler();
     }
@@ -656,6 +705,7 @@ describe('WireService corruption repair', () => {
     try {
       svc.appendRecord({ type: 'wire.test.doomed', time: 8 });
       await expect(svc.flush()).rejects.toThrow('Wire journal repair did not complete');
+      await expect(svc.flush()).rejects.toThrow('Wire journal repair did not complete');
 
       expect(await rawBytes()).toBe(raw);
       expect(unexpected).toHaveLength(1);
@@ -682,6 +732,32 @@ describe('WireService corruption repair', () => {
         },
       ]);
     } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
+
+  it.each([AGENT_WIRE_RECORD_KEY, BACKUP_KEY])('does not erase a discarded fact after repair recovers (%s)', async (failedKey) => {
+    const prefix = `${currentMetadata()}\n`;
+    await seedCorrupt(`${prefix}GARBAGE\n`);
+    const originalWrite = storage.write.bind(storage);
+    storage.write = async (scope, key, data, options) => {
+      if (key === failedKey) throw new Error('disk full');
+      return originalWrite(scope, key, data, options);
+    };
+    await collect(wire.readJournal());
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      wire.appendRecord({ type: 'wire.test.doomed', time: 1 });
+      await expect(wire.flush()).rejects.toThrow('Wire journal repair did not complete');
+      storage.write = originalWrite;
+      wire.appendRecord({ type: 'wire.test.recovered', time: 2 });
+      await expect(wire.flush()).rejects.toThrow('Wire journal repair did not complete');
+      await expect(wire.flush()).rejects.toThrow('Wire journal repair did not complete');
+      expect(await rawBytes()).toBe(`${prefix}${JSON.stringify({ type: 'wire.test.recovered', time: 2 })}\n`);
+      expect(unexpected).toHaveLength(1);
+    } finally {
+      storage.write = originalWrite;
       resetUnexpectedErrorHandler();
     }
   });
@@ -736,6 +812,31 @@ describe('WireService corruption repair', () => {
 });
 
 describe('WireService flush', () => {
+  it('flushes only its own scope and key', async () => {
+    const targetLog = recordingWireLog([]);
+    const targets: unknown[][] = [];
+    targetLog.flush = async (...target: [] | [string, string]) => { targets.push(target); };
+    const stub = wireOverLog(targetLog, 'targeted-flush');
+    await stub.flush();
+    expect(targets).toEqual([[testWireScope(SCOPE, 'targeted-flush'), AGENT_WIRE_RECORD_KEY]]);
+  });
+
+  it('drains accepted records to storage before rejecting a pre-store gap', async () => {
+    const expected = new Error('dehydrate exploded');
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      wire.appendRecord({ type: 'wire.test.bad', time: 1 }, async () => { throw expected; });
+      wire.appendRecord({ type: 'wire.test.good', time: 2 });
+      await expect(wire.flush()).rejects.toBe(expected);
+      const bytes = await storage.read(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY);
+      expect(new TextDecoder().decode(bytes)).toBe(`${JSON.stringify({ type: 'wire.test.good', time: 2 })}\n`);
+      expect(unexpected).toEqual([expected]);
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
+
   it('drains the dehydrate queue before resolving', async () => {
     const records: WireRecord[] = [];
     const stub = wireOverLog(recordingWireLog(records), 'flush');

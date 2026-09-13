@@ -34,7 +34,7 @@ import {
 } from './subagent';
 
 export const SUBAGENT_RELEASE_GRACE_MS = 30_000;
-export const SUBAGENT_RELEASE_GRACE_ENV = 'KIMI_CODE_SUBAGENT_RELEASE_GRACE_MS';
+export const SUBAGENT_RELEASE_GRACE_ENV = 'KIKI_SUBAGENT_RELEASE_GRACE_MS';
 
 export function resolveReleaseGraceMs(getEnv: (name: string) => string | undefined): number {
   const raw = getEnv(SUBAGENT_RELEASE_GRACE_ENV);

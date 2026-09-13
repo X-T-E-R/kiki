@@ -12,6 +12,8 @@ import {
   type TerminalProcess,
   type TerminalSpawnOptions,
 } from '@kiki/agent-core-v2';
+import { createKlient } from '@kiki/klient/http';
+import type { TerminalSignal } from '@kiki/klient';
 import { ErrorCode } from '../src/protocol/error-codes';
 import type { Terminal } from '@kiki/agent-core-v2/os/interface/terminal';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -179,7 +181,7 @@ function openTerminalConn(url: string, token: string): Promise<TerminalConn> {
   });
 }
 
-describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
+describe('server-v2 /api/sessions/{sid}/terminals', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let work: string | undefined;
@@ -231,7 +233,7 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
   });
 
   async function createSession(cwd: string): Promise<string> {
-    const res = await fetch(`${base}/api/v1/sessions`, {
+    const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd } }),
@@ -258,9 +260,53 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
     return (await res.json()) as Envelope<T>;
   }
 
+  it('multiplexes PTY replay and global events on the authenticated Klient socket without crossing sessions', async () => {
+    const wires: WebSocket[] = [];
+    class CountingWebSocket extends WebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        wires.push(this);
+      }
+    }
+    const klient = createKlient({ endpoint: base, token: server!.authTokenService.getToken(), WebSocket: CountingWebSocket as unknown as typeof globalThis.WebSocket });
+    const signals: TerminalSignal[] = [];
+    const off = klient.terminal.onTerminalSignal((signal) => signals.push(signal));
+    const subscription = klient.events.on('config.changed', () => undefined);
+    try {
+      await subscription.ready;
+      const sid = await createSession(work!);
+      const other = await createSession(work!);
+      const term = await klient.terminal.createTerminal(sid, { cols: 100, rows: 30 });
+      expect((await klient.terminal.listTerminals(sid)).items.map((item) => item.id)).toEqual([term.id]);
+      expect((await klient.terminal.getTerminal(sid, term.id)).cols).toBe(100);
+      await expect(klient.terminal.terminalAttach(other, term.id)).rejects.toThrow('terminal');
+      klient.terminal.terminalDetach(other, term.id);
+      processes[0]!.emitData('before attach');
+      await expect(klient.terminal.terminalAttach(sid, term.id)).resolves.toMatchObject({ replayed: 1 });
+      expect(wires).toHaveLength(1);
+      expect(signals.filter((signal) => signal.kind === 'output').map((signal) => signal.data)).toEqual(['before attach']);
+      klient.terminal.terminalInput(sid, term.id, 'echo hello\r');
+      klient.terminal.terminalResize(sid, term.id, 120, 40);
+      await vi.waitFor(() => expect(processes[0]!.writes).toEqual(['echo hello\r']));
+      await vi.waitFor(() => expect(processes[0]!.resizes).toContainEqual([120, 40]));
+      const disconnected = new Promise<void>((resolve) => wires[0]!.once('close', () => resolve()));
+      wires[0]!.terminate();
+      await disconnected;
+      processes[0]!.emitData('during blackout');
+      await vi.waitFor(() => expect(signals.filter((signal) => signal.kind === 'attached')).toHaveLength(2));
+      expect(wires).toHaveLength(2);
+      expect(signals.filter((signal) => signal.kind === 'output').map((signal) => signal.data)).toEqual(['before attach', 'during blackout']);
+      await klient.terminal.closeTerminal(sid, term.id);
+      await vi.waitFor(() => expect(signals.some((signal) => signal.kind === 'exit')).toBe(true));
+      expect(processes[0]!.killed).toBe(true);
+    } finally {
+      off(); subscription.dispose(); await klient.close();
+    }
+  });
+
   it('defaults terminal creation to the local runtime when runtime_id is omitted', async () => {
     const sid = await createSession(work as string);
-    const res = await fetch(`${base}/api/v1/sessions/${sid}/terminals`, {
+    const res = await fetch(`${base}/api/sessions/${sid}/terminals`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({}),
@@ -277,9 +323,9 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
       const sidA = await createSession(rootA);
       const sidB = await createSession(rootB);
 
-      const termA = (await post<Terminal>(`/api/v1/sessions/${sidA}/terminals`, { cols: 100, rows: 30 }))
+      const termA = (await post<Terminal>(`/api/sessions/${sidA}/terminals`, { cols: 100, rows: 30 }))
         .data;
-      const termB = (await post<Terminal>(`/api/v1/sessions/${sidB}/terminals`, {})).data;
+      const termB = (await post<Terminal>(`/api/sessions/${sidB}/terminals`, {})).data;
 
       expect(termA.session_id).toBe(sidA);
       expect(termA.cols).toBe(100);
@@ -288,8 +334,8 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
       expect(termB.session_id).toBe(sidB);
       expect(spawnOptions.map((o) => o.cwd)).toEqual([resolve(rootA), resolve(rootB)]);
 
-      const listA = (await get<{ items: Terminal[] }>(`/api/v1/sessions/${sidA}/terminals`)).data;
-      const listB = (await get<{ items: Terminal[] }>(`/api/v1/sessions/${sidB}/terminals`)).data;
+      const listA = (await get<{ items: Terminal[] }>(`/api/sessions/${sidA}/terminals`)).data;
+      const listB = (await get<{ items: Terminal[] }>(`/api/sessions/${sidB}/terminals`)).data;
       expect(listA.items.map((t) => t.id)).toEqual([termA.id]);
       expect(listB.items.map((t) => t.id)).toEqual([termB.id]);
     } finally {
@@ -300,50 +346,50 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
 
   it('resolves an explicit relative cwd against the session workspace', async () => {
     const sid = await createSession(work as string);
-    const term = (await post<Terminal>(`/api/v1/sessions/${sid}/terminals`, { cwd: 'sub' })).data;
+    const term = (await post<Terminal>(`/api/sessions/${sid}/terminals`, { cwd: 'sub' })).data;
     expect(term.cwd).toBe(resolve(work as string, 'sub'));
     expect(spawnOptions[0]?.cwd).toBe(resolve(work as string, 'sub'));
   });
 
   it('gets and closes a terminal by session id', async () => {
     const sid = await createSession(work as string);
-    const terminal = (await post<Terminal>(`/api/v1/sessions/${sid}/terminals`, {})).data;
+    const terminal = (await post<Terminal>(`/api/sessions/${sid}/terminals`, {})).data;
 
-    const got = (await get<Terminal>(`/api/v1/sessions/${sid}/terminals/${terminal.id}`)).data;
+    const got = (await get<Terminal>(`/api/sessions/${sid}/terminals/${terminal.id}`)).data;
     expect(got.id).toBe(terminal.id);
 
     const closed = await post<{ closed: true }>(
-      `/api/v1/sessions/${sid}/terminals/${terminal.id}:close`,
+      `/api/sessions/${sid}/terminals/${terminal.id}:close`,
       {},
     );
     expect(closed.code).toBe(0);
     expect(closed.data).toEqual({ closed: true });
     expect(processes[0]?.killed).toBe(true);
 
-    const after = (await get<Terminal>(`/api/v1/sessions/${sid}/terminals/${terminal.id}`)).data;
+    const after = (await get<Terminal>(`/api/sessions/${sid}/terminals/${terminal.id}`)).data;
     expect(after.status).toBe('exited');
   });
 
   it('maps terminal-not-found, cwd-escape and unknown-session to protocol codes', async () => {
     const sid = await createSession(work as string);
 
-    const missing = await get<unknown>(`/api/v1/sessions/${sid}/terminals/term_missing`);
+    const missing = await get<unknown>(`/api/sessions/${sid}/terminals/term_missing`);
     expect(missing.code).toBe(ErrorCode.TERMINAL_NOT_FOUND);
 
-    const escaping = await post<unknown>(`/api/v1/sessions/${sid}/terminals`, {
+    const escaping = await post<unknown>(`/api/sessions/${sid}/terminals`, {
       cwd: '../outside',
     });
     expect(escaping.code).toBe(ErrorCode.FS_PATH_ESCAPES_SESSION);
 
-    const noSession = await get<unknown>(`/api/v1/sessions/sess_missing/terminals`);
+    const noSession = await get<unknown>(`/api/sessions/sess_missing/terminals`);
     expect(noSession.code).toBe(ErrorCode.SESSION_NOT_FOUND);
   });
 
   it('bridges terminal attach, input, output, resize, reconnect replay, detach, close and exit', async () => {
     const sid = await createSession(work as string);
-    const terminal = (await post<Terminal>(`/api/v1/sessions/${sid}/terminals`, {})).data;
+    const terminal = (await post<Terminal>(`/api/sessions/${sid}/terminals`, {})).data;
     const token = (server as RunningServer).authTokenService.getToken();
-    const url = `ws://127.0.0.1:${(server as RunningServer).port}/api/v1/ws`;
+    const url = `ws://127.0.0.1:${(server as RunningServer).port}/api/ws`;
     const session = getLiveSessionById((server as RunningServer).core.accessor, sid);
     expect(session).toBeDefined();
     const terminalService = session!.accessor.get(ISessionTerminalService);
@@ -484,11 +530,11 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
 
   it('reports a replay gap after more than 2,000 buffered output frames', async () => {
     const sid = await createSession(work as string);
-    const terminal = (await post<Terminal>(`/api/v1/sessions/${sid}/terminals`, {})).data;
+    const terminal = (await post<Terminal>(`/api/sessions/${sid}/terminals`, {})).data;
     for (let seq = 1; seq <= 2001; seq += 1) processes[0]!.emitData(`frame-${seq}`);
 
     const conn = await openTerminalConn(
-      `ws://127.0.0.1:${(server as RunningServer).port}/api/v1/ws`,
+      `ws://127.0.0.1:${(server as RunningServer).port}/api/ws`,
       (server as RunningServer).authTokenService.getToken(),
     );
     await conn.next((frame) => frame.type === 'server_hello');
@@ -516,7 +562,7 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
   it('maps malformed, unknown-session and unknown-terminal WS controls to protocol codes', async () => {
     const sid = await createSession(work as string);
     const conn = await openTerminalConn(
-      `ws://127.0.0.1:${(server as RunningServer).port}/api/v1/ws`,
+      `ws://127.0.0.1:${(server as RunningServer).port}/api/ws`,
       (server as RunningServer).authTokenService.getToken(),
     );
     await conn.next((frame) => frame.type === 'server_hello');

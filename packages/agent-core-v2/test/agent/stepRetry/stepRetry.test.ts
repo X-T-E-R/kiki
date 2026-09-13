@@ -322,9 +322,9 @@ describe('stepRetry plugin', () => {
     expect(second).toEqual({ type: 'completed', steps: 1, truncated: false });
   });
 
-  it('retries any request error inside the request when KIMI_CODE_INFINITE_RETRY is set', async () => {
+  it('retries any request error inside the request when KIKI_INFINITE_RETRY is set', async () => {
     vi.useFakeTimers();
-    vi.stubEnv('KIMI_CODE_INFINITE_RETRY', '1');
+    vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     let calls = 0;
     ctx = createTestAgent(
       llmGenerateServices(async () => {
@@ -354,9 +354,9 @@ describe('stepRetry plugin', () => {
     expect(rpcEvents('turn.step.interrupted')).toEqual([]);
   });
 
-  it('keeps retrying past the per-step attempt budget when KIMI_CODE_INFINITE_RETRY is set', async () => {
+  it('keeps retrying past the per-step attempt budget when KIKI_INFINITE_RETRY is set', async () => {
     vi.useFakeTimers();
-    vi.stubEnv('KIMI_CODE_INFINITE_RETRY', '1');
+    vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     let calls = 0;
     ctx = createTestAgent(
       llmGenerateServices(async () => {
@@ -385,7 +385,7 @@ describe('stepRetry plugin', () => {
 
   it('cancels the turn when aborted during an infinite retry backoff', async () => {
     vi.useFakeTimers();
-    vi.stubEnv('KIMI_CODE_INFINITE_RETRY', '1');
+    vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     const controller = new AbortController();
     let calls = 0;
     ctx = createTestAgent(

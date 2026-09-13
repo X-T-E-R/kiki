@@ -15,19 +15,32 @@ import { AgentContextProjectorService } from '#/agent/contextProjector/contextPr
 import { IAgentCognitionAnchorService } from '#/agent/cognition/cognitionAnchor';
 import {
   AgentLLMRequesterService,
-  KIMI_CODE_INFINITE_RETRY_ENV,
+  KIKI_INFINITE_RETRY_ENV,
 } from '#/agent/llmRequester/llmRequesterService';
-import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
+import {
+  IAgentLLMRequesterService,
+  type AgentLLMRequestSource,
+} from '#/agent/llmRequester/llmRequester';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
+import { IWebSearchTool } from '#/agent/tools/web-search/web-search';
+import { WebSearchTool } from '#/agent/tools/web-search/webSearchTool';
+import { appendSharedPrompt, type PromptConfig } from '@kiki/agent-profiles/promptConfig';
+import Ajv from 'ajv';
+import addFormats from 'ajv-formats';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
-import { IAgentUsageService } from '#/agent/usage/usage';
+import {
+  IAgentUsageService,
+  type UsageRecordContext,
+} from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
+import { INbSearchService } from '#/app/nbSearch/nbSearch';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { Event2 } from '#/app/event/event2';
 import { IEventBus } from '#/app/event/eventBus';
@@ -196,6 +209,11 @@ function createService(
     readonly identityDimensions?: RequestIdentityDimensions[];
     readonly hostRequestHeaders?: Readonly<Record<string, string>>;
     readonly env?: Record<string, string>;
+    readonly nativeWebSearch?: boolean;
+    readonly nbSearch?: Partial<INbSearchService>;
+    readonly promptConfig?: { value: PromptConfig };
+    readonly promptRefresh?: () => Promise<void>;
+    readonly systemPrompt?: () => string;
   } = {},
 ) {
   const ix = disposables.add(new TestInstantiationService());
@@ -217,7 +235,18 @@ function createService(
       compactionSoftContextSize: undefined,
     }),
     resolveRequestParams: () => options.requestParams ?? { cacheKey: sessionId },
-    getSystemPrompt: () => 'system',
+    getSystemPrompt: () => appendSharedPrompt(options.systemPrompt?.() ?? 'system', options.promptConfig?.value),
+    refreshSystemPrompt: options.promptRefresh ?? (async () => undefined),
+    preparePromptConfiguration: (() => {
+      let signature = '';
+      return async () => {
+        const next = JSON.stringify(options.promptConfig?.value ?? {});
+        if (next === signature) return false;
+        await options.promptRefresh?.();
+        signature = next;
+        return true;
+      };
+    })(),
     data: () => ({
       cwd: '',
       modelAlias: selectedModelAlias(),
@@ -233,13 +262,30 @@ function createService(
       measuredCalls.push({ messages: input.length, usage });
     },
   };
-  const usage = { record: () => undefined, status: () => ({}) };
+  const usageRecords: {
+    readonly model: string;
+    readonly usage: TokenUsage;
+    readonly source?: AgentLLMRequestSource;
+    readonly context?: UsageRecordContext;
+  }[] = [];
+  const usage = {
+    record: (
+      model: string,
+      usage: TokenUsage,
+      source?: AgentLLMRequestSource,
+      context?: UsageRecordContext,
+    ) => {
+      usageRecords.push({ model, usage, source, context });
+    },
+    status: () => ({}),
+  };
   const context = {
     get: () => options.contextMessages ?? history,
   };
   const tools = { list: () => [] };
   const config: Partial<IConfigService> = {
     get: ((section: string) => {
+      if (section === 'prompt') return options.promptConfig?.value;
       if (section === 'providers') return options.providers;
       if (section === 'requestIdentity') return options.globalRequestIdentity?.value;
       return undefined;
@@ -293,6 +339,12 @@ function createService(
   });
   ix.stub(IAgentUsageService, usage);
   ix.stub(IConfigService, config);
+  ix.stub(INbSearchService, { prepareToolDescriptions: async () => undefined, ...options.nbSearch });
+  if (options.nativeWebSearch) {
+    ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    ix.set(IWebSearchTool, new SyncDescriptor(WebSearchTool));
+    ix.get(IAgentToolRegistryService).register(ix.get(IWebSearchTool));
+  }
   ix.stub(IBootstrapService, {
     clientIdentity: { productName: 'test', version: '1.0.0', platform: 'test' },
     platform: 'linux',
@@ -352,6 +404,7 @@ function createService(
     events,
     telemetryRecords,
     measuredCalls,
+    usageRecords,
   };
 }
 
@@ -364,6 +417,73 @@ function captureRequestParams(requester: ModelRequester): ModelRequestParams[] {
   };
   return captured;
 }
+
+describe('AgentLLMRequesterService parameter budgets', () => {
+  it('clamps output to the context budget even when operation history has no measured usage', async () => {
+    const requester = createRequester({ value: 0 }, null);
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { requestParams: { maxCompletionTokens: 5000 } });
+    await service.request({ messages: history });
+    expect(captured[0]).toMatchObject({ maxCompletionTokens: 1000, maxContextTokens: 1000 });
+  });
+
+  it('retains the resolved profile output ceiling despite a larger operation override', async () => {
+    const requester = createRequester({ value: 0 }, null);
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { requestParams: { maxCompletionTokens: 300 } });
+    await service.request({ maxOutputSize: 900 });
+    expect(captured[0]).toMatchObject({ maxCompletionTokens: 300, maxContextTokens: 1000, usedContextTokens: 0 });
+  });
+});
+
+describe('AgentLLMRequesterService native tool and shared prompt preparation', () => {
+  it.each(['main', 'standalone-child'])('sends lane schema, freshly prepared descriptions and shared guidance once for %s', async (agentId) => {
+    const inputs: ModelRequestInput[] = [];
+    let description = 'not prepared';
+    const prepare = vi.fn(async () => { description = 'Default: exa.search; available sync: gma.research (typed research answer)'; });
+    const promptConfig = { value: { shared: 'ALL_AGENTS', variables: { search_guidance: 'Prefer native GMA SSE.' }, tools: { WebSearch: '${search_guidance}' } } };
+    const { service } = createService(createRequester({ value: 0 }, null, [], inputs), undefined, {
+      agentId, nativeWebSearch: true, promptConfig,
+      nbSearch: { prepareToolDescriptions: prepare, toolDescription: () => description },
+    });
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+    for (const input of inputs) {
+      expect(input.systemPrompt).toBe('system\n\nALL_AGENTS');
+      const search = input.tools?.find((tool) => tool.name === 'WebSearch');
+      const ajv = new Ajv({ strict: false });
+      addFormats(ajv);
+      const validate = ajv.compile(search!.parameters);
+      expect(validate({ query: 'example', lane: 'gma.research' })).toBe(true);
+      expect(validate({ action: 'read', job_id: '00000000-0000-4000-8000-000000000001', page_size: 2 })).toBe(true);
+      expect(validate({ query: 'example', unknown_field: true })).toBe(false);
+      expect(search?.description).toContain('available sync: gma.research');
+      expect(search?.description).toContain('Prefer native GMA SSE.');
+      expect(search?.description).not.toContain('not prepared');
+    }
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it('omits disabled-tool guidance and preserves explicit overrides while refreshing configured variables next request', async () => {
+    const inputs: ModelRequestInput[] = [];
+    const promptConfig: { value: PromptConfig } = { value: { shared: 'Shared ${value}', variables: { value: 'first', search_guidance: 'SEARCH_ONLY' }, tools: { WebSearch: '${search_guidance}' } } };
+    let base = 'first base';
+    const refresh = vi.fn(async () => { base = `${promptConfig.value.variables?.['value']} base`; });
+    const prepare = vi.fn();
+    const { service } = createService(createRequester({ value: 0 }, null, [], inputs), undefined, {
+      promptConfig, promptRefresh: refresh, systemPrompt: () => base,
+      nbSearch: { prepareToolDescriptions: prepare },
+    });
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    promptConfig.value = { ...promptConfig.value, variables: { value: 'second', search_guidance: 'SEARCH_ONLY' } };
+    await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+    await service.request({ systemPrompt: 'EXPLICIT', tools: [], source: { type: 'operation', requestKind: 'test' } });
+    expect(inputs.map((input) => input.systemPrompt)).toEqual(['first base\n\nShared first', 'second base\n\nShared second', 'EXPLICIT\n\nShared second']);
+    expect(JSON.stringify(inputs)).not.toContain('SEARCH_ONLY');
+    expect(prepare).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('AgentLLMRequesterService request attribution headers', () => {
   it('projects a complete Codex-compatible Responses identity', async () => {
@@ -796,6 +916,24 @@ describe('AgentLLMRequesterService measured anchors', () => {
     expect(measuredCalls).toHaveLength(1);
     expect(measuredCalls[0]?.usage.inputOther).toBe(40);
   });
+
+  it('marks missing usage unknown while preserving provider-reported zero as known', async () => {
+    const missing = createService(createRequester({ value: 0 }, null), undefined);
+    await missing.service.request();
+    expect(missing.usageRecords[0]?.usage).toEqual(emptyUsage());
+    expect(missing.usageRecords[0]?.context?.usageKnown).toBe(false);
+
+    const requester = createRequester({ value: 0 }, null);
+    const base = requester.request.bind(requester);
+    requester.request = async function* (input, signal, options) {
+      yield { type: 'usage', usage: emptyUsage(), model: 'wire-model' };
+      yield* base(input, signal, options);
+    };
+    const known = createService(requester, undefined);
+    await known.service.request();
+    expect(known.usageRecords[0]?.usage).toEqual(emptyUsage());
+    expect(known.usageRecords[0]?.context?.usageKnown).toBe(true);
+  });
 });
 
 describe('AgentLLMRequesterService Anthropic effort diagnostics', () => {
@@ -858,7 +996,7 @@ describe('AgentLLMRequesterService infinite retry', () => {
     vi.useRealTimers();
   });
 
-  it('retries every request error while KIMI_CODE_INFINITE_RETRY is set', async () => {
+  it('retries every request error while KIKI_INFINITE_RETRY is set', async () => {
     vi.useFakeTimers();
     const calls = { value: 0 };
     const requester = createRequester(calls, new APIStatusError(400, 'endpoint broken'), [
@@ -867,7 +1005,7 @@ describe('AgentLLMRequesterService infinite retry', () => {
       new APIProviderQuotaExhaustedError('quota exhausted'),
     ]);
     const { service } = createService(requester, undefined, {
-      env: { [KIMI_CODE_INFINITE_RETRY_ENV]: '1' },
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' },
     });
 
     const promise = service.request();
@@ -882,7 +1020,7 @@ describe('AgentLLMRequesterService infinite retry', () => {
     const calls = { value: 0 };
     const requester = createRequester(calls, new APIProviderRateLimitError('slow down', null, 1));
     const { service } = createService(requester, undefined, {
-      env: { [KIMI_CODE_INFINITE_RETRY_ENV]: '1' },
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' },
     });
 
     const startedAt = Date.now();
@@ -897,7 +1035,7 @@ describe('AgentLLMRequesterService infinite retry', () => {
     const calls = { value: 0 };
     const requester = createRequester(calls, new APIStatusError(400, 'endpoint broken'));
     const { service } = createService(requester, undefined, {
-      env: { [KIMI_CODE_INFINITE_RETRY_ENV]: '1' },
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' },
     });
     const controller = new AbortController();
     setTimeout(() => controller.abort(new Error('stop')), 100);
@@ -915,7 +1053,7 @@ describe('AgentLLMRequesterService infinite retry', () => {
     const calls = { value: 0 };
     const requester = createRequester(calls, new APIRequestTooLargeError(413, 'Request Entity Too Large'));
     const { service } = createService(requester, undefined, {
-      env: { [KIMI_CODE_INFINITE_RETRY_ENV]: '1' },
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' },
     });
 
     await service.request();
@@ -931,7 +1069,7 @@ describe('AgentLLMRequesterService infinite retry', () => {
       new APIContextOverflowError(400, 'context length exceeded'),
     );
     const { service } = createService(requester, undefined, {
-      env: { [KIMI_CODE_INFINITE_RETRY_ENV]: '1' },
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' },
     });
 
     await expect(service.request()).rejects.toBeInstanceOf(APIContextOverflowError);
@@ -945,7 +1083,7 @@ describe('AgentLLMRequesterService infinite retry', () => {
       new APIStatusError(404, 'model not found'),
     ]);
     const { service } = createService(requester, undefined, {
-      env: { [KIMI_CODE_INFINITE_RETRY_ENV]: '1' },
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' },
     });
 
     const promise = service.request({

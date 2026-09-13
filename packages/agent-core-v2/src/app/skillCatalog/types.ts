@@ -6,6 +6,8 @@ export interface SkillMetadata {
   readonly type?: string | undefined;
   readonly whenToUse?: string | undefined;
   readonly disableModelInvocation?: boolean | undefined;
+  readonly promptCommand?: boolean;
+  readonly argumentHint?: string;
   readonly isSubSkill?: boolean | undefined;
   readonly safe?: boolean | undefined;
   readonly arguments?: readonly unknown[] | string | undefined;
@@ -34,6 +36,8 @@ export interface SkillSummary {
   readonly source: SkillSource;
   readonly type?: string | undefined;
   readonly disableModelInvocation?: boolean | undefined;
+  readonly promptCommand?: boolean;
+  readonly argumentHint?: string;
   readonly isSubSkill?: boolean | undefined;
 }
 
@@ -41,7 +45,7 @@ export interface SkillRoot {
   readonly path: string;
   readonly source: SkillSource;
   readonly plugin?: SkillPluginContext;
-  readonly scanMode?: 'directory' | 'root-skill-only';
+  readonly scanMode?: 'directory' | 'root-skill-only' | 'commands';
 }
 
 export interface SkillPluginContext {
@@ -94,6 +98,8 @@ export function summarizeSkill(skill: SkillDefinition): SkillSummary {
     source: skill.source,
     type: skill.metadata.type,
     disableModelInvocation: skill.metadata.disableModelInvocation,
+    promptCommand: skill.metadata.promptCommand,
+    argumentHint: skill.metadata.argumentHint,
     isSubSkill: skill.metadata.isSubSkill,
   };
 }

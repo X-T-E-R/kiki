@@ -121,7 +121,7 @@ export function transformOpenApiDocument(
 }
 
 function patchSessionExport(paths: Record<string, unknown>): void {
-  const operation = getOperation(paths, '/api/v1/sessions/{session_id}/export', 'post');
+  const operation = getOperation(paths, '/api/sessions/{session_id}/export', 'post');
   if (operation === undefined) return;
 
   setResponse(operation, '200', {
@@ -141,7 +141,7 @@ function patchSessionExport(paths: Record<string, unknown>): void {
 }
 
 function patchFileUpload(paths: Record<string, unknown>): void {
-  const operation = getOperation(paths, '/api/v1/files', 'post');
+  const operation = getOperation(paths, '/api/files', 'post');
   if (operation === undefined) return;
 
   operation['requestBody'] = {
@@ -155,7 +155,7 @@ function patchFileUpload(paths: Record<string, unknown>): void {
 }
 
 function patchFileDownload(paths: Record<string, unknown>): void {
-  const operation = getOperation(paths, '/api/v1/files/{file_id}', 'get');
+  const operation = getOperation(paths, '/api/files/{file_id}', 'get');
   if (operation === undefined) return;
 
   setResponse(operation, '200', {
@@ -178,7 +178,7 @@ function patchFileDownload(paths: Record<string, unknown>): void {
 }
 
 function patchSessionAction(paths: Record<string, unknown>): void {
-  const internalPath = '/api/v1/sessions/{tail}';
+  const internalPath = '/api/sessions/{tail}';
   const pathItem = asRecord(paths[internalPath]);
   const operation = asRecord(pathItem?.['post']);
   if (pathItem === undefined || operation === undefined) return;
@@ -193,12 +193,12 @@ function patchSessionAction(paths: Record<string, unknown>): void {
       content: jsonContent(openApiDocumentEnvelopeJsonSchema(archiveSessionResponseSchema)),
     });
   }
-  paths['/api/v1/sessions/{session_id}:archive'] = cloned;
+  paths['/api/sessions/{session_id}:archive'] = cloned;
   delete paths[internalPath];
 }
 
 function patchFsAction(paths: Record<string, unknown>): void {
-  const operation = getOperation(paths, '/api/v1/sessions/{session_id}/{tail}', 'post');
+  const operation = getOperation(paths, '/api/sessions/{session_id}/{tail}', 'post');
   if (operation === undefined) return;
 
   operation['description'] = appendDescription(
@@ -216,7 +216,7 @@ function patchFsAction(paths: Record<string, unknown>): void {
 }
 
 function patchFsDownload(paths: Record<string, unknown>): void {
-  const operation = getOperation(paths, '/api/v1/sessions/{session_id}/fs/{*}', 'get');
+  const operation = getOperation(paths, '/api/sessions/{session_id}/fs/{*}', 'get');
   if (operation === undefined) return;
 
   setResponse(operation, '200', {
@@ -257,7 +257,7 @@ function patchFsDownload(paths: Record<string, unknown>): void {
 }
 
 function patchQuestionResolveOrDismiss(paths: Record<string, unknown>): void {
-  const operation = getOperation(paths, '/api/v1/sessions/{session_id}/questions/{tail}', 'post');
+  const operation = getOperation(paths, '/api/sessions/{session_id}/questions/{tail}', 'post');
   if (operation === undefined) return;
 
   operation['description'] = appendDescription(

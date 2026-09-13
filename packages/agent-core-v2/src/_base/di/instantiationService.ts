@@ -164,6 +164,8 @@ export class InstantiationService implements IInstantiationService {
   private _fiberHost: FiberHost | undefined;
 
   private _disposed = false;
+  private readonly _onWillDispose = new Emitter<void>();
+  readonly onWillDispose = this._onWillDispose.event;
 
   constructor(
     private readonly _services: ServiceCollection = new ServiceCollection(),
@@ -653,6 +655,8 @@ export class InstantiationService implements IInstantiationService {
       return;
     }
     this._disposed = true;
+    this._onWillDispose.fire();
+    this._onWillDispose.dispose();
 
     try {
       for (const child of Array.from(this._children)) {

@@ -97,15 +97,15 @@ const REPLACE_BODY = {
   ],
 } as const;
 
-describe('server-v2 /api/v1 provider write endpoints', () => {
+describe('server-v2 /api provider write endpoints', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-provider-write-'));
-    process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START'] = '0';
-    process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
+    process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'] = '0';
+    process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
   });
 
   afterEach(async () => {
@@ -117,8 +117,8 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
-    delete process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START'];
-    delete process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
+    delete process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'];
+    delete process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
   });
 
   async function boot(toml?: string): Promise<void> {
@@ -191,7 +191,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('creates a provider with model aliases and persists them to config.toml', async () => {
     await boot();
-    const { status, body } = await postJson<unknown>('/api/v1/providers', CREATE_BODY);
+    const { status, body } = await postJson<unknown>('/api/providers', CREATE_BODY);
     expect(status).toBe(201);
     expect(body.code).toBe(0);
     expect(body.data).toEqual({
@@ -229,10 +229,10 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       },
     });
 
-    const providers = await getJson<{ items: unknown[] }>('/api/v1/providers');
+    const providers = await getJson<{ items: unknown[] }>('/api/providers');
     expect(providers.body.data.items).toEqual([body.data]);
 
-    const models = await getJson<{ items: unknown[] }>('/api/v1/models');
+    const models = await getJson<{ items: unknown[] }>('/api/models');
     expect(models.body.data.items).toEqual([
       {
         provider: 'my-openai',
@@ -254,7 +254,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     await boot();
     const firstIdentity = { overrides: { request: { logical_id: 'none' } } } as const;
     const secondIdentity = { preset: 'none' } as const;
-    const created = await postJson<unknown>('/api/v1/providers', {
+    const created = await postJson<unknown>('/api/providers', {
       ...CREATE_BODY,
       models: [
         { ...CREATE_BODY.models[0], request_identity: firstIdentity },
@@ -263,7 +263,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     });
     expect(created.status).toBe(201);
 
-    expect((await getJson<{ items: Array<Record<string, unknown>> }>('/api/v1/models')).body.data.items)
+    expect((await getJson<{ items: Array<Record<string, unknown>> }>('/api/models')).body.data.items)
       .toEqual([
         {
           provider: 'my-openai',
@@ -281,12 +281,12 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
         },
       ]);
 
-    await putJson('/api/v1/providers/my-openai', REPLACE_BODY);
+    await putJson('/api/providers/my-openai', REPLACE_BODY);
     expect((await readConfigToml())['models']).toMatchObject({
       'my-openai/gpt-4.1': { request_identity: firstIdentity },
     });
 
-    await putJson('/api/v1/providers/my-openai', {
+    await putJson('/api/providers/my-openai', {
       ...REPLACE_BODY,
       models: [
         { ...REPLACE_BODY.models[0], request_identity: secondIdentity },
@@ -300,7 +300,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('clears model request_identity only on explicit null', async () => {
     await boot();
-    await postJson('/api/v1/providers', {
+    await postJson('/api/providers', {
       ...CREATE_BODY,
       models: [
         { ...CREATE_BODY.models[0], request_identity: { preset: 'none' } },
@@ -308,7 +308,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       ],
     });
 
-    await putJson('/api/v1/providers/my-openai', {
+    await putJson('/api/providers/my-openai', {
       ...REPLACE_BODY,
       models: [
         { ...REPLACE_BODY.models[0], request_identity: null },
@@ -324,7 +324,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     const requestIdentity = {
       overrides: { client: { user_agent: 'host' } },
     } as const;
-    const created = await postJson<{ request_identity?: unknown }>('/api/v1/providers', {
+    const created = await postJson<{ request_identity?: unknown }>('/api/providers', {
       ...CREATE_BODY,
       request_identity: requestIdentity,
     });
@@ -336,7 +336,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     });
 
     const replaced = await putJson<{ provider: { request_identity?: unknown } }>(
-      '/api/v1/providers/my-openai',
+      '/api/providers/my-openai',
       REPLACE_BODY,
     );
     expect(replaced.status).toBe(200);
@@ -345,13 +345,13 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('clears request_identity only on explicit null', async () => {
     await boot();
-    await postJson('/api/v1/providers', {
+    await postJson('/api/providers', {
       ...CREATE_BODY,
       request_identity: { preset: 'none' },
     });
 
     const cleared = await putJson<{ provider: { request_identity?: unknown } }>(
-      '/api/v1/providers/my-openai',
+      '/api/providers/my-openai',
       { ...REPLACE_BODY, request_identity: null },
     );
     expect(cleared.status).toBe(200);
@@ -383,13 +383,13 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
         ],
       },
     ]) {
-      expect((await postJson('/api/v1/providers', body)).body.code).toBe(40001);
+      expect((await postJson('/api/providers', body)).body.code).toBe(40001);
     }
   });
 
   it('rejects removed attribution fields on both create and replace', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    const created = await postJson<unknown>('/api/v1/providers', {
+    const created = await postJson<unknown>('/api/providers', {
       ...CREATE_BODY,
       request_attribution: 'none',
     });
@@ -397,7 +397,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(created.body.data).toBeNull();
     expect(created.body.details?.length).toBeGreaterThan(0);
 
-    const replaced = await putJson<unknown>('/api/v1/providers/openai', {
+    const replaced = await putJson<unknown>('/api/providers/openai', {
       ...REPLACE_BODY,
       request_originator: 'my-ide',
     });
@@ -407,7 +407,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('creates a credential-less provider (env-resolved types may omit api_key)', async () => {
     await boot();
-    const { status, body } = await postJson<unknown>('/api/v1/providers', {
+    const { status, body } = await postJson<unknown>('/api/providers', {
       id: 'vertex',
       type: 'vertexai',
       models: [{ model: 'gemini-2.5-pro', max_context_size: 1048576 }],
@@ -426,19 +426,19 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('seeds the global default_model on a fresh setup (the provider default wins)', async () => {
     await boot();
-    const { status } = await postJson<unknown>('/api/v1/providers', CREATE_BODY);
+    const { status } = await postJson<unknown>('/api/providers', CREATE_BODY);
     expect(status).toBe(201);
 
     const onDisk = await readConfigToml();
     expect(onDisk['default_model']).toBe('my-openai/gpt-4.1');
 
-    const auth = await getJson<{ ready: boolean; default_model: string | null }>('/api/v1/auth');
+    const auth = await getJson<{ ready: boolean; default_model: string | null }>('/api/auth');
     expect(auth.body.data).toMatchObject({ ready: true, default_model: 'my-openai/gpt-4.1' });
   });
 
   it('seeds the first model when the create body names no provider default', async () => {
     await boot();
-    const { status } = await postJson<unknown>('/api/v1/providers', {
+    const { status } = await postJson<unknown>('/api/providers', {
       id: 'my-openai',
       type: 'openai',
       api_key: 'sk-test-openai',
@@ -455,7 +455,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('keeps an existing global default_model on create', async () => {
     await boot(DEFAULTED_TOML);
-    const { status } = await postJson<unknown>('/api/v1/providers', CREATE_BODY);
+    const { status } = await postJson<unknown>('/api/providers', CREATE_BODY);
     expect(status).toBe(201);
 
     const onDisk = await readConfigToml();
@@ -464,7 +464,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('leaves even a dangling default_model untouched on create', async () => {
     await boot(DANGLING_DEFAULT_TOML);
-    const { status } = await postJson<unknown>('/api/v1/providers', CREATE_BODY);
+    const { status } = await postJson<unknown>('/api/providers', CREATE_BODY);
     expect(status).toBe(201);
 
     const onDisk = await readConfigToml();
@@ -473,20 +473,20 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('rejects a duplicate provider id with 40921', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    const { body } = await postJson<unknown>('/api/v1/providers', {
+    const { body } = await postJson<unknown>('/api/providers', {
       ...CREATE_BODY,
       id: 'openai',
     });
     expect(body.code).toBe(40921);
     expect(body.data).toBeNull();
 
-    const providers = await getJson<{ items: Array<{ id: string }> }>('/api/v1/providers');
+    const providers = await getJson<{ items: Array<{ id: string }> }>('/api/providers');
     expect(providers.body.data.items.map((p) => p.id)).toEqual(['kimi', 'openai']);
   });
 
   it('accepts a Unicode provider id (Chinese + space)', async () => {
     await boot();
-    const { status, body } = await postJson<{ id: string }>('/api/v1/providers', {
+    const { status, body } = await postJson<{ id: string }>('/api/providers', {
       ...CREATE_BODY,
       id: '测试 Kimi',
     });
@@ -503,7 +503,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('creates models with support_efforts and adaptive_thinking', async () => {
     await boot();
-    const { status } = await postJson<unknown>('/api/v1/providers', {
+    const { status } = await postJson<unknown>('/api/providers', {
       ...CREATE_BODY,
       models: [
         {
@@ -542,7 +542,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       },
     ];
     for (const { name, body, path } of cases) {
-      const { body: envelope } = await postJson('/api/v1/providers', body);
+      const { body: envelope } = await postJson('/api/providers', body);
       expect(envelope.code, name).toBe(40001);
       expect(envelope.data, name).toBeNull();
       if (path !== undefined) {
@@ -556,7 +556,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('deletes a provider and its model aliases, keeping unrelated defaults', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    const { status, text } = await deleteJson<unknown>('/api/v1/providers/openai');
+    const { status, text } = await deleteJson<unknown>('/api/providers/openai');
     expect(status).toBe(204);
     expect(text).toBe('');
 
@@ -567,15 +567,15 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     });
     expect(onDisk['default_model']).toBe('k2');
 
-    const providers = await getJson<{ items: Array<{ id: string }> }>('/api/v1/providers');
+    const providers = await getJson<{ items: Array<{ id: string }> }>('/api/providers');
     expect(providers.body.data.items.map((p) => p.id)).toEqual(['kimi']);
-    const models = await getJson<{ items: Array<{ model: string }> }>('/api/v1/models');
+    const models = await getJson<{ items: Array<{ model: string }> }>('/api/models');
     expect(models.body.data.items.map((m) => m.model)).toEqual(['k2']);
   });
 
   it('never touches default_provider/default_model when deleting their owner (204, pointers dangling)', async () => {
     await boot(DEFAULTED_TOML);
-    const { status, text } = await deleteJson<unknown>('/api/v1/providers/openai');
+    const { status, text } = await deleteJson<unknown>('/api/providers/openai');
     expect(status).toBe(204);
     expect(text).toBe('');
 
@@ -590,10 +590,10 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('round-trips a created provider: delete removes every trace from config.toml', async () => {
     await boot();
-    const created = await postJson<unknown>('/api/v1/providers', CREATE_BODY);
+    const created = await postJson<unknown>('/api/providers', CREATE_BODY);
     expect(created.status).toBe(201);
 
-    const { status } = await deleteJson<unknown>('/api/v1/providers/my-openai');
+    const { status } = await deleteJson<unknown>('/api/providers/my-openai');
     expect(status).toBe(204);
 
     const onDisk = await readConfigToml();
@@ -601,25 +601,25 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(onDisk['models']).toBeUndefined();
     expect(onDisk['default_model']).toBe('my-openai/gpt-4.1');
 
-    const providers = await getJson<{ items: unknown[] }>('/api/v1/providers');
+    const providers = await getJson<{ items: unknown[] }>('/api/providers');
     expect(providers.body.data.items).toEqual([]);
   });
 
   it('rejects deleting an OAuth-managed provider with 40003 and leaves config unchanged', async () => {
     await boot(MANAGED_TOML);
     const before = await readConfigToml();
-    const { body } = await deleteJson<unknown>('/api/v1/providers/managed%3Akimi-code');
+    const { body } = await deleteJson<unknown>('/api/providers/managed%3Akimi-code');
     expect(body?.code).toBe(40003);
     expect(body?.msg).toContain('/oauth/logout');
     expect(await readConfigToml()).toEqual(before);
 
-    const providers = await getJson<{ items: Array<{ id: string }> }>('/api/v1/providers');
+    const providers = await getJson<{ items: Array<{ id: string }> }>('/api/providers');
     expect(providers.body.data.items.map((p) => p.id)).toEqual(['managed:kimi-code']);
   });
 
   it('maps an unknown provider id to 40412 on delete', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    const { body } = await deleteJson<unknown>('/api/v1/providers/missing');
+    const { body } = await deleteJson<unknown>('/api/providers/missing');
     expect(body?.code).toBe(40412);
   });
 
@@ -627,7 +627,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     await boot(KEEP_DEFAULT_TOML);
     const { status, body } = await putJson<{
       provider: Record<string, unknown>;
-    }>('/api/v1/providers/openai', REPLACE_BODY);
+    }>('/api/providers/openai', REPLACE_BODY);
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(body.data.provider).toEqual({
@@ -666,7 +666,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     });
     expect(onDisk['default_model']).toBe('k2');
 
-    const models = await getJson<{ items: Array<{ model: string }> }>('/api/v1/models');
+    const models = await getJson<{ items: Array<{ model: string }> }>('/api/models');
     expect(models.body.data.items.map((m) => m.model)).toEqual([
       'k2',
       'openai/gpt-4.1',
@@ -677,7 +677,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
   it('sets a new api_key when a non-empty one is sent', async () => {
     await boot(KEEP_DEFAULT_TOML);
     const { status, body } = await putJson<{ provider: { has_api_key: boolean } }>(
-      '/api/v1/providers/openai',
+      '/api/providers/openai',
       { ...REPLACE_BODY, api_key: 'sk-new-openai' },
     );
     expect(status).toBe(200);
@@ -699,7 +699,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     await boot(KEEP_DEFAULT_TOML);
     const { status, body } = await putJson<{
       provider: { has_api_key: boolean; status: string };
-    }>('/api/v1/providers/openai', { ...REPLACE_BODY, api_key: '' });
+    }>('/api/providers/openai', { ...REPLACE_BODY, api_key: '' });
     expect(status).toBe(200);
     expect(body.data.provider.has_api_key).toBe(false);
     expect(body.data.provider.status).toBe('unconfigured');
@@ -731,7 +731,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       '',
     ].join('\n');
     await boot(RICH_TOML);
-    const { status, body } = await putJson<unknown>('/api/v1/providers/openai', {
+    const { status, body } = await putJson<unknown>('/api/providers/openai', {
       type: 'openai',
       models: [
         {
@@ -764,7 +764,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
   it('never touches default_model when the rebuild drops its alias (no rename)', async () => {
     await boot(DEFAULTED_TOML);
     const { status, body } = await putJson<unknown>(
-      '/api/v1/providers/openai',
+      '/api/providers/openai',
       { ...REPLACE_BODY, type: 'openai_responses' },
     );
     expect(status).toBe(200);
@@ -788,7 +788,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     await boot(DEFAULTED_TOML);
     const { status, body } = await putJson<{
       provider: Record<string, unknown>;
-    }>('/api/v1/providers/openai', {
+    }>('/api/providers/openai', {
       ...REPLACE_BODY,
       new_id: 'my-openai',
       models: [
@@ -822,7 +822,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
   it('migrates default_provider on rename but leaves default_model alone when its model was dropped', async () => {
     await boot(DEFAULTED_TOML);
     const { status, body } = await putJson<unknown>(
-      '/api/v1/providers/openai',
+      '/api/providers/openai',
       { ...REPLACE_BODY, new_id: 'my-openai' },
     );
     expect(status).toBe(200);
@@ -835,7 +835,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('rejects a rename to an existing provider id with 40921', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    const { status, body } = await putJson<unknown>('/api/v1/providers/openai', {
+    const { status, body } = await putJson<unknown>('/api/providers/openai', {
       ...REPLACE_BODY,
       new_id: 'kimi',
     });
@@ -852,7 +852,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
   it('rejects an invalid rename target with 40001 and leaves config unchanged', async () => {
     await boot(KEEP_DEFAULT_TOML);
     const before = await readConfigToml();
-    const { body } = await putJson<unknown>('/api/v1/providers/openai', {
+    const { body } = await putJson<unknown>('/api/providers/openai', {
       ...REPLACE_BODY,
       new_id: '../bad',
     });
@@ -873,7 +873,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       },
     ];
     for (const { name, body, path } of cases) {
-      const { body: envelope } = await putJson('/api/v1/providers/openai', body);
+      const { body: envelope } = await putJson('/api/providers/openai', body);
       expect(envelope.code, name).toBe(40001);
       expect(envelope.data, name).toBeNull();
       if (path !== undefined) {
@@ -892,7 +892,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       overrides: { client: { user_agent: 'kimi_code' } },
     } as const;
     const { status, body } = await putJson<{ provider: Record<string, unknown> }>(
-      '/api/v1/providers/managed%3Akimi-code',
+      '/api/providers/managed%3Akimi-code',
       {
         new_id: 'managed:kimi-code',
         type: 'kimi',
@@ -945,7 +945,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     });
 
     const fetched = await getJson<{ request_identity?: unknown }>(
-      '/api/v1/providers/managed%3Akimi-code',
+      '/api/providers/managed%3Akimi-code',
     );
     expect(fetched.body.data.request_identity).toEqual(requestIdentity);
   });
@@ -953,7 +953,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
   it('rejects renaming an OAuth-managed provider and leaves config unchanged', async () => {
     await boot(MANAGED_TOML);
     const before = await readConfigToml();
-    const { body } = await putJson<unknown>('/api/v1/providers/managed%3Akimi-code', {
+    const { body } = await putJson<unknown>('/api/providers/managed%3Akimi-code', {
       new_id: 'renamed-managed',
       type: 'kimi',
       models: [{ model: 'kimi-k2', max_context_size: 131072 }],
@@ -966,7 +966,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
   it('rejects changing an OAuth-managed provider type and leaves config unchanged', async () => {
     await boot(MANAGED_TOML);
     const before = await readConfigToml();
-    const { body } = await putJson<unknown>('/api/v1/providers/managed%3Akimi-code', {
+    const { body } = await putJson<unknown>('/api/providers/managed%3Akimi-code', {
       type: 'openai',
       models: [{ model: 'kimi-k2', max_context_size: 131072 }],
     });
@@ -978,7 +978,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
   it('rejects writing an OAuth-managed provider api_key and leaves config unchanged', async () => {
     await boot(MANAGED_TOML);
     const before = await readConfigToml();
-    const { body } = await putJson<unknown>('/api/v1/providers/managed%3Akimi-code', {
+    const { body } = await putJson<unknown>('/api/providers/managed%3Akimi-code', {
       type: 'kimi',
       api_key: 'replacement-secret',
       models: [{ model: 'kimi-k2', max_context_size: 131072 }],
@@ -990,7 +990,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('maps an unknown provider id to 40412 on replace', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    const { body } = await putJson<unknown>('/api/v1/providers/missing', REPLACE_BODY);
+    const { body } = await putJson<unknown>('/api/providers/missing', REPLACE_BODY);
     expect(body.code).toBe(40412);
     expect(body.data).toBeNull();
   });
@@ -1013,7 +1013,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       '',
     ].join('\n');
     await boot(FULL_TOML);
-    const { status } = await putJson<unknown>('/api/v1/providers/openai', {
+    const { status } = await putJson<unknown>('/api/providers/openai', {
       type: 'openai',
       models: [{ model: 'gpt-4.1', max_context_size: 1047576 }],
     });
@@ -1035,15 +1035,15 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       },
     });
 
-    const single = await getJson<Record<string, unknown>>('/api/v1/providers/openai');
+    const single = await getJson<Record<string, unknown>>('/api/providers/openai');
     expect(single.body.data).not.toHaveProperty('base_url');
     expect(single.body.data).not.toHaveProperty('default_model');
   });
 
   it('does not reveal an empty-string api_key on the single GET', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    await putJson<unknown>('/api/v1/providers/openai', { ...REPLACE_BODY, api_key: '' });
-    const { body } = await getJson<Record<string, unknown>>('/api/v1/providers/openai');
+    await putJson<unknown>('/api/providers/openai', { ...REPLACE_BODY, api_key: '' });
+    const { body } = await getJson<Record<string, unknown>>('/api/providers/openai');
     expect(body.data).not.toHaveProperty('api_key');
   });
 
@@ -1056,11 +1056,11 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
         { model: 'gpt-4.1', max_context_size: 128000 },
       ],
     };
-    const created = await postJson<unknown>('/api/v1/providers', duplicate);
+    const created = await postJson<unknown>('/api/providers', duplicate);
     expect(created.body.code).toBe(40001);
     expect(created.body.msg).toContain('duplicate model');
 
-    const replaced = await putJson<unknown>('/api/v1/providers/openai', {
+    const replaced = await putJson<unknown>('/api/providers/openai', {
       type: 'openai',
       models: [
         { model: 'gpt-4.1', max_context_size: 1047576 },
@@ -1072,7 +1072,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('rejects a base_url containing an env placeholder with 40001', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    const { body } = await postJson<unknown>('/api/v1/providers', {
+    const { body } = await postJson<unknown>('/api/providers', {
       ...CREATE_BODY,
       base_url: 'https://${HOST}/v1',
     });
@@ -1082,7 +1082,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
 
   it('trims a padded base_url before persisting', async () => {
     await boot(KEEP_DEFAULT_TOML);
-    const { status, body } = await postJson<{ base_url?: string }>('/api/v1/providers', {
+    const { status, body } = await postJson<{ base_url?: string }>('/api/providers', {
       ...CREATE_BODY,
       base_url: '  https://api.openai.example/v1  ',
     });
@@ -1112,7 +1112,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
       '',
     ].join('\n');
     await boot(FOREIGN_TOML);
-    const { status, body } = await putJson<unknown>('/api/v1/providers/openai', {
+    const { status, body } = await putJson<unknown>('/api/providers/openai', {
       type: 'openai',
       models: [{ model: 'gpt-4.1', max_context_size: 1047576 }],
     });

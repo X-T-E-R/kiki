@@ -9,7 +9,7 @@ Gates not-yet-public features behind `IFlagService.enabled(id)`, per the reposit
 - `src/flag/flagRegistry.ts` — `IFlagRegistry` token + `FlagDefinitionInput` / `FlagId` / `FlagSurface` types + `registerFlagDefinition` / `getContributedFlags` (import-time contribution queue).
 - `src/flag/flagRegistryService.ts` — `FlagRegistryService` impl; in-memory catalog seeded from import-time contributions; App scope.
 - `src/flag/flag.ts` — `IFlagService` token + resolver types (`ExperimentalFlagMap`, `ExperimentalFlagConfig`, `ExperimentalFlagSource`, `ExperimentalFeatureState`) + `ExperimentalConfigSchema` / `ExperimentalConfig` (zod).
-- `src/flag/flagService.ts` — `FlagService` impl + `MASTER_ENV` (`KIMI_CODE_EXPERIMENTAL_FLAG`) + `EXPERIMENTAL_SECTION` (`experimental`); reads definitions from `IFlagRegistry`; self-registers at App scope.
+- `src/flag/flagService.ts` — `FlagService` impl + `MASTER_ENV` (`KIKI_EXPERIMENTAL_FLAG`) + `EXPERIMENTAL_SECTION` (`experimental`); reads definitions from `IFlagRegistry`; self-registers at App scope.
 - `src/flag/index.ts` — barrel; re-exported by `src/index.ts`.
 - `src/<domain>/flag.ts` — each domain that owns a flag declares it here and calls `registerFlagDefinition` at the module top level (e.g. `src/agent/toolSelect/flag.ts`). The directory already names the domain, so the file is just `flag.ts`.
 
@@ -24,9 +24,9 @@ Gates not-yet-public features behind `IFlagService.enabled(id)`, per the reposit
 
 Highest wins; env is read live on every call (nothing cached):
 
-1. L1 per-feature `def.env` (e.g. `KIMI_CODE_EXPERIMENTAL_MY_FEATURE`) → forces on/off.
+1. L1 per-feature `def.env` (e.g. `KIKI_EXPERIMENTAL_MY_FEATURE`) → forces on/off.
 2. L2 `[experimental]` config section per-flag override.
-3. L3 master env `KIMI_CODE_EXPERIMENTAL_FLAG` truthy → every flag on.
+3. L3 master env `KIKI_EXPERIMENTAL_FLAG` truthy → every flag on.
 4. L4 registry `default`.
 
 `explain(id)` returns the winning `source` (`master-env` | `env` | `config` | `default`) plus the effective `configValue`. `explain(id)` returns `undefined` (and `enabled(id)` returns `false`) for an id that no domain has registered.
@@ -60,7 +60,7 @@ export const myFeatureFlag: FlagDefinitionInput = {
   id: 'my_feature',
   title: 'My feature',
   description: '...',
-  env: 'KIMI_CODE_EXPERIMENTAL_MY_FEATURE',
+  env: 'KIKI_EXPERIMENTAL_MY_FEATURE',
   default: false,
   surface: 'both',
 };
@@ -78,7 +78,7 @@ export * from './flag';
 
 `src/index.ts` already re-exports every domain barrel, so the contribution runs during bootstrap, before any scope is created — and therefore before any consumer resolves `IFlagService`.
 
-- `env` must start with `KIMI_CODE_EXPERIMENTAL_`, be unique, and not equal `KIMI_CODE_EXPERIMENTAL_FLAG`.
+- `env` must start with `KIKI_EXPERIMENTAL_`, be unique, and not equal `KIKI_EXPERIMENTAL_FLAG`.
 - `id` must not be `flag`. A duplicate `id` throws when `FlagRegistryService` drains the contributions.
 - `FlagId` is `string`, not a literal union: with no central catalog there is nothing to derive it from, so `enabled()` has no compile-time typo-checking. Cover gated behavior with tests instead.
 - `surface`: `core` | `tui` | `both` (documentation/grouping only; not used in resolution).

@@ -5,10 +5,10 @@ import { getNativeCacheBase } from '#/native/native-assets';
 describe('getNativeCacheBase precedence', () => {
   const baseOptions = { homeDir: '/home/u' };
 
-  it('uses KIMI_CODE_CACHE_DIR when set (highest precedence)', () => {
+  it('uses KIKI_CACHE_DIR when set (highest precedence)', () => {
     const got = getNativeCacheBase({
       ...baseOptions,
-      env: { KIMI_CODE_CACHE_DIR: '/custom/cache' },
+      env: { KIKI_CACHE_DIR: '/custom/cache' },
     });
     expect(got).toBe('/custom/cache');
   });

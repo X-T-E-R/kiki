@@ -19,6 +19,7 @@ export interface RenderSkillPromptInput {
   readonly skillContent: string;
   readonly skillSource?: SkillSource | undefined;
   readonly skillDir?: string | undefined;
+  readonly skillPath?: string;
 }
 
 interface RenderSkillLoadedBlockInput extends RenderSkillPromptInput {
@@ -39,7 +40,7 @@ export interface RenderModelToolSkillPromptInput extends RenderSkillPromptInput 
 
 export function renderModelToolSkillPrompt(input: RenderModelToolSkillPromptInput): string {
   return [
-    'Skill tool loaded instructions for this request. Follow them.',
+    'Skill loaded for this request.',
     '',
     renderSkillLoadedBlock({ ...input, trigger: input.trigger }),
   ].join('\n');
@@ -59,6 +60,7 @@ function renderSkillAttributes(input: RenderSkillLoadedBlockInput): string {
     ['trigger', input.trigger],
     ['source', input.skillSource],
     ['dir', input.skillDir],
+    ['path', input.skillPath],
     ['args', input.skillArgs],
   ];
 

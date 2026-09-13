@@ -173,7 +173,7 @@ describe('host filesystem change notifications', () => {
   it('drops native signals under pruned top-level directories without resolving them', () => {
     const rig = signalRig();
     const events: HostFsChange[] = [];
-    const filter = subtreeWatchFilter('/repo', ['/repo/.agents', '/repo/.kimi-code/agents']);
+    const filter = subtreeWatchFilter('/repo', ['/repo/.agents', '/repo/.kiki/agents']);
     const seen: string[] = [];
     const ignored = Object.assign(
       (path: string): boolean => {
@@ -191,8 +191,8 @@ describe('host filesystem change notifications', () => {
     expect(events).toEqual([]);
     expect(seen).toEqual([]);
 
-    rig.attempt(0).emit('.kimi-code\\agents\\worker.md');
-    rig.attempt(0).emit('.kimi-code');
+    rig.attempt(0).emit('.kiki\\agents\\worker.md');
+    rig.attempt(0).emit('.kiki');
     rig.attempt(0).emit('README.md');
     expect(events).toEqual([
       { path: '/repo', action: 'modified', kind: 'directory' },

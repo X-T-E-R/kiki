@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+afterEach(() => vi.restoreAllMocks());
 
 import { FooterComponent } from '#/tui/components/chrome/footer';
 import type { AppState } from '#/tui/types';
@@ -73,7 +75,8 @@ describe('FooterComponent status_line items', () => {
   });
 
   it('honors the configured position of the tips slot', () => {
-    // The tip content itself rotates; locate it via a tips-only render.
+    // All three instances must use the same rotation slot, even across a 10s boundary.
+    vi.spyOn(Date, 'now').mockReturnValue(20_000);
     const tipsOnly = plain(
       new FooterComponent({
         ...baseState,
@@ -95,8 +98,8 @@ describe('FooterComponent status_line items', () => {
     );
 
     expect(tipsOnly.length).toBeGreaterThan(0);
-    expect(tipsFirst.indexOf(tipsOnly)).toBeLessThan(tipsFirst.indexOf('kimi-k2'));
-    expect(tipsLast.indexOf('kimi-k2')).toBeLessThan(tipsLast.indexOf(tipsOnly));
+    expect(tipsFirst.trimEnd()).toBe(`${tipsOnly}  kimi-k2`);
+    expect(tipsLast.trimEnd()).toBe(`kimi-k2  ${tipsOnly}`);
   });
 
   it('renders nothing on line 1 for an empty items list', () => {

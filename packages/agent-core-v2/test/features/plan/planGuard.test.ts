@@ -80,6 +80,7 @@ function hookContext(
     readonly args?: Record<string, unknown>;
     readonly accesses?: ToolAccesses;
     readonly display?: ToolInputDisplay;
+    readonly execute?: ResolvedToolExecutionHookContext['execution']['execute'];
   } = {},
 ): ResolvedToolExecutionHookContext {
   const args = input.args ?? {};
@@ -94,7 +95,7 @@ function hookContext(
       accesses: input.accesses,
       display: input.display,
       approvalRule: toolName,
-      execute: async () => ({ output: '' }),
+      execute: input.execute ?? (async () => ({ output: '' })),
     },
   };
 }
@@ -363,6 +364,31 @@ describe('AgentPlanService plan-guard listener', () => {
       expect(permissionRan).toBe(false);
     });
 
+    it.each(['manual', 'auto', 'yolo'] as const)(
+      'blocks BoardWrite in %s before permission or board execution',
+      async (permissionMode) => {
+        mode = permissionMode;
+        await enterPlan();
+        const boardHost = vi.fn(async () => ({ output: '' }));
+        const context = hookContext('BoardWrite', {
+          args: { action: 'create', title: 'Requirement', requestKey: 'request-1' },
+          execute: boardHost,
+        });
+        const decision = await run(context);
+        if (decision?.veto === undefined) {
+          await context.execution.execute({ turnId: context.turnId, toolCallId: context.toolCall.id, signal: context.signal });
+        }
+
+        expect(decision?.veto?.isError).toBe(true);
+        expect(decision?.veto?.output).toContain('BoardWrite');
+        expect(decision?.veto?.output).toContain('ExitPlanMode');
+        expect(requestToolApproval).not.toHaveBeenCalled();
+        expect(requests).toEqual([]);
+        expect(permissionRan).toBe(false);
+        expect(boardHost).not.toHaveBeenCalled();
+      },
+    );
+
     it('blocks TaskStop while plan mode is active', async () => {
       await enterPlan();
       const decision = await run(hookContext('TaskStop', { args: { task_id: 'bash-abc12345' } }));
@@ -412,7 +438,7 @@ describe('AgentPlanService plan-guard listener', () => {
       },
     );
 
-    it.each(['Read', 'Grep', 'Bash', 'CronList', 'AgentList'] as const)(
+    it.each(['Read', 'BoardRead', 'Grep', 'Bash', 'CronList', 'AgentList'] as const)(
       'abstains on %s while plan mode is active',
       async (toolName) => {
         await enterPlan();

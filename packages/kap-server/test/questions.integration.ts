@@ -63,7 +63,7 @@ interface DismissWire {
   dismissed_at: string;
 }
 
-describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
+describe('server-v2 /api/sessions/{sid}/questions', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -115,7 +115,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
   }
 
   async function createSession(): Promise<string> {
-    const { body } = await postJson<{ id: string }>('/api/v1/sessions', {
+    const { body } = await postJson<{ id: string }>('/api/sessions', {
       metadata: { cwd: home as string },
     });
     expect(body.code).toBe(0);
@@ -145,7 +145,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
     const sid = await createSession();
     questionService(sid).enqueue(makeRequest('q-1'));
 
-    const { body } = await getJson<ListWire>(`/api/v1/sessions/${sid}/questions?status=pending`);
+    const { body } = await getJson<ListWire>(`/api/sessions/${sid}/questions?status=pending`);
     expect(body.code).toBe(0);
     expect(body.data.items).toHaveLength(1);
     const item = body.data.items[0]!;
@@ -171,7 +171,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
     const sid = await createSession();
     questionService(sid).enqueue(makeRequest('q-2'));
 
-    const { body } = await postJson<ResolveWire>(`/api/v1/sessions/${sid}/questions/q-2`, {
+    const { body } = await postJson<ResolveWire>(`/api/sessions/${sid}/questions/q-2`, {
       answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } },
       method: 'number_key',
     });
@@ -179,7 +179,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
     expect(body.data.resolved).toBe(true);
     expect(Number.isNaN(Date.parse(body.data.resolved_at))).toBe(false);
 
-    const listed = await getJson<ListWire>(`/api/v1/sessions/${sid}/questions?status=pending`);
+    const listed = await getJson<ListWire>(`/api/sessions/${sid}/questions?status=pending`);
     expect(listed.body.data.items).toHaveLength(0);
   });
 
@@ -187,7 +187,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
     const sid = await createSession();
     const resultPromise: Promise<QuestionResult> = questionService(sid).request(makeRequest('q-3'));
 
-    await postJson<ResolveWire>(`/api/v1/sessions/${sid}/questions/q-3`, {
+    await postJson<ResolveWire>(`/api/sessions/${sid}/questions/q-3`, {
       answers: {
         q_0: { kind: 'multi', option_ids: ['opt_0_0', 'opt_0_1'] },
       },
@@ -222,7 +222,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
     const single: Promise<QuestionResult> = questionService(sid).request(
       makeTwoQuestionRequest('q-t1'),
     );
-    await postJson<ResolveWire>(`/api/v1/sessions/${sid}/questions/q-t1`, {
+    await postJson<ResolveWire>(`/api/sessions/${sid}/questions/q-t1`, {
       answers: {
         q_0: { kind: 'single', option_id: 'opt_0_1' },
         q_1: {
@@ -239,7 +239,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
     const other: Promise<QuestionResult> = questionService(sid).request(
       makeTwoQuestionRequest('q-t2'),
     );
-    await postJson<ResolveWire>(`/api/v1/sessions/${sid}/questions/q-t2`, {
+    await postJson<ResolveWire>(`/api/sessions/${sid}/questions/q-t2`, {
       answers: {
         q_0: { kind: 'other', text: 'Hippopotamus' },
         q_1: { kind: 'skipped' },
@@ -256,7 +256,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
       makeTwoQuestionRequest('q-t3'),
     );
 
-    await postJson<ResolveWire>(`/api/v1/sessions/${sid}/questions/q-t3`, {
+    await postJson<ResolveWire>(`/api/sessions/${sid}/questions/q-t3`, {
       answers: {
         q_0: { kind: 'single', option_id: 'opt_0_9' },
         q_9: { kind: 'single', option_id: 'opt_9_0' },
@@ -279,7 +279,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
       makeTwoQuestionRequest('q-t4'),
     );
 
-    await postJson<ResolveWire>(`/api/v1/sessions/${sid}/questions/q-t4`, {
+    await postJson<ResolveWire>(`/api/sessions/${sid}/questions/q-t4`, {
       answers: {
         q_0: { kind: 'skipped' },
         q_1: { kind: 'skipped' },
@@ -294,25 +294,25 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
     const resultPromise: Promise<QuestionResult> = questionService(sid).request(makeRequest('q-4'));
 
     const { body } = await postJson<DismissWire>(
-      `/api/v1/sessions/${sid}/questions/q-4:dismiss`,
+      `/api/sessions/${sid}/questions/q-4:dismiss`,
     );
     expect(body.code).toBe(40909);
     expect(body.data.dismissed).toBe(true);
     expect(Number.isNaN(Date.parse(body.data.dismissed_at))).toBe(false);
 
     await expect(resultPromise).resolves.toBeNull();
-    const listed = await getJson<ListWire>(`/api/v1/sessions/${sid}/questions?status=pending`);
+    const listed = await getJson<ListWire>(`/api/sessions/${sid}/questions?status=pending`);
     expect(listed.body.data.items).toHaveLength(0);
   });
 
   it('returns 40902 on a duplicate resolve (recently-resolved window)', async () => {
     const sid = await createSession();
     questionService(sid).enqueue(makeRequest('q-5'));
-    await postJson<ResolveWire>(`/api/v1/sessions/${sid}/questions/q-5`, {
+    await postJson<ResolveWire>(`/api/sessions/${sid}/questions/q-5`, {
       answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } },
     });
 
-    const dup = await postJson<{ resolved: false }>(`/api/v1/sessions/${sid}/questions/q-5`, {
+    const dup = await postJson<{ resolved: false }>(`/api/sessions/${sid}/questions/q-5`, {
       answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } },
     });
     expect(dup.body.code).toBe(40902);
@@ -321,7 +321,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
 
   it('returns 40405 for an unknown question id', async () => {
     const sid = await createSession();
-    const { body } = await postJson<null>(`/api/v1/sessions/${sid}/questions/nope`, {
+    const { body } = await postJson<null>(`/api/sessions/${sid}/questions/nope`, {
       answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } },
     });
     expect(body.code).toBe(40405);
@@ -340,11 +340,11 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
       ],
     });
 
-    const list = await getJson<ListWire>(`/api/v1/sessions/${sid}/questions?status=pending`);
+    const list = await getJson<ListWire>(`/api/sessions/${sid}/questions?status=pending`);
     expect(list.body.data.items[0]!.question_id).toBe('AskUserQuestion:0');
 
     const { body } = await postJson<ResolveWire>(
-      `/api/v1/sessions/${sid}/questions/AskUserQuestion%3A0`,
+      `/api/sessions/${sid}/questions/AskUserQuestion%3A0`,
       { answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } } },
     );
     expect(body.code).toBe(0);
@@ -364,13 +364,13 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
       ],
     });
 
-    const list = await getJson<ListWire>(`/api/v1/sessions/${sid}/questions?status=pending`);
+    const list = await getJson<ListWire>(`/api/sessions/${sid}/questions?status=pending`);
     const item = list.body.data.items[0]!;
     expect(item.tool_call_id).toBe('AskUserQuestion:0');
     expect(item.question_id).not.toBe('AskUserQuestion:0');
 
     const { body } = await postJson<ResolveWire>(
-      `/api/v1/sessions/${sid}/questions/${encodeURIComponent(item.question_id)}`,
+      `/api/sessions/${sid}/questions/${encodeURIComponent(item.question_id)}`,
       { answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } } },
     );
     expect(body.code).toBe(0);
@@ -380,7 +380,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
 
   it('keeps 40001 for a colon tail that matches no pending question', async () => {
     const sid = await createSession();
-    const { body } = await postJson<null>(`/api/v1/sessions/${sid}/questions/q-9:0`, {
+    const { body } = await postJson<null>(`/api/sessions/${sid}/questions/q-9:0`, {
       answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } },
     });
     expect(body.code).toBe(40001);
@@ -393,7 +393,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
       toolCallId: 'AskUserQuestion:1',
       questions: [{ question: 'Pick one', options: [{ label: 'Yes' }] }],
     });
-    const url = `/api/v1/sessions/${sid}/questions/AskUserQuestion%3A1`;
+    const url = `/api/sessions/${sid}/questions/AskUserQuestion%3A1`;
     await postJson<ResolveWire>(url, {
       answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } },
     });
@@ -406,7 +406,7 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
   });
 
   it('returns 40401 for an unknown session', async () => {
-    const { body } = await getJson<null>('/api/v1/sessions/nope/questions?status=pending');
+    const { body } = await getJson<null>('/api/sessions/nope/questions?status=pending');
     expect(body.code).toBe(40401);
   });
 });

@@ -69,7 +69,7 @@ describe('/agent', () => {
     const dir = await mkdtemp(join(tmpdir(), 'kimi-agent-command-'));
     try {
       await mkdir(join(dir, '.git'));
-      const agentDir = join(dir, '.kimi-code', 'agents');
+      const agentDir = join(dir, '.kiki', 'agents');
       await mkdir(agentDir, { recursive: true });
       await writeFile(
         join(agentDir, 'grok-only.md'),
@@ -109,7 +109,7 @@ describe('/agent', () => {
     const dir = await mkdtemp(join(tmpdir(), 'kimi-agent-command-disabled-builtin-'));
     try {
       await mkdir(join(dir, '.git'));
-      const agentDir = join(dir, '.kimi-code', 'agents');
+      const agentDir = join(dir, '.kiki', 'agents');
       await mkdir(agentDir, { recursive: true });
       await writeFile(
         join(agentDir, 'agent.md'),

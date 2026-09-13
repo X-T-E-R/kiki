@@ -131,7 +131,7 @@ const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
 
 const noopOnPart: AgentLLMRequestPartHandler = () => {};
 
-export const KIMI_CODE_INFINITE_RETRY_ENV = 'KIMI_CODE_INFINITE_RETRY';
+export const KIKI_INFINITE_RETRY_ENV = 'KIKI_INFINITE_RETRY';
 
 interface ResolvedLLMRequest {
   readonly requester: ModelRequester;
@@ -523,7 +523,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         const delayMs =
           readRetryAfterMs(raw) ??
           retryBackoffDelay(infiniteRetryAttempt - 1);
-        this.log.warn('llm request failed; retrying indefinitely (KIMI_CODE_INFINITE_RETRY)', {
+        this.log.warn('llm request failed; retrying indefinitely (KIKI_INFINITE_RETRY)', {
           model: request.model.name,
           ...request.logFields,
           attempt: infiniteRetryAttempt,
@@ -536,7 +536,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   }
 
   private get infiniteRetryEnabled(): boolean {
-    return parseBooleanEnv(this.bootstrap.getEnv(KIMI_CODE_INFINITE_RETRY_ENV)) === true;
+    return parseBooleanEnv(this.bootstrap.getEnv(KIKI_INFINITE_RETRY_ENV)) === true;
   }
 
   private nextProjectionPolicyForError(

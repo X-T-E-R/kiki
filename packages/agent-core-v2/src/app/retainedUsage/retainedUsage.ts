@@ -17,6 +17,7 @@ export interface RetainedUsageRecord {
   readonly modelAlias?: string;
   readonly profileName?: string;
   readonly executorId?: string;
+  readonly usageKnown?: boolean;
 }
 
 export interface RetainedDeletedSessionUsage extends SessionSummary {

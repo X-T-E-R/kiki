@@ -17,6 +17,12 @@ interface ErrorHandlerHost {
 export function installErrorHandler(app: ErrorHandlerHost): void {
   app.setErrorHandler((err, req, reply) => {
     const requestId = req.id;
+    if (err.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+      reply
+        .status(413)
+        .send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'request body exceeds the allowed size limit', requestId));
+      return;
+    }
     if (isError2(err) && err.code === ErrorCodes.CONFIG_INVALID) {
       reply
         .status(200)

@@ -45,7 +45,7 @@ interface ListWire {
   items: TaskWire[];
 }
 
-describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
+describe('server-v2 /api/sessions/{sid}/tasks', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -114,7 +114,7 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
   }
 
   async function createSession(): Promise<string> {
-    const res = await fetch(`${base}/api/v1/sessions`, {
+    const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd: home as string } }),
@@ -168,7 +168,7 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
 
   it('returns an empty list when the session has no main agent (gap G10)', async () => {
     const id = await createSession();
-    const { body } = await getJson<ListWire>(`/api/v1/sessions/${id}/tasks`);
+    const { body } = await getJson<ListWire>(`/api/sessions/${id}/tasks`);
     expect(body.code).toBe(0);
     expect(body.data.items).toEqual([]);
   });
@@ -176,7 +176,7 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
   it('returns an empty list when the main agent has no tasks yet', async () => {
     const id = await createSession();
     await mainAgentTasks(id);
-    const { body } = await getJson<ListWire>(`/api/v1/sessions/${id}/tasks`);
+    const { body } = await getJson<ListWire>(`/api/sessions/${id}/tasks`);
     expect(body.code).toBe(0);
     expect(body.data.items).toEqual([]);
   });
@@ -195,7 +195,7 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     const questionId = tasks.registerTask(fakeTask('question'));
     await flush();
 
-    const { body } = await getJson<ListWire>(`/api/v1/sessions/${id}/tasks`);
+    const { body } = await getJson<ListWire>(`/api/sessions/${id}/tasks`);
     expect(body.code).toBe(0);
     const byId = new Map(body.data.items.map((t) => [t.id, t]));
     expect(byId.size).toBe(3);
@@ -245,13 +245,13 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     const foregroundId = tasks.registerTask(fakeTask('agent'), { detached: false });
     await flush();
 
-    const { body } = await getJson<ListWire>(`/api/v1/sessions/${id}/tasks`);
+    const { body } = await getJson<ListWire>(`/api/sessions/${id}/tasks`);
     expect(body.code).toBe(0);
     const byId = new Map(body.data.items.map((t) => [t.id, t]));
     expect(byId.get(backgroundId)?.run_in_background).toBe(true);
     expect(byId.get(foregroundId)?.run_in_background).toBe(false);
 
-    const single = await getJson<TaskWire>(`/api/v1/sessions/${id}/tasks/${foregroundId}`);
+    const single = await getJson<TaskWire>(`/api/sessions/${id}/tasks/${foregroundId}`);
     expect(single.body.data.run_in_background).toBe(false);
   });
 
@@ -261,12 +261,12 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     tasks.registerTask(fakeTask('process'));
     await flush();
 
-    const running = await getJson<ListWire>(`/api/v1/sessions/${id}/tasks?status=running`);
+    const running = await getJson<ListWire>(`/api/sessions/${id}/tasks?status=running`);
     expect(running.body.code).toBe(0);
     expect(running.body.data.items).toHaveLength(1);
     expect(running.body.data.items[0]?.status).toBe('running');
 
-    const completed = await getJson<ListWire>(`/api/v1/sessions/${id}/tasks?status=completed`);
+    const completed = await getJson<ListWire>(`/api/sessions/${id}/tasks?status=completed`);
     expect(completed.body.code).toBe(0);
     expect(completed.body.data.items).toEqual([]);
   });
@@ -278,12 +278,12 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     const subagentId = tasks.registerTask(fakeTask('agent'));
     await flush();
 
-    const got = await getJson<TaskWire>(`/api/v1/sessions/${id}/tasks/${taskId}`);
+    const got = await getJson<TaskWire>(`/api/sessions/${id}/tasks/${taskId}`);
     expect(got.body.code).toBe(0);
     expect(got.body.data).toMatchObject({ id: taskId, session_id: id, kind: 'bash' });
     expect(got.body.data.agent_id).toBeUndefined();
 
-    const gotSubagent = await getJson<TaskWire>(`/api/v1/sessions/${id}/tasks/${subagentId}`);
+    const gotSubagent = await getJson<TaskWire>(`/api/sessions/${id}/tasks/${subagentId}`);
     expect(gotSubagent.body.code).toBe(0);
     expect(gotSubagent.body.data).toMatchObject({
       id: subagentId,
@@ -294,7 +294,7 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
       parent_tool_call_id: 'call-parent-1',
     });
 
-    const missing = await getJson<null>(`/api/v1/sessions/${id}/tasks/nope`);
+    const missing = await getJson<null>(`/api/sessions/${id}/tasks/nope`);
     expect(missing.body.code).toBe(40406);
   });
 
@@ -305,13 +305,13 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     await flush();
 
     const got = await getJson<TaskWire>(
-      `/api/v1/sessions/${id}/tasks/${taskId}?with_output=true`,
+      `/api/sessions/${id}/tasks/${taskId}?with_output=true`,
     );
     expect(got.body.code).toBe(0);
     expect(got.body.data.output_preview).toBe('hello world');
     expect(got.body.data.output_bytes).toBe(Buffer.byteLength('hello world', 'utf-8'));
 
-    const plain = await getJson<TaskWire>(`/api/v1/sessions/${id}/tasks/${taskId}`);
+    const plain = await getJson<TaskWire>(`/api/sessions/${id}/tasks/${taskId}`);
     expect(plain.body.code).toBe(0);
     expect(plain.body.data.output_preview).toBeUndefined();
     expect(plain.body.data.output_bytes).toBeUndefined();
@@ -324,14 +324,14 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     await flush();
 
     const cancelled = await postJson<{ cancelled: boolean }>(
-      `/api/v1/sessions/${id}/tasks/${taskId}:cancel`,
+      `/api/sessions/${id}/tasks/${taskId}:cancel`,
     );
     expect(cancelled.body.code).toBe(0);
     expect(cancelled.body.data).toEqual({ cancelled: true });
     expect(tasks.getTask(taskId)?.stopReason).toBe('Aborted by the user');
 
     const again = await postJson<{ cancelled: boolean }>(
-      `/api/v1/sessions/${id}/tasks/${taskId}:cancel`,
+      `/api/sessions/${id}/tasks/${taskId}:cancel`,
     );
     expect(again.body.code).toBe(40904);
     expect(again.body.data).toEqual({ cancelled: false });
@@ -341,7 +341,7 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
   it('cancelling an unknown task returns 40406', async () => {
     const id = await createSession();
     await mainAgentTasks(id);
-    const { body } = await postJson<null>(`/api/v1/sessions/${id}/tasks/nope:cancel`);
+    const { body } = await postJson<null>(`/api/sessions/${id}/tasks/nope:cancel`);
     expect(body.code).toBe(40406);
   });
 
@@ -351,18 +351,18 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     const taskId = tasks.registerTask(fakeTask('process'));
     await flush();
 
-    const { body } = await postJson<null>(`/api/v1/sessions/${id}/tasks/${taskId}`);
+    const { body } = await postJson<null>(`/api/sessions/${id}/tasks/${taskId}`);
     expect(body.code).toBe(40001);
   });
 
   it('returns 40401 for an unknown session on all three endpoints', async () => {
-    const list = await getJson<null>('/api/v1/sessions/nope/tasks');
+    const list = await getJson<null>('/api/sessions/nope/tasks');
     expect(list.body.code).toBe(40401);
 
-    const got = await getJson<null>('/api/v1/sessions/nope/tasks/tid');
+    const got = await getJson<null>('/api/sessions/nope/tasks/tid');
     expect(got.body.code).toBe(40401);
 
-    const cancelled = await postJson<null>('/api/v1/sessions/nope/tasks/tid:cancel');
+    const cancelled = await postJson<null>('/api/sessions/nope/tasks/tid:cancel');
     expect(cancelled.body.code).toBe(40401);
   });
 });

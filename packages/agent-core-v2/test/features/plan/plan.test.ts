@@ -2,7 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 
-import type { ToolCall } from '#/kosong/contract/message';
+import type { Message, ToolCall } from '#/kosong/contract/message';
+import { estimateTokensForMessages } from '#/kosong/contract/tokens';
+import PLAN_MODE_FULL_REMINDER from '../../../src/features/plan/injection/plan-mode-full-reminder.md?raw';
 import { dirname, join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -74,6 +76,22 @@ function createPlanFileFakes(
 type InjectableDynamicInjector = {
   inject(boundary: undefined, isNewTurn: boolean): Promise<void>;
 };
+
+function expectFirstPlanRequest(ctx: TestAgentContext, prompt: string, tokens: number): void {
+  const expected: Message[] = [
+    { role: 'user', content: [{ type: 'text', text: prompt }], toolCalls: [] },
+    { role: 'user', content: [{ type: 'text', text: `<system-reminder>\n${PLAN_MODE_FULL_REMINDER}\n\nPlan file: <plan-file>\n</system-reminder>` }], toolCalls: [] },
+  ];
+  expect(estimateTokensForMessages(expected)).toBe(tokens);
+  const actual = ctx.llmCalls[0]!.history.map((message) => ({
+    role: message.role,
+    content: message.content.map((part) => part.type === 'text'
+      ? { ...part, text: part.text.replaceAll(/^Plan file: .+$/gm, 'Plan file: <plan-file>') }
+      : part),
+    toolCalls: message.toolCalls,
+  }));
+  expect(actual).toEqual(expected);
+}
 
 describe('Plan service', () => {
   let activeFakes: PlanFakes;
@@ -718,7 +736,9 @@ describe('Plan service', () => {
       ctx.mockNextResponse({ type: 'text', text: 'The safe command printed plan-safe.' });
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Inspect without mutating files' }] });
 
-      expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
+      const events = await ctx.untilTurnEnd();
+      expectFirstPlanRequest(ctx, 'Inspect without mutating files', 693);
+      expect(events).toMatchInlineSnapshot(`
         [wire] permission.set_mode         { "mode": "yolo", "time": "<time>" }
         [wire] plan_mode.enter             { "id": "test-plan", "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "planMode": true }
@@ -744,7 +764,7 @@ describe('Plan service', () => {
         [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
         [emit] tool.call.delta             { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-1>", "toolCallId": "call_bash", "name": "Bash", "argumentsPart": "{\\"command\\":\\"printf plan-safe\\",\\"timeout\\":60}" }
         [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "tool_call", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
-        [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 693, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "time": "<time>" }
+        [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 693, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "usage": { "byModel": { "mock-model": { "inputOther": 693, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 693, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 693, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
         [wire] token_counting.measured     { "length": 3, "tokens": 716, "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "contextTokens": 716 }
@@ -769,7 +789,7 @@ describe('Plan service', () => {
         [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "aca3041121ee711028f726fed37e7b999f7e8885c05dbece76ef97eb43e2ec1e", "messageCount": 4, "turnStep": "0.2", "time": "<time>" }
         [emit] assistant.delta             { "time": "<time>", "turnId": 0, "step": 2, "stepId": "<uuid-4>", "partId": "<uuid-5>", "delta": "The safe command printed plan-safe." }
         [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 2, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
-        [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 720, "output": 12, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "time": "<time>" }
+        [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 720, "output": 12, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "usage": { "byModel": { "mock-model": { "inputOther": 1413, "output": 35, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1413, "output": 35, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 1413, "output": 35, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
         [wire] token_counting.measured     { "length": 5, "tokens": 732, "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "contextTokens": 732 }
@@ -809,7 +829,9 @@ describe('Plan service', () => {
       ctx.mockNextResponse({ type: 'text', text: 'The command completed.' });
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Remove forbidden.txt' }] });
 
-      expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
+      const events = await ctx.untilTurnEnd();
+      expectFirstPlanRequest(ctx, 'Remove forbidden.txt', 690);
+      expect(events).toMatchInlineSnapshot(`
         [wire] permission.set_mode         { "mode": "yolo", "time": "<time>" }
         [wire] plan_mode.enter             { "id": "test-plan", "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "planMode": true }
@@ -835,7 +857,7 @@ describe('Plan service', () => {
         [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
         [emit] tool.call.delta             { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-1>", "toolCallId": "call_bash", "name": "Bash", "argumentsPart": "{\\"command\\":\\"rm forbidden.txt\\",\\"timeout\\":60}" }
         [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "tool_call", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
-        [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 690, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "time": "<time>" }
+        [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 690, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "usage": { "byModel": { "mock-model": { "inputOther": 690, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 690, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 690, "output": 23, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
         [wire] token_counting.measured     { "length": 3, "tokens": 713, "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "contextTokens": 713 }
@@ -860,7 +882,7 @@ describe('Plan service', () => {
         [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "aca3041121ee711028f726fed37e7b999f7e8885c05dbece76ef97eb43e2ec1e", "messageCount": 4, "turnStep": "0.2", "time": "<time>" }
         [emit] assistant.delta             { "time": "<time>", "turnId": 0, "step": 2, "stepId": "<uuid-4>", "partId": "<uuid-5>", "delta": "The command completed." }
         [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 2, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
-        [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 716, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "time": "<time>" }
+        [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 716, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "usage": { "byModel": { "mock-model": { "inputOther": 1406, "output": 32, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1406, "output": 32, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 1406, "output": 32, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
         [wire] token_counting.measured     { "length": 5, "tokens": 725, "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "contextTokens": 725 }

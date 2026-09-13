@@ -18,8 +18,8 @@ import { DaemonClient, type AnyFrame } from '../harness/index.js';
 import { fetchWithReport } from '../harness/report.js';
 import { createCaseLogger } from './log.js';
 
-const BASE_URL = process.env['KIMI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
-const API_PREFIX = '/api/v1';
+const BASE_URL = process.env['KIKI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
+const API_PREFIX = '/api';
 const SHORT_TIMEOUT_MS = 15_000;
 
 interface PromptSteeredPayload {

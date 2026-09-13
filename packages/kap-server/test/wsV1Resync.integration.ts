@@ -10,6 +10,7 @@ import {
   IEventBus,
   IWireService,
   getLiveSessionById,
+  closeSessionById,
   resumeSessionById,
 } from '@kiki/agent-core-v2';
 import {
@@ -191,7 +192,7 @@ function integerRange(from: number, through: number): number[] {
   return Array.from({ length: Math.max(through - from + 1, 0) }, (_, index) => from + index);
 }
 
-describe('server-v2 /api/v1/ws resync', () => {
+describe('server-v2 /api/ws resync', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -206,7 +207,7 @@ describe('server-v2 /api/v1/ws resync', () => {
       logLevel: 'silent',
     });
     base = `http://127.0.0.1:${server.port}`;
-    wsUrl = `ws://127.0.0.1:${server.port}/api/v1/ws`;
+    wsUrl = `ws://127.0.0.1:${server.port}/api/ws`;
   }
 
   beforeEach(async () => {
@@ -226,7 +227,7 @@ describe('server-v2 /api/v1/ws resync', () => {
   });
 
   async function createSession(): Promise<string> {
-    const res = await fetch(`${base}/api/v1/sessions`, {
+    const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd: home } }),
@@ -237,7 +238,7 @@ describe('server-v2 /api/v1/ws resync', () => {
   }
 
   async function getTranscript(sessionId: string): Promise<TranscriptResponse> {
-    const res = await fetch(`${base}/api/v1/sessions/${sessionId}/transcript?agent_id=main`, {
+    const res = await fetch(`${base}/api/sessions/${sessionId}/transcript?agent_id=main`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     const body = (await res.json()) as { code: number; data: TranscriptResponse };
@@ -279,6 +280,73 @@ describe('server-v2 /api/v1/ws resync', () => {
     main!.accessor.get(IEventBus).publish(event);
   }
 
+  it('restores oversized cold history through HTTP and atomic WS resets without losing tasks or reconnecting', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    const main = getLiveSessionById(server!.core.accessor, sid)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const wire = main.accessor.get(IWireService);
+    for (let turnId = 1; turnId <= 249; turnId += 1) {
+      wire.appendRecord({ type: 'turn.prompt', turnId, input: [{ type: 'text', text: `Example turn ${turnId}` }], origin: { kind: 'user' } });
+      wire.appendRecord({ type: 'turn.ended', turnId, reason: 'completed' });
+    }
+    const summary = 'Example complete task result 😀 '.repeat(400);
+    for (let index = 0; index < 438; index += 1) {
+      wire.appendRecord({ type: 'subagent.started', subagentId: `example-task-${index}` });
+      wire.appendRecord({ type: 'subagent.completed', subagentId: `example-task-${index}`, resultSummary: `${index}:${summary}` });
+    }
+    await wire.flush();
+    await closeSessionById(server!.core.accessor, sid);
+    const snapshotResponse = await fetch(`${base}/api/sessions/${sid}/snapshot?mode=transcript`, {
+      headers: authHeaders(server as RunningServer),
+    });
+    expect(snapshotResponse.status).toBe(200);
+    expect((await snapshotResponse.json() as { code: number }).code).toBe(0);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const c = await openConn(wsUrl, server!.authTokenService.getToken());
+      try {
+        await c.next((frame) => frame.type === 'server_hello');
+        c.send({ type: 'client_hello', id: 'hello', payload: withToken({ client_id: 'example-client' }) });
+        await c.next((frame) => frame.type === 'ack' && frame.id === 'hello');
+        c.send({ type: 'subscribe_v2', id: 'seed', payload: { session_id: sid, transcript: { '*': 'off', main: 'delta' } } });
+        const reset = await c.next((frame) => frame.type === 'transcript.reset', 20_000);
+        expect(Buffer.byteLength(JSON.stringify(reset))).toBeGreaterThan(4 << 20);
+        const payload = transcriptResetPayload(reset);
+        const transcript = new AgentTranscript('main');
+        applyTranscriptFrame(transcript, reset);
+        expect(transcript.snapshot().tasks).toHaveLength(438);
+        const tasks = new Map(transcript.snapshot().tasks.map((task) => [task.taskId, task]));
+        for (let index = 0; index < 438; index += 1) {
+          expect(tasks.get(`example-task-${index}`)?.resultSummary).toBe(`${index}:${summary}`);
+        }
+        expect(transcript.snapshot().items.filter((item) => item.kind === 'turn')).toHaveLength(20);
+        expect(payload.coverage.hasMoreOlder).toBe(true);
+        await c.next((frame) => frame.type === 'ack' && frame.id === 'seed');
+        expect(c.ws.readyState).toBe(WebSocket.OPEN);
+      } finally {
+        c.ws.close();
+        await c.closed;
+      }
+    }
+    const history = new Set(integerRange(230, 249).map((id) => `t${id}`));
+    let before = 't230';
+    for (let page = 0; page < 20; page += 1) {
+      const older = await fetch(`${base}/api/sessions/${sid}/transcript?agent_id=main&before_turn=${before}&page_size=20`, {
+        headers: authHeaders(server as RunningServer),
+      });
+      const body = await older.json() as { code: number; data: TranscriptResponse & { has_more: boolean } };
+      expect(body.code).toBe(0);
+      const turns = body.data.items.filter((item) => item.kind === 'turn');
+      for (const turn of turns) {
+        expect(history.has(turn.turnId!)).toBe(false);
+        history.add(turn.turnId!);
+      }
+      if (!body.data.has_more) break;
+      expect(turns.length).toBeGreaterThan(0);
+      before = turns[0]!.turnId!;
+    }
+    expect([...history].sort()).toEqual(integerRange(1, 249).map((id) => `t${id}`).sort());
+  }, 120_000);
+
   it('server_hello then client_hello ack with accepted subscription', async () => {
     const sid = await createSession();
     const c = await openConn(wsUrl, server!.authTokenService.getToken());
@@ -306,7 +374,7 @@ describe('server-v2 /api/v1/ws resync', () => {
     c.send({ type: 'client_hello', id: 'h1', payload: withToken({ client_id: 'cli', subscriptions: [sid] }) });
     await c.next((f) => f.type === 'ack' && f.id === 'h1');
 
-    emitAgentEvent(sid, { type: 'turn.started', turnId: 1 } as unknown as Event2<any>);
+    emitAgentEvent(sid, { type: 'turn.started', turnId: 1, origin: { kind: 'user' } } as unknown as Event2<any>);
 
     const ev = await c.next((f) => f.type === 'turn.started');
     expect(ev.seq).toBeGreaterThanOrEqual(1);
@@ -325,7 +393,7 @@ describe('server-v2 /api/v1/ws resync', () => {
     await c1.next((f) => f.type === 'server_hello');
     c1.send({ type: 'client_hello', id: 'h1', payload: withToken({ client_id: 'cli', subscriptions: [sid] }) });
     await c1.next((f) => f.type === 'ack' && f.id === 'h1');
-    emitAgentEvent(sid, { type: 'turn.started', turnId: 1 } as unknown as Event2<any>);
+    emitAgentEvent(sid, { type: 'turn.started', turnId: 1, origin: { kind: 'user' } } as unknown as Event2<any>);
     emitAgentEvent(sid, { type: 'turn.ended', turnId: 1 } as unknown as Event2<any>);
     await c1.next((f) => f.type === 'turn.ended');
     c1.ws.close();

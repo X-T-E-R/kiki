@@ -64,7 +64,7 @@ describe('server-e2e report', () => {
         caseName: 'refresh: replay from zero',
         direction: 'lifecycle',
         message: 'open',
-        url: 'ws://server.example.test/api/v1/ws',
+        url: 'ws://server.example.test/api/ws',
       },
       { reportDir },
     );
@@ -204,7 +204,7 @@ describe('server-e2e report', () => {
       )) as typeof fetch;
     const client = new HttpClient({
       baseUrl: 'http://server.example.test',
-      apiPrefix: '/api/v1',
+      apiPrefix: '/api',
       fetchImpl,
       reportDir,
     });
@@ -239,7 +239,7 @@ describe('server-e2e report', () => {
     FakeWebSocket.instances = [];
 
     const ws = new WsClient({
-      url: 'ws://server.example.test/api/v1/ws',
+      url: 'ws://server.example.test/api/ws',
       wsImpl: FakeWebSocket as unknown as typeof WsWebSocket,
       logger: () => {},
       reportDir,
@@ -334,7 +334,7 @@ describe('server-e2e report', () => {
       )) as typeof fetch;
 
     const response = await fetchWithReport(
-      'http://server.example.test/api/v1/meta',
+      'http://server.example.test/api/meta',
       { headers: { accept: 'application/json' } },
       { reportDir, fetchImpl },
     );
@@ -348,7 +348,7 @@ describe('server-e2e report', () => {
       kind: 'http',
       caseName: 'refresh: meta',
       method: 'GET',
-      path: '/api/v1/meta',
+      path: '/api/meta',
       status: 200,
       response: {
         envelope: {

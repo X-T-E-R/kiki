@@ -519,14 +519,14 @@ export class SubagentTool implements ISubagentTool {
 
       if (runInBackground) {
         return {
-          output: formatBackgroundAgentResult(taskId, handle, runLabel, allowBackground),
+          output: formatBackgroundAgentResult(taskId, handle, runLabel),
         };
       }
 
       const release = await this.tasks.waitForForegroundRelease(taskId);
       if (release === 'detached' || release === 'timeout_detached') {
         return {
-          output: formatBackgroundAgentResult(taskId, handle, runLabel, allowBackground),
+          output: formatBackgroundAgentResult(taskId, handle, runLabel),
         };
       }
       return await this.formatForegroundResult(taskId, handle, timeoutMs);
@@ -570,7 +570,6 @@ function formatBackgroundAgentResult(
   taskId: string,
   handle: SubagentHandle,
   description: string,
-  allowBackground: boolean,
 ): string {
   return [
     `task_id: ${taskId}`,
@@ -578,13 +577,7 @@ function formatBackgroundAgentResult(
     `agent_id: ${handle.agentId}`,
     `actual_profile: ${handle.profileName}`,
     'automatic_notification: true',
-    '',
     `description: ${description}`,
-    '',
-    allowBackground
-      ? `next_step: Completion is delivered automatically. An interactive main agent (root) should continue independent work or end the current turn normally when none remains; completion starts a follow-up turn when root is idle, without another user prompt. Do not keep root's turn open with TaskWait, TaskOutput or AgentList polling, sleep, or timed loops, or choose foreground execution merely because the next step depends on the result. Reserve synchronous waiting for a genuine same-turn requirement. A subagent must handle its own dependencies before returning its final result to its parent.`
-      : 'next_step: The completion arrives automatically in a later turn.',
-    `resume_hint: To continue or recover this same subagent later, call AgentRun(resume="${handle.agentId}", prompt="..."). The parameter is agent_id ("${handle.agentId}"), NOT task_id ("${taskId}") or source_id from a later <notification>. Recovery cases: a later <notification type="task.lost" | "task.failed" | "task.killed"> for this subagent — its conversation history is preserved across session restarts and resume will pick it up.`,
   ].join('\n');
 }
 

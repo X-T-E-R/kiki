@@ -1,6 +1,16 @@
 {
   "name": "@kiki/docs",
   "private": true,
+  "description": "Kiki documentation site",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
+    "directory": "docs"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/kiki/issues"
+  },
   "license": "MIT",
   "type": "module",
   "scripts": {

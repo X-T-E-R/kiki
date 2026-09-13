@@ -1,7 +1,7 @@
-declare const __KIMI_CODE_VERSION__: string | undefined;
-declare const __KIMI_CODE_CHANNEL__: string | undefined;
-declare const __KIMI_CODE_COMMIT__: string | undefined;
-declare const __KIMI_CODE_BUILD_TARGET__: string | undefined;
+declare const __KIKI_VERSION__: string | undefined;
+declare const __KIKI_CHANNEL__: string | undefined;
+declare const __KIKI_COMMIT__: string | undefined;
+declare const __KIKI_BUILD_TARGET__: string | undefined;
 
 export interface KimiBuildInfo {
   readonly version?: string;
@@ -16,19 +16,19 @@ function optionalBuildString(value: unknown): string | undefined {
 
 export const KIMI_BUILD_INFO: KimiBuildInfo = {
   version:
-    typeof __KIMI_CODE_VERSION__ === 'string'
-      ? optionalBuildString(__KIMI_CODE_VERSION__)
+    typeof __KIKI_VERSION__ === 'string'
+      ? optionalBuildString(__KIKI_VERSION__)
       : undefined,
   channel:
-    typeof __KIMI_CODE_CHANNEL__ === 'string'
-      ? optionalBuildString(__KIMI_CODE_CHANNEL__)
+    typeof __KIKI_CHANNEL__ === 'string'
+      ? optionalBuildString(__KIKI_CHANNEL__)
       : undefined,
   commit:
-    typeof __KIMI_CODE_COMMIT__ === 'string'
-      ? optionalBuildString(__KIMI_CODE_COMMIT__)
+    typeof __KIKI_COMMIT__ === 'string'
+      ? optionalBuildString(__KIKI_COMMIT__)
       : undefined,
   buildTarget:
-    typeof __KIMI_CODE_BUILD_TARGET__ === 'string'
-      ? optionalBuildString(__KIMI_CODE_BUILD_TARGET__)
+    typeof __KIKI_BUILD_TARGET__ === 'string'
+      ? optionalBuildString(__KIKI_BUILD_TARGET__)
       : undefined,
 };

@@ -1,4 +1,4 @@
-import { resolveKimiHome } from '@kiki/agent-core-v2';
+import { resolveKikiHome } from '@kiki/agent-core-v2';
 import {
   createKimiDefaultHeaders,
   KIMI_CODE_FLOW_CONFIG,
@@ -41,7 +41,7 @@ export class KimiForCodingProvider implements ModelProvider {
     this.baseUrl = options.baseUrl ?? kimiCodeBaseUrl();
     this.promptCacheKey = options.promptCacheKey;
     this.defaultHeaders = options.defaultHeaders;
-    this.homeDir = resolveKimiHome(options.homeDir);
+    this.homeDir = resolveKikiHome(options.homeDir);
     this.identity = {
       productName: options.productName,
       version: options.version,

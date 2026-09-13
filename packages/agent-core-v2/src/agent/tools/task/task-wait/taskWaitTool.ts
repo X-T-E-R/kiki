@@ -22,8 +22,6 @@ import TASK_WAIT_DESCRIPTION from './task-wait.md?raw';
 
 const OUTPUT_PREVIEW_BYTES = 32 * 1024;
 
-const PAGING_HINT_LINES = 300;
-
 const PROGRESS_INTERVAL_MS = 1_000;
 
 type TaskWaitOutcome = 'completed' | 'timed_out' | 'task_not_found' | 'aborted';
@@ -36,21 +34,8 @@ function terminalReason(info: AgentTaskInfo): 'timed_out' | 'stopped' | 'failed'
 }
 
 function fullOutputHint(output: AgentTaskOutputSnapshot): string | undefined {
-  if (!output.fullOutputAvailable || output.outputPath === undefined) return undefined;
-  if (output.truncated) {
-    return (
-      `Only the last ${String(OUTPUT_PREVIEW_BYTES)} bytes are shown above. ` +
-      'Use the Read tool with the output_path to page through the full log ' +
-      `(parameters: path, line_offset, n_lines; read about ${String(PAGING_HINT_LINES)} ` +
-      'lines per page).'
-    );
-  }
-  return (
-    'The preview above is the complete output. Use the Read tool with the output_path ' +
-    'if you need to re-read the full log later ' +
-    `(parameters: path, line_offset, n_lines; read about ${String(PAGING_HINT_LINES)} ` +
-    'lines per page).'
-  );
+  if (!output.truncated || !output.fullOutputAvailable || output.outputPath === undefined) return undefined;
+  return 'Truncated tail; Read output_path for the full log.';
 }
 
 export function taskWaitProgressUpdate(
@@ -245,7 +230,7 @@ export class TaskWaitTool implements ITaskWaitTool {
         waitedMs: Date.now() - startedAt,
         timeoutMs,
       }),
-      'The wait ended before the task finished; a timeout is not an error and the task is still running. Reassess any same-turn synchronization requirement rather than automatically repeating TaskWait. For an interactive main agent (root) with automatic subagent completion notification, continue independent work or end the turn normally; completion starts a follow-up turn when root is idle. A subagent must handle its dependencies before returning its final result to its parent.',
+      'The wait timed out, not the task. The task is still running.',
     ];
     const running = this.tasks.list(true);
     if (running.length > 0) {

@@ -5,7 +5,7 @@
  * Usage:
  *   node produce-manifest.mjs <input-dir> <release-tag>
  *
- * Input dir must contain files matching: kimi-code-<target>.zip.sha256
+ * Input dir must contain files matching: kiki-<target>.zip.sha256
  * (produced by package.mjs across the 6 native-build matrix runners).
  *
  * Output:
@@ -26,10 +26,10 @@ if (!inputDir || !tag) {
 const version = tag.replace(/^@kiki\/cli@/, '').replace(/^v/, '');
 
 const entries = await readdir(inputDir);
-const sumFiles = entries.filter((f) => /^kimi-code-[a-z0-9-]+\.zip\.sha256$/.test(f));
+const sumFiles = entries.filter((f) => /^kiki-[a-z0-9-]+\.zip\.sha256$/.test(f));
 
 if (sumFiles.length === 0) {
-  console.error(`No kimi-code-<target>.zip.sha256 files found in ${inputDir}`);
+  console.error(`No kiki-<target>.zip.sha256 files found in ${inputDir}`);
   process.exit(1);
 }
 
@@ -42,8 +42,8 @@ for (const sumFile of sumFiles.sort()) {
     process.exit(1);
   }
   const filename = basename(sumFile, '.sha256');
-  // kimi-code-darwin-arm64.zip → darwin-arm64
-  const target = filename.replace(/^kimi-code-/, '').replace(/\.zip$/, '');
+  // kiki-darwin-arm64.zip → darwin-arm64
+  const target = filename.replace(/^kiki-/, '').replace(/\.zip$/, '');
   platforms[target] = { filename, checksum };
 }
 

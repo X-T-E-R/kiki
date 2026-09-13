@@ -87,6 +87,7 @@ import '#/session/subagent/configSection';
 import {
   canonicalizeSubagentBinding,
   DEFAULT_SUBAGENT_TIMEOUT_MS,
+  formatSubagentTimeoutDescription,
   resolveSubagentBinding,
   resolveSubagentTimeoutMs,
   subagentModelSource,
@@ -324,7 +325,7 @@ describe('Agent config', () => {
       [emit] agent.activity.updated          { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] tool.call.delta                 { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-1>", "toolCallId": "call_lookup", "name": "Lookup", "argumentsPart": "{\\"query\\":\\"original\\"}" }
       [emit] agent.activity.updated          { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "tool_call", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
-      [wire] usage.record                    { "model": "mock-model", "usage": { "inputOther": 9, "output": 17, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "time": "<time>" }
+      [wire] usage.record                    { "model": "mock-model", "usage": { "inputOther": 9, "output": 17, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
       [emit] agent.status.updated            { "time": "<time>", "usage": { "byModel": { "mock-model": { "inputOther": 9, "output": 17, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 9, "output": 17, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 9, "output": 17, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [wire] token_counting.measured         { "length": 2, "tokens": 26, "time": "<time>" }
       [emit] agent.status.updated            { "time": "<time>", "contextTokens": 26 }
@@ -373,7 +374,7 @@ describe('Agent config', () => {
       [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "systemPrompt": "You are a deterministic test agent.", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 3, "turnStep": "0.2", "time": "<time>" }
       [emit] assistant.delta             { "time": "<time>", "turnId": 0, "step": 2, "stepId": "<uuid-4>", "partId": "<uuid-5>", "delta": "Still using the original turn config." }
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 2, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
-      [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 31, "output": 13, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "time": "<time>" }
+      [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 31, "output": 13, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
       [emit] agent.status.updated        { "time": "<time>", "usage": { "byModel": { "mock-model": { "inputOther": 40, "output": 30, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 40, "output": 30, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 40, "output": 30, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [wire] token_counting.measured     { "length": 4, "tokens": 44, "time": "<time>" }
       [emit] agent.status.updated        { "time": "<time>", "contextTokens": 44 }
@@ -417,7 +418,7 @@ describe('Agent config', () => {
       [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "changed-model", "modelAlias": "changed-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "7617cb8b42659214c397a1d7505fce204b673b078a10de8bcccc697d88dcda56", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 5, "turnStep": "1.1", "time": "<time>" }
       [emit] assistant.delta             { "time": "<time>", "turnId": 1, "step": 1, "stepId": "<uuid-6>", "partId": "<uuid-7>", "delta": "Now the changed config is active." }
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 1, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
-      [wire] usage.record                { "model": "changed-model", "usage": { "inputOther": 50, "output": 12, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 1, "agentId": "main", "provider": "test-provider", "modelAlias": "changed-model", "executorId": "native", "time": "<time>" }
+      [wire] usage.record                { "model": "changed-model", "usage": { "inputOther": 50, "output": 12, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 1, "agentId": "main", "provider": "test-provider", "modelAlias": "changed-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
       [emit] agent.status.updated        { "time": "<time>", "usage": { "byModel": { "mock-model": { "inputOther": 40, "output": 30, "inputCacheRead": 0, "inputCacheCreation": 0 }, "changed-model": { "inputOther": 50, "output": 12, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 90, "output": 42, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 50, "output": 12, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [wire] token_counting.measured     { "length": 6, "tokens": 62, "time": "<time>" }
       [emit] agent.status.updated        { "time": "<time>", "contextTokens": 62 }
@@ -508,11 +509,11 @@ describe('ConfigService env overlay (live)', () => {
 
     expect(config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(true);
 
-    env['KIMI_CODE_BUILTIN_PRODUCT_SKILLS'] = '0';
+    env['KIKI_BUILTIN_PRODUCT_SKILLS'] = '0';
     expect(config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(false);
 
     await config.replace(BUILTIN_PRODUCT_SKILLS_SECTION, true);
-    delete env['KIMI_CODE_BUILTIN_PRODUCT_SKILLS'];
+    delete env['KIKI_BUILTIN_PRODUCT_SKILLS'];
     expect(config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(true);
 
     disposables.dispose();
@@ -533,11 +534,11 @@ describe('ConfigService env overlay (live)', () => {
     await config.replace(BUILTIN_PRODUCT_SKILLS_SECTION, false);
 
     for (const invalid of ['', '   ', 'maybe']) {
-      env['KIMI_CODE_BUILTIN_PRODUCT_SKILLS'] = invalid;
+      env['KIKI_BUILTIN_PRODUCT_SKILLS'] = invalid;
       expect(config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(false);
     }
 
-    env['KIMI_CODE_BUILTIN_PRODUCT_SKILLS'] = 'on';
+    env['KIKI_BUILTIN_PRODUCT_SKILLS'] = 'on';
     expect(config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(true);
 
     disposables.dispose();
@@ -1214,6 +1215,18 @@ describe('config deprecations', () => {
     return { config, disposables, storage };
   }
 
+  it('parses and writes model service_tier while rejecting unknown tier values', async () => {
+    const { config, disposables, storage } = await createConfig({}, '[models."example/fast"]\nmodel = "fast"\nservice_tier = "priority"\n');
+    try {
+      expect(config.get(MODELS_SECTION)).toMatchObject({ 'example/fast': { serviceTier: 'priority' } });
+      await config.set(MODELS_SECTION, { 'example/fast': { model: 'fast', serviceTier: 'default' } });
+      expect(new TextDecoder().decode(await storage.read('', 'config.toml'))).toContain('service_tier = "default"');
+      await expect(config.set(MODELS_SECTION, { 'example/fast': { serviceTier: 'invalid' } })).rejects.toThrow();
+    } finally {
+      disposables.dispose();
+    }
+  });
+
   it('warns and ignores a deprecated TOML key whose value no longer applies', async () => {
     const { config, disposables } = await createConfig(
       {},
@@ -1710,13 +1723,31 @@ describe('subagent config section', () => {
 
     expect(resolveSubagentTimeoutMs(config)).toBe(DEFAULT_SUBAGENT_TIMEOUT_MS);
 
-    env[SUBAGENT_TIMEOUT_ENV] = 'abc';
-    expect(resolveSubagentTimeoutMs(config)).toBe(DEFAULT_SUBAGENT_TIMEOUT_MS);
-
     env[SUBAGENT_TIMEOUT_ENV] = '3000';
     expect(resolveSubagentTimeoutMs(config)).toBe(3000);
 
     disposables.dispose();
+  });
+
+  it('accepts zero and surrounding whitespace while rejecting empty, negative, and non-integer env values', async () => {
+    const env: Record<string, string> = {};
+    const { config, disposables } = await createConfig(env);
+
+    env[SUBAGENT_TIMEOUT_ENV] = ' 0 ';
+    expect(resolveSubagentTimeoutMs(config)).toBe(0);
+
+    for (const invalid of ['', '   ', 'abc', '-1', '1.5']) {
+      env[SUBAGENT_TIMEOUT_ENV] = invalid;
+      expect(resolveSubagentTimeoutMs(config)).toBe(DEFAULT_SUBAGENT_TIMEOUT_MS);
+    }
+
+    disposables.dispose();
+  });
+
+  it('formats bounded and disabled timeout values for user-facing descriptions', () => {
+    expect(formatSubagentTimeoutDescription(DEFAULT_SUBAGENT_TIMEOUT_MS)).toBe('2 hours');
+    expect(formatSubagentTimeoutDescription(5 * 60 * 60 * 1000)).toBe('5 hours');
+    expect(formatSubagentTimeoutDescription(0)).toBe('unlimited');
   });
 
   it('reads timeout_ms from config.toml and lets the env var win', async () => {
@@ -1726,6 +1757,17 @@ describe('subagent config section', () => {
 
     env[SUBAGENT_TIMEOUT_ENV] = '7000';
     expect(resolveSubagentTimeoutMs(config)).toBe(7000);
+
+    disposables.dispose();
+  });
+
+  it('accepts a disabled timeout_ms from config.toml', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      '[subagent]\ntimeout_ms = 0\n',
+    );
+
+    expect(resolveSubagentTimeoutMs(config)).toBe(0);
 
     disposables.dispose();
   });
@@ -1756,6 +1798,8 @@ describe('subagent config section', () => {
     delete env[SUBAGENT_TIMEOUT_ENV];
     expect(config.get<SubagentConfig>(SUBAGENT_SECTION)).toEqual({
       timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
+      maxDirectChildren: 16,
+      maxTotalSubagents: 0,
     });
 
     disposables.dispose();
@@ -1922,6 +1966,12 @@ describe('mcp config section', () => {
 
     expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBeUndefined();
 
+    expect(MCP_STARTUP_TIMEOUT_ENV).toBe('KIKI_MCP_STARTUP_TIMEOUT_MS');
+    expect(MCP_TOOL_TIMEOUT_ENV).toBe('KIKI_MCP_TOOL_TIMEOUT_MS');
+    env['KIMI_MCP_STARTUP_TIMEOUT_MS'] = '12000';
+    env['KIMI_MCP_TOOL_TIMEOUT_MS'] = '12000';
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBeUndefined();
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.toolTimeoutMs).toBeUndefined();
     env[MCP_STARTUP_TIMEOUT_ENV] = 'abc';
     expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBeUndefined();
 

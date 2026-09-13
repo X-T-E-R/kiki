@@ -76,7 +76,15 @@ describe('ipc transport specifics', () => {
   it('drops clients whose hello token mismatches', async () => {
     const socketPath = await setup({ token: 'right' });
     const klient = createKlient({ socketPath, token: 'wrong' });
+    const read = vi.fn(() => Promise.resolve('idle'));
+    const publish = vi.fn();
+    const errors: Error[] = [];
+    klient.events.onError((error) => errors.push(error));
+    klient.events.observe({ events: ['config.changed'], read }, publish);
     await expect(klient.global.env()).rejects.toThrow();
+    await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+    expect(read).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
     await klient.close();
 
     const ok = createKlient({ socketPath, token: 'right' });

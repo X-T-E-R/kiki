@@ -51,7 +51,7 @@ const WORKER_SCRIPT = `
   import { join } from 'node:path';
   const { OAuthManager } = await import(process.env.KIMI_OAUTH_ENTRY);
 
-  const shareDir = process.env.KIMI_CODE_HOME;
+  const shareDir = process.env.KIKI_HOME;
   const tokenPath = join(shareDir, 'token.json');
   const counterPath = join(shareDir, 'refresh-count.txt');
   const readyPath = join(shareDir, 'first-load-ready.txt');

@@ -179,4 +179,53 @@ describe('AgentTaskService — foreground persistence', () => {
     expect(snapshot.fullOutputAvailable).toBe(true);
     expect(snapshot.outputSizeBytes).toBe(big.length);
   });
+
+  it('archives high-churn foreground tasks and bounds their shared output cache without evicting active tasks', async () => {
+    const internals = background as unknown as {
+      tasks: Map<string, { retainedOutputBytes: number }>;
+      cachedOutputs: Map<string, { retainedOutputBytes: number }>;
+    };
+    const active = controllableProcess();
+    const activeId = registerForeground(background, active.proc, 'stream', 'still active');
+    active.pushStdout('active-prefix\n');
+    const history: Array<{ taskId: string; output: string }> = [];
+    for (let batch = 0; batch < 3; batch++) {
+      for (let i = 0; i < 12; i++) {
+        const output = `task-${batch}-${i}\n${'x'.repeat(128 * 1024)}`;
+        const taskId = registerForeground(background, immediateProcess(0, output), 'echo', 'history');
+        history.push({ taskId, output });
+        await background.wait(taskId);
+      }
+      await vi.waitFor(() => {
+        expect([...internals.tasks.keys()]).toEqual([activeId]);
+        const bytes = [...internals.tasks.values(), ...internals.cachedOutputs.values()]
+          .reduce((sum, entry) => sum + entry.retainedOutputBytes, 0);
+        expect(bytes).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
+      });
+      expect(background.getTask(activeId)?.status).toBe('running');
+    }
+    for (const { taskId, output } of history) {
+      expect(await background.readOutput(taskId)).toBe(output);
+      expect(await background.wait(taskId)).toMatchObject({ status: 'completed', detached: false });
+      expect(await background.waitForForegroundRelease(taskId)).toBe('terminal');
+      expect(await background.stop(taskId)).toMatchObject({ status: 'completed' });
+    }
+    expect(background.list(false).map((task) => task.taskId)).toEqual([activeId]);
+    active.pushStdout('active-suffix\n');
+    active.finish(0);
+    await background.wait(activeId);
+    expect(await background.readOutput(activeId)).toBe('active-prefix\nactive-suffix\n');
+    await vi.waitFor(() => expect(internals.tasks.size).toBe(0));
+    expect(ctx.allEvents.filter((event) => event.event === 'task.notified')).toHaveLength(0);
+  }, 20_000);
+
+  it('persists foreground output explicitly after its execution record has been archived', async () => {
+    const taskId = registerForeground(background, immediateProcess(0, 'late spill'), 'echo', 'history');
+    await background.wait(taskId);
+    const internals = background as unknown as { tasks: Map<string, unknown> };
+    await vi.waitFor(() => expect(internals.tasks.has(taskId)).toBe(false));
+    background.persistOutput(taskId);
+    const snapshot = await background.getOutputSnapshot(taskId, 1_000);
+    expect(snapshot).toMatchObject({ preview: 'late spill', fullOutputAvailable: true });
+  });
 });

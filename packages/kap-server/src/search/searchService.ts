@@ -80,7 +80,7 @@ async function pathExists(path: string): Promise<boolean> {
 
 /**
  * `search_worker` — run the global search index in a dedicated worker
- * thread (default ON). Disable via `KIMI_CODE_EXPERIMENTAL_SEARCH_WORKER=false`
+ * thread (default ON). Disable via `KIKI_EXPERIMENTAL_SEARCH_WORKER=false`
  * or the `[experimental]` config section to fall back to the in-process
  * (inline) host. Read once at service construction.
  */
@@ -91,7 +91,7 @@ registerFlagDefinition({
   title: 'search worker isolation',
   description:
     'Run the global search-index MiniDB (open, WAL replay, sync, queries) in a dedicated worker thread instead of the server main thread.',
-  env: 'KIMI_CODE_EXPERIMENTAL_SEARCH_WORKER',
+  env: 'KIKI_EXPERIMENTAL_SEARCH_WORKER',
   default: true,
   surface: 'core',
 });
@@ -110,7 +110,7 @@ export interface IGlobalSearchService {
   /** Full rebuild: wipe the index and rescan every wire file. */
   reindex(): Promise<{ sessions: number; documents: number }>;
   /**
-   * Diagnostic status (the `/api/v1/debug` surface reflects it). Never
+   * Diagnostic status (the `/api/debug` surface reflects it). Never
    * throws: a backend that cannot answer (failed open, worker down) reports
    * a degraded lifecycle instead of rejecting. `lifecycle` is the aggregate
    * state machine (stage 5): stopped → opening → ready → building/degraded →
@@ -868,7 +868,7 @@ export class GlobalSearchService implements IGlobalSearchService {
    * minutes-long first open (or while the worker backs off), where status()
    * would block. The up states (ready/building) come from the backend's
    * cached last response and may lag one RPC; status() is the exact,
-   * round-trip variant. Reflected on the `/api/v1/debug` surface like every
+   * round-trip variant. Reflected on the `/api/debug` surface like every
    * Service method.
    */
   lifecycleReport(): CoreLifecycleReport {

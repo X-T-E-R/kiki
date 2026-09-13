@@ -33,7 +33,7 @@ import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { bootstrap, logSeed, resolveLoggingConfig } from '@kiki/agent-core-v2';
+import { bootstrap, IConfigService, ISessionIndex, logSeed, resolveLoggingConfig } from '@kiki/agent-core-v2';
 
 import { TEST_CLIENT_IDENTITY } from '../helpers/engine.js';
 import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
@@ -300,6 +300,8 @@ beforeAll(async () => {
   ({ app } = bootstrap({ homeDir, clientIdentity: TEST_CLIENT_IDENTITY }, [
     ...logSeed(resolveLoggingConfig({ homeDir, env: process.env })),
   ]));
+  await app.accessor.get(IConfigService).ready;
+  await app.accessor.get(ISessionIndex).prepare();
   klient = createMemoryKlient({ scope: app });
 
   server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -448,11 +450,14 @@ async function newCase(modelId: string, label: string): Promise<CaseContext> {
     (payload: Record<string, unknown>): void => {
       events.push({ name, payload });
     };
-  agent.events.on('turn.started', record('turn.started'));
-  agent.events.on('turn.ended', record('turn.ended'));
-  agent.events.on('error', record('error'));
-  agent.events.on('prompt.completed', record('prompt.completed'));
-  agent.events.on('prompt.aborted', record('prompt.aborted'));
+  const subscriptions = [
+    agent.events.on('turn.started', record('turn.started')),
+    agent.events.on('turn.ended', record('turn.ended')),
+    agent.events.on('error', record('error')),
+    agent.events.on('prompt.completed', record('prompt.completed')),
+    agent.events.on('prompt.aborted', record('prompt.aborted')),
+  ];
+  await Promise.all(subscriptions.map((subscription) => subscription.ready));
 
   return {
     agent,
@@ -464,12 +469,7 @@ async function newCase(modelId: string, label: string): Promise<CaseContext> {
 }
 
 async function promptAndWait(ctx: CaseContext, input: readonly ContentPart[]): Promise<void> {
-  const settled = Promise.race([
-    onceEvent(ctx.agent.events, 'prompt.completed', 60_000),
-    onceEvent(ctx.agent.events, 'prompt.aborted', 60_000),
-  ]);
-  await ctx.agent.prompt({ input });
-  await settled;
+  await ctx.agent.prompt({ input }, { waitFor: 'terminal' });
 }
 
 /** Chat-completions messages array of the n-th captured request. */

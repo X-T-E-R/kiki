@@ -37,7 +37,7 @@ import {
 } from '../services/messages/messageActions';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import type { SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
-import { projectPromptHandle } from './prompts';
+import { PROMPT_BODY_LIMIT_BYTES, projectPromptHandle } from './prompts';
 import {
   getMessage,
   listMessages,
@@ -56,7 +56,7 @@ interface MessageRouteHost {
   ): unknown;
   post(
     path: string,
-    options: { preHandler: unknown[]; schema?: Record<string, unknown> } | undefined,
+    options: { preHandler: unknown[]; schema?: Record<string, unknown>; bodyLimit?: number } | undefined,
     handler: (
       req: { id: string; body: unknown; params: unknown },
       reply: { send(payload: unknown): unknown },
@@ -248,7 +248,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
   );
   app.post(
     actionRoute.path,
-    actionRoute.options,
+    { ...actionRoute.options, bodyLimit: PROMPT_BODY_LIMIT_BYTES },
     actionRoute.handler as Parameters<MessageRouteHost['post']>[2],
   );
 }

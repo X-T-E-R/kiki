@@ -37,6 +37,13 @@ import { ToolResultTruncationService } from '#/agent/toolResultTruncation/toolRe
 import { makeAgentScopeContext, IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
+import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { AgentToolPolicyService } from '#/agent/toolPolicy/toolPolicyService';
+import { IConfigService } from '#/app/config/config';
+import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
+import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IEventBus } from '#/app/event/eventBus';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -153,6 +160,50 @@ describe('AgentToolExecutorService', () => {
       }),
     ]);
     expect(tool.calls).toEqual([]);
+  });
+
+  it.each(['manual', 'auto', 'yolo'] as const)('enforces the research ceiling before resolution even with %s approval', async () => {
+    const data: ProfileData = {
+      executionRestriction: 'research-readonly',
+      modelCapabilities: UNKNOWN_CAPABILITY,
+      thinkingLevel: 'off',
+      systemPrompt: '',
+    };
+    ix.stub(IAgentProfileService, { data: () => data });
+    ix.stub(IConfigService, { get: (() => ({})) as IConfigService['get'] });
+    ix.stub(ISessionToolPolicy, { disabledTools: () => [] });
+    ix.stub(ISessionToolPolicyGate, { disabledTools: [] });
+    ix.set(IAgentToolPolicyService, new SyncDescriptor(AgentToolPolicyService));
+    const policy = ix.get(IAgentToolPolicyService);
+    const approval = vi.fn((event: BeforeToolExecuteEvent) => event.allow());
+    executor.onBeforeExecuteTool(approval);
+    const rejected = [
+      ['Bash', 'builtin'], ['Write', 'builtin'], ['Edit', 'builtin'], ['Skill', 'builtin'],
+      ['AgentRun', 'builtin'], ['AgentSwarm', 'builtin'], ['AgentSend', 'builtin'],
+      ['Read', 'user'], ['Read', 'mcp'], ['mcp__example__Read', 'mcp'],
+      ['UnknownFutureTool', 'builtin'], ['SelectTools', 'builtin'],
+    ] as const;
+    for (const [name, source] of rejected) {
+      const tool = new TestTool(name);
+      const resolve = vi.spyOn(tool, 'resolveExecution');
+      const registration = registry.register(tool, { source });
+      const result = await execute([toolCall(`blocked_${name}_${source}`, name, { text: 'no' })]);
+      expect(result[0]?.isError).toBe(true);
+      expect(resolve).not.toHaveBeenCalled();
+      expect(tool.calls).toEqual([]);
+      expect(policy.isToolActiveForDisclosure(name, source)).toBe(false);
+      expect(policy.isToolActiveForProfile({}, name, source)).toBe(false);
+      registration.dispose();
+    }
+    expect(approval).not.toHaveBeenCalled();
+    for (const name of ['Read', 'ReadMediaFile', 'Glob', 'Grep', 'WebSearch', 'FetchURL']) {
+      const tool = new TestTool(name);
+      registry.register(tool);
+      const result = await execute([toolCall(`allowed_${name}`, name, { text: 'research' })]);
+      expect(result[0]?.isError).not.toBe(true);
+      expect(tool.calls).toHaveLength(1);
+    }
+    expect(approval).toHaveBeenCalledTimes(6);
   });
 
   it('tags tool_call telemetry with recorded dup types, defaulting to normal', async () => {

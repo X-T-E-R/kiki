@@ -10,7 +10,6 @@ import {
   IAgentToolPolicyService,
   IAgentPromptService,
   IAgentSkillService,
-  IAuthSummaryService,
   IEventBus,
   IEventService,
   IFileService,
@@ -38,7 +37,9 @@ import {
   type ISessionScopeHandle,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 import { ErrorCode } from '../protocol/error-codes';
+import { ensurePromptAuthReady } from '../lib/promptAuth';
 import { projectPromptContentParts } from '../services/messages/messageProjection';
 import {
   promptAbortResponseSchema,
@@ -65,6 +66,9 @@ import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent, MAIN_AGENT_ID } from '../transport/mainAgent';
 import { parseActionSuffix } from './action-suffix';
+import { KLIENT_CALL_BODY_LIMIT_BYTES } from '../transport/klient/registerKlientHttp';
+
+export const PROMPT_BODY_LIMIT_BYTES = KLIENT_CALL_BODY_LIMIT_BYTES;
 
 interface PromptRouteHost {
   get(
@@ -77,7 +81,7 @@ interface PromptRouteHost {
   ): unknown;
   post(
     path: string,
-    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
+    options: { preHandler: unknown[]; schema?: Record<string, unknown>; bodyLimit?: number },
     handler: (
       req: { id: string; body: unknown; params: unknown },
       reply: { send(payload: unknown): unknown },
@@ -114,10 +118,10 @@ async function resolvePromptFromSession(session: ISessionScopeHandle, agentId?: 
     throw new Error2('agent.not_found', `agent ${agentId} does not exist`);
   }
   return {
+    accessor: agent.accessor,
     prompt: agent.accessor.get(IAgentPromptService),
     skill: agent.accessor.get(IAgentSkillService),
     events: agent.accessor.get(IEventBus),
-    auth: agent.accessor.get(IAuthSummaryService),
     profile: agent.accessor.get(IAgentProfileService),
     toolPolicy: agent.accessor.get(IAgentToolPolicyService),
     permissionMode: agent.accessor.get(IAgentPermissionModeService),
@@ -243,7 +247,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         );
         const resolved = await resolvePromptFromSession(session, req.body.agent_id);
         reservation = reservePrompt(resolved.prompt, req.body.prompt_id);
-        await resolved.auth.ensureReady();
+        await ensurePromptAuthReady(session, resolved.accessor, req.body);
 
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
         preparedMedia = await resolvePromptMediaFiles(
@@ -272,13 +276,22 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         const execution: PromptExecutionBinding | undefined =
           req.body.profile === undefined &&
             req.body.model === undefined &&
-            req.body.thinking === undefined
+            req.body.thinking === undefined &&
+            req.body.plan_mode === undefined &&
+            req.body.swarm_mode === undefined &&
+            req.body.goal_objective === undefined &&
+            req.body.goal_control === undefined
             ? undefined
             : {
                 profile: req.body.profile,
                 model: req.body.model,
                 thinking: req.body.thinking,
+                planMode: req.body.plan_mode,
+                swarmMode: req.body.swarm_mode,
+                goalObjective: req.body.goal_objective,
+                goalControl: req.body.goal_control,
               };
+        validatePromptRuntimeControls(resolved.accessor, execution);
         if (req.body.permission_mode !== undefined) resolved.permissionMode.setMode(req.body.permission_mode);
         if (req.body.plan_gate !== undefined) resolved.plan.setGate(req.body.plan_gate);
         let deferredDisabledTools: readonly string[] | undefined;
@@ -360,7 +373,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       }
     },
   );
-  app.post(submitRoute.path, submitRoute.options, submitRoute.handler as Parameters<PromptRouteHost['post']>[2]);
+  app.post(
+    submitRoute.path,
+    { ...submitRoute.options, bodyLimit: PROMPT_BODY_LIMIT_BYTES },
+    submitRoute.handler as Parameters<PromptRouteHost['post']>[2],
+  );
 
   const steerManyRoute = defineRoute(
     {
@@ -482,7 +499,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       }
     },
   );
-  app.post(actionRoute.path, actionRoute.options, actionRoute.handler as Parameters<PromptRouteHost['post']>[2]);
+  app.post(
+    actionRoute.path,
+    { ...actionRoute.options, bodyLimit: PROMPT_BODY_LIMIT_BYTES },
+    actionRoute.handler as Parameters<PromptRouteHost['post']>[2],
+  );
 }
 
 function projectPromptList(snapshot: PromptQueueSnapshot) {
@@ -497,6 +518,9 @@ export function projectPromptHandle(handle: PromptHandle) {
 }
 
 export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][number]) {
+  if (prompt.state === 'failed' || prompt.state === 'cancelled') {
+    throw new Error2(ErrorCodes.INTERNAL, `Prompt ${prompt.id} ${prompt.state} before launch; inspect prompt completion events`);
+  }
   const status = prompt.state === 'running' || prompt.state === 'steered'
     ? 'running'
     : prompt.state === 'blocked' ? 'blocked' : 'queued';

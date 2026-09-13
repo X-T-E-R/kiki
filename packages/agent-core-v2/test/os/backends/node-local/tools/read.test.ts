@@ -215,7 +215,7 @@ describe('ReadTool', () => {
     expect(result).toEqual({
       output: '1\talpha\n2\tbeta',
       note: readNote(
-        '2 lines read from file starting from line 1. Total lines in file: 2. End of file reached.',
+        '2 lines read starting at line 1. Total lines in file: 2. End of file.',
       ),
     });
   });
@@ -238,7 +238,7 @@ describe('ReadTool', () => {
     expect(result.output).toBe(['1\talpha', '2\tbeta'].join('\n'));
     expect(result.note).toBe(
       readNote(
-        '2 lines read from file starting from line 1. Total lines in file: 2. End of file reached.',
+        '2 lines read starting at line 1. Total lines in file: 2. End of file.',
       ),
     );
   });
@@ -251,7 +251,7 @@ describe('ReadTool', () => {
     expect(result.output).toBe(['1\talpha\\r', '2\tbeta', '3\tgamma\\rdone'].join('\n'));
     expect(result.note).toBe(
       readNote(
-        '3 lines read from file starting from line 1. Total lines in file: 3. End of file reached. Mixed or lone carriage-return line endings are shown as \\r. Use exact \\r\\n or \\r escapes in Edit.old_string for those lines.',
+        '3 lines read starting at line 1. Total lines in file: 3. End of file. Mixed or lone carriage-return line endings are shown as \\r. Use exact \\r\\n or \\r escapes in Edit.old_string for those lines.',
       ),
     );
   });
@@ -264,7 +264,7 @@ describe('ReadTool', () => {
     expect(result).toEqual({
       output: '2\tb\n3\tc',
       note: readNote(
-        '2 lines read from file starting from line 2. Total lines in file: at least 4. More lines are available. Continue with line_offset=4.',
+        '2 lines read starting at line 2. Total lines in file: at least 4. More lines are available. Continue with line_offset=4.',
       ),
     });
   });
@@ -276,7 +276,7 @@ describe('ReadTool', () => {
 
     expect(result).toEqual({
       output: '',
-      note: readNote('No lines read from file. Total lines in file: 2. End of file reached.'),
+      note: readNote('No lines read. Total lines in file: 2. End of file.'),
     });
   });
 
@@ -288,7 +288,7 @@ describe('ReadTool', () => {
     expect(result).toEqual({
       output: '3\tc\n4\td\n5\te',
       note: readNote(
-        '3 lines read from file starting from line 3. Total lines in file: 5. End of file reached.',
+        '3 lines read starting at line 3. Total lines in file: 5. End of file.',
       ),
     });
   });
@@ -300,7 +300,7 @@ describe('ReadTool', () => {
 
     expect(result.output).toBe('1\ta\n2\tb');
     expect(result.note).toBe(
-      readNote('2 lines read from file starting from line 1. Total lines in file: 5.'),
+      readNote('2 lines read starting at line 1. Total lines in file: 5.'),
     );
   });
 
@@ -343,7 +343,7 @@ describe('ReadTool', () => {
     expect(result.output).toBe('1\texternal');
     expect(result.note).toBe(
       readNote(
-        '1 line read from file starting from line 1. Total lines in file: 1. End of file reached.',
+        '1 line read starting at line 1. Total lines in file: 1. End of file.',
       ),
     );
     expect(readBytes).toHaveBeenCalledWith('/tmp/external.txt', MEDIA_SNIFF_BYTES);
@@ -417,7 +417,7 @@ describe('ReadTool', () => {
     expect(result.output).toBe('1\thome note');
     expect(result.note).toBe(
       readNote(
-        '1 line read from file starting from line 1. Total lines in file: 1. End of file reached.',
+        '1 line read starting at line 1. Total lines in file: 1. End of file.',
       ),
     );
     expect(readBytes).toHaveBeenCalledWith('/home/test/notes/today.txt', MEDIA_SNIFF_BYTES);
@@ -804,11 +804,10 @@ describe('ReadTool', () => {
     expect(output).not.toContain('Max');
   });
 
-  it('interpolates the cap constants into the description and references the Grep tool', () => {
+  it('interpolates the cap constants into the description', () => {
     const tool = toolWithContent('');
     expect(tool.description).toContain(String(MAX_LINES));
     expect(tool.description).toContain(String(MAX_LINE_LENGTH));
-    expect(tool.description).toContain('Grep');
   });
 
   it('reads files inside additional_dirs via absolute path', async () => {
@@ -840,7 +839,7 @@ describe('ReadTool', () => {
     expect(result.isError).toBeFalsy();
     expect(result.output).toBe('');
     expect(result.note).toBe(
-      readNote('No lines read from file. Total lines in file: 0. End of file reached.'),
+      readNote('No lines read. Total lines in file: 0. End of file.'),
     );
   });
 
@@ -916,7 +915,7 @@ describe('ReadTool', () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.output).toContain('5\te');
-    expect(result.note).toContain('1 line read from file starting from line 5.');
+    expect(result.note).toContain('1 line read starting at line 5.');
   });
 
   it('tail mode reports absolute line numbers when long lines are truncated', async () => {

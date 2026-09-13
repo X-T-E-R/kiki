@@ -61,7 +61,7 @@ describe('local/local on-disk layout (byte compatibility)', () => {
   }
 
   it('persists the pre-refactor layout byte-for-byte and serves it through the snapshot reader', async () => {
-    const created = await postJson<{ id: string; workspace_id: string }>('/api/v1/sessions', {
+    const created = await postJson<{ id: string; workspace_id: string }>('/api/sessions', {
       metadata: { cwd: workDir },
     });
     expect(created.code).toBe(0);
@@ -105,14 +105,14 @@ describe('local/local on-disk layout (byte compatibility)', () => {
     };
     expect(metaWithAgent.agents['main']?.homedir).toBe(join(sessionDir, 'agents', 'main'));
 
-    const snapshot = await fetch(`${base}/api/v1/sessions/${sessionId}/snapshot`, {
+    const snapshot = await fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
       headers: authHeaders(server!),
     });
     const snapshotBody = (await snapshot.json()) as Envelope<{ session: { id: string } }>;
     expect(snapshotBody.code).toBe(0);
     expect(snapshotBody.data.session.id).toBe(sessionId);
 
-    const second = await postJson<{ id: string; workspace_id: string }>('/api/v1/sessions', {
+    const second = await postJson<{ id: string; workspace_id: string }>('/api/sessions', {
       metadata: { cwd: workDir },
     });
     expect(second.code).toBe(0);
@@ -129,7 +129,7 @@ describe('local/local on-disk layout (byte compatibility)', () => {
   });
 
   it('keeps moved sessions discoverable when their workspace catalog moves with them', async () => {
-    const created = await postJson<{ id: string; workspace_id: string }>('/api/v1/sessions', {
+    const created = await postJson<{ id: string; workspace_id: string }>('/api/sessions', {
       metadata: { cwd: workDir },
     });
     expect(created.code).toBe(0);
@@ -151,7 +151,7 @@ describe('local/local on-disk layout (byte compatibility)', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
     const headers = authHeaders(server);
-    const workspacesResponse = await fetch(`${base}/api/v1/workspaces`, { headers });
+    const workspacesResponse = await fetch(`${base}/api/workspaces`, { headers });
     const workspaces = (await workspacesResponse.json()) as Envelope<{
       items: { id: string; root: string }[];
     }>;
@@ -161,7 +161,7 @@ describe('local/local on-disk layout (byte compatibility)', () => {
     );
 
     const snapshotResponse = await fetch(
-      `${base}/api/v1/sessions/${created.data.id}/snapshot`,
+      `${base}/api/sessions/${created.data.id}/snapshot`,
       { headers },
     );
     const snapshot = (await snapshotResponse.json()) as Envelope<{ session: { id: string } }>;

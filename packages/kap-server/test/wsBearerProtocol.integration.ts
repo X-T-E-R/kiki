@@ -26,7 +26,7 @@ describe('server-v2 WS bearer subprotocol', () => {
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-ws-bearer-'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
-    wsUrl = `ws://127.0.0.1:${server.port}/api/v1/ws`;
+    wsUrl = `ws://127.0.0.1:${server.port}/api/ws`;
   });
 
   afterEach(async () => {

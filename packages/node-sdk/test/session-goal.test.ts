@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { Session } from '#/session';
+import { createKimiHarness } from '#/index';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { TEST_IDENTITY } from './test-identity';
 import type { SDKRpcClientBase } from '#/rpc';
 
 function makeSession() {
@@ -18,6 +23,25 @@ function makeSession() {
 }
 
 describe('Session goal methods', () => {
+  it('runs the complete goal lifecycle through the real SDK and shared facade', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-sdk-goal-'));
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    try {
+      const session = await harness.createSession({ id: 'goal-facade', workDir: homeDir });
+      const goal = await session.createGoal({ objective: 'Complete the example' });
+      expect((await session.getGoal()).goal?.goalId).toBe(goal.goalId);
+      expect((await session.pauseGoal()).status).toBe('paused');
+      expect((await session.resumeGoal()).status).toBe('active');
+      await session.cancelGoal();
+      expect((await session.getGoal()).goal).toBeNull();
+      await session.close();
+      await expect(session.getGoal()).rejects.toMatchObject({ code: 'session.closed' });
+    } finally {
+      await harness.close();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    }
+  });
+
   it('createGoal forwards the supported payload with sessionId', async () => {
     const { session, rpc } = makeSession();
     await session.createGoal({

@@ -64,6 +64,29 @@ describe('parseSkillText', () => {
     expect(skill.description).toBe('# Foo skill');
   });
 
+  it('treats command files as explicit user prompts even when metadata requests otherwise', () => {
+    const skill = parseSkillText({
+      skillMdPath: '/workspace/.kiki/commands/brainstorm.md',
+      skillDirName: 'brainstorm',
+      source: 'project',
+      text: '---\ndescription: Discuss options\nargument-hint: "<topic>"\ndisable-model-invocation: false\ntype: flow\n---\nDiscuss $ARGUMENTS without creating files.',
+    });
+    expect(skill.name).toBe('brainstorm');
+    expect(skill.metadata).toMatchObject({
+      promptCommand: true, disableModelInvocation: true, type: 'prompt', argumentHint: '<topic>',
+    });
+    expect(skill.content).toBe('Discuss $ARGUMENTS without creating files.');
+  });
+
+  it('allows plain command files but rejects names that cannot be slash tokens', () => {
+    const input = {
+      skillMdPath: '/home/commands/brainstorm.md', skillDirName: 'brainstorm', source: 'user' as const,
+      text: 'Discuss options.',
+    };
+    expect(parseSkillText(input).metadata.disableModelInvocation).toBe(true);
+    expect(() => parseSkillText({ ...input, text: '---\nname: two words\n---\nDiscuss.' })).toThrow(SkillParseError);
+  });
+
   it('throws on an unsupported skill type', () => {
     expect(() =>
       parseSkillText({

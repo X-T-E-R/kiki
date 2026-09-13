@@ -210,7 +210,7 @@ describe('applyCatalogProvider', () => {
     const models = catalogProviderModels({
       id: 'gateway',
       npm: '@ai-sdk/openai-compatible',
-      api: 'https://gateway.example.test/api/v1',
+      api: 'https://gateway.example.test/openai/v1',
       models: {
         'vendor/claude-model': {
           id: 'vendor/claude-model',
@@ -218,7 +218,7 @@ describe('applyCatalogProvider', () => {
           limit: { context: 200000 },
           provider: {
             npm: '@ai-sdk/anthropic',
-            api: 'https://gateway.example.test/api/anthropic/v1',
+            api: 'https://gateway.example.test/anthropic/v1',
           },
         },
         'vendor/gpt-model': {
@@ -232,7 +232,7 @@ describe('applyCatalogProvider', () => {
     applyCatalogProvider(config, {
       providerId: 'gateway',
       wire: 'openai',
-      baseUrl: 'https://gateway.example.test/api/v1',
+      baseUrl: 'https://gateway.example.test/openai/v1',
       apiKey: 'sk',
       models,
       selectedModelId: 'vendor/claude-model',
@@ -243,7 +243,7 @@ describe('applyCatalogProvider', () => {
       provider: 'gateway',
       model: 'vendor/claude-model',
       protocol: 'anthropic',
-      baseUrl: 'https://gateway.example.test/api/anthropic',
+      baseUrl: 'https://gateway.example.test/anthropic',
     });
     const plain = config.models?.['gateway/vendor/gpt-model'];
     expect(plain).toMatchObject({ maxContextSize: 400000, maxInputSize: 272000 });

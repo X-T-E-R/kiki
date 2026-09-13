@@ -426,7 +426,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
   const listRoute = defineRoute(
     {
       method: 'GET',
-      path: '/sessions',
+      path: '/sessions/query',
       querystring: v2SessionsListQuerySchema,
       success: { data: v2SessionPageSchema },
       errors: {

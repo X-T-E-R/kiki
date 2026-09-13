@@ -2,13 +2,13 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { resolveKimiHome } from '@kiki/agent-core-v2';
+import { resolveKikiHome } from '@kiki/agent-core-v2';
 import { ulid } from 'ulid';
 
 /** Default cadence for refreshing `heartbeat_at`. */
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 
-export const DEFAULT_SERVER_DIR = join(resolveKimiHome(), 'server');
+export const DEFAULT_SERVER_DIR = join(resolveKikiHome(), 'server');
 export const DEFAULT_SERVER_INSTANCES_DIR = join(DEFAULT_SERVER_DIR, 'instances');
 
 /** In-memory shape of a registered instance. camelCase for TS consumers. */
@@ -51,7 +51,7 @@ export interface IInstanceRegistry {
 }
 
 export interface InstanceRegistryOptions {
-  /** Directory holding `<serverId>.json` files. Defaults to `<KIMI_CODE_HOME>/server/instances`. */
+  /** Directory holding `<serverId>.json` files. Defaults to `<KIKI_HOME>/server/instances`. */
   readonly instancesDir?: string;
   /** Override `Date.now` — used in tests for deterministic timestamps. */
   readonly now?: () => number;

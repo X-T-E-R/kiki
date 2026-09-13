@@ -59,12 +59,12 @@ describe('TabbedModelSelectorComponent', () => {
   it('renders an "All" + per-provider tab strip', () => {
     const out = strip(make().component.render(120).join('\n'));
     expect(out).toContain('All');
-    expect(out).toContain('Kimi Code');
+    expect(out).toContain('Kiki');
     expect(out).toContain('openai');
   });
 
   it('highlights the active tab with a filled background (AskUserQuestion style)', () => {
-    // currentValue k2 → the active tab is "Kimi Code"; its cell carries the
+    // currentValue k2 → the active tab is "Kiki"; its cell carries the
     // primary background SGR.
     const raw = make().component.render(120).join('\n');
     expect(raw).toContain(PRIMARY_BG);
@@ -97,7 +97,7 @@ describe('TabbedModelSelectorComponent', () => {
 
   it('cycles provider tabs with Tab', () => {
     const { component } = make();
-    // tabs = [All, Kimi Code, openai]; active starts on All.
+    // tabs = [All, Kiki, openai]; active starts on All.
     // Two Tabs → openai, whose list shows GPT-5 and not Kimi K2.
     component.handleInput(TAB);
     component.handleInput(TAB);

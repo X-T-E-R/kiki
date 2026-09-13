@@ -7,7 +7,6 @@ import {
   ensureMainAgent,
   IAgentProfileService,
   ISessionContext,
-  ISessionInteractionService,
   ISessionMetadata,
   IWorkspaceService,
   resumeSessionById,
@@ -29,8 +28,6 @@ import {
 } from '../protocol/rest-snapshot';
 import { loadCapturedMessageHistory } from '../services/messages/messageHistory';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
-import { toWireApproval } from './approvals';
-import { toWireQuestion } from './questions';
 import { readAgentRuntimeControls } from './sessionAgentConfig';
 import { resolveSessionFacts, toWireSession } from './sessions';
 
@@ -118,34 +115,37 @@ export async function assembleSnapshot(
     throw new SnapshotNotFoundError(sessionId);
   }
 
-  const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
-  const workspace = await core.accessor.get(IWorkspaceService).get(workspaceId);
-  const cwd = workspace?.root ?? '';
-  const meta = await handle.accessor.get(ISessionMetadata).read();
-
   const main = await ensureMainAgent(handle);
-  const snapState = await broadcaster.getSnapshotState(sessionId, { captureMessages: !compact });
-  const projected = toWireSession(
-    { ...meta, workspaceId },
-    cwd,
-    resolveSessionFacts(core, sessionId),
-  );
-  const model = readBoundModel(main);
-  const session = {
-    ...projected,
-    agent_config: {
-      ...projected.agent_config,
-      ...(model === undefined ? {} : { model }),
-      ...(await readAgentRuntimeControls(main)),
+  const snapState = await broadcaster.getSnapshotState(sessionId, {
+    captureMessages: !compact,
+    capture: async () => {
+      const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
+      const workspace = await core.accessor.get(IWorkspaceService).get(workspaceId);
+      const meta = await handle.accessor.get(ISessionMetadata).read();
+      const projected = toWireSession({ ...meta, workspaceId }, workspace?.root ?? '', resolveSessionFacts(core, sessionId));
+      const model = readBoundModel(main);
+      return {
+        meta,
+        session: {
+          ...projected,
+          agent_config: {
+            ...projected.agent_config,
+            model: model ?? projected.agent_config?.model,
+            ...(await readAgentRuntimeControls(main)),
+          },
+        },
+      };
     },
-  };
+  });
+  if (snapState.captured === undefined) throw new SnapshotNotFoundError(sessionId);
+  const { meta, session } = snapState.captured;
   const subagentCandidates = [...snapState.subagents];
   const subagentIds = subagentCandidates.map((subagent) => subagent.id);
   const subagents = compact
     ? enrichCompactSnapshotSubagents(
         subagentCandidates,
         meta.agents,
-        broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, subagentIds),
+        await broadcaster.getTranscriptToolCallCounts(sessionId, subagentIds),
       )
     : enrichSnapshotSubagents(
         subagentCandidates,
@@ -171,14 +171,6 @@ export async function assembleSnapshot(
     snapState.currentPromptId,
   );
 
-  const interaction = handle.accessor.get(ISessionInteractionService);
-  const pendingApprovals = interaction
-    .listPending('approval')
-    .map((i) => toWireApproval(i, sessionId));
-  const pendingQuestions = interaction
-    .listPending('question')
-    .map((i) => toWireQuestion(i, sessionId));
-
   return {
     as_of_seq: snapState.seq,
     epoch: snapState.epoch,
@@ -192,8 +184,8 @@ export async function assembleSnapshot(
       status?.contextBreakdown === undefined
         ? undefined
         : toRestContextBreakdown(status.contextBreakdown),
-    pending_approvals: pendingApprovals,
-    pending_questions: pendingQuestions,
+    pending_approvals: snapState.pendingApprovals,
+    pending_questions: snapState.pendingQuestions,
   };
 }
 
@@ -216,7 +208,7 @@ function enrichCompactSnapshotSubagents(
       ...subagent,
       model: firstNonEmpty(subagent.model, meta?.model),
       thinking_effort: firstNonEmpty(subagent.thinking_effort, meta?.thinkingEffort),
-      tool_call_count: toolCallCounts.get(subagent.id) ?? subagent.tool_call_count,
+      tool_call_count: toolCallCounts.get(subagent.id),
     };
   });
 }
@@ -236,10 +228,7 @@ function enrichSnapshotSubagents(
       profile: spawnedName,
       parent_agent_id: firstNonEmpty(subagent.parent_agent_id, subagentParentAgentId(meta)),
       label: userLabel,
-      tool_call_count: Math.max(
-        subagent.tool_call_count ?? 0,
-        toolCallCounts.get(subagent.id) ?? 0,
-      ),
+      tool_call_count: toolCallCounts.get(subagent.id),
     };
   });
 }

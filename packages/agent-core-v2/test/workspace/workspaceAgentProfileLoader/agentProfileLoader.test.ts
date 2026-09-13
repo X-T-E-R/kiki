@@ -722,7 +722,7 @@ describe('agent profile loaders + session catalog', () => {
   it('routes project and extra writes through their owning loaders', async () => {
     await withFixture(async (fixture) => {
       const projectPath = await writeAgent(
-        join(fixture.workDir, '.kimi-code', 'agents'),
+        join(fixture.workDir, '.kiki', 'agents'),
         'project-profile.md',
         agentMd('project-profile', 'project original'),
       );
@@ -1005,7 +1005,7 @@ describe('agent profile loaders + session catalog', () => {
     await withFixture(async (fixture) => {
       const userRoot = join(fixture.homeDir, 'agents');
       const genericUserRoot = join(fixture.osHomeDir, '.agents', 'agents');
-      const workspaceRoot = join(fixture.workDir, '.kimi-code', 'agents');
+      const workspaceRoot = join(fixture.workDir, '.kiki', 'agents');
       await writeAgent(userRoot, 'reviewer.md', agentMd('reviewer', 'reviewer'));
       await writeAgent(
         join(userRoot, '.routes', 'reviewer'),
@@ -1090,7 +1090,7 @@ describe('agent profile loaders + session catalog', () => {
       await writeAgent(join(fixture.homeDir, 'agents'), 'shared.md', agentMd('shared', 'from user'));
       await writeAgent(join(fixture.homeDir, 'agents'), 'user-only.md', agentMd('user-only', 'user agent'));
       await writeAgent(
-        join(fixture.workDir, '.kimi-code', 'agents'),
+        join(fixture.workDir, '.kiki', 'agents'),
         'shared.md',
         agentMd('shared', 'from project'),
       );
@@ -1134,7 +1134,7 @@ describe('agent profile loaders + session catalog', () => {
       await writeAgent(fixture.extraDir, 'shared.md', agentMd('shared', 'from extra'));
       await writeAgent(fixture.extraDir, 'user-extra.md', agentMd('user-extra', 'from extra'));
       await writeAgent(
-        join(fixture.workDir, '.kimi-code', 'agents'),
+        join(fixture.workDir, '.kiki', 'agents'),
         'shared.md',
         agentMd('shared', 'from project'),
       );
@@ -1327,11 +1327,11 @@ describe('agent profile loaders + session catalog', () => {
   it('skips invalid workspace files and still loads valid ones', async () => {
     await withFixture(async (fixture) => {
       const badPath = await writeAgent(
-        join(fixture.workDir, '.kimi-code', 'agents'),
+        join(fixture.workDir, '.kiki', 'agents'),
         'bad.md',
         '---\nname: bad\n---\n\nbody\n',
       );
-      await writeAgent(join(fixture.workDir, '.kimi-code', 'agents'), 'good.md', agentMd('good', 'valid'));
+      await writeAgent(join(fixture.workDir, '.kiki', 'agents'), 'good.md', agentMd('good', 'valid'));
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
@@ -1347,7 +1347,7 @@ describe('agent profile loaders + session catalog', () => {
   it('keeps the builtin default when a same-name file does not opt in to override', async () => {
     await withFixture(async (fixture) => {
       await writeAgent(
-        join(fixture.workDir, '.kimi-code', 'agents'),
+        join(fixture.workDir, '.kiki', 'agents'),
         'agent.md',
         agentMd('agent', 'project default override'),
       );
@@ -1370,7 +1370,7 @@ describe('agent profile loaders + session catalog', () => {
   it('lets a file profile explicitly override the builtin default', async () => {
     await withFixture(async (fixture) => {
       await writeAgent(
-        join(fixture.workDir, '.kimi-code', 'agents'),
+        join(fixture.workDir, '.kiki', 'agents'),
         'agent.md',
         agentMd('agent', 'project default override', true),
       );
@@ -1391,7 +1391,7 @@ describe('agent profile loaders + session catalog', () => {
         agentMd('agent', 'user default override', true),
       );
       await writeAgent(
-        join(fixture.workDir, '.kimi-code', 'agents'),
+        join(fixture.workDir, '.kiki', 'agents'),
         'agent.md',
         agentMd('agent', 'project default without override'),
       );
@@ -1579,7 +1579,7 @@ describe('agent profile loaders + session catalog', () => {
     await withFixture(async (fixture) => {
       await writeFile(join(fixture.homeDir, 'SYSTEM.md'), 'system md prompt');
       await writeAgent(
-        join(fixture.workDir, '.kimi-code', 'agents'),
+        join(fixture.workDir, '.kiki', 'agents'),
         'agent.md',
         agentMd('agent', 'project default override', true),
       );
@@ -1674,7 +1674,7 @@ describe('agent profile loaders + session catalog', () => {
 
   it('rescans the workspace source when a project agent file changes on disk', async () => {
     await withFixture(async (fixture) => {
-      await mkdir(join(fixture.workDir, '.kimi-code', 'agents'), { recursive: true });
+      await mkdir(join(fixture.workDir, '.kiki', 'agents'), { recursive: true });
       await withStack(fixture, { fsWatch: new HostFsWatchService() }, async (stack) => {
         await stack.ready();
         expect(stack.catalog.get('watched-agent')).toBeUndefined();
@@ -1691,7 +1691,7 @@ describe('agent profile loaders + session catalog', () => {
         });
         await new Promise((resolve) => setTimeout(resolve, 300));
         await writeAgent(
-          join(fixture.workDir, '.kimi-code', 'agents'),
+          join(fixture.workDir, '.kiki', 'agents'),
           'watched-agent.md',
           agentMd('watched-agent', 'from watch'),
         );
@@ -1872,7 +1872,7 @@ describe('agent profile loaders + session catalog', () => {
   it('keeps private aliases scoped to each winning parent while wildcard remains public-only', async () => {
     await withFixture(async (fixture) => {
       const userRoot = join(fixture.homeDir, 'agents');
-      const workspaceRoot = join(fixture.workDir, '.kimi-code', 'agents');
+      const workspaceRoot = join(fixture.workDir, '.kiki', 'agents');
       await writeAgent(userRoot, 'user-team.md', sourceParentMd('user-team', 'writer', './_private/writer.md', '    model_alias: user-model\n'));
       await writeAgent(join(userRoot, '_private'), 'writer.md', agentMd('shared-child-name', 'user writer'));
       await writeAgent(workspaceRoot, 'workspace-team.md', sourceParentMd('workspace-team', 'writer', './_private/writer.md', '    model_alias: workspace-model\n'));
@@ -1904,7 +1904,7 @@ describe('agent profile loaders + session catalog', () => {
   it('switches the entire private graph when a workspace profile overrides a user profile', async () => {
     await withFixture(async (fixture) => {
       const userRoot = join(fixture.homeDir, 'agents');
-      const workspaceRoot = join(fixture.workDir, '.kimi-code', 'agents');
+      const workspaceRoot = join(fixture.workDir, '.kiki', 'agents');
       await writeAgent(userRoot, 'team.md', sourceParentMd('team', 'user-writer', './_private/user-writer.md'));
       await writeAgent(join(userRoot, '_private'), 'user-writer.md', privateAgentMd('writer', 'user writer'));
       await writeAgent(workspaceRoot, 'team.md', sourceParentMd('team', 'workspace-writer', './_private/workspace-writer.md'));
@@ -1927,7 +1927,7 @@ describe('agent profile loaders + session catalog', () => {
 
   it('fails closed for missing, invalid, non-private, forbidden, renamed, and orphaned source files', async () => {
     await withFixture(async (fixture) => {
-      const root = join(fixture.workDir, '.kimi-code', 'agents');
+      const root = join(fixture.workDir, '.kiki', 'agents');
       const parentPath = await writeAgent(root, 'team.md', sourceParentMd('team', 'writer', './_private/writer.md'));
       const childPath = await writeAgent(join(root, '_private'), 'writer.md', 'not yaml');
       await withStack(fixture, undefined, async (stack) => {
@@ -1971,7 +1971,7 @@ describe('agent profile loaders + session catalog', () => {
 
   it('rejects lexical and symlink escapes and deduplicates repeated canonical sources', async () => {
     await withFixture(async (fixture) => {
-      const root = join(fixture.workDir, '.kimi-code', 'agents');
+      const root = join(fixture.workDir, '.kiki', 'agents');
       const outside = await writeAgent(fixture.workDir, 'outside-writer.md', privateAgentMd('writer', 'outside'));
       await writeAgent(root, 'escape.md', sourceParentMd('escape', 'writer', '../../outside-writer.md'));
       await writeAgent(root, 'repeat.md', `---\nname: repeat\ndescription: repeat\nsubagents:\n  - name: writer-a\n    source: ./_private/writer.md\n    model_alias: model-a\n  - name: writer-b\n    source: ./_private/writer.md\n    model_alias: model-b\n---\n\nrepeat\n`);
@@ -2027,7 +2027,7 @@ describe('agent profile loaders + session catalog', () => {
 
   it('atomically refreshes a private child while an older snapshot keeps the prior definition', async () => {
     await withFixture(async (fixture) => {
-      const root = join(fixture.workDir, '.kimi-code', 'agents');
+      const root = join(fixture.workDir, '.kiki', 'agents');
       await writeAgent(root, 'team.md', sourceParentMd('team', 'writer', './_private/writer.md'));
       const childPath = await writeAgent(join(root, '_private'), 'writer.md', privateAgentMd('writer', 'before'));
       await withStack(fixture, { fsWatch: new HostFsWatchService() }, async (stack) => {
@@ -2072,7 +2072,7 @@ describe('agent profile loaders + session catalog', () => {
 
   it.runIf(process.platform === 'win32')('deduplicates source paths across Windows casing', async () => {
     await withFixture(async (fixture) => {
-      const root = join(fixture.workDir, '.kimi-code', 'agents');
+      const root = join(fixture.workDir, '.kiki', 'agents');
       await writeAgent(root, 'team.md', `---\nname: team\ndescription: team\nsubagents:\n  - name: writer-lower\n    source: ./_private/writer.md\n  - name: writer-upper\n    source: ./_PRIVATE/WRITER.md\n---\n\nteam\n`);
       await writeAgent(join(root, '_Private'), 'writer.md', agentMd('writer', 'writer'));
       await withStack(fixture, undefined, async (stack) => {

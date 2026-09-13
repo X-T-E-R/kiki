@@ -121,7 +121,7 @@ function describeMethods(
 
 /**
  * Describe EVERY registered scoped Service served by
- * `GET /api/v1/debug/channels`.
+ * `GET /api/debug/channels`.
  */
 export function describeAllChannels(): readonly ChannelDescriptor[] {
   const byName = new Map<string, ScopedEntry>();

@@ -1,25 +1,3 @@
-/**
- * `sessionAgentProfileCatalog` domain — `ISessionAgentProfileCatalog`
- * implementation.
- *
- * Projects the App-scope `IAgentProfileRegistry` into this session's merged
- * profile view. The relevant entries are the global ones (builtin) plus the
- * ones tagged with the seeded workspace key (user / plugin / extra /
- * workspace / explicit); they are re-merged on every registry change (the
- * projection is a cheap full recompute — merge, never incremental patching).
- * Merge rules, applied per profile name: candidates are collected from every
- * relevant entry (deduped within an entry, highest priority first); the first
- * candidate wins, except that replacing a same-name `builtin` profile
- * requires `override: true` in the frontmatter — a non-override collision is
- * warned about and skipped to the next candidate. Builtins named by the
- * `disabledBuiltinProfiles` config section and file-backed profiles named by
- * `disabledNamedProfiles` are omitted from discovery and dispatch. The builtin
- * default is retained separately as a binding fallback so the main agent can
- * still start when `agent` is disabled. `ready` waits for config loading so
- * downstream tool descriptions see the effective projection.
- * Bound at Session scope.
- */
-
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';

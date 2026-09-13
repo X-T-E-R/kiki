@@ -18,7 +18,8 @@
     "../kaos/src/**/*.ts",
     "../klient/src/**/*.ts",
     "../oauth/src/**/*.ts",
-    "../protocol/src/**/*.ts"
+    "../protocol/src/**/*.ts",
+    "../transcript/src/**/*.ts"
   ],
   "exclude": ["dist", ".tmp-api-extractor", "examples", "test", "../*/dist", "../*/test"]
 }

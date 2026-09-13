@@ -27,6 +27,51 @@ type AgentEventRegistration = EventRegistration | StreamEventRegistration;
 
 // ── payload schemas ─────────────────────────────────────────────────────────
 
+export const turnStepStartedEventSchema = z.object({
+  type: z.literal('turn.step.started'), time: z.number().optional(),
+  turnId: z.number(), step: z.number(), stepId: z.string().optional(),
+});
+
+export const turnStepInterruptedEventSchema = z.object({
+  type: z.literal('turn.step.interrupted'), time: z.number().optional(),
+  turnId: z.number(), step: z.number(), stepId: z.string().optional(),
+  reason: z.string(), message: z.string().optional(),
+});
+
+export const turnStepRetryingEventSchema = z.object({
+  type: z.literal('turn.step.retrying'), time: z.number().optional(),
+  turnId: z.number(), step: z.number(), stepId: z.string().optional(),
+  failedAttempt: z.number(), nextAttempt: z.number(), maxAttempts: z.number(), delayMs: z.number(),
+  errorName: z.string(), errorMessage: z.string(), statusCode: z.number().optional(),
+});
+
+export const hookResultEventSchema = z.object({
+  type: z.literal('hook.result'), time: z.number().optional(),
+  turnId: z.number().optional(), hookEvent: z.string(), content: z.string(), blocked: z.boolean().optional(),
+});
+
+export const goalSnapshotSchema = z.object({
+  goalId: z.string(), objective: z.string(), completionCriterion: z.string().optional(),
+  status: z.enum(['active', 'paused', 'blocked', 'complete']),
+  turnsUsed: z.number(), tokensUsed: z.number(), wallClockMs: z.number(),
+  terminalReason: z.string().optional(),
+  budget: z.object({
+    tokenBudget: z.number().nullable(), turnBudget: z.number().nullable(), wallClockBudgetMs: z.number().nullable(),
+    remainingTokens: z.number().nullable(), remainingTurns: z.number().nullable(), remainingWallClockMs: z.number().nullable(),
+    tokenBudgetReached: z.boolean(), turnBudgetReached: z.boolean(), wallClockBudgetReached: z.boolean(), overBudget: z.boolean(),
+  }),
+});
+
+export const goalUpdatedEventSchema = z.object({
+  type: z.literal('goal.updated'), time: z.number().optional(),
+  snapshot: goalSnapshotSchema.nullable(),
+  change: z.object({
+    kind: z.enum(['lifecycle', 'completion']), status: goalSnapshotSchema.shape.status.optional(),
+    reason: z.string().optional(), actor: z.enum(['user', 'model', 'runtime', 'system']).optional(),
+    stats: z.object({ turnsUsed: z.number(), tokensUsed: z.number(), wallClockMs: z.number() }).optional(),
+  }).optional(),
+});
+
 export const turnStartedEventSchema = z.object({
   type: z.literal('turn.started'),
   time: z.number().optional(),
@@ -251,6 +296,11 @@ export const agentStatusUpdatedEventSchema = z.looseObject({
 
 /** Public event name → payload type. Keys must stay in sync with `agentEvents`. */
 export interface AgentEventPayloads {
+  'turn.step.started': z.infer<typeof turnStepStartedEventSchema>;
+  'turn.step.interrupted': z.infer<typeof turnStepInterruptedEventSchema>;
+  'turn.step.retrying': z.infer<typeof turnStepRetryingEventSchema>;
+  'hook.result': z.infer<typeof hookResultEventSchema>;
+  'goal.updated': z.infer<typeof goalUpdatedEventSchema>;
   'turn.started': z.infer<typeof turnStartedEventSchema>;
   'turn.ended': z.infer<typeof turnEndedEventSchema>;
   'assistant.delta': z.infer<typeof assistantDeltaEventSchema>;
@@ -281,6 +331,11 @@ export type AgentEventName = keyof AgentEventPayloads;
 
 /** Public event name → stream binding + payload schema. */
 export const agentEvents = {
+  'turn.step.started': { kind: 'stream', name: 'events', type: 'turn.step.started', schema: turnStepStartedEventSchema },
+  'turn.step.interrupted': { kind: 'stream', name: 'events', type: 'turn.step.interrupted', schema: turnStepInterruptedEventSchema },
+  'turn.step.retrying': { kind: 'stream', name: 'events', type: 'turn.step.retrying', schema: turnStepRetryingEventSchema },
+  'hook.result': { kind: 'stream', name: 'events', type: 'hook.result', schema: hookResultEventSchema },
+  'goal.updated': { kind: 'stream', name: 'events', type: 'goal.updated', schema: goalUpdatedEventSchema },
   'turn.started': { kind: 'stream', name: 'events', type: 'turn.started', schema: turnStartedEventSchema },
   'turn.ended': { kind: 'stream', name: 'events', type: 'turn.ended', schema: turnEndedEventSchema },
   'assistant.delta': { kind: 'stream', name: 'events', type: 'assistant.delta', schema: assistantDeltaEventSchema },

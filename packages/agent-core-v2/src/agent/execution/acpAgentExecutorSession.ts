@@ -101,6 +101,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   readonly #dispatcher: IEventDispatcher;
   readonly #workspace: ISessionWorkspaceContext;
   readonly #memory: IAgentContextMemoryService;
+  readonly #interaction: ISessionInteractionService;
   readonly #permissionMode: IAgentPermissionModeService;
   #active: ActiveExternalTurn | undefined;
   #permissionContext:
@@ -147,6 +148,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.#dispatcher = context.agent.accessor.get(IEventDispatcher);
     this.#workspace = context.agent.accessor.get(ISessionWorkspaceContext);
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
+    this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     this.#permissionMode = context.agent.accessor.get(IAgentPermissionModeService);
     this.#client = clientFactory(
       processService,
@@ -324,9 +326,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (active === undefined) return false;
     const cancelled = active.turn.cancel(reason);
     void active.handle.cancel(reason);
-    this.context.agent.accessor
-      .get(ISessionInteractionService)
-      .cancelPendingForTurn(active.turn.id);
+    this.#interaction.cancelPendingForTurn(active.turn.id);
     return cancelled;
   }
 
@@ -404,9 +404,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     } finally {
       cleanup();
       if (this.#permissionContext?.turn === turn) this.#permissionContext = undefined;
-      this.context.agent.accessor
-        .get(ISessionInteractionService)
-        .cancelPendingForTurn(turn.id);
+      this.#interaction.cancelPendingForTurn(turn.id);
     }
   }
 
@@ -531,9 +529,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     const response = await raceApproval(approval, context.signal);
     if (response === undefined || response.decision === 'cancelled') {
-      this.context.agent.accessor
-        .get(ISessionInteractionService)
-        .cancelPendingForTurn(active.turn.id);
+      this.#interaction.cancelPendingForTurn(active.turn.id);
       return { outcome: 'cancelled' };
     }
     const selectedOptionId = response.selectedOptionId;

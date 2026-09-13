@@ -331,7 +331,7 @@ describe('ReadMediaFileTool', () => {
     expect(systemText).toContain('Mime type: image/png');
     expect(systemText).toContain(`Original dimensions: ${PNG_WIDTH}x${PNG_HEIGHT}`);
     expect(systemText).toMatch(/relative coordinates first/i);
-    expect(systemText).toMatch(/read the result back/i);
+    expect(systemText).not.toMatch(/read the result back/i);
 
     const parts = outputParts(result);
     expect(parts).toHaveLength(3);

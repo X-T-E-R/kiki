@@ -9,9 +9,9 @@ const HOST_ERROR_CODE = 40301;
 export interface HostCheckOptions {
   /** The host the server bound to; always allowed (port stripped both sides). */
   readonly boundHost?: string;
-  /** Extra allowed hosts / domain-suffix patterns (from `KIMI_CODE_ALLOWED_HOSTS`). */
+  /** Extra allowed hosts / domain-suffix patterns (from `KIKI_ALLOWED_HOSTS`). */
   readonly extra?: readonly string[];
-  /** Disable the check entirely (`KIMI_CODE_DISABLE_HOST_CHECK=1`; test-only). */
+  /** Disable the check entirely (`KIKI_DISABLE_HOST_CHECK=1`; test-only). */
   readonly disable?: boolean;
 }
 
@@ -24,13 +24,13 @@ export interface HostCheck {
 }
 
 /**
- * Parse `KIMI_CODE_ALLOWED_HOSTS` into an `extra` allowlist.
+ * Parse `KIKI_ALLOWED_HOSTS` into an `extra` allowlist.
  *
  * Comma-separated, trimmed, empties dropped. A leading `.` is preserved so the
  * caller can express domain-suffix wildcards (`.example.com`).
  */
 export function parseAllowedHosts(env: NodeJS.ProcessEnv = process.env): string[] {
-  const raw = env['KIMI_CODE_ALLOWED_HOSTS'];
+  const raw = env['KIKI_ALLOWED_HOSTS'];
   if (raw === undefined) {
     return [];
   }
@@ -40,9 +40,9 @@ export function parseAllowedHosts(env: NodeJS.ProcessEnv = process.env): string[
     .filter((entry) => entry.length > 0);
 }
 
-/** True when `KIMI_CODE_DISABLE_HOST_CHECK=1` (test/controlled env only). */
+/** True when `KIKI_DISABLE_HOST_CHECK=1` (test/controlled env only). */
 export function isHostCheckDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env['KIMI_CODE_DISABLE_HOST_CHECK'] === '1';
+  return env['KIKI_DISABLE_HOST_CHECK'] === '1';
 }
 
 /**
@@ -78,7 +78,7 @@ export function formatHostErrorMessage(host: string | undefined): string {
   const normalizedHost = host === undefined || host.length === 0 ? undefined : stripPort(host);
   const hostLabel = normalizedHost ?? '<missing>';
   const hostArg = normalizedHost ?? '<host>';
-  return `Invalid Host header: ${hostLabel}; allow this host with KIMI_CODE_ALLOWED_HOSTS=${hostArg} or 'kimi web --allowed-host ${hostArg}'.`;
+  return `Invalid Host header: ${hostLabel}; allow this host with KIKI_ALLOWED_HOSTS=${hostArg} or 'kimi web --allowed-host ${hostArg}'.`;
 }
 
 /**

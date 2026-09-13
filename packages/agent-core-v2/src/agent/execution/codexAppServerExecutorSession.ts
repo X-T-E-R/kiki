@@ -101,6 +101,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   readonly #dispatcher: IEventDispatcher;
   readonly #workspace: ISessionWorkspaceContext;
   readonly #memory: IAgentContextMemoryService;
+  readonly #interaction: ISessionInteractionService;
   #threadId: string | undefined;
   #modelValidated = false;
   #active: ActiveCodexTurn | undefined;
@@ -147,6 +148,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.#dispatcher = context.agent.accessor.get(IEventDispatcher);
     this.#workspace = context.agent.accessor.get(ISessionWorkspaceContext);
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
+    this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     this.#client = clientFactory(
       processService,
       (request, responder, signal) => this.#handleServerRequest(request, responder, signal),
@@ -311,7 +313,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     if (active === undefined) return false;
     const cancelled = active.turn.cancel(reason);
     void active.handle.cancel(reason);
-    this.context.agent.accessor.get(ISessionInteractionService).cancelPendingForTurn(active.turn.id);
+    this.#interaction.cancelPendingForTurn(active.turn.id);
     return cancelled;
   }
 
@@ -378,7 +380,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     } finally {
       cleanup();
       if (this.#permissionContext?.turn === turn) this.#permissionContext = undefined;
-      this.context.agent.accessor.get(ISessionInteractionService).cancelPendingForTurn(turn.id);
+      this.#interaction.cancelPendingForTurn(turn.id);
     }
   }
 

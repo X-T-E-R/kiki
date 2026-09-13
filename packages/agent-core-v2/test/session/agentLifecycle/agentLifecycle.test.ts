@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'pathe';
+import { ErrorCodes } from '#/errors';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
@@ -533,6 +534,36 @@ describe('AgentLifecycleService', () => {
   afterEach(() => {
     disposables.dispose();
     vi.restoreAllMocks();
+  });
+
+  it('counts and drains tasks across live agents without stopping them or conflating local task ids', async () => {
+    const info = { kind: 'agent' as const, taskId: 'local-task', description: 'example', status: 'running' as const, startedAt: 0, endedAt: null };
+    let pending = true;
+    const suppress = vi.fn(async () => {});
+    const wait = vi.fn(async () => {
+      if (wait.mock.calls.length === 2) pending = false;
+      return { ...info, status: 'completed' as const };
+    });
+    ix.stub(IAgentTaskService, {
+      list: () => pending ? [info] : [],
+      suppressTerminalNotification: suppress,
+      wait,
+      stopAllOnExit,
+    });
+    const svc = ix.get(IAgentLifecycleService);
+    await svc.create({ agentId: 'main' });
+    await svc.create({ agentId: 'child' });
+    expect(svc.countPendingBackgroundTasks()).toBe(2);
+    await svc.drainBackgroundTasks(5_000);
+    expect(suppress).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenCalledWith('local-task', expect.any(Number));
+    expect(svc.countPendingBackgroundTasks()).toBe(0);
+    expect(stopAllOnExit).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, Infinity, NaN])('rejects invalid drain deadline %s', async (timeout) => {
+    await expect(ix.get(IAgentLifecycleService).drainBackgroundTasks(timeout)).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
   });
 
   it('create / getHandle / list / remove', async () => {

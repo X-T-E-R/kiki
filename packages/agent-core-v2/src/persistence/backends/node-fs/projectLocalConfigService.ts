@@ -1,3 +1,4 @@
+import { KIKI_CONFIG_MIGRATION_MARKER } from '@kiki/oauth';
 import { dirname, isAbsolute, join, normalize, resolve } from 'pathe';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { z } from 'zod';
@@ -86,7 +87,7 @@ export class FileProjectLocalConfigService implements IProjectLocalConfigService
   }
 
   private getProjectLocalConfigPath(projectRoot: string): string {
-    return join(projectRoot, '.kimi-code', 'local.toml');
+    return join(projectRoot, '.kiki', 'local.toml');
   }
 
   private async findProjectRoot(workDir: string): Promise<string> {
@@ -108,7 +109,13 @@ export class FileProjectLocalConfigService implements IProjectLocalConfigService
     try {
       text = await this.fs.readText(configPath);
     } catch (error: unknown) {
-      if (isPathMissing(error)) return undefined;
+      if (isPathMissing(error)) {
+        const projectRoot = dirname(dirname(configPath));
+        if (!await this.pathExists(join(dirname(configPath), KIKI_CONFIG_MIGRATION_MARKER)) && await this.pathExists(join(projectRoot, '.kimi-code', 'local.toml'))) {
+          throw new Error2(ErrorCodes.CONFIG_INVALID, `Legacy project configuration requires explicit migration: kiki migrate-config --workspace ${JSON.stringify(projectRoot)}`);
+        }
+        return undefined;
+      }
       throw toStorageIoError(error, { path: configPath, op: 'read' });
     }
 

@@ -79,7 +79,7 @@ const CATALOG = {
   ],
 };
 
-describe('server-v2 /api/v1 plugins', () => {
+describe('server-v2 /api plugins', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -157,13 +157,13 @@ describe('server-v2 /api/v1 plugins', () => {
   }
 
   it('installs, lists, disables, enables, and removes a plugin', async () => {
-    const empty = await call<{ plugins: unknown[] }>('GET', '/api/v1/plugins');
+    const empty = await call<{ plugins: unknown[] }>('GET', '/api/plugins');
     expect(empty.body.data.plugins).toEqual([]);
 
     const source = await makePluginDir('demo-plugin', '1.0.0');
     const installed = await call<{ id: string; version: string; enabled: boolean }>(
       'POST',
-      '/api/v1/plugins',
+      '/api/plugins',
       { source },
     );
     expect(installed.body.code).toBe(0);
@@ -171,37 +171,37 @@ describe('server-v2 /api/v1 plugins', () => {
 
     const list = await call<{ plugins: { id: string; enabled: boolean }[] }>(
       'GET',
-      '/api/v1/plugins',
+      '/api/plugins',
     );
     expect(list.body.data.plugins.map((p) => [p.id, p.enabled])).toEqual([['demo-plugin', false]]);
 
-    const disabled = await call<{ ok: true }>('POST', '/api/v1/plugins/demo-plugin:disable');
+    const disabled = await call<{ ok: true }>('POST', '/api/plugins/demo-plugin:disable');
     expect(disabled.body.code).toBe(0);
-    const afterDisable = await call<{ plugins: { enabled: boolean }[] }>('GET', '/api/v1/plugins');
+    const afterDisable = await call<{ plugins: { enabled: boolean }[] }>('GET', '/api/plugins');
     expect(afterDisable.body.data.plugins[0]?.enabled).toBe(false);
 
-    const enabled = await call<{ ok: true }>('POST', '/api/v1/plugins/demo-plugin:enable');
+    const enabled = await call<{ ok: true }>('POST', '/api/plugins/demo-plugin:enable');
     expect(enabled.body.code).toBe(0);
 
-    const removed = await call<{ ok: true }>('POST', '/api/v1/plugins/demo-plugin:remove');
+    const removed = await call<{ ok: true }>('POST', '/api/plugins/demo-plugin:remove');
     expect(removed.body.code).toBe(0);
-    const afterRemove = await call<{ plugins: unknown[] }>('GET', '/api/v1/plugins');
+    const afterRemove = await call<{ plugins: unknown[] }>('GET', '/api/plugins');
     expect(afterRemove.body.data.plugins).toEqual([]);
   });
 
   it('rejects bare ids, bogus actions, and unknown plugins', async () => {
-    const bare = await call('POST', '/api/v1/plugins/demo-plugin');
+    const bare = await call('POST', '/api/plugins/demo-plugin');
     expect(bare.body.code).toBe(40001);
-    const bogus = await call('POST', '/api/v1/plugins/demo-plugin:explode');
+    const bogus = await call('POST', '/api/plugins/demo-plugin:explode');
     expect(bogus.body.code).toBe(40001);
-    const unknown = await call('POST', '/api/v1/plugins/nope:remove');
+    const unknown = await call('POST', '/api/plugins/nope:remove');
     expect(unknown.body.code).toBe(40419);
-    const badSource = await call('POST', '/api/v1/plugins', { source: '' });
+    const badSource = await call('POST', '/api/plugins', { source: '' });
     expect(badSource.body.code).toBe(40001);
   });
 
   it('fans out event.plugin.changed over WS on install and remove', async () => {
-    const ws = new WebSocket(`${base.replace('http', 'ws')}/api/v1/ws`, [
+    const ws = new WebSocket(`${base.replace('http', 'ws')}/api/ws`, [
       `kimi-code.bearer.${bearerToken(server!)}`,
     ]);
     const types: string[] = [];
@@ -218,12 +218,12 @@ describe('server-v2 /api/v1 plugins', () => {
       });
 
       const source = await makePluginDir('demo-plugin', '1.0.0');
-      await call('POST', '/api/v1/plugins', { source });
+      await call('POST', '/api/plugins', { source });
       await vi.waitFor(() => {
         expect(types).toContain('event.plugin.changed');
       });
 
-      await call('POST', '/api/v1/plugins/demo-plugin:remove');
+      await call('POST', '/api/plugins/demo-plugin:remove');
       await vi.waitFor(() => {
         expect(types.filter((t) => t === 'event.plugin.changed').length).toBeGreaterThanOrEqual(2);
       });
@@ -233,15 +233,15 @@ describe('server-v2 /api/v1 plugins', () => {
   });
 
   it('maps client-fixable install input errors to 4xx, never 50001', async () => {
-    const relative = await call('POST', '/api/v1/plugins', { source: 'relative/dir' });
+    const relative = await call('POST', '/api/plugins', { source: 'relative/dir' });
     expect(relative.body.code).toBe(40001);
-    const missing = await call('POST', '/api/v1/plugins', {
+    const missing = await call('POST', '/api/plugins', {
       source: join(home!, 'no-such-plugin-dir'),
     });
     expect(missing.body.code).toBe(40409);
     const noManifest = await mkdtemp(join(tmpdir(), 'kimi-no-manifest-'));
     createdDirs.push(noManifest);
-    const unloadable = await call('POST', '/api/v1/plugins', { source: noManifest });
+    const unloadable = await call('POST', '/api/plugins', { source: noManifest });
     expect(unloadable.body.code).toBe(40001);
   });
 
@@ -261,7 +261,7 @@ describe('server-v2 /api/v1 plugins', () => {
         keywords?: string[];
         installed?: { version?: string };
       }[];
-    }>('GET', '/api/v1/plugins/marketplace');
+    }>('GET', '/api/plugins/marketplace');
     expect(before.body.code).toBe(0);
     expect(before.body.data.configured).toBe(true);
     expect(before.body.data.source).toBe(CATALOG_URL);
@@ -296,7 +296,7 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(meta?.keywords).toEqual(['web', 'tools']);
 
     const source = await makePluginDir('demo-plugin', '1.0.0');
-    await call('POST', '/api/v1/plugins', { source });
+    await call('POST', '/api/plugins', { source });
 
     const after = await call<{
       entries: {
@@ -304,16 +304,16 @@ describe('server-v2 /api/v1 plugins', () => {
         installed?: { version?: string; enabled: boolean };
         updateAvailable?: boolean;
       }[];
-    }>('GET', '/api/v1/plugins/marketplace');
+    }>('GET', '/api/plugins/marketplace');
     const demo = after.body.data.entries.find((e) => e.id === 'demo-plugin');
     expect(demo?.installed).toEqual({ version: '1.0.0', enabled: false });
     expect(demo?.updateAvailable).toBe(true);
 
     const ghSource = await makePluginDir('gh-plugin', '1.5.0');
-    await call('POST', '/api/v1/plugins', { source: ghSource });
+    await call('POST', '/api/plugins', { source: ghSource });
     const afterGh = await call<{
       entries: { id: string; updateAvailable?: boolean }[];
-    }>('GET', '/api/v1/plugins/marketplace');
+    }>('GET', '/api/plugins/marketplace');
     expect(afterGh.body.data.entries.find((e) => e.id === 'gh-plugin')?.updateAvailable).toBe(true);
   });
 
@@ -331,7 +331,7 @@ describe('server-v2 /api/v1 plugins', () => {
         return realFetch(url as never, init);
       }),
     );
-    const { body } = await call('GET', '/api/v1/plugins/marketplace');
+    const { body } = await call('GET', '/api/plugins/marketplace');
     expect(body.code).toBe(50001);
     expect(body.msg).toContain('invalid catalog');
   });
@@ -352,14 +352,14 @@ describe('server-v2 /api/v1 plugins', () => {
         return realFetch(url as never, init);
       }),
     );
-    const { body } = await call('GET', '/api/v1/plugins/marketplace');
+    const { body } = await call('GET', '/api/plugins/marketplace');
     expect(body.code).toBe(50001);
     expect(body.msg).toContain('invalid catalog');
   });
 
   it('uses the env marketplace URL without injecting capability markers', async () => {
     await server?.close();
-    vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_URL', CATALOG_URL);
+    vi.stubEnv('KIKI_PLUGIN_MARKETPLACE_URL', CATALOG_URL);
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -373,7 +373,7 @@ describe('server-v2 /api/v1 plugins', () => {
       configured: boolean;
       source?: string;
       entries: { id: string; capabilityId?: string }[];
-    }>('GET', '/api/v1/plugins/marketplace');
+    }>('GET', '/api/plugins/marketplace');
     expect(body.code).toBe(0);
     expect(body.data.configured).toBe(true);
     expect(body.data.source).toBe(CATALOG_URL);
@@ -392,7 +392,7 @@ describe('server-v2 /api/v1 plugins', () => {
         return realFetch(url as never, init);
       }),
     );
-    const { body } = await call('GET', '/api/v1/plugins/marketplace');
+    const { body } = await call('GET', '/api/plugins/marketplace');
     expect(body.code).toBe(50001);
     expect(body.msg).toContain('unreachable');
   });
@@ -425,7 +425,7 @@ describe('server-v2 /api/v1 plugins', () => {
       configured: boolean;
       source?: string;
       entries: { id: string; source: string }[];
-    }>('GET', '/api/v1/plugins/marketplace');
+    }>('GET', '/api/plugins/marketplace');
     expect(body.code).toBe(0);
     expect(body.data.configured).toBe(true);
     expect(body.data.entries).toEqual([
@@ -450,11 +450,11 @@ describe('server-v2 /api/v1 plugins', () => {
     const realFetch = globalThis.fetch;
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
-      if (href.includes('/api/v1/')) return realFetch(url as never, init);
+      if (href.includes('/api/')) return realFetch(url as never, init);
       throw new Error(`unexpected fetch: ${href}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_URL', undefined as unknown as string);
+    vi.stubEnv('KIKI_PLUGIN_MARKETPLACE_URL', undefined as unknown as string);
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -466,17 +466,17 @@ describe('server-v2 /api/v1 plugins', () => {
 
     const { body } = await call<{ configured: boolean; source?: string; entries: unknown[] }>(
       'GET',
-      '/api/v1/plugins/marketplace',
+      '/api/plugins/marketplace',
     );
     expect(body.code).toBe(0);
     expect(body.data).toEqual({ configured: false, entries: [] });
-    expect(fetchMock.mock.calls.every(([url]) => String(url).includes('/api/v1/'))).toBe(true);
+    expect(fetchMock.mock.calls.every(([url]) => String(url).includes('/api/'))).toBe(true);
   });
 
   it('reads [plugins] marketplace_url from config.toml', async () => {
     await server?.close();
     await writeFile(join(home!, 'config.toml'), `[plugins]\nmarketplace_url = "${CATALOG_URL}"\n`);
-    vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_URL', undefined as unknown as string);
+    vi.stubEnv('KIKI_PLUGIN_MARKETPLACE_URL', undefined as unknown as string);
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -488,7 +488,7 @@ describe('server-v2 /api/v1 plugins', () => {
 
     const { body } = await call<{ configured: boolean; source?: string; entries: { id: string }[] }>(
       'GET',
-      '/api/v1/plugins/marketplace',
+      '/api/plugins/marketplace',
     );
     expect(body.code).toBe(0);
     expect(body.data.configured).toBe(true);
@@ -498,20 +498,20 @@ describe('server-v2 /api/v1 plugins', () => {
 
   it('returns plugin info including MCP servers and diagnostics', async () => {
     const source = await makePluginDir('demo-plugin', '1.0.0');
-    await call('POST', '/api/v1/plugins', { source });
+    await call('POST', '/api/plugins', { source });
     const info = await call<{
       id: string;
       mcpServers: unknown[];
       diagnostics: unknown[];
       root: string;
       manifest?: { name: string };
-    }>('GET', '/api/v1/plugins/demo-plugin');
+    }>('GET', '/api/plugins/demo-plugin');
     expect(info.body.code).toBe(0);
     expect(info.body.data.id).toBe('demo-plugin');
     expect(info.body.data.mcpServers).toEqual([]);
     expect(Array.isArray(info.body.data.diagnostics)).toBe(true);
     expect(info.body.data.manifest?.name).toBe('demo-plugin');
-    const missing = await call('GET', '/api/v1/plugins/nope');
+    const missing = await call('GET', '/api/plugins/nope');
     expect(missing.body.code).toBe(40419);
   });
 
@@ -542,7 +542,7 @@ describe('server-v2 /api/v1 plugins', () => {
 
     const { body } = await call<{ entries: { id: string; source: string }[] }>(
       'GET',
-      '/api/v1/plugins/marketplace',
+      '/api/plugins/marketplace',
     );
     expect(body.code).toBe(0);
     expect(body.data.entries.map((e) => e.id)).toEqual(['tilde-plugin', 'tilde-entry-plugin']);

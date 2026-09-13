@@ -168,6 +168,56 @@ async function query(service: UsageAggregationService, input: UsageQuery = {}) {
   return service.query(input);
 }
 
+describe('UsageAggregationService accounting evidence', () => {
+  it('preserves explicit missing usage and legacy-zero provenance without dropping known tokens', async () => {
+    const zero = { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
+    const records = [
+      { ...usageRecord(100), usageKnown: true },
+      { ...usageRecord(101), usage: zero, usageKnown: true },
+      { ...usageRecord(102), usage: zero, usageKnown: false },
+      { ...usageRecord(103), usage: zero },
+    ];
+    const { service } = fixture([summary('s', 'w')], { [scope('w', 's')]: records }, () => 200);
+    const response = await query(service);
+    expect(response.summary.tokens).toEqual({ input_other: 1, output: 1, input_cache_read: 1, input_cache_creation: 1 });
+    expect(response.summary).toMatchObject({ tokens_unknown: true, cost_unknown: true });
+    expect(response.reliability).toMatchObject({ usage_coverage: { known_records: 2, missing_records: 1, legacy_zero_records: 1 } });
+    expect(response.sessions.items[0]?.usage).toMatchObject({ tokens_unknown: true });
+    expect(response.trend[0]?.groups[0]).toMatchObject({ tokens_unknown: true });
+    const knownZero = fixture([summary('s', 'w')], { [scope('w', 's')]: [records[1]!] }, () => 200);
+    expect((await query(knownZero.service)).summary).toMatchObject({ tokens_unknown: false });
+    const retained = fixture([], {}, () => 200, {}, {
+      items: [retainedSession('deleted', 'w', [retainedRecord(100, { usage: zero, usageKnown: false })])],
+      complete: true,
+      scannedRecords: 1,
+    });
+    expect((await query(retained.service)).reliability).toMatchObject({
+      includes_deleted_sessions: true,
+      usage_coverage: { known_records: 0, missing_records: 1, legacy_zero_records: 0 },
+    });
+  });
+  it('distinguishes no records, genuine zero, rejected records and nonzero usage', async () => {
+    const session = summary('session-a', 'workspace-a');
+    const at = 1_000;
+    const zero = { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
+    const scenarios = [
+      { records: [], sessions: 0, complete: true, input: 0, covered: false },
+      { records: [{ ...usageRecord(at), usage: zero }], sessions: 1, complete: true, input: 0, covered: true },
+      { records: [{ ...usageRecord(at), usage: { ...zero, inputOther: -1 } }], sessions: 0, complete: false, input: 0, covered: false },
+      { records: [usageRecord(at)], sessions: 1, complete: true, input: 1, covered: true },
+    ];
+    for (const scenario of scenarios) {
+      const { service } = fixture([session], { [scope('workspace-a', 'session-a')]: scenario.records }, () => 2_000);
+      const response = await query(service);
+      expect(response.summary.session_count).toBe(scenario.sessions);
+      expect(response.summary.tokens.input_other).toBe(scenario.input);
+      expect(response.reliability.complete).toBe(scenario.complete);
+      expect(response.reliability.scanned_sessions).toBe(1);
+      expect(response.reliability.coverage.earliest_at).toBe(scenario.covered ? at : null);
+    }
+  });
+});
+
 describe('UsageAggregationService cache budgets', () => {
   it('charges warmed cache entries against each request record budget', async () => {
     const sessionA = summary('session-a', 'workspace-a');

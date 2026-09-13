@@ -251,6 +251,7 @@ describe('DaemonTranscriptRenderer', () => {
         kind: 'shell',
         id: 'shell-1',
         commandId: 'shell-1',
+        command: undefined,
         output: 'partial',
         done: false,
         isError: undefined,
@@ -282,6 +283,7 @@ describe('DaemonTranscriptRenderer', () => {
         kind: 'shell',
         id: 'shell-1',
         commandId: 'shell-1',
+        command: undefined,
         output: 'final',
         done: true,
         isError: false,
@@ -308,6 +310,24 @@ describe('DaemonTranscriptRenderer', () => {
     expect(output).toContain('✓ explore');
     expect(output).toContain('$ final');
     expect(output).toContain('Approval approved · run command');
+  });
+
+  it('renders a preserved shell command separately from its output', () => {
+    const output = render([
+      {
+        kind: 'shell',
+        id: 'shell-command',
+        commandId: 'command-1',
+        command: 'pnpm test',
+        output: '42 passed',
+        done: true,
+        isError: false,
+      },
+    ]);
+
+    expect(output).toContain('$ pnpm test');
+    expect(output).toContain('42 passed');
+    expect(output).not.toContain('$ 42 passed');
   });
 
   it('maps question dialog labels back to REST option identifiers', () => {

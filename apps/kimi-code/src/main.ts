@@ -184,7 +184,11 @@ function bootstrap(): void {
     },
   );
 
-  program.parse(process.argv);
+  void program.parseAsync(process.argv).catch((error: unknown) => {
+    const code = typeof error === 'object' && error !== null && 'exitCode' in error ? Number(error.exitCode) : 1;
+    process.exitCode = Number.isInteger(code) && code > 0 ? code : 1;
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  });
 }
 
 main();

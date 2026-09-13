@@ -495,6 +495,12 @@ function lifecycleHarness(initial: readonly IAgentScopeHandle[]) {
     get: (agentId) => handles.get(agentId),
     list: () => [...handles.values()],
     broadcastPermissionMode: () => {},
+    countPendingBackgroundTasks: () => {
+      throw new Error('unexpected count pending background tasks');
+    },
+    drainBackgroundTasks: async () => {
+      throw new Error('unexpected drain background tasks');
+    },
     remove: async () => {},
   };
   return {

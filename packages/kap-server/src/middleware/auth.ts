@@ -43,7 +43,7 @@ function defaultIsBypassed(req: FastifyRequest, bypassSeatDelegation: boolean): 
   if (path === null) {
     return false;
   }
-  if (req.method === 'GET' && path === '/api/v1/healthz') {
+  if (req.method === 'GET' && path === '/api/healthz') {
     return true;
   }
   if (path === '/mcp') {

@@ -235,8 +235,8 @@ export class FsWatchBridge {
         rawCount: 0,
         truncated: false,
         debounceTimer: undefined,
-        debounceMs: readPositiveIntEnv('KIMI_CODE_FS_WATCH_DEBOUNCE_MS', DEFAULT_DEBOUNCE_MS),
-        maxChangesPerWindow: readPositiveIntEnv('KIMI_CODE_FS_WATCH_MAX_CHANGES_PER_WINDOW', DEFAULT_MAX_CHANGES_PER_WINDOW),
+        debounceMs: readPositiveIntEnv('KIKI_FS_WATCH_DEBOUNCE_MS', DEFAULT_DEBOUNCE_MS),
+        maxChangesPerWindow: readPositiveIntEnv('KIKI_FS_WATCH_MAX_CHANGES_PER_WINDOW', DEFAULT_MAX_CHANGES_PER_WINDOW),
       };
       sw.sub = handle.onDidChange((event) => this.onRuntimeEvent(key, event));
       this.recomputeAndApply(sw);

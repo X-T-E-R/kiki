@@ -102,7 +102,7 @@ into runtime code or packaging scripts.
 | Area | Primary implementation |
 |---|---|
 | Activation and VS Code commands | `apps/vscode/src/extension.ts` |
-| Webview lifecycle | `apps/vscode/src/KimiWebviewProvider.ts` |
+| Webview lifecycle | `apps/vscode/src/KikiWebviewProvider.ts` |
 | Webview RPC boundary | `apps/vscode/src/bridge-handler.ts`, `apps/vscode/src/handlers` |
 | SDK host | `apps/vscode/src/runtime/kimi-runtime.ts` |
 | Session lifecycle and event routing | `apps/vscode/src/runtime/session-runtime.ts` |
@@ -119,8 +119,8 @@ into runtime code or packaging scripts.
 
 The SDK resolves the home directory using the normal Kimi Code rules:
 
-1. system-level `KIMI_CODE_HOME`, when set;
-2. otherwise `~/.kimi-code`.
+1. system-level `KIKI_HOME`, when set;
+2. otherwise `~/.kiki`.
 
 The extension does not add a separate `kimi.homeDir` setting and does not pass
 its own default home to the SDK. VS Code and the TUI share the following data

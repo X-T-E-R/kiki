@@ -30,7 +30,7 @@ interface FsEntryWire {
   mime?: string;
 }
 
-describe('server-v2 /api/v1 fs routes', () => {
+describe('server-v2 /api fs routes', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let work: string | undefined;
@@ -90,7 +90,7 @@ describe('server-v2 /api/v1 fs routes', () => {
   });
 
   async function createSession(): Promise<string> {
-    const res = await fetch(`${base}/api/v1/sessions`, {
+    const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd: work as string } }),
@@ -101,7 +101,7 @@ describe('server-v2 /api/v1 fs routes', () => {
   }
 
   async function postFs<T>(id: string, action: string, body: unknown, runtimeId = 'local'): Promise<Envelope<T>> {
-    const res = await fetch(`${base}/api/v1/sessions/${id}/fs:${action}`, {
+    const res = await fetch(`${base}/api/sessions/${id}/fs:${action}`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ runtime_id: runtimeId, ...(body as object) }),
@@ -112,7 +112,7 @@ describe('server-v2 /api/v1 fs routes', () => {
   it('defaults fs actions to the local runtime when runtime_id is omitted', async () => {
     await writeFile(join(work!, 'a.txt'), 'hello');
     const id = await createSession();
-    const res = await fetch(`${base}/api/v1/sessions/${id}/fs:stat`, {
+    const res = await fetch(`${base}/api/sessions/${id}/fs:stat`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ path: 'a.txt' }),
@@ -261,7 +261,7 @@ describe('server-v2 /api/v1 fs routes', () => {
 
   it('fs:search resolves a registered workspace id when no session exists', async () => {
     await writeFile(join(work!, 'gamma.ts'), '');
-    const res = await fetch(`${base}/api/v1/workspaces`, {
+    const res = await fetch(`${base}/api/workspaces`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ root: work }),
@@ -338,7 +338,7 @@ describe('server-v2 /api/v1 fs routes', () => {
       const body = await postFs<null>(id, 'read', { path: 'docs/secret.txt' });
       expect(body.code).toBe(ErrorCode.FS_PATH_ESCAPES_SESSION);
 
-      const res = await fetch(`${base}/api/v1/sessions/${id}/fs/docs/secret.txt:download?runtime_id=local`, {
+      const res = await fetch(`${base}/api/sessions/${id}/fs/docs/secret.txt:download?runtime_id=local`, {
         headers: authHeaders(server as RunningServer),
       } as never);
       const downloadBody = (await res.json()) as Envelope<null>;
@@ -352,7 +352,7 @@ describe('server-v2 /api/v1 fs routes', () => {
     const link = join(tmpdir(), `kimi-server-v2-fs-cwd-link-${process.pid}`);
     await symlink(work!, link, 'dir');
     try {
-      const res = await fetch(`${base}/api/v1/sessions`, {
+      const res = await fetch(`${base}/api/sessions`, {
         method: 'POST',
         headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
         body: JSON.stringify({ metadata: { cwd: link } }),
@@ -375,7 +375,7 @@ describe('server-v2 /api/v1 fs routes', () => {
     await writeFile(join(work!, 'a.txt'), 'download-me');
     const id = await createSession();
 
-    const res = await fetch(`${base}/api/v1/sessions/${id}/fs/a.txt:download?runtime_id=local`, {
+    const res = await fetch(`${base}/api/sessions/${id}/fs/a.txt:download?runtime_id=local`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     expect(res.status).toBe(200);
@@ -384,7 +384,7 @@ describe('server-v2 /api/v1 fs routes', () => {
     const etag = res.headers.get('etag');
     expect(etag).toBeTruthy();
 
-    const cached = await fetch(`${base}/api/v1/sessions/${id}/fs/a.txt:download?runtime_id=local`, {
+    const cached = await fetch(`${base}/api/sessions/${id}/fs/a.txt:download?runtime_id=local`, {
       headers: authHeaders(server as RunningServer, { 'if-none-match': etag as string }),
     } as never);
     expect(cached.status).toBe(304);
@@ -394,7 +394,7 @@ describe('server-v2 /api/v1 fs routes', () => {
     await writeFile(join(work!, 'b.txt'), 'compat-download');
     const id = await createSession();
 
-    const res = await fetch(`${base}/api/v1/sessions/${id}/fs/b.txt:download`, {
+    const res = await fetch(`${base}/api/sessions/${id}/fs/b.txt:download`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     expect(res.status).toBe(200);
@@ -413,7 +413,7 @@ describe('server-v2 /api/v1 fs routes', () => {
     const baseline = resources.size;
 
     for (let i = 0; i < 2; i += 1) {
-      const res = await fetch(`${base}/api/v1/sessions/${id}/fs/c.txt:download?runtime_id=local`, {
+      const res = await fetch(`${base}/api/sessions/${id}/fs/c.txt:download?runtime_id=local`, {
         headers: authHeaders(server as RunningServer),
       } as never);
       expect(res.status).toBe(200);
@@ -423,7 +423,7 @@ describe('server-v2 /api/v1 fs routes', () => {
   });
 
   async function postWorkspaceSearch<T>(body: unknown): Promise<Envelope<T>> {
-    const res = await fetch(`${base}/api/v1/workspace/fs:search`, {
+    const res = await fetch(`${base}/api/workspace/fs:search`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ runtime_id: 'local', ...(body as object) }),
@@ -433,7 +433,7 @@ describe('server-v2 /api/v1 fs routes', () => {
 
   it('workspace fs:search finds files by registered workspace id', async () => {
     await writeFile(join(work!, 'epsilon.ts'), '');
-    const res = await fetch(`${base}/api/v1/workspaces`, {
+    const res = await fetch(`${base}/api/workspaces`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ root: work }),
@@ -471,7 +471,7 @@ describe('server-v2 /api/v1 fs routes', () => {
 
   it('workspace fs:search defaults to the local runtime when runtime_id is omitted', async () => {
     await writeFile(join(work!, 'theta.ts'), '');
-    const res = await fetch(`${base}/api/v1/workspace/fs:search`, {
+    const res = await fetch(`${base}/api/workspace/fs:search`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ workspace: work, query: 'theta' }),
@@ -500,7 +500,7 @@ describe('server-v2 /api/v1 fs routes', () => {
   }
 
   async function postWorkspaceSuggest<T>(body: unknown): Promise<Envelope<T>> {
-    const res = await fetch(`${base}/api/v1/workspace/fs:suggest`, {
+    const res = await fetch(`${base}/api/workspace/fs:suggest`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ runtime_id: 'local', ...(body as object) }),
@@ -510,7 +510,7 @@ describe('server-v2 /api/v1 fs routes', () => {
 
   it('workspace fs:suggest finds files by registered workspace id', async () => {
     await writeFile(join(work!, 'epsilon.ts'), '');
-    const res = await fetch(`${base}/api/v1/workspaces`, {
+    const res = await fetch(`${base}/api/workspaces`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ root: work }),
@@ -596,7 +596,7 @@ describe('server-v2 /api/v1 fs routes', () => {
 
   it('workspace fs:suggest defaults to the local runtime when runtime_id is omitted', async () => {
     await writeFile(join(work!, 'iota.ts'), '');
-    const res = await fetch(`${base}/api/v1/workspace/fs:suggest`, {
+    const res = await fetch(`${base}/api/workspace/fs:suggest`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ workspace: work, query: 'iota' }),

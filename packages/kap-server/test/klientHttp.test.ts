@@ -10,6 +10,7 @@ import { WebSocket, type RawData } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
 import { registerKlientHttp } from '../src/transport/klient/registerKlientHttp';
+import { TerminalHttpConnection } from '../src/transport/klient/terminalHttp';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
 
@@ -21,6 +22,19 @@ function rawToString(data: RawData): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
   return Buffer.from(data).toString('utf8');
 }
+
+it('rejects every PTY control before resolving a session when exposure disables terminals', async () => {
+  const get = vi.fn(() => { throw new Error('must not resolve a session'); });
+  const send = vi.fn();
+  const connection = new TerminalHttpConnection({ accessor: { get } } as unknown as Scope, false, send);
+  for (const type of ['terminal_attach', 'terminal_input', 'terminal_resize', 'terminal_detach']) {
+    expect(connection.receive({ type, id: type, data: { session_id: 's1', terminal_id: 't1', data: 'unsafe', cols: 80, rows: 24 } })).toBe(true);
+  }
+  await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(4));
+  expect(get).not.toHaveBeenCalled();
+  for (const [frame] of send.mock.calls) expect(frame).toMatchObject({ type: 'terminal_ack', code: 40414, msg: 'terminal unavailable' });
+  connection.dispose();
+});
 
 describe('klient HTTP host', () => {
   let homeDir: string;
@@ -68,6 +82,52 @@ describe('klient HTTP host', () => {
     });
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ code: 0, data: process.platform });
+  });
+
+  it('reads the real agent panel projection and rejects unregistered board workspaces', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    try {
+      const query = { session_id: 'session_missing', agent_id: 'main' };
+      const panel = await klient.global.agentPanel.read(query);
+      const legacy = await fetch(`${endpoint}/api/agents/capabilities?session_id=session_missing&agent_id=main`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }).then((response) => response.json()) as { data: unknown };
+      expect(panel).toEqual(legacy.data);
+      expect(panel).toMatchObject({ context: 'live', available: false, targets: [] });
+      const session = await klient.global.sessions.create({ workDir: homeDir, title: 'Panel projection' });
+      await klient.session(session.id).agent('main').getUsage();
+      const live = await klient.global.agentPanel.read({ session_id: session.id, agent_id: 'main' });
+      const liveLegacy = await fetch(`${endpoint}/api/agents/capabilities?session_id=${encodeURIComponent(session.id)}&agent_id=main`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }).then((response) => response.json()) as { data: unknown };
+      expect(live).toEqual(liveLegacy.data);
+      expect(live.profile?.name).toBeTypeOf('string');
+      expect(live.tools?.length).toBeGreaterThan(0);
+      expect(live.metrics?.['main']).toHaveProperty('totalCostUsd');
+      await expect(klient.global.board.read({ action: 'preview', workspaceId: 'wd_missing' })).resolves.toMatchObject({ ok: false, error: { code: 'WORKSPACE_NOT_FOUND' } });
+      await expect(klient.global.board.write({ action: 'create', workspaceId: 'wd_missing', requestKey: 'create-one', title: 'Example task' })).resolves.toMatchObject({ ok: false, error: { code: 'WORKSPACE_NOT_FOUND' } });
+      await expect(klient.global.agentPanel.read({ profile: 'missing', workspace_id: 'wd_missing' })).rejects.toMatchObject({ code: 40410 });
+    } finally {
+      await klient.close();
+    }
+  });
+
+  it('shares sessions between the typed REST surface and session facade on the unified host', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    try {
+      if (klient.rest === undefined) throw new Error('HTTP client must expose its REST facade');
+      await expect(klient.rest.healthz()).resolves.toBe(true);
+      const workspace = await klient.global.workspaces.createOrTouch({ root: homeDir });
+      const created = await klient.rest.sessions.create({ workspace_id: workspace.id, title: 'Unified client session' });
+      expect(created.workspace_id).toBe(workspace.id);
+      const listed = await klient.rest.sessions.list({ workspace_id: workspace.id });
+      expect(listed.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.id, title: 'Unified client session' })]));
+      const snapshot = await klient.session(created.id).view.snapshot();
+      expect(snapshot.session.id).toBe(created.id);
+      await expect(klient.rest.sessions.create({ workspace_id: 'wd_missing_000000000000' })).rejects.toMatchObject({ code: 40410 });
+    } finally {
+      await klient.close();
+    }
   });
 
   it('returns a public RPC error envelope for malformed procedures', async () => {
@@ -124,6 +184,37 @@ describe('klient HTTP host', () => {
       });
       subscription.dispose();
       await klient.close();
+    }
+  });
+
+  it('shares a resumable session view across two authenticated clients', async () => {
+    const clients = [0, 1].map(() => createKlient({ endpoint, token: TOKEN, WebSocket: WebSocket as unknown as typeof globalThis.WebSocket }));
+    const subscriptions: Array<{ close(): void; restart(): void }> = [];
+    try {
+      const created = await clients[0]!.global.sessions.create({ workDir: homeDir, title: 'Shared view' });
+      const snapshots = await Promise.all(clients.map((client) => client.session(created.id).view.snapshot()));
+      expect(snapshots[0]!.session.id).toBe(created.id);
+      expect(snapshots[1]!.epoch).toBe(snapshots[0]!.epoch);
+      const page = await clients[0]!.session(created.id).view.transcript.page({ agentId: 'main', pageSize: 20 });
+      expect(page).toMatchObject({ session_id: created.id, agent_id: 'main', coverage: { kind: 'full', hasMoreOlder: false } });
+      expect(page.cursor?.epoch).toBeTruthy();
+      const catchUp = await clients[1]!.session(created.id).view.transcript.catchUp({ agentId: 'main', since: page.cursor!, grade: 'delta' });
+      expect(catchUp).toMatchObject({ session_id: created.id, complete: true, epoch: page.cursor!.epoch });
+      const signals: Array<Array<{ type: string }>> = [[], []];
+      clients.forEach((client, index) => {
+        const snapshot = snapshots[index]!;
+        subscriptions.push(client.session(created.id).view.subscribe({
+          sessionCursor: { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
+          transcriptGrades: { '*': 'turn', main: 'delta' },
+        }, (signal) => signals[index]!.push(signal)));
+      });
+      await vi.waitFor(() => { for (const received of signals) expect(received.some((signal) => signal.type === 'ready')).toBe(true); });
+      for (const received of signals) expect(received.some((signal) => signal.type === 'transcript')).toBe(true);
+      subscriptions[0]!.restart();
+      await vi.waitFor(() => expect(signals[0]!.filter((signal) => signal.type === 'ready')).toHaveLength(2));
+    } finally {
+      for (const subscription of subscriptions) subscription.close();
+      await Promise.all(clients.map((client) => client.close()));
     }
   });
 

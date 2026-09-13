@@ -27,6 +27,7 @@ import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/st
 import type { TestAgentContext, TestAgentOptions, TestAgentServiceOverride } from '../../harness';
 import { agentService, appServices, createCommandRunner, execEnvServices, hostEnvironmentServices, sessionServices, testAgent } from '../../harness';
 import { IAgentToolSelectAnnouncementsService } from '#/agent/toolSelect/toolSelectAnnouncements';
+import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import {
   IAgentFullCompactionService,
   IModelOAuthTokens,
@@ -47,6 +48,22 @@ import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 type GenerateFn = NonNullable<TestAgentOptions['generate']>;
 
+const TWO_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'recent user two', 'recent assistant two'];
+const THREE_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'old user two', 'old assistant two', 'recent user three', 'recent assistant three'];
+
+function fixtureRequestTokens(ctx: TestAgentContext, text: readonly string[]): number {
+  const tools = ctx.get(IAgentToolSelectService).shapeTools(ctx.get(IAgentToolRegistryService).list());
+  return ctx.tokenCounting.requestSize({
+    systemPrompt: ctx.get(IAgentProfileService).getSystemPrompt(),
+    tools: tools.filter((tool) => tool.deferred !== true).map((tool) => ({
+      name: tool.name, description: tool.description, parameters: tool.parameters ?? {},
+    })),
+    messages: text.map((value, index) => ({
+      role: index % 2 === 0 ? 'user' : 'assistant', content: [{ type: 'text', text: value }], toolCalls: [],
+    })),
+  });
+}
+
 const CATALOGUED_PROVIDER = {
   type: 'kimi',
   apiKey: 'test-key',
@@ -63,7 +80,6 @@ const CATALOGUED_MODEL_CAPABILITIES = {
 } as const;
 const SNAPSHOT_VISIBLE_TOOLS = [
   'AgentRun',
-  'AgentSwarm',
   'CronCreate',
   'CronDelete',
   'CronList',
@@ -264,7 +280,7 @@ describe('FullCompaction', () => {
     expect(completeEvent?.args).toEqual({ time: '<time>' });
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
       system: <system-prompt>
-      tools: AgentRun, AgentSwarm, EnterPlanMode, ExitPlanMode
+      tools: AgentRun, EnterPlanMode, ExitPlanMode
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
@@ -292,7 +308,7 @@ describe('FullCompaction', () => {
       properties: expect.objectContaining({
         agent_id: 'main',
         source: 'manual',
-        tokens_before: 4_212,
+        tokens_before: fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT),
         tokens_after: expect.any(Number),
         duration_ms: expect.any(Number),
         compacted_count: 6,
@@ -571,7 +587,7 @@ describe('FullCompaction', () => {
       session_id: 'test-session',
       cwd: dir,
       trigger: 'auto',
-      token_count: 4_212,
+      token_count: fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT),
     });
     expect(post).toMatchObject({
       hook_event_name: 'PostCompact',
@@ -645,6 +661,7 @@ describe('FullCompaction', () => {
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
@@ -657,7 +674,7 @@ describe('FullCompaction', () => {
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'manual',
-        tokens_before: 17_776,
+        tokens_before: tokensBefore,
         retry_count: 1,
         trace_id: 'trace-compact-1',
       }),
@@ -665,8 +682,8 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   });
 
-  it('retries any compaction request error indefinitely when KIMI_CODE_INFINITE_RETRY is set', async () => {
-    vi.stubEnv('KIMI_CODE_INFINITE_RETRY', '1');
+  it('retries any compaction request error indefinitely when KIKI_INFINITE_RETRY is set', async () => {
+    vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     let attempts = 0;
     const generate: GenerateFn = async () => {
       attempts += 1;
@@ -692,8 +709,8 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   });
 
-  it('lets context overflow reach compaction shrink instead of retrying when KIMI_CODE_INFINITE_RETRY is set', async () => {
-    vi.stubEnv('KIMI_CODE_INFINITE_RETRY', '1');
+  it('lets context overflow reach compaction shrink instead of retrying when KIKI_INFINITE_RETRY is set', async () => {
+    vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     let attempts = 0;
     const generate: GenerateFn = async () => {
       attempts += 1;
@@ -1099,6 +1116,7 @@ describe('FullCompaction', () => {
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const failed = ctx.once('error');
 
     await ctx.rpc.beginCompaction({});
@@ -1124,7 +1142,7 @@ describe('FullCompaction', () => {
       properties: expect.objectContaining({
         agent_id: 'main',
         source: 'manual',
-        tokens_before: 17_776,
+        tokens_before: tokensBefore,
         duration_ms: expect.any(Number),
         round: 1,
         retry_count: 0,
@@ -1337,6 +1355,7 @@ describe('FullCompaction', () => {
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const failed = ctx.once('error');
 
     await ctx.rpc.beginCompaction({});
@@ -1349,7 +1368,7 @@ describe('FullCompaction', () => {
       event: 'compaction_failed',
       properties: expect.objectContaining({
         source: 'manual',
-        tokens_before: 17_776,
+        tokens_before: tokensBefore,
         duration_ms: expect.any(Number),
         retry_count: 4,
         error_type: 'APIConnectionError',
@@ -1401,7 +1420,7 @@ describe('FullCompaction', () => {
 
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
       system: <system-prompt>
-      tools: AgentRun, AgentSwarm, EnterPlanMode, ExitPlanMode
+      tools: AgentRun, EnterPlanMode, ExitPlanMode
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
@@ -1463,7 +1482,7 @@ describe('FullCompaction', () => {
     );
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
       system: <system-prompt>
-      tools: AgentRun, AgentSwarm, EnterPlanMode, ExitPlanMode
+      tools: AgentRun, EnterPlanMode, ExitPlanMode
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
@@ -1626,7 +1645,7 @@ describe('FullCompaction', () => {
     expect(countEvents(events, 'full_compaction.complete')).toBe(0);
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
       system: <system-prompt>
-      tools: AgentRun, AgentSwarm, EnterPlanMode, ExitPlanMode
+      tools: AgentRun, EnterPlanMode, ExitPlanMode
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
@@ -1712,7 +1731,7 @@ describe('FullCompaction', () => {
     expect(ctx.llmInputs()).toMatchInlineSnapshot(`
       call 1:
         system: <system-prompt>
-        tools: AgentRun, AgentSwarm, EnterPlanMode, ExitPlanMode
+        tools: AgentRun, EnterPlanMode, ExitPlanMode
         messages:
           user: text "old user one"
           assistant: text "old assistant one"
@@ -1732,7 +1751,7 @@ describe('FullCompaction', () => {
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'auto',
-        tokens_before: 4_219,
+        tokens_before: fixtureRequestTokens(ctx, [...THREE_EXCHANGE_TEXT, 'Answer after compacting']),
         tokens_after: expect.any(Number),
         compacted_count: 4,
         retry_count: 0,
@@ -2336,6 +2355,25 @@ describe('FullCompaction', () => {
       answerCall?.history.map(messageText).some((text) => text.includes('keep-this-pending-verbatim')),
     ).toBe(true);
     await ctx.expectResumeMatches();
+  });
+
+  it('compacts against the profile context budget without advertising a larger model capacity', async () => {
+    const ctx = testAgent();
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 } });
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({
+      resolvedProfile: normalizeAgentProfile({ name: 'budget-profile', contextBudget: 150_000, systemPrompt: () => 'Budgeted profile' }),
+      model: profile.getModel(),
+    });
+    expect(profile.data().modelCapabilities.max_context_tokens).toBe(1_000_000);
+    expect(profile.getModelCapabilities().max_context_tokens).toBe(150_000);
+    ctx.appendExchange(1, 'old user', 'old assistant', 160_000);
+    ctx.mockNextResponse({ type: 'text', text: 'Budgeted summary.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Answer after compaction.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue' }] });
+    const events = await ctx.untilTurnEnd();
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(events).toContainEqual(expect.objectContaining({ event: 'compaction.started' }));
   });
 
   it('triggers auto compaction when pending tokens cross the ratio threshold', async () => {

@@ -127,10 +127,6 @@ function buildMediaNote(input: {
         'and compute absolute coordinates using the original image size.',
     );
   }
-  parts.push(
-    'If you generate or edit images or videos via commands or scripts, ' +
-      'read the result back immediately before continuing.',
-  );
   return `<system>${parts.join(' ')}</system>`;
 }
 

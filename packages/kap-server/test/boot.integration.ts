@@ -176,7 +176,7 @@ describe('server-v2 boot', () => {
     restoreExternalDelegationEnv(externalDelegationEnv);
   });
 
-  it('boots agent-core-v2 and serves the basic /api/v1 routes', async () => {
+  it('boots agent-core-v2 and serves the basic /api routes', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-'));
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -188,7 +188,7 @@ describe('server-v2 boot', () => {
 
     const base = `http://127.0.0.1:${server.port}`;
 
-    const healthz = await fetch(`${base}/api/v1/healthz`);
+    const healthz = await fetch(`${base}/api/healthz`);
     expect(healthz.status).toBe(200);
     const healthBody = await healthz.json() as {
       code: number;
@@ -199,7 +199,7 @@ describe('server-v2 boot', () => {
     expect(healthBody.data.ok).toBe(true);
     expect(typeof healthBody.request_id).toBe('string');
 
-    const meta = await authedFetch(server, base, '/api/v1/meta');
+    const meta = await authedFetch(server, base, '/api/meta');
     expect(meta.status).toBe(200);
     const metaBody = await meta.json() as {
       code: number;
@@ -210,7 +210,7 @@ describe('server-v2 boot', () => {
     expect(typeof metaBody.data.server_version).toBe('string');
     expect(metaBody.data.capabilities).toBeDefined();
 
-    const auth = await authedFetch(server, base, '/api/v1/auth');
+    const auth = await authedFetch(server, base, '/api/auth');
     expect(auth.status).toBe(200);
     const authBody = await auth.json() as {
       code: number;
@@ -220,7 +220,7 @@ describe('server-v2 boot', () => {
     expect(typeof authBody.data.ready).toBe('boolean');
     expect(authBody.data.providers_count).toBeGreaterThanOrEqual(0);
 
-    const oauthPoll = await authedFetch(server, base, '/api/v1/oauth/login');
+    const oauthPoll = await authedFetch(server, base, '/api/oauth/login');
     expect(oauthPoll.status).toBe(200);
     const oauthBody = await oauthPoll.json() as { code: number; data: null };
     expect(oauthBody.code).toBe(0);
@@ -265,7 +265,7 @@ describe('server-v2 boot', () => {
       expect(prepare).toHaveBeenCalledOnce();
       expect(workspaceList).not.toHaveBeenCalled();
       expect(setLiveTranscriptSource).not.toHaveBeenCalled();
-      expect((await authedFetch(server, base, '/api/v1/meta')).status).toBe(200);
+      expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
 
       prepareGate.resolve({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
       await vi.waitFor(() => expect(workspaceList).toHaveBeenCalledOnce());
@@ -370,7 +370,7 @@ describe('server-v2 boot', () => {
 
     expect(prepare).toHaveBeenCalled();
     expect(get).not.toHaveBeenCalled();
-    const metaResponse = await authedFetch(server, base, '/api/v1/meta');
+    const metaResponse = await authedFetch(server, base, '/api/meta');
     expect(await metaResponse.json()).toMatchObject({
       code: 0,
       data: {
@@ -384,7 +384,7 @@ describe('server-v2 boot', () => {
     const edgeResponse = await authedFetch(
       server,
       base,
-      '/api/v2/sessions/session_index_unavailable/external-delegation/list',
+      '/api/sessions/session_index_unavailable/external-delegation/list',
       {
         method: 'POST',
         headers: {
@@ -432,11 +432,11 @@ describe('server-v2 boot', () => {
 
       const base = `http://127.0.0.1:${server.port}`;
       await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
-      expect((await authedFetch(server, base, '/api/v1/meta')).status).toBe(200);
+      expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
 
       prepareFailure.reject(new Error('injected prepare failure'));
       await vi.waitFor(() => expect(prepareSettled).toBe(true));
-      expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+      expect((await fetch(`${base}/api/healthz`)).status).toBe(200);
     } finally {
       prepareFailure.resolve({
         source: 'read-model',
@@ -463,7 +463,7 @@ describe('server-v2 boot', () => {
     });
 
     const base = `http://127.0.0.1:${server.port}`;
-    const meta = await authedFetch(server, base, '/api/v1/meta');
+    const meta = await authedFetch(server, base, '/api/meta');
     const metaBody = await meta.json() as {
       code: number;
       data: { server_version: string };
@@ -664,8 +664,8 @@ describe('server-v2 boot — external delegation startup', () => {
     });
     const base = `http://127.0.0.1:${server.port}`;
 
-    expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
-    const metaResponse = await authedFetch(server, base, '/api/v1/meta');
+    expect((await fetch(`${base}/api/healthz`)).status).toBe(200);
+    const metaResponse = await authedFetch(server, base, '/api/meta');
     const meta = await metaResponse.json() as {
       code: number;
       data: {
@@ -690,7 +690,7 @@ describe('server-v2 boot — external delegation startup', () => {
     const edgeResponse = await authedFetch(
       server,
       base,
-      '/api/v2/sessions/session-operator/external-delegation/list',
+      '/api/sessions/session-operator/external-delegation/list',
       {
         method: 'POST',
         headers: {

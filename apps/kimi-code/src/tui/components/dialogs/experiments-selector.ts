@@ -199,7 +199,7 @@ function featureDetail(feature: ExperimentalFeatureState): string {
 function sourceLabel(feature: ExperimentalFeatureState): string {
   switch (feature.source) {
     case 'master-env':
-      return 'locked by KIMI_CODE_EXPERIMENTAL_FLAG';
+      return 'locked by KIKI_EXPERIMENTAL_FLAG';
     case 'env':
       return `locked by ${feature.env}`;
     case 'config':

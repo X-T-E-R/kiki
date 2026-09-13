@@ -1,15 +1,15 @@
 {
   "name": "kiki",
-  "publisher": "moonshot-ai",
-  "displayName": "Kimi Code",
-  "description": "Official Kimi Code plugin for VS Code",
+  "publisher": "kiki",
+  "displayName": "Kiki",
+  "description": "Kiki extension for VS Code",
   "version": "0.7.1",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MoonshotAI/kimi-code.git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
     "directory": "apps/vscode"
   },
   "engines": {
@@ -41,7 +41,8 @@
     "autocomplete",
     "moonshot",
     "kimi",
-    "moonshot-ai"
+    "moonshot-ai",
+    "kiki"
   ],
   "pricing": "Free",
   "activationEvents": [],
@@ -49,14 +50,14 @@
   "icon": "resources/kimi-icon-storefront.png",
   "contributes": {
     "configuration": {
-      "title": "Kimi Code",
+      "title": "Kiki",
       "properties": {
-        "kimi.autosave": {
+        "kiki.autosave": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically save files before Kimi reads or writes them"
+          "description": "Automatically save files before Kiki reads or writes them"
         },
-        "kimi.editorContext": {
+        "kiki.editorContext": {
           "type": "string",
           "default": "never",
           "enum": [
@@ -69,73 +70,73 @@
             "Share once when conversation starts",
             "Share when active file changes"
           ],
-          "description": "Control when to share the active editor's file and cursor position with Kimi"
+          "description": "Control when to share the active editor's file and cursor position with Kiki"
         }
       }
     },
     "commands": [
       {
-        "command": "kimi.openInTab",
-        "title": "Kimi Code: Open in New Tab",
+        "command": "kiki.openInTab",
+        "title": "Kiki: Open in New Tab",
         "icon": "$(link-external)"
       },
       {
-        "command": "kimi.openInSideBar",
-        "title": "Kimi Code: Open in Side Panel",
+        "command": "kiki.openInSideBar",
+        "title": "Kiki: Open in Side Panel",
         "icon": "$(layout-sidebar-left)"
       },
       {
-        "command": "kimi.showLogs",
-        "title": "Kimi Code: Show Logs",
+        "command": "kiki.showLogs",
+        "title": "Kiki: Show Logs",
         "icon": "$(output)"
       },
       {
-        "command": "kimi.resetKimi",
-        "title": "Kimi Code: Reset Kimi (in case of any issues/no response)",
+        "command": "kiki.resetKiki",
+        "title": "Kiki: Reset Kiki (in case of any issues/no response)",
         "icon": "$(refresh)"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "kimi-sidebar",
-          "title": "Kimi Code",
+          "id": "kiki-sidebar",
+          "title": "Kiki",
           "icon": "resources/kimi-icon.svg"
         }
       ]
     },
     "views": {
-      "kimi-sidebar": [
+      "kiki-sidebar": [
         {
           "type": "webview",
-          "id": "kimi.webview",
-          "name": "Kimi Code"
+          "id": "kiki.webview",
+          "name": "Kiki"
         }
       ]
     },
     "menus": {
       "view/title": [
         {
-          "command": "kimi.openInTab",
-          "when": "view == kimi.webview",
+          "command": "kiki.openInTab",
+          "when": "view == kiki.webview",
           "group": "navigation"
         }
       ],
       "commandPalette": [
         {
-          "command": "kimi.openInTab",
+          "command": "kiki.openInTab",
           "when": "true"
         },
         {
-          "command": "kimi.openInSideBar",
+          "command": "kiki.openInSideBar",
           "when": "true"
         },
         {
-          "command": "kimi.showLogs",
+          "command": "kiki.showLogs",
           "when": "true"
         },
         {
-          "command": "kimi.resetKimi",
+          "command": "kiki.resetKiki",
           "when": "true"
         }
       ]

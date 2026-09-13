@@ -1,71 +1,20 @@
-/**
- * `kimi -p` (print mode) runner.
- *
- * Unlike the former `V2PromptHarness` / `V2Session` shim, this runner talks to
- * agent-core-v2's native DI services directly — no `PromptHarness`, no
- * SDK-shaped session, no event translation. It:
- *   - `bootstrap()`s the app scope,
- *   - creates / resumes a session and its main agent via native services,
- *   - subscribes to the main agent's per-agent `IEventBus` and renders the
- *     native `Event2` stream (payloads are already protocol-shaped),
- *   - drives a turn through `IAgentPromptService.enqueue()` and awaits
- *     `Turn.result` for authoritative completion,
- *   - applies the print-mode background policy (config-driven:
- *     `exit` / `drain` / `steer`) before exiting.
- */
-
+/** `kiki -p`: one writer and background-policy loop over the shared client facade. */
 import { readFile } from 'node:fs/promises';
 
 import {
-  IAgentGoalService,
-  IAgentLifecycleService,
-  IAgentPermissionModeService,
-  IAgentProfileService,
-  IAgentPromptService,
-  IAgentTaskService,
-  IAuthSummaryService,
-  IBootstrapService,
-  IConfigService,
-  IEventBus,
-  ISessionCronService,
-  ISessionIndex,
-  ISessionManager,
+  createPrintClient,
   PRINT_MAX_TURNS_DEFAULT,
   PRINT_WAIT_CEILING_S_DEFAULT,
-  applyPrintModeConfigDefaults,
-  bootstrap,
-  ensureMainAgent,
-  resumeSessionById,
-  logSeed,
   parseAgentFileText,
   resolveAgentPath,
-  resolveAgentTaskConfig,
-  resolveKimiHome,
-  resolveLoggingConfig,
-  resolvePrintBackgroundMode,
+  resolveKikiHome,
   setClampedTimeout,
-  type Event2,
-  type IAgentScopeHandle,
-  type ISessionScopeHandle,
-  type LoopRunResult,
+  type AgentTaskConfig,
   type PrintBackgroundMode,
-  type Scope,
-} from '@kiki/agent-core-v2';
+} from '@kiki/node-sdk';
+import type { AgentEventPayloads, AgentHandle, EventSubscription, Klient, SessionHandle } from '@kiki/klient';
 import { createKimiDefaultHeaders } from '@kiki/oauth';
-import type { GoalUpdated } from '@kiki/agent-core-v2/agent/goal/goalOps';
-import type { TurnEnded } from '@kiki/agent-core-v2/agent/loop/turnOps';
-import type {
-  AssistantDelta,
-  ThinkingDelta,
-  ToolCallDelta,
-} from '@kiki/agent-core-v2/agent/loop/turnEvents';
-import type { TurnStepRetrying } from '@kiki/agent-core-v2/agent/stepRetry/stepRetryService';
-import type { HookResult } from '@kiki/agent-core-v2/features/externalHooks/agent/agentExternalHooksService';
-import type {
-  ToolCallStarted,
-  ToolProgress,
-  ToolResultEvent,
-} from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
+
 import { resolve } from 'pathe';
 
 import { PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';
@@ -97,7 +46,17 @@ import {
   writeResumeHint,
 } from '../prompt-render';
 
-const PROMPT_UI_MODE = 'print';
+type AssistantDelta = AgentEventPayloads['assistant.delta'];
+type ThinkingDelta = AgentEventPayloads['thinking.delta'];
+type ToolCallDelta = AgentEventPayloads['tool.call.delta'];
+type TurnStepRetrying = AgentEventPayloads['turn.step.retrying'];
+type HookResult = AgentEventPayloads['hook.result'];
+type ToolCallStarted = AgentEventPayloads['tool.call.started'];
+type ToolProgress = AgentEventPayloads['tool.progress'];
+type ToolResultEvent = AgentEventPayloads['tool.result'];
+type TurnEnded = AgentEventPayloads['turn.ended'];
+type PrintEvent = AgentEventPayloads[keyof AgentEventPayloads];
+type TerminalReceipt = Awaited<ReturnType<AgentHandle['prompt']>>;
 /** Re-check `goalActive` at least this often while waiting for goal turns. */
 const GOAL_WAIT_POLL_MS = 250;
 /**
@@ -120,53 +79,38 @@ export async function runV2Print(
 
   writeExperimentalVersion(version, outputFormat, stdout, stderr);
 
-  const homeDir = resolveKimiHome();
-  const logging = resolveLoggingConfig({ homeDir, env: process.env });
+  const homeDir = resolveKikiHome();
   const identity = createKimiCodeHostIdentity(version);
-  const hostHeaders = createKimiDefaultHeaders({ homeDir, ...identity });
-
-  const { app } = bootstrap(
-    {
-      homeDir,
-      clientIdentity: identity,
-      args: {
-        requestHeaders: hostHeaders,
-        // `--skillsDir` (v1 print parity): explicit skill dirs replace default
-        // user / project discovery for this process.
-        skillDirs: opts.skillsDirs,
-        // `--agent-file`: explicit agent definition files, registered with the
-        // highest-precedence source for this process. Passed through unresolved —
-        // the engine expands `~` and resolves relative paths against the session
-        // workDir (mirroring `--skills-dir`).
-        agentFiles: opts.agentFiles,
-      },
+  const host = await createPrintClient({
+    homeDir,
+    clientIdentity: identity,
+    args: {
+      requestHeaders: createKimiDefaultHeaders({ homeDir, ...identity }),
+      skillDirs: opts.skillsDirs,
+      agentFiles: opts.agentFiles,
     },
-    [...logSeed(logging)],
-  );
-
-  const configService = app.accessor.get(IConfigService);
-  await configService.ready;
-  // Print-mode config defaults (task timeouts / loop step cap / subagent
-  // timeout → unbounded) before anything resolves a session; only keys the
-  // user left unset are filled, in the memory layer.
-  await applyPrintModeConfigDefaults(configService);
-  const defaultModel = configService.get<string>('defaultModel') ?? undefined;
-  for (const diagnostic of configService.diagnostics()) {
-    if (diagnostic.severity === 'warning') {
-      stderr.write(`Warning: ${diagnostic.message}\n`);
-    }
-  }
-
+  });
+  const klient = host.klient;
   let restorePermission = async (): Promise<void> => {};
+  let activeAgent: AgentHandle | undefined;
+  let activeSession: SessionHandle | undefined;
   let removeTerminationCleanup: (() => void) | undefined;
   let cleanupPromise: Promise<void> | undefined;
   const cleanup = async (): Promise<void> => {
     const pending = (cleanupPromise ??= (async () => {
       removeTerminationCleanup?.();
       try {
-        await restorePermission();
+        await activeAgent?.cancel();
       } finally {
-        app.dispose();
+        try {
+          await restorePermission();
+        } finally {
+          try {
+            await activeSession?.close();
+          } finally {
+            await host.dispose();
+          }
+        }
       }
     })());
     await raceWithTimeout(pending, PROMPT_CLEANUP_TIMEOUT_MS);
@@ -174,66 +118,47 @@ export async function runV2Print(
   removeTerminationCleanup = installPromptTerminationCleanup(promptProcess, cleanup);
 
   try {
-    const resolved = await resolveNativeSession(app, opts, workDir, defaultModel, stderr);
+    const defaultModel = await klient.global.config.get<string | undefined>('defaultModel');
+    for (const diagnostic of await klient.global.config.diagnostics()) {
+      if (diagnostic.severity === 'warning') stderr.write(`Warning: ${diagnostic.message}\n`);
+    }
+    const resolved = await resolvePrintSession(klient, host.osHomeDir, opts, workDir, defaultModel, stderr);
     restorePermission = resolved.restorePermission;
+    activeAgent = resolved.agent;
+    activeSession = resolved.session;
 
     const goalCreate = parseHeadlessGoalCreate(opts.prompt!);
     if (goalCreate !== undefined) {
-      await runNativeGoal(
-        app,
-        resolved.session,
-        resolved.agent,
-        goalCreate,
-        resolved.goalModel,
-        outputFormat,
-        stdout,
-        stderr,
-      );
+      await runPrintGoal(klient, resolved.session, resolved.agent, goalCreate, resolved.goalModel, outputFormat, stdout, stderr);
     } else {
-      await runNativeTurn(
-        app,
-        resolved.session,
-        resolved.agent,
-        opts.prompt!,
-        outputFormat,
-        stdout,
-        stderr,
-      );
+      await runPrintTurn(klient, resolved.session, resolved.agent, opts.prompt!, outputFormat, stdout, stderr);
     }
-    writeResumeHint(resolved.session.id, outputFormat, stdout, stderr);
+    writeResumeHint(resolved.sessionId, outputFormat, stdout, stderr);
   } finally {
     await cleanup();
   }
 }
 
-interface ResolvedNativeSession {
-  readonly session: ISessionScopeHandle;
-  readonly agent: IAgentScopeHandle;
+interface ResolvedPrintSession {
+  readonly sessionId: string;
+  readonly session: SessionHandle;
+  readonly agent: AgentHandle;
   readonly restorePermission: () => Promise<void>;
   readonly goalModel: string | undefined;
 }
 
-async function resolveNativeSession(
-  app: Scope,
+async function resolvePrintSession(
+  klient: Klient,
+  osHomeDir: string,
   opts: CLIOptions,
   workDir: string,
   defaultModel: string | undefined,
   stderr: PromptOutput,
-): Promise<ResolvedNativeSession> {
-  const sessions = app.accessor.get(ISessionManager);
-  const index = app.accessor.get(ISessionIndex);
-
-  // `--agent` selects a catalog profile by name; otherwise `--agent-file`
-  // implicitly selects the profile that file defines. The file
-  // is parsed here (fatal on error) so a bad file fails before any turn.
+): Promise<ResolvedPrintSession> {
   let agentProfileName = opts.agent;
   const agentFile = opts.agentFiles[0];
   if (agentProfileName === undefined && agentFile !== undefined) {
-    const agentFilePath = resolveAgentPath(
-      agentFile,
-      workDir,
-      app.accessor.get(IBootstrapService).osHomeDir,
-    );
+    const agentFilePath = resolveAgentPath(agentFile, workDir, osHomeDir);
     let agentFileText: string;
     try {
       agentFileText = await readFile(agentFilePath, 'utf8');
@@ -244,11 +169,7 @@ async function resolveNativeSession(
       );
     }
     try {
-      agentProfileName = parseAgentFileText({
-        path: agentFilePath,
-        source: 'explicit',
-        text: agentFileText,
-      }).name;
+      agentProfileName = parseAgentFileText({ path: agentFilePath, source: 'explicit', text: agentFileText }).name;
     } catch (error) {
       throw new Error(
         `Invalid agent file "${agentFilePath}": ${error instanceof Error ? error.message : String(error)}`,
@@ -257,206 +178,124 @@ async function resolveNativeSession(
     }
   }
 
-  // `--agent` / `--agent-file` are creation-only: validateOptions rejects them
-  // together with --session/--continue. Model and thinking remain invocation
-  // overrides and can be applied after the bound profile is restored on resume.
-  const applyInvocationOverrides = async (
-    profile: IAgentProfileService,
-    model: string | undefined,
-    thinking: string | undefined,
-  ): Promise<void> => {
-    if (model !== undefined) await profile.setModel(model);
-    if (thinking !== undefined) profile.setThinking(thinking);
-  };
-
-  const resumeById = async (id: string): Promise<ISessionScopeHandle> => {
-    const session = await resumeSessionById(app.accessor, id);
-    if (session === undefined) {
-      throw new Error(`Session "${id}" not found.`);
-    }
-    return session;
-  };
-
-  const forceAuto = (
-    agent: IAgentScopeHandle,
-  ): { readonly restorePermission: () => Promise<void> } => {
-    const permissionMode = agent.accessor.get(IAgentPermissionModeService);
-    const previous = permissionMode.mode;
-    permissionMode.setMode('auto');
+  const resumeById = async (sessionId: string): Promise<ResolvedPrintSession> => {
+    const session = klient.session(sessionId);
+    if (!await session.resume()) throw new Error(`Session "${sessionId}" not found.`);
+    const agent = session.agent('main');
+    if (opts.model !== undefined) await agent.setModel(opts.model);
+    if (opts.thinking !== undefined) await agent.setThinking(opts.thinking);
+    const currentModel = await agent.getModel();
+    const previousPermission = await agent.getPermission();
+    await agent.setPermission('auto', { broadcast: false });
     return {
-      restorePermission: async () => {
-        permissionMode.setMode(previous);
-      },
+      sessionId, session, agent,
+      restorePermission: () => agent.setPermission(previousPermission, { broadcast: false }),
+      goalModel: configuredModel(opts.model, currentModel),
     };
   };
 
   if (opts.session !== undefined) {
-    const target = await index.get(opts.session);
-    if (target === undefined) {
-      throw new Error(`Session "${opts.session}" not found.`);
-    }
+    const target = await klient.global.sessions.get(opts.session);
+    if (target === undefined) throw new Error(`Session "${opts.session}" not found.`);
     if (target.cwd !== undefined && resolve(target.cwd) !== resolve(workDir)) {
       stderr.write(
         `Session "${opts.session}" was created under a different directory.\n` +
-          `  cd "${target.cwd}" && kimi -r ${opts.session}\n\n`,
+          `  cd "${target.cwd}" && kiki -r ${opts.session}\n\n`,
       );
       throw new Error(`Session "${opts.session}" was created under a different directory.`);
     }
-    const session = await resumeById(opts.session);
-    const agent = await ensureMainAgent(session);
-    const profile = agent.accessor.get(IAgentProfileService);
-    await applyInvocationOverrides(profile, opts.model, opts.thinking);
-    const currentModel = profile.getModel();
-    const { restorePermission } = forceAuto(agent);
-    return {
-      session,
-      agent,
-      restorePermission,
-      goalModel: configuredModel(opts.model, currentModel),
-    };
+    return resumeById(opts.session);
   }
 
   if (opts.continue) {
-    const page = await index.listRecent({});
+    const page = await klient.global.sessions.list({});
     const previous = page.items.find((summary) => summary.cwd === workDir);
-    if (previous !== undefined) {
-      const session = await resumeById(previous.id);
-      const agent = await ensureMainAgent(session);
-      const profile = agent.accessor.get(IAgentProfileService);
-      await applyInvocationOverrides(profile, opts.model, opts.thinking);
-      const currentModel = profile.getModel();
-      const { restorePermission } = forceAuto(agent);
-      return {
-        session,
-        agent,
-        restorePermission,
-          goalModel: configuredModel(opts.model, currentModel),
-      };
-    }
+    if (previous !== undefined) return resumeById(previous.id);
     stderr.write(`No sessions to continue under "${workDir}"; starting a fresh session.\n`);
   }
 
   const model = requireConfiguredModel(opts.model, defaultModel);
-  const session = await sessions.create({
+  const created = await klient.global.sessions.create({
     workDir,
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
-    mainAgentBinding: {
-      profile: agentProfileName ?? 'agent',
-      model,
-      thinking: opts.thinking,
-    },
+    mainAgentBinding: { profile: agentProfileName ?? 'agent', model, thinking: opts.thinking },
   });
-  const agent = await ensureMainAgent(session);
-  agent.accessor.get(IAgentPermissionModeService).setMode('auto');
-  return {
-    session,
-    agent,
-    restorePermission: async () => {},
-    goalModel: model,
-  };
+  const session = klient.session(created.id);
+  const agent = session.agent('main');
+  await agent.setPermission('auto', { broadcast: false });
+  return { sessionId: created.id, session, agent, restorePermission: async () => {}, goalModel: model };
 }
 
-async function runNativeTurn(
-  app: Scope,
-  session: ISessionScopeHandle,
-  agent: IAgentScopeHandle,
+async function runPrintTurn(
+  klient: Klient,
+  session: SessionHandle,
+  agent: AgentHandle,
   prompt: string,
   outputFormat: PromptOutputFormat,
   stdout: PromptOutput,
   stderr: PromptOutput,
 ): Promise<void> {
-  const writer: PromptTurnWriter =
-    outputFormat === 'stream-json'
-      ? new PromptJsonWriter(stdout)
-      : new PromptTranscriptWriter(stdout, stderr);
-
-  await agent.accessor.get(IAuthSummaryService).ensureReady();
-
+  const writer: PromptTurnWriter = outputFormat === 'stream-json'
+    ? new PromptJsonWriter(stdout) : new PromptTranscriptWriter(stdout, stderr);
+  await klient.global.auth.ensureReady(await agent.getModel());
   const turnEndings = createPrintTurnEndings();
-  const subscription = agent.accessor.get(IEventBus).subscribe((event: Event2<any>) => {
-    dispatchNativeEvent(writer, event, stderr);
-    // Arm the turn-endings collector before `turn.result` settles so a
-    // background-task completion that steers a new turn right after the main
-    // turn ends cannot have its `turn.ended` slip past the policy loop.
-    if (event.type === 'turn.ended') turnEndings.push(event as TurnEnded);
-  });
+  const subscriptions: EventSubscription[] = [];
+  const eventNames = [
+    'turn.step.started', 'turn.step.interrupted', 'turn.step.retrying', 'assistant.delta',
+    'hook.result', 'thinking.delta', 'tool.call.started', 'tool.call.delta', 'tool.result',
+    'tool.progress', 'turn.ended',
+  ] as const;
+  const errors = agent.events.onError((error) => stderr.write(`Warning: print event delivery failed: ${error.message}\n`));
   try {
-    const handle = await agent.accessor.get(IAgentPromptService).enqueue({
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: prompt }],
-        toolCalls: [],
-        origin: { kind: 'user' },
-      },
-    });
-    const turn = await handle.launched;
-    if (turn === undefined) {
-      // A prompt blocked by an onBeforeSubmitPrompt hook never launches a turn.
-      writer.finish();
-      const completion = await handle.completion;
-      throw new Error(
-        completion.state === 'blocked'
-          ? 'Prompt hook blocked the request.'
-          : 'Prompt turn could not be started',
-      );
+    for (const name of eventNames) {
+      subscriptions.push(agent.events.on(name, (event) => {
+        dispatchPrintEvent(writer, event, stderr);
+        if (event.type === 'turn.ended') turnEndings.push(event);
+      }));
     }
-    const result = await turn.result;
-
-    // Turn settled, but `-p` is not done until the print-mode background
-    // policy says so (config-driven: exit / drain / steer). Flush the buffered
-    // assistant message first so a long drain/steer wait does not withhold the
-    // final message.
+    await Promise.all(subscriptions.map((subscription) => subscription.ready));
+    const receipt = await agent.prompt({ input: [{ type: 'text', text: prompt }] }, { waitFor: 'terminal' });
+    if (receipt.turnId === undefined || receipt.result === undefined) {
+      throw new Error(receipt.state === 'blocked' ? 'Prompt hook blocked the request.' : 'Prompt turn could not be started');
+    }
     writer.flushAssistant();
-    if (result.type === 'completed') {
-      const configService = app.accessor.get(IConfigService);
-      const taskConfig = resolveAgentTaskConfig(configService);
-      const goalService = agent.accessor.get(IAgentGoalService);
-      const cronService = session.accessor.get(ISessionCronService);
-      try {
-        await applyPrintBackgroundPolicy({
-          mode: resolvePrintBackgroundMode(configService),
-          ceilingS: taskConfig?.printWaitCeilingS ?? PRINT_WAIT_CEILING_S_DEFAULT,
-          maxTurns: taskConfig?.printMaxTurns ?? PRINT_MAX_TURNS_DEFAULT,
-          countPending: () => countPendingBackgroundTasks(session),
-          drain: () => drainBackgroundTasks(session, taskConfig?.printWaitCeilingS),
-          turnEndings,
-          skipTurnId: turn.id,
-          warn: (message) => stderr.write(`Warning: ${message}\n`),
-          now: () => Date.now(),
-          goalActive: () => goalService.getGoal().goal?.status === 'active',
-          cronNextFireAt: () => cronService.getNextFireTime(),
-        });
-      } catch (error) {
-        // A steered turn that fails fails the run (v1 parity). Anything else
-        // is best-effort: a wedged background task must not fail the (already
-        // completed) main turn.
-        if (error instanceof PrintSteeredTurnFailedError) {
-          writer.finish();
-          throw error;
-        }
-        stderr.write(
-          `Warning: print background policy failed: ${
-            error instanceof Error ? error.message : String(error)
-          }\n`,
-        );
-      }
-      writer.finish();
-      return;
+    if (receipt.result.type !== 'completed') throw new Error(formatPrintTurnFailure(receipt.result));
+
+    const [legacy, current] = await Promise.all([
+      klient.global.config.get<AgentTaskConfig | undefined>('background'),
+      klient.global.config.get<AgentTaskConfig | undefined>('task'),
+    ]);
+    const taskConfig = { ...legacy, ...current };
+    const ceilingS = taskConfig.printWaitCeilingS ?? PRINT_WAIT_CEILING_S_DEFAULT;
+    try {
+      await applyPrintBackgroundPolicy({
+        mode: taskConfig.printBackgroundMode ?? (taskConfig.keepAliveOnExit === true ? 'drain' : 'steer'),
+        ceilingS,
+        maxTurns: taskConfig.printMaxTurns ?? PRINT_MAX_TURNS_DEFAULT,
+        countPending: () => session.countPendingBackgroundTasks(),
+        drain: () => session.drainBackgroundTasks(ceilingS * 1000),
+        turnEndings,
+        skipTurnId: receipt.turnId,
+        warn: (message) => stderr.write(`Warning: ${message}\n`),
+        now: () => Date.now(),
+        goalActive: async () => (await agent.getGoal()).goal?.status === 'active',
+        cronNextFireAt: () => session.nextCronFireAt(),
+      });
+    } catch (error) {
+      if (error instanceof PrintSteeredTurnFailedError) throw error;
+      stderr.write(`Warning: print background policy failed: ${error instanceof Error ? error.message : String(error)}\n`);
     }
-    writer.finish();
-    throw new Error(formatNativeTurnFailure(result));
-  } catch (error) {
-    writer.finish();
-    throw error instanceof Error ? error : new Error(String(error));
   } finally {
-    subscription.dispose();
+    writer.finish();
+    for (const subscription of subscriptions) subscription.dispose();
+    errors.dispose();
   }
 }
 
-async function runNativeGoal(
-  app: Scope,
-  session: ISessionScopeHandle,
-  agent: IAgentScopeHandle,
+async function runPrintGoal(
+  klient: Klient,
+  session: SessionHandle,
+  agent: AgentHandle,
   goal: HeadlessGoalCreate,
   model: string | undefined,
   outputFormat: PromptOutputFormat,
@@ -464,39 +303,30 @@ async function runNativeGoal(
   stderr: PromptOutput,
 ): Promise<void> {
   requireConfiguredModel(model);
-  const goalService = agent.accessor.get(IAgentGoalService);
-  await goalService.createGoal({
-    objective: goal.objective,
-    replace: goal.replace,
-  });
   let completedSnapshot: { readonly status: string } | null = null;
-  const subscription = agent.accessor.get(IEventBus).subscribe((event: Event2<any>) => {
-    if (event.type === 'goal.updated') {
-      const updated = event as unknown as GoalUpdated;
-      if (updated.change?.kind === 'completion' && updated.snapshot !== null) {
-        completedSnapshot = updated.snapshot;
-      }
-    }
+  const subscription = agent.events.on('goal.updated', (event) => {
+    if (event.change?.kind === 'completion' && event.snapshot !== null) completedSnapshot = event.snapshot;
   });
+  let created = false;
   try {
-    await runNativeTurn(app, session, agent, goal.objective, outputFormat, stdout, stderr);
+    await subscription.ready;
+    await agent.createGoal({ objective: goal.objective, replace: goal.replace });
+    created = true;
+    await runPrintTurn(klient, session, agent, goal.objective, outputFormat, stdout, stderr);
   } finally {
     subscription.dispose();
-    const snapshot = completedSnapshot ?? goalService.getGoal().goal;
-    if (outputFormat === 'stream-json') {
-      stdout.write(`${JSON.stringify(goalSummaryJson(snapshot))}\n`);
-    } else {
-      stderr.write(`${formatGoalSummaryText(snapshot)}\n`);
-    }
-    if (snapshot !== null && snapshot.status !== 'complete') {
-      process.exitCode = goalExitCode(snapshot.status);
+    if (created) {
+      const snapshot = completedSnapshot ?? (await agent.getGoal()).goal;
+      if (outputFormat === 'stream-json') stdout.write(`${JSON.stringify(goalSummaryJson(snapshot))}\n`);
+      else stderr.write(`${formatGoalSummaryText(snapshot)}\n`);
+      if (snapshot !== null && snapshot.status !== 'complete') process.exitCode = goalExitCode(snapshot.status);
     }
   }
 }
 
-function dispatchNativeEvent(
+function dispatchPrintEvent(
   writer: PromptTurnWriter,
-  event: Event2<any>,
+  event: PrintEvent,
   stderr: PromptOutput,
 ): void {
   switch (event.type) {
@@ -622,29 +452,16 @@ export interface PrintBackgroundPolicyInput {
   readonly mode: PrintBackgroundMode;
   readonly ceilingS: number;
   readonly maxTurns: number;
-  readonly countPending: () => number;
+  readonly countPending: () => number | Promise<number>;
   readonly drain: () => Promise<void>;
   readonly turnEndings: PrintTurnEndings;
   readonly skipTurnId: number;
   readonly warn: (message: string) => void;
   readonly now: () => number;
-  /**
-   * Reports whether an agent goal is still `active`. v2 drives goal
-   * continuation as new turns (v1 keeps a single turn alive), so a `-p` goal
-   * run must stay alive until the goal leaves `active`, independent of the
-   * background policy.
-   */
-  readonly goalActive?: () => boolean;
-  /**
-   * Reports the next scheduled cron fire time (epoch ms), or `null` when no
-   * cron task has a future fire. While it returns non-null the policy keeps
-   * the process alive — the cron tick timer itself is unref'd — waiting for
-   * the fire to steer a new turn, then re-evaluating (a fired one-shot task
-   * disappears; a recurring one reports its advanced next fire). Cron
-   * liveness is independent of the background mode: it applies under
-   * `exit`/`drain` too (v1 parity). Omitted = no cron waiting.
-   */
-  readonly cronNextFireAt?: () => number | null;
+  /** Keep waiting for active goal continuations regardless of background mode. */
+  readonly goalActive?: () => boolean | Promise<boolean>;
+  /** Next cron fire (epoch ms), or null. Cron liveness applies under exit/drain too. */
+  readonly cronNextFireAt?: () => number | null | Promise<number | null>;
 }
 
 /**
@@ -689,7 +506,7 @@ export async function applyPrintBackgroundPolicy(
     // continuation-launch failure), which would otherwise hang the run until
     // the ceiling. A continuation turn that does not complete pauses/blocks
     // the goal, so the condition exits on the next check.
-    while (input.goalActive?.() === true) {
+    while (await input.goalActive?.() === true) {
       const ended = await input.turnEndings.next(
         Math.min(deadline - input.now(), GOAL_WAIT_POLL_MS),
         input.skipTurnId,
@@ -704,7 +521,7 @@ export async function applyPrintBackgroundPolicy(
     // (one-shot tasks vanish after firing; recurring ones advance their next
     // fire), then re-evaluate from the top.
     if (!cronWedged && input.cronNextFireAt !== undefined) {
-      const fireAt = input.cronNextFireAt();
+      const fireAt = await input.cronNextFireAt();
       if (fireAt !== null) {
         if (fireAt <= input.now() && lastPastFireAt === fireAt) {
           cronWedged = true;
@@ -744,7 +561,7 @@ export async function applyPrintBackgroundPolicy(
       input.warn(`print steer max turns reached (${input.maxTurns}), finishing`);
       return;
     }
-    if (input.countPending() === 0) return;
+    if (await input.countPending() === 0) return;
     const ended = await input.turnEndings.next(deadline - input.now(), input.skipTurnId);
     if (ended === null) return;
     if (ended.reason !== 'completed') {
@@ -754,72 +571,18 @@ export async function applyPrintBackgroundPolicy(
 }
 
 function formatTurnEndingFailure(ending: PrintTurnEnding): string {
-  if (ending.error?.code === 'provider.filtered') {
-    return 'Provider safety policy blocked the response.';
-  }
-  if (ending.error !== undefined) return `${ending.error.code}: ${ending.error.message}`;
-  if (ending.reason === 'blocked') {
-    return 'Prompt hook blocked the request.';
-  }
+  const error = ending.error as { code: string; message: string } | undefined;
+  if (error?.code === 'provider.filtered') return 'Provider safety policy blocked the response.';
+  if (error !== undefined) return `${error.code}: ${error.message}`;
+  if (ending.reason === 'blocked') return 'Prompt hook blocked the request.';
   return `Prompt turn ended with reason: ${ending.reason}`;
 }
 
-function countPendingBackgroundTasks(session: ISessionScopeHandle): number {
-  let count = 0;
-  for (const handle of session.accessor.get(IAgentLifecycleService).list()) {
-    count += handle.accessor.get(IAgentTaskService).list(true).length;
-  }
-  return count;
-}
-
-async function drainBackgroundTasks(
-  session: ISessionScopeHandle,
-  ceilingS: number | undefined,
-): Promise<void> {
-  const ceilingMs =
-    typeof ceilingS === 'number' && Number.isFinite(ceilingS) && ceilingS > 0
-      ? ceilingS * 1000
-      : PRINT_WAIT_CEILING_S_DEFAULT * 1000;
-
-  const deadline = Date.now() + ceilingMs;
-  const seen = new Set<string>();
-  const allWaiters: Promise<unknown>[] = [];
-  while (Date.now() < deadline) {
-    const batch: Promise<unknown>[] = [];
-    const suppressions: Promise<void>[] = [];
-    let activeCount = 0;
-    for (const handle of session.accessor.get(IAgentLifecycleService).list()) {
-      const taskService = handle.accessor.get(IAgentTaskService);
-      for (const task of taskService.list(true)) {
-        activeCount++;
-        if (seen.has(task.taskId)) continue;
-        seen.add(task.taskId);
-        suppressions.push(taskService.suppressTerminalNotification(task.taskId));
-        const remaining = Math.max(1, deadline - Date.now());
-        const waiter = taskService.wait(task.taskId, remaining);
-        batch.push(waiter);
-        allWaiters.push(waiter);
-      }
-    }
-    if (suppressions.length > 0) await Promise.all(suppressions);
-    if (activeCount === 0 || batch.length === 0) break;
-    await Promise.all(batch);
-  }
-  if (allWaiters.length > 0) await Promise.all(allWaiters);
-}
-
-function formatNativeTurnFailure(result: LoopRunResult): string {
+function formatPrintTurnFailure(result: NonNullable<TerminalReceipt['result']>): string {
   if (result.type === 'failed') {
-    const error = result.error as { readonly code?: string; readonly message?: string } | undefined;
-    if (error?.code === 'provider.filtered') {
-      return 'Provider safety policy blocked the response.';
-    }
-    if (error?.code !== undefined) {
-      return `${error.code}: ${error.message ?? ''}`.trimEnd();
-    }
-    if (result.error instanceof Error) {
-      return result.error.message;
-    }
+    if (result.error.code === 'provider.filtered') return 'Provider safety policy blocked the response.';
+    if (result.error.code === 'internal' && result.error.name === 'Error') return result.error.message;
+    return `${result.error.code}: ${result.error.message}`.trimEnd();
   }
   return `Prompt turn ended with reason: ${result.type}`;
 }

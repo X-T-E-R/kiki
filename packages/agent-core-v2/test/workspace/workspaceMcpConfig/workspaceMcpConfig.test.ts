@@ -124,7 +124,7 @@ describe('WorkspaceMcpConfigService', () => {
   }
 
   async function writeProjectConfig(servers: Record<string, McpServerConfig>): Promise<string> {
-    const dir = join(cwd, '.kimi-code');
+    const dir = join(cwd, '.kiki');
     await mkdir(dir, { recursive: true });
     const file = join(dir, 'mcp.json');
     await writeFile(file, JSON.stringify({ mcpServers: servers }), 'utf8');

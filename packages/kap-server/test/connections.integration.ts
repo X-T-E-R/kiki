@@ -17,7 +17,7 @@ interface Envelope<T> {
   request_id: string;
 }
 
-describe('server-v2 GET /api/v1/connections', () => {
+describe('server-v2 GET /api/connections', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -27,7 +27,7 @@ describe('server-v2 GET /api/v1/connections', () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-connections-'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
-    wsUrl = `ws://127.0.0.1:${server.port}/api/v1/ws`;
+    wsUrl = `ws://127.0.0.1:${server.port}/api/ws`;
   });
 
   afterEach(async () => {
@@ -42,7 +42,7 @@ describe('server-v2 GET /api/v1/connections', () => {
   });
 
   async function listConnections() {
-    const res = await fetch(`${base}/api/v1/connections`, {
+    const res = await fetch(`${base}/api/connections`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     const body = (await res.json()) as Envelope<unknown>;
@@ -51,7 +51,7 @@ describe('server-v2 GET /api/v1/connections', () => {
   }
 
   async function createSession(cwd: string): Promise<string> {
-    const res = await fetch(`${base}/api/v1/sessions`, {
+    const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd } }),

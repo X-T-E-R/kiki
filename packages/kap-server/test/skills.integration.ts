@@ -32,7 +32,7 @@ interface SkillWire {
   disable_model_invocation?: boolean;
 }
 
-describe('server-v2 /api/v1 skills', () => {
+describe('server-v2 /api skills', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -74,7 +74,7 @@ describe('server-v2 /api/v1 skills', () => {
   }
 
   async function createSession(cwd: string = home as string): Promise<string> {
-    const { body } = await postJson<{ id: string }>('/api/v1/sessions', {
+    const { body } = await postJson<{ id: string }>('/api/sessions', {
       metadata: { cwd },
     });
     expect(body.code).toBe(0);
@@ -89,7 +89,7 @@ describe('server-v2 /api/v1 skills', () => {
   }
 
   async function registerWorkspace(root: string): Promise<string> {
-    const { body } = await postJson<{ id: string }>('/api/v1/workspaces', { root });
+    const { body } = await postJson<{ id: string }>('/api/workspaces', { root });
     expect(body.code).toBe(0);
     return body.data.id;
   }
@@ -104,7 +104,7 @@ describe('server-v2 /api/v1 skills', () => {
   }
 
   async function seedProjectSkill(root: string, name: string): Promise<void> {
-    const dir = join(root, '.kimi-code', 'skills', name);
+    const dir = join(root, '.kiki', 'skills', name);
     await mkdir(dir, { recursive: true });
     await writeFile(
       join(dir, 'SKILL.md'),
@@ -121,19 +121,54 @@ describe('server-v2 /api/v1 skills', () => {
     );
   }
 
-  describe('GET /api/v1/sessions/{sid}/skills', () => {
+  it('discovers user and workspace Markdown commands and activates the latest prompt once', async () => {
+    const root = await makeWorkspaceDir();
+    await mkdir(join(home!, 'commands'), { recursive: true });
+    await mkdir(join(root, '.kiki', 'commands'), { recursive: true });
+    await writeFile(join(home!, 'commands', 'notes.md'), 'Discuss notes without creating files.');
+    const commandPath = join(root, '.kiki', 'commands', 'brainstorm.md');
+    await writeFile(commandPath, '---\ndescription: Discuss options\nargument-hint: "<topic>"\n---\nDiscuss $ARGUMENTS without creating files.');
+    await seedProjectSkill(root, 'brainstorm');
+    const workspaceId = await registerWorkspace(root);
+    const workspace = await getJson<{ skills: SkillWire[] }>(`/api/workspaces/${workspaceId}/skills`);
+    expect(workspace.body.code).toBe(0);
+    expect(workspace.body.data.skills.find((skill) => skill.name === 'command:brainstorm')).toMatchObject({
+      source: 'project', prompt_command: true, disable_model_invocation: true, argument_hint: '<topic>',
+    });
+    const id = await createSession(root);
+    const listed = await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`);
+    expect(listed.body.data.skills.find((skill) => skill.name === 'notes')).toMatchObject({ source: 'user', disable_model_invocation: true });
+    expect(listed.body.data.skills.find((skill) => skill.name === 'brainstorm')?.path).toContain('SKILL.md');
+    expect(listed.body.data.skills.find((skill) => skill.name === 'command:brainstorm')).toBeDefined();
+    await writeFile(commandPath, '---\ndescription: Updated discussion\n---\nUpdated discussion: $ARGUMENTS.');
+    await expect.poll(async () => (await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`))
+      .body.data.skills.find((skill) => skill.name === 'command:brainstorm')?.description, { timeout: 10000 })
+      .toBe('Updated discussion');
+    const activated = await postJson(`/api/sessions/${id}/skills/command%3Abrainstorm:activate`, { args: 'menu choices' });
+    expect(activated.body.code).toBe(0);
+    const messages = await getJson<{ items: Array<{ role: string; content: Array<{ type: string; text?: string }> }> }>(`/api/sessions/${id}/messages`);
+    const bodies = messages.body.data.items.filter((message) => message.role === 'user')
+      .flatMap((message) => message.content.map((part) => part.text ?? '')).join('\n');
+    expect(bodies.match(/Updated discussion: menu choices\./g)).toHaveLength(1);
+    await writeFile(join(home!, 'commands', 'notes.md'), 'Updated user notes.');
+    await expect.poll(async () => (await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`))
+      .body.data.skills.find((skill) => skill.name === 'notes')?.description, { timeout: 10000 })
+      .toBe('Updated user notes.');
+  });
+
+  describe('GET /api/sessions/{sid}/skills', () => {
     it('returns 40401 for an unknown session', async () => {
-      const { body } = await getJson<null>('/api/v1/sessions/nope/skills');
+      const { body } = await getJson<null>('/api/sessions/nope/skills');
       expect(body.code).toBe(40401);
       expect(body.msg).toMatch(/does not exist/);
     });
 
     it('cold-loads a persisted but not live (archived) session and lists skills', async () => {
       const id = await createSession();
-      const archived = await postJson<{ archived: boolean }>(`/api/v1/sessions/${id}:archive`);
+      const archived = await postJson<{ archived: boolean }>(`/api/sessions/${id}:archive`);
       expect(archived.body.code).toBe(0);
 
-      const { body } = await getJson<{ skills: SkillWire[] }>(`/api/v1/sessions/${id}/skills`);
+      const { body } = await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`);
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
       expect(skills.some((s) => s.name === 'update-config')).toBe(true);
@@ -142,7 +177,7 @@ describe('server-v2 /api/v1 skills', () => {
     it('lists builtin skills projected to the wire shape', async () => {
       const id = await createSession();
       const { body } = await getJson<{ skills: SkillWire[] }>(
-        `/api/v1/sessions/${id}/skills`,
+        `/api/sessions/${id}/skills`,
       );
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
@@ -157,7 +192,7 @@ describe('server-v2 /api/v1 skills', () => {
     it('lists the check-kiki-docs builtin skill', async () => {
       const id = await createSession();
       const { body } = await getJson<{ skills: SkillWire[] }>(
-        `/api/v1/sessions/${id}/skills`,
+        `/api/sessions/${id}/skills`,
       );
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
@@ -169,13 +204,13 @@ describe('server-v2 /api/v1 skills', () => {
     });
   });
 
-  describe('POST /api/v1/sessions/{sid}/skills/{name}:activate', () => {
+  describe('POST /api/sessions/{sid}/skills/{name}:activate', () => {
     it('activates a builtin skill and returns the wire envelope', async () => {
       const id = await createSession();
       await createMainAgent(id);
 
       const { body } = await postJson<{ activated: boolean; skill_name: string }>(
-        `/api/v1/sessions/${id}/skills/update-config:activate`,
+        `/api/sessions/${id}/skills/update-config:activate`,
         { args: '--help' },
       );
       expect(body.code).toBe(0);
@@ -190,12 +225,12 @@ describe('server-v2 /api/v1 skills', () => {
       await createMainAgent(id);
 
       const activated = await postJson<{ activated: boolean; skill_name: string }>(
-        `/api/v1/sessions/${id}/skills/update-config:activate`,
+        `/api/sessions/${id}/skills/update-config:activate`,
         { args: '--help' },
       );
       expect(activated.body.code).toBe(0);
 
-      const got = await getJson<{ title: string }>(`/api/v1/sessions/${id}`);
+      const got = await getJson<{ title: string }>(`/api/sessions/${id}`);
       expect(got.body.code).toBe(0);
       expect(got.body.data.title).toBe('/update-config --help');
     });
@@ -205,20 +240,20 @@ describe('server-v2 /api/v1 skills', () => {
       await createMainAgent(id);
 
       const { body } = await postJson<null>(
-        `/api/v1/sessions/${id}/skills/does-not-exist:activate`,
+        `/api/sessions/${id}/skills/does-not-exist:activate`,
       );
       expect(body.code).toBe(40415);
     });
 
     it('returns 40401 for an unknown session', async () => {
-      const { body } = await postJson<null>('/api/v1/sessions/nope/skills/update-config:activate');
+      const { body } = await postJson<null>('/api/sessions/nope/skills/update-config:activate');
       expect(body.code).toBe(40401);
       expect(body.msg).toMatch(/does not exist/);
     });
 
     it('rejects a bare {name} (no action) with 40001', async () => {
       const id = await createSession();
-      const { body } = await postJson<null>(`/api/v1/sessions/${id}/skills/update-config`);
+      const { body } = await postJson<null>(`/api/sessions/${id}/skills/update-config`);
       expect(body.code).toBe(40001);
       expect(body.msg).toMatch(/unsupported action/);
     });
@@ -226,7 +261,7 @@ describe('server-v2 /api/v1 skills', () => {
     it('rejects an unsupported action with 40001', async () => {
       const id = await createSession();
       const { body } = await postJson<null>(
-        `/api/v1/sessions/${id}/skills/update-config:bogus`,
+        `/api/sessions/${id}/skills/update-config:bogus`,
       );
       expect(body.code).toBe(40001);
       expect(body.msg).toMatch(/unsupported action/);
@@ -239,7 +274,7 @@ describe('server-v2 /api/v1 skills', () => {
       const noteBytes = Buffer.from('hello from the attachment');
       const form = new FormData();
       form.set('file', new Blob([noteBytes], { type: 'text/plain' }), 'note.txt');
-      const uploadRes = await fetch(`${base}/api/v1/files`, {
+      const uploadRes = await fetch(`${base}/api/files`, {
         method: 'POST',
         headers: authHeaders(server as RunningServer),
         body: form,
@@ -248,7 +283,7 @@ describe('server-v2 /api/v1 skills', () => {
       expect(uploaded.code).toBe(0);
 
       const { body } = await postJson<{ activated: boolean; skill_name: string }>(
-        `/api/v1/sessions/${id}/skills/update-config:activate`,
+        `/api/sessions/${id}/skills/update-config:activate`,
         {
           args: '--help',
           attachments: [
@@ -267,7 +302,7 @@ describe('server-v2 /api/v1 skills', () => {
 
       const messages = await getJson<{
         items: Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
-      }>(`/api/v1/sessions/${id}/messages`);
+      }>(`/api/sessions/${id}/messages`);
       const userMsg = messages.body.data.items.find((m) => m.role === 'user');
       expect(userMsg).toBeDefined();
       expect(userMsg!.content[0]?.type).toBe('text');
@@ -278,7 +313,7 @@ describe('server-v2 /api/v1 skills', () => {
       expect(notice?.text).toContain(`${noteBytes.length} bytes`);
       const attachedPath = /bytes\): (.+) — open it with the Read tool$/.exec(notice?.text ?? '')?.[1];
       expect(attachedPath).toBeDefined();
-      expect(attachedPath).toContain('/attachments/');
+      expect(attachedPath?.replaceAll('\\', '/')).toContain('/attachments/');
       expect(await readFile(attachedPath!)).toEqual(noteBytes);
     });
 
@@ -287,7 +322,7 @@ describe('server-v2 /api/v1 skills', () => {
       await createMainAgent(id);
 
       const { body } = await postJson<null>(
-        `/api/v1/sessions/${id}/skills/update-config:activate`,
+        `/api/sessions/${id}/skills/update-config:activate`,
         {
           attachments: [
             { type: 'file', file_id: 'f_does_not_exist', name: 'x.txt', media_type: 'text/plain', size: 1 },
@@ -304,7 +339,7 @@ describe('server-v2 /api/v1 skills', () => {
       const noteBytes = Buffer.from('must never be materialized');
       const form = new FormData();
       form.set('file', new Blob([noteBytes], { type: 'text/plain' }), 'note.txt');
-      const uploadRes = await fetch(`${base}/api/v1/files`, {
+      const uploadRes = await fetch(`${base}/api/files`, {
         method: 'POST',
         headers: authHeaders(server as RunningServer),
         body: form,
@@ -313,7 +348,7 @@ describe('server-v2 /api/v1 skills', () => {
       expect(uploaded.code).toBe(0);
 
       const { body } = await postJson<null>(
-        `/api/v1/sessions/${id}/skills/does-not-exist:activate`,
+        `/api/sessions/${id}/skills/does-not-exist:activate`,
         {
           attachments: [
             { type: 'file', file_id: uploaded.data.id, name: 'note.txt', media_type: 'text/plain', size: noteBytes.length },
@@ -327,14 +362,14 @@ describe('server-v2 /api/v1 skills', () => {
     });
   });
 
-  describe('GET /api/v1/workspaces/{wid}/skills', () => {
+  describe('GET /api/workspaces/{wid}/skills', () => {
     it('lists skills for a workspace without creating a session', async () => {
       const workspaceDir = await makeWorkspaceDir();
       await seedProjectSkill(workspaceDir, 'e2e-greeting');
       const wid = await registerWorkspace(workspaceDir);
 
       const { body } = await getJson<{ skills: SkillWire[] }>(
-        `/api/v1/workspaces/${wid}/skills`,
+        `/api/workspaces/${wid}/skills`,
       );
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
@@ -351,8 +386,8 @@ describe('server-v2 /api/v1 skills', () => {
       const sid = await createSession(workspaceDir);
 
       const [wsRes, sessRes] = await Promise.all([
-        getJson<{ skills: SkillWire[] }>(`/api/v1/workspaces/${wid}/skills`),
-        getJson<{ skills: SkillWire[] }>(`/api/v1/sessions/${sid}/skills`),
+        getJson<{ skills: SkillWire[] }>(`/api/workspaces/${wid}/skills`),
+        getJson<{ skills: SkillWire[] }>(`/api/sessions/${sid}/skills`),
       ]);
       const wsSkills = listSkillsResponseSchema.parse(wsRes.body.data).skills;
       const sessSkills = listSkillsResponseSchema.parse(sessRes.body.data).skills;
@@ -380,7 +415,7 @@ describe('server-v2 /api/v1 skills', () => {
 
       const wid = await registerWorkspace(workspaceDir);
       const { body } = await getJson<{ skills: SkillWire[] }>(
-        `/api/v1/workspaces/${wid}/skills`,
+        `/api/workspaces/${wid}/skills`,
       );
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
@@ -412,8 +447,8 @@ describe('server-v2 /api/v1 skills', () => {
       const wid = await registerWorkspace(workspaceDir);
       const sid = await createSession(workspaceDir);
       const [workspaceResponse, sessionResponse] = await Promise.all([
-        getJson<{ skills: SkillWire[] }>(`/api/v1/workspaces/${wid}/skills`),
-        getJson<{ skills: SkillWire[] }>(`/api/v1/sessions/${sid}/skills`),
+        getJson<{ skills: SkillWire[] }>(`/api/workspaces/${wid}/skills`),
+        getJson<{ skills: SkillWire[] }>(`/api/sessions/${sid}/skills`),
       ]);
       const workspaceSkills = listSkillsResponseSchema.parse(workspaceResponse.body.data).skills;
       const sessionSkills = listSkillsResponseSchema.parse(sessionResponse.body.data).skills;
@@ -426,7 +461,7 @@ describe('server-v2 /api/v1 skills', () => {
 
     it('returns 40410 for an unknown workspace', async () => {
       const { body } = await getJson<null>(
-        '/api/v1/workspaces/wd_does-not-exist_000000000000/skills',
+        '/api/workspaces/wd_does-not-exist_000000000000/skills',
       );
       expect(body.code).toBe(40410);
     });

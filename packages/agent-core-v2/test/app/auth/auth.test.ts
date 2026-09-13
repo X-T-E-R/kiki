@@ -422,13 +422,13 @@ describe('OAuthService', () => {
     }
   });
 
-  it('getRegion reads the marker from the bootstrapped home, not KIMI_CODE_HOME', async () => {
+  it('getRegion reads the marker from the bootstrapped home, not KIKI_HOME', async () => {
     const bootstrapHome = ix.get(IBootstrapService).homeDir;
     const envHome = await mkdtemp(join(tmpdir(), 'kimi-v2-auth-envhome-'));
     try {
       await mkdir(bootstrapHome, { recursive: true });
       await writeFile(join(bootstrapHome, 'region'), 'global\n', 'utf-8');
-      vi.stubEnv('KIMI_CODE_HOME', envHome);
+      vi.stubEnv('KIKI_HOME', envHome);
       vi.stubEnv('KIMI_CODE_OAUTH_HOST', '');
       providers[OAUTH_PROVIDER] = { type: 'kimi' };
       expect(createService().getRegion()).toBe('global');

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { mapError } from '../src/transport/errors';
 import { installErrorHandler } from '../src/error-handler';
 
-describe('/api/v1/debug transport mapError', () => {
+describe('/api/debug transport mapError', () => {
   it.each([
     [ErrorCodes.OS_FS_NOT_FOUND, ErrorCode.FS_PATH_NOT_FOUND],
     [ErrorCodes.OS_FS_NOT_DIRECTORY, ErrorCode.FS_PATH_NOT_FOUND],

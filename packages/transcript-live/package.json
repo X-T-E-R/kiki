@@ -3,6 +3,15 @@
   "version": "0.0.1",
   "private": true,
   "description": "Engine event bindings for the canonical transcript operation stream.",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
+    "directory": "packages/transcript-live"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/kiki/issues"
+  },
   "license": "MIT",
   "type": "module",
   "imports": {

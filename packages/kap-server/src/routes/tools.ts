@@ -81,9 +81,9 @@ export function registerToolsRoutes(app: ToolsRouteHost, core: Scope): void {
   const listMcpServersRoute = defineRoute(
     {
       method: 'GET',
-      path: '/mcp/servers',
+      path: '/mcp/runtime/servers',
       success: { data: listMcpServersResponseSchema },
-      description: 'List configured MCP servers',
+      description: 'List live MCP server connections',
       tags: ['tools'],
     },
     async (req, reply) => {
@@ -104,7 +104,7 @@ export function registerToolsRoutes(app: ToolsRouteHost, core: Scope): void {
   const restartMcpServerRoute = defineRoute(
     {
       method: 'POST',
-      path: '/mcp/servers/{tail}',
+      path: '/mcp/runtime/servers/{tail}',
       success: { data: restartMcpServerResultSchema },
       errors: {
         [ErrorCode.MCP_SERVER_NOT_FOUND]: {},

@@ -125,6 +125,12 @@ class FakeAgentLifecycle implements IAgentLifecycleService {
   broadcastPermissionMode(): void {
     throw new Error('not implemented');
   }
+  countPendingBackgroundTasks(): number {
+    throw new Error('not implemented');
+  }
+  drainBackgroundTasks(): Promise<void> {
+    throw new Error('not implemented');
+  }
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));

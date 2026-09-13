@@ -2,20 +2,20 @@
   "name": "@kiki/agent-core-v2",
   "version": "0.4.0",
   "private": true,
-  "description": "The unified agent engine for Kimi (v2 — DI Scope architecture)",
+  "description": "The unified agent engine for Kiki (v2 — DI Scope architecture)",
   "license": "MIT",
   "author": "Moonshot AI",
-  "homepage": "https://github.com/MoonshotAI/kimi-code/tree/main/packages/agent-core-v2#readme",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MoonshotAI/kimi-code.git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
     "directory": "packages/agent-core-v2"
   },
   "bugs": {
-    "url": "https://github.com/MoonshotAI/kimi-code/issues"
+    "url": "https://github.com/X-T-E-R/kiki/issues"
   },
   "keywords": [
-    "kimi",
+    "kiki",
     "agent",
     "ai",
     "llm",

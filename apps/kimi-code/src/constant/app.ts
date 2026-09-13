@@ -2,9 +2,9 @@ import { ErrorCodes } from '@kiki/node-sdk';
 
 import { currentKimiProfile } from '#/utils/region';
 
-export const PRODUCT_NAME = 'Kimi Code';
-export const CLI_COMMAND_NAME = 'kimi';
-export const PROCESS_NAME = 'kimi-code';
+export const PRODUCT_NAME = 'Kiki';
+export const CLI_COMMAND_NAME = 'kiki';
+export const PROCESS_NAME = 'kiki';
 
 // Used in telemetry app names and HTTP User-Agent headers.
 export const CLI_USER_AGENT_PRODUCT = 'kimi-code-cli';
@@ -43,21 +43,21 @@ export const HEADLESS_STDIO_DRAIN_TIMEOUT_MS = 10000;
 // Published npm package name; this can differ from the executable command.
 export const NPM_PACKAGE_NAME = '@kiki/cli';
 
-// App-owned data paths. SDK/core runtime config is intentionally not routed here.
-export const KIMI_CODE_HOME_ENV = 'KIMI_CODE_HOME';
+// App-owned paths share the runtime's Kiki home.
+export const KIKI_HOME_ENV = 'KIKI_HOME';
 export const KIKI_DESKTOP_BUNDLED_ENV = 'KIKI_DESKTOP_BUNDLED';
 export function isKikiDesktopBundled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env[KIKI_DESKTOP_BUNDLED_ENV] === '1';
 }
-export const KIMI_CODE_DATA_DIR_NAME = '.kimi-code';
-export const KIMI_CODE_LOG_DIR_NAME = 'logs';
-export const KIMI_CODE_CACHE_DIR_NAME = 'cache';
-export const KIMI_CODE_UPDATE_DIR_NAME = 'updates';
-export const KIMI_CODE_BIN_DIR_NAME = 'bin';
-export const KIMI_CODE_PLUGIN_UPDATE_NOTICE_STATE_FILE_NAME = 'plugin-notices.json';
-export const KIMI_CODE_INPUT_HISTORY_DIR_NAME = 'user-history';
-export const KIMI_CODE_BANNER_DIR_NAME = 'banner';
-export const KIMI_CODE_BANNER_STATE_FILE_NAME = 'state.json';
+export const KIKI_DATA_DIR_NAME = '.kiki';
+export const KIKI_LOG_DIR_NAME = 'logs';
+export const KIKI_CACHE_DIR_NAME = 'cache';
+export const KIKI_UPDATE_DIR_NAME = 'updates';
+export const KIKI_BIN_DIR_NAME = 'bin';
+export const KIKI_PLUGIN_UPDATE_NOTICE_STATE_FILE_NAME = 'plugin-notices.json';
+export const KIKI_INPUT_HISTORY_DIR_NAME = 'user-history';
+export const KIKI_BANNER_DIR_NAME = 'banner';
+export const KIKI_BANNER_STATE_FILE_NAME = 'state.json';
 
 // Managed Kimi auth provider key shared with OAuth/SDK config.
 export const DEFAULT_OAUTH_PROVIDER_NAME = 'managed:kimi-code';
@@ -74,7 +74,7 @@ export function kimiCodeCdnBase(): string {
 // The marketplace env override name lives in the shared agent-core-v2 plugin
 // domain (kap-server consumes it from there). Deep-path import: this module is
 // evaluated on every CLI invocation, so it must not pull in the engine root.
-export { KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV } from '@kiki/agent-core-v2/app/plugin/marketplace';
+export { KIKI_PLUGIN_MARKETPLACE_URL_ENV } from '@kiki/agent-core-v2/app/plugin/marketplace';
 // Official plugins whose usage bills against the user's plan quota. Installing
 // one of these shows a quota note after the install result.
 export const QUOTA_CONSUMING_PLUGIN_IDS: readonly string[] = ['kimi-datasource'];

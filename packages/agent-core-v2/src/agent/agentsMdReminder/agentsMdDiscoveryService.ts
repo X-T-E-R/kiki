@@ -7,7 +7,7 @@ import { LifecycleScope } from '#/app/scopes';
 import {
   AGENTS_MD_PLAIN_NAMES,
   dirsRootToLeaf,
-  dotKimiAgentsMdPath,
+  dotKikiAgentsMdPath,
   findProjectRoot,
 } from '#/agent/profile/context';
 import type { HostDirEntry, IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -154,15 +154,15 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     }
     cache.existingDirectories.set(ownerKey, this.now() + this.ttlMs);
     const paths: string[] = [];
-    const dotKimiEntry = namedEntry(entries, '.kimi-code', pathClass);
-    if (dotKimiEntry !== undefined && (dotKimiEntry.isDirectory || dotKimiEntry.isSymbolicLink)) {
-      const dotKimiDir = dirname(dotKimiAgentsMdPath(directory));
-      const isDirectory = dotKimiEntry.isDirectory || (await statDirectory(fs, dotKimiDir));
+    const dotKikiEntry = namedEntry(entries, '.kiki', pathClass);
+    if (dotKikiEntry !== undefined && (dotKikiEntry.isDirectory || dotKikiEntry.isSymbolicLink)) {
+      const dotKikiDir = dirname(dotKikiAgentsMdPath(directory));
+      const isDirectory = dotKikiEntry.isDirectory || (await statDirectory(fs, dotKikiDir));
       if (isDirectory) {
-        await this.ensureWatcher(lease, cache, dotKimiDir, ownerKey);
-        const nestedEntries = await readDir(fs, dotKimiDir);
+        await this.ensureWatcher(lease, cache, dotKikiDir, ownerKey);
+        const nestedEntries = await readDir(fs, dotKikiDir);
         if (nestedEntries !== undefined) {
-          const candidate = join(dotKimiDir, 'AGENTS.md');
+          const candidate = join(dotKikiDir, 'AGENTS.md');
           const entry = namedEntry(nestedEntries, 'AGENTS.md', pathClass);
           if (entry !== undefined && (await isNonEmptyFile(fs, candidate, entry))) {
             paths.push(normalize(candidate));
@@ -352,9 +352,9 @@ function affectsDirectory(
 ): boolean {
   const changedKey = pathKey(changedPath, pathClass);
   if (changedKey === ownerKey) return true;
-  if (changedKey === pathKey(join(ownerKey, '.kimi-code'), pathClass)) return true;
+  if (changedKey === pathKey(join(ownerKey, '.kiki'), pathClass)) return true;
   return [
-    dotKimiAgentsMdPath(ownerKey),
+    dotKikiAgentsMdPath(ownerKey),
     ...AGENTS_MD_PLAIN_NAMES.map((name) => join(ownerKey, name)),
   ].some((candidate) => pathKey(candidate, pathClass) === changedKey);
 }

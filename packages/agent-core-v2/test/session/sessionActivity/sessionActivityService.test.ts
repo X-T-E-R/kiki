@@ -129,6 +129,12 @@ class FakeAgentLifecycle implements IAgentLifecycleService {
   broadcastPermissionMode(): void {
     throw new Error('not implemented');
   }
+  countPendingBackgroundTasks(): number {
+    throw new Error('not implemented');
+  }
+  drainBackgroundTasks(): Promise<void> {
+    throw new Error('not implemented');
+  }
 }
 
 function turnActive(turnId: number, phase: 'running' | 'streaming' = 'running'): AgentActivityState {

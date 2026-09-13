@@ -36,6 +36,30 @@ defineKlientConformance('memory', async () => {
 });
 
 describe('memory dispatcher specifics', () => {
+  it('acknowledges only attached subscriptions and cancels pending attach on dispose', async () => {
+    const dispose = vi.fn();
+    const attach = vi.fn(() => ({ dispose }));
+    const dispatcher = createMemoryDispatcher({ accessor: { get: () => ({ onDidChange: attach }) } } as unknown as ScopeLike);
+    const ready = vi.fn();
+    const error = vi.fn();
+    const source = { kind: 'emitter' as const, service: 'configService', event: 'onDidChange' };
+    const cancelled = dispatcher.listen({}, source, vi.fn(), error, ready);
+    cancelled.dispose();
+    await Promise.resolve();
+    expect(attach).not.toHaveBeenCalled();
+    expect(ready).not.toHaveBeenCalled();
+    const active = dispatcher.listen({}, source, vi.fn(), error, ready);
+    await Promise.resolve();
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(ready).toHaveBeenCalledTimes(1);
+    active.dispose();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    dispatcher.listen({}, { kind: 'stream', name: 'missing' }, vi.fn(), error, ready);
+    await Promise.resolve();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(ready).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     [ErrorCodes.THREAD_NOT_FOUND, 40421],
     [ErrorCodes.THREAD_ARCHIVED, 40927],
@@ -45,6 +69,7 @@ describe('memory dispatcher specifics', () => {
     [ErrorCodes.THREAD_CURSOR_INVALID, 40931],
     [ErrorCodes.THREAD_IDEMPOTENCY_CONFLICT, 40932],
     [ErrorCodes.THREAD_LIMIT_EXCEEDED, 42903],
+    ['dispatch.limit_exceeded' as const, 42904],
     [ErrorCodes.THREAD_DELIVERY_FAILED, 50005],
   ])('maps engine error %s to RPC code %i', (reason, code) => {
     expect(toRPCError(new Error2(reason, 'failure', { details: { field: 'value' } }))).toMatchObject({

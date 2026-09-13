@@ -33,7 +33,7 @@ Main directories:
 
 ## Daemon TUI
 
-- Interactive `kimi`/`kiki` shells always attach to or spawn the shared daemon and run `DaemonTUI`; there is no runtime legacy-TUI fallback.
+- Interactive `kiki` shells always attach to or spawn the shared daemon and run `DaemonTUI`; there is no runtime legacy-TUI fallback.
 - The daemon TUI command registry must identify supported and disabled commands in both autocomplete and `/help`; unknown slash input must not become a prompt unless it matches a discovered Skill or agent profile.
 - Commands without a daemon contract stay explicitly disabled in the registry rather than simulating support client-side.
 
@@ -46,7 +46,7 @@ Main directories:
 - `interactions` converts approval/question requests into the data shape a UI panel/dialog needs and converts user choices back into daemon responses.
 - `theme` is the single source of truth for colors and styles. Components must not bypass the theme system and use chalk named colors directly.
 - `utils` holds utility functions with no UI-state dependency. Logic that needs `TUIState` or a component instance must not live under app-level `src/utils`.
-- The daemon TUI may consume `@kiki/session-core` and `@kiki/klient`; other app paths continue to use `@kiki/node-sdk`. Never import `@kiki/agent-core-v2` directly in app code.
+- The daemon TUI consumes `@kiki/session-core` and `@kiki/klient`. Non-interactive print uses the same Klient facade through `createPrintClient` from `@kiki/node-sdk`, which owns in-memory bootstrap and print defaults. Keep output/exit/background policy in the single CLI print runner, not in another SDK runner. Never import `@kiki/agent-core-v2` directly in app code.
 
 ## TUI Coding Conventions
 

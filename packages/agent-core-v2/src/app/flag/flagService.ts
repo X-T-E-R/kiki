@@ -15,7 +15,7 @@ import {
 } from './flag';
 import { type FlagDefinitionInput, type FlagId, IFlagRegistry } from './flagRegistry';
 
-export const MASTER_ENV = 'KIMI_CODE_EXPERIMENTAL_FLAG';
+export const MASTER_ENV = 'KIKI_EXPERIMENTAL_FLAG';
 
 export class FlagService extends Disposable implements IFlagService {
   declare readonly _serviceBrand: undefined;

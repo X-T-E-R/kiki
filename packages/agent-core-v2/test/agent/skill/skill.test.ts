@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createControlledPromise } from '@antfu/utils';
+import { Event } from '#/_base/event';
+import { Error2, ErrorCodes } from '#/errors';
+import type { ILogService } from '#/_base/log/log';
+import { RuntimeSkillDiscovery } from '#/workspace/workspaceSkillCatalog/runtimeSkillDiscovery';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
+import type { Runtime } from '#/runtime/runtime';
+import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import type { SkillToolInput } from '#/agent/tools/skill/skill';
+import { stubWorkspaceContext } from '../../session/workspaceContext/stub-workspace-context';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -10,6 +19,7 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentSkillService } from '#/agent/skill/skill';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
+import { parseSkillText } from '#/app/skillCatalog/parser';
 import { summarizeSkill } from '#/app/skillCatalog/types';
 import type { generate as kosongGenerate } from '#/kosong/contract/generate';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
@@ -132,6 +142,26 @@ describe('AgentSkillService', () => {
     });
   });
 
+  it('loads a user command once with arguments and retains attachment content', async () => {
+    skills.register(parseSkillText({
+      skillMdPath: '/home/commands/brainstorm.md', skillDirName: 'brainstorm', source: 'user',
+      text: 'Discuss $ARGUMENTS. Do not create files.',
+    }));
+    await ix.get(IAgentSkillService).activate({
+      name: 'brainstorm', args: 'menu options', content: [{ type: 'text', text: 'Attached note' }],
+    });
+    expect(prompted).toHaveLength(1);
+    expect(prompted[0]?.origin).toMatchObject({ trigger: 'user-slash', skillType: 'prompt' });
+    const text = prompted[0]?.content[0];
+    expect(text?.type).toBe('text');
+    if (text?.type === 'text') {
+      expect(text.text.match(/Discuss menu options\./g)).toHaveLength(1);
+      expect(text.text).not.toContain('$ARGUMENTS');
+    }
+    expect(prompted[0]?.content[1]).toEqual({ type: 'text', text: 'Attached note' });
+    expect(skills.getModelSkillListing()).not.toContain('brainstorm');
+  });
+
   it('activate throws for an unknown skill', async () => {
     const svc = ix.get(IAgentSkillService);
     await expect(svc.activate({ name: 'missing' })).rejects.toThrow(/not found/i);
@@ -221,7 +251,7 @@ describe('SkillTool', () => {
   });
   afterEach(() => disposables.dispose());
 
-  function toolContext(args: { readonly skill: string; readonly args?: string }) {
+  function toolContext(args: SkillToolInput) {
     return {
       turnId: 0,
       toolCallId: 'call_skill',
@@ -239,11 +269,26 @@ describe('SkillTool', () => {
     };
   }
 
-  function makeTool(ix: TestInstantiationService, depth?: number): SkillTool {
+  function makeTool(ix: TestInstantiationService, depth?: number, text = '# Explicit $ARGUMENTS', fs: Partial<IHostFileSystem> = {}): SkillTool {
+    const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
+    Object.defineProperty(fake, 'fs', { value: {
+      realpath: async (path: string) => path,
+      readText: async () => text,
+      ...fs,
+    } as unknown as IHostFileSystem });
+    const runtime: Runtime = fake;
     const tool = new SkillTool(
       ix.get(ISessionSkillCatalog),
       stubSkillService(),
       stubSessionContext(),
+      {
+        _serviceBrand: undefined,
+        onDidChange: Event.None as Event<void>,
+        inspect: () => runtime,
+        isAvailable: () => true,
+        acquire: () => ({ runtime, dispose: () => {}, track: (value) => value }),
+      },
+      stubWorkspaceContext('/workspace'),
     );
     return depth === undefined ? tool : tool.withInitialQueryDepth(depth);
   }
@@ -254,7 +299,6 @@ describe('SkillTool', () => {
     expect(tool.name).toBe('Skill');
     expect(tool.parameters).toMatchObject({
       type: 'object',
-      required: ['skill'],
       additionalProperties: false,
       properties: {
         skill: { type: 'string' },
@@ -264,6 +308,144 @@ describe('SkillTool', () => {
     expect(SkillToolInputSchema.safeParse({ skill: 'commit' }).success).toBe(true);
     expect(SkillToolInputSchema.safeParse({ skill: 'commit', args: '-m fix' }).success).toBe(true);
     expect(SkillToolInputSchema.safeParse({}).success).toBe(false);
+    expect(SkillToolInputSchema.safeParse({ path: 'review.md' }).success).toBe(true);
+    expect(SkillToolInputSchema.safeParse({ path: 'review.md', skill: 'commit' }).success).toBe(false);
+  });
+
+  it('loads an explicit file with args, provenance and resource root without replacing the catalog', async () => {
+    const tool = makeTool(ix, undefined, '---\nname: commit\narguments: [target]\n---\nReview $target');
+    const result = await executeTool(tool, toolContext({ path: 'skills/review.md', args: 'staged' }));
+    expect(result.isError).not.toBe(true);
+    expect(result.delivery).toMatchObject({ kind: 'steer', message: {
+      origin: { skillName: 'commit', skillArgs: 'staged', skillPath: '/workspace/skills/review.md', skillSource: 'extra' },
+    } });
+    expect(JSON.stringify(result.delivery)).toContain('Review staged');
+    expect(JSON.stringify(result.delivery)).toContain('/workspace/skills');
+    expect(skills.getSkill('commit')).toEqual(COMMIT_SKILL);
+    expect(skills.listSkills()).toHaveLength(1);
+  });
+
+  it('enforces user-only and inline restrictions for explicit paths', async () => {
+    for (const metadata of ['disable-model-invocation: true', 'type: flow']) {
+      const result = await executeTool(makeTool(ix, undefined, `---\nname: private\n${metadata}\n---\nSecret`), toolContext({ path: 'private.md' }));
+      expect(result.isError).toBe(true);
+      expect(result.delivery).toBeUndefined();
+    }
+  });
+
+  it('rejects a plain user command both by name and by explicit model path', async () => {
+    skills.register(parseSkillText({
+      skillMdPath: '/workspace/.kiki/commands/brainstorm.md', skillDirName: 'brainstorm',
+      source: 'project', text: 'Discuss options.',
+    }));
+    for (const input of [{ skill: 'brainstorm' }, { path: '.kiki/commands/brainstorm.md' }]) {
+      const result = await executeTool(makeTool(ix, undefined, 'Discuss options.'), toolContext(input));
+      expect(result.isError).toBe(true);
+      expect(result.delivery).toBeUndefined();
+      expect(result.output).toContain('only be triggered by the user');
+    }
+  });
+
+  it.each(['file', 'directory'])('rejects physical aliases of a discovered command %s symlink', async (linkKind) => {
+    const root = '/workspace/.kiki/commands';
+    const target = '/workspace/prompts/review.md';
+    const fs = {
+      realpath: async (path: string) => path === `${root}/review.md` || path === '/workspace/alias.md' ? target : path,
+      readText: async () => 'Review the current changes.',
+      readdir: async () => [{ name: 'review.md', isFile: linkKind !== 'file', isDirectory: false, isSymbolicLink: linkKind === 'file' }],
+      stat: async () => ({ isFile: true, isDirectory: false }),
+    } as unknown as IHostFileSystem;
+    const discovery = new RuntimeSkillDiscovery({ warn: vi.fn() } as unknown as ILogService, fs);
+    const discovered = await discovery.discover([{ path: root, source: 'project', scanMode: 'commands' }]);
+    expect(discovered.skills).toHaveLength(1);
+    expect(discovered.skills[0]!.metadata.promptCommand).toBe(true);
+    for (const skill of discovered.skills) skills.register(skill);
+    const tool = makeTool(ix, undefined, '', fs);
+    for (const path of [target, '/workspace/alias.md']) {
+      const result = await executeTool(tool, toolContext({ path }));
+      expect(result.isError).toBe(true);
+      expect(result.delivery).toBeUndefined();
+      expect(result.output).toContain('only be triggered by the user');
+    }
+    const ordinary = await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
+    expect(ordinary.isError).not.toBe(true);
+    expect(ordinary.delivery).toBeDefined();
+  });
+
+  it.each([ErrorCodes.OS_FS_NOT_FOUND, ErrorCodes.OS_FS_NOT_DIRECTORY])('ignores a vanished command with %s without losing live command protection', async (code) => {
+    const root = '/workspace/.kiki/commands';
+    let vanished = false;
+    const fs = {
+      realpath: async (path: string) => {
+        if (path === `${root}/gone.md` && vanished) throw new Error2(code, 'Command path no longer exists');
+        if (path === `${root}/live.md` || path === '/workspace/alias.md') return '/workspace/live.md';
+        return path;
+      },
+      readText: async () => '# Instructions',
+      readdir: async () => ['gone.md', 'live.md'].map((name) => ({ name, isFile: true, isDirectory: false })),
+      stat: async () => ({ isFile: true, isDirectory: false }),
+    } as unknown as IHostFileSystem;
+    const discovered = await new RuntimeSkillDiscovery({ warn: vi.fn() } as unknown as ILogService, fs)
+      .discover([{ path: root, source: 'project', scanMode: 'commands' }]);
+    expect(discovered.skills).toHaveLength(2);
+    for (const skill of discovered.skills) skills.register(skill);
+    vanished = true;
+    const tool = makeTool(ix, undefined, '', fs);
+    const ordinary = await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
+    expect(ordinary.isError).not.toBe(true);
+    expect(ordinary.delivery).toBeDefined();
+    for (const path of ['/workspace/live.md', '/workspace/alias.md']) {
+      const result = await executeTool(tool, toolContext({ path }));
+      expect(result.isError).toBe(true);
+      expect(result.delivery).toBeUndefined();
+      expect(result.output).toContain('only be triggered by the user');
+    }
+  });
+
+  it.each([ErrorCodes.OS_FS_PERMISSION_DENIED, ErrorCodes.OS_FS_UNKNOWN])('does not ignore unresolved command identity errors with %s', async (code) => {
+    const commandPath = '/workspace/.kiki/commands/private.md';
+    skills.register(parseSkillText({ skillMdPath: commandPath, skillDirName: 'private', source: 'project', text: '# Private' }));
+    const failure = new Error2(code, 'Cannot resolve command identity');
+    const readText = vi.fn(async () => '# Independent');
+    const tool = makeTool(ix, undefined, '', {
+      realpath: async (path) => { if (path === commandPath) throw failure; return path; },
+      readText,
+    });
+    await expect(executeTool(tool, toolContext({ path: '/workspace/independent.md' }))).rejects.toBe(failure);
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('does not read outside an isolated runtime workspace', async () => {
+    await expect(makeTool(ix).resolveExecution({ path: '/outside/skill.md' })).rejects.toThrow();
+  });
+
+  it('rejects a sensitive canonical symlink target before reading skill content', async () => {
+    const readText = vi.fn(async () => '# forbidden');
+    const tool = makeTool(ix, undefined, '', { realpath: async () => '/workspace/.env', readText });
+    await expect(tool.resolveExecution({ path: 'safe.md' })).rejects.toMatchObject({ code: 'PATH_SENSITIVE' });
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['commands/review.md', '/workspace/ordinary.md'],
+    ['ordinary.md', '/workspace/commands/review.md'],
+  ])('keeps user-only command policy across a symlink from %s', async (path, target) => {
+    const tool = makeTool(ix, undefined, '# user-only command', { realpath: async () => target });
+    const result = await executeTool(tool, toolContext({ path }));
+    expect(result.isError).toBe(true);
+    expect(result.delivery).toBeUndefined();
+    expect(result.output).toContain('only be triggered by the user');
+  });
+
+  it('uses the canonical path for admission and provenance without reading during preparation', async () => {
+    const readText = vi.fn(async () => '# approved file');
+    const tool = makeTool(ix, undefined, '', { realpath: async () => '/workspace/actual.md', readText });
+    const execution = await tool.resolveExecution({ path: 'link.md' });
+    expect(execution).toMatchObject({ display: { kind: 'skill_call', skill_name: '/workspace/actual.md' } });
+    expect(readText).not.toHaveBeenCalled();
+    const result = await executeTool(tool, toolContext({ path: 'link.md' }));
+    expect(result.delivery).toMatchObject({ message: { origin: { skillPath: '/workspace/actual.md' } } });
+    expect(readText).toHaveBeenCalledWith('/workspace/actual.md');
   });
 
   it('returns a tool error when the skill is unknown', async () => {
@@ -313,7 +495,7 @@ describe('SkillTool', () => {
     );
 
     expect(result).toMatchObject({
-      output: 'Skill "commit" loaded inline. Follow its instructions.',
+      output: 'Skill "commit" loaded.',
     });
     expect(result.output).not.toContain('# Commit');
     expect(prompted).toHaveLength(0);

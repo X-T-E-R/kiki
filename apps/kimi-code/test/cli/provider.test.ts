@@ -377,11 +377,11 @@ describe('kimi provider add', () => {
     expect(final.models?.['kohub-responses/legacy-model']).toBeUndefined();
   });
 
-  it('reads the api key from KIMI_REGISTRY_API_KEY when --api-key is omitted', async () => {
+  it('reads the api key from KIKI_REGISTRY_API_KEY when --api-key is omitted', async () => {
     const fetchMock = mockRegistryFetch();
     const { harness } = makeHarness({ providers: {} } as KimiConfig);
     const { deps, exitCodes } = makeDeps(harness, {
-      env: { KIMI_REGISTRY_API_KEY: 'sk-env-token' },
+      env: { KIKI_REGISTRY_API_KEY: 'sk-env-token' },
     });
 
     await tryRun(() => handleProviderAdd(deps, REGISTRY_URL, {}));
@@ -393,6 +393,16 @@ describe('kimi provider add', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer sk-env-token' }),
       }),
     );
+  });
+
+  it('ignores the retired generic registry environment variable', async () => {
+    const fetchMock = mockRegistryFetch();
+    const { harness } = makeHarness({ providers: {} } as KimiConfig);
+    const { deps, stderr, exitCodes } = makeDeps(harness, { env: { KIMI_REGISTRY_API_KEY: 'synthetic-legacy-key' } });
+    await tryRun(() => handleProviderAdd(deps, REGISTRY_URL, {}));
+    expect(exitCodes).toEqual([1]);
+    expect(stderr.join('')).toContain('KIKI_REGISTRY_API_KEY');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('exits 1 with a clear message when no api key is supplied anywhere', async () => {
@@ -896,11 +906,11 @@ describe('kimi provider catalog add', () => {
     expect(current().defaultModel).toBeUndefined();
   });
 
-  it('falls back to KIMI_REGISTRY_API_KEY when --api-key is omitted', async () => {
+  it('falls back to KIKI_REGISTRY_API_KEY when --api-key is omitted', async () => {
     mockRegistryFetch(CATALOG_BODY);
     const { harness, current } = makeHarness({ providers: {} } as KimiConfig);
     const { deps, exitCodes } = makeDeps(harness, {
-      env: { KIMI_REGISTRY_API_KEY: 'sk-env' },
+      env: { KIKI_REGISTRY_API_KEY: 'sk-env' },
     });
 
     await tryRun(() => handleCatalogAdd(deps, 'openai', {}));

@@ -7,7 +7,7 @@
  *     prompt can be aborted (or was already terminal).
  *
  * Converted from the retired scenario `09-image-file-prompts.ts`. Skips when
- * no server is reachable at `KIMI_SERVER_URL`.
+ * no server is reachable at `KIKI_SERVER_URL`.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -17,8 +17,8 @@ import { DaemonClient, EnvelopeError } from '../harness/index.js';
 import { fetchWithReport } from '../harness/report.js';
 import { createCaseLogger } from './log.js';
 
-const BASE_URL = process.env['KIMI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
-const API_PREFIX = '/api/v1';
+const BASE_URL = process.env['KIKI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
+const API_PREFIX = '/api';
 const SHORT_TIMEOUT_MS = 15_000;
 
 const ONE_BY_ONE_PNG = Buffer.from(

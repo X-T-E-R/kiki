@@ -12,7 +12,7 @@ const createdDirs: string[] = [];
 const running: RunningServer[] = [];
 
 beforeEach(() => {
-  prevPassword = process.env['KIMI_CODE_PASSWORD'];
+  prevPassword = process.env['KIKI_PASSWORD'];
 });
 
 afterEach(async () => {
@@ -26,9 +26,9 @@ afterEach(async () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
   if (prevPassword === undefined) {
-    delete process.env['KIMI_CODE_PASSWORD'];
+    delete process.env['KIKI_PASSWORD'];
   } else {
-    process.env['KIMI_CODE_PASSWORD'] = prevPassword;
+    process.env['KIKI_PASSWORD'] = prevPassword;
   }
 });
 
@@ -40,15 +40,15 @@ async function tmpHome(): Promise<string> {
 
 async function probeDebug(server: RunningServer): Promise<number> {
   const token = server.authTokenService.getToken();
-  const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/debug/channels`, {
+  const res = await fetch(`http://127.0.0.1:${server.port}/api/debug/channels`, {
     headers: { authorization: `Bearer ${token}` },
   });
   return res.status;
 }
 
 describe('debug endpoints are not exposed on a non-loopback bind', () => {
-  it('returns 404 for /api/v1/debug/* on a 0.0.0.0 bind even when requested', async () => {
-    process.env['KIMI_CODE_PASSWORD'] = 'test-pw';
+  it('returns 404 for /api/debug/* on a 0.0.0.0 bind even when requested', async () => {
+    process.env['KIKI_PASSWORD'] = 'test-pw';
     const home = await tmpHome();
     const server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,

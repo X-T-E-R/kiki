@@ -32,7 +32,7 @@ const mocks = vi.hoisted(() => {
     readonly fallback: TuiConfigFallback;
 
     constructor(fallback: TuiConfigFallback) {
-      super('Invalid TUI config in ~/.kimi-code/tui.toml; using defaults.');
+      super('Invalid TUI config in ~/.kiki/tui.toml; using defaults.');
       this.fallback = fallback;
     }
   }
@@ -51,12 +51,14 @@ const mocks = vi.hoisted(() => {
     harnessClose: vi.fn(),
     harnessTrack: vi.fn(),
     kimiTuiConstructor: vi.fn(),
+    daemonDiscover: vi.fn(async () => ({ url: 'http://127.0.0.1:57580', token: 'token' })),
+    tuiClose: vi.fn(),
     tuiStart: vi.fn(),
     tuiGetStartupMcpMs: vi.fn(async () => 0),
     tuiGetCurrentSessionId: vi.fn(() => ''),
     tuiHasSessionContent: vi.fn(() => false),
     createKimiDeviceId: vi.fn<CreateKimiDeviceId>(() => 'device-1'),
-    resolveKimiHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-code-test-home'),
+    resolveKikiHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-code-test-home'),
     flushDiagnosticLogsSync: vi.fn(),
     harnessCreatesDeviceIdOnConstruction: false,
     execFileSync: vi.fn(() => ''),
@@ -85,7 +87,7 @@ vi.mock('@kiki/node-sdk', async (importOriginal) => {
   };
   return {
     ...actual,
-    resolveKimiHome: mocks.resolveKimiHome,
+    resolveKikiHome: mocks.resolveKikiHome,
     flushDiagnosticLogsSync: mocks.flushDiagnosticLogsSync,
     createKimiHarness: (...args: unknown[]) => {
       const options = args[0] as { readonly homeDir?: string } | undefined;
@@ -115,18 +117,19 @@ vi.mock('../../src/tui/config', () => ({
   TuiConfigParseError: mocks.TuiConfigParseError,
 }));
 
-vi.mock('../../src/tui/index', () => ({
-  KimiTUI: class {
+vi.mock('../../src/tui/daemon/discovery', () => ({
+  resolveDaemonHome: () => '/tmp/kiki-test-home',
+  discoverDaemon: mocks.daemonDiscover,
+  ensureDaemon: vi.fn(async () => ({ url: 'http://127.0.0.1:57580', token: 'token' })),
+}));
+vi.mock('../../src/tui/daemon/workspace-trust', () => ({ runWorkspaceTrustGate: vi.fn(async () => true) }));
+vi.mock('../../src/tui/daemon/daemon-tui', () => ({
+  DaemonTUI: class {
     onExit?: () => Promise<void>;
-
     readonly state = { ui: { mode: 'regular' as const } };
-
-    constructor(...args: unknown[]) {
-      mocks.kimiTuiConstructor(this, ...args);
-    }
-
+    constructor(...args: unknown[]) { mocks.kimiTuiConstructor(this, ...args); }
     start = mocks.tuiStart;
-    getStartupMcpMs = mocks.tuiGetStartupMcpMs;
+    close = mocks.tuiClose;
     getCurrentSessionId = mocks.tuiGetCurrentSessionId;
     hasSessionContent = mocks.tuiHasSessionContent;
   },
@@ -184,7 +187,7 @@ describe('runShell', () => {
     mocks.tuiGetCurrentSessionId.mockReturnValue('');
     mocks.tuiHasSessionContent.mockReturnValue(false);
     mocks.createKimiDeviceId.mockImplementation(() => 'device-1');
-    mocks.resolveKimiHome.mockImplementation(
+    mocks.resolveKikiHome.mockImplementation(
       (homeDir?: string) => homeDir ?? '/tmp/kimi-code-test-home',
     );
     mocks.resolveCommandPath.mockImplementation(() => '/bin/stty');
@@ -237,15 +240,16 @@ describe('runShell', () => {
     });
   }
 
-  it('builds the SDK harness regardless of the experimental master switch', async () => {
+  it('attaches without constructing a local SDK harness', async () => {
     stubTuiStartup();
-    await withEnv({ KIMI_CODE_EXPERIMENTAL_FLAG: undefined }, async () => {
+    await withEnv({ KIKI_EXPERIMENTAL_FLAG: undefined }, async () => {
       await runShell(minimalCliOptions, '1.2.3-test');
     });
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledTimes(1);
+    expect(mocks.kimiHarnessConstructor).not.toHaveBeenCalled();
+    expect(mocks.daemonDiscover).toHaveBeenCalledOnce();
   });
 
-  it('constructs KimiHarness and KimiTUI with startup input', async () => {
+  it('constructs the daemon TUI with startup input', async () => {
     mocks.loadTuiConfig.mockResolvedValue({
       theme: 'dark',
       editorCommand: null,
@@ -272,21 +276,9 @@ describe('runShell', () => {
 
     await runShell(cliOptions, '1.2.3-test');
 
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledWith(
-      expect.objectContaining({
-        identity: expect.objectContaining({
-          productName: 'kimi-code-cli',
-          version: '1.2.3-test',
-        }),
-      }),
-    );
-    expect(mocks.harnessEnsureConfigFile).toHaveBeenCalledOnce();
-    expect(mocks.harnessEnsureConfigFile.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.harnessGetConfig.mock.invocationCallOrder[0]!,
-    );
-    // stty is resolved to an absolute path before the trust gate and skipped
-    // entirely on Windows (a bare `stty` name would resolve into the
-    // untrusted cwd).
+    expect(mocks.kimiHarnessConstructor).not.toHaveBeenCalled();
+    expect(mocks.harnessEnsureConfigFile).not.toHaveBeenCalled();
+    expect(mocks.daemonDiscover).toHaveBeenCalledOnce();
     if (process.platform !== 'win32') {
       expect(execFileSync).toHaveBeenCalledWith('/bin/stty', ['-ixon'], {
         stdio: ['inherit', 'ignore', 'ignore'],
@@ -387,9 +379,8 @@ describe('runShell', () => {
       '1.2.3-test',
     );
 
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledWith(
-      expect.objectContaining({ skillDirs: ['/skills'] }),
-    );
+    expect(mocks.kimiHarnessConstructor).not.toHaveBeenCalled();
+    expect(mocks.kimiTuiConstructor.mock.calls[0]?.[2]).toMatchObject({ cliOptions: { skillsDirs: ['/skills'] } });
   });
 
   it('detects auto theme and forwards config parse warnings as startup notice', async () => {
@@ -423,7 +414,7 @@ describe('runShell', () => {
     expect(mocks.detectTerminalTheme).toHaveBeenCalledOnce();
     const [, , startupInput] = mocks.kimiTuiConstructor.mock.calls[0]!;
     expect(startupInput).toMatchObject({
-      startupNotice: 'Invalid TUI config in ~/.kimi-code/tui.toml; using defaults.',
+      startupNotice: 'Invalid TUI config in ~/.kiki/tui.toml; using defaults.',
       tuiConfig: {
         theme: 'auto',
         editorCommand: 'vim',
@@ -595,7 +586,8 @@ describe('runShell', () => {
       ),
     ).rejects.toThrow('boom');
 
-    expect(mocks.harnessClose).toHaveBeenCalledOnce();
+    expect(mocks.tuiClose).toHaveBeenCalledOnce();
+    expect(mocks.harnessClose).not.toHaveBeenCalled();
   });
 
   it('prints resume instructions from the TUI exit handler', async () => {
@@ -636,7 +628,7 @@ describe('runShell', () => {
       );
 
       expect(stdout.text()).toContain(' Bye!\n');
-      expect(stderr.text()).toContain(' To resume this session: kimi -r ses-1');
+      expect(stderr.text()).toContain(' To resume this session: kiki -r ses-1');
     } finally {
       exitSpy.mockRestore();
       stdout.restore();
@@ -644,54 +636,6 @@ describe('runShell', () => {
     }
   });
 
-  it('prints the opened web URL from the TUI exit handler when set', async () => {
-    mocks.loadTuiConfig.mockResolvedValue({
-      theme: 'dark',
-      editorCommand: null,
-      notifications: { enabled: true, condition: 'unfocused' },
-    });
-    mocks.tuiStart.mockResolvedValue(undefined);
-    mocks.tuiGetCurrentSessionId.mockReturnValue('ses-1');
-    mocks.tuiHasSessionContent.mockReturnValue(true);
-
-    const stdout = captureProcessWrite('stdout');
-    const stderr = captureProcessWrite('stderr');
-    const exitSpy = mockProcessExit();
-
-    try {
-      await runShell(
-        {
-          session: undefined,
-          continue: false,
-          yolo: false,
-          auto: false,
-          plan: false,
-          model: undefined,
-          outputFormat: undefined,
-          prompt: undefined,
-          skillsDirs: [],
-          agent: undefined,
-          agentFiles: [],
-        },
-        '1.2.3-test',
-      );
-      const [tui] = mocks.kimiTuiConstructor.mock.calls[0]!;
-      const openedUrl = 'http://127.0.0.1:58627/sessions/ses-1#token=tok-1';
-      (tui as { exitOpenUrl?: string }).exitOpenUrl = openedUrl;
-
-      await expect((tui as { onExit: () => Promise<void> }).onExit()).rejects.toBeInstanceOf(
-        ExitCalled,
-      );
-
-      expect(stderr.text()).toContain(' To resume this session: kimi -r ses-1');
-      expect(stderr.text()).toContain('open ');
-      expect(stderr.text()).toContain(openedUrl);
-    } finally {
-      exitSpy.mockRestore();
-      stdout.restore();
-      stderr.restore();
-    }
-  });
 
   it('surfaces an invalid target config as an error, not silently', async () => {
     mocks.loadTuiConfig.mockResolvedValue({
@@ -699,8 +643,8 @@ describe('runShell', () => {
       editorCommand: null,
       notifications: { enabled: true, condition: 'unfocused' },
     });
-    mocks.harnessGetConfig.mockRejectedValue(
-      new Error('Invalid configuration in ~/.kimi-code/config.toml'),
+    mocks.daemonDiscover.mockRejectedValueOnce(
+      new Error('Invalid configuration in ~/.kiki/config.toml'),
     );
 
     // A broken config.toml must fail loudly — startup must not swallow it and

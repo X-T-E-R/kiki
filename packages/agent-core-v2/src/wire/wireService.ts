@@ -42,7 +42,7 @@ export class WireService extends Service implements IWireService {
   private pendingRepair:
     | { readonly records: WireRecord[]; readonly truncation: AppendLogTruncation }
     | undefined;
-  private persistError: Error | undefined;
+  private persistFailure: { readonly error: unknown } | undefined;
 
   constructor(
     @IAgentScopeContext scopeContext: IAgentScopeContext,
@@ -75,7 +75,7 @@ export class WireService extends Service implements IWireService {
       try {
         this.appendRecordLow(record);
       } catch (error) {
-        onUnexpectedError(error);
+        this.reportPersistFailure(error);
       }
       return;
     }
@@ -91,7 +91,7 @@ export class WireService extends Service implements IWireService {
         const output = dehydrate === undefined ? record : await dehydrate(record, transform);
         this.appendRecordLow(output);
       })
-      .catch((error: unknown) => onUnexpectedError(error));
+      .catch((error: unknown) => this.reportPersistFailure(error));
     this.persistQueue = queued;
     void queued.then(() => {
       if (this.persistQueue === queued) this.persistQueue = undefined;
@@ -207,17 +207,24 @@ export class WireService extends Service implements IWireService {
           },
         },
       );
-      this.persistError = error;
       throw error;
     }
   }
 
   async flush(): Promise<void> {
     await this.persistQueue;
-    const persistError = this.persistError;
-    this.persistError = undefined;
-    if (persistError !== undefined) throw persistError;
-    await this.log.flush(this.wireScope, AGENT_WIRE_RECORD_KEY);
+    try {
+      await this.log.flush(this.wireScope, AGENT_WIRE_RECORD_KEY);
+    } catch (error) {
+      if (this.persistFailure !== undefined) throw this.persistFailure.error;
+      throw error;
+    }
+    if (this.persistFailure !== undefined) throw this.persistFailure.error;
+  }
+
+  private reportPersistFailure(error: unknown): void {
+    this.persistFailure ??= { error };
+    onUnexpectedError(error);
   }
 
   private reportSkippedRecord(type: string | undefined, index: number, malformed = false): void {

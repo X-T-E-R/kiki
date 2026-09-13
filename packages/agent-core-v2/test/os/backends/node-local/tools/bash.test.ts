@@ -1,6 +1,17 @@
 import { PassThrough, Readable, type Writable } from 'node:stream';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { createServices, createScopedTestHost, stubPair } from '#/_base/di/test';
+import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
+import { LifecycleScope } from '#/app/scopes';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
+import { LocalRuntime } from '#/runtime/localRuntime';
+import type { Runtime } from '#/runtime/runtime';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { stubPermissionModeService } from '../../../../agent/permissionMode/stubs';
 
 import {
   IAgentTaskService,
@@ -13,18 +24,21 @@ import {
 } from '#/agent/task/task';
 import type { AgentTaskSettlement } from '#/agent/task/types';
 import { userCancellationReason } from '#/_base/utils/abort';
-import type { IConfigService } from '#/app/config/config';
+import { IConfigService } from '#/app/config/config';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
-import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { stubWorkspaceContext } from '../../../../session/workspaceContext/stub-workspace-context';
-import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
-import { type ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
-import { type BashInput, BashInputSchema } from '#/agent/tools/os/bash/bash';
+import { IBashTool, type BashInput, BashInputSchema } from '#/agent/tools/os/bash/bash';
 import { BashTool } from '#/agent/tools/os/bash/bashTool';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
+
+const disposables = new DisposableStore();
+afterEach(() => { disposables.clear(); });
 
 const posixEnv: IHostEnvironment = {
   _serviceBrand: undefined,
@@ -681,7 +695,7 @@ function isPromiseLike(value: ToolExecution | Promise<ToolExecution>): value is 
 }
 
 async function executeTool(
-  tool: BashTool,
+  tool: IBashTool,
   ctx: ReturnType<typeof context>,
 ): Promise<ExecutableToolResult> {
   const { args, ...executionContext } = ctx;
@@ -714,17 +728,14 @@ function bashTool(
   background: IAgentTaskService = createFakeTaskService().service,
   toolPolicy: IAgentToolPolicyService = stubToolPolicy(),
   config: IConfigService = stubConfig(),
-): BashTool {
-  const processService: IHostProcessService = {
-    _serviceBrand: undefined,
-    spawn: async (command, args = [], options) => runner.spawn(command, args, options),
-  };
-  const backend = Object.assign(
-    new FakeRuntime(
-      { workspaceId: ctx.workspaceId, runtimeId: 'local', generation: 'test' },
-      { capabilities: ['process'], pathClass: env.pathClass },
-    ),
-    { environment: env, process: processService },
+  options: {
+    permissionMode?: IAgentPermissionModeService;
+    runtime?: Runtime;
+    disposeLease?: () => void;
+  } = {},
+): IBashTool {
+  const backend = options.runtime ?? disposables.add(
+    new LocalRuntime(ctx.workspaceId, env, undefined, runner, undefined, undefined),
   );
   const runtime: IAgentRuntimeService = {
     _serviceBrand: undefined,
@@ -734,13 +745,139 @@ function bashTool(
     acquire: () => ({
       runtime: backend,
       track: (resource) => resource,
-      dispose: () => {},
+      dispose: options.disposeLease ?? (() => {}),
     }),
   };
-  return new BashTool(runtime, ctx, stubWorkspaceContext(ctx.cwd), background, toolPolicy, config);
+  const services = createServices(disposables, {
+    additionalServices: (reg) => {
+      reg.define(IBashTool, BashTool);
+      reg.defineInstance(IAgentRuntimeService, runtime);
+      reg.defineInstance(ISessionContext, ctx);
+      reg.defineInstance(ISessionWorkspaceContext, stubWorkspaceContext(ctx.cwd));
+      reg.defineInstance(IAgentTaskService, background);
+      reg.defineInstance(IAgentToolPolicyService, toolPolicy);
+      reg.defineInstance(IConfigService, config);
+      reg.defineInstance(IAgentPermissionModeService, options.permissionMode ?? stubPermissionModeService(() => 'manual'));
+    },
+  });
+  return services.get(IBashTool);
 }
 
 describe('BashTool', () => {
+  it.each([
+    [posixEnv, '/workspace', '/other/repository', '/other/repository'],
+    [windowsBashEnv, 'C:\\workspace', 'D:\\other\\repository', '/d/other/repository'],
+    [windowsBashEnv, 'C:\\workspace', '/d/other/repository', '/d/other/repository'],
+  ])('allows explicit external cwd in effective yolo on local runtimes: %s %s %s', async (env, root, cwd, shellCwd) => {
+    const { runner, exec: spawn } = createTestRunner(processWithOutput());
+    const tool = bashTool(runner, env, createTestCtx(root), undefined, undefined, undefined, {
+      permissionMode: stubPermissionModeService(() => 'yolo'),
+    });
+    const result = await executeTool(tool, context({ command: 'git status --short', cwd }));
+    expect(result.isError).toBe(false);
+    expect(spawn).toHaveBeenCalledWith(env.shellPath, ['-c', `cd '${shellCwd}' && git status --short`], expect.anything());
+  });
+
+  it.each(['manual', 'auto'] as const)('rejects external cwd in %s and releases the runtime lease', async (mode) => {
+    const { runner, exec: spawn } = createTestRunner(processWithOutput());
+    const disposeLease = vi.fn();
+    const tool = bashTool(runner, undefined, undefined, undefined, undefined, undefined, {
+      permissionMode: stubPermissionModeService(() => mode),
+      disposeLease,
+    });
+    const result = await executeTool(tool, context({ command: 'git status --short', cwd: '/other/repository' }));
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining('outside runtime workspace') });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(disposeLease).toHaveBeenCalledOnce();
+  });
+
+  it('reads the effective agent mode at execution rather than caching it when resolving', async () => {
+    const { runner, exec: spawn } = createTestRunner(vi.fn(async () => processWithOutput()));
+    let mode: PermissionMode = 'yolo';
+    const tool = bashTool(runner, undefined, undefined, undefined, undefined, undefined, {
+      permissionMode: stubPermissionModeService(() => mode),
+    });
+    const execution = await tool.resolveExecution({ command: 'git status --short', cwd: '/other/repository' });
+    if (execution.isError === true) throw new Error('Expected executable Bash call');
+    mode = 'manual';
+    expect(await execution.execute(context({ command: 'unused' }))).toMatchObject({ isError: true });
+    expect(spawn).not.toHaveBeenCalled();
+    mode = 'yolo';
+    expect(await execution.execute(context({ command: 'unused' }))).toMatchObject({ isError: false });
+  });
+
+  it('does not give mapped runtimes external cwd access even when named local in yolo', async () => {
+    const { runner, exec: spawn } = createTestRunner(processWithOutput());
+    const runtime = new FakeRuntime(
+      { workspaceId: 'test', runtimeId: 'local', generation: 'mapped' },
+      { mapWorkspaceRoots: () => ({ workDir: '/container/project' }) },
+    );
+    const disposeLease = vi.fn();
+    const tool = bashTool(runner, undefined, undefined, undefined, undefined, undefined, {
+      runtime,
+      permissionMode: stubPermissionModeService(() => 'yolo'),
+      disposeLease,
+    });
+    const result = await executeTool(tool, context({ command: 'git status --short', cwd: '/other/repository' }));
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining('outside runtime workspace') });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(disposeLease).toHaveBeenCalledOnce();
+  });
+
+  it('uses each agent scope effective mode without elevating a restricted child from main yolo', async () => {
+    _clearScopedRegistryForTests();
+    registerScopedService(LifecycleScope.Agent, IBashTool, BashTool, ScopeActivation.OnDemand, 'os/backends');
+    const { runner, exec } = createTestRunner(vi.fn(async () => processWithOutput()));
+    const backend = disposables.add(new LocalRuntime('test', posixEnv, undefined, runner, undefined, undefined));
+    const runtime: IAgentRuntimeService = {
+      _serviceBrand: undefined,
+      onDidChange: () => ({ dispose: () => {} }),
+      isAvailable: () => true,
+      inspect: () => backend,
+      acquire: () => ({ runtime: backend, track: (resource) => resource, dispose: () => {} }),
+    };
+    const host = disposables.add(createScopedTestHost([
+      stubPair(IConfigService, stubConfig()),
+      stubPair(IAgentRuntimeService, runtime),
+      stubPair(IAgentToolPolicyService, stubToolPolicy()),
+    ]));
+    const session = host.child(LifecycleScope.Session, 'session', [
+      stubPair(ISessionContext, createTestCtx()),
+      stubPair(ISessionWorkspaceContext, stubWorkspaceContext('/workspace')),
+    ]);
+    for (const [id, mode] of [['main', 'yolo'], ['child', 'yolo'], ['restricted-child', 'manual']] as const) {
+      const agent = host.childOf(session, LifecycleScope.Agent, id, [
+        stubPair(IAgentPermissionModeService, stubPermissionModeService(() => mode)),
+        stubPair(IAgentTaskService, createFakeTaskService().service),
+      ]);
+      const result = await executeTool(agent.accessor.get(IBashTool), context({ command: 'git status --short', cwd: '/other/repository' }));
+      expect(result.isError, id).toBe(mode !== 'yolo');
+    }
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps relative cwd traversal restricted in yolo', async () => {
+    const { runner, exec } = createTestRunner(processWithOutput());
+    const tool = bashTool(runner, undefined, undefined, undefined, undefined, undefined, {
+      permissionMode: stubPermissionModeService(() => 'yolo'),
+    });
+    expect(await executeTool(tool, context({ command: 'pwd', cwd: '../other' }))).toMatchObject({ isError: true });
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it.each(['mapping', 'spawn'] as const)('releases the runtime lease after %s failure', async (failure) => {
+    const { runner } = createTestRunner(vi.fn(async () => { throw new Error('spawn failed'); }));
+    const disposeLease = vi.fn();
+    const runtime = failure === 'mapping'
+      ? new FakeRuntime({ workspaceId: 'test', runtimeId: 'remote', generation: 'test' }, {
+          mapWorkspaceRoots: () => { throw new Error('mapping failed'); },
+        })
+      : undefined;
+    const tool = bashTool(runner, undefined, undefined, undefined, undefined, undefined, { runtime, disposeLease });
+    expect(await executeTool(tool, context({ command: 'pwd' }))).toMatchObject({ isError: true, output: `${failure} failed` });
+    expect(disposeLease).toHaveBeenCalledOnce();
+  });
+
   it('exposes current metadata and schema', () => {
     const { runner } = createTestRunner(processWithOutput());
     const tool = bashTool(runner);
@@ -819,12 +956,28 @@ describe('BashTool', () => {
     expect(properties['timeout']?.default).toBe(60);
   });
 
-  it('renders the available commands section and the /tasks hint', () => {
+  it('renders the available commands section without a /tasks hint', () => {
     const { runner } = createTestRunner(processWithOutput());
     const tool = bashTool(runner);
 
     expect(tool.description).toContain('Commands available');
-    expect(tool.description).toContain('/tasks');
+    expect(tool.description).not.toContain('/tasks');
+  });
+
+  it('strips background instructions when background tools are disabled', () => {
+    const { runner } = createTestRunner(processWithOutput());
+    const tool = bashTool(
+      runner,
+      createTestEnv(),
+      createTestCtx(),
+      createFakeTaskService().service,
+      stubToolPolicy(() => false),
+    );
+
+    expect(tool.description).toContain('Background execution is disabled for this agent.');
+    expect(tool.description).not.toContain('If `run_in_background=true`');
+    expect(tool.description).not.toContain('TaskOutput');
+    expect(tool.description).not.toContain('/tasks');
   });
 
   it('runs through runner.spawn, injects cwd, noninteractive env, and closes stdin', async () => {
@@ -1166,7 +1319,7 @@ describe('BashTool', () => {
     expect(result.spill?.totalChars).toBe(10 * 1024 * 1024 + 1);
   });
 
-  it('points the spill at the persisted task log when foreground output exceeds the delivery cap', async () => {
+  it('points the spill at the persisted task log without duplicating TaskOutput guidance', async () => {
     const fullOutput = `${'short line\n'.repeat(6_000)}tail survives\n`;
     const { runner } = createTestRunner(processWithOutput({ stdout: fullOutput }));
     const { service, persisted } = createFakeTaskService();
@@ -1185,7 +1338,7 @@ describe('BashTool', () => {
     expect(spill!.totalChars).toBe(fullOutput.length);
     expect(spill!.suffix).toContain(`task_id: ${taskId}`);
     expect(spill!.suffix).toContain('output_size_bytes:');
-    expect(spill!.suffix).toContain(`TaskOutput(task_id="${taskId}")`);
+    expect(spill!.suffix).not.toContain('TaskOutput');
   });
 
   it('leaves the result for generic pipeline spill when task-log persistence is unavailable', async () => {
@@ -1243,7 +1396,7 @@ describe('BashTool', () => {
     expect(result.spill?.suffix).toContain('Command failed with exit code: 1.');
   });
 
-  it('omits the TaskOutput hint from the spill suffix when background tools are disabled', async () => {
+  it('does not add TaskOutput guidance to persisted spill metadata', async () => {
     const fullOutput = 'short line\n'.repeat(6_000);
     const { runner } = createTestRunner(processWithOutput({ stdout: fullOutput }));
     const { service } = createFakeTaskService();
@@ -1395,7 +1548,10 @@ describe('BashTool background mode', () => {
     expect(result.output).not.toContain('after detach\n');
     expect(result.output).toContain(`task_id: ${task.taskId}`);
     expect(result.output).toContain('automatic_notification: true');
-    expect(result.output).toContain('do NOT wait, poll, or call TaskOutput');
+    expect(result.output).toContain('next_step: Continue your current work; completion arrives automatically.');
+    expect(result.output).not.toContain('TaskOutput');
+    expect(result.output).not.toContain('TaskStop');
+    expect(result.output).not.toContain('/tasks');
     expect((result as { brief?: string }).brief).toBe(`Backgrounded ${task.taskId}`);
     expect(service.getTask(task.taskId)).toMatchObject({ detached: true });
     await vi.waitFor(async () => {
@@ -1501,8 +1657,7 @@ describe('BashTool background mode', () => {
     const result = await running;
 
     expect(result.output).toContain(`task_id: ${task.taskId}`);
-    expect(result.output).toContain('You will be automatically notified when it completes');
-    expect(result.output).toContain('do NOT wait or poll');
+    expect(result.output).toContain('next_step: Continue your current work; completion arrives automatically.');
     expect(result.output).not.toContain('TaskOutput');
     expect(result.output).not.toContain('TaskStop');
 
@@ -1597,7 +1752,9 @@ describe('BashTool background mode', () => {
     expect(result.output).toMatch(/task_id: bash-[0-9a-z]{8}/);
     expect(result.output).toContain('automatic_notification: true');
     expect((result as { brief?: string }).brief).toMatch(/^Started bash-[0-9a-z]{8}$/);
-    expect(result.output).toContain('do NOT wait, poll, or call TaskOutput on it');
+    expect(result.output).toContain('next_step: Completion arrives automatically.');
+    expect(result.output).not.toContain('TaskOutput');
+    expect(result.output).not.toContain('TaskStop');
     expect(result.output).not.toContain('block=false');
     expect(service.list(false)).toHaveLength(1);
   });
@@ -1787,7 +1944,7 @@ describe('BashTool background mode', () => {
     }
   });
 
-  it('reports background task startup with task_id, status, automatic_notification, and a human-shell hint', async () => {
+  it('reports concise background task metadata and automatic notification', async () => {
     const proc = processWithOutput();
     const { runner } = createTestRunner(proc);
     const { service } = createFakeTaskService();
@@ -1801,12 +1958,17 @@ describe('BashTool background mode', () => {
     expect(typeof result.output).toBe('string');
     const output = result.output as string;
     expect(output).toContain('task_id:');
+    expect(output).toContain('pid: 123');
+    expect(output).toContain('description: sleep task');
     expect(output).toContain('status: running');
     expect(output).toContain('automatic_notification: true');
-    expect(output).toContain('do NOT wait, poll, or call TaskOutput on it');
+    expect(output).toContain('next_step: Completion arrives automatically.');
+    expect(output.split('\n').filter((line) => line.startsWith('next_step:'))).toHaveLength(1);
     expect(output).not.toContain('block=false');
-    expect(output).toContain('human_shell_hint:');
-    expect(output).toContain('/tasks');
+    expect(output).not.toContain('human_shell_hint:');
+    expect(output).not.toContain('/tasks');
+    expect(output).not.toContain('TaskOutput');
+    expect(output).not.toContain('TaskStop');
   });
 
   it('rejects background command without description (description-required guard)', async () => {

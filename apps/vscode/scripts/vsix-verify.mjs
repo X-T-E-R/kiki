@@ -30,6 +30,7 @@ const REQUIRED_WEBVIEW_FILES = ['media/gui/index.html'];
 const FORBIDDEN_PATH_SEGMENTS = new Set([
   '.kimi',
   '.kimi-code',
+  '.kiki',
   '.vscode',
   '__tests__',
   'cache',
@@ -93,7 +94,7 @@ const CONTRIBUTE_FIELDS = [
 ];
 
 export async function verifyVsix(vsixPath, target, options = {}) {
-  const extractionRoot = await mkdtemp(join(tmpdir(), 'kimi-vsix-audit-'));
+  const extractionRoot = await mkdtemp(join(tmpdir(), 'kiki-vsix-audit-'));
   try {
     await extractZip(vsixPath, extractionRoot);
     return await auditExtractedVsix(extractionRoot, target, options);

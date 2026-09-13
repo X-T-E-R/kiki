@@ -15,6 +15,9 @@ export const createSessionOptionsSchema = z.object({
   sessionId: z.string().optional(),
   workDir: z.string(),
   additionalDirs: z.array(z.string()).optional(),
+  mainAgentBinding: z.object({
+    profile: z.string().optional(), model: z.string().optional(), thinking: z.string().optional(),
+  }).optional(),
   /**
    * Ephemeral per-session MCP servers (engine `CreateSessionOptions.mcpServers`):
    * connected only for the created session, never persisted.

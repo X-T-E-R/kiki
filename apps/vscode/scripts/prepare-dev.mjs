@@ -19,7 +19,7 @@ export async function prepareDevEnvironment(baseDir = defaultBaseDir) {
     root,
     userData: join(root, 'user-data'),
     extensions: join(root, 'extensions'),
-    kimiHome: join(root, 'kimi-home'),
+    kikiHome: join(root, 'kiki-home'),
     workspace: join(root, 'workspace'),
   };
   await Promise.all(
@@ -29,7 +29,7 @@ export async function prepareDevEnvironment(baseDir = defaultBaseDir) {
   );
   await writeFile(
     join(paths.workspace, 'README.md'),
-    '# Isolated Kimi Code extension development workspace\n',
+    '# Isolated Kiki extension development workspace\n',
   );
   return paths;
 }
@@ -71,7 +71,7 @@ async function main() {
   }
   const paths = await prepareDevEnvironment(options.baseDir);
   console.log(`Prepared isolated VS Code profile: ${paths.root}`);
-  console.log(`KIMI_CODE_HOME=${paths.kimiHome}`);
+  console.log(`KIKI_HOME=${paths.kikiHome}`);
   console.log(`Workspace=${paths.workspace}`);
 }
 

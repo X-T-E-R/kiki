@@ -172,6 +172,12 @@ function makeLifecycleStub(handles: readonly IAgentScopeHandle[] = []): Lifecycl
       throw new Error('not implemented');
     },
     remove: async () => {},
+    countPendingBackgroundTasks: () => {
+      throw new Error('IAgentLifecycleService.countPendingBackgroundTasks is not supported in this test');
+    },
+    drainBackgroundTasks: async () => {
+      throw new Error('IAgentLifecycleService.drainBackgroundTasks is not supported in this test');
+    },
   };
 
   return {

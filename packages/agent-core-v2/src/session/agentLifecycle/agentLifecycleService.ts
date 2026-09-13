@@ -503,6 +503,40 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     }
   }
 
+  countPendingBackgroundTasks(): number {
+    let count = 0;
+    for (const handle of this.handles.values()) {
+      count += handle.accessor.get(IAgentTaskService).list(true).length;
+    }
+    return count;
+  }
+
+  async drainBackgroundTasks(timeoutMs: number): Promise<void> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Background drain timeout must be positive and finite');
+    }
+    const deadline = Date.now() + timeoutMs;
+    const seen = new Set<string>();
+    while (Date.now() < deadline) {
+      const batch: Promise<unknown>[] = [];
+      const suppressions: Promise<void>[] = [];
+      let activeCount = 0;
+      for (const handle of this.handles.values()) {
+        const tasks = handle.accessor.get(IAgentTaskService);
+        for (const task of tasks.list(true)) {
+          activeCount++;
+          const key = `${handle.id}/${task.taskId}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          suppressions.push(tasks.suppressTerminalNotification(task.taskId));
+          batch.push(tasks.wait(task.taskId, Math.max(1, deadline - Date.now())));
+        }
+      }
+      await Promise.all([...suppressions, ...batch]);
+      if (activeCount === 0 || batch.length === 0) break;
+    }
+  }
+
   async remove(agentId: string): Promise<void> {
     const handle = this.handles.get(agentId);
     if (handle === undefined) return this.removing.get(agentId);

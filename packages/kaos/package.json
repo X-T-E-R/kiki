@@ -5,17 +5,17 @@
   "description": "Execution environment abstraction for AI agent applications",
   "license": "MIT",
   "author": "Moonshot AI",
-  "homepage": "https://github.com/MoonshotAI/kimi-code/tree/main/packages/kaos#readme",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MoonshotAI/kimi-code.git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
     "directory": "packages/kaos"
   },
   "bugs": {
-    "url": "https://github.com/MoonshotAI/kimi-code/issues"
+    "url": "https://github.com/X-T-E-R/kiki/issues"
   },
   "keywords": [
-    "kimi",
+    "kiki",
     "agent",
     "execution",
     "sandbox",

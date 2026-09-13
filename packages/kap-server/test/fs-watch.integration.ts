@@ -55,11 +55,11 @@ function addressOf(r: RunningServer): string {
 }
 
 function wsUrl(r: RunningServer): string {
-  return `${addressOf(r).replace(/^http/, 'ws')}/api/v1/ws`;
+  return `${addressOf(r).replace(/^http/, 'ws')}/api/ws`;
 }
 
 async function createSession(r: RunningServer): Promise<string> {
-  const res = await fetch(`${addressOf(r)}/api/v1/sessions`, {
+  const res = await fetch(`${addressOf(r)}/api/sessions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ metadata: { cwd: workspace } }),
@@ -236,8 +236,8 @@ describe('WS fs watch (kap-server)', () => {
     'burst > 500 changes inside 200ms window → truncated:true',
     { timeout: 15000 },
     async () => {
-      vi.stubEnv('KIMI_CODE_FS_WATCH_DEBOUNCE_MS', '500');
-      vi.stubEnv('KIMI_CODE_FS_WATCH_MAX_CHANGES_PER_WINDOW', '100');
+      vi.stubEnv('KIKI_FS_WATCH_DEBOUNCE_MS', '500');
+      vi.stubEnv('KIKI_FS_WATCH_MAX_CHANGES_PER_WINDOW', '100');
       const r = await boot();
       const sid = await createSession(r);
       const conn = await openConn(wsUrl(r));

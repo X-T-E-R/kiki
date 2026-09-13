@@ -2,20 +2,20 @@
   "name": "@kiki/node-sdk",
   "version": "0.19.0",
   "private": true,
-  "description": "TypeScript SDK for the Kimi Code Agent",
+  "description": "TypeScript SDK for the Kiki Agent",
   "license": "MIT",
   "author": "Moonshot AI",
-  "homepage": "https://github.com/MoonshotAI/kimi-code/tree/main/packages/node-sdk#readme",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MoonshotAI/kimi-code.git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
     "directory": "packages/node-sdk"
   },
   "bugs": {
-    "url": "https://github.com/MoonshotAI/kimi-code/issues"
+    "url": "https://github.com/X-T-E-R/kiki/issues"
   },
   "keywords": [
-    "kimi",
+    "kiki",
     "sdk",
     "typescript",
     "agent",

@@ -5,10 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { AgentExecutionService } from '#/agent/execution/executionService';
-import type { IAgentProfileService } from '#/agent/profile/profile';
-import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import type { IAgentStateService } from '#/agent/state/agentState';
-import type { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -17,6 +20,7 @@ import {
   AgentExecutorPreflightService,
   IAgentExecutorPreflightService,
 } from '#/app/agentExecutor/preflight';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IHostFileSystem, type HostFileStat } from '#/os/interface/hostFileSystem';
 import {
   IHostProcessService,
@@ -62,11 +66,11 @@ function bootstrap(): IBootstrapService {
     arch: 'x64',
     cwd: 'C:/workspace',
     osHomeDir: 'C:/Users/test',
-    homeDir: 'C:/Users/test/.kimi-code',
-    configPath: 'C:/Users/test/.kimi-code/config.toml',
+    homeDir: 'C:/Users/test/.kiki',
+    configPath: 'C:/Users/test/.kiki/config.toml',
     configReadOnly: true,
-    userAgentProfileHomeDir: 'C:/Users/test/.kimi-code',
-    modelAccountHomeDir: 'C:/Users/test/.kimi-code',
+    userAgentProfileHomeDir: 'C:/Users/test/.kiki',
+    modelAccountHomeDir: 'C:/Users/test/.kiki',
     clientIdentity: { productName: 'test', version: '0', platform: 'test' },
     args: { requestHeaders: {} },
     sessionsDir: 'sessions',
@@ -300,32 +304,27 @@ describe('AgentExecutorPreflightService', () => {
     const first = await registry.resolveExecutable('kimi-acp');
     processService.outputs.set('kimi --version', { output: '0.38.0' });
     const second = await registry.resolveExecutable('kimi-acp');
-    const execution = new AgentExecutionService(
-      services,
-      {
-        _serviceBrand: undefined,
-        agentId: 'agent-test',
-        scope: () => 'agent-test',
-      } satisfies IAgentScopeContext,
-      { reserveExecution: () => () => {} } as unknown as ISessionDispatchService,
-      {
-        _serviceBrand: undefined,
-        data: () => ({
-          thinkingLevel: 'off',
-          systemPrompt: '',
-          executorId: 'kimi-acp',
-          executorProtocol: 'acp-v1',
-          executorDescriptorRevision: first.descriptor.revision,
-        }),
-        preparePromptConfiguration: async () => false,
-        getSystemPrompt: () => '',
-      } as IAgentProfileService,
-      registry,
-      {
-        _serviceBrand: undefined,
-        contributeState: () => ({ dispose: () => {} }),
-      } as unknown as IAgentStateService,
-    );
+    services.set(IAgentScopeContext, {
+      _serviceBrand: undefined,
+      agentId: 'agent-test',
+      scope: () => 'agent-test',
+    });
+    services.stub(IAgentProfileService, {
+      data: () => ({
+        modelCapabilities: UNKNOWN_CAPABILITY,
+        thinkingLevel: 'off',
+        systemPrompt: '',
+        executorId: 'kimi-acp',
+        executorProtocol: 'acp-v1',
+        executorDescriptorRevision: first.descriptor.revision,
+      }),
+    });
+    services.stub(IAgentStateService, { contributeState: () => ({ dispose: () => {} }) });
+    services.stub(IAgentLoopService, {});
+    services.stub(IAgentPromptService, {});
+    services.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
+    services.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
+    const execution = services.get(IAgentExecutionService);
 
     expect(first.descriptor.command).toBe('kimi');
     expect(first.descriptor.command).toBe(second.descriptor.command);
@@ -335,7 +334,7 @@ describe('AgentExecutorPreflightService', () => {
       { kind: 'prompt', prompt: 'work' },
       { signal: new AbortController().signal },
     )).rejects.toThrow(/descriptor.*changed/i);
-    execution.dispose();
+    await execution.shutdown();
   });
 
   it('reports unavailable binaries without treating missing auth as success', async () => {

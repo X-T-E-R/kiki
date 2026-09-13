@@ -16,6 +16,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
+import { PROMPT_BODY_LIMIT_BYTES } from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -43,7 +44,7 @@ interface PageWire {
 
 const MSG_ID = /^msg_.+/;
 
-describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
+describe('server-v2 /api/sessions/{sid}/messages', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -127,14 +128,14 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
 
   async function cursor(sessionId: string): Promise<{ seq: number; epoch: string }> {
     const snapshot = await getJson<{ as_of_seq: number; epoch: string }>(
-      `/api/v1/sessions/${sessionId}/snapshot`,
+      `/api/sessions/${sessionId}/snapshot`,
     );
     expect(snapshot.body.code).toBe(0);
     return { seq: snapshot.body.data.as_of_seq, epoch: snapshot.body.data.epoch };
   }
 
   async function createSession(): Promise<string> {
-    const res = await fetch(`${base}/api/v1/sessions`, {
+    const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd: home as string } }),
@@ -162,7 +163,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
 
   it('returns an empty page when the session has no main agent', async () => {
     const id = await createSession();
-    const { body } = await getJson<PageWire>(`/api/v1/sessions/${id}/messages`);
+    const { body } = await getJson<PageWire>(`/api/sessions/${id}/messages`);
     expect(body.code).toBe(0);
     expect(body.data.items).toEqual([]);
     expect(body.data.has_more).toBe(false);
@@ -171,7 +172,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
   it('returns an empty page when the main agent has no messages yet', async () => {
     const id = await createSession();
     await seedMainAgentMessages(id, []);
-    const { body } = await getJson<PageWire>(`/api/v1/sessions/${id}/messages`);
+    const { body } = await getJson<PageWire>(`/api/sessions/${id}/messages`);
     expect(body.code).toBe(0);
     expect(body.data.items).toEqual([]);
   });
@@ -188,7 +189,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       { role: 'tool', content: [{ type: 'text', text: 'file.txt' }], toolCalls: [], toolCallId: 'call_1' },
     ]);
 
-    const { body } = await getJson<PageWire>(`/api/v1/sessions/${id}/messages`);
+    const { body } = await getJson<PageWire>(`/api/sessions/${id}/messages`);
     expect(body.code).toBe(0);
     expect(body.data.has_more).toBe(false);
     expect(body.data.items).toHaveLength(3);
@@ -228,12 +229,12 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'hello' }], toolCalls: [] },
     ]);
 
-    const list = await getJson<PageWire>(`/api/v1/sessions/${id}/messages`);
+    const list = await getJson<PageWire>(`/api/sessions/${id}/messages`);
     const assistant = list.body.data.items.find((m) => m.role === 'assistant');
     expect(assistant).toBeDefined();
 
     const got = await getJson<MessageWire>(
-      `/api/v1/sessions/${id}/messages/${assistant!.id}`,
+      `/api/sessions/${id}/messages/${assistant!.id}`,
     );
     expect(got.body.code).toBe(0);
     expect(got.body.data).toMatchObject({
@@ -243,7 +244,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     });
 
     const missing = await getJson<null>(
-      `/api/v1/sessions/${id}/messages/msg_does_not_exist`,
+      `/api/sessions/${id}/messages/msg_does_not_exist`,
     );
     expect(missing.body.code).toBe(40403);
   });
@@ -258,7 +259,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     ]);
 
     const result = await postJson<{ user_message_id: string }>(
-      `/api/v1/sessions/${id}/messages/user_1:edit`,
+      `/api/sessions/${id}/messages/user_1:edit`,
       {
         content: [{ type: 'text', text: 'first edited' }],
         expected_cursor: await cursor(id),
@@ -267,7 +268,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     expect(result.code, JSON.stringify(result)).toBe(0);
     expect(result.data.user_message_id).toBe('user_1');
 
-    const listed = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+    const listed = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
     const userMessages = listed.body.data.items.filter((message) => message.role === 'user');
     expect(userMessages).toHaveLength(1);
     expect(userMessages[0]).toMatchObject({
@@ -290,6 +291,33 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     );
   });
 
+  it('applies the prompt-sized body budget to edit-resend media payloads', async () => {
+    const id = await createSession();
+    const payload = JSON.stringify({
+      content: [1, 2, 3].map((index) => ({
+        type: 'image',
+        source: {
+          kind: 'base64',
+          media_type: 'image/png',
+          data: `iVBORw0KGgo${'A'.repeat(4 * 1024 * 1024)}${String(index)}`,
+        },
+      })),
+      expected_cursor: await cursor(id),
+    });
+    expect(Buffer.byteLength(payload, 'utf8')).toBeGreaterThan(1 << 20);
+
+    const response = await server!.app.inject({
+      method: 'POST',
+      url: `/api/sessions/${id}/messages/missing_user:edit`,
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      payload,
+    });
+    const body = JSON.parse(response.body) as Envelope<null>;
+    expect(response.statusCode).toBe(413);
+    expect(body.code).toBe(40001);
+    expect(body.msg).toContain('request body exceeds');
+  });
+
   it('regenerate reuses the original core user content and message id', async () => {
     const id = await createSession();
     await seedMainAgentMessages(id, [
@@ -298,13 +326,13 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     ]);
 
     const result = await postJson<{ user_message_id: string }>(
-      `/api/v1/sessions/${id}/messages/assistant_final:regenerate`,
+      `/api/sessions/${id}/messages/assistant_final:regenerate`,
       { expected_cursor: await cursor(id) },
     );
     expect(result.code, JSON.stringify(result)).toBe(0);
     expect(result.data.user_message_id).toBe('user_original');
 
-    const listed = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+    const listed = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
     expect(listed.body.data.items.filter((message) => message.role === 'user')).toEqual([
       expect.objectContaining({
         id: 'user_original',
@@ -322,11 +350,11 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     ]);
     const expectedCursor = await cursor(id);
     const [left, right] = await Promise.all([
-      postJson(`/api/v1/sessions/${id}/messages/race_user:edit`, {
+      postJson(`/api/sessions/${id}/messages/race_user:edit`, {
         content: [{ type: 'text', text: 'left' }],
         expected_cursor: expectedCursor,
       }),
-      postJson(`/api/v1/sessions/${id}/messages/race_user:edit`, {
+      postJson(`/api/sessions/${id}/messages/race_user:edit`, {
         content: [{ type: 'text', text: 'right' }],
         expected_cursor: expectedCursor,
       }),
@@ -344,13 +372,13 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     ]);
     const expected_cursor = await cursor(id);
 
-    const atUser = await postJson<{ id: string }>(`/api/v1/sessions/${id}:fork`, {
+    const atUser = await postJson<{ id: string }>(`/api/sessions/${id}:fork`, {
       through_message_id: 'fork_user_2',
       expected_cursor,
     });
     expect(atUser.code, JSON.stringify(atUser)).toBe(0);
     const userForkMessages = await getJson<PageWire>(
-      `/api/v1/sessions/${atUser.data.id}/messages?page_size=100`,
+      `/api/sessions/${atUser.data.id}/messages?page_size=100`,
     );
     expect(userForkMessages.body.data.items.map((message) => message.id)).toEqual([
       'fork_user_2',
@@ -358,13 +386,13 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       'fork_user_1',
     ]);
 
-    const atAssistant = await postJson<{ id: string }>(`/api/v1/sessions/${id}:fork`, {
+    const atAssistant = await postJson<{ id: string }>(`/api/sessions/${id}:fork`, {
       through_message_id: 'fork_assistant_1',
       expected_cursor,
     });
     expect(atAssistant.code, JSON.stringify(atAssistant)).toBe(0);
     const assistantForkMessages = await getJson<PageWire>(
-      `/api/v1/sessions/${atAssistant.data.id}/messages?page_size=100`,
+      `/api/sessions/${atAssistant.data.id}/messages?page_size=100`,
     );
     expect(assistantForkMessages.body.data.items.map((message) => message.id)).toEqual([
       'fork_assistant_1',
@@ -378,7 +406,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       { id: 'role_user', role: 'user', content: [{ type: 'text', text: 'prompt' }], toolCalls: [], origin: { kind: 'user' } },
       { id: 'role_assistant', role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
     ]);
-    const result = await postJson(`/api/v1/sessions/${id}/messages/role_assistant:edit`, {
+    const result = await postJson(`/api/sessions/${id}/messages/role_assistant:edit`, {
       content: [{ type: 'text', text: 'not allowed' }],
       expected_cursor: await cursor(id),
     });
@@ -391,7 +419,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       { id: 'preflight_user', role: 'user', content: [{ type: 'text', text: 'prompt' }], toolCalls: [], origin: { kind: 'user' } },
       { id: 'preflight_assistant', role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
     ]);
-    const result = await postJson(`/api/v1/sessions/${id}/messages/preflight_user:edit`, {
+    const result = await postJson(`/api/sessions/${id}/messages/preflight_user:edit`, {
       content: [{
         type: 'file',
         file_id: 'file_missing',
@@ -402,7 +430,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       expected_cursor: await cursor(id),
     });
     expect(result.code).toBe(40407);
-    const listed = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+    const listed = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
     expect(listed.body.data.items.map((message) => message.id)).toEqual([
       'preflight_assistant',
       'preflight_user',
@@ -421,7 +449,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       payload: { questions: [] },
     });
 
-    const result = await postJson(`/api/v1/sessions/${id}/messages/busy_user:edit`, {
+    const result = await postJson(`/api/sessions/${id}/messages/busy_user:edit`, {
       content: [{ type: 'text', text: 'replacement' }],
       expected_cursor: await cursor(id),
     });
@@ -447,7 +475,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     });
     await agent.accessor.get(IWireService).flush();
 
-    const result = await postJson(`/api/v1/sessions/${id}/messages/compacted_user:edit`, {
+    const result = await postJson(`/api/sessions/${id}/messages/compacted_user:edit`, {
       content: [{ type: 'text', text: 'replacement' }],
       expected_cursor: await cursor(id),
     });
@@ -460,16 +488,16 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [] },
     ]);
     const { body } = await getJson<null>(
-      `/api/v1/sessions/${id}/messages/msg_00NOT_IN_SESSION00`,
+      `/api/sessions/${id}/messages/msg_00NOT_IN_SESSION00`,
     );
     expect(body.code).toBe(40403);
   });
 
   it('returns 40401 for an unknown session on both endpoints', async () => {
-    const list = await getJson<null>('/api/v1/sessions/nope/messages');
+    const list = await getJson<null>('/api/sessions/nope/messages');
     expect(list.body.code).toBe(40401);
 
-    const got = await getJson<null>('/api/v1/sessions/nope/messages/msg_does_not_exist');
+    const got = await getJson<null>('/api/sessions/nope/messages/msg_does_not_exist');
     expect(got.body.code).toBe(40401);
   });
 
@@ -480,22 +508,22 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       { role: 'user', content: [{ type: 'text', text: 'm1' }], toolCalls: [] },
       { role: 'user', content: [{ type: 'text', text: 'm2' }], toolCalls: [] },
     ]);
-    const all = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+    const all = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
     const idsDesc = all.body.data.items.map((m) => m.id);
     expect(idsDesc).toHaveLength(3);
 
-    const first = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=1`);
+    const first = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=1`);
     expect(first.body.data.items.map((m) => m.id)).toEqual([idsDesc[0]]);
     expect(first.body.data.has_more).toBe(true);
 
     const older = await getJson<PageWire>(
-      `/api/v1/sessions/${id}/messages?before_id=${idsDesc[0]}`,
+      `/api/sessions/${id}/messages?before_id=${idsDesc[0]}`,
     );
     expect(older.body.data.items.map((m) => m.id)).toEqual([idsDesc[1], idsDesc[2]]);
     expect(older.body.data.has_more).toBe(false);
 
     const newer = await getJson<PageWire>(
-      `/api/v1/sessions/${id}/messages?after_id=${idsDesc[2]}`,
+      `/api/sessions/${id}/messages?after_id=${idsDesc[2]}`,
     );
     expect(newer.body.data.items.map((m) => m.id)).toEqual([idsDesc[0], idsDesc[1]]);
     expect(newer.body.data.has_more).toBe(false);
@@ -508,7 +536,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'a' }], toolCalls: [] },
       { role: 'user', content: [{ type: 'text', text: 'q2' }], toolCalls: [] },
     ]);
-    const { body } = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?role=user`);
+    const { body } = await getJson<PageWire>(`/api/sessions/${id}/messages?role=user`);
     expect(body.code).toBe(0);
     expect(body.data.items.every((m) => m.role === 'user')).toBe(true);
     expect(body.data.items).toHaveLength(2);
@@ -542,7 +570,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     await agent.accessor.get(IWireService).flush();
 
     const readTexts = async (): Promise<string[]> => {
-      const { body } = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+      const { body } = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
       return body.data.items.map((item) =>
         item.content.map((part) => (part.type === 'text' ? part['text'] : '')).join(''),
       );
@@ -581,7 +609,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     });
     await agent.accessor.get(IWireService).flush();
 
-    const livePage = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+    const livePage = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
     expect(livePage.body.data.items).toHaveLength(4);
     const liveSummaryId = livePage.body.data.items[0]!.id;
 
@@ -589,7 +617,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     server = undefined;
     await boot();
 
-    const { body } = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+    const { body } = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
     expect(body.code).toBe(0);
     expect(body.data.items).toHaveLength(4);
     expect(body.data.items.every((m) => MSG_ID.test(m.id))).toBe(true);
@@ -603,7 +631,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       metadata: { origin: { kind: 'compaction_summary' } },
     });
 
-    const got = await getJson<MessageWire>(`/api/v1/sessions/${id}/messages/${m1.id}`);
+    const got = await getJson<MessageWire>(`/api/sessions/${id}/messages/${m1.id}`);
     expect(got.body.code).toBe(0);
     expect(got.body.data).toMatchObject({
       id: m1.id,
@@ -611,7 +639,7 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       content: [{ type: 'text', text: 'm1' }],
     });
 
-    const missing = await getJson<null>(`/api/v1/sessions/${id}/messages/msg_does_not_exist`);
+    const missing = await getJson<null>(`/api/sessions/${id}/messages/msg_does_not_exist`);
     expect(missing.body.code).toBe(40403);
   });
 });

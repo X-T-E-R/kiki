@@ -1,4 +1,5 @@
 import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
 import { IConfigService } from '#/app/config/config';
 import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
@@ -69,7 +70,7 @@ function renderBashDescription(shellName: string): string {
 function withoutBackgroundDescription(description: string): string {
   return description
     .replace(
-      /\r?\n\r?\nIf `run_in_background=true`,[\s\S]*?point them to the `\/tasks` command, which opens an interactive panel; it has no subcommands\./,
+      /\r?\n\r?\nIf `run_in_background=true`,[\s\S]*?Use `TaskStop` only if the task must be cancelled\./,
       '\n\nBackground execution is disabled for this agent. Do not set `run_in_background=true`.',
     )
     .replace(
@@ -101,6 +102,7 @@ export class BashTool implements IBashTool {
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IConfigService private readonly config: IConfigService,
+    @IAgentPermissionModeService private readonly permissionMode: IAgentPermissionModeService,
   ) {}
 
   private allowBackground(): boolean {
@@ -179,11 +181,6 @@ export class BashTool implements IBashTool {
 
     const startsInBackground = args.run_in_background === true;
     const foregroundTimeoutMs = normalizeTimeoutMs(args.timeout, false);
-    const lease = this.runtime.acquire(['process']);
-    const view = new RuntimeWorkspaceView(lease.runtime, this.workspaceCtx);
-    const env = lease.runtime.environment;
-    const command = env.osKind === 'Windows' ? rewriteWindowsNullRedirect(args.command) : args.command;
-    const effectiveCwd = view.resolve(args.cwd ?? view.workDir);
     const description = startsInBackground ? args.description!.trim() : foregroundDescription(args);
     const timeoutMs = startsInBackground
       ? args.disable_timeout
@@ -192,8 +189,14 @@ export class BashTool implements IBashTool {
       : foregroundTimeoutMs;
 
     const builder = new ToolOutputAccumulator();
+    const lease = this.runtime.acquire(['process']);
     let proc: IHostProcess;
+    let command: string;
     try {
+      const view = new RuntimeWorkspaceView(lease.runtime, this.workspaceCtx);
+      const env = lease.runtime.environment;
+      command = env.osKind === 'Windows' ? rewriteWindowsNullRedirect(args.command) : args.command;
+      const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');
       proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command));
     } catch (error) {
       lease.dispose();
@@ -354,10 +357,7 @@ export class BashTool implements IBashTool {
       return result;
     }
 
-    const taskOutputHint = this.allowBackground()
-      ? `\nnext_step: Use TaskOutput(task_id="${taskId}") to query the task output.`
-      : '';
-    const taskInfo = `task_id: ${taskId}\noutput_size_bytes: ${String(output.outputSizeBytes)}${taskOutputHint}`;
+    const taskInfo = `task_id: ${taskId}\noutput_size_bytes: ${String(output.outputSizeBytes)}`;
     const existingSuffix = result.spill?.suffix;
     return {
       ...result,
@@ -384,8 +384,7 @@ export class BashTool implements IBashTool {
       `description: ${description}\n` +
       `status: ${status}\n` +
       `automatic_notification: true\n` +
-      this.nextStepLines(scenario) +
-      'human_shell_hint: Tell the human to run /tasks to open the interactive background-task panel.';
+      this.nextStepLines(scenario);
 
     const foregroundResult = builder.ok('');
     const foregroundOutput = foregroundResult.output.length > 0 ? foregroundResult.output : '';
@@ -406,22 +405,9 @@ export class BashTool implements IBashTool {
     scenario: 'background_started' | 'foreground_detached',
   ): string {
     if (scenario === 'foreground_detached') {
-      const avoid = this.allowBackground()
-        ? 'do NOT wait, poll, or call TaskOutput on it'
-        : 'do NOT wait or poll';
-      return (
-        'next_step: The task now runs in the background. You will be automatically notified ' +
-        `when it completes — ${avoid}; continue with your current work.\n`
-      );
+      return 'next_step: Continue your current work; completion arrives automatically.\n';
     }
-    if (!this.allowBackground()) {
-      return 'next_step: You will be automatically notified when it completes.\n';
-    }
-    return (
-      'next_step: The completion arrives automatically in a later turn — do NOT wait, poll, ' +
-      'or call TaskOutput on it; continue with your current work.\n' +
-      'next_step: Use TaskStop only if the task must be cancelled.\n'
-    );
+    return 'next_step: Completion arrives automatically.\n';
   }
 }
 

@@ -344,10 +344,10 @@ describe('ensureRgPath download branch', () => {
   it('downloads from the cn CDN by default (no env override, no install marker)', async () => {
     const savedHost = process.env['KIMI_CODE_OAUTH_HOST'];
     const savedLegacyHost = process.env['KIMI_OAUTH_HOST'];
-    const savedHome = process.env['KIMI_CODE_HOME'];
+    const savedHome = process.env['KIKI_HOME'];
     delete process.env['KIMI_CODE_OAUTH_HOST'];
     delete process.env['KIMI_OAUTH_HOST'];
-    process.env['KIMI_CODE_HOME'] = fakeShare;
+    process.env['KIKI_HOME'] = fakeShare;
     try {
       const body = bodyFromBuffer(Buffer.from('not a real archive', 'utf8'));
       const fetchMock = vi.fn().mockResolvedValue({
@@ -369,8 +369,8 @@ describe('ensureRgPath download branch', () => {
       else process.env['KIMI_CODE_OAUTH_HOST'] = savedHost;
       if (savedLegacyHost === undefined) delete process.env['KIMI_OAUTH_HOST'];
       else process.env['KIMI_OAUTH_HOST'] = savedLegacyHost;
-      if (savedHome === undefined) delete process.env['KIMI_CODE_HOME'];
-      else process.env['KIMI_CODE_HOME'] = savedHome;
+      if (savedHome === undefined) delete process.env['KIKI_HOME'];
+      else process.env['KIKI_HOME'] = savedHome;
     }
   });
 

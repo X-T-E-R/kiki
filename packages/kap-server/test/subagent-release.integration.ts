@@ -49,7 +49,7 @@ describe('released subagent scopes', () => {
       logLevel: 'silent',
     });
     const base = `http://127.0.0.1:${server.port}`;
-    const created = await fetch(`${base}/api/v1/sessions`, {
+    const created = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server, { 'content-type': 'application/json' }),
       body: JSON.stringify({ metadata: { cwd: home } }),
@@ -75,7 +75,7 @@ describe('released subagent scopes', () => {
       const response = await authedFetch(
         server!,
         base,
-        `/api/v1/sessions/${sessionId}/transcript?agent_id=agent-1`,
+        `/api/sessions/${sessionId}/transcript?agent_id=agent-1`,
       );
       expect(response.status).toBe(200);
       return ((await response.json()) as Envelope<TranscriptContract>).data;

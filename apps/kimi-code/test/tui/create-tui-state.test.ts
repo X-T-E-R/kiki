@@ -104,7 +104,7 @@ describe('createTUIState', () => {
   });
 
   it('builds an alternate-screen renderer with a docked layout in fullscreen mode', () => {
-    vi.stubEnv('KIMI_CODE_TUI_FULL_SCREEN', '1');
+    vi.stubEnv('KIKI_TUI_FULL_SCREEN', '1');
     const state = createTUIState({
       initialAppState: fakeInitialAppState(),
       startup: {

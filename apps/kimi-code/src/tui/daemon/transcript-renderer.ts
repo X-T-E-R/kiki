@@ -117,8 +117,11 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
         2,
         0,
       );
-    case 'shell':
-      return new Text(`${block.done ? '$' : '…'} ${block.output}`, 2, 0);
+    case 'shell': {
+      const command = block.command ?? block.output;
+      const output = block.command === undefined || block.output === '' ? '' : `\n${block.output}`;
+      return new Text(`${block.done ? '$' : '…'} ${command}${output}`, 2, 0);
+    }
     case 'skill':
       return new Text(currentTheme.dim(`/${block.name}${block.args === undefined ? '' : ` ${block.args}`}`), 2, 0);
     case 'system':

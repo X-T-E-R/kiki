@@ -10,7 +10,7 @@ export const agentProfileRoutesFlag: FlagDefinitionInput = {
   id: AGENT_PROFILE_ROUTES_FLAG_ID,
   title: 'Agent profile routes',
   description: 'Load and dispatch named specializations of existing agent profiles.',
-  env: 'KIMI_CODE_EXPERIMENTAL_AGENT_PROFILE_ROUTES',
+  env: 'KIKI_EXPERIMENTAL_AGENT_PROFILE_ROUTES',
   default: false,
   surface: 'core',
 };

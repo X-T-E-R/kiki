@@ -341,11 +341,11 @@ function instructionProbeDirectory(
   }
   const parent = dirname(normalized);
   const parentName = basename(parent);
-  const isDotKimi =
+  const isDotKiki =
     pathClass === 'win32'
-      ? parentName.toLowerCase() === '.kimi-code'
-      : parentName === '.kimi-code';
-  return isDotKimi ? dirname(parent) : parent;
+      ? parentName.toLowerCase() === '.kiki'
+      : parentName === '.kiki';
+  return isDotKiki ? dirname(parent) : parent;
 }
 
 function stringArg(args: unknown, key: string): string | undefined {

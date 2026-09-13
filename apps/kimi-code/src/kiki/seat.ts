@@ -53,7 +53,7 @@ export function registerSeatCommand(program: Command): Command {
       const seats = await daemonRequest<readonly Omit<SeatConnection, 'delegationToken'>[]>(
         connection,
         'GET',
-        '/api/v2/external-delegation/seats',
+        '/api/external-delegation/seats',
       );
       process.stdout.write(`${JSON.stringify(seats, null, options.json === true ? 0 : 2)}\n`);
     });
@@ -67,7 +67,7 @@ export function registerSeatCommand(program: Command): Command {
       const revoked = await daemonRequest<Omit<SeatConnection, 'delegationToken'>>(
         connection,
         'DELETE',
-        `/api/v2/external-delegation/seats/${encodeURIComponent(seatId)}`,
+        `/api/external-delegation/seats/${encodeURIComponent(seatId)}`,
       );
       process.stdout.write(`${JSON.stringify(revoked, null, options.json === true ? 0 : 2)}\n`);
     });
@@ -100,7 +100,7 @@ export function createSeatOnConnection(
   return daemonRequest<SeatConnection>(
     connection,
     'POST',
-    '/api/v2/external-delegation/seats',
+    '/api/external-delegation/seats',
     {
       workspace: input.workspace,
       principal: input.principal,
@@ -117,14 +117,15 @@ export async function daemonRequest<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const response = await fetch(`${connection.url}${path}`, {
+  const request: RequestInit = {
     method,
     headers: {
       authorization: `Bearer ${connection.token}`,
       'content-type': 'application/json',
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  };
+  if (body !== undefined) request.body = JSON.stringify(body);
+  const response = await fetch(`${connection.url}${path}`, request);
   const envelope = await response.json() as {
     readonly code: number;
     readonly msg: string;

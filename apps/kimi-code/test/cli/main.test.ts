@@ -11,9 +11,11 @@ import { handleMainCommand, main } from '#/main';
 
 const mocks = vi.hoisted(() => {
   const parse = vi.fn();
+  const parseAsync = vi.fn(() => Promise.resolve());
   return {
     parse,
-    createProgram: vi.fn(() => ({ parse })),
+    parseAsync,
+    createProgram: vi.fn(() => ({ parse, parseAsync })),
     getVersion: vi.fn(() => '0.0.1-alpha.2'),
     validateOptions: vi.fn(),
     runShell: vi.fn(),
@@ -250,7 +252,7 @@ describe('main entry command handling', () => {
     main();
 
     await waitForAssertion(() => {
-      expect(mocks.parse).toHaveBeenCalledWith(process.argv);
+      expect(mocks.parseAsync).toHaveBeenCalledWith(process.argv);
     });
   });
 
@@ -260,7 +262,7 @@ describe('main entry command handling', () => {
       process.title = 'kimi-test-runner';
       main();
 
-      expect(process.title).toBe('kimi-code');
+      expect(process.title).toBe('kiki');
     } finally {
       process.title = originalTitle;
     }

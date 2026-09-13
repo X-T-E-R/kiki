@@ -60,7 +60,7 @@ export async function doctor(homeDir = resolveKikiHome()): Promise<DoctorReport>
     : await daemonRequest<readonly Omit<SeatConnection, 'delegationToken'>[]>(
         connection,
         'GET',
-        '/api/v2/external-delegation/seats',
+        '/api/external-delegation/seats',
       );
   return {
     daemon: {

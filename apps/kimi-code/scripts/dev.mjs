@@ -13,9 +13,9 @@ const APP_ROOT = resolve(SCRIPT_DIR, '..');
 // the whole repo instead of just apps/kimi-code.
 const REPO_ROOT = resolve(APP_ROOT, '../..');
 // Runtime variable the CLI reads to locate the marketplace JSON.
-const MARKETPLACE_ENV = 'KIMI_CODE_PLUGIN_MARKETPLACE_URL';
+const MARKETPLACE_ENV = 'KIKI_PLUGIN_MARKETPLACE_URL';
 // Opt-in for dev: point this run at an explicit marketplace source instead of the local server.
-const EXPLICIT_MARKETPLACE_ENV = 'KIMI_CODE_DEV_MARKETPLACE_URL';
+const EXPLICIT_MARKETPLACE_ENV = 'KIKI_DEV_MARKETPLACE_URL';
 
 let marketplaceServer;
 const env = { ...process.env };
@@ -34,7 +34,7 @@ if (explicitSource !== undefined && explicitSource.length > 0) {
   env[MARKETPLACE_ENV] = marketplaceServer.marketplaceUrl;
   // Marks the URL as the dev server's own (serving this repo's catalog), so
   // the CLI can tell it apart from a user-configured marketplace override.
-  env['KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] = '1';
+  env['KIKI_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] = '1';
   console.error(`Plugin marketplace dev server: ${marketplaceServer.marketplaceUrl}`);
   if (inherited !== undefined && inherited.length > 0 && inherited !== marketplaceServer.marketplaceUrl) {
     console.error(

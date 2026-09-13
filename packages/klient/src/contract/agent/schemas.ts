@@ -37,8 +37,19 @@ export const promptPartSchema = z.discriminatedUnion('type', [
 
 export const emptyPayloadSchema = z.object({});
 
+export const promptExecutionBindingSchema = z.object({
+  profile: z.string().optional(),
+  model: z.string().optional(),
+  thinking: z.string().optional(),
+  planMode: z.boolean().optional(),
+  swarmMode: z.boolean().optional(),
+  goalObjective: z.string().optional(),
+  goalControl: z.enum(['pause', 'resume', 'cancel']).optional(),
+});
+
 export const promptPayloadSchema = z.object({
   input: z.array(promptPartSchema),
+  execution: promptExecutionBindingSchema.optional(),
   // Mirrors `PromptPayload.disabledTools` in the engine (client-managed
   // session denylist, full-replace).
   disabledTools: z.array(z.string()).optional(),
@@ -137,10 +148,29 @@ export const runtimeBindingSchema = z.object({
   runtimeId: z.string(),
 });
 
+export const modelCapabilitySchema = z.object({
+  image_in: z.boolean(),
+  video_in: z.boolean(),
+  audio_in: z.boolean(),
+  thinking: z.boolean(),
+  tool_use: z.boolean(),
+  max_context_tokens: z.number(),
+  max_input_tokens: z.number().optional(),
+  dynamically_loaded_tools: z.boolean().optional(),
+});
+
 export const permissionModeSchema = z.enum(['manual', 'yolo', 'auto']);
 
 export const setPermissionPayloadSchema = z.object({
   mode: permissionModeSchema,
+});
+
+export const agentLoopStatusSchema = z.object({
+  state: z.enum(['idle', 'running']),
+  activeTurnId: z.number().optional(),
+  pendingTurnIds: z.array(z.number()),
+  hasPendingRequests: z.boolean(),
+  activeTraceId: z.string().optional(),
 });
 
 export const tokenUsageSchema = z.object({

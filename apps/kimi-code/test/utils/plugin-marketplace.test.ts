@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV } from '#/constant/app';
+import { KIKI_PLUGIN_MARKETPLACE_URL_ENV } from '#/constant/app';
 import {
   BUILT_IN_PLUGIN_MARKETPLACE_SOURCE,
   LOCAL_DEV_PLUGIN_MARKETPLACE_SOURCE,
@@ -247,8 +247,8 @@ describe('loadPluginMarketplace', () => {
   });
 
   it('loads the source-checkout catalog without any network fetch when no source is configured', async () => {
-    const previous = process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
-    delete process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
+    const previous = process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV];
+    delete process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV];
     const fetchImpl = vi.fn(async () => {
       throw new Error('network fetch is forbidden');
     }) as unknown as typeof fetch;
@@ -267,15 +267,15 @@ describe('loadPluginMarketplace', () => {
       );
     } finally {
       if (previous === undefined) {
-        delete process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
+        delete process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV];
       } else {
-        process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV] = previous;
+        process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV] = previous;
       }
     }
   });
 
   it('resolves explicit option, env, and config sources in precedence order', async () => {
-    const previous = process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
+    const previous = process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV];
     const optionSource = 'https://option.test/marketplace.json';
     const envSource = 'https://env.test/marketplace.json';
     const configSource = 'https://config.test/marketplace.json';
@@ -294,7 +294,7 @@ describe('loadPluginMarketplace', () => {
         }),
     }));
     const fetchImpl = fetchMock as unknown as typeof fetch;
-    process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV] = envSource;
+    process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV] = envSource;
 
     try {
       const fromOption = await loadPluginMarketplace({
@@ -314,7 +314,7 @@ describe('loadPluginMarketplace', () => {
       expect(fromEnv.source).toBe(envSource);
       expect(fromEnv.plugins[0]?.id).toBe('env.test');
 
-      delete process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
+      delete process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV];
       const fromConfig = await loadPluginMarketplace({
         workDir: '/tmp/work',
         configSource,
@@ -329,9 +329,9 @@ describe('loadPluginMarketplace', () => {
       ]);
     } finally {
       if (previous === undefined) {
-        delete process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
+        delete process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV];
       } else {
-        process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV] = previous;
+        process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV] = previous;
       }
     }
   });

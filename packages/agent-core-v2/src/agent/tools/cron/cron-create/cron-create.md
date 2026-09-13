@@ -16,14 +16,9 @@ One-shots are best for near-term reminders. A task only fires while its session 
 For "every N minutes" / "every hour" / "weekdays at 9am" requests:
   "*/5 * * * *" (every 5 min), "0 * * * *" (hourly), "0 9 * * 1-5" (weekdays at 9am local)
 
-## Avoid the :00 and :30 minute marks when the task allows it
+## Avoid exact minute marks when the request is approximate
 
-Every user who asks for "9am" gets `0 9`, and every user who asks for "hourly" gets `0 *` — which means requests from across the planet land on the API at the same instant. When the user's request is approximate, pick a minute that is NOT 0 or 30:
-  "every morning around 9" → "57 8 * * *" or "3 9 * * *" (not "0 9 * * *")
-  "hourly" → "7 * * * *" (not "0 * * * *")
-  "in an hour or so, remind me to..." → pick whatever minute you land on, don't round
-
-Only use minute 0 or 30 when the user names that exact time and clearly means it ("at 9:00 sharp", "at half past", coordinating with a meeting). When in doubt, nudge a few minutes early or late — the user will not notice, and the fleet will.
+When the request is approximate, choose a minute other than 0 or 30. Use minute 0 or 30 only when the user specifies that exact time.
 
 ## Coalesce semantics
 
@@ -56,7 +51,7 @@ starts a fresh 7-day window. One-shot tasks are never marked stale.
 
 ## Jitter behavior
 
-Anti-herd jitter is applied deterministically per task id:
+Jitter is applied deterministically per task id:
   - Recurring: ideal fire time is shifted **forward** by an offset ≤ min(10% of the cron period, 15 minutes). A `*/5 * * * *` task can drift up to 30s; a `0 9 * * *` task can drift up to 15 minutes.
   - One-shot: only when the ideal fire lands on `:00` or `:30` of the hour, the fire is pulled **earlier** by ≤ 90 seconds. Other minutes pass through unchanged.
 

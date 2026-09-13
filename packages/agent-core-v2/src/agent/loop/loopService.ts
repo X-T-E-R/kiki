@@ -821,16 +821,17 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   }
 
   private materializeBatch(batch: StepRequestBatch): void {
-    this.materializeRequest(batch.driver);
+    const delivery = {};
+    this.materializeRequest(batch.driver, delivery);
     for (const request of batch.merged) {
-      this.materializeRequest(request);
+      this.materializeRequest(request, delivery);
     }
   }
 
-  private materializeRequest(request: StepRequest): void {
+  private materializeRequest(request: StepRequest, delivery: object): void {
     if (request.state !== 'pending') return;
     request.onWillMaterialize();
-    const messages = request.resolveContextMessages();
+    const messages = request.resolveContextMessages(delivery);
     if (messages.length > 0) {
       this.context.append(...messages);
     }

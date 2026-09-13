@@ -172,6 +172,8 @@ export interface IInstantiationService {
   readonly _serviceBrand: undefined;
 
   readonly cascade: CascadeEngine;
+  /** Fires synchronously after resolution is disabled, before child and service teardown starts. */
+  readonly onWillDispose: Event<void>;
 
   invokeFunction<R, TS extends any[] = []>(
     fn: (accessor: ServicesAccessor, ...args: TS) => R,

@@ -42,7 +42,7 @@ export interface ServiceDispatcherRouteOptions {
 
 /**
  * Mount the reflection dispatcher under `basePath` (e.g. `/debug` inside the
- * prefixed `/api/v1` plugin): the three scope routes plus
+ * prefixed `/api` plugin): the three scope routes plus
  * `GET {basePath}/channels` for introspection. `channels` is a single segment,
  * so it cannot collide with `:service/:method`.
  */

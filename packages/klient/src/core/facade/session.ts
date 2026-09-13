@@ -7,7 +7,11 @@
  * wire).
  */
 
-import type { AgentActivityState } from '@kiki/agent-core-v2/agent/activityView/activityView';
+import type { SessionActivityState } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
+import type { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
+import type { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
+import type { ISessionCronService } from '@kiki/agent-core-v2/session/cron/sessionCronService';
+import type { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
 import type {
   ApprovalRequest,
   ApprovalResponse,
@@ -76,12 +80,27 @@ export interface SessionSkillsFacade {
   list(): Promise<readonly SkillSummary[]>;
 }
 
-/**
- * Derived session lifecycle phase. The engine retired its `sessionActivity`
- * service (#1751) — busy is now derived from agent activity views — so the
- * facade composes the phase from the pending interaction lists and each
- * agent's `agentActivityView`, keeping the retired service's precedence.
- */
+export interface SessionTodosFacade {
+  get(agentId?: Parameters<ISessionTodoService['getTodos']>[0]): Promise<
+    ReturnType<ISessionTodoService['getTodos']>
+  >;
+}
+
+export interface SessionInitFacade {
+  generateAgentsMd(): ReturnType<ISessionInitService['generateAgentsMd']>;
+  cancelInit(): Promise<void>;
+}
+
+export interface SessionBtwFacade {
+  start(): ReturnType<ISessionBtwService['start']>;
+}
+
+export interface SessionCronFacade {
+  list(): Promise<ReturnType<ISessionCronService['list']>>;
+  nextFireAt(taskId: string): Promise<ReturnType<ISessionCronService['getNextFireForTask']>>;
+}
+
+/** Compatibility phase mapped from one authoritative session activity snapshot. */
 export type SessionStatus = 'running' | 'idle' | 'awaiting_approval' | 'awaiting_question';
 
 export interface SessionFacade {
@@ -105,12 +124,21 @@ export interface SessionFacade {
   status(): Promise<SessionStatus>;
   close(): Promise<void>;
   archive(): Promise<void>;
-  /** Re-materialize a closed session; `false` when it no longer exists. */
+  /** Re-materialize without changing archive status; false when the session no longer exists. */
+  resume(opts?: SessionRestoreOptions): Promise<boolean>;
+  /** Re-materialize and unarchive; false when the session no longer exists. */
   restore(opts?: SessionRestoreOptions): Promise<boolean>;
+  countPendingBackgroundTasks(): Promise<number>;
+  drainBackgroundTasks(timeoutMs: number): Promise<void>;
+  nextCronFireAt(): Promise<number | null>;
+  readonly todos: SessionTodosFacade;
+  readonly init: SessionInitFacade;
+  readonly btw: SessionBtwFacade;
+  readonly cron: SessionCronFacade;
   /** Permanently delete the session and its persisted data; throws when missing. */
   delete(): Promise<void>;
-  fork(input?: { title?: string; metadata?: Record<string, unknown> }): Promise<SessionMeta>;
-  createChild(input?: { title?: string; metadata?: Record<string, unknown> }): Promise<SessionMeta>;
+  fork(input?: { newSessionId?: string; title?: string; metadata?: Record<string, unknown>; turnIndex?: number }): Promise<SessionMeta>;
+  createChild(input?: { newSessionId?: string; title?: string; metadata?: Record<string, unknown> }): Promise<SessionMeta>;
   readonly approvals: SessionApprovalsFacade;
   readonly questions: SessionQuestionsFacade;
   readonly interactions: SessionInteractionsFacade;
@@ -125,10 +153,10 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
     call(scope, 'sessionMetadata', 'read', []) as Promise<SessionMeta>;
   const spawn = async (
     method: 'fork' | 'createChild',
-    input: { title?: string; metadata?: Record<string, unknown> } = {},
+    input: NonNullable<Parameters<SessionFacade['fork']>[0]> = {},
   ): Promise<SessionMeta> => {
     const handle = (await call({}, 'sessionManager', method, [
-      { sourceSessionId: sessionId, title: input.title, metadata: input.metadata },
+      { ...input, sourceSessionId: sessionId },
     ])) as HandleWire;
     return call({ sessionId: handle.id }, 'sessionMetadata', 'read', []) as Promise<SessionMeta>;
   };
@@ -144,35 +172,47 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
     setArchived: (archived) =>
       call(scope, 'sessionMetadata', 'setArchived', [archived]) as Promise<void>,
     status: async () => {
-      const pending = (kind: 'approval' | 'question') =>
-        call(scope, 'sessionInteractionService', 'listPending', [kind]) as Promise<
-          readonly unknown[]
-        >;
-      if ((await pending('approval')).length > 0) return 'awaiting_approval';
-      if ((await pending('question')).length > 0) return 'awaiting_question';
-      const meta = await read();
-      for (const agentId of Object.keys(meta.agents ?? {})) {
-        try {
-          const state = (await call(
-            { sessionId, agentId },
-            'agentActivityView',
-            'state',
-            [],
-          )) as AgentActivityState;
-          if (state.turn !== undefined || state.background.length > 0) return 'running';
-        } catch {
-          // Agents stay registered after their live handle is gone; the scope
-          // probe fails for a dead agent, so treat it as not active — the same
-          // view the retired service had from iterating live handles only.
-        }
-      }
-      return 'idle';
+      const state = await call(scope, 'sessionActivityView', 'state', []) as SessionActivityState;
+      if (state.pendingInteraction === 'approval') return 'awaiting_approval';
+      if (state.pendingInteraction === 'question') return 'awaiting_question';
+      return state.busy ? 'running' : 'idle';
     },
     close: () => call({}, 'sessionManager', 'close', [sessionId]) as Promise<void>,
     archive: () => call({}, 'sessionManager', 'archive', [sessionId]) as Promise<void>,
+    resume: async (opts) => {
+      const handle = await call({}, 'sessionManager', 'resume', opts === undefined ? [sessionId] : [sessionId, opts]) as HandleWire | undefined;
+      return handle !== undefined && handle !== null;
+    },
     restore: async (opts) => {
       const handle = (await call({}, 'sessionManager', 'restore', [sessionId, opts])) as HandleWire | null;
       return handle !== null && handle !== undefined;
+    },
+    countPendingBackgroundTasks: () => call(scope, 'agentLifecycleService', 'countPendingBackgroundTasks', []) as Promise<number>,
+    drainBackgroundTasks: (timeoutMs) => call(scope, 'agentLifecycleService', 'drainBackgroundTasks', [timeoutMs], { timeoutMs: 0 }) as Promise<void>,
+    nextCronFireAt: () => call(scope, 'sessionCronService', 'getNextFireTime', []) as Promise<number | null>,
+    todos: {
+      get: (agentId) =>
+        call(
+          scope,
+          'sessionTodoService',
+          'getTodos',
+          agentId === undefined ? [] : [agentId],
+        ) as Promise<ReturnType<ISessionTodoService['getTodos']>>,
+    },
+    init: {
+      generateAgentsMd: () =>
+        call(scope, 'sessionInitService', 'generateAgentsMd', []) as ReturnType<ISessionInitService['generateAgentsMd']>,
+      cancelInit: () =>
+        call(scope, 'sessionInitService', 'cancelInit', []) as Promise<void>,
+    },
+    btw: {
+      start: () => call(scope, 'sessionBtwService', 'start', []) as ReturnType<ISessionBtwService['start']>,
+    },
+    cron: {
+      list: () =>
+        call(scope, 'sessionCronService', 'list', []) as Promise<ReturnType<ISessionCronService['list']>>,
+      nextFireAt: (taskId) =>
+        call(scope, 'sessionCronService', 'getNextFireForTask', [taskId]) as Promise<ReturnType<ISessionCronService['getNextFireForTask']>>,
     },
     delete: () => call({}, 'sessionManager', 'delete', [sessionId]) as Promise<void>,
     fork: (input) => spawn('fork', input),

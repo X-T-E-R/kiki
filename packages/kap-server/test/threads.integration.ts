@@ -249,7 +249,7 @@ describe('peer-thread routes', () => {
         logLevel: 'silent',
       });
       const base = `http://127.0.0.1:${server.port}`;
-      const createdResponse = await fetch(`${base}/api/v1/sessions`, {
+      const createdResponse = await fetch(`${base}/api/sessions`, {
         method: 'POST',
         headers: authHeaders(server, {
           'content-type': 'application/json',
@@ -283,7 +283,7 @@ describe('peer-thread routes', () => {
         }],
         timeout_ms: 60_000,
       });
-      const client = httpRequest(`${base}/api/v1/threads:wait`, {
+      const client = httpRequest(`${base}/api/threads:wait`, {
         method: 'POST',
         headers: authHeaders(server, {
           'content-type': 'application/json',
@@ -328,7 +328,7 @@ describe('peer-thread routes', () => {
         logLevel: 'silent',
       });
       const base = `http://127.0.0.1:${server.port}`;
-      const createdResponse = await fetch(`${base}/api/v1/sessions`, {
+      const createdResponse = await fetch(`${base}/api/sessions`, {
         method: 'POST',
         headers: authHeaders(server, {
           'content-type': 'application/json',
@@ -359,7 +359,7 @@ describe('peer-thread routes', () => {
         return realWaitThreads(input);
       });
       let waitSettled = false;
-      waitRequest = fetch(`${base}/api/v1/threads:wait`, {
+      waitRequest = fetch(`${base}/api/threads:wait`, {
         method: 'POST',
         headers: authHeaders(server, {
           'content-type': 'application/json',
@@ -443,9 +443,9 @@ describe('peer-thread routes', () => {
           details?: Array<{ path: string; message: string }>;
         }>;
       };
-      const created = await post('/api/v1/sessions', { metadata: { cwd: home } });
+      const created = await post('/api/sessions', { metadata: { cwd: home } });
       expect(created.code).toBe(0);
-      const listResponse = await fetch(`${base}/api/v1/threads`, {
+      const listResponse = await fetch(`${base}/api/threads`, {
         headers: authHeaders(server),
       } as never);
       const listed = (await listResponse.json()) as {
@@ -456,7 +456,7 @@ describe('peer-thread routes', () => {
       const target = listed.data.threads[0]?.ref;
       expect(target).toBeDefined();
 
-      const accepted = await post('/api/v1/threads:send', {
+      const accepted = await post('/api/threads:send', {
         target,
         content: 'external REST input',
         idempotency_key: 'rest-target-only',
@@ -464,7 +464,7 @@ describe('peer-thread routes', () => {
       expect(accepted.code).toBe(0);
       expect(accepted.data?.['message_id']).toEqual(expect.any(String));
 
-      const rejected = await post('/api/v1/threads:send', {
+      const rejected = await post('/api/threads:send', {
         source: { ...target, session_id: 'forged-source' },
         target,
         content: 'legacy source must fail',

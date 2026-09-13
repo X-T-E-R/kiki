@@ -11,7 +11,7 @@ export const AgentListInputSchema = z.object({
     .optional()
     .default(false)
     .describe(
-      'When true, also include children whose latest background task has finished or failed. The default lists running children and children with no tracking task.',
+      'When true, also include finished or errored children. The default includes live executions even after their background task settles, and idle children with no tracking task.',
     ),
 });
 

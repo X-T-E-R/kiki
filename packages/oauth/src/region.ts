@@ -20,7 +20,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { resolveKikiHome } from './home';
 import { join } from 'node:path';
 
 import { z } from 'zod';
@@ -119,7 +119,7 @@ export interface ResolveKimiRegionOptions {
    * install-channel marker.
    */
   readonly configuredOAuthKey?: string;
-  /** Kimi home dir; defaults to `KIMI_CODE_HOME` or `~/.kimi-code`. */
+  /** Kiki runtime home; defaults to `KIKI_HOME` or `~/.kiki`. */
   readonly homeDir?: string;
   /**
    * Set false to skip the install-channel marker (e.g. the desktop app's
@@ -152,12 +152,9 @@ function readRegionMarker(homeDir: string): KimiRegion | undefined {
   return value === 'mainland-cn' || value === 'global' ? value : undefined;
 }
 
-// Mirrors `defaultKimiHome` in ./toolkit; keep the two in sync so the marker
-// always lands next to the credentials dir it describes.
+// The shared home resolver keeps the marker next to its credentials directory.
 function defaultHomeDir(env: NodeJS.ProcessEnv): string {
-  const override = env['KIMI_CODE_HOME'];
-  if (override !== undefined && override.length > 0) return override;
-  return join(homedir(), '.kimi-code');
+  return resolveKikiHome(undefined, env);
 }
 
 export function resolveKimiRegion(options: ResolveKimiRegionOptions = {}): KimiRegion {

@@ -5,6 +5,8 @@ import {
   ScopeActivation,
 } from '#/_base/di/scope';
 import { linkAbortSignal } from '#/_base/utils/abort';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService, type ProfileBindingSnapshot } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { assertResearchExecutor } from '#/agent/profile/executionRestriction';
@@ -52,6 +54,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
   private broken: unknown;
   private cancelling = false;
   private shuttingDown = false;
+  private shutdownPromise: Promise<void> | undefined;
 
   constructor(
     @IInstantiationService instantiation: IInstantiationService,
@@ -60,6 +63,8 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     @IAgentStateService states: IAgentStateService,
+    @IAgentLoopService private readonly loop: IAgentLoopService,
+    @IAgentPromptService private readonly prompt: IAgentPromptService,
   ) {
     super();
     states.contributeState(externalExecutorKey);
@@ -144,22 +149,28 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     await this.session?.settled();
   }
 
-  async shutdown(reason?: unknown): Promise<void> {
-    if (this.shuttingDown) {
-      await this.settled();
-      return;
-    }
+  shutdown(reason?: unknown): Promise<void> {
+    if (this.shutdownPromise !== undefined) return this.shutdownPromise;
     this.shuttingDown = true;
-    this.cancel(reason);
-    await Promise.all([
-      this.settled(),
-      this.session?.shutdown(reason),
-    ]);
+    this.shutdownPromise = this.shutdownSession(reason);
+    return this.shutdownPromise;
   }
 
-  override dispose(): void {
-    this.cancel(new Error('Agent execution service disposed'));
-    super.dispose();
+  override async dispose(): Promise<void> {
+    try {
+      await this.shutdown(new Error('Agent execution service disposed'));
+    } finally {
+      super.dispose();
+    }
+  }
+
+  private async shutdownSession(reason?: unknown): Promise<void> {
+    this.cancel(reason);
+    const session = this.session;
+    await Promise.all([this.settled(), session?.shutdown(reason)]);
+    if (this.session !== session) await this.session?.shutdown(reason);
+    this.session = undefined;
+    this.sessionBindingKey = undefined;
   }
 
   private async resolveSession(): Promise<AgentExecutorSession> {
@@ -185,7 +196,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     if (this.session !== undefined) return this.session;
     try {
       if (executorId === 'native') {
-        this.session = new NativeAgentExecutorSession(this.agent);
+        this.session = new NativeAgentExecutorSession(this.agent, this.loop, this.prompt);
       } else {
         this.session = await this.createExternalSession(binding, executorId);
       }
@@ -202,6 +213,9 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     executorId: string,
   ): Promise<AgentExecutorSession> {
     const resolved = await this.executors.resolveExecutable(executorId, binding.executorOptions);
+    if (this.shuttingDown) {
+      throw new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is shutting down`);
+    }
     if (binding.executorProtocol !== resolved.descriptor.protocol) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,

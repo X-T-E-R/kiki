@@ -6,7 +6,8 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { extractImageCompressionCaptions } from '#/agent/media/image-compress';
-import { userCancellationReason } from '#/_base/utils/abort';
+import { abortable, userCancellationReason } from '#/_base/utils/abort';
+import { toErrorPayload } from '#/_base/errors/serialize';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
@@ -50,6 +51,7 @@ import {
   type PromptSnapshot,
   type PromptState,
   type PromptSubmitContext,
+  type PromptTerminalResult,
   type SteerPayload,
 } from './prompt';
 import { promptMetadataTextFromContentParts } from './promptMetadataText';
@@ -426,6 +428,24 @@ export class AgentPromptService implements IAgentPromptService {
       throw new Error2(ErrorCodes.INTERNAL, `Prompt ${handle.id} failed to launch; inspect prompt completion events`);
     }
     return turn === undefined ? undefined : { turn_id: turn.id };
+  }
+
+  async submitAndWait(payload: PromptPayload, signal?: AbortSignal): Promise<PromptTerminalResult> {
+    signal?.throwIfAborted();
+    const handle = await this.submitPrompt(payload);
+    const completion = await (signal === undefined ? handle.completion : abortable(handle.completion, signal));
+    const turn = await handle.launched;
+    const result = completion.result;
+    return {
+      promptId: completion.promptId,
+      turnId: turn?.id,
+      state: completion.state,
+      result: result?.type === 'failed'
+        ? { ...result, error: toErrorPayload(result.error) }
+        : result?.type === 'cancelled'
+          ? { ...result, reason: toErrorPayload(result.reason) }
+          : result,
+    };
   }
 
   private async submitPrompt(payload: PromptPayload): Promise<PromptHandle> {

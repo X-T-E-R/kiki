@@ -10,7 +10,7 @@ import { isMainModule } from "./vsix-targets.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(scriptDir, "..");
-const defaultCachePath = join(tmpdir(), "kimi-vscode-test-cache");
+const defaultCachePath = join(tmpdir(), "kiki-vscode-test-cache");
 
 export async function runExtensionHostSmoke(options = {}) {
   const version = options.version ?? "stable";
@@ -33,7 +33,7 @@ export async function runExtensionHostSmoke(options = {}) {
     extensions: join(root, "ext"),
     installUserData: join(root, "install"),
     userData: join(root, "user"),
-    kimiHome: join(root, "home"),
+    kikiHome: join(root, "home"),
     osHome: join(root, "os-home"),
     workspace: join(root, "ws"),
     harness: join(root, "harness"),
@@ -45,12 +45,12 @@ export async function runExtensionHostSmoke(options = {}) {
       paths.extensions,
       paths.installUserData,
       paths.userData,
-      paths.kimiHome,
+      paths.kikiHome,
       paths.osHome,
       paths.workspace,
       paths.harness,
     ].map((path) => mkdir(path, { recursive: true })));
-    await writeFile(join(paths.workspace, "README.md"), "# Kimi VSIX Extension Host smoke\n", "utf8");
+    await writeFile(join(paths.workspace, "README.md"), "# Kiki VSIX Extension Host smoke\n", "utf8");
     await writeHarnessManifest(paths.harness);
 
     const installProfileArgs = [
@@ -83,10 +83,10 @@ export async function runExtensionHostSmoke(options = {}) {
         "--skip-release-notes",
       ],
       extensionTestsEnv: {
-        KIMI_CODE_HOME: paths.kimiHome,
-        KIMI_VSCODE_SMOKE_OS_HOME: paths.osHome,
-        KIMI_VSCODE_SMOKE_REPORT: paths.report,
-        KIMI_VSCODE_SMOKE_VSIX: basename(vsixPath),
+        KIKI_HOME: paths.kikiHome,
+        KIKI_VSCODE_SMOKE_OS_HOME: paths.osHome,
+        KIKI_VSCODE_SMOKE_REPORT: paths.report,
+        KIKI_VSCODE_SMOKE_VSIX: basename(vsixPath),
       },
     });
 
@@ -111,15 +111,15 @@ export async function runExtensionHostSmoke(options = {}) {
 
 function defaultVsixPath() {
   const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : process.arch;
-  return join(appDir, "artifacts", "vsix", `kimi-code-${process.platform}-${arch}.vsix`);
+  return join(appDir, "artifacts", "vsix", `kiki-${process.platform}-${arch}.vsix`);
 }
 
 async function writeHarnessManifest(directory) {
   await writeFile(
     join(directory, "package.json"),
     JSON.stringify({
-      name: "kimi-vscode-extension-host-smoke",
-      displayName: "Kimi VSCode Extension Host Smoke",
+      name: "kiki-vscode-extension-host-smoke",
+      displayName: "Kiki VSCode Extension Host Smoke",
       publisher: "local-test",
       version: "0.0.0",
       engines: { vscode: "^1.70.0" },

@@ -24,7 +24,7 @@ import {
 } from '@kiki/agent-core-v2/app/plugin/marketplace';
 import type { KimiConfig } from '@kiki/node-sdk';
 
-import { KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV } from '#/constant/app';
+import { KIKI_PLUGIN_MARKETPLACE_URL_ENV } from '#/constant/app';
 
 export {
   computeUpdateStatus,
@@ -68,14 +68,14 @@ export function isDefaultPluginMarketplaceSource(
 ): boolean {
   const resolved = resolvePluginMarketplaceSource({
     optionUrl: source,
-    envUrl: env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV],
+    envUrl: env[KIKI_PLUGIN_MARKETPLACE_URL_ENV],
     configUrl: configSource,
   });
   if (resolved === undefined) return true;
   return (
     source === undefined &&
-    env['KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] === '1' &&
-    resolved === nonemptyMarketplaceSource(env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV])
+    env['KIKI_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] === '1' &&
+    resolved === nonemptyMarketplaceSource(env[KIKI_PLUGIN_MARKETPLACE_URL_ENV])
   );
 }
 
@@ -84,8 +84,8 @@ export function isLocalDevPluginMarketplaceSource(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (source === LOCAL_DEV_PLUGIN_MARKETPLACE_SOURCE) return true;
-  const devSource = nonemptyMarketplaceSource(env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV]);
-  return env['KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] === '1' && source === devSource;
+  const devSource = nonemptyMarketplaceSource(env[KIKI_PLUGIN_MARKETPLACE_URL_ENV]);
+  return env['KIKI_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] === '1' && source === devSource;
 }
 
 export async function loadPluginMarketplace(
@@ -93,7 +93,7 @@ export async function loadPluginMarketplace(
 ): Promise<PluginMarketplace> {
   const configuredSource = resolvePluginMarketplaceSource({
     optionUrl: options.source,
-    envUrl: process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV],
+    envUrl: process.env[KIKI_PLUGIN_MARKETPLACE_URL_ENV],
     configUrl: options.configSource,
   });
   const localDevLocation =

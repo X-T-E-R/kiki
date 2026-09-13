@@ -17,7 +17,7 @@ export interface FetchCatalogOrBuiltInResult {
 export interface FetchCatalogOrBuiltInOptions extends FetchCatalogOptions {
   /**
    * Override the built-in snapshot JSON (tests). Defaults to the tsdown-injected
-   * `__KIMI_CODE_BUILT_IN_CATALOG__` constant.
+   * `__KIKI_BUILT_IN_CATALOG__` constant.
    */
   readonly builtInJson?: string;
 }

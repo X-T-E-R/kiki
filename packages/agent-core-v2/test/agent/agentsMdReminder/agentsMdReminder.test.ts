@@ -429,18 +429,18 @@ describe('agentsMdReminder path-carrying tools', () => {
     expect(reminderText(h)).toContain(subAgentsMd);
   });
 
-  it('discovers the .kimi-code/AGENTS.md variant alongside the plain one', async () => {
+  it('discovers the .kiki/AGENTS.md variant alongside the plain one', async () => {
     const h = createHarness();
     const subDir = join(workDir, 'packages', 'kap-server');
-    const dotKimi = normalize(join(subDir, '.kimi-code', 'AGENTS.md'));
-    await writeAgentsMd(join(subDir, '.kimi-code'), 'dot kimi instructions');
+    const dotKiki = normalize(join(subDir, '.kiki', 'AGENTS.md'));
+    await writeAgentsMd(join(subDir, '.kiki'), 'dot kiki instructions');
     const plain = await writeAgentsMd(subDir);
 
     const result = await fire(h, didCtx('Read', { path: join(subDir, 'index.ts') }));
 
     expect(outputText(result)).toBe('original result');
     const text = reminderText(h);
-    expect(text).toContain(dotKimi);
+    expect(text).toContain(dotKiki);
     expect(text).toContain(plain);
   });
 
@@ -1019,6 +1019,23 @@ describe('agentsMdReminder discovery cache', () => {
     expect(h.reminders).toHaveLength(1);
   });
 
+  it('discovers a newly created .kiki directory after a watcher event without loading legacy instructions', async () => {
+    const watch = watchHarness();
+    const h = createHarness({ hostWatch: watch.service });
+    const subDir = join(workDir, 'packages', 'kap-server');
+    await writeAgentsMd(join(subDir, '.kimi-code'), 'Synthetic legacy instructions.');
+    h.reminder.seedInjected([], workDir);
+    await fire(h, didCtx('Read', { path: join(subDir, 'before.ts') }));
+    expect(h.reminders).toHaveLength(0);
+    const agentsMd = await writeAgentsMd(join(subDir, '.kiki'), 'Synthetic canonical instructions.');
+    watch.fire(subDir, { path: join(subDir, '.kiki'), action: 'created', kind: 'directory' });
+    await fire(h, didCtx('Read', { path: join(subDir, 'after.ts') }));
+    expect(watch.paths).toContain(normalize(join(subDir, '.kiki')));
+    expect(reminderText(h)).toContain(agentsMd);
+    expect(h.reminders).toHaveLength(1);
+    expect(reminderText(h)).not.toContain(normalize(join(subDir, '.kimi-code', 'AGENTS.md')));
+  });
+
   it('invalidates a negative cache entry from a directory watcher event', async () => {
     const watch = watchHarness();
     const h = createHarness({ hostWatch: watch.service });
@@ -1087,7 +1104,7 @@ describe('agentsMdReminder discovery cache', () => {
     expect(reminderText(h)).toContain(agentsMd);
   });
 
-  it('explicitly invalidates the outer directory after writing .kimi-code/AGENTS.md', async () => {
+  it('explicitly invalidates the outer directory after writing .kiki/AGENTS.md', async () => {
     const hostFs = new HostFileSystem();
     const environment = {
       _serviceBrand: undefined,
@@ -1106,7 +1123,7 @@ describe('agentsMdReminder discovery cache', () => {
 
     await fire(writer, didCtx('Read', { path: join(subDir, 'before.ts') }));
     const beforeWrite = readdir.mock.calls.length;
-    const agentsMd = await writeAgentsMd(join(subDir, '.kimi-code'));
+    const agentsMd = await writeAgentsMd(join(subDir, '.kiki'));
     await fire(writer, didCtx('Write', { path: agentsMd, content: 'instructions' }));
     const afterWrite = readdir.mock.calls.length;
     await fire(reader, didCtx('Read', { path: join(subDir, 'after.ts') }));

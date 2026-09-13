@@ -4,6 +4,7 @@ import {
   DAEMON_COMMANDS,
   daemonAutocompleteCommands,
   daemonCommandHelp,
+  daemonSkillCommands,
   parseDaemonSlashInput,
   resolveDaemonCommand,
   validateDaemonCommandArgs,
@@ -44,6 +45,18 @@ describe('daemon command registry', () => {
       rawToken: 'SkIlL:ReviewSkill',
       args: 'first  \t second',
     });
+  });
+
+  it('uses bare prompt names while reserving builtin names and aliases', () => {
+    const skills = daemonSkillCommands(['brainstorm', 'plan', 'q', 'web'].map((name) => ({
+      name, path: `/workspace/.kiki/commands/${name}.md`, description: 'Discuss options',
+      source: 'project', prompt_command: true, argument_hint: '<topic>',
+    })));
+    expect(skills.map((skill) => skill.commandName)).toEqual(['brainstorm', 'skill:plan', 'skill:q', 'skill:web']);
+    expect(skills[0]).toMatchObject({ description: '[project] Discuss options', argumentHint: '<topic>' });
+    const menu = daemonAutocompleteCommands(new Map(skills.map((skill) => [skill.commandName, skill])), new Map());
+    expect(menu.find((item) => item.name === 'brainstorm')?.argumentHint).toBe('<topic>');
+    expect(menu.filter((item) => item.name === 'plan')).toHaveLength(1);
   });
 
   it('installs supported, disabled, skill, and agent commands in autocomplete', () => {

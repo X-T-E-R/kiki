@@ -22,13 +22,18 @@ import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecyc
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { IEventBus } from '@kiki/agent-core-v2/app/event/eventBus';
+import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { ISessionContext } from '@kiki/agent-core-v2/session/sessionContext/sessionContext';
+import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
+import { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem';
+import { readPersistedPlan } from '@kiki/agent-core-v2/features/plan/planRead';
 import type {
   FileMeta,
   GetResult,
   SaveOptions,
 } from '@kiki/agent-core-v2/app/file/fileService';
 import { FileErrors } from '@kiki/agent-core-v2/app/file/fileService';
-import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
+import { Error2 } from '@kiki/agent-core-v2/errors';
 
 import { Readable } from 'node:stream';
 
@@ -184,6 +189,24 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
   return {
     async call(scope, service, method, args, options) {
       options?.signal?.throwIfAborted();
+      if (service === 'agentPlanService' && method === 'status' && scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
+        const session = (await resolveScope({ sessionId: scope.sessionId })).like;
+        if (session.accessor.get(IAgentLifecycleService).get(scope.agentId) === undefined && scope.agentId !== 'main') {
+          const metadata = await session.accessor.get(ISessionMetadata).read();
+          if (!Object.hasOwn(metadata.agents ?? {}, scope.agentId)) throw new RPCError(NOT_FOUND, `agent not found: ${scope.agentId}`);
+          options?.signal?.throwIfAborted();
+          try {
+            const plan = await readPersistedPlan(
+              session.accessor.get(ISessionContext), scope.agentId,
+              root.accessor.get(IAppendLogStore), root.accessor.get(IHostFileSystem),
+            );
+            options?.signal?.throwIfAborted();
+            return wireClone(plan);
+          } catch (error) {
+            throw toRPCError(error);
+          }
+        }
+      }
       const resolved = await resolveScope(scope);
       options?.signal?.throwIfAborted();
       const instance = resolveService(resolved, service);

@@ -11,6 +11,17 @@ function runtime(generation: string, pathClass: 'posix' | 'win32'): FakeRuntime 
 }
 
 describe('RuntimeWorkspaceView', () => {
+  it('requires both caller permission and provider support for external absolute paths', () => {
+    const backend = runtime('one', 'posix');
+    const view = new RuntimeWorkspaceView(backend, { workDir: '/workspace' });
+    expect(() => view.resolve('/outside', view.workDir, true)).toThrow('outside runtime workspace');
+    Object.assign(backend.workspace, { supportsExternalPaths: true });
+    expect(() => view.resolve('/outside')).toThrow('outside runtime workspace');
+    expect(view.resolve('/outside', view.workDir, true)).toBe('/outside');
+    expect(() => view.resolve('../outside', view.workDir, true)).toThrow('outside runtime workspace');
+    expect(() => { view.assertAllowed('/outside'); }).toThrow('outside runtime workspace');
+  });
+
   it('resolves posix paths within the fixed runtime roots', () => {
     const view = new RuntimeWorkspaceView(runtime('one', 'posix'), {
       workDir: '/workspace/project',

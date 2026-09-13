@@ -3,7 +3,8 @@ import { Command, InvalidArgumentError, Option } from 'commander';
 
 import type { CLIOptions } from './options';
 import { registerAcpCommand } from './sub/acp';
-import { registerDoctorCommand } from './sub/doctor';
+import { registerDoctorCommand } from '#/kiki/doctor';
+import { registerKikiCommands } from '#/kiki/register';
 import { registerExportCommand } from './sub/export';
 import { registerLoginCommand } from './sub/login';
 import { registerProviderCommand } from './sub/provider';
@@ -18,13 +19,12 @@ export function createProgram(
   onPluginNodeRunner: PluginNodeRunnerHandler = () => {},
 ): Command {
   const program = new Command(CLI_COMMAND_NAME)
-    .description('The Starting Point for Next-Gen Agents')
+    .description('Kiki local agent workspace and shared daemon')
     .version(version, '-V, --version')
     .allowUnknownOption(false)
     .configureHelp({ helpWidth: 100 })
     .helpOption('-h, --help', 'Show help.')
-    .usage('[options] [command]')
-    .addHelpText('after', '\nDocumentation:        https://moonshotai.github.io/kimi-code/\n');
+    .usage('[options] [command]');
 
   program
     .addOption(
@@ -119,6 +119,7 @@ export function createProgram(
   registerWebCommand(program);
   registerLoginCommand(program);
   registerDoctorCommand(program);
+  registerKikiCommands(program);
 
   program
     .command('__plugin_run_node', { hidden: true })

@@ -24,6 +24,9 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
+import { readPersistedPlan } from '#/features/plan/planRead';
+import { makeSessionContext } from '#/session/sessionContext/sessionContext';
+import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
 import {
   registerTestAgentWire,
@@ -83,6 +86,29 @@ async function readRecords(key = KEY): Promise<WireRecord[]> {
 }
 
 describe('plan ops (wire-backed)', () => {
+  it('projects the same current plan after undo without rewriting the persisted journal', async () => {
+    await dispatcher.dispatch(new PlanModeEnter({ id: 'before-undo' }));
+    await dispatcher.dispatch(new ContextAppendMessage({ message: {
+      role: 'user', content: [{ type: 'text', text: 'Change the plan' }], toolCalls: [], origin: { kind: 'user' },
+    } }));
+    await dispatcher.dispatch(new PlanModeCancel({}));
+    await dispatcher.dispatch(new PlanModeEnter({ id: 'after-checkpoint' }));
+    await dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    const records = await readRecords();
+    const context = makeSessionContext({ sessionId: 's', workspaceId: 'w', sessionDir: '/session', sessionScope: 'readonly', cwd: '/workspace' });
+    await log.rewrite(context.scope('agents/child'), AGENT_WIRE_RECORD_KEY, records);
+    const hostFs = { readText: async (path: string) => `content:${path}` } as IHostFileSystem;
+    const result = await readPersistedPlan(context, 'child', log, hostFs);
+    expect(result).toEqual({ id: 'before-undo', content: 'content:/session/agents/child/plans/before-undo.md', path: '/session/agents/child/plans/before-undo.md' });
+    expect(agentState.get(planKey).id).toBe(result!.id);
+    const after = [];
+    for await (const record of log.read(context.scope('agents/child'), AGENT_WIRE_RECORD_KEY)) after.push(record);
+    expect(after).toEqual(records);
+    const unreadable = { readText: async () => { throw new Error('plan read denied'); } } as unknown as IHostFileSystem;
+    await expect(readPersistedPlan(context, 'child', log, unreadable)).rejects.toThrow('plan read denied');
+    await log.rewrite(context.scope('agents/child'), AGENT_WIRE_RECORD_KEY, [{ type: 'plan_mode.enter', id: 123 }]);
+    await expect(readPersistedPlan(context, 'child', log, hostFs)).rejects.toThrow('Malformed plan state event');
+  });
   it('enter/cancel/exit drive active state and persist flat records', async () => {
     expect(agentState.get(planKey).active).toBe(false);
 

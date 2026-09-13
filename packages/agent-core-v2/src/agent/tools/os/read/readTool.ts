@@ -517,10 +517,8 @@ export class ReadTool implements IReadTool {
     const lineWord = lineCount === 1 ? 'line' : 'lines';
     const parts =
       lineCount > 0
-        ? [
-            `${String(lineCount)} ${lineWord} read from file starting from line ${String(input.startLine)}.`,
-          ]
-        : ['No lines read from file.'];
+        ? [`${String(lineCount)} ${lineWord} read starting at line ${String(input.startLine)}.`]
+        : ['No lines read.'];
 
     if (input.totalLines !== undefined) {
       parts.push(`Total lines in file: ${String(input.totalLines)}.`);
@@ -535,7 +533,7 @@ export class ReadTool implements IReadTool {
     if (input.hasMore && input.nextLine !== undefined) {
       parts.push(`More lines are available. Continue with line_offset=${String(input.nextLine)}.`);
     } else if (!input.maxBytesReached && lineCount < input.requestedLines) {
-      parts.push('End of file reached.');
+      parts.push('End of file.');
     }
     if (input.truncatedLineNumbers.length > 0) {
       parts.push(

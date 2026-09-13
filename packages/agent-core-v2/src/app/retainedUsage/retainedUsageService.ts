@@ -45,6 +45,7 @@ const retainedUsageRecordSchema = z.object({
   modelAlias: z.string().optional(),
   profileName: z.string().optional(),
   executorId: z.string().optional(),
+  usageKnown: z.boolean().optional(),
 });
 
 const retainedDeletedSessionUsageHeaderSchema = z.object({

@@ -1,6 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
+import type { WebSocket } from 'ws';
+import { WsConnectionV1, type WsConnectionV1Options } from '../src/transport/ws/v1/wsConnectionV1';
 
 import type {
   AgentActivityState,
@@ -2764,7 +2767,7 @@ describe('SessionEventBroadcaster', () => {
       expect(backfillSpy.mock.calls.map((call) => call[1])).toEqual(['main']);
     });
 
-    it('folds a roster agent the client named explicitly even under a wildcard default', async () => {
+    it.each(['turn', 'delta'] as const)('folds a roster agent explicitly requested at %s grade under a wildcard default', async (childGrade) => {
       const lc = new FakeLifecycle();
       lc.addAgent('main');
       sessions.set('s1', lc);
@@ -2779,7 +2782,7 @@ describe('SessionEventBroadcaster', () => {
       });
 
       const view = collectingTarget();
-      await bc.subscribe('s1', view.target, undefined, { '*': 'turn', main: 'delta', 'sub-1': 'delta' });
+      await bc.subscribe('s1', view.target, undefined, { '*': 'turn', main: 'delta', 'sub-1': childGrade });
       const ids = transcriptEnvelopes(view.envelopes)
         .filter((e) => e.type === 'transcript.reset')
         .map((e) => (e.payload as { agent_id: string }).agent_id)
@@ -2902,6 +2905,171 @@ describe('SessionEventBroadcaster', () => {
       const types = transcriptEnvelopes(second.envelopes).map((e) => e.type);
       expect(types[0]).toBe('transcript.reset');
       expect(types.indexOf('transcript.ops')).toBeGreaterThan(types.indexOf('transcript.reset'));
+    });
+
+    it('does not publish an obsolete seed after the store and epoch change during drain', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      sessions.set('s1', lc);
+      const core = makeCore(sessions, eventBus);
+      const service = new TranscriptService({ homeDir: dir, core });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+      const view = collectingTarget();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let drains = 0;
+      const target: BroadcastTarget = { send: view.target.send, drain: async () => { if (++drains === 2) await gate; } };
+      const old = bc.subscribe('s1', target, undefined, { main: 'delta' });
+      await vi.waitFor(() => expect(drains).toBe(2));
+      const oldEpoch = service.getTranscriptCursor('s1', 'main').epoch;
+      service.dropSession('s1');
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      main.bus.emit(agentEvent('turn.started', { turnId: 9, origin: { kind: 'user' } }));
+      await bc.subscribe('s1', target, undefined, { main: 'delta' });
+      const current = service.getTranscriptCursor('s1', 'main');
+      expect(current.epoch).not.toBe(oldEpoch);
+      const count = transcriptEnvelopes(view.envelopes).length;
+      release();
+      await old;
+      expect(transcriptEnvelopes(view.envelopes)).toHaveLength(count);
+      expect((transcriptEnvelopes(view.envelopes).at(-1)!.payload as { cursor: unknown }).cursor).toEqual(current);
+      main.bus.emit(agentEvent('assistant.delta', { turnId: 9, delta: 'current-generation' }));
+      expect(JSON.stringify(transcriptEnvelopes(view.envelopes).at(-1))).toContain('current-generation');
+    });
+
+    it('reseeds an overflowing journal and converges both agents after asynchronous drain', async () => {
+      const { AgentTranscript } = await import('@kiki/transcript');
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      const sub = lc.addAgent('sub-1');
+      sessions.set('s1', lc);
+      const core = makeCore(sessions, eventBus, { 'sub-1': { type: 'sub' } });
+      const service = new TranscriptService({ homeDir: dir, core });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      sub.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+      const view = collectingTarget();
+      let drains = 0;
+      const target: BroadcastTarget = {
+        send: view.target.send,
+        drain: async () => {
+          if (++drains !== 2) return;
+          for (let index = 0; index <= TRANSCRIPT_OPS_JOURNAL_CAPACITY; index += 1) {
+            main.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'x' }));
+          }
+          sub.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'child-during-drain' }));
+        },
+      };
+      await bc.subscribe('s1', target, undefined, { '*': 'delta' });
+      const sent = transcriptEnvelopes(view.envelopes);
+      expect(sent.filter((envelope) => envelope.type === 'transcript.reset' &&
+        (envelope.payload as { agent_id: string }).agent_id === 'main').length).toBeGreaterThanOrEqual(2);
+      for (const agentId of ['main', 'sub-1']) {
+        const receiver = new AgentTranscript(agentId);
+        for (const envelope of sent) {
+          const payload = envelope.payload as unknown as {
+            agent_id: string; snapshot: import('@kiki/transcript').AgentTranscriptSnapshot;
+            coverage: import('@kiki/transcript').TranscriptCoverage;
+            ops: import('@kiki/transcript').TranscriptOperation[];
+          };
+          if (payload.agent_id !== agentId) continue;
+          const result = receiver.apply(envelope.type === 'transcript.reset'
+            ? [{ op: 'reset', agentId, snapshot: payload.snapshot, coverage: payload.coverage }]
+            : payload.ops);
+          expect(result.gap).toBeUndefined();
+        }
+        expect(receiver.snapshot()).toEqual(service.forSessionLive('s1')!.getAgent(agentId)!.snapshot());
+      }
+    });
+
+    it.each(['close', 'write-error', 'drain-error'])('releases a real connection pending attach on %s', async (failure) => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      sessions.set('s1', lc);
+      const core = makeCore(sessions, eventBus);
+      const service = new TranscriptService({ homeDir: dir, core });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      main.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'x'.repeat(128 * 1024) }));
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+      let complete: ((error?: Error) => void) | undefined;
+      const socket = Object.assign(new EventEmitter(), {
+        OPEN: 1, readyState: 1, bufferedAmount: 0,
+        send: (_data: unknown, options?: { fin: boolean }, callback?: (error?: Error) => void) => {
+          if (options !== undefined) complete = callback;
+        },
+        close: () => { socket.readyState = 3; socket.emit('close'); },
+        terminate: () => { socket.readyState = 3; socket.emit('close'); },
+      });
+      const connection = new WsConnectionV1({ socket: socket as unknown as WebSocket, broadcaster: bc,
+        connectionRegistry: { add() {} } as unknown as WsConnectionV1Options['connectionRegistry'],
+        remoteAddress: null, userAgent: null, heartbeatIntervalMs: 0 });
+      const release = vi.spyOn(lc.interactions, 'releaseConsumer');
+      if (failure === 'drain-error') vi.spyOn(connection, 'drain').mockRejectedValueOnce(new Error('drain failed'));
+      socket.emit('message', Buffer.from(JSON.stringify({ type: 'subscribe_v2', id: 'seed', payload: { session_id: 's1', transcript: { main: 'delta' } } })));
+      if (failure !== 'drain-error') {
+        await vi.waitFor(() => expect(complete).toBeDefined());
+        expect(connection.subscriptionSessionIds).toEqual([]);
+        if (failure === 'close') { connection.close(); complete?.(); }
+        else complete?.(new Error('fragment write failed'));
+      }
+      await vi.waitFor(() => expect(release).toHaveBeenCalled());
+      const internal = bc as unknown as { sessions: Map<string, {
+        targets: Map<BroadcastTarget, unknown>; interactionConsumers: Map<BroadcastTarget, string>;
+        pendingTranscriptSeeds: Map<BroadcastTarget, unknown>;
+      }> };
+      await vi.waitFor(() => {
+        const state = internal.sessions.get('s1')!;
+        expect(state.targets.has(connection)).toBe(false);
+        expect(state.interactionConsumers.has(connection)).toBe(false);
+        expect(state.pendingTranscriptSeeds.has(connection)).toBe(false);
+        expect(connection.subscriptionSessionIds).toEqual([]);
+      });
+      connection.close();
+    });
+
+    it.each([false, true])('closes the async seed write gap and respects cancellation=%s', async (cancel) => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      sessions.set('s1', lc);
+      const core = makeCore(sessions, eventBus);
+      const service = new TranscriptService({ homeDir: dir, core });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+      const view = collectingTarget();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let drains = 0;
+      const target: BroadcastTarget = {
+        send: view.target.send,
+        drain: async () => { if (++drains === 2) await gate; },
+      };
+      const pending = bc.subscribe('s1', target, undefined, { main: 'delta' });
+      await vi.waitFor(() => expect(drains).toBe(2));
+      expect(transcriptEnvelopes(view.envelopes).map((envelope) => envelope.type)).toEqual(['transcript.reset']);
+      main.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'during-transfer' }));
+      if (cancel) bc.unsubscribe('s1', target);
+      release();
+      await pending;
+      main.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'after-transfer' }));
+      const sent = transcriptEnvelopes(view.envelopes);
+      if (cancel) expect(sent).toHaveLength(1);
+      else {
+        expect(sent.slice(1).every((envelope) => envelope.type === 'transcript.ops')).toBe(true);
+        expect(sent.length).toBeGreaterThanOrEqual(3);
+        expect((sent.at(-1)!.payload as { cursor: unknown }).cursor).toEqual(service.getTranscriptCursor('s1', 'main'));
+        expect(JSON.stringify(sent)).toContain('during-transfer');
+        expect(JSON.stringify(sent)).toContain('after-transfer');
+      }
     });
 
     it('activates after a synchronous reset and keeps the ops journal bounded', async () => {
@@ -3241,7 +3409,7 @@ describe('SessionEventBroadcaster', () => {
       expect(currentCursor.seq).toBeLessThanOrEqual(watermark.seq);
     });
 
-    it('forces a full reset on a grade upgrade even when transcript_since is covered', async () => {
+    it.each([false, true])('forces a full reset on a grade upgrade even when transcript_since is covered (deferred=%s)', async (deferTranscriptReset) => {
       const lc = new FakeLifecycle();
       const main = lc.addAgent('main');
       sessions.set('s1', lc);
@@ -3267,8 +3435,9 @@ describe('SessionEventBroadcaster', () => {
       // so the seed must send a reset carrying the full detail.
       const before = transcriptEnvelopes(view.envelopes).length;
       await bc.subscribe('s1', view.target, undefined, { main: 'delta' }, {
-        transcriptSince: { main: cursor },
+        transcriptSince: { main: cursor }, deferTranscriptReset,
       });
+      if (deferTranscriptReset) await bc.flushTranscriptSeed('s1', view.target);
       const upgraded = transcriptEnvelopes(view.envelopes).slice(before);
       const resets = upgraded.filter((e) => e.type === 'transcript.reset');
       expect(resets).toHaveLength(1);
@@ -3291,6 +3460,8 @@ describe('SessionEventBroadcaster', () => {
 
       const graded = collectingTarget();
       const legacy = collectingTarget();
+      const durableCursors = vi.fn();
+      graded.target.sendDurableCursor = durableCursors;
       await bc.subscribe('s1', graded.target, undefined, { '*': 'delta' });
       await bc.subscribe('s1', legacy.target);
 
@@ -3331,6 +3502,9 @@ describe('SessionEventBroadcaster', () => {
       expect(legacyTypes).toContain('tool.result');
       expect(legacyTypes).toContain('prompt.queued');
       expect(legacyTypes).toContain('prompt.replaced');
+      for (const envelope of legacy.envelopes.filter((entry) => ['turn.started', 'tool.result', 'prompt.queued', 'prompt.replaced'].includes(entry.type))) {
+        expect(durableCursors).toHaveBeenCalledWith({ seq: envelope.seq, epoch: envelope.epoch });
+      }
       expect(transcriptEnvelopes(legacy.envelopes)).toHaveLength(0);
     });
 

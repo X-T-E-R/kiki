@@ -5,7 +5,7 @@
  * compare (engine telemetry forwarding, host request headers, the Windows
  * Git Bash probe, workspace trust, the config write cascade, deleteSession,
  * foldAgentWireReplay).
- * Wiring: real v2 engine bootstrapped on a temp KIMI_CODE_HOME; remote provider calls are stubbed.
+ * Wiring: real v2 engine bootstrapped on a temp KIKI_HOME; remote provider calls are stubbed.
  * Run: pnpm exec vitest run test/sdk-rpc-client-v2.test.ts
  */
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -45,6 +45,7 @@ import {
   IMcpManagementService,
   IMcpOAuthService,
   ISessionManager,
+  ISessionMetadata,
   ISessionTodoService,
   OsProcessErrors,
 } from '@kiki/agent-core-v2';
@@ -126,6 +127,7 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     const session = await harness.createSession({ id: 'ses_runtime', workDir });
     try {
       const binding = await session.getRuntime();
@@ -425,6 +427,7 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     const titleBaseUrl = 'https://api.example.test/coding/v1';
     const titleOAuthRef = resolveKimiCodeOAuthRef({ baseUrl: titleBaseUrl });
     // Storage names strip the `oauth/` prefix (FileTokenStorage rejects
@@ -532,6 +535,7 @@ key = "${titleOAuthRef.key}"
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     const titleBaseUrl = 'https://api.example.test/coding/v1';
     const titleOAuthRef = resolveKimiCodeOAuthRef({ baseUrl: titleBaseUrl });
     await new FileTokenStorage(join(homeDir, 'credentials')).save(
@@ -667,6 +671,7 @@ key = "${titleOAuthRef.key}"
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
 
     try {
       const session = await harness.createSession({ id: 'ses_resume_race', workDir });
@@ -692,6 +697,7 @@ key = "${titleOAuthRef.key}"
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
 
     try {
       const [first, second] = await Promise.allSettled([
@@ -717,6 +723,7 @@ key = "${titleOAuthRef.key}"
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
 
     try {
       const session = await harness.createSession({ id: 'ses_coalesce', workDir });
@@ -740,6 +747,7 @@ key = "${titleOAuthRef.key}"
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
 
     try {
       const session = await harness.createSession({ id: 'ses_no_coalesce', workDir });
@@ -762,6 +770,7 @@ key = "${titleOAuthRef.key}"
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
 
     try {
       const session = await harness.createSession({ id: 'ses_title_kind', workDir });
@@ -782,8 +791,9 @@ key = "${titleOAuthRef.key}"
     const { harness, homeDir } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     await writeSkill(join(homeDir, 'skills', 'demo-user-skill'), 'demo-user-skill');
-    await writeSkill(join(workDir, '.kimi-code', 'skills', 'demo-project-skill'), 'demo-project-skill');
+    await writeSkill(join(workDir, '.kiki', 'skills', 'demo-project-skill'), 'demo-project-skill');
     try {
       const skills = await harness.listWorkspaceSkills(workDir);
       const byName = new Map(skills.map((skill) => [skill.name, skill]));
@@ -805,11 +815,12 @@ key = "${titleOAuthRef.key}"
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     const explicitBase = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-explicit-'));
     tempDirs.push(explicitBase);
     const explicitDir = join(explicitBase, 'skills');
     await writeSkill(join(homeDir, 'skills', 'demo-user-skill'), 'demo-user-skill');
-    await writeSkill(join(workDir, '.kimi-code', 'skills', 'demo-project-skill'), 'demo-project-skill');
+    await writeSkill(join(workDir, '.kiki', 'skills', 'demo-project-skill'), 'demo-project-skill');
     await writeSkill(join(explicitDir, 'demo-explicit-skill'), 'demo-explicit-skill');
     const harness = createKimiHarness({
       homeDir,
@@ -906,10 +917,32 @@ key = "${titleOAuthRef.key}"
     }
   });
 
+  it('resumes archived sessions through the facade without unarchiving or losing metadata', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-sdk-resume-home-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'kiki-sdk-resume-work-'));
+    tempDirs.push(homeDir, workDir);
+    await mkdir(join(workDir, '.git'));
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
+    const id = 'ses_archived_resume';
+    try {
+      await client.createSession({ id, workDir, metadata: { label: 'keep' } });
+      await client.engineAccessor.get(ISessionManager).archive(id);
+      expect(getLiveSessionById(client.engineAccessor, id)).toBeUndefined();
+      const resumed = await client.resumeSession({ id, includeSubagents: true, replayTurnLimit: 3 });
+      expect(resumed).toMatchObject({ id, metadata: { label: 'keep' } });
+      const live = getLiveSessionById(client.engineAccessor, id);
+      expect(live).toBeDefined();
+      expect((await live!.accessor.get(ISessionMetadata).read()).archived).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
   it('deleteSession removes a session and rejects a missing id with session_not_found', async () => {
     const { harness, homeDir } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     try {
       const session = await harness.createSession({ workDir });
       await harness.deleteSession(session.id);
@@ -930,6 +963,7 @@ key = "${titleOAuthRef.key}"
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     try {
       await client.createSession({ id: 'ses_todos', workDir });
@@ -952,6 +986,23 @@ key = "${titleOAuthRef.key}"
       const stored = handle!.accessor.get(ISessionTodoService).getTodos();
       expect(served).not.toBe(stored);
       expect(served[0]).not.toBe(stored[0]);
+
+      const child = await handle!.accessor.get(IAgentLifecycleService).create({
+        agentId: 'todo-child',
+      });
+      handle!.accessor.get(ISessionTodoService).setTodos(
+        [{ title: 'child-only', status: 'done' }],
+        child.id,
+      );
+      await expect(
+        client.withInteractiveAgent(child.id, () =>
+          client.getTodos({ sessionId: 'ses_todos' }),
+        ),
+      ).resolves.toEqual([{ title: 'child-only', status: 'done' }]);
+      await expect(client.getTodos({ sessionId: 'ses_todos' })).resolves.toEqual([
+        { title: 'write tests', status: 'in_progress' },
+        { title: 'ship it', status: 'pending' },
+      ]);
       await expect(client.getTodos({ sessionId: 'ses_missing' })).rejects.toMatchObject({
         code: ErrorCodes.SESSION_NOT_FOUND,
       });
@@ -966,6 +1017,7 @@ describe('SDKRpcClient workspace trust', () => {
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     await writeFile(
       join(workDir, '.mcp.json'),
       JSON.stringify({
@@ -986,9 +1038,9 @@ describe('SDKRpcClient workspace trust', () => {
       }),
       'utf-8',
     );
-    await mkdir(join(workDir, '.kimi-code'), { recursive: true });
+    await mkdir(join(workDir, '.kiki'), { recursive: true });
     await writeFile(
-      join(workDir, '.kimi-code', 'mcp.json'),
+      join(workDir, '.kiki', 'mcp.json'),
       JSON.stringify({ mcpServers: { 'nested-server': { command: 'nested-cmd' } } }),
       'utf-8',
     );
@@ -1021,6 +1073,7 @@ describe('SDKRpcClient workspace trust', () => {
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     await writeFile(join(workDir, '.mcp.json'), '{not json', 'utf-8');
     try {
       const info = await harness.getWorkspaceTrustInfo(workDir);
@@ -1034,6 +1087,7 @@ describe('SDKRpcClient workspace trust', () => {
     const { harness, homeDir } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     try {
       await harness.trustWorkspace(workDir);
       expect(await harness.getWorkspaceTrustInfo(workDir)).toEqual({
@@ -1056,6 +1110,7 @@ describe('SDKRpcClient createSession profile binding', () => {
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
     try {
       const session = await harness.createSession({
@@ -1079,6 +1134,7 @@ describe('SDKRpcClient createSession profile binding', () => {
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     await writeFile(
       join(homeDir, 'config.toml'),
       `
@@ -1096,7 +1152,7 @@ max_context_size = 1000
 `,
       'utf-8',
     );
-    const agentDir = join(workDir, '.kimi-code', 'agents');
+    const agentDir = join(workDir, '.kiki', 'agents');
     await mkdir(agentDir, { recursive: true });
     await writeFile(
       join(agentDir, 'reviewer.md'),
@@ -1126,6 +1182,7 @@ max_context_size = 1000
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
     try {
       await expect(
@@ -1376,6 +1433,7 @@ describe('SDKRpcClient engine telemetry', () => {
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-tel-work-'));
     tempDirs.push(workDir);
+    await mkdir(join(workDir, '.git'));
     const records: TelemetryRecord[] = [];
     const harness = createKimiHarness({
       homeDir,

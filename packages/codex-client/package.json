@@ -3,6 +3,15 @@
   "version": "0.0.1",
   "private": true,
   "description": "Outbound Codex app-server process and turn client",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
+    "directory": "packages/codex-client"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/kiki/issues"
+  },
   "license": "MIT",
   "author": "Moonshot AI",
   "type": "module",

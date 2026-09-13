@@ -3,6 +3,7 @@ import type { Tool as KosongTool } from '#/kosong/contract/tool';
 import { createDecorator } from "#/_base/di/instantiation";
 import { type IDisposable } from "#/_base/di/lifecycle";
 import type { McpServerEntry } from '#/mcpCore/connection-manager';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
 
@@ -23,6 +24,7 @@ export interface IAgentMcpService {
   resolved(name: string): McpResolvedServer | undefined;
   getRemoteServerUrl(name: string): string | undefined;
   reconnect(name: string, signal?: AbortSignal): Promise<void>;
+  connect(name: string, config: McpServerConfig): Promise<void>;
   onStatusChange(listener: (entry: McpServerEntry) => void): IDisposable;
 }
 
