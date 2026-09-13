@@ -660,6 +660,8 @@ const lookupCodec = {
 };
 const INTERACTION_PENDING_NEXT_STEP =
   'Call kiki_interactions to inspect pending requests, call kiki_respond to answer each one, then call kiki_wait again.';
+const TIMED_OUT_NEXT_STEP =
+  'The dispatch is still running; call kiki_wait again to keep waiting.';
 const LIST_DESCRIPTION = 'List owned children and continuations.';
 const PROFILES_DESCRIPTION =
   'List named agent profiles (whenToUse, models, tools). Clients may cache this catalog.';
@@ -947,7 +949,11 @@ const wait = defineDelegationProcedure({
     },
     encodeOutput: (value) => value.waitStatus === 'interaction_pending'
       ? { ...value, next_step: INTERACTION_PENDING_NEXT_STEP }
-      : value,
+      : value.waitStatus === 'timed_out'
+        ? { ...value, next_step: value.dispatch === undefined
+            ? TIMED_OUT_NEXT_STEP
+            : `The dispatch is still running; call kiki_wait with dispatch_id "${value.dispatch.dispatchId}" to keep waiting.` }
+        : value,
   },
   legacy: {
     input: {

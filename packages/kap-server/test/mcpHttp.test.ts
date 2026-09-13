@@ -69,27 +69,85 @@ describe('Kiki MCP HTTP transport', () => {
     expect(listed.structuredContent).not.toHaveProperty('dispatchables');
   });
 
-  it('polls active dispatch activity without reading turn-detail events', async () => {
-    let finishWait!: (value: Awaited<ReturnType<SeatKlient['wait']>>) => void;
-    const waitResult = new Promise<Awaited<ReturnType<SeatKlient['wait']>>>((resolve) => {
-      finishWait = resolve;
-    });
-    const events = vi.fn();
-    const status = vi.fn(async () => {
-      queueMicrotask(() => finishWait({
-        waitStatus: 'completed',
-        waitedMs: 1,
-        dispatch: {
-          dispatchId: 'dispatch_one',
-          target: 'named',
-          taskName: 'child_one',
-          status: 'completed',
-          createdAt: 1,
+  it('keeps wait behavior unchanged without a progress token', async () => {
+    const completed: Awaited<ReturnType<SeatKlient['wait']>> = {
+      waitStatus: 'completed',
+      waitedMs: 1,
+      dispatch: {
+        dispatchId: 'dispatch_one',
+        target: 'named',
+        taskName: 'child_one',
+        status: 'completed',
+        createdAt: 1,
+      },
+      completedDuringWait: [],
+      interactions: [],
+    };
+    const wait = vi.fn((..._args: Parameters<SeatKlient['wait']>) => Promise.resolve(completed));
+    const status = vi.fn();
+    const signal = new AbortController().signal;
+    const klient = { wait, status } as unknown as SeatKlient;
+
+    await expect(followWaitProgress(
+      klient,
+      { dispatchId: 'dispatch_one', timeoutMs: 70_000 },
+      { signal, sendNotification: vi.fn() },
+      1,
+    )).resolves.toBe(completed);
+    expect(wait).toHaveBeenCalledWith(
+      { dispatchId: 'dispatch_one', timeoutMs: 70_000 },
+      { signal },
+    );
+    expect(status).not.toHaveBeenCalled();
+  });
+
+  it('returns the real wait result when it settles before a progress boundary', async () => {
+    const completed: Awaited<ReturnType<SeatKlient['wait']>> = {
+      waitStatus: 'completed',
+      waitedMs: 1,
+      dispatch: {
+        dispatchId: 'dispatch_one',
+        target: 'named',
+        taskName: 'child_one',
+        status: 'completed',
+        createdAt: 1,
+      },
+      completedDuringWait: [],
+      interactions: [],
+    };
+    const notifications = vi.fn();
+    const klient = {
+      wait: vi.fn(async () => completed),
+      status: vi.fn(async () => ({
+        dispatchId: 'dispatch_one',
+        target: 'named' as const,
+        taskName: 'child_one',
+        status: 'running' as const,
+        createdAt: 1,
+        activity: {
+          activeToolCalls: [{ toolCallId: 'call_one', name: 'Read', since: Number.MAX_SAFE_INTEGER }],
         },
-        completedDuringWait: [],
-        interactions: [],
-      }));
-      return {
+      })),
+    } as unknown as SeatKlient;
+
+    await expect(followWaitProgress(
+      klient,
+      { dispatchId: 'dispatch_one' },
+      {
+        signal: new AbortController().signal,
+        _meta: { progressToken: 'progress_one' },
+        sendNotification: notifications,
+      },
+      1,
+    )).resolves.toBe(completed);
+    expect(notifications).not.toHaveBeenCalled();
+  });
+
+  it('returns an in-flight snapshot at a new tool progress boundary', async () => {
+    vi.useFakeTimers({ now: 0 });
+    try {
+      let waitSignal: AbortSignal | undefined;
+      const status = {
         dispatchId: 'dispatch_one',
         target: 'named' as const,
         taskName: 'child_one',
@@ -99,36 +157,129 @@ describe('Kiki MCP HTTP transport', () => {
           activeToolCalls: [{ toolCallId: 'call_one', name: 'Read', since: 1 }],
         },
       };
-    });
-    const notifications: unknown[] = [];
-    const klient = {
-      wait: vi.fn(() => waitResult),
-      status,
-      events,
-    } as unknown as SeatKlient;
+      const notifications = vi.fn(async () => {});
+      const klient = {
+        wait: vi.fn((
+          _input: Parameters<SeatKlient['wait']>[0],
+          options: Parameters<SeatKlient['wait']>[1],
+        ) => {
+          waitSignal = options?.signal;
+          return new Promise<Awaited<ReturnType<SeatKlient['wait']>>>(() => {});
+        }),
+        status: vi.fn(async () => status),
+        events: vi.fn(),
+      } as unknown as SeatKlient;
 
-    await expect(followWaitProgress(
+      await expect(followWaitProgress(
+        klient,
+        { dispatchId: 'dispatch_one' },
+        {
+          signal: new AbortController().signal,
+          _meta: { progressToken: 'progress_one' },
+          sendNotification: notifications,
+        },
+        1,
+      )).resolves.toEqual({
+        waitStatus: 'timed_out',
+        waitedMs: 0,
+        dispatch: status,
+        completedDuringWait: [],
+        interactions: [],
+      });
+      expect(notifications).toHaveBeenCalledWith({
+        method: 'notifications/progress',
+        params: {
+          progressToken: 'progress_one',
+          progress: 1,
+          message: 'Delegation running tool: Read.',
+        },
+      });
+      expect(klient.events).not.toHaveBeenCalled();
+      expect(waitSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns the latest in-flight snapshot at the maximum progress wait duration', async () => {
+    vi.useFakeTimers({ now: 0 });
+    try {
+      let waitSignal: AbortSignal | undefined;
+      const status = {
+        dispatchId: 'dispatch_one',
+        target: 'named' as const,
+        taskName: 'child_one',
+        status: 'running' as const,
+        createdAt: 1,
+      };
+      const klient = {
+        wait: vi.fn((
+          _input: Parameters<SeatKlient['wait']>[0],
+          options: Parameters<SeatKlient['wait']>[1],
+        ) => {
+          waitSignal = options?.signal;
+          return new Promise<Awaited<ReturnType<SeatKlient['wait']>>>(() => {});
+        }),
+        status: vi.fn(async () => status),
+      } as unknown as SeatKlient;
+      const pending = followWaitProgress(
+        klient,
+        { dispatchId: 'dispatch_one', timeoutMs: 600_000 },
+        {
+          signal: new AbortController().signal,
+          _meta: { progressToken: 'progress_one' },
+          sendNotification: vi.fn(),
+        },
+        60_000,
+      );
+      const settled = vi.fn();
+      void pending.then(settled);
+
+      await vi.advanceTimersByTimeAsync(44_999);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toEqual({
+        waitStatus: 'timed_out',
+        waitedMs: 45_000,
+        dispatch: status,
+        completedDuringWait: [],
+        interactions: [],
+      });
+      expect(waitSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('honors abort while following delegation progress', async () => {
+    let waitSignal: AbortSignal | undefined;
+    const controller = new AbortController();
+    const reason = new Error('request aborted');
+    const klient = {
+      wait: vi.fn((
+        _input: Parameters<SeatKlient['wait']>[0],
+        options: Parameters<SeatKlient['wait']>[1],
+      ) => {
+        waitSignal = options?.signal;
+        return new Promise<Awaited<ReturnType<SeatKlient['wait']>>>(() => {});
+      }),
+      status: vi.fn(() => new Promise<Awaited<ReturnType<SeatKlient['status']>>>(() => {})),
+    } as unknown as SeatKlient;
+    const pending = followWaitProgress(
       klient,
       { dispatchId: 'dispatch_one' },
       {
-        signal: new AbortController().signal,
+        signal: controller.signal,
         _meta: { progressToken: 'progress_one' },
-        sendNotification: async (notification) => {
-          notifications.push(notification);
-        },
+        sendNotification: vi.fn(),
       },
       1,
-    )).resolves.toMatchObject({ waitStatus: 'completed' });
-    expect(status).toHaveBeenCalled();
-    expect(events).not.toHaveBeenCalled();
-    expect(notifications).toEqual([{
-      method: 'notifications/progress',
-      params: {
-        progressToken: 'progress_one',
-        progress: 1,
-        message: 'Delegation running tool: Read.',
-      },
-    }]);
+    );
+
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(waitSignal?.aborted).toBe(true);
   });
 
   it('rejects a wrong bearer with HTTP 401 code/msg', async () => {

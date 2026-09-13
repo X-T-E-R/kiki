@@ -1,5 +1,4 @@
 import { isAbsolute } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
@@ -26,6 +25,7 @@ const EXTERNAL_FAILURE_CATEGORIES = new Set([
   'invalid_input',
   'internal',
 ]);
+const MCP_PROGRESS_WAIT_MAX_MS = 45_000;
 
 export interface KikiMcpConfig {
   readonly endpoint: string;
@@ -51,6 +51,13 @@ interface ProgressRequestContext {
     };
   }): Promise<void>;
 }
+
+type ProgressWaitResult = Awaited<ReturnType<SeatKlient['wait']>>;
+type ProgressWaitControl =
+  | { readonly kind: 'resolved'; readonly value: ProgressWaitResult }
+  | { readonly kind: 'rejected'; readonly error: unknown }
+  | { readonly kind: 'deadline' }
+  | { readonly kind: 'aborted'; readonly error: unknown };
 
 export function createKikiMcpServer(
   source: SeatKlient | KikiMcpConfig,
@@ -156,44 +163,128 @@ export async function followWaitProgress(
   input: DelegationProcedureInput<'wait'>,
   context: ProgressRequestContext,
   pollIntervalMs: number,
-): Promise<Awaited<ReturnType<SeatKlient['wait']>>> {
-  const waitPromise = klient.wait(input, { signal: context.signal });
+): Promise<ProgressWaitResult> {
   const progressToken = context._meta?.progressToken;
-  if (progressToken === undefined || input.dispatchId === undefined) return waitPromise;
+  if (progressToken === undefined) return klient.wait(input, { signal: context.signal });
 
-  const waitSettled = { settled: true as const };
-  const settlement = waitPromise.then(
-    () => waitSettled,
-    () => waitSettled,
+  context.signal.throwIfAborted();
+  const startedAt = Date.now();
+  const waitController = new AbortController();
+  const waitPromise = klient.wait(input, {
+    signal: AbortSignal.any([context.signal, waitController.signal]),
+  });
+  let waitSettled = false;
+  const settlement: Promise<ProgressWaitControl> = waitPromise.then(
+    (value) => {
+      waitSettled = true;
+      return { kind: 'resolved', value };
+    },
+    (error: unknown) => {
+      waitSettled = true;
+      return { kind: 'rejected', error };
+    },
   );
-  let progress = 0;
-  let reportedTool: string | undefined;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  let abortListener = () => {};
+  const control = new Promise<ProgressWaitControl>((resolve) => {
+    deadlineTimer = setTimeout(() => {
+      resolve({ kind: 'deadline' });
+    }, MCP_PROGRESS_WAIT_MAX_MS);
+    abortListener = () => {
+      resolve({ kind: 'aborted', error: context.signal.reason });
+    };
+    context.signal.addEventListener('abort', abortListener, { once: true });
+  });
+  let latestStatus: Awaited<ReturnType<SeatKlient['status']>> | undefined;
 
-  while (true) {
-    context.signal.throwIfAborted();
-    const status = await Promise.race([
-      settlement,
-      klient.status({ dispatchId: input.dispatchId }),
-    ]);
-    if ('settled' in status) return await waitPromise;
-    const currentTool = status.activity?.activeToolCalls.at(-1)?.name;
-    if (currentTool !== undefined && currentTool !== reportedTool) {
-      reportedTool = currentTool;
-      await context.sendNotification({
-        method: 'notifications/progress',
-        params: {
-          progressToken,
-          progress: ++progress,
-          message: `Delegation running tool: ${currentTool}.`,
-        },
-      });
+  try {
+    await Promise.resolve();
+    if (input.dispatchId === undefined) {
+      return finishProgressWait(await Promise.race([settlement, control]), startedAt, undefined);
     }
-    const delayed = await Promise.race([
-      settlement,
-      delay(pollIntervalMs, undefined, { signal: context.signal }),
-    ]);
-    if (delayed === waitSettled) return await waitPromise;
+    while (true) {
+      const status = klient.status({ dispatchId: input.dispatchId }).then(
+        (value) => ({ kind: 'status' as const, value }),
+        (error: unknown): ProgressWaitControl => ({ kind: 'rejected', error }),
+      );
+      const outcome = await Promise.race([settlement, control, status]);
+      if (outcome.kind !== 'status') return finishProgressWait(outcome, startedAt, latestStatus);
+
+      latestStatus = outcome.value;
+      const currentTool = latestStatus.activity?.activeToolCalls.at(-1);
+      if (currentTool !== undefined) {
+        const notification = context.sendNotification({
+          method: 'notifications/progress',
+          params: {
+            progressToken,
+            progress: 1,
+            message: `Delegation running tool: ${currentTool.name}.`,
+          },
+        }).then(
+          () => ({ kind: 'notified' as const }),
+          (error: unknown): ProgressWaitControl => ({ kind: 'rejected', error }),
+        );
+        const notified = await Promise.race([settlement, control, notification]);
+        if (notified.kind !== 'notified') return finishProgressWait(notified, startedAt, latestStatus);
+        const boundary = await Promise.race([
+          settlement,
+          Promise.resolve({ kind: 'boundary' as const }),
+        ]);
+        return boundary.kind === 'boundary'
+          ? progressWaitBoundary(startedAt, latestStatus)
+          : finishProgressWait(boundary, startedAt, latestStatus);
+      }
+
+      const poll = progressPoll(pollIntervalMs);
+      const pollOutcome = await Promise.race([settlement, control, poll.promise]);
+      poll.cancel();
+      if (pollOutcome.kind !== 'polled') return finishProgressWait(pollOutcome, startedAt, latestStatus);
+    }
+  } finally {
+    clearTimeout(deadlineTimer);
+    context.signal.removeEventListener('abort', abortListener);
+    if (!waitSettled) waitController.abort();
   }
+}
+
+function finishProgressWait(
+  outcome: ProgressWaitControl,
+  startedAt: number,
+  dispatch: Awaited<ReturnType<SeatKlient['status']>> | undefined,
+): ProgressWaitResult {
+  if (outcome.kind === 'resolved') return outcome.value;
+  if (outcome.kind === 'deadline') return progressWaitBoundary(startedAt, dispatch);
+  throw outcome.error;
+}
+
+function progressWaitBoundary(
+  startedAt: number,
+  dispatch: Awaited<ReturnType<SeatKlient['status']>> | undefined,
+): ProgressWaitResult {
+  return {
+    waitStatus: 'timed_out',
+    waitedMs: Math.max(0, Date.now() - startedAt),
+    dispatch,
+    completedDuringWait: [],
+    interactions: [],
+  };
+}
+
+function progressPoll(delayMs: number): {
+  readonly promise: Promise<{ readonly kind: 'polled' }>;
+  cancel(): void;
+} {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return {
+    promise: new Promise((resolve) => {
+      timer = setTimeout(() => {
+        resolve({ kind: 'polled' });
+      }, delayMs);
+    }),
+    cancel: () => {
+      clearTimeout(timer);
+    },
+  };
 }
 
 function updateProfileDescriptions(
