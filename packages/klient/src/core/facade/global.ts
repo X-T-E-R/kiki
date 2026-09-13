@@ -323,7 +323,8 @@ export interface GlobalMcpFacade {
     locator: McpServerLocator;
     cwd?: string;
   }): Promise<McpServerAuthBeginResult>;
-  completeAuth(input: { flowId: string; timeoutMs?: number }): Promise<void>;
+  /** Aborting the signal stops this wait, not the shared authorization flow. */
+  completeAuth(input: { flowId: string; timeoutMs?: number }, options?: Pick<CallOptions, 'signal'>): Promise<void>;
   cancelAuth(input: { flowId: string }): Promise<void>;
   resetAuth(input: { locator: McpServerLocator; cwd?: string }): Promise<void>;
 }
@@ -340,13 +341,16 @@ export interface GlobalFilesFacade {
    * base64-encoded (JSON cannot carry them), so very large uploads pay one
    * encode here and one decode in the dispatcher.
    */
-  save(input: {
-    data: Uint8Array;
-    filename: string;
-    name?: string;
-    mimeType?: string;
-    expiresInSec?: number;
-  }): Promise<FileMeta>;
+  save(
+    input: {
+      data: Uint8Array;
+      filename: string;
+      name?: string;
+      mimeType?: string;
+      expiresInSec?: number;
+    },
+    options?: Pick<CallOptions, 'timeoutMs' | 'signal'>,
+  ): Promise<FileMeta>;
   /** Download one upload back into memory. */
   get(fileId: string): Promise<FileDownload>;
   delete(fileId: string): Promise<void>;
@@ -647,12 +651,12 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     },
 
     files: {
-      save: ({ data, filename, name, mimeType, expiresInSec }) =>
+      save: ({ data, filename, name, mimeType, expiresInSec }, options) =>
         call('fileService', 'save', [
           encodeBase64(data),
           filename,
           { name, mimeType, expiresInSec },
-        ]) as Promise<FileMeta>,
+        ], options) as Promise<FileMeta>,
       get: async (fileId) => {
         const wire = (await call('fileService', 'get', [fileId])) as {
           meta: FileMeta;
@@ -716,8 +720,9 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
           locator,
           { cwd },
         ]) as Promise<McpServerAuthBeginResult>,
-      completeAuth: ({ flowId, timeoutMs }) =>
+      completeAuth: ({ flowId, timeoutMs }, options) =>
         call('mcpManagementService', 'completeServerAuth', [{ flowId, timeoutMs }], {
+          signal: options?.signal,
           // Clamp to Node's 32-bit timer ceiling: `timeoutMs` may legally be
           // the contract max (2**31 - 1), and adding the margin would
           // overflow setTimeout into a ~1ms deadline.

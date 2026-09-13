@@ -1,4 +1,5 @@
 import type { Scope } from '@kiki/agent-core-v2';
+import { HTTP_REQUEST_BODY_LIMIT_BYTES } from '@kiki/klient/http';
 import {
   createKlientDispatcher,
   decodeJsonFrame,
@@ -16,17 +17,19 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
+import { TerminalHttpConnection } from './terminalHttp';
 import { okEnvelope } from '../../protocol/envelope';
 import { selectWsBearerProtocol } from '../ws/bearerProtocol';
+import { registerSessionViewHttp, SessionViewHttpConnection, type SessionViewHttpOptions } from './sessionViewHttp';
 
 export const KLIENT_CALL_PATH = '/api/klient/call';
 export const KLIENT_EVENTS_PATH = '/api/klient/events';
 export const KLIENT_HTTP_MAX_PAYLOAD_BYTES = 8 << 20;
-export const KLIENT_CALL_BODY_LIMIT_BYTES =
-  Math.ceil((KLIENT_HTTP_MAX_PAYLOAD_BYTES * 4) / 3) + (64 << 10);
+export const KLIENT_CALL_BODY_LIMIT_BYTES = HTTP_REQUEST_BODY_LIMIT_BYTES;
 
-export interface RegisterKlientHttpOptions {
+export interface RegisterKlientHttpOptions extends SessionViewHttpOptions {
   readonly maxPayloadBytes?: number;
+  readonly enableTerminals?: boolean;
 }
 
 interface ActiveStream {
@@ -41,8 +44,14 @@ export function registerKlientHttp(
   opts: RegisterKlientHttpOptions = {},
 ): WebSocketServer {
   const dispatcher = createKlientDispatcher(scope);
+  registerSessionViewHttp(app, scope, opts);
 
   app.post(KLIENT_CALL_PATH, { bodyLimit: KLIENT_CALL_BODY_LIMIT_BYTES }, async (req, reply) => {
+    const controller = new AbortController();
+    const abort = (): void => {
+      if (!reply.raw.writableEnded) controller.abort();
+    };
+    reply.raw.once('close', abort);
     try {
       const { procedure, params } = parseKlientCallRequest(req.body);
       const data = await dispatcher.call(
@@ -50,6 +59,7 @@ export function registerKlientHttp(
         procedure.service,
         procedure.method,
         params,
+        { signal: controller.signal },
       );
       return await reply.send(okEnvelope(data, req.id));
     } catch (error) {
@@ -57,6 +67,8 @@ export function registerKlientHttp(
         req.log.error({ err: error }, 'klient http call failed');
       }
       return reply.send(errorEnvelope(error, req.id));
+    } finally {
+      reply.raw.off('close', abort);
     }
   });
 
@@ -67,7 +79,7 @@ export function registerKlientHttp(
   });
   const connections = new Set<KlientHttpConnection>();
   wss.on('connection', (socket) => {
-    const connection = new KlientHttpConnection(socket, dispatcher, app);
+    const connection = new KlientHttpConnection(socket, dispatcher, app, opts, scope);
     connections.add(connection);
     const dispose = (): void => {
       connection.dispose();
@@ -88,13 +100,26 @@ export function registerKlientHttp(
 class KlientHttpConnection {
   private readonly subscriptions = new Map<string, IDisposable>();
   private readonly streams = new Map<string, ActiveStream>();
+  private readonly sessionViews: SessionViewHttpConnection;
+  private readonly terminals: TerminalHttpConnection;
+  private readonly heartbeat: ReturnType<typeof setInterval>;
+  private lastInboundAt = Date.now();
   private closed = false;
 
   constructor(
     private readonly socket: WebSocket,
     private readonly dispatcher: KlientDispatcher,
     private readonly app: Pick<FastifyInstance, 'log'>,
+    opts: RegisterKlientHttpOptions,
+    scope: Scope,
   ) {
+    this.terminals = new TerminalHttpConnection(scope, opts.enableTerminals === true, (frame) => this.send(frame));
+    this.sessionViews = new SessionViewHttpConnection(opts.sessionViewBroadcaster,
+      (frame) => this.send(frame), (id, error) => this.sendError('view_error', id, error));
+    this.heartbeat = setInterval(() => {
+      if (Date.now() - this.lastInboundAt > 30_000) { socket.terminate(); this.dispose(); return; }
+      this.send({ type: 'ping', data: { nonce: String(Date.now()), heartbeatMs: 10_000 } });
+    }, 10_000);
     socket.on('message', (data) => {
       this.onMessage(data);
     });
@@ -102,8 +127,9 @@ class KlientHttpConnection {
 
   private onMessage(data: RawData): void {
     if (this.closed) return;
+    this.lastInboundAt = Date.now();
     const frame = decodeJsonFrame(rawDataToString(data));
-    if (frame === undefined) return;
+    if (frame === undefined || this.sessionViews.receive(frame) || this.terminals.receive(frame)) return;
     const id = typeof frame.id === 'string' ? frame.id : '';
     switch (frame.type) {
       case 'subscribe':
@@ -145,9 +171,11 @@ class KlientHttpConnection {
           subscription.dispose();
           this.sendError('error', id, error);
         },
+        () => {
+          if (this.subscriptions.get(id) === subscription) this.send({ type: 'subscribed', id });
+        },
       );
       this.subscriptions.set(id, subscription);
-      this.send({ type: 'subscribed', id });
     } catch (error) {
       this.sendError('error', id, error);
     }
@@ -229,7 +257,7 @@ class KlientHttpConnection {
     active.cancel();
   }
 
-  private sendError(type: 'error' | 'stream_error', id: string, error: unknown): void {
+  private sendError(type: 'error' | 'stream_error' | 'view_error', id: string, error: unknown): void {
     if (!(error instanceof RPCError)) {
       this.app.log.error({ err: error }, 'klient websocket operation failed');
     }
@@ -252,6 +280,9 @@ class KlientHttpConnection {
     this.subscriptions.clear();
     for (const active of this.streams.values()) active.cancel();
     this.streams.clear();
+    this.sessionViews.dispose();
+    this.terminals.dispose();
+    clearInterval(this.heartbeat);
   }
 }
 

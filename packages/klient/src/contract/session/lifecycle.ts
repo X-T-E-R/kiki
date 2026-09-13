@@ -50,6 +50,11 @@ export const handleWireSchema = z.looseObject({
   kind: z.string(),
 });
 
+export const agentLifecycleContract = {
+  countPendingBackgroundTasks: { input: z.tuple([]), output: z.number() },
+  drainBackgroundTasks: { input: z.tuple([z.number().positive().finite()]), output: noResult },
+} satisfies ServiceContract;
+
 export const sessionManagerContract = {
   create: { input: z.tuple([createSessionOptionsSchema]), output: handleWireSchema },
   resume: {

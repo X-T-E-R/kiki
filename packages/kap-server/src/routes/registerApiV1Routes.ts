@@ -45,6 +45,7 @@ import { registerTranscriptRoutes } from './transcript';
 import { registerThreadsRoutes } from './threads';
 import { registerWorkspaceFsRoutes } from './workspaceFs';
 import { registerWorkspacesRoutes } from './workspaces';
+import { registerApiV2RouteSet, type RegisterApiV2RoutesOptions } from './registerApiV2Routes';
 
 interface ApiV1AppHost {
   register(
@@ -90,6 +91,7 @@ export interface RegisterApiV1RoutesOptions {
    */
   readonly dangerousBypassAuth?: boolean;
   readonly externalDelegation: ExternalDelegationState;
+  readonly apiV2?: RegisterApiV2RoutesOptions;
   /**
    * Custom browser tab title for this instance, surfaced as `web_title` in the
    * `/meta` payload. Set by `start.ts` from the `webTitle` server option (the
@@ -234,8 +236,9 @@ export async function registerApiV1Routes(
           onShutdown: opts.onShutdown,
         });
       }
+      await registerApiV2RouteSet(apiV1 as unknown, core, opts.apiV2);
     },
-    { prefix: '/api/v1' },
+    { prefix: '/api' },
   );
 }
 

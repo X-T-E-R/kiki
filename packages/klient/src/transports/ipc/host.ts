@@ -62,6 +62,7 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
     const decoder = new NdjsonDecoder();
     const listens = new Map<string, IDisposable>();
     const activeStreams = new Map<string, AbortController>();
+    const activeCalls = new Map<string, AbortController>();
     let helloDone = false;
 
     const send = (frame: IpcFrame): void => {
@@ -124,15 +125,26 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
             sendError(id, new RPCError(REQUEST_INVALID, 'expected hello first'));
             return;
           }
+          if (activeCalls.has(id)) {
+            sendError(id, new RPCError(REQUEST_INVALID, 'call id already in use'));
+            return;
+          }
+          const controller = new AbortController();
+          activeCalls.set(id, controller);
           const args = Array.isArray(frame.arg) ? frame.arg : frame.arg === undefined ? [] : [frame.arg];
           dispatcher
-            .call(scopeRefFromTarget(frame), String(frame.service), String(frame.method), args)
+            .call(scopeRefFromTarget(frame), String(frame.service), String(frame.method), args, { signal: controller.signal })
             .then((data) => {
-              send({ type: 'result', id, data });
+              if (!controller.signal.aborted) send({ type: 'result', id, data });
             })
             .catch((error: unknown) => {
-              sendError(id, error);
-            });
+              if (!controller.signal.aborted) sendError(id, error);
+            })
+            .finally(() => { activeCalls.delete(id); });
+          return;
+        }
+        case 'call_cancel': {
+          activeCalls.get(id)?.abort();
           return;
         }
         case 'listen': {
@@ -149,11 +161,16 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
                 send({ type: 'event', id, data });
               },
               (error) => {
+                if (listens.get(id) !== sub) return;
+                listens.delete(id);
+                sub.dispose();
                 sendError(id, error);
+              },
+              () => {
+                if (listens.get(id) === sub) send({ type: 'listen_result', id });
               },
             );
             listens.set(id, sub);
-            send({ type: 'listen_result', id });
           } catch (error) {
             sendError(id, error);
           }
@@ -220,6 +237,8 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
       listens.clear();
       for (const ac of activeStreams.values()) ac.abort();
       activeStreams.clear();
+      for (const controller of activeCalls.values()) controller.abort();
+      activeCalls.clear();
       connections.delete(socket);
     };
     socket.on('close', teardown);

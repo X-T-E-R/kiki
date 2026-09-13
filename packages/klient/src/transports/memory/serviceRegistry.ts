@@ -27,6 +27,7 @@ import { IHostFolderBrowser } from '@kiki/agent-core-v2/app/hostFolderBrowser/ho
 import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
 import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionApprovalService } from '@kiki/agent-core-v2/session/approval/approval';
 import { ISessionQuestionService } from '@kiki/agent-core-v2/session/question/question';
@@ -50,9 +51,16 @@ import { IAgentMcpService } from '@kiki/agent-core-v2/agent/mcp/mcp';
 import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
 import { IThreadCommunicationService } from '@kiki/agent-core-v2/app/threadCommunication/threadCommunication';
 import { IMcpManagementService } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
+import { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
+import { ISessionCronService } from '@kiki/agent-core-v2/session/cron/sessionCronService';
+import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
 
 /** Wire service name (decorator id string) → token. */
 export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {
+  agentLifecycleService: IAgentLifecycleService,
+  sessionCronService: ISessionCronService,
   sessionIndex: ISessionIndex,
   workspaceService: IWorkspaceService,
   configService: IConfigService,
@@ -72,6 +80,10 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   workspaceInstanceManager: IWorkspaceInstanceManager,
   sessionManager: ISessionManager,
   sessionMetadata: ISessionMetadata,
+  sessionActivityView: ISessionActivityView,
+  sessionBtwService: ISessionBtwService,
+  sessionInitService: ISessionInitService,
+  sessionTodoService: ISessionTodoService,
   sessionInteractionService: ISessionInteractionService,
   sessionApprovalService: ISessionApprovalService,
   sessionQuestionService: ISessionQuestionService,

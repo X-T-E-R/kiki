@@ -12,13 +12,6 @@ import { registerV2McpRoutes } from './v2/mcp';
 import { registerV2SessionsRoutes } from './v2/sessions';
 import { registerV2UsageRoutes } from './v2/usage';
 
-interface ApiV2AppHost {
-  register(
-    plugin: (apiV2: unknown) => Promise<void> | void,
-    opts: { prefix: string },
-  ): unknown;
-}
-
 export interface RegisterApiV2RoutesOptions {
   readonly externalDelegation?: {
     readonly principalId: string;
@@ -29,8 +22,8 @@ export interface RegisterApiV2RoutesOptions {
   readonly seatManager?: ExternalDelegationSeatManager;
 }
 
-export async function registerApiV2Routes(
-  app: ApiV2AppHost,
+export async function registerApiV2RouteSet(
+  api: unknown,
   core: Scope,
   opts: RegisterApiV2RoutesOptions = {},
 ): Promise<void> {
@@ -40,51 +33,46 @@ export async function registerApiV2Routes(
   const legacyEnabled = seatManager === undefined || state === undefined
     ? await legacyExternalDelegationEnabled(core)
     : false;
-  await app.register(
-    async (apiV2) => {
-      registerV2SessionsRoutes(apiV2 as Parameters<typeof registerV2SessionsRoutes>[0], core);
-      registerV2McpRoutes(apiV2 as Parameters<typeof registerV2McpRoutes>[0], core);
-      registerV2UsageRoutes(apiV2 as Parameters<typeof registerV2UsageRoutes>[0], core);
-      if (seatManager !== undefined && state !== undefined) {
-        registerV2ExternalDelegationSeatRoutes(
-          apiV2 as Parameters<typeof registerV2ExternalDelegationSeatRoutes>[0],
-          seatManager,
-          state,
-        );
-        registerV2ExternalDelegationRoutes(
-          apiV2 as Parameters<typeof registerV2ExternalDelegationRoutes>[0],
-          core,
-          {
-            state,
-            resolve: async (sessionId, presentedToken) => {
-              const seat = await seatManager.resolve(sessionId, presentedToken);
-              if (seat !== undefined) return seat;
-              if (
-                externalDelegation === undefined ||
-                !tokenMatches(presentedToken, externalDelegation.token)
-              ) {
-                return undefined;
-              }
-              if (sessionId !== externalDelegation.sessionId) {
-                return { error: 'session_not_admitted' };
-              }
-              return {
-                principalId: externalDelegation.principalId,
-                sessionId: externalDelegation.sessionId,
-              };
-            },
-          },
-        );
-      } else if (legacyEnabled && externalDelegation !== undefined) {
-        registerV2ExternalDelegationRoutes(
-          apiV2 as Parameters<typeof registerV2ExternalDelegationRoutes>[0],
-          core,
-          { ...externalDelegation, state: { state: 'active' } },
-        );
-      }
-    },
-    { prefix: '/api/v2' },
-  );
+  registerV2SessionsRoutes(api as Parameters<typeof registerV2SessionsRoutes>[0], core);
+  registerV2McpRoutes(api as Parameters<typeof registerV2McpRoutes>[0], core);
+  registerV2UsageRoutes(api as Parameters<typeof registerV2UsageRoutes>[0], core);
+  if (seatManager !== undefined && state !== undefined) {
+    registerV2ExternalDelegationSeatRoutes(
+      api as Parameters<typeof registerV2ExternalDelegationSeatRoutes>[0],
+      seatManager,
+      state,
+    );
+    registerV2ExternalDelegationRoutes(
+      api as Parameters<typeof registerV2ExternalDelegationRoutes>[0],
+      core,
+      {
+        state,
+        resolve: async (sessionId, presentedToken) => {
+          const seat = await seatManager.resolve(sessionId, presentedToken);
+          if (seat !== undefined) return seat;
+          if (
+            externalDelegation === undefined ||
+            !tokenMatches(presentedToken, externalDelegation.token)
+          ) {
+            return undefined;
+          }
+          if (sessionId !== externalDelegation.sessionId) {
+            return { error: 'session_not_admitted' };
+          }
+          return {
+            principalId: externalDelegation.principalId,
+            sessionId: externalDelegation.sessionId,
+          };
+        },
+      },
+    );
+  } else if (legacyEnabled && externalDelegation !== undefined) {
+    registerV2ExternalDelegationRoutes(
+      api as Parameters<typeof registerV2ExternalDelegationRoutes>[0],
+      core,
+      { ...externalDelegation, state: { state: 'active' } },
+    );
+  }
 }
 
 async function legacyExternalDelegationEnabled(core: Scope): Promise<boolean> {

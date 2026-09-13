@@ -7,6 +7,7 @@
  */
 
 import type {
+  CallOptions,
   EventSourceRef,
   IDisposable,
   KlientChannel,
@@ -33,8 +34,8 @@ class MemoryChannel implements KlientChannel {
     this.dispatcher = createMemoryDispatcher(scope);
   }
 
-  call(scope: ScopeRef, service: string, method: string, args: unknown[]): Promise<unknown> {
-    return this.dispatcher.call(scope, service, method, args);
+  call(scope: ScopeRef, service: string, method: string, args: unknown[], options?: CallOptions): Promise<unknown> {
+    return this.dispatcher.call(scope, service, method, args, options);
   }
 
   stream(scope: ScopeRef, service: string, method: string, args: unknown[]): AsyncIterable<unknown> {
@@ -46,8 +47,9 @@ class MemoryChannel implements KlientChannel {
     source: EventSourceRef,
     handler: (data: unknown) => void,
     onError?: (error: Error) => void,
+    onReady?: () => void,
   ): IDisposable {
-    return this.dispatcher.listen(scope, source, handler, onError);
+    return this.dispatcher.listen(scope, source, handler, onError, onReady);
   }
 
   close(): Promise<void> {

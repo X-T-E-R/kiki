@@ -81,6 +81,28 @@ export const promptLaunchResultSchema = z.object({
   turn_id: z.number(),
 });
 
+const promptErrorSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  name: z.string().optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
+  retryable: z.boolean(),
+  get cause(): z.ZodOptional<typeof promptErrorSchema> {
+    return promptErrorSchema.optional();
+  },
+});
+
+export const promptTerminalResultSchema = z.object({
+  promptId: z.string(),
+  turnId: z.number().optional(),
+  state: z.enum(['completed', 'failed', 'cancelled', 'blocked']),
+  result: z.discriminatedUnion('type', [
+    z.object({ type: z.literal('completed'), steps: z.number(), truncated: z.boolean() }),
+    z.object({ type: z.literal('failed'), steps: z.number(), error: promptErrorSchema }),
+    z.object({ type: z.literal('cancelled'), steps: z.number(), reason: promptErrorSchema }),
+  ]).optional(),
+});
+
 export const cancelPayloadSchema = z.object({
   turnId: z.number().optional(),
 });

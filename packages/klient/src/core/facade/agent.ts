@@ -44,11 +44,12 @@ export type { AgentTaskInfo } from '../../contract/agent/schemas.js';
 export type McpServerEntry = ReturnType<IAgentMcpService['list']>[number];
 
 export interface AgentFacade {
-  prompt(input: {
-    input: readonly ContentPart[];
-    disabledTools?: readonly string[];
-    promptId?: string;
-  }): Promise<PromptLaunchResult>;
+  prompt(input: Parameters<IAgentPromptService['submit']>[0]): Promise<PromptLaunchResult>;
+  /** Wait for this prompt's terminal receipt, not ordinary turn events. Aborting stops only the wait. */
+  prompt(
+    input: Parameters<IAgentPromptService['submit']>[0],
+    options: { waitFor: 'terminal'; signal?: AbortSignal },
+  ): Promise<Awaited<ReturnType<IAgentPromptService['submitAndWait']>>>;
   /**
    * Submit one prompt with one or more skill activations bundled into the
    * same user message: the skills are validated up front (an unknown name or
@@ -103,9 +104,15 @@ export interface AgentFacade {
 }
 
 export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFacade {
+  function prompt(input: Parameters<IAgentPromptService['submit']>[0]): Promise<PromptLaunchResult>;
+  function prompt(input: Parameters<IAgentPromptService['submit']>[0], options: { waitFor: 'terminal'; signal?: AbortSignal }): ReturnType<IAgentPromptService['submitAndWait']>;
+  function prompt(input: Parameters<IAgentPromptService['submit']>[0], options?: { waitFor: 'terminal'; signal?: AbortSignal }) {
+    return call(scope, 'agentPromptService', options?.waitFor === 'terminal' ? 'submitAndWait' : 'submit', [input],
+      options === undefined ? undefined : { timeoutMs: 0, signal: options.signal },
+    ) as Promise<PromptLaunchResult | Awaited<ReturnType<IAgentPromptService['submitAndWait']>>>;
+  }
   return {
-    prompt: (input) =>
-      call(scope, 'agentPromptService', 'submit', [input]) as Promise<PromptLaunchResult>,
+    prompt,
     promptWithSkills: (input) =>
       call(scope, 'agentSkillService', 'promptWithSkills', [input]) as Promise<PromptWithSkillsResult>,
     steer: (input) =>

@@ -18,6 +18,7 @@ import {
   planDataSchema,
   promptLaunchResultSchema,
   promptPayloadSchema,
+  promptTerminalResultSchema,
   promptWithSkillsPayloadSchema,
   promptWithSkillsResultSchema,
   runShellCommandPayloadSchema,
@@ -32,6 +33,10 @@ export const agentPromptContract = {
   submit: {
     input: z.tuple([promptPayloadSchema]),
     output: maybe(promptLaunchResultSchema),
+  },
+  submitAndWait: {
+    input: z.tuple([promptPayloadSchema]),
+    output: promptTerminalResultSchema,
   },
   submitSteer: {
     input: z.tuple([steerPayloadSchema]),

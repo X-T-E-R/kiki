@@ -47,7 +47,6 @@ import { transformOpenApiDocument } from './openapi/transforms';
 import { registerRequestLogging } from './requestLogging';
 import { resolveRequestId } from './request-id';
 import { registerApiV1Routes } from './routes/registerApiV1Routes';
-import { registerApiV2Routes } from './routes/registerApiV2Routes';
 import { registerWebAssetRoutes } from './routes/webAssets';
 import {
   createServerLogger,
@@ -139,7 +138,7 @@ export interface ServerStartOptions {
    */
   readonly env?: NodeJS.ProcessEnv;
   /**
-   * Plugin marketplace catalog URL for `GET /api/v1/plugins/marketplace`.
+   * Plugin marketplace catalog URL for `GET /api/plugins/marketplace`.
    * Takes precedence over `KIMI_CODE_PLUGIN_MARKETPLACE_URL` and
    * `[plugins] marketplace_url` in config.toml. An empty or omitted value
    * means the marketplace is unconfigured and is not fetched.
@@ -168,7 +167,7 @@ export interface ServerStartOptions {
   readonly disableAuth?: boolean;
   /**
    * Custom browser tab title for this web UI instance (the CLI's
-   * `--web-title`). Surfaced as `web_title` in `GET /api/v1/meta` so the web
+   * `--web-title`). Surfaced as `web_title` in `GET /api/meta` so the web
    * UI can distinguish multiple instances on different machines. Instance-level
    * and frozen at boot; omit to let the UI fall back to `<workspace dir> | Kimi Code`.
    */
@@ -211,7 +210,7 @@ export interface ServerStartOptions {
    */
   readonly webAssetsDir?: string;
   /**
-   * Engine version, reported as `server_version` (GET /api/v1/meta), in the
+   * Engine version, reported as `server_version` (GET /api/meta), in the
    * OpenAPI document, and in the lock / instance registry. Defaults to
    * kap-server's own package version; the host product version travels in
    * `hostIdentity.version` instead.
@@ -392,6 +391,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
 
   const shutdownController = new AbortController();
+  app.addHook('onResponse', async () => {
+    if (shutdownController.signal.aborted) app.server.closeIdleConnections();
+  });
   const leaseRegistry = new LeaseRegistry(opts.leaseTtlMs, Date.now, (error) => {
     logger.warn({ err: error }, 'lease resource expiry cleanup failed');
   });
@@ -581,7 +583,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           { name: 'models', description: 'Configured model aliases' },
           { name: 'providers', description: 'Configured providers' },
           { name: 'sessions', description: 'Session lifecycle' },
-          { name: 'v2-sessions', description: 'Domain-grouped session list query (API v2)' },
+          { name: 'v2-sessions', description: 'Domain-grouped advanced session list query' },
           { name: 'workspaces', description: 'Workspace registry + folder picker' },
           { name: 'messages', description: 'Message history' },
           { name: 'search', description: 'Global message search' },
@@ -635,13 +637,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     onWorkspaceServed: (workspace) => registration.update({ workspaces: [workspace] }),
     dangerousBypassAuth: opts.disableAuth === true,
     externalDelegation: externalDelegationState,
+    apiV2: {
+      externalDelegation,
+      externalDelegationState,
+      seatManager,
+    },
     webTitle: opts.webTitle,
-  });
-
-  await registerApiV2Routes(app, core, {
-    externalDelegation,
-    externalDelegationState,
-    seatManager,
   });
 
   const runtimeSeatResolver: SeatResolver = {
@@ -677,7 +678,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     });
   }
 
-  const wssKlient = registerKlientHttp(app, core);
+  const wssKlient = registerKlientHttp(app, core, {
+    enableTerminals,
+    sessionViewBroadcaster: broadcaster,
+    sessionViewTranscriptService: transcriptService,
+  });
   const wssV1 = registerWsV1(core, {
     validateCredential,
     registry: connectionRegistry,

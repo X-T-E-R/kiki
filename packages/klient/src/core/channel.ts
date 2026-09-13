@@ -8,8 +8,35 @@
  * future session/agent facades plug in without changing this interface.
  */
 
+import type {
+  SessionViewSignal,
+  SessionViewSubscribeInput,
+  SessionViewTranscriptCatchUpInput,
+  SessionViewTranscriptPageInput,
+} from '../contract/session/view.js';
+
 export interface IDisposable {
   dispose(): void;
+}
+
+export interface SessionViewChannelSubscription {
+  updateSessionCursor(cursor: SessionViewSubscribeInput['sessionCursor']): void;
+  setTranscriptGrades(grades: SessionViewSubscribeInput['transcriptGrades']): void;
+  updateTranscriptCursor(agentId: string, cursor: NonNullable<SessionViewSubscribeInput['transcriptSince']>[string]): void;
+  restart(): void;
+  nudge(): void;
+  close(): void;
+}
+
+export interface SessionViewChannel {
+  snapshot(sessionId: string): Promise<unknown>;
+  transcriptPage(sessionId: string, input: SessionViewTranscriptPageInput): Promise<unknown>;
+  transcriptCatchUp(sessionId: string, input: SessionViewTranscriptCatchUpInput): Promise<unknown>;
+  subscribe(
+    sessionId: string,
+    input: SessionViewSubscribeInput,
+    handler: (signal: SessionViewSignal) => void,
+  ): SessionViewChannelSubscription;
 }
 
 /** Optional per-call knobs a transport may honor. */
@@ -45,6 +72,11 @@ export type EventSourceRef =
   | { readonly kind: 'emitter'; readonly service: string; readonly event: string };
 
 export interface KlientChannel {
+  /** HTTP-only KAP REST domains; other transports leave this unavailable. */
+  readonly rest?: import('./facade/http-rest.js').HttpRestFacade;
+  readonly terminal?: import('./facade/terminal.js').TerminalFacade;
+  readonly sessionView?: SessionViewChannel;
+  readonly sessionCommands?: import('../contract/session/commands.js').SessionCommandChannel;
   /**
    * Invoke `service.method(...args)` in the given scope; resolves with the raw
    * wire result. `options.timeoutMs` overrides the transport's default per-call
@@ -66,13 +98,17 @@ export interface KlientChannel {
   /**
    * Subscribe to an event source; `handler` receives raw wire payloads.
    * `onError` reports asynchronous subscription failures (bad source, dropped
-   * remote subscription) — synchronous validation may also throw.
+   * remote subscription) — synchronous validation may also throw. Every loss of
+   * subscription continuity must call `onError` before any restored `onReady`.
+   * `onReady` runs only after the source is attached, initially and after each
+   * reconnect. Failed or disposed subscriptions never acknowledge readiness.
    */
   listen(
     scope: ScopeRef,
     source: EventSourceRef,
     handler: (data: unknown) => void,
     onError?: (error: Error) => void,
+    onReady?: () => void,
   ): IDisposable;
   /** Tear the transport down (sockets, lazy bridges). Rejects in-flight calls. */
   close(): Promise<void>;

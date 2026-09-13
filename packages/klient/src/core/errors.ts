@@ -11,6 +11,8 @@ export class RPCError extends Error {
     message: string,
     readonly details?: unknown,
     readonly reason?: string,
+    readonly requestId?: string,
+    readonly data?: unknown,
   ) {
     super(message);
     this.name = 'RPCError';
@@ -49,6 +51,7 @@ const ENGINE_ERROR_CODES: Readonly<Record<string, number>> = {
   [ErrorCodes.THREAD_IDEMPOTENCY_CONFLICT]: 40932,
   [ErrorCodes.PROMPT_ID_CONFLICT]: 40938,
   [ErrorCodes.THREAD_LIMIT_EXCEEDED]: 42903,
+  'dispatch.limit_exceeded': 42904,
   [ErrorCodes.THREAD_DELIVERY_FAILED]: 50005,
 };
 

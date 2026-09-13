@@ -61,6 +61,19 @@ describe('API surface snapshot', () => {
     const paths = openApi.paths ?? {};
     expect(Object.keys(paths).length).toBeGreaterThan(0);
 
+    for (const obsoletePath of [
+      '/api/v1/meta',
+      '/api/v1/mcp/servers',
+      '/api/v1/ws',
+      '/api/v2/sessions',
+      '/api/v2/mcp/servers',
+      '/api/v2/usage',
+      '/api/v2/external-delegation/seats',
+    ]) {
+      const res = await fetch(`${base}${obsoletePath}`, { headers: authHeaders(server) } as never);
+      expect(res.status).toBe(404);
+    }
+
     const routes: Array<[string, string]> = [];
     for (const [path, item] of Object.entries(paths)) {
       for (const key of Object.keys(item)) {

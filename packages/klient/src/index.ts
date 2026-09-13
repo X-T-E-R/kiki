@@ -13,6 +13,20 @@ export type {
   KlientChannel,
   ScopeRef,
 } from './core/channel.js';
+export type { TerminalFacade, TerminalSignal, TerminalAttachResult, TerminalConnectionStatus } from './core/facade/terminal.js';
+export type {
+  HttpRestBinaryFile,
+  HttpRestConfigPatch,
+  HttpRestFacade,
+  HttpRestListSessionsQuery,
+  HttpRestPluginMarketplaceEntry,
+  HttpRestPluginMarketplaceResponse,
+  HttpRestRequestOptions,
+  HttpRestSearchMessageHit,
+  HttpRestSearchMessagesBody,
+  HttpRestSearchMessagesResponse,
+  HttpRestSessionArchive,
+} from './core/facade/http-rest.js';
 export { RPCError } from './core/errors.js';
 export { KlientValidationError, type ValidationPhase } from './core/validation.js';
 export {
@@ -22,7 +36,7 @@ export {
   type KlientOptions,
   type SessionHandle,
 } from './core/klient.js';
-export type { KlientEvents } from './core/events/hub.js';
+export type { EventSubscription, KlientEvents } from './core/events/hub.js';
 export type { Caller, ScopedCaller, ScopedStreamCaller } from './core/facade/global.js';
 
 export type {
@@ -95,6 +109,23 @@ export type {
   SessionMetaUpdatedPayload,
 } from './contract/global/events.js';
 export type { SessionEventPayloads } from './contract/session/events.js';
+export type { SessionViewChannel, SessionViewChannelSubscription } from './core/channel.js';
+export type { SessionCommandsFacade } from './core/facade/session-commands.js';
+export type {
+  SessionViewFacade,
+  SessionViewSignal,
+  SessionViewSubscribeInput,
+  SessionViewSubscription,
+  SessionViewTranscriptCatchUpInput,
+  SessionViewTranscriptFacade,
+  SessionViewTranscriptPageInput,
+} from './core/facade/session-view.js';
+export {
+  sessionViewSignalSchema,
+  sessionViewSubscribeInputSchema,
+  sessionViewTranscriptCatchUpInputSchema,
+  sessionViewTranscriptPageInputSchema,
+} from './contract/session/view.js';
 export type { AgentEventPayloads } from './contract/agent/events.js';
 
 // Wire types re-exported for consumer convenience (type-only; the engine is

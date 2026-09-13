@@ -36,7 +36,7 @@ import { resolveSessionFacts, toWireSession } from './sessions';
 
 const SNAPSHOT_MESSAGE_PAGE_SIZE = 100;
 
-class SnapshotNotFoundError extends Error {
+export class SnapshotNotFoundError extends Error {
   constructor(sessionId: string) {
     super(`session ${sessionId} does not exist`);
     this.name = 'SnapshotNotFoundError';
@@ -106,7 +106,7 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
   app.get(route.path, route.options, route.handler as Parameters<SnapshotRouteHost['get']>[2]);
 }
 
-async function assembleSnapshot(
+export async function assembleSnapshot(
   core: Scope,
   broadcaster: SessionEventBroadcaster,
   sessionId: string,

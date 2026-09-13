@@ -32,7 +32,7 @@ import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
 
 import { Readable } from 'node:stream';
 
-import type { EventSourceRef, IDisposable, ScopeRef } from '../../core/channel.js';
+import type { CallOptions, EventSourceRef, IDisposable, ScopeRef } from '../../core/channel.js';
 import { RPCError, toRPCError } from '../../core/errors.js';
 import { IEventService, serviceTokens } from './serviceRegistry.js';
 
@@ -50,13 +50,14 @@ export function wireClone<T>(value: T): T {
 }
 
 export interface MemoryDispatcher {
-  call(scope: ScopeRef, service: string, method: string, args: unknown[]): Promise<unknown>;
+  call(scope: ScopeRef, service: string, method: string, args: unknown[], options?: CallOptions): Promise<unknown>;
   stream(scope: ScopeRef, service: string, method: string, args: unknown[]): AsyncIterable<unknown>;
   listen(
     scope: ScopeRef,
     source: EventSourceRef,
     handler: (data: unknown) => void,
     onError?: (error: Error) => void,
+    onReady?: () => void,
   ): IDisposable;
 }
 
@@ -181,8 +182,10 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
   }
 
   return {
-    async call(scope, service, method, args) {
+    async call(scope, service, method, args, options) {
+      options?.signal?.throwIfAborted();
       const resolved = await resolveScope(scope);
+      options?.signal?.throwIfAborted();
       const instance = resolveService(resolved, service);
       // `fileService` adapts bytes ⇄ streams: the JSON wire cannot carry
       // `save`'s Readable source or `get`'s result stream, so both cross as
@@ -224,6 +227,12 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
         return wireClone(member);
       }
       const clonedArgs = args.map(wireClone);
+      if (service === 'mcpManagementService' && method === 'completeServerAuth') {
+        clonedArgs[1] = { signal: options?.signal };
+      }
+      if (service === 'agentPromptService' && method === 'submitAndWait') {
+        clonedArgs[1] = options?.signal;
+      }
       try {
         const result = await (member as (...a: unknown[]) => unknown).apply(instance, clonedArgs);
         return wireClone(result);
@@ -322,7 +331,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       };
     },
 
-    listen(scope, source, handler, onError) {
+    listen(scope, source, handler, onError, onReady) {
       // Scope resolution can be async (main-agent materialization); the
       // subscription attaches once settled. Disposing early cancels it.
       let inner: IDisposable | undefined;
@@ -334,10 +343,13 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
             inner = subscribeSource(resolved, source, handler);
           } catch (error) {
             onError?.(error instanceof Error ? error : new Error(String(error)));
+            return;
           }
+          if (disposed) inner.dispose();
+          else onReady?.();
         },
         (error: unknown) => {
-          onError?.(error instanceof Error ? error : new Error(String(error)));
+          if (!disposed) onError?.(error instanceof Error ? error : new Error(String(error)));
         },
       );
       return {

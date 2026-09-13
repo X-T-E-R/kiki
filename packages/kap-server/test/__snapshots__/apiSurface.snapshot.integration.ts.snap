@@ -22,331 +22,343 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
   "routes": [
     [
       "DELETE",
-      "/api/v1/files/{file_id}",
+      "/api/external-delegation/seats/{seat_id}",
     ],
     [
       "DELETE",
-      "/api/v1/oauth/login",
+      "/api/files/{file_id}",
     ],
     [
       "DELETE",
-      "/api/v1/providers/{provider_id}",
+      "/api/mcp/servers/{name}",
     ],
     [
       "DELETE",
-      "/api/v1/workspaces/{workspace_id}",
+      "/api/oauth/login",
     ],
     [
       "DELETE",
-      "/api/v1/workspaces/{workspace_id}/thread-communication",
+      "/api/providers/{provider_id}",
     ],
     [
       "DELETE",
-      "/api/v2/external-delegation/seats/{seat_id}",
+      "/api/workspaces/{workspace_id}",
     ],
     [
       "DELETE",
-      "/api/v2/mcp/servers/{name}",
+      "/api/workspaces/{workspace_id}/thread-communication",
     ],
     [
       "GET",
-      "/api/v1/agents",
+      "/api/agents",
     ],
     [
       "GET",
-      "/api/v1/agents/capabilities",
+      "/api/agents/capabilities",
     ],
     [
       "GET",
-      "/api/v1/auth",
+      "/api/auth",
     ],
     [
       "GET",
-      "/api/v1/capabilities",
+      "/api/capabilities",
     ],
     [
       "GET",
-      "/api/v1/capabilities/{capability_id}",
+      "/api/capabilities/{capability_id}",
     ],
     [
       "GET",
-      "/api/v1/catalog/providers",
+      "/api/catalog/providers",
     ],
     [
       "GET",
-      "/api/v1/catalog/providers/{catalog_id}",
+      "/api/catalog/providers/{catalog_id}",
     ],
     [
       "GET",
-      "/api/v1/config",
+      "/api/config",
     ],
     [
       "GET",
-      "/api/v1/connections",
+      "/api/connections",
     ],
     [
       "GET",
-      "/api/v1/debug/{service}/{method}",
+      "/api/debug/{service}/{method}",
     ],
     [
       "GET",
-      "/api/v1/debug/channels",
+      "/api/debug/channels",
     ],
     [
       "GET",
-      "/api/v1/debug/session/{session_id}/{service}/{method}",
+      "/api/debug/session/{session_id}/{service}/{method}",
     ],
     [
       "GET",
-      "/api/v1/debug/session/{session_id}/agent/{agent_id}/{service}/{method}",
+      "/api/debug/session/{session_id}/agent/{agent_id}/{service}/{method}",
     ],
     [
       "GET",
-      "/api/v1/debug/session/{session_id}/agent/{agent_id}/runtime-binding",
+      "/api/debug/session/{session_id}/agent/{agent_id}/runtime-binding",
     ],
     [
       "GET",
-      "/api/v1/debug/session/{session_id}/association",
+      "/api/debug/session/{session_id}/association",
     ],
     [
       "GET",
-      "/api/v1/debug/workspace/{workspace_id}/snapshot",
+      "/api/debug/workspace/{workspace_id}/snapshot",
     ],
     [
       "GET",
-      "/api/v1/debug/workspaces",
+      "/api/debug/workspaces",
     ],
     [
       "GET",
-      "/api/v1/files/{file_id}",
+      "/api/external-delegation/seats",
     ],
     [
       "GET",
-      "/api/v1/fs:browse",
+      "/api/files/{file_id}",
     ],
     [
       "GET",
-      "/api/v1/fs:content",
+      "/api/fs:browse",
     ],
     [
       "GET",
-      "/api/v1/fs:home",
+      "/api/fs:content",
     ],
     [
       "GET",
-      "/api/v1/gui/store/getItem",
+      "/api/fs:home",
     ],
     [
       "GET",
-      "/api/v1/gui/store/length",
+      "/api/gui/store/getItem",
     ],
     [
       "GET",
-      "/api/v1/healthz",
+      "/api/gui/store/length",
     ],
     [
       "GET",
-      "/api/v1/mcp/servers",
+      "/api/healthz",
     ],
     [
       "GET",
-      "/api/v1/meta",
+      "/api/klient/session-view/{sessionId}/snapshot",
     ],
     [
       "GET",
-      "/api/v1/models",
+      "/api/klient/session-view/{sessionId}/transcript",
     ],
     [
       "GET",
-      "/api/v1/nb-search/capabilities",
+      "/api/klient/session-view/{sessionId}/transcript/catch-up",
     ],
     [
       "GET",
-      "/api/v1/nb-search/test",
+      "/api/mcp/auth-statuses",
     ],
     [
       "GET",
-      "/api/v1/oauth/login",
+      "/api/mcp/runtime/servers",
     ],
     [
       "GET",
-      "/api/v1/oauth/region",
+      "/api/mcp/servers",
     ],
     [
       "GET",
-      "/api/v1/oauth/usage",
+      "/api/mcp/servers/{name}",
     ],
     [
       "GET",
-      "/api/v1/oauth/userinfo",
+      "/api/meta",
     ],
     [
       "GET",
-      "/api/v1/plugins",
+      "/api/models",
     ],
     [
       "GET",
-      "/api/v1/plugins/{plugin_id}",
+      "/api/nb-search/capabilities",
     ],
     [
       "GET",
-      "/api/v1/plugins/marketplace",
+      "/api/nb-search/test",
     ],
     [
       "GET",
-      "/api/v1/providers",
+      "/api/oauth/login",
     ],
     [
       "GET",
-      "/api/v1/providers/{provider_id}",
+      "/api/oauth/region",
     ],
     [
       "GET",
-      "/api/v1/sessions",
+      "/api/oauth/usage",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}",
+      "/api/oauth/userinfo",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/approvals",
+      "/api/plugins",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/children",
+      "/api/plugins/{plugin_id}",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/fs/{*}",
+      "/api/plugins/marketplace",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/goal",
+      "/api/providers",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/media/{file_id}",
+      "/api/providers/{provider_id}",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/messages",
+      "/api/sessions",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/messages/{message_id}",
+      "/api/sessions/{session_id}",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/profile",
+      "/api/sessions/{session_id}/approvals",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/prompts",
+      "/api/sessions/{session_id}/children",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/questions",
+      "/api/sessions/{session_id}/fs/{*}",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/runtime",
+      "/api/sessions/{session_id}/goal",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/skills",
+      "/api/sessions/{session_id}/media/{file_id}",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/snapshot",
+      "/api/sessions/{session_id}/messages",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/status",
+      "/api/sessions/{session_id}/messages/{message_id}",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/tasks",
+      "/api/sessions/{session_id}/profile",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/tasks/{task_id}",
+      "/api/sessions/{session_id}/prompts",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/terminals",
+      "/api/sessions/{session_id}/questions",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/terminals/{terminal_id}",
+      "/api/sessions/{session_id}/runtime",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/transcript",
+      "/api/sessions/{session_id}/skills",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/transcript/ops",
+      "/api/sessions/{session_id}/snapshot",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/transcript/plan",
+      "/api/sessions/{session_id}/status",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/transcript/user-messages",
+      "/api/sessions/{session_id}/tasks",
     ],
     [
       "GET",
-      "/api/v1/sessions/{session_id}/warnings",
+      "/api/sessions/{session_id}/tasks/{task_id}",
     ],
     [
       "GET",
-      "/api/v1/threads",
+      "/api/sessions/{session_id}/terminals",
     ],
     [
       "GET",
-      "/api/v1/tools",
+      "/api/sessions/{session_id}/terminals/{terminal_id}",
     ],
     [
       "GET",
-      "/api/v1/workspaces",
+      "/api/sessions/{session_id}/transcript",
     ],
     [
       "GET",
-      "/api/v1/workspaces/{workspace_id}/skills",
+      "/api/sessions/{session_id}/transcript/ops",
     ],
     [
       "GET",
-      "/api/v1/workspaces/{workspace_id}/thread-communication",
+      "/api/sessions/{session_id}/transcript/plan",
     ],
     [
       "GET",
-      "/api/v1/workspaces/{workspace_id}/trust",
+      "/api/sessions/{session_id}/transcript/user-messages",
     ],
     [
       "GET",
-      "/api/v2/external-delegation/seats",
+      "/api/sessions/{session_id}/warnings",
     ],
     [
       "GET",
-      "/api/v2/mcp/auth-statuses",
+      "/api/sessions/query",
     ],
     [
       "GET",
-      "/api/v2/mcp/servers",
+      "/api/threads",
     ],
     [
       "GET",
-      "/api/v2/mcp/servers/{name}",
+      "/api/tools",
     ],
     [
       "GET",
-      "/api/v2/sessions",
+      "/api/usage",
     ],
     [
       "GET",
-      "/api/v2/usage",
+      "/api/workspaces",
+    ],
+    [
+      "GET",
+      "/api/workspaces/{workspace_id}/skills",
+    ],
+    [
+      "GET",
+      "/api/workspaces/{workspace_id}/thread-communication",
+    ],
+    [
+      "GET",
+      "/api/workspaces/{workspace_id}/trust",
     ],
     [
       "GET",
@@ -358,11 +370,55 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PATCH",
-      "/api/v1/agents/{name}",
+      "/api/agents/{name}",
     ],
     [
       "PATCH",
-      "/api/v1/workspaces/{workspace_id}",
+      "/api/workspaces/{workspace_id}",
+    ],
+    [
+      "POST",
+      "/api/capabilities/{tail}",
+    ],
+    [
+      "POST",
+      "/api/config",
+    ],
+    [
+      "POST",
+      "/api/debug/{service}/{method}",
+    ],
+    [
+      "POST",
+      "/api/debug/session/{session_id}/{service}/{method}",
+    ],
+    [
+      "POST",
+      "/api/debug/session/{session_id}/agent/{agent_id}/{service}/{method}",
+    ],
+    [
+      "POST",
+      "/api/external-delegation/seats",
+    ],
+    [
+      "POST",
+      "/api/files",
+    ],
+    [
+      "POST",
+      "/api/fs:mkdir",
+    ],
+    [
+      "POST",
+      "/api/gui/store/clear",
+    ],
+    [
+      "POST",
+      "/api/gui/store/removeItem",
+    ],
+    [
+      "POST",
+      "/api/gui/store/setItem",
     ],
     [
       "POST",
@@ -370,299 +426,255 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
-      "/api/v1/capabilities/{tail}",
+      "/api/leases",
     ],
     [
       "POST",
-      "/api/v1/config",
+      "/api/mcp/auth:begin",
     ],
     [
       "POST",
-      "/api/v1/debug/{service}/{method}",
+      "/api/mcp/auth:cancel",
     ],
     [
       "POST",
-      "/api/v1/debug/session/{session_id}/{service}/{method}",
+      "/api/mcp/auth:complete",
     ],
     [
       "POST",
-      "/api/v1/debug/session/{session_id}/agent/{agent_id}/{service}/{method}",
+      "/api/mcp/auth:reset",
     ],
     [
       "POST",
-      "/api/v1/files",
+      "/api/mcp/runtime/servers/{tail}",
     ],
     [
       "POST",
-      "/api/v1/fs:mkdir",
+      "/api/mcp/servers",
     ],
     [
       "POST",
-      "/api/v1/gui/store/clear",
+      "/api/mcp/servers:inspect",
     ],
     [
       "POST",
-      "/api/v1/gui/store/removeItem",
+      "/api/mcp/servers:test",
     ],
     [
       "POST",
-      "/api/v1/gui/store/setItem",
+      "/api/models/{tail}",
     ],
     [
       "POST",
-      "/api/v1/leases",
+      "/api/oauth/login",
     ],
     [
       "POST",
-      "/api/v1/mcp/servers/{tail}",
+      "/api/oauth/logout",
     ],
     [
       "POST",
-      "/api/v1/models/{tail}",
+      "/api/plugins",
     ],
     [
       "POST",
-      "/api/v1/oauth/login",
+      "/api/plugins/{tail}",
     ],
     [
       "POST",
-      "/api/v1/oauth/logout",
+      "/api/providers",
     ],
     [
       "POST",
-      "/api/v1/plugins",
+      "/api/providers{action}",
     ],
     [
       "POST",
-      "/api/v1/plugins/{tail}",
+      "/api/providers/{tail}",
     ],
     [
       "POST",
-      "/api/v1/providers",
+      "/api/search",
     ],
     [
       "POST",
-      "/api/v1/providers{action}",
+      "/api/sessions",
     ],
     [
       "POST",
-      "/api/v1/providers/{tail}",
+      "/api/sessions:archive",
     ],
     [
       "POST",
-      "/api/v1/search",
+      "/api/sessions:restore",
     ],
     [
       "POST",
-      "/api/v1/sessions",
+      "/api/sessions/{session_id}:archive",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}:archive",
+      "/api/sessions/{session_id}/{tail}",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/{tail}",
+      "/api/sessions/{session_id}/approvals/{approval_id}",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/approvals/{approval_id}",
+      "/api/sessions/{session_id}/children",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/children",
+      "/api/sessions/{session_id}/export",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/export",
+      "/api/sessions/{session_id}/external-delegation/cancel",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/messages/{tail}",
+      "/api/sessions/{session_id}/external-delegation/continue",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/profile",
+      "/api/sessions/{session_id}/external-delegation/dispatch",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/prompts",
+      "/api/sessions/{session_id}/external-delegation/events",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/prompts:steer",
+      "/api/sessions/{session_id}/external-delegation/interactions",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/prompts/{tail}",
+      "/api/sessions/{session_id}/external-delegation/list",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/questions/{tail}",
+      "/api/sessions/{session_id}/external-delegation/respond",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/runtime",
+      "/api/sessions/{session_id}/external-delegation/result",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/skills/{tail}",
+      "/api/sessions/{session_id}/external-delegation/send",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/source-overlay",
+      "/api/sessions/{session_id}/external-delegation/status",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/tasks/{tail}",
+      "/api/sessions/{session_id}/external-delegation/transcript",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/terminals",
+      "/api/sessions/{session_id}/external-delegation/wait",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/terminals/{tail}",
+      "/api/sessions/{session_id}/messages/{tail}",
     ],
     [
       "POST",
-      "/api/v1/sessions/{session_id}/title/generate",
+      "/api/sessions/{session_id}/profile",
     ],
     [
       "POST",
-      "/api/v1/shutdown",
+      "/api/sessions/{session_id}/prompts",
     ],
     [
       "POST",
-      "/api/v1/threads:read",
+      "/api/sessions/{session_id}/prompts:steer",
     ],
     [
       "POST",
-      "/api/v1/threads:send",
+      "/api/sessions/{session_id}/prompts/{tail}",
     ],
     [
       "POST",
-      "/api/v1/threads:wait",
+      "/api/sessions/{session_id}/questions/{tail}",
     ],
     [
       "POST",
-      "/api/v1/workspace/fs:search",
+      "/api/sessions/{session_id}/runtime",
     ],
     [
       "POST",
-      "/api/v1/workspace/fs:suggest",
+      "/api/sessions/{session_id}/skills/{tail}",
     ],
     [
       "POST",
-      "/api/v1/workspaces",
+      "/api/sessions/{session_id}/source-overlay",
     ],
     [
       "POST",
-      "/api/v1/workspaces/{workspace_id}/trust",
+      "/api/sessions/{session_id}/tasks/{tail}",
     ],
     [
       "POST",
-      "/api/v1/workspaces/{workspace_id}/untrust",
+      "/api/sessions/{session_id}/terminals",
     ],
     [
       "POST",
-      "/api/v2/external-delegation/seats",
+      "/api/sessions/{session_id}/terminals/{tail}",
     ],
     [
       "POST",
-      "/api/v2/mcp/auth:begin",
+      "/api/sessions/{session_id}/title/generate",
     ],
     [
       "POST",
-      "/api/v2/mcp/auth:cancel",
+      "/api/shutdown",
     ],
     [
       "POST",
-      "/api/v2/mcp/auth:complete",
+      "/api/threads:read",
     ],
     [
       "POST",
-      "/api/v2/mcp/auth:reset",
+      "/api/threads:send",
     ],
     [
       "POST",
-      "/api/v2/mcp/servers",
+      "/api/threads:wait",
     ],
     [
       "POST",
-      "/api/v2/mcp/servers:inspect",
+      "/api/workspace/fs:search",
     ],
     [
       "POST",
-      "/api/v2/mcp/servers:test",
+      "/api/workspace/fs:suggest",
     ],
     [
       "POST",
-      "/api/v2/sessions:archive",
+      "/api/workspaces",
     ],
     [
       "POST",
-      "/api/v2/sessions:restore",
+      "/api/workspaces/{workspace_id}/trust",
     ],
     [
       "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/cancel",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/continue",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/dispatch",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/events",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/interactions",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/list",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/respond",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/result",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/send",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/status",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/transcript",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/external-delegation/wait",
+      "/api/workspaces/{workspace_id}/untrust",
     ],
     [
       "PUT",
-      "/api/v1/providers/{provider_id}",
+      "/api/mcp/servers/{name}",
     ],
     [
       "PUT",
-      "/api/v1/workspaces/{workspace_id}/thread-communication",
+      "/api/providers/{provider_id}",
     ],
     [
       "PUT",
-      "/api/v2/mcp/servers/{name}",
+      "/api/workspaces/{workspace_id}/thread-communication",
     ],
   ],
 }

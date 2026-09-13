@@ -6,6 +6,7 @@
  */
 
 import type { KlientChannel, ScopeRef } from './channel.js';
+import { createTerminalFacade, type TerminalFacade } from './facade/terminal.js';
 import { globalContract, isStreamingContract } from '#/contract/index';
 import { globalEvents, type KlientEventPayloads } from '#/contract/global/events';
 import { sessionEvents, type SessionEventPayloads } from '#/contract/session/events';
@@ -14,6 +15,8 @@ import type { EventRegistration, StreamingProcedureContract } from '#/contract/t
 import { EventHub, type KlientEvents } from './events/hub.js';
 import { createGlobalFacade, type GlobalFacade, type ScopedCaller, type ScopedStreamCaller } from './facade/global.js';
 import { createSessionFacade, type SessionFacade } from './facade/session.js';
+import { createSessionViewFacade, type SessionViewFacade } from './facade/session-view.js';
+import { createSessionCommandsFacade, type SessionCommandsFacade } from './facade/session-commands.js';
 import { createAgentFacade, type AgentFacade } from './facade/agent.js';
 import { parseChunk, parseInput, parseOutput } from './validation.js';
 
@@ -28,6 +31,8 @@ export interface KlientOptions {
 
 export interface SessionHandle extends SessionFacade {
   readonly events: KlientEvents<SessionEventPayloads>;
+  readonly view: SessionViewFacade;
+  readonly commands: SessionCommandsFacade;
   agent(agentId: string): AgentHandle;
 }
 
@@ -36,6 +41,9 @@ export interface AgentHandle extends AgentFacade {
 }
 
 export interface Klient {
+  /** HTTP-only KAP REST domains; unavailable on memory and IPC transports. */
+  readonly rest?: import('./facade/http-rest.js').HttpRestFacade;
+  readonly terminal: TerminalFacade;
   readonly global: GlobalFacade;
   readonly events: KlientEvents;
   session(sessionId: string): SessionHandle;
@@ -107,6 +115,8 @@ export function createKlientFromChannel(
   };
 
   return {
+    rest: channel.rest,
+    terminal: createTerminalFacade(channel.terminal),
     global: createGlobalFacade(call, callStream),
     events: makeHub<KlientEventPayloads>({}, globalEvents),
     session(sessionId: string): SessionHandle {
@@ -114,6 +124,8 @@ export function createKlientFromChannel(
       return {
         ...createSessionFacade(call, sessionId),
         events: makeHub<SessionEventPayloads>(scope, sessionEvents),
+        view: createSessionViewFacade(channel.sessionView, sessionId, validate),
+        commands: createSessionCommandsFacade(channel.sessionCommands, sessionId, validate),
         agent(agentId: string): AgentHandle {
           const agentScope: ScopeRef = { sessionId, agentId };
           return {

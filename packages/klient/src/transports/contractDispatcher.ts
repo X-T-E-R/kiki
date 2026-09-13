@@ -3,7 +3,7 @@ import type {
   ProcedureContract,
   StreamingProcedureContract,
 } from '../contract/types.js';
-import type { EventSourceRef, IDisposable, ScopeRef } from '../core/channel.js';
+import type { CallOptions, EventSourceRef, IDisposable, ScopeRef } from '../core/channel.js';
 import { RPCError } from '../core/errors.js';
 import {
   KlientValidationError,
@@ -23,13 +23,14 @@ const INTERNAL_ERROR = 50001;
 type ContractEntry = ProcedureContract | StreamingProcedureContract;
 
 export interface ContractDispatcher {
-  call(scope: ScopeRef, service: string, method: string, args: unknown[]): Promise<unknown>;
+  call(scope: ScopeRef, service: string, method: string, args: unknown[], options?: CallOptions): Promise<unknown>;
   stream(scope: ScopeRef, service: string, method: string, args: unknown[]): AsyncIterable<unknown>;
   listen(
     scope: ScopeRef,
     source: EventSourceRef,
     handler: (data: unknown) => void,
     onError?: (error: Error) => void,
+    onReady?: () => void,
   ): IDisposable;
 }
 
@@ -37,13 +38,13 @@ export function createContractDispatcher(root: ScopeLike): ContractDispatcher {
   const dispatcher = createMemoryDispatcher(root);
 
   return {
-    async call(scope, service, method, args) {
+    async call(scope, service, method, args, options) {
       const { name, procedure } = resolveProcedure(service, method);
       if (isStreamingContract(procedure)) {
         throw new RPCError(REQUEST_INVALID, `${name} is a streaming procedure`);
       }
       const wireArgs = parseInputAsRpc(name, procedure, args);
-      const data = await dispatcher.call(scope, service, method, wireArgs);
+      const data = await dispatcher.call(scope, service, method, wireArgs, options);
       return parseOutputAsRpc(name, procedure, data);
     },
 
@@ -56,8 +57,8 @@ export function createContractDispatcher(root: ScopeLike): ContractDispatcher {
       return validatedStream(dispatcher, scope, service, method, wireArgs, name, procedure);
     },
 
-    listen(scope, source, handler, onError) {
-      return dispatcher.listen(scope, source, handler, onError);
+    listen(scope, source, handler, onError, onReady) {
+      return dispatcher.listen(scope, source, handler, onError, onReady);
     },
   };
 }
