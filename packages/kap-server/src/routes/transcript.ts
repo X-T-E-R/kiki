@@ -1,8 +1,6 @@
 import { MAIN_AGENT_ID, type Scope } from '@kiki/agent-core-v2';
 import {
-  filterOpsForGrade,
   isPlainAgentId,
-  paginateTurns,
   transcriptOpsCatchupResponseSchema,
   transcriptOpsQuerySchema,
   transcriptPlanResponseSchema,
@@ -21,6 +19,7 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { ErrorCode } from '../protocol/error-codes';
 import { defineRoute } from '../middleware/defineRoute';
 import type { TranscriptService } from '../services/transcript/transcriptService';
+import { readSessionViewTranscriptCatchUp, readSessionViewTranscriptPage } from '../transport/klient/sessionViewReads';
 
 interface TranscriptRouteHost {
   get(
@@ -64,8 +63,6 @@ const transcriptQueryCoercion = z
   });
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
-
-const DEFAULT_PAGE_SIZE = 20;
 
 const userMessagesQueryCoercion = z
   .object({
@@ -124,79 +121,17 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
     async (req, reply) => {
       const { session_id } = req.params;
       const query = req.query;
-      const pageQuery = {
+      const data = await readSessionViewTranscriptPage(transcriptService, session_id, {
+        agentId: query.agent_id,
         beforeTurn: query.before_turn,
         afterTurn: query.after_turn,
-        pageSize: query.page_size ?? DEFAULT_PAGE_SIZE,
-      };
-
-      const store = transcriptService.forSessionLive(session_id);
-      if (store !== undefined) {
-        await transcriptService.whenReady(session_id);
-        await transcriptService.ensureAgentHistory(session_id, query.agent_id);
-        const transcript = store.ensureAgent(query.agent_id);
-        const page = paginateTurns(transcript.getItems(), pageQuery);
-        reply.send(
-          okEnvelope(
-            {
-              session_id,
-              agent_id: query.agent_id,
-              items: page.items,
-              has_more: page.hasMore,
-              tasks: [...transcript.getTasks().values()],
-              interactions: [...transcript.getInteractions().values()],
-              attachments: [...transcript.getAttachments().values()],
-              todos: [...transcript.getTodos().values()],
-              prompts: [...transcript.getPrompts().values()],
-              meta: transcript.getMeta(),
-              agents: store.agents(),
-              pending_interactions: transcript.listPendingInteractions(),
-              cursor: transcriptService.getTranscriptCursor(session_id, query.agent_id),
-              coverage: coverageForItems(page.items, page.hasMore),
-            },
-            req.id,
-          ),
-        );
-        return;
-      }
-
-      const snapshot = await transcriptService.readColdSnapshot(session_id, query.agent_id);
-      if (snapshot === undefined) {
+        pageSize: query.page_size,
+      });
+      if (data === undefined) {
         sendSessionNotFound(reply, req.id, session_id);
         return;
       }
-      const page = paginateTurns(snapshot.items, pageQuery);
-      const roster = (await transcriptService.readColdRoster(session_id)) ?? [];
-      if (
-        !roster.some((d) => d.agentId === query.agent_id) &&
-        (snapshot.items.length > 0 || snapshot.tasks.length > 0 || query.agent_id === MAIN_AGENT_ID)
-      ) {
-        roster.push({
-          agentId: query.agent_id,
-          type: query.agent_id === MAIN_AGENT_ID ? ('main' as const) : ('sub' as const),
-        });
-      }
-      reply.send(
-        okEnvelope(
-          {
-            session_id,
-            agent_id: query.agent_id,
-            items: page.items,
-            has_more: page.hasMore,
-            tasks: snapshot.tasks,
-            interactions: snapshot.interactions,
-            attachments: snapshot.attachments,
-            todos: snapshot.todos,
-            prompts: snapshot.prompts,
-            meta: snapshot.meta,
-            agents: roster,
-            pending_interactions: [],
-            cursor: undefined,
-            coverage: coverageForItems(page.items, page.hasMore),
-          },
-          req.id,
-        ),
-      );
+      reply.send(okEnvelope(data, req.id));
     },
   );
   app.get(route.path, route.options, route.handler as Parameters<TranscriptRouteHost['get']>[2]);
@@ -220,46 +155,16 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
       const { session_id } = req.params;
       const query = req.query;
 
-      const catchup = transcriptService.getOpsSince(session_id, query.agent_id, {
-        epoch: query.epoch,
-        seq: query.since_seq,
+      const data = await readSessionViewTranscriptCatchUp(transcriptService, session_id, {
+        agentId: query.agent_id,
+        since: { epoch: query.epoch, seq: query.since_seq },
+        grade: query.grade,
       });
-      if (catchup === undefined) {
-        const roster = await transcriptService.readColdRoster(session_id);
-        if (roster === undefined) {
-          sendSessionNotFound(reply, req.id, session_id);
-          return;
-        }
-        reply.send(
-          okEnvelope(
-            {
-              session_id,
-              agent_id: query.agent_id,
-              epoch: query.epoch ?? `cold:${session_id}:${query.agent_id}`,
-              batches: [],
-              through_seq: 0,
-              complete: false,
-            },
-            req.id,
-          ),
-        );
+      if (data === undefined) {
+        sendSessionNotFound(reply, req.id, session_id);
         return;
       }
-      reply.send(
-        okEnvelope(
-          {
-            session_id,
-            agent_id: query.agent_id,
-            epoch: catchup.epoch,
-            batches: catchup.batches
-              .map((batch) => ({ ...batch, ops: filterOpsForGrade(query.grade, batch.ops) }))
-              .filter((batch) => batch.ops.length > 0),
-            through_seq: catchup.throughSeq,
-            complete: catchup.complete,
-          },
-          req.id,
-        ),
-      );
+      reply.send(okEnvelope(data, req.id));
     },
   );
   app.get(opsRoute.path, opsRoute.options, opsRoute.handler as Parameters<TranscriptRouteHost['get']>[2]);
@@ -422,17 +327,6 @@ function projectUserMessages(
     }
   }
   return { messages, attachments: [...attachments.values()] };
-}
-
-function coverageForItems(items: readonly TranscriptItem[], hasMoreOlder: boolean) {
-  if (!hasMoreOlder) return { kind: 'full' as const, hasMoreOlder: false as const };
-  const turns = items.filter((item) => item.kind === 'turn');
-  return {
-    kind: 'tail' as const,
-    fromTurnId: turns[0]?.turnId,
-    throughTurnId: turns.at(-1)?.turnId,
-    hasMoreOlder,
-  };
 }
 
 function sendSessionNotFound(

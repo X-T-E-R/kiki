@@ -55,6 +55,12 @@ export interface FrameUpsertOp {
   readonly frame: TranscriptFrame;
 }
 
+/** Authoritative count at the enclosing batch cursor; omission explicitly invalidates count knowledge. */
+export interface ToolCountSetOp {
+  readonly op: 'tool.count.set';
+  readonly count?: number;
+}
+
 export type AppendTarget =
   | { readonly type: 'frame'; readonly turnId: TurnId; readonly stepId: StepId; readonly frameId: FrameId }
   | { readonly type: 'task'; readonly taskId: TaskId };
@@ -144,6 +150,7 @@ export type TranscriptOperation =
   | TurnUpsertOp
   | StepUpsertOp
   | FrameUpsertOp
+  | ToolCountSetOp
   | AppendOp
   | MarkerUpsertOp
   | TaskRefUpsertOp
@@ -172,6 +179,10 @@ export interface AgentTranscriptSnapshot {
   readonly todos: readonly TranscriptTodo[];
   /** Global prompt queue entities; never paginated. */
   readonly prompts: readonly TranscriptPrompt[];
+  /** Global tool-frame count when known. */
+  readonly toolCallCount?: number;
+  /** Explicit false prevents deriving a zero count from an empty but unavailable history. */
+  readonly toolCallCountKnown?: boolean;
   readonly meta: TranscriptMeta;
   /**
    * When the reset only ships a tail window, this flag tells the consumer
@@ -183,6 +194,8 @@ export interface AgentTranscriptSnapshot {
 export interface AppliedOps {
   /** Ops that were accepted and mutated the store (normalized). */
   readonly accepted: readonly TranscriptOperation[];
+  /** Exact tool-frame arithmetic delta when it can be proven. */
+  readonly toolCallCountDelta?: number;
   /** Set when an `append` could not be placed (offset beyond local length). */
   readonly gap?: { readonly target: AppendTarget; readonly expected: number; readonly got: number };
 }

@@ -8,6 +8,7 @@ import { TranscriptFactReducer } from '#/facts/reducer';
 import { TranscriptWireAdapter, type TranscriptWireRecord } from '#/facts/wireAdapter';
 import { AgentTranscript } from '#/store/agentTranscript';
 import {
+  agentTranscriptSnapshotSchema,
   transcriptGradeSpecSchema,
   transcriptOperationSchema,
   transcriptOpsCatchupResponseSchema,
@@ -74,6 +75,11 @@ describe('granularity', () => {
       'prompt.upsert',
       'meta.merge',
     ]);
+  });
+
+  it('forwards tool count sets at turn grade', () => {
+    const op = { op: 'tool.count.set', count: 7 } as const;
+    expect(filterOpsForGrade('turn', [op])).toEqual([op]);
   });
 
   it('block admits step/frame upserts but no appends', () => {
@@ -162,6 +168,7 @@ describe('granularity', () => {
       ],
       todos: [{ todoId: 'todo', items: [{ title: 'write tests', status: 'in_progress' as const }] }],
       prompts: [{ promptId: 'p1', status: 'running' as const, createdAt: '2026-07-22T00:00:00.000Z' }],
+      toolCallCount: 3,
       meta: {},
     };
     const turnGrade = redactSnapshotForGrade('turn', snapshot);
@@ -169,6 +176,7 @@ describe('granularity', () => {
     expect(turnGrade.attachments).toHaveLength(1);
     expect(turnGrade.todos).toHaveLength(1);
     expect(turnGrade.prompts).toHaveLength(1);
+    expect(turnGrade.toolCallCount).toBe(3);
     const turn = turnGrade.items[0];
     expect(turn?.kind === 'turn' && turn.steps).toEqual([]);
     expect(turn?.kind === 'turn' && turn.prompt).toBe('hi');
@@ -297,6 +305,17 @@ describe('contract schemas', () => {
         cursor,
       }).success,
     ).toBe(true);
+    expect(agentTranscriptSnapshotSchema.parse({ ...snapshot, toolCallCount: 7 }).toolCallCount).toBe(7);
+    expect(
+      agentTranscriptSnapshotSchema.safeParse({ ...snapshot, toolCallCount: -1 }).success,
+    ).toBe(false);
+    expect(
+      agentTranscriptSnapshotSchema.parse({ ...snapshot, toolCallCount: undefined, toolCallCountKnown: false }).toolCallCountKnown,
+    ).toBe(false);
+    const invalidateCount = { op: 'tool.count.set', count: undefined } as const;
+    expect(transcriptOperationSchema.safeParse(invalidateCount).success).toBe(true);
+    expect(transcriptOperationSchema.safeParse({ op: 'tool.count.set', count: 0 }).success).toBe(true);
+    expect(transcriptOperationSchema.safeParse({ op: 'tool.count.set', count: -1 }).success).toBe(false);
     expect(
       transcriptOpsPayloadSchema.safeParse({
         session_id: 's1',
@@ -462,6 +481,10 @@ describe('contract schemas', () => {
       coverage: { kind: 'full', hasMoreOlder: false },
     });
     expect(ok.success).toBe(true);
+    expect(transcriptResponseSchema.parse({ ...ok.data, tool_call_count: 3 }).tool_call_count).toBe(3);
+    expect(
+      transcriptResponseSchema.safeParse({ ...ok.data, tool_call_count: -1 }).success,
+    ).toBe(false);
     expect(
       transcriptResponseSchema.safeParse({
         ...ok.data,
@@ -2173,5 +2196,14 @@ describe('TranscriptWireAdapter', () => {
     expect(first.changedIds).toEqual(new Set(['t0']));
     expect(duplicate.acceptedFacts).toHaveLength(0);
     expect(duplicate.acceptedOperations).toHaveLength(0);
+
+    const countResult = reducer.apply([
+      {
+        factId: 'fact-count',
+        durability: 'durable',
+        operations: [{ op: 'tool.count.set', count: 7 }],
+      },
+    ]);
+    expect(countResult.changedIds).toEqual(new Set(['toolCallCount']));
   });
 });

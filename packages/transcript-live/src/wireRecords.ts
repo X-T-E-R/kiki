@@ -5,7 +5,16 @@ export interface ContextRecord {
   readonly [key: string]: unknown;
 }
 
+export interface WireRecordsReadResult {
+  readonly records: ContextRecord[];
+  readonly complete: boolean;
+}
+
 export async function readWireRecords(wirePath: string): Promise<ContextRecord[]> {
+  return (await readWireRecordsWithCompleteness(wirePath)).records;
+}
+
+export async function readWireRecordsWithCompleteness(wirePath: string): Promise<WireRecordsReadResult> {
   const raw = await readFile(wirePath, 'utf8');
   const lines = raw.split('\n');
   const records: ContextRecord[] = [];
@@ -16,12 +25,12 @@ export async function readWireRecords(wirePath: string): Promise<ContextRecord[]
     try {
       records.push(JSON.parse(line) as ContextRecord);
     } catch (parseError) {
-      if (i === lines.length - 1) break;
+      if (i === lines.length - 1) return { records, complete: false };
       throw new Error(
         `wire.jsonl: corrupted line ${i + 1} in ${wirePath}: ${String(parseError)}`,
         { cause: parseError },
       );
     }
   }
-  return records;
+  return { records, complete: true };
 }

@@ -18,6 +18,10 @@ import type {
 } from './operation';
 import { transcriptValueEquals } from './equality';
 
+const EMPTY_REMOVED_ITEM_IDS: ReadonlySet<string> = new Set();
+const REMOVED_ITEM_ID_LIMIT = 2048;
+const removedItemIdsByState = new WeakMap<AgentState, ReadonlySet<string>>();
+
 /** Mutable-free aggregate state behind one AgentTranscript. */
 export interface AgentState {
   readonly items: readonly TranscriptItem[];
@@ -30,6 +34,8 @@ export interface AgentState {
   readonly todos: ReadonlyMap<TodoId, TranscriptTodo>;
   /** Global prompt queue entities, keyed by id. */
   readonly prompts: ReadonlyMap<PromptId, TranscriptPrompt>;
+  /** Global tool-frame count when known. */
+  readonly toolCallCount?: number;
   readonly meta: TranscriptMeta;
   /** Interaction ids currently in 'pending' state (derived index). */
   readonly pendingInteractions: ReadonlySet<InteractionId>;
@@ -44,6 +50,7 @@ export const EMPTY_AGENT_STATE: AgentState = {
   attachments: new Map(),
   todos: new Map(),
   prompts: new Map(),
+  toolCallCount: 0,
   meta: {},
   pendingInteractions: new Set(),
   hasMoreOlder: false,
@@ -53,41 +60,99 @@ export interface ApplyResult {
   readonly state: AgentState;
   /** True when the op changed observable state. */
   readonly changed: boolean;
+  /** Exact tool-frame arithmetic delta when it can be proven. */
+  readonly toolCallCountDelta?: number;
   /** Present when an append failed to land (offset beyond local length). */
   readonly gap?: { readonly expected: number; readonly got: number };
 }
 
 export function applyOperation(state: AgentState, op: TranscriptOperation): ApplyResult {
+  let result: ApplyResult;
   switch (op.op) {
     case 'reset':
-      return applyReset(state, op);
+      result = applyReset(state, op);
+      break;
     case 'turn.upsert':
-      return applyTurnUpsert(state, op.turn);
+      result = applyTurnUpsert(state, op.turn);
+      break;
     case 'step.upsert':
-      return applyStepUpsert(state, op.turnId, op.step);
+      result = applyStepUpsert(state, op.turnId, op.step);
+      break;
     case 'frame.upsert':
-      return applyFrameUpsert(state, op);
+      result = applyFrameUpsert(state, op);
+      break;
+    case 'tool.count.set':
+      result = applyToolCountSet(state, op.count);
+      break;
     case 'append':
-      return applyAppend(state, op);
+      result = applyAppend(state, op);
+      break;
     case 'marker.upsert':
-      return applyItemUpsert(state, op.item, op.item.markerId, op.beforeTurn);
+      result = applyItemUpsert(state, op.item, op.item.markerId, op.beforeTurn);
+      break;
     case 'taskref.upsert':
-      return applyItemUpsert(state, op.item, op.item.refId, op.beforeTurn);
+      result = applyItemUpsert(state, op.item, op.item.refId, op.beforeTurn);
+      break;
     case 'task.upsert':
-      return applyTaskUpsert(state, op.task);
+      result = applyTaskUpsert(state, op.task);
+      break;
     case 'interaction.upsert':
-      return applyInteractionUpsert(state, op.interaction);
+      result = applyInteractionUpsert(state, op.interaction);
+      break;
     case 'attachment.upsert':
-      return applyAttachmentUpsert(state, op.attachment);
+      result = applyAttachmentUpsert(state, op.attachment);
+      break;
     case 'todo.upsert':
-      return applyTodoUpsert(state, op.todo);
+      result = applyTodoUpsert(state, op.todo);
+      break;
     case 'prompt.upsert':
-      return applyPromptUpsert(state, op.prompt);
+      result = applyPromptUpsert(state, op.prompt);
+      break;
     case 'meta.merge':
-      return applyMetaMerge(state, op.meta);
+      result = applyMetaMerge(state, op.meta);
+      break;
     case 'items.remove':
-      return applyItemsRemove(state, op.ids);
+      result = applyItemsRemove(state, op.ids);
+      break;
   }
+  result = normalizeToolCallDelta(op, result);
+  carryRemovedItemIds(state, result.state, op);
+  return result;
+}
+
+function normalizeToolCallDelta(op: TranscriptOperation, result: ApplyResult): ApplyResult {
+  if (result.toolCallCountDelta !== undefined) return result;
+  if (op.op === 'reset' || op.op === 'tool.count.set' || op.op === 'items.remove') return result;
+  return { ...result, toolCallCountDelta: 0 };
+}
+
+function carryRemovedItemIds(
+  state: AgentState,
+  next: AgentState,
+  op: TranscriptOperation,
+): void {
+  if (op.op === 'reset') {
+    const coverage = op.coverage ?? fullCoverage(op.snapshot.hasMoreOlder ?? false);
+    if (coverage.kind === 'full') {
+      removedItemIdsByState.set(next, EMPTY_REMOVED_ITEM_IDS);
+      return;
+    }
+  }
+  if (next === state) return;
+  const prior = removedItemIdsByState.get(state);
+  if (op.op === 'items.remove') {
+    const removed = new Set(prior ?? EMPTY_REMOVED_ITEM_IDS);
+    for (const id of op.ids) {
+      removed.add(id);
+      if (removed.size > REMOVED_ITEM_ID_LIMIT) {
+        const oldest = removed.values().next().value;
+        if (oldest !== undefined) removed.delete(oldest);
+      }
+    }
+    removedItemIdsByState.set(next, removed);
+    return;
+  }
+  if (prior !== undefined) removedItemIdsByState.set(next, prior);
 }
 
 function applyReset(state: AgentState, op: Extract<TranscriptOperation, { op: 'reset' }>): ApplyResult {
@@ -107,6 +172,14 @@ function applyReset(state: AgentState, op: Extract<TranscriptOperation, { op: 'r
   const todos = stabilizeMap(state.todos, op.snapshot.todos, (value) => value.todoId);
   const prompts = stabilizeMap(state.prompts, op.snapshot.prompts, (value) => value.promptId);
   const meta = transcriptValueEquals(state.meta, op.snapshot.meta) ? state.meta : op.snapshot.meta;
+  const toolCallCount = toolCallCountAfterReset(
+    state,
+    op.snapshot.toolCallCount,
+    op.snapshot.toolCallCountKnown,
+    op.grade,
+    items,
+    coverage,
+  );
   const pending = new Set<InteractionId>();
   for (const interaction of interactions.values()) {
     if (interaction.state === 'pending') pending.add(interaction.interactionId);
@@ -119,6 +192,7 @@ function applyReset(state: AgentState, op: Extract<TranscriptOperation, { op: 'r
     attachments,
     todos,
     prompts,
+    toolCallCount,
     meta,
     pendingInteractions: pending,
     hasMoreOlder,
@@ -130,15 +204,65 @@ function applyReset(state: AgentState, op: Extract<TranscriptOperation, { op: 'r
     attachments !== state.attachments ||
     todos !== state.todos ||
     prompts !== state.prompts ||
+    toolCallCount !== state.toolCallCount ||
     meta !== state.meta ||
     hasMoreOlder !== state.hasMoreOlder;
-  return changed ? { state: next, changed: true } : { state, changed: false };
+  return changed
+    ? { state: next, changed: true, toolCallCountDelta: undefined }
+    : { state, changed: false, toolCallCountDelta: 0 };
+}
+
+function applyToolCountSet(state: AgentState, count: number | undefined): ApplyResult {
+  if (state.toolCallCount === count) return { state, changed: false, toolCallCountDelta: undefined };
+  return {
+    state: { ...state, toolCallCount: count },
+    changed: true,
+    toolCallCountDelta: undefined,
+  };
 }
 
 function fullCoverage(hasMoreOlder: boolean): TranscriptCoverage {
   return hasMoreOlder
     ? { kind: 'tail', hasMoreOlder: true }
     : { kind: 'full', hasMoreOlder: false };
+}
+
+function countToolCallFrames(items: readonly TranscriptItem[]): number {
+  let count = 0;
+  for (const item of items) {
+    if (item.kind !== 'turn') continue;
+    for (const step of item.steps) {
+      for (const frame of step.frames) {
+        if (frame.kind === 'tool') count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function canPreservePartialToolCallCount(state: AgentState): boolean {
+  return state.hasMoreOlder || state.items.some((item) => item.kind === 'turn');
+}
+
+function toolCallCountAfterReset(
+  state: AgentState,
+  supplied: number | undefined,
+  suppliedKnown: boolean | undefined,
+  grade: 'turn' | 'block' | 'delta' | undefined,
+  items: readonly TranscriptItem[],
+  coverage: TranscriptCoverage,
+): number | undefined {
+  if (suppliedKnown === false) return undefined;
+  if (grade === 'turn' && suppliedKnown !== true && supplied === undefined) return undefined;
+  const visible = countToolCallFrames(items);
+  if (coverage.kind === 'full') return supplied ?? visible;
+  if (supplied !== undefined) return Math.max(supplied, visible);
+  if (state.toolCallCount === undefined || !canPreservePartialToolCallCount(state)) return undefined;
+  return Math.max(state.toolCallCount, visible);
+}
+
+function adjustToolCallCount(count: number | undefined, delta: number): number | undefined {
+  return count === undefined ? undefined : Math.max(0, count + delta);
 }
 
 function reconcileItems(
@@ -312,13 +436,23 @@ function applyFrameUpsert(
   const step = turn.steps[stepIndex] ?? skeletonStep(op.stepId, op.turnId);
   const frameIndex = step.frames.findIndex((frame) => frame.frameId === op.frame.frameId);
   let frames: readonly TranscriptFrame[];
+  let toolCallCount = state.toolCallCount;
+  let toolCallCountDelta = 0;
   if (frameIndex >= 0) {
     const current = step.frames[frameIndex];
     if (current !== undefined && frameEquals(current, op.frame)) {
-      return { state, changed: false };
+      return { state, changed: false, toolCallCountDelta: 0 };
+    }
+    if (current !== undefined && (current.kind === 'tool') !== (op.frame.kind === 'tool')) {
+      toolCallCountDelta = op.frame.kind === 'tool' ? 1 : -1;
+      toolCallCount = adjustToolCallCount(toolCallCount, toolCallCountDelta);
     }
     frames = replaceAt(step.frames, frameIndex, op.frame);
   } else {
+    if (op.frame.kind === 'tool') {
+      toolCallCountDelta = 1;
+      toolCallCount = adjustToolCallCount(toolCallCount, 1);
+    }
     frames = [...step.frames, op.frame];
   }
   const nextStep: TranscriptStep = { ...step, frames: [...frames] };
@@ -332,8 +466,9 @@ function applyFrameUpsert(
       ? replaceAt(state.items, located.index, nextTurn)
       : insertTurn(state.items, nextTurn);
   return {
-    state: { ...state, items },
+    state: { ...state, items, toolCallCount },
     changed: true,
+    toolCallCountDelta,
   };
 }
 
@@ -463,7 +598,25 @@ function applyItemsRemove(state: AgentState, ids: readonly string[]): ApplyResul
     (entry): entry is TranscriptTurn => entry.kind === 'turn' && drop.has(entry.turnId),
   );
   const items = state.items.filter((entry) => !drop.has(itemIdOf(entry)));
-  if (items.length === state.items.length) return { state, changed: false };
+  const removedToolCallCount = countToolCallFrames(removedTurns);
+  const priorRemovedItemIds = removedItemIdsByState.get(state) ?? EMPTY_REMOVED_ITEM_IDS;
+  const unseenTurnRemoved =
+    state.hasMoreOlder &&
+    ids.some(
+      (id) => !state.items.some((entry) => itemIdOf(entry) === id) && !priorRemovedItemIds.has(id),
+    );
+  const toolCallCountDelta =
+    unseenTurnRemoved || removedToolCallCount === 0 ? (unseenTurnRemoved ? undefined : 0) : -removedToolCallCount;
+  const toolCallCount = unseenTurnRemoved
+    ? undefined
+    : adjustToolCallCount(state.toolCallCount, -removedToolCallCount);
+  const itemsChanged = items.length !== state.items.length;
+  const toolCallCountChanged = toolCallCount !== state.toolCallCount;
+  if (!itemsChanged && !toolCallCountChanged) {
+    return unseenTurnRemoved
+      ? { state: { ...state }, changed: true, toolCallCountDelta }
+      : { state, changed: false, toolCallCountDelta };
+  }
   let pending = state.pendingInteractions;
   let interactions = state.interactions;
   if (removedTurns.length > 0) {
@@ -490,7 +643,11 @@ function applyItemsRemove(state: AgentState, ids: readonly string[]): ApplyResul
     }
     pending = nextPending;
   }
-  return { state: { ...state, items, interactions, pendingInteractions: pending }, changed: true };
+  return {
+    state: { ...state, items, interactions, pendingInteractions: pending, toolCallCount },
+    changed: true,
+    toolCallCountDelta,
+  };
 }
 
 function applyTaskUpsert(state: AgentState, task: TranscriptTask): ApplyResult {

@@ -57,6 +57,8 @@ export class AgentTranscript {
   apply(ops: readonly TranscriptOperation[]): AppliedOps {
     const accepted: TranscriptOperation[] = [];
     let gap: AppliedOps['gap'];
+    let toolCallCountDelta = 0;
+    let toolCallCountDeltaKnown = true;
     let state = this.#state;
     for (let index = 0; index < ops.length;) {
       const first = ops[index];
@@ -68,6 +70,11 @@ export class AgentTranscript {
         gap = { target: (op as { target: AppendTarget }).target, ...result.gap };
         index = run.nextIndex;
         continue;
+      }
+      if (result.toolCallCountDelta === undefined) {
+        toolCallCountDeltaKnown = false;
+      } else if (result.changed && toolCallCountDeltaKnown) {
+        toolCallCountDelta += result.toolCallCountDelta;
       }
       const key = appendTargetKey(op);
       if (!result.changed) {
@@ -93,7 +100,11 @@ export class AgentTranscript {
       const event: TranscriptChangeEvent = { agentId: this.agentId, ops: accepted };
       for (const listener of this.#listeners) listener(event);
     }
-    return { accepted, gap };
+    return {
+      accepted,
+      toolCallCountDelta: toolCallCountDeltaKnown ? toolCallCountDelta : undefined,
+      gap,
+    };
   }
 
   onChange(listener: TranscriptListener): Disposable {
@@ -196,6 +207,8 @@ export class AgentTranscript {
       attachments: stableMapValues(this.#state.attachments),
       todos: stableMapValues(this.#state.todos),
       prompts: stableMapValues(this.#state.prompts),
+      toolCallCount: this.#state.toolCallCount,
+      toolCallCountKnown: this.#state.toolCallCount !== undefined,
       meta: this.#state.meta,
       hasMoreOlder,
     };

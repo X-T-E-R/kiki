@@ -435,6 +435,8 @@ export const agentTranscriptSnapshotSchema = z.object({
   attachments: z.array(attachmentSchema).default([]),
   todos: z.array(todoSchema).default([]),
   prompts: z.array(transcriptPromptSchema).default([]),
+  toolCallCount: z.number().int().nonnegative().optional(),
+  toolCallCountKnown: z.boolean().optional(),
   meta: transcriptMetaSchema,
   hasMoreOlder: z.boolean().optional(),
 });
@@ -477,6 +479,10 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
     turnId: turnIdSchema,
     stepId: stepIdSchema,
     frame: transcriptFrameSchema,
+  }),
+  z.object({
+    op: z.literal('tool.count.set'),
+    count: z.number().int().nonnegative().optional(),
   }),
   z.object({
     op: z.literal('append'),
@@ -611,6 +617,7 @@ export const transcriptResponseSchema = z.object({
   agent_id: agentIdSchema,
   items: z.array(transcriptItemSchema),
   has_more: z.boolean(),
+  tool_call_count: z.number().int().nonnegative().optional(),
   tasks: z.array(transcriptTaskSchema),
   interactions: z.array(interactionSchema).default([]),
   attachments: z.array(attachmentSchema).default([]),
@@ -622,6 +629,7 @@ export const transcriptResponseSchema = z.object({
   cursor: transcriptCursorSchema.optional(),
   coverage: transcriptCoverageSchema,
 });
+export type TranscriptResponse = z.infer<typeof transcriptResponseSchema>;
 
 export const transcriptOpsCatchupResponseSchema = z.object({
   session_id: z.string().min(1),
@@ -636,6 +644,7 @@ export const transcriptOpsCatchupResponseSchema = z.object({
   through_seq: transcriptSeqSchema,
   complete: z.boolean(),
 });
+export type TranscriptOpsCatchupResponse = z.infer<typeof transcriptOpsCatchupResponseSchema>;
 
 /**
  * One turn-opening input, projected out of a transcript for the

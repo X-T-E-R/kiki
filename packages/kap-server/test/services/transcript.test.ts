@@ -1,4 +1,5 @@
 import { appendFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import * as fsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -32,6 +33,7 @@ import {
   type AppendOp,
   type FrameUpsertOp,
   type InteractionUpsertOp,
+  type TranscriptChangeEvent,
   type TranscriptFrame,
   type TranscriptOperation,
   type TranscriptTask,
@@ -43,12 +45,30 @@ import type { LiveAdapterBusEvent } from '@kiki/transcript-live';
 
 import {
   TranscriptService,
+  type TranscriptServiceDeps,
   snapshotToOps,
   TRANSCRIPT_OPS_JOURNAL_CAPACITY,
 } from '../../src/services/transcript/transcriptService';
+import { readWireRecordsBounded } from '../../src/services/transcript/boundedWireScan';
+
+vi.mock('node:fs/promises', { spy: true });
 
 function ev(payload: Record<string, unknown>): LiveAdapterBusEvent {
   return payload as unknown as LiveAdapterBusEvent;
+}
+
+function measuredReader(metrics: { reads: number; bytes: number }): NonNullable<
+  TranscriptServiceDeps['toolCallCountReader']
+> {
+  return async (wirePath, fileSize, options) =>
+    readWireRecordsBounded(wirePath, fileSize, {
+      ...options,
+      onRead: (bytes) => {
+        metrics.reads += 1;
+        metrics.bytes += bytes;
+        options.onRead?.(bytes);
+      },
+    });
 }
 
 class TestSessionStateService extends StateRegistry implements ISessionStateService {
@@ -495,6 +515,435 @@ describe('TranscriptService live integration', () => {
     } as unknown as Scope;
   }
 
+  it('reads cached historical counts without materializing transcripts and distinguishes missing history', async () => {
+    const home = await seedWireHomeWithTool();
+    try {
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+      });
+      const materialize = vi.spyOn(service, 'readColdSnapshot');
+      expect((await service.getAgentToolCallCounts('s1', ['main', 'agent-missing'])).get('main')).toBe(1);
+      expect((await service.getAgentToolCallCounts('s1', ['agent-missing'])).has('agent-missing')).toBe(false);
+      expect(materialize).not.toHaveBeenCalled();
+      const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const resumed = [
+        { type: 'turn.prompt', turnId: 1, promptId: 'prompt-2', input: [], origin: { kind: 'user' }, time: 6_000 },
+        { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 1, step: 1, uuid: 'step-2' }, time: 7_000 },
+        { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 1, stepUuid: 'step-2', toolCallId: 'call_2', name: 'Read', args: {} }, time: 8_000 },
+      ];
+      await appendFile(path, `${resumed.map((record) => JSON.stringify(record)).join('\n')}\n`);
+      expect((await service.getAgentToolCallCounts('s1', ['main', 'main'])).get('main')).toBe(2);
+      expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(2);
+      await appendFile(path, `${JSON.stringify({ type: 'context.undo', count: 1, time: 9_000 })}\n`);
+      expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(1);
+      await appendFile(path, `${JSON.stringify({ type: 'context.clear', time: 10_000 })}\n`);
+      expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(0);
+      expect(materialize).not.toHaveBeenCalled();
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('[STAT-R1] pins requested cache hits so a 257-file working set rereads at most one file', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-count-cache-'));
+    try {
+      const agentIds = Array.from({ length: 257 }, (_, index) => `agent-${index}`);
+      const wireSizes = new Map<string, number>();
+      for (const agentId of agentIds) {
+        const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', agentId);
+        await mkdir(wireDir, { recursive: true });
+        const record = {
+          type: 'turn.prompt',
+          turnId: 0,
+          promptId: `${agentId}-prompt`,
+          input: [],
+          origin: { kind: 'user' },
+        };
+        const wire = `${JSON.stringify(record)}\n`;
+        wireSizes.set(agentId, Buffer.byteLength(wire));
+        await writeFile(join(wireDir, 'wire.jsonl'), wire);
+      }
+      const metrics = { reads: 0, bytes: 0 };
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+        toolCallCountLimits: {
+          maxBytesPerRequest: 1 << 20,
+          maxFilesPerRequest: 300,
+          maxCacheEntries: 256,
+          maxCacheBytes: 1 << 20,
+        },
+        toolCallCountReader: measuredReader(metrics),
+      });
+      const first = await service.getAgentToolCallCounts('s1', agentIds);
+      const firstReads = metrics.reads;
+      const firstBytes = metrics.bytes;
+      metrics.reads = 0;
+      metrics.bytes = 0;
+      const second = await service.getAgentToolCallCounts('s1', agentIds);
+      expect(first.size).toBe(257);
+      expect(second.size).toBe(257);
+      expect(firstReads).toBe(257);
+      expect(firstBytes).toBe([...wireSizes.values()].reduce((sum, size) => sum + size, 0));
+      expect(metrics.reads).toBe(1);
+      expect(metrics.bytes).toBe(wireSizes.get('agent-0'));
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('[STAT-R1] does not reread a large wire after the live transcript becomes complete', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-count-materialized-'));
+    try {
+      const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+      await mkdir(wireDir, { recursive: true });
+      const records = Array.from({ length: 3_000 }, (_, index) => ({
+        type: 'metadata',
+        index,
+        padding: 'x'.repeat(700),
+      }));
+      const wirePath = join(wireDir, 'wire.jsonl');
+      await writeFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+      const agents = new FakeAgents();
+      agents.add('main', { loopStatus: { state: 'idle' } });
+      const metrics = { reads: 0, bytes: 0 };
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+        toolCallCountReader: measuredReader(metrics),
+      });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      const before = await service.getAgentToolCallCounts('s1', ['main']);
+      expect(before.get('main')).toBe(0);
+      expect(metrics.reads).toBe(0);
+      metrics.reads = 0;
+      metrics.bytes = 0;
+      await appendFile(wirePath, `${JSON.stringify({ type: 'metadata', padding: 'y'.repeat(700) })}\n`);
+      const bus = agents.get('main')!.bus;
+      bus.emit(ev({ type: 'turn.started', turnId: 3_001, origin: { kind: 'user' } }));
+      bus.emit(ev({ type: 'turn.step.started', turnId: 3_001, step: 1 }));
+      bus.emit(
+        ev({
+          type: 'tool.call.started',
+          turnId: 3_001,
+          toolCallId: 'call-live',
+          name: 'Read',
+          args: {},
+        }),
+      );
+      const readFile = vi.spyOn(fsPromises, 'readFile').mockClear();
+      const open = vi.spyOn(fsPromises, 'open').mockClear();
+      try {
+        const after = await service.getAgentToolCallCounts('s1', ['main']);
+        expect(after.get('main')).toBe(1);
+        expect(metrics.reads).toBe(0);
+        expect(metrics.bytes).toBe(0);
+        expect(readFile).not.toHaveBeenCalled();
+        expect(open).not.toHaveBeenCalled();
+      } finally {
+        readFile.mockRestore();
+        open.mockRestore();
+      }
+      service.dropSession('s1');
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('[STAT-R1] counts tool calls for wires beyond the old 1 MiB default budget', async () => {
+    const home = await seedWireHomeWithTool();
+    try {
+      await appendFile(
+        join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl'),
+        `${JSON.stringify({ type: 'metadata', padding: 'z'.repeat(2 << 20) })}\n`,
+      );
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+      });
+      expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(1);
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('[STAT-R1] returns unknown instead of using a stale count after a wire exceeds the byte budget', async () => {
+    const home = await seedWireHomeWithTool();
+    try {
+      const metrics = { reads: 0, bytes: 0 };
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+        toolCallCountLimits: { maxBytesPerRequest: 2_048, maxFilesPerRequest: 8 },
+        toolCallCountReader: measuredReader(metrics),
+      });
+      const first = await service.getAgentToolCallCounts('s1', ['main']);
+      expect(first.get('main')).toBe(1);
+      metrics.reads = 0;
+      metrics.bytes = 0;
+      await appendFile(
+        join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl'),
+        `${JSON.stringify({ type: 'metadata', padding: 'z'.repeat(4_096) })}\n`,
+      );
+      const second = await service.getAgentToolCallCounts('s1', ['main']);
+      expect(second.has('main')).toBe(false);
+      expect(metrics.reads).toBe(0);
+      expect(metrics.bytes).toBe(0);
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('[STAT-R3] verifies readability even for a zero-byte bounded scan', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-empty-read-'));
+    try {
+      await expect(readWireRecordsBounded(join(home, 'missing.jsonl'), 0, {
+        maxBytes: 0,
+        onRecord: () => undefined,
+      })).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it.each(['tool-prefix', 'half-record', 'complete-no-newline'] as const)(
+    '[STAT-R3] preserves prefix display without promoting incomplete %s history', async (scenario) => {
+      const home = await seedWireHomeWithTool();
+      try {
+        const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+        const wire = await fsPromises.readFile(wirePath, 'utf8');
+        const content = scenario === 'half-record' ? '{"type":'
+          : scenario === 'tool-prefix' ? `${wire}{"type":` : wire.trimEnd();
+        await writeFile(wirePath, content);
+        const agents = new FakeAgents();
+        agents.add('main', { loopStatus: { state: 'idle' } });
+        const service = new TranscriptService({
+          homeDir: home,
+          core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+        });
+        const known = scenario === 'complete-no-newline';
+        expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(known ? 1 : undefined);
+        const cold = await service.readColdSnapshot('s1', 'main');
+        expect(cold?.toolCallCountKnown).toBe(known);
+        expect(cold?.toolCallCount).toBe(known ? 1 : undefined);
+        expect(cold?.items.some((item) => item.kind === 'turn')).toBe(scenario !== 'half-record');
+        const store = service.forSessionLive('s1');
+        await service.whenReady('s1');
+        await service.ensureAgentHistory('s1', 'main');
+        const live = store?.getAgent('main')?.snapshot();
+        expect(live?.toolCallCountKnown).toBe(known);
+        expect(live?.toolCallCount).toBe(known ? 1 : undefined);
+        expect(live?.items.some((item) => item.kind === 'turn')).toBe(scenario !== 'half-record');
+        expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).get('main')).toBe(known ? 1 : undefined);
+        expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(known ? 1 : undefined);
+        service.dropSession('s1');
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    },
+  );
+
+  it('[STAT-R3] keeps missing and corrupt history unknown while preserving readable empty as zero', async () => {
+    const scenarios = [
+      { name: 'missing', content: undefined, expectedKnown: false },
+      { name: 'corrupt', content: '{"type":"turn.prompt"}\nnot-json\n', expectedKnown: false },
+      { name: 'empty', content: '', expectedKnown: true },
+    ] as const;
+    for (const scenario of scenarios) {
+      const home = await mkdtemp(join(tmpdir(), `transcript-count-${scenario.name}-`));
+      try {
+        const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+        await mkdir(wireDir, { recursive: true });
+        const wirePath = join(wireDir, 'wire.jsonl');
+        if (scenario.content !== undefined) await writeFile(wirePath, scenario.content);
+        const service = new TranscriptService({
+          homeDir: home,
+          core: fakeCoreWithAgents(
+            new SessionInteractionService(new TestSessionStateService()),
+            new FakeAgents(),
+          ),
+        });
+        const snapshot = await service.readColdSnapshot('s1', 'main');
+        expect(snapshot?.toolCallCountKnown).toBe(scenario.expectedKnown);
+        if (scenario.expectedKnown) {
+          expect(snapshot?.toolCallCount).toBe(0);
+          expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(0);
+        } else {
+          expect(snapshot?.toolCallCount).toBeUndefined();
+          expect((await service.getAgentToolCallCounts('s1', ['main'])).has('main')).toBe(false);
+        }
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    }
+  });
+
+  it('[STAT-R3] retries a failed child backfill only after readable wire evidence appears', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-backfill-recovery-'));
+    try {
+      const agents = new FakeAgents();
+      agents.add('main');
+      agents.add('child-recovery');
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      await service.ensureAgentHistory('s1', 'child-recovery');
+      expect(service.getMaterializedAgentToolCallCounts('s1', ['child-recovery'])).toEqual(new Map());
+      const readColdSnapshot = vi.spyOn(service, 'readColdSnapshot');
+      await service.ensureAgentHistory('s1', 'child-recovery');
+      expect(readColdSnapshot).not.toHaveBeenCalled();
+
+      const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'child-recovery');
+      await mkdir(wireDir, { recursive: true });
+      const records = [
+        {
+          type: 'turn.prompt',
+          turnId: 0,
+          promptId: 'recovery-prompt',
+          input: [],
+          origin: { kind: 'user' },
+        },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'recovery-step' },
+        },
+        {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call',
+            turnId: 0,
+            stepUuid: 'recovery-step',
+            toolCallId: 'recovery-call',
+            name: 'Read',
+            args: {},
+          },
+        },
+      ];
+      await writeFile(
+        join(wireDir, 'wire.jsonl'),
+        `${records.map((record) => JSON.stringify(record)).join(String.fromCodePoint(10))}${String.fromCodePoint(10)}`,
+      );
+      await service.ensureAgentHistory('s1', 'child-recovery');
+      expect(service.getMaterializedAgentToolCallCounts('s1', ['child-recovery']).get('child-recovery')).toBe(1);
+      expect(readColdSnapshot).toHaveBeenCalledOnce();
+      service.dropSession('s1');
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('[STAT-R3] dispatches authoritative known and unknown count operations to live clients', async () => {
+    const knownHome = await seedWireHomeWithTool();
+    try {
+      const knownAgents = new FakeAgents();
+      const knownMain = knownAgents.add('main', { loopStatus: { state: 'idle' } });
+      const knownService = new TranscriptService({
+        homeDir: knownHome,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), knownAgents),
+      });
+      const knownEvents: TranscriptChangeEvent[] = [];
+      knownService.onSessionOps('s1', (event) => knownEvents.push(event));
+      await knownService.whenReady('s1');
+      expect(knownEvents.flatMap((event) => event.ops)).toContainEqual({
+        op: 'tool.count.set',
+        count: 1,
+      });
+      knownMain.bus.emit(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+      knownMain.bus.emit(ev({ type: 'turn.step.started', turnId: 1, step: 1 }));
+      knownMain.bus.emit(
+        ev({ type: 'tool.call.started', turnId: 1, toolCallId: 'call-2', name: 'Read', args: {} }),
+      );
+      expect(knownEvents.at(-1)?.ops.at(-1)).toEqual({ op: 'tool.count.set', count: 2 });
+      knownService.dropSession('s1');
+    } finally {
+      await rm(knownHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+
+    const unknownAgents = new FakeAgents();
+    const unknownMain = unknownAgents.add('main', { loopStatus: { state: 'idle' } });
+    const unknownService = new TranscriptService({
+      homeDir: '/nonexistent-home',
+      core: fakeCoreWithAgents(
+        new SessionInteractionService(new TestSessionStateService()),
+        unknownAgents,
+      ),
+    });
+    const unknownEvents: TranscriptChangeEvent[] = [];
+    unknownService.onSessionOps('s1', (event) => unknownEvents.push(event));
+    await unknownService.whenReady('s1');
+    expect(unknownEvents.flatMap((event) => event.ops)).toContainEqual({
+      op: 'tool.count.set',
+      count: undefined,
+    });
+    unknownMain.bus.emit(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+    unknownMain.bus.emit(ev({ type: 'turn.step.started', turnId: 1, step: 1 }));
+    unknownMain.bus.emit(
+      ev({ type: 'tool.call.started', turnId: 1, toolCallId: 'call-unknown', name: 'Read', args: {} }),
+    );
+    expect(unknownEvents.at(-1)?.ops.at(-1)).toEqual({
+      op: 'tool.count.set',
+      count: undefined,
+    });
+    unknownService.dropSession('s1');
+  });
+
+  it('[STAT-R1] coalesces concurrent reads of the same wire file', async () => {
+    const home = await seedWireHomeWithTool();
+    let release!: () => void;
+    let entered!: () => void;
+    const readGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const readEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let firstRead = true;
+    let reads = 0;
+    let bytes = 0;
+    const reader: NonNullable<TranscriptServiceDeps['toolCallCountReader']> = async (
+      wirePath,
+      fileSize,
+      options,
+    ) => {
+      if (firstRead) {
+        firstRead = false;
+        entered();
+        await readGate;
+      }
+      return readWireRecordsBounded(wirePath, fileSize, {
+        ...options,
+        onRead: (amount) => {
+          reads += 1;
+          bytes += amount;
+          options.onRead?.(amount);
+        },
+      });
+    };
+    try {
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+        toolCallCountReader: reader,
+      });
+      const first = service.getAgentToolCallCounts('s1', ['main']);
+      await readEntered;
+      const second = service.getAgentToolCallCounts('s1', ['main']);
+      release();
+      const [firstCounts, secondCounts] = await Promise.all([first, second]);
+      expect(firstCounts.get('main')).toBe(1);
+      expect(secondCounts.get('main')).toBe(1);
+      expect(reads).toBe(1);
+      expect(bytes).toBe(749);
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   async function seedWireHomeWithTool(includeResult: boolean = true): Promise<string> {
     const home = await mkdtemp(join(tmpdir(), 'transcript-backfill-live-'));
     const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
@@ -926,12 +1375,14 @@ describe('TranscriptService live integration', () => {
       );
     }
 
-    expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).get('main')).toBe(5);
+    expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).has('main')).toBe(false);
     const transcript = store?.getAgent('main');
     if (transcript === undefined) throw new Error('expected materialized main transcript');
     const snapshot = transcript.snapshot();
     const rewritten: AgentTranscriptSnapshot = {
       ...snapshot,
+      toolCallCountKnown: true,
+      toolCallCount: 2,
       items: snapshot.items.map((item) =>
         item.kind === 'turn'
           ? {
@@ -1229,7 +1680,11 @@ describe('TranscriptService live integration', () => {
       const currentCursor = service.getTranscriptCursor('s1', 'main');
       expect(currentCursor).toMatchObject({ seq: 0 });
       expect(currentCursor.epoch).not.toBe(oldCursor.epoch);
-      expect(store.getAgent('main')?.snapshot()).toEqual(rewritten);
+      expect(store.getAgent('main')?.snapshot()).toEqual({
+        ...rewritten,
+        toolCallCount: 0,
+        toolCallCountKnown: true,
+      });
       expect(service.getOpsSince('s1', 'main', oldCursor)).toMatchObject({
         batches: [],
         throughSeq: 0,

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 
 import {
   IAgentActivityView,
@@ -25,6 +25,7 @@ import {
   type TranscriptCursor,
   type TranscriptMarker,
   type TranscriptOperation,
+  type ToolCountSetOp,
   type TranscriptTaskRef,
   type TranscriptTurn,
 } from '@kiki/transcript';
@@ -32,36 +33,90 @@ import {
 import {
   bindSessionTranscript,
   descriptorFromMeta,
-  readWireRecords,
+  readWireRecordsWithCompleteness,
   type TranscriptBinding,
   type TranscriptBindingLogger,
 } from '@kiki/transcript-live';
+
+import {
+  readWireRecordsBounded,
+  type BoundedWireScanOptions,
+} from './boundedWireScan';
 
 const SESSIONS_ROOT = 'sessions';
 const AGENTS_DIR = 'agents';
 const MAIN_AGENT_ID = 'main';
 const WIRE_FILE = 'wire.jsonl';
 const STATE_FILE = 'state.json';
+const DEFAULT_TOOL_CALL_COUNT_MAX_BYTES = 32 << 20;
+const DEFAULT_TOOL_CALL_COUNT_MAX_FILES = 64;
+const DEFAULT_TOOL_CALL_COUNT_CACHE_ENTRIES = 256;
+const DEFAULT_TOOL_CALL_COUNT_CACHE_BYTES = 8 << 20;
+const DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES = 64 << 10;
+
+export interface TranscriptToolCallCountLimits {
+  readonly maxBytesPerRequest?: number;
+  readonly maxFilesPerRequest?: number;
+  readonly maxCacheEntries?: number;
+  readonly maxCacheBytes?: number;
+  readonly readChunkBytes?: number;
+}
 
 export interface TranscriptServiceDeps {
   readonly homeDir: string;
   readonly core: Scope;
   readonly logger?: TranscriptBindingLogger;
+  readonly toolCallCountLimits?: TranscriptToolCallCountLimits;
+  readonly toolCallCountReader?: (
+    wirePath: string,
+    fileSize: number,
+    options: BoundedWireScanOptions,
+  ) => Promise<number>;
 }
 
 interface LiveEntry {
   readonly store: TranscriptStore;
   readonly binding: TranscriptBinding;
-  readonly ready: Promise<void>;
+  ready: Promise<void>;
   readonly agentBackfills: Map<string, Promise<void>>;
+  readonly agentHistory: Map<string, AgentHistoryState>;
   readonly opsJournals: Map<string, AgentOpsJournal>;
   readonly agentToolCallStates: Map<string, MaterializedAgentToolCallState>;
   readonly agentDisposal: IDisposable;
 }
 
+interface AgentHistoryState {
+  status: 'pending' | 'complete' | 'failed';
+  failureSignature?: string;
+}
+
 interface MaterializedAgentToolCallState {
   readonly toolFrameIdsByTurn: Map<string, Set<string>>;
   toolCallCount: number;
+}
+
+interface PersistedToolCallState {
+  readonly fingerprint: string;
+  readonly state: MaterializedAgentToolCallState;
+  readonly weight: number;
+}
+
+interface ToolCallReadResult {
+  readonly fingerprint: string;
+  readonly state?: MaterializedAgentToolCallState;
+  readonly weight: number;
+  readonly known: boolean;
+  readonly reason?: 'budget' | 'missing' | 'failed';
+  readonly error?: unknown;
+}
+
+interface ToolCallCountCandidate {
+  readonly agentId: string;
+  readonly wirePath: string;
+  fingerprint?: string;
+  size?: number;
+  cached?: MaterializedAgentToolCallState;
+  reason?: 'budget' | 'missing' | 'failed';
 }
 
 interface AgentOpsJournal {
@@ -87,8 +142,23 @@ export interface TranscriptOpsCatchup {
 export class TranscriptService {
   private readonly live = new Map<string, LiveEntry>();
   private readonly opsListeners = new Map<string, Set<TranscriptOpsListener>>();
+  private readonly toolCallCountLimits: Required<TranscriptToolCallCountLimits>;
+  private readonly persistedToolCallStates = new Map<string, PersistedToolCallState>();
+  private persistedToolCallStateWeight = 0;
+  private readonly persistedToolCallReads = new Map<string, Promise<ToolCallReadResult>>();
+  private readonly persistedToolCallPins = new Map<string, number>();
+  private readonly toolCallCountReader: NonNullable<TranscriptServiceDeps['toolCallCountReader']>;
 
   constructor(private readonly deps: TranscriptServiceDeps) {
+    this.toolCallCountReader = deps.toolCallCountReader ?? readWireRecordsBounded;
+    const limits = deps.toolCallCountLimits;
+    this.toolCallCountLimits = {
+      maxBytesPerRequest: nonNegativeLimit(limits?.maxBytesPerRequest, DEFAULT_TOOL_CALL_COUNT_MAX_BYTES),
+      maxFilesPerRequest: nonNegativeLimit(limits?.maxFilesPerRequest, DEFAULT_TOOL_CALL_COUNT_MAX_FILES),
+      maxCacheEntries: nonNegativeLimit(limits?.maxCacheEntries, DEFAULT_TOOL_CALL_COUNT_CACHE_ENTRIES),
+      maxCacheBytes: nonNegativeLimit(limits?.maxCacheBytes, DEFAULT_TOOL_CALL_COUNT_CACHE_BYTES),
+      readChunkBytes: positiveLimit(limits?.readChunkBytes, DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES),
+    };
     followSessionLifecycles(deps.core.accessor, (service) => {
       const d1 = service.onDidCloseSession(({ sessionId }) => this.dropSession(sessionId));
       const d2 = service.onDidArchiveSession(({ sessionId }) => this.dropSession(sessionId));
@@ -132,24 +202,27 @@ export class TranscriptService {
       }
       throw error;
     }
-    this.live.set(sessionId, {
+    const entry: LiveEntry = {
       store,
       binding,
-      ready: (async () => {
-        await this.backfillMain(sessionId, store);
-        if (this.live.get(sessionId)?.store === store) {
-          binding.seedRunningTasks(MAIN_AGENT_ID);
-          binding.seedPendingInteractions(MAIN_AGENT_ID);
-          binding.seedPrompts(MAIN_AGENT_ID);
-        }
-      })(),
+      ready: Promise.resolve(),
       agentBackfills: new Map(),
+      agentHistory: new Map(),
       opsJournals: new Map(),
       agentToolCallStates: new Map(),
       agentDisposal: session.accessor
         .get(IAgentLifecycleService)
         .onDidDispose((agentId) => this.evictAgent(sessionId, store, agentId)),
-    });
+    };
+    this.live.set(sessionId, entry);
+    entry.ready = (async () => {
+      await this.backfillMain(sessionId, store);
+      if (this.live.get(sessionId)?.store === store) {
+        binding.seedRunningTasks(MAIN_AGENT_ID);
+        binding.seedPendingInteractions(MAIN_AGENT_ID);
+        binding.seedPrompts(MAIN_AGENT_ID);
+      }
+    })();
     return store;
   }
 
@@ -165,6 +238,7 @@ export class TranscriptService {
     const session = getLiveSessionById(this.deps.core.accessor, sessionId);
     if (session?.accessor.get(IAgentLifecycleService).get(agentId) !== undefined) return;
     entry.agentBackfills.delete(agentId);
+    entry.agentHistory.delete(agentId);
     entry.opsJournals.delete(agentId);
     entry.agentToolCallStates.delete(agentId);
     store.evictAgentTranscript(agentId);
@@ -188,12 +262,20 @@ export class TranscriptService {
    * materialized in this process — comes back established.
    */
   async ensureAgentHistory(sessionId: string, agentId: string): Promise<void> {
-    if (agentId === MAIN_AGENT_ID) return this.whenReady(sessionId);
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
     await entry.ready;
     let backfill = entry.agentBackfills.get(agentId);
+    const history = entry.agentHistory.get(agentId);
+    if (history?.status === 'failed') {
+      const changed = await this.historyFailureChanged(sessionId, agentId, history);
+      if (!changed) return;
+      if (entry.agentBackfills.get(agentId) === backfill) entry.agentBackfills.delete(agentId);
+      backfill = entry.agentBackfills.get(agentId);
+    }
     if (backfill === undefined) {
+      if (agentId === MAIN_AGENT_ID && history?.status !== 'failed') return;
+      entry.agentHistory.set(agentId, { status: 'pending' });
       backfill = this.backfillAgent(sessionId, entry.store, agentId);
       entry.agentBackfills.set(agentId, backfill);
     }
@@ -246,15 +328,33 @@ export class TranscriptService {
    * without colliding.
    */
   private async backfillAgent(sessionId: string, store: TranscriptStore, agentId: string): Promise<void> {
+    const entryAtStart = this.live.get(sessionId);
+    if (entryAtStart?.store !== store) return;
+    entryAtStart.agentHistory.set(agentId, { status: 'pending' });
+    const transcript = store.ensureAgent(agentId);
+    this.dispatchToolCallCount(sessionId, transcript, undefined, true);
     const initialActiveTurnId = this.liveActiveTurnId(sessionId, agentId);
     let snapshot: AgentTranscriptSnapshot | undefined;
+    let failed = false;
     try {
       snapshot = await this.readColdSnapshot(
         sessionId,
         agentId,
         () => this.liveActiveTurnIds(sessionId, agentId, initialActiveTurnId),
       );
+      if (snapshot === undefined) failed = true;
+      if (snapshot !== undefined) {
+        const result = transcript.apply(snapshotToOps(snapshot));
+        if (result.gap !== undefined) {
+          this.deps.logger?.warn({ sessionId, agentId, gap: result.gap }, 'transcript: backfill append gap');
+        }
+        if (result.accepted.length > 0) {
+          this.dispatchOps(sessionId, { agentId, ops: result.accepted });
+        }
+        failed = !snapshotToolCallCountKnown(snapshot);
+      }
     } catch (error) {
+      failed = true;
       this.deps.logger?.warn(
         { sessionId, agentId, err: error instanceof Error ? error.message : error },
         'transcript: history backfill failed, continuing without it',
@@ -262,16 +362,6 @@ export class TranscriptService {
     }
     const entry = this.live.get(sessionId);
     if (entry?.store !== store) return;
-    const transcript = store.ensureAgent(agentId);
-    if (snapshot !== undefined) {
-      const result = transcript.apply(snapshotToOps(snapshot));
-      if (result.gap !== undefined) {
-        this.deps.logger?.warn({ sessionId, agentId, gap: result.gap }, 'transcript: backfill append gap');
-      }
-      if (result.accepted.length > 0) {
-        this.dispatchOps(sessionId, { agentId, ops: result.accepted });
-      }
-    }
     const existing = store.agents().find((d) => d.agentId === agentId);
     const hasContent =
       snapshot !== undefined && (snapshot.items.length > 0 || snapshot.tasks.length > 0);
@@ -284,8 +374,17 @@ export class TranscriptService {
         createdAt: existing?.createdAt,
       });
     }
-    if (!entry.agentToolCallStates.has(agentId)) {
-      entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot(transcript.snapshot()));
+    const materialized = transcript.snapshot();
+    entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot(materialized));
+    const failureSignature = failed
+      ? await this.historyFailureSignature(sessionId, agentId)
+      : undefined;
+    if (failed) {
+      entry.agentHistory.set(agentId, { status: 'failed', failureSignature });
+      this.dispatchToolCallCount(sessionId, transcript, undefined, true);
+    } else {
+      entry.agentHistory.set(agentId, { status: 'complete' });
+      this.dispatchToolCallCount(sessionId, transcript, countToolCallFrames(materialized.items), true);
     }
     entry.binding.finishReplay(agentId);
   }
@@ -377,19 +476,35 @@ export class TranscriptService {
 
   private handleLiveOps(sessionId: string, event: TranscriptChangeEvent): void {
     const entry = this.live.get(sessionId);
-    if (entry !== undefined) {
-      let state = entry.agentToolCallStates.get(event.agentId);
-      if (state === undefined) {
-        const transcript = entry.store.getAgent(event.agentId);
-        if (transcript !== undefined) {
-          state = toolCallStateFromSnapshot(transcript.snapshot());
-          entry.agentToolCallStates.set(event.agentId, state);
-        }
-      } else {
-        applyToolCallOps(state, event.ops);
-      }
+    if (entry === undefined) {
+      this.dispatchOps(sessionId, event);
+      return;
     }
-    this.dispatchOps(sessionId, event);
+    const transcript = entry.store.getAgent(event.agentId);
+    let state = entry.agentToolCallStates.get(event.agentId);
+    if (state === undefined && transcript !== undefined) {
+      state = toolCallStateFromSnapshot(transcript.snapshot());
+      entry.agentToolCallStates.set(event.agentId, state);
+    }
+    const before = state?.toolCallCount;
+    if (state !== undefined) applyToolCallOps(state, event.ops);
+    const countChanged = state !== undefined && before !== state.toolCallCount;
+    if (!countChanged || transcript === undefined) {
+      this.dispatchOps(sessionId, event);
+      return;
+    }
+    if (state === undefined) {
+      this.dispatchOps(sessionId, event);
+      return;
+    }
+    const history = entry.agentHistory.get(event.agentId);
+    const count = history?.status === 'complete' ? state.toolCallCount : undefined;
+    const countOp = toolCallCountSetOperation(count);
+    this.applyToolCallOperation(transcript, countOp);
+    this.dispatchOps(sessionId, {
+      agentId: event.agentId,
+      ops: [...event.ops, countOp],
+    });
   }
 
   getMaterializedAgentToolCallCounts(
@@ -400,9 +515,14 @@ export class TranscriptService {
     const entry = this.live.get(sessionId);
     if (entry === undefined) return result;
     for (const agentId of new Set(agentIds)) {
+      if (entry.agentHistory.get(agentId)?.status !== 'complete') continue;
       const state = entry.agentToolCallStates.get(agentId);
-      if (state === undefined) continue;
-      result.set(agentId, state.toolCallCount);
+      if (state !== undefined) {
+        result.set(agentId, state.toolCallCount);
+        continue;
+      }
+      const transcript = entry.store.getAgent(agentId);
+      if (transcript !== undefined) result.set(agentId, countToolCallFrames(transcript.getItems()));
     }
     return result;
   }
@@ -411,24 +531,305 @@ export class TranscriptService {
     sessionId: string,
     agentIds: readonly string[],
   ): Promise<ReadonlyMap<string, number>> {
-    const uniqueAgentIds = [...new Set(agentIds)];
     const counts = new Map<string, number>();
-    const store = this.forSessionLive(sessionId);
-    if (store !== undefined) {
-      await this.whenReady(sessionId);
-      await Promise.all(uniqueAgentIds.map((agentId) => this.ensureAgentHistory(sessionId, agentId)));
-      for (const agentId of uniqueAgentIds) {
-        counts.set(agentId, countToolCallFrames(store.getAgent(agentId)?.getItems() ?? []));
+    const entry = this.live.get(sessionId);
+    const candidateAgentIds: string[] = [];
+    for (const agentId of new Set(agentIds)) {
+      if (!isPlainAgentId(agentId)) continue;
+      const history = entry?.agentHistory.get(agentId);
+      if (history !== undefined) {
+        if (history.status !== 'complete') continue;
+        const state = entry?.agentToolCallStates.get(agentId);
+        if (state !== undefined) {
+          counts.set(agentId, state.toolCallCount);
+          continue;
+        }
+        const transcript = entry?.store.getAgent(agentId);
+        if (transcript !== undefined) {
+          counts.set(agentId, countToolCallFrames(transcript.getItems()));
+          continue;
+        }
+        continue;
+      } else if (entry?.agentToolCallStates.has(agentId)) {
+        continue;
       }
-      return counts;
+      candidateAgentIds.push(agentId);
     }
-    await Promise.all(
-      uniqueAgentIds.map(async (agentId) => {
-        const snapshot = await this.readColdSnapshot(sessionId, agentId);
-        counts.set(agentId, countToolCallFrames(snapshot?.items ?? []));
-      }),
-    );
+    if (candidateAgentIds.length === 0) return counts;
+    const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
+    if (summary === undefined) return counts;
+    const candidates: ToolCallCountCandidate[] = candidateAgentIds.map((agentId) => ({
+      agentId,
+      wirePath: join(
+        this.deps.homeDir,
+        SESSIONS_ROOT,
+        summary.workspaceId,
+        sessionId,
+        AGENTS_DIR,
+        agentId,
+        WIRE_FILE,
+      ),
+    }));
+    for (const candidate of candidates) {
+      try {
+        const info = await stat(candidate.wirePath);
+        if (!Number.isSafeInteger(info.size) || info.size < 0) {
+          candidate.reason = 'failed';
+          continue;
+        }
+        candidate.size = info.size;
+        candidate.fingerprint = fileFingerprint(info);
+        const cached = this.persistedToolCallStates.get(candidate.wirePath);
+        if (cached?.fingerprint === candidate.fingerprint) {
+          candidate.cached = cached.state;
+          this.pinPersistedToolCallState(candidate.wirePath);
+        } else if (cached !== undefined) {
+          this.deletePersistedToolCallState(candidate.wirePath);
+        }
+      } catch (error) {
+        candidate.reason = (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'failed';
+        this.deletePersistedToolCallState(candidate.wirePath);
+        this.logToolCallCountFailure(sessionId, candidate.agentId, error);
+      }
+    }
+    let remainingBytes = this.toolCallCountLimits.maxBytesPerRequest;
+    let remainingFiles = this.toolCallCountLimits.maxFilesPerRequest;
+    try {
+      for (const candidate of candidates) {
+        let persisted = candidate.cached;
+        if (persisted === undefined && candidate.reason === undefined) {
+          if (remainingFiles <= 0 || candidate.size === undefined) {
+            candidate.reason = 'budget';
+          } else {
+            remainingFiles -= 1;
+            if (candidate.size > remainingBytes) {
+              candidate.reason = 'budget';
+            } else {
+              remainingBytes -= candidate.size;
+              const read = await this.readPersistedToolCallState(
+                candidate.wirePath,
+                candidate.fingerprint as string,
+                candidate.size,
+                candidate.agentId,
+                sessionId,
+              );
+              if (read.known) {
+                persisted = read.state;
+                if (persisted !== undefined) {
+                  this.admitPersistedToolCallState(candidate.wirePath, {
+                    fingerprint: read.fingerprint,
+                    state: persisted,
+                    weight: read.weight,
+                  });
+                }
+              } else {
+                candidate.reason = read.reason ?? 'failed';
+              }
+            }
+          }
+        }
+        if (persisted !== undefined) {
+          this.touchPersistedToolCallState(candidate.wirePath);
+          const live = entry?.agentToolCallStates.get(candidate.agentId);
+          counts.set(candidate.agentId, mergeToolCallCount(persisted, live));
+        }
+      }
+    } finally {
+      for (const candidate of candidates) {
+        if (candidate.cached !== undefined) this.unpinPersistedToolCallState(candidate.wirePath);
+      }
+    }
     return counts;
+  }
+
+  private dispatchToolCallCount(
+    sessionId: string,
+    transcript: AgentTranscript,
+    count: number | undefined,
+    force: boolean,
+  ): void {
+    const op = toolCallCountSetOperation(count);
+    const result = transcript.apply([op]);
+    if (result.accepted.length > 0) {
+      this.dispatchOps(sessionId, { agentId: transcript.agentId, ops: result.accepted });
+    } else if (force) {
+      this.dispatchOps(sessionId, { agentId: transcript.agentId, ops: [op] });
+    }
+  }
+
+  private applyToolCallOperation(
+    transcript: AgentTranscript,
+    operation: TranscriptOperation,
+  ): void {
+    transcript.apply([operation]);
+  }
+
+  private async readPersistedToolCallState(
+    wirePath: string,
+    fingerprint: string,
+    fileSize: number,
+    agentId: string,
+    sessionId: string,
+  ): Promise<ToolCallReadResult> {
+    const key = `${wirePath}\\0${fingerprint}`;
+    const existing = this.persistedToolCallReads.get(key);
+    if (existing !== undefined) return existing;
+    const read = this.scanPersistedToolCallState(wirePath, fingerprint, fileSize, agentId);
+    this.persistedToolCallReads.set(key, read);
+    try {
+      const result = await read;
+      if (!result.known && result.reason === 'failed') {
+        this.logToolCallCountFailure(sessionId, agentId, result.error);
+      }
+      return result;
+    } finally {
+      if (this.persistedToolCallReads.get(key) === read) this.persistedToolCallReads.delete(key);
+    }
+  }
+
+  private async scanPersistedToolCallState(
+    wirePath: string,
+    fingerprint: string,
+    fileSize: number,
+    agentId: string,
+  ): Promise<ToolCallReadResult> {
+    const state: MaterializedAgentToolCallState = {
+      toolFrameIdsByTurn: new Map(),
+      toolCallCount: 0,
+    };
+    const adapter = new TranscriptWireAdapter(agentId);
+    const acceptedDurableFacts = new Set<string>();
+    try {
+      await this.toolCallCountReader(wirePath, fileSize, {
+        maxBytes: fileSize,
+        chunkBytes: this.toolCallCountLimits.readChunkBytes,
+        onRecord: (record) => {
+          for (const fact of adapter.add(record)) {
+            if (fact.durability === 'durable' && acceptedDurableFacts.has(fact.factId)) continue;
+            applyToolCallOps(state, fact.operations);
+            if (fact.durability === 'durable') acceptedDurableFacts.add(fact.factId);
+          }
+        },
+      });
+      return { fingerprint, state, weight: fileSize, known: true };
+    } catch (error) {
+      return { fingerprint, weight: fileSize, known: false, reason: 'failed', error };
+    }
+  }
+
+  private pinPersistedToolCallState(wirePath: string): void {
+    this.persistedToolCallPins.set(
+      wirePath,
+      (this.persistedToolCallPins.get(wirePath) ?? 0) + 1,
+    );
+  }
+
+  private unpinPersistedToolCallState(wirePath: string): void {
+    const count = this.persistedToolCallPins.get(wirePath);
+    if (count === undefined || count <= 1) this.persistedToolCallPins.delete(wirePath);
+    else this.persistedToolCallPins.set(wirePath, count - 1);
+  }
+
+  private touchPersistedToolCallState(wirePath: string): void {
+    const entry = this.persistedToolCallStates.get(wirePath);
+    if (entry === undefined) return;
+    this.persistedToolCallStates.delete(wirePath);
+    this.persistedToolCallStates.set(wirePath, entry);
+  }
+
+  private deletePersistedToolCallState(wirePath: string): void {
+    const entry = this.persistedToolCallStates.get(wirePath);
+    if (entry === undefined) return;
+    this.persistedToolCallStates.delete(wirePath);
+    this.persistedToolCallStateWeight -= entry.weight;
+  }
+
+  private admitPersistedToolCallState(
+    wirePath: string,
+    entry: PersistedToolCallState,
+  ): void {
+    if (
+      this.toolCallCountLimits.maxCacheEntries <= 0 ||
+      this.toolCallCountLimits.maxCacheBytes <= 0 ||
+      entry.weight > this.toolCallCountLimits.maxCacheBytes
+    ) {
+      return;
+    }
+    this.deletePersistedToolCallState(wirePath);
+    this.persistedToolCallStates.set(wirePath, entry);
+    this.persistedToolCallStateWeight += entry.weight;
+    for (;;) {
+      const overEntries = this.persistedToolCallStates.size > this.toolCallCountLimits.maxCacheEntries;
+      const overBytes = this.persistedToolCallStateWeight > this.toolCallCountLimits.maxCacheBytes;
+      if (!overEntries && !overBytes) return;
+      const oldest = this.oldestUnpinnedPersistedToolCallState();
+      if (oldest === undefined) {
+        this.deletePersistedToolCallState(wirePath);
+        return;
+      }
+      this.deletePersistedToolCallState(oldest);
+    }
+  }
+
+  private oldestUnpinnedPersistedToolCallState(): string | undefined {
+    for (const wirePath of this.persistedToolCallStates.keys()) {
+      if ((this.persistedToolCallPins.get(wirePath) ?? 0) === 0) return wirePath;
+    }
+    return undefined;
+  }
+
+  private logToolCallCountFailure(sessionId: string, agentId: string, error: unknown): void {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    const detail = code ?? (error instanceof Error ? error.message : String(error));
+    this.deps.logger?.warn(
+      { sessionId, agentId, err: detail },
+      'transcript: tool-call count unavailable',
+    );
+  }
+
+  private logTranscriptFailure(sessionId: string, agentId: string, error: unknown): void {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    const detail = code ?? (error instanceof Error ? error.message : String(error));
+    this.deps.logger?.warn(
+      { sessionId, agentId, err: detail },
+      'transcript: history snapshot unavailable',
+    );
+  }
+
+  private async historyFailureChanged(
+    sessionId: string,
+    agentId: string,
+    prior: AgentHistoryState,
+  ): Promise<boolean> {
+    const current = await this.historyFailureSignature(sessionId, agentId);
+    return current !== prior.failureSignature;
+  }
+
+  private async historyFailureSignature(sessionId: string, agentId: string): Promise<string> {
+    if (!isPlainAgentId(agentId)) return 'invalid';
+    try {
+      const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
+      if (summary === undefined) return 'unknown';
+      const wirePath = join(
+        this.deps.homeDir,
+        SESSIONS_ROOT,
+        summary.workspaceId,
+        sessionId,
+        AGENTS_DIR,
+        agentId,
+        WIRE_FILE,
+      );
+      try {
+        const info = await stat(wirePath);
+        if (!Number.isSafeInteger(info.size) || info.size < 0) return 'invalid';
+        return `file:${fileFingerprint(info)}`;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        return code === 'ENOENT' ? 'missing' : `error:${code ?? 'unknown'}`;
+      }
+    } catch {
+      return 'unknown';
+    }
   }
 
   /**
@@ -459,8 +860,8 @@ export class TranscriptService {
   /**
    * Rebuild one agent's transcript snapshot for a cold session from its
    * persisted wire records. Returns `undefined` when the session is unknown to
-   * the index; a known session without wire records for the agent yields an
-   * empty snapshot.
+   * the index; a known session without readable wire records yields an empty
+   * snapshot with an unknown tool-call count.
    */
   async readColdSnapshot(
     sessionId: string,
@@ -469,7 +870,7 @@ export class TranscriptService {
   ): Promise<AgentTranscriptSnapshot | undefined> {
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
     if (summary === undefined) return undefined;
-    if (!isPlainAgentId(agentId)) return emptySnapshot();
+    if (!isPlainAgentId(agentId)) return unknownSnapshot();
     const wirePath = join(
       this.deps.homeDir,
       SESSIONS_ROOT,
@@ -479,53 +880,78 @@ export class TranscriptService {
       agentId,
       WIRE_FILE,
     );
-    let records: Awaited<ReturnType<typeof readWireRecords>>;
+    let records: Awaited<ReturnType<typeof readWireRecordsWithCompleteness>>;
     try {
-      records = await readWireRecords(wirePath);
+      records = await readWireRecordsWithCompleteness(wirePath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptySnapshot();
-      throw error;
+      this.logTranscriptFailure(sessionId, agentId, error);
+      return unknownSnapshot();
     }
-    const transcript = new AgentTranscript(agentId);
-    const reducer = new TranscriptFactReducer(transcript);
-    const adapter = new TranscriptWireAdapter(agentId, {
-      turn: (turnId) => transcript.getTurn(turnId),
-      tool: (toolCallId) => {
-        for (const item of transcript.getItems()) {
-          if (item.kind !== 'turn') continue;
-          for (const step of item.steps) {
-            const frame = step.frames.find(
-              (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
-            );
-            if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
+    try {
+      const transcript = new AgentTranscript(agentId);
+      const reducer = new TranscriptFactReducer(transcript);
+      const adapter = new TranscriptWireAdapter(agentId, {
+        turn: (turnId) => transcript.getTurn(turnId),
+        tool: (toolCallId) => {
+          for (const item of transcript.getItems()) {
+            if (item.kind !== 'turn') continue;
+            for (const step of item.steps) {
+              const frame = step.frames.find(
+                (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+              );
+              if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
+            }
           }
-        }
-        return undefined;
-      },
-      task: (taskId) => transcript.getTask(taskId),
-    });
-    for (const record of records) reducer.apply(adapter.add(record));
-    const preservedTurns: TranscriptTurn[] = [];
-    for (const turnId of preserveOpenTurnIds?.() ?? []) {
-      const candidate = transcript.getTurn(turnId);
-      if (candidate?.state === 'running') preservedTurns.push(structuredClone(candidate));
+          return undefined;
+        },
+        task: (taskId) => transcript.getTask(taskId),
+      });
+      for (const record of records.records) reducer.apply(adapter.add(record));
+      const preservedTurns: TranscriptTurn[] = [];
+      for (const turnId of preserveOpenTurnIds?.() ?? []) {
+        const candidate = transcript.getTurn(turnId);
+        if (candidate?.state === 'running') preservedTurns.push(structuredClone(candidate));
+      }
+      reducer.apply(adapter.finish());
+      for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
+      const snapshot = transcript.snapshot();
+      return records.complete
+        ? knownSnapshot(snapshot, countToolCallFrames(snapshot.items))
+        : { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false };
+    } catch (error) {
+      this.logTranscriptFailure(sessionId, agentId, error);
+      return unknownSnapshot();
     }
-    reducer.apply(adapter.finish());
-    for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
-    return transcript.snapshot();
   }
 
   async reconcileAfterRewrite(sessionId: string, agentId: string = MAIN_AGENT_ID): Promise<void> {
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
+    const transcript = entry.store.ensureAgent(agentId);
+    entry.agentHistory.set(agentId, { status: 'pending' });
+    this.dispatchToolCallCount(sessionId, transcript, undefined, true);
     const initialActiveTurnId = this.liveActiveTurnId(sessionId, agentId);
-    const snapshot = await this.readColdSnapshot(
-      sessionId,
-      agentId,
-      () => this.liveActiveTurnIds(sessionId, agentId, initialActiveTurnId),
-    );
-    if (snapshot === undefined || this.live.get(sessionId) !== entry) return;
-    entry.store.ensureAgent(agentId).apply([
+    let snapshot: AgentTranscriptSnapshot | undefined;
+    try {
+      snapshot = await this.readColdSnapshot(
+        sessionId,
+        agentId,
+        () => this.liveActiveTurnIds(sessionId, agentId, initialActiveTurnId),
+      );
+    } catch (error) {
+      this.logTranscriptFailure(sessionId, agentId, error);
+    }
+    if (
+      snapshot === undefined ||
+      !snapshotToolCallCountKnown(snapshot) ||
+      this.live.get(sessionId) !== entry
+    ) {
+      const failureSignature = await this.historyFailureSignature(sessionId, agentId);
+      entry.agentHistory.set(agentId, { status: 'failed', failureSignature });
+      this.dispatchToolCallCount(sessionId, transcript, undefined, true);
+      return;
+    }
+    transcript.apply([
       {
         op: 'reset',
         agentId,
@@ -534,7 +960,10 @@ export class TranscriptService {
         snapshot,
       },
     ]);
-    entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot(snapshot));
+    const materialized = transcript.snapshot();
+    entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot(materialized));
+    entry.agentHistory.set(agentId, { status: 'complete' });
+    this.dispatchToolCallCount(sessionId, transcript, countToolCallFrames(materialized.items), true);
     entry.opsJournals.set(agentId, { epoch: randomUUID(), nextSeq: 1, batches: [] });
   }
 
@@ -723,7 +1152,24 @@ export function snapshotTurnOps(turn: TranscriptTurn): TranscriptOperation[] {
   return ops;
 }
 
-function emptySnapshot(): AgentTranscriptSnapshot {
+function toolCallCountSetOperation(count: number | undefined): TranscriptOperation {
+  const operation: ToolCountSetOp = { op: 'tool.count.set', count };
+  return operation;
+}
+
+function snapshotToolCallCountKnown(snapshot: AgentTranscriptSnapshot): boolean {
+  return snapshot.toolCallCountKnown !== false;
+}
+
+function knownSnapshot(snapshot: AgentTranscriptSnapshot, count: number): AgentTranscriptSnapshot {
+  return {
+    ...snapshot,
+    toolCallCount: count,
+    toolCallCountKnown: true,
+  };
+}
+
+function unknownSnapshot(): AgentTranscriptSnapshot {
   return {
     items: [],
     tasks: [],
@@ -731,6 +1177,36 @@ function emptySnapshot(): AgentTranscriptSnapshot {
     attachments: [],
     todos: [],
     prompts: [],
+    toolCallCount: undefined,
+    toolCallCountKnown: false,
     meta: {},
   };
+}
+
+function fileFingerprint(info: {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+}): string {
+  return `${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+}
+
+function mergeToolCallCount(
+  persisted: MaterializedAgentToolCallState,
+  live: MaterializedAgentToolCallState | undefined,
+): number {
+  let count = persisted.toolCallCount;
+  for (const [turnId, frameIds] of live?.toolFrameIdsByTurn ?? []) {
+    const prior = persisted.toolFrameIdsByTurn.get(turnId);
+    for (const frameId of frameIds) if (!prior?.has(frameId)) count += 1;
+  }
+  return count;
+}
+
+function positiveLimit(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isFinite(value) ? Math.max(1, Math.floor(value)) : fallback;
+}
+
+function nonNegativeLimit(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
 }

@@ -566,6 +566,289 @@ describe('AgentTranscript', () => {
     expect(tx.hasMoreOlder).toBe(true);
   });
 
+  it('keeps a global tool-call count across windows and partial reset pages', () => {
+    const source = new AgentTranscript('main');
+    source.apply([
+      {
+        op: 'turn.upsert',
+        turn: { ...turn1.turn, turnId: 't0', ordinal: 0 },
+      },
+      {
+        op: 'frame.upsert',
+        turnId: 't0',
+        stepId: 't0.1',
+        frame: { kind: 'tool', frameId: 't0.1.call_0', toolCallId: 'call_0', name: 'Read', state: 'done' },
+      },
+      turn1,
+      {
+        op: 'frame.upsert',
+        turnId: 't1',
+        stepId: 't1.1',
+        frame: { kind: 'tool', frameId: 't1.1.call_2', toolCallId: 'call_2', name: 'Bash', state: 'done' },
+      },
+    ]);
+    expect(source.snapshot().toolCallCount).toBe(2);
+    const tail = source.snapshot({ tailTurns: 1 });
+    expect(tail.toolCallCount).toBe(2);
+
+    const client = new AgentTranscript('main');
+    const tailReset: TranscriptOperation = {
+      op: 'reset',
+      agentId: 'main',
+      coverage: { kind: 'tail', fromTurnId: 't1', throughTurnId: 't1', hasMoreOlder: true },
+      snapshot: { ...tail, toolCallCount: 5 },
+    };
+    client.receive([tailReset]);
+    expect(client.snapshot().toolCallCount).toBe(5);
+    expect(client.receive([tailReset]).accepted).toEqual([]);
+
+    const olderReset: TranscriptOperation = {
+      op: 'reset',
+      agentId: 'main',
+      coverage: { kind: 'tail', fromTurnId: 't0', throughTurnId: 't0', hasMoreOlder: true },
+      snapshot: { ...tail, items: [source.getTurn('t0')!], toolCallCount: 5 },
+    };
+    client.receive([olderReset]);
+    expect(client.snapshot().toolCallCount).toBe(5);
+    expect(client.receive([olderReset]).accepted).toEqual([]);
+
+    client.apply([
+      {
+        op: 'frame.upsert',
+        turnId: 't0',
+        stepId: 't0.1',
+        frame: { kind: 'tool', frameId: 't0.1.call_1', toolCallId: 'call_1', name: 'Write', state: 'running' },
+      },
+    ]);
+    expect(client.snapshot().toolCallCount).toBe(6);
+    client.receive([olderReset]);
+    expect(client.snapshot().toolCallCount).toBe(5);
+  });
+
+  it('distinguishes a genuine empty count from an unknown partial tail', () => {
+    const empty = new AgentTranscript('main');
+    expect(empty.snapshot().toolCallCount).toBe(0);
+    empty.receive([
+      {
+        op: 'reset',
+        agentId: 'main',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        snapshot: {
+          items: [],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          todos: [],
+          prompts: [],
+          meta: {},
+        },
+      },
+    ]);
+    expect(empty.snapshot().toolCallCount).toBe(0);
+
+    const redacted = new AgentTranscript('main');
+    redacted.receive([{
+      op: 'reset',
+      agentId: 'main',
+      grade: 'turn',
+      coverage: { kind: 'full', hasMoreOlder: false },
+      snapshot: { ...empty.snapshot(), toolCallCount: undefined, toolCallCountKnown: false },
+    }]);
+    expect(redacted.snapshot().toolCallCount).toBeUndefined();
+
+    const visible = new AgentTranscript('main');
+    visible.apply(toolFrame('running'));
+    const tail = visible.snapshot({ tailTurns: 1 });
+    const derived = new AgentTranscript('main');
+    derived.receive([
+      {
+        op: 'reset',
+        agentId: 'main',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        snapshot: {
+          items: tail.items,
+          tasks: tail.tasks,
+          interactions: tail.interactions,
+          attachments: tail.attachments,
+          todos: tail.todos,
+          prompts: tail.prompts,
+          meta: tail.meta,
+        },
+      },
+    ]);
+    expect(derived.snapshot().toolCallCount).toBe(1);
+
+    const unknownTail = new AgentTranscript('main');
+    unknownTail.receive([
+      {
+        op: 'reset',
+        agentId: 'main',
+        coverage: { kind: 'tail', fromTurnId: 't1', throughTurnId: 't1', hasMoreOlder: true },
+        snapshot: {
+          items: tail.items,
+          tasks: tail.tasks,
+          interactions: tail.interactions,
+          attachments: tail.attachments,
+          todos: tail.todos,
+          prompts: tail.prompts,
+          meta: tail.meta,
+          hasMoreOlder: true,
+        },
+      },
+    ]);
+    expect(unknownTail.snapshot().toolCallCount).toBeUndefined();
+
+    const unknownRemoval = unknownTail.apply([{ op: 'items.remove', ids: ['t0'] }]);
+    expect(unknownRemoval.toolCallCountDelta).toBeUndefined();
+    expect(unknownTail.snapshot().toolCallCount).toBeUndefined();
+  });
+
+  it('updates known counts only for tool transitions and visible removals', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply(toolFrame('running'));
+    expect(tx.snapshot().toolCallCount).toBe(1);
+
+    tx.apply([toolFrame('done')[2]!]);
+    expect(tx.snapshot().toolCallCount).toBe(1);
+    tx.apply([
+      { op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: { kind: 'text', frameId: 'non-tool', role: 'assistant', text: 'text' } },
+      { op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: { kind: 'thinking', frameId: 'non-tool', text: 'thinking' } },
+    ]);
+    expect(tx.snapshot().toolCallCount).toBe(1);
+
+    tx.apply([
+      {
+        op: 'frame.upsert',
+        turnId: 't1',
+        stepId: 't1.1',
+        frame: { kind: 'text', frameId: 't1.1.call_1', role: 'assistant', text: 'replacement' },
+      },
+    ]);
+    expect(tx.snapshot().toolCallCount).toBe(0);
+
+    tx.apply([toolFrame('running')[2]!]);
+    expect(tx.snapshot().toolCallCount).toBe(1);
+    tx.apply([{ op: 'items.remove', ids: ['t1'] }]);
+    expect(tx.snapshot().toolCallCount).toBe(0);
+    expect(tx.apply([{ op: 'items.remove', ids: ['t1'] }]).accepted).toEqual([]);
+
+    const partial = new AgentTranscript('main');
+    const partialSnapshot = new AgentTranscript('main');
+    partialSnapshot.apply(toolFrame('running'));
+    partial.receive([
+      {
+        op: 'reset',
+        agentId: 'main',
+        coverage: { kind: 'tail', fromTurnId: 't1', throughTurnId: 't1', hasMoreOlder: true },
+        snapshot: { ...partialSnapshot.snapshot({ tailTurns: 1 }), toolCallCount: 3 },
+      },
+    ]);
+    partial.apply([{ op: 'items.remove', ids: ['t1'] }]);
+    expect(partial.snapshot().toolCallCount).toBe(2);
+    partial.apply([{ op: 'items.remove', ids: ['t1'] }]);
+    expect(partial.snapshot().toolCallCount).toBe(2);
+  });
+
+  it('STAT-R2 applies authoritative count sets and keeps frame deltas exact', () => {
+    const tx = new AgentTranscript('main');
+    expect(tx.apply([{ op: 'tool.count.set', count: undefined }]).toolCallCountDelta).toBeUndefined();
+    expect(tx.snapshot()).toMatchObject({ toolCallCount: undefined, toolCallCountKnown: false });
+    const set = tx.apply([{ op: 'tool.count.set', count: 7 }]);
+    expect(set.toolCallCountDelta).toBeUndefined();
+    expect(tx.snapshot()).toMatchObject({ toolCallCount: 7, toolCallCountKnown: true });
+    expect(tx.getItems()).toEqual([]);
+    const repeatedSet = tx.apply([{ op: 'tool.count.set', count: 7 }]);
+    expect(repeatedSet.toolCallCountDelta).toBeUndefined();
+    expect(repeatedSet.accepted).toEqual([]);
+
+    const added = tx.apply(toolFrame('running'));
+    expect(added.toolCallCountDelta).toBe(1);
+    expect(tx.snapshot().toolCallCount).toBe(8);
+    const repeated = tx.apply([toolFrame('running')[2]!]);
+    expect(repeated.toolCallCountDelta).toBe(0);
+    expect(repeated.accepted).toEqual([]);
+
+    const removed = tx.apply([{ op: 'items.remove', ids: ['t1'] }]);
+    expect(removed.toolCallCountDelta).toBe(-1);
+    expect(tx.snapshot().toolCallCount).toBe(7);
+    const repeatedRemoval = tx.apply([{ op: 'items.remove', ids: ['t1'] }]);
+    expect(repeatedRemoval.toolCallCountDelta).toBe(0);
+    expect(repeatedRemoval.accepted).toEqual([]);
+    expect(tx.snapshot().toolCallCount).toBe(7);
+
+    const transitions = new AgentTranscript('main');
+    expect(transitions.apply(toolFrame('running')).toolCallCountDelta).toBe(1);
+    expect(transitions.apply([toolFrame('done')[2]!]).toolCallCountDelta).toBe(0);
+    expect(
+      transitions.apply([
+        {
+          op: 'frame.upsert',
+          turnId: 't1',
+          stepId: 't1.1',
+          frame: { kind: 'text', frameId: 't1.1.call_1', role: 'assistant', text: 'text' },
+        },
+      ]).toolCallCountDelta,
+    ).toBe(-1);
+    expect(
+      transitions.apply([
+        { op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: { kind: 'thinking', frameId: 't1.1.call_1', text: 'thinking' } },
+      ]).toolCallCountDelta,
+    ).toBe(0);
+    expect(transitions.apply([toolFrame('running')[2]!]).toolCallCountDelta).toBe(1);
+  });
+
+  it('STAT-R2 remembers unknown removals across a later authoritative baseline', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([{ op: 'reset', agentId: 'main', coverage: { kind: 'tail', hasMoreOlder: true },
+      snapshot: { ...tx.snapshot(), toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: true } }]);
+    expect(tx.apply([{ op: 'items.remove', ids: ['hidden'] }]).toolCallCountDelta).toBeUndefined();
+    expect(tx.apply([{ op: 'items.remove', ids: ['hidden'] }]).toolCallCountDelta).toBe(0);
+    tx.apply([{ op: 'tool.count.set', count: 7 }]);
+    expect(tx.apply([{ op: 'items.remove', ids: ['hidden'] }]).accepted).toEqual([]);
+    expect(tx.snapshot().toolCallCount).toBe(7);
+    tx.apply([{ op: 'items.remove', ids: Array.from({ length: 2049 }, (_, i) => `removed-${i}`) }]);
+    tx.apply([{ op: 'tool.count.set', count: 7 }]);
+    expect(tx.apply([{ op: 'items.remove', ids: ['removed-2048'] }]).toolCallCountDelta).toBe(0);
+    expect(tx.snapshot().toolCallCount).toBe(7);
+    tx.apply([{ op: 'items.remove', ids: ['hidden'] }]);
+    expect(tx.snapshot().toolCallCount).toBeUndefined();
+  });
+
+  it('STAT-R3 keeps unknown resets unknown and poisons mixed batch deltas', () => {
+    const unknown = new AgentTranscript('main');
+    const unknownReset = unknown.apply([
+      {
+        op: 'reset',
+        agentId: 'main',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        snapshot: { ...unknown.snapshot(), toolCallCount: undefined, toolCallCountKnown: false },
+      },
+    ]);
+    expect(unknownReset.toolCallCountDelta).toBeUndefined();
+    expect(unknown.snapshot()).toMatchObject({ toolCallCount: undefined, toolCallCountKnown: false });
+
+    const realEmpty = new AgentTranscript('main');
+    realEmpty.apply([{ op: 'tool.count.set', count: undefined }]);
+    const emptyReset = realEmpty.apply([
+      {
+        op: 'reset',
+        agentId: 'main',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        snapshot: { ...new AgentTranscript('main').snapshot(), toolCallCount: 0, toolCallCountKnown: true },
+      },
+    ]);
+    expect(emptyReset.toolCallCountDelta).toBeUndefined();
+    expect(realEmpty.snapshot()).toMatchObject({ toolCallCount: 0, toolCallCountKnown: true });
+
+    const mixed = new AgentTranscript('main');
+    const mixedResult = mixed.apply([
+      { op: 'tool.count.set', count: 7 },
+      ...toolFrame('running'),
+    ]);
+    expect(mixedResult.toolCallCountDelta).toBeUndefined();
+    expect(mixed.snapshot()).toMatchObject({ toolCallCount: 8, toolCallCountKnown: true });
+  });
+
   it('task upsert + append keeps output tail globally, detached flips freely', () => {
     const tx = new AgentTranscript('main');
     tx.apply([
