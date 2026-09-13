@@ -33,7 +33,7 @@ export class SelectToolsTool implements ISelectToolsTool {
       execute: async () => {
         if (!this.toolSelect.enabled()) {
           return {
-            output: 'select_tools is not available for the current model.',
+            output: `${SELECT_TOOLS_TOOL_NAME} is not available for the current model.`,
             isError: true,
           };
         }

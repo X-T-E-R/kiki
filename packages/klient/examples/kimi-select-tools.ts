@@ -1,12 +1,12 @@
 /**
- * Probe the `select_tools` (progressive tool disclosure) capability of the
+ * Probe the `SelectTools` (progressive tool disclosure) capability of the
  * kimi-type providers, based on the real providers/auth in
  * `~/.kimi-code/config.toml`.
  *
  * Feature recap (from the Tool Select guide): with the `tool-select`
  * experimental flag + `tool_use` + `dynamically_loaded_tools` capabilities,
  * MCP tool schemas no longer ride the top-level `tools[]`; the model calls
- * the builtin `select_tools` with exact names (announced in
+ * the builtin `SelectTools` with exact names (announced in
  * `<tools_added>`/`<tools_removed>` system reminders), the engine injects
  * the loaded schemas as a `role: 'system'` message whose `tools` field
  * carries full definitions, and the model then calls the loaded tool.
@@ -30,10 +30,10 @@
  *
  * Part B — live, per kimi model from the real config: a two-step flow that
  * mirrors exactly what the agent loop produces.
- *   step 1: announcement + `select_tools` available, user asks for a
- *           screenshot — does the model call `select_tools`, with names from
+ *   step 1: announcement + `SelectTools` available, user asks for a
+ *           screenshot — does the model call `SelectTools`, with names from
  *           the announced list?
- *   step 2: history += the select_tools call, its "Loaded: ..." result, and
+ *   step 2: history += the SelectTools call, its "Loaded: ..." result, and
  *           the schema-injection system message — does the model now call
  *           the loaded computer-use tool?
  *
@@ -142,9 +142,9 @@ const COMPUTER_USE_TOOLS: readonly Tool[] = [
 
 const COMPUTER_USE_NAMES = COMPUTER_USE_TOOLS.map((t) => t.name);
 
-/** The builtin select_tools schema, mirroring `SelectToolsInputSchema`. */
+/** The builtin SelectTools schema, mirroring `SelectToolsInputSchema`. */
 const SELECT_TOOLS: Tool = {
-  name: 'select_tools',
+  name: 'SelectTools',
   description:
     'Load one or more tools by name so you can call them. ' +
     'All available tool names are listed in the <tools_added>/<tools_removed> announcements ' +
@@ -170,7 +170,7 @@ const SYSTEM_PROMPT =
   'You are a computer-use agent operating the user\u2019s computer through tool calls. ' +
   'Only a core tool set is available up front; additional tools are announced by name in ' +
   '<tools_added> blocks in the system context. To use an announced tool, first call ' +
-  'select_tools with its exact name to load its definition, then call the tool itself.';
+  'SelectTools with its exact name to load its definition, then call the tool itself.';
 
 const userMessage = (text: string): Message => ({
   role: 'user',
@@ -326,8 +326,8 @@ async function probeWireEncoding(): Promise<void> {
       'kimi: declaration embeds computer_screenshot',
     );
     assert(
-      kimiBody?.tools?.some((t) => t.function?.name === 'select_tools') === true,
-      'kimi: top-level tools[] keeps select_tools',
+      kimiBody?.tools?.some((t) => t.function?.name === 'SelectTools') === true,
+      'kimi: top-level tools[] keeps SelectTools',
     );
     assert(
       kimiBody?.tools?.some((t) => t.function?.name === 'computer_screenshot') !== true,
@@ -363,7 +363,7 @@ async function probeWireEncoding(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Part B — live two-step select_tools flow per real kimi model.
+// Part B — live two-step SelectTools flow per real kimi model.
 // ---------------------------------------------------------------------------
 
 type Step1Outcome =
@@ -418,7 +418,7 @@ async function step1Select(requester: ModelRequester, scenario: Scenario): Promi
       60_000,
       'step1',
     );
-    const call = result.toolCalls.find((t) => t.name === 'select_tools');
+    const call = result.toolCalls.find((t) => t.name === 'SelectTools');
     if (call === undefined) {
       const other = result.toolCalls.map((t) => t.name).join(', ');
       return {
@@ -468,7 +468,7 @@ async function step2UseLoadedTool(
           {
             type: 'function',
             id: step1.callId,
-            name: 'select_tools',
+            name: 'SelectTools',
             arguments: JSON.stringify({ names: [loadName] }),
           },
         ],
@@ -517,7 +517,7 @@ async function step2UseLoadedTool(
 
 async function probeLiveKimiProviders(): Promise<void> {
   const homeDir = process.env['KIMI_CODE_HOME'] ?? join(homedir(), '.kimi-code');
-  console.log(`\n=== part B: live select_tools flow on real kimi providers (${homeDir}) ===`);
+  console.log(`\n=== part B: live SelectTools flow on real kimi providers (${homeDir}) ===`);
   const { app } = bootstrap({ homeDir, clientIdentity: EXAMPLE_CLIENT_IDENTITY }, [
     ...logSeed(resolveLoggingConfig({ homeDir, env: process.env })),
   ]);
@@ -559,7 +559,7 @@ async function probeLiveKimiProviders(): Promise<void> {
           }
           console.log(`[${m.model}] ${scenario.expectTool}  ${elapsed}  declared=${String(declared)}  ${row}`);
         } else if (step1.kind === 'no-call') {
-          row = `FAIL  no select_tools call: ${step1.text}`;
+          row = `FAIL  no SelectTools call: ${step1.text}`;
           console.log(`[${m.model}] ${scenario.expectTool}  ${String(Date.now() - startedAt)}ms  declared=${String(declared)}  ${row}`);
         } else {
           row = `ERROR  ${step1.message}`;

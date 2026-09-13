@@ -125,7 +125,7 @@ abstract class ThreadToolBase {
 
 export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool {
   declare readonly _serviceBrand: undefined;
-  readonly name = 'list_threads';
+  readonly name = 'ThreadList';
   readonly description =
     'List enabled local threads. Results are newest first and can be continued with the returned cursor.';
   readonly parameters = toInputJsonSchema(ListThreadsToolInputSchema);
@@ -156,7 +156,7 @@ export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool 
 
 export class ReadThreadTool extends ThreadToolBase implements IReadThreadTool {
   declare readonly _serviceBrand: undefined;
-  readonly name = 'read_thread';
+  readonly name = 'ThreadRead';
   readonly description =
     'Read completed main-agent turns from a local thread without resuming a cold thread.';
   readonly parameters = toInputJsonSchema(ReadThreadToolInputSchema);
@@ -190,7 +190,7 @@ export class SendMessageToThreadTool
   implements ISendMessageToThreadTool
 {
   declare readonly _serviceBrand: undefined;
-  readonly name = 'send_message_to_thread';
+  readonly name = 'ThreadSend';
   readonly description =
     'Persist and queue a user-role peer message for another enabled local thread. Reuse the same idempotency key only for the same message.';
   readonly parameters = toInputJsonSchema(SendMessageToThreadToolInputSchema);
@@ -222,7 +222,7 @@ export class SendMessageToThreadTool
 
 export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool {
   declare readonly _serviceBrand: undefined;
-  readonly name = 'wait_threads';
+  readonly name = 'ThreadWait';
   readonly description =
     'Wait for terminal, attention, lifecycle, or undeliverable-message activity from up to eight local threads.';
   readonly parameters = toInputJsonSchema(WaitThreadsToolInputSchema);
@@ -262,22 +262,22 @@ function mainAgentOnly(accessor: ServicesAccessor): boolean {
 }
 
 registerAgentToolService(IListThreadsTool, ListThreadsTool, {
-  name: 'list_threads',
+  name: 'ThreadList',
   domain: 'threadCommunication',
   when: mainAgentOnly,
 });
 registerAgentToolService(IReadThreadTool, ReadThreadTool, {
-  name: 'read_thread',
+  name: 'ThreadRead',
   domain: 'threadCommunication',
   when: mainAgentOnly,
 });
 registerAgentToolService(ISendMessageToThreadTool, SendMessageToThreadTool, {
-  name: 'send_message_to_thread',
+  name: 'ThreadSend',
   domain: 'threadCommunication',
   when: mainAgentOnly,
 });
 registerAgentToolService(IWaitThreadsTool, WaitThreadsTool, {
-  name: 'wait_threads',
+  name: 'ThreadWait',
   domain: 'threadCommunication',
   when: mainAgentOnly,
 });

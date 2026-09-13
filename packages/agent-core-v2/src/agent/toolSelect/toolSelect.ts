@@ -3,7 +3,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { Tool } from '#/kosong/contract/tool';
 import type { ToolInfo } from '#/tool/toolContract';
 
-export const SELECT_TOOLS_TOOL_NAME = 'select_tools';
+export const SELECT_TOOLS_TOOL_NAME = 'SelectTools';
 
 export interface ShapedToolEntry extends ToolInfo {
   readonly deferred?: true;

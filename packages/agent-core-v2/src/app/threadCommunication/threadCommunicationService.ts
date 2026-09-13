@@ -310,7 +310,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     if (input.threads.length === 0 || input.threads.length > MAX_WAIT_THREADS) {
       throw new Error2(
         ErrorCodes.THREAD_LIMIT_EXCEEDED,
-        `wait_threads accepts between 1 and ${MAX_WAIT_THREADS} threads.`,
+        `ThreadWait accepts between 1 and ${MAX_WAIT_THREADS} threads.`,
       );
     }
     const seen = new Set<string>();
@@ -318,7 +318,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       this.requireLocalHost(item.thread);
       const key = threadIdentity(item.thread);
       if (seen.has(key)) {
-        throw new Error2(ErrorCodes.REQUEST_INVALID, 'wait_threads contains duplicate threads.');
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'ThreadWait contains duplicate threads.');
       }
       seen.add(key);
       if (!(await this.workspaceEnabled(item.thread.workspaceId))) {
@@ -845,7 +845,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       if (!(error instanceof ThreadActivityCursorExpiredError)) throw error;
       throw new Error2(
         ErrorCodes.THREAD_CURSOR_INVALID,
-        'Activity cursor is older than retained history; retry wait_threads without this cursor.',
+        'Activity cursor is older than retained history; retry ThreadWait without this cursor.',
         {
           details: {
             resyncCursor: encodeCursor({

@@ -310,7 +310,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
 function notLoadedToolOutput(name: string): string {
   return (
     `Tool "${name}" is available but not loaded. ` +
-    `Call select_tools with ["${name}"] first, then call the tool.`
+    `Call ${SELECT_TOOLS_TOOL_NAME} with ["${name}"] first, then call the tool.`
   );
 }
 

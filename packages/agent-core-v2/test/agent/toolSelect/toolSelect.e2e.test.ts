@@ -68,7 +68,7 @@ function selectToolsCall(id: string, names: readonly string[]) {
   return {
     type: 'function' as const,
     id,
-    name: 'select_tools',
+    name: 'SelectTools',
     arguments: JSON.stringify({ names }),
   };
 }
@@ -125,7 +125,7 @@ describe('progressive tool disclosure end-to-end', () => {
 
     const firstWire = ctx.llmCalls[0]!;
     expect(toolNames(firstWire.tools)).not.toContain(MCP_ALPHA);
-    expect(toolNames(firstWire.tools)).toContain('select_tools');
+    expect(toolNames(firstWire.tools)).toContain('SelectTools');
     const announcementText = firstWire.history
       .map((message) =>
         message.content.map((part) => (part.type === 'text' ? part.text : '')).join(''),

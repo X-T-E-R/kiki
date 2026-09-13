@@ -531,7 +531,7 @@ describe('AgentToolSelectService S0 baseline (gate closed)', () => {
     expect(h.sut.shapeHistory(messages)).toBe(messages);
   });
 
-  it('shapeTools filters select_tools itself out of the view', () => {
+  it('shapeTools filters SelectTools itself out of the view', () => {
     const h = createHarness();
     registerBuiltin(h, new EchoTool());
     const selectTools = h.ix.createInstance(SelectToolsTool);
@@ -551,7 +551,7 @@ describe('AgentToolSelectService S0 baseline (gate closed)', () => {
     expect(shaped.find((entry) => entry.name === USER_DEFERRED)?.deferred).toBeUndefined();
   });
 
-  it('shapeTools applies profile filtering and removes select_tools while the gate is closed', () => {
+  it('shapeTools applies profile filtering and removes SelectTools while the gate is closed', () => {
     const h = createHarness();
     registerBuiltin(h, new EchoTool());
     registerMcp(h, new StubMcpTool(MCP_ALPHA));
@@ -563,7 +563,7 @@ describe('AgentToolSelectService S0 baseline (gate closed)', () => {
     expect(shaped.map((entry) => entry.name)).toEqual(['Echo']);
   });
 
-  it('select_tools execution self-guards while the gate is closed', async () => {
+  it('SelectTools execution self-guards while the gate is closed', async () => {
     const h = createHarness();
     const selectTools = h.ix.createInstance(SelectToolsTool);
     const execution = selectTools.resolveExecution({ names: [MCP_ALPHA] });
@@ -575,7 +575,7 @@ describe('AgentToolSelectService S0 baseline (gate closed)', () => {
       signal: new AbortController().signal,
     });
     expect(result).toEqual({
-      output: 'select_tools is not available for the current model.',
+      output: 'SelectTools is not available for the current model.',
       isError: true,
     });
   });
@@ -603,7 +603,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     flagEnabled = true;
   });
 
-  it('hides unloaded MCP tools, marks loaded MCP tools deferred, keeps builtins and select_tools', () => {
+  it('hides unloaded MCP tools, marks loaded MCP tools deferred, keeps builtins and SelectTools', () => {
     const h = createHarness();
     registerBuiltin(h, new EchoTool());
     registerMcp(h, new StubMcpTool(MCP_ALPHA));
@@ -636,7 +636,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(afterLoad.find((entry) => entry.name === USER_INLINE)?.deferred).toBeUndefined();
   });
 
-  it('keeps select_tools visible when the profile omits it while hiding inactive tools', () => {
+  it('keeps SelectTools visible when the profile omits it while hiding inactive tools', () => {
     const h = createHarness();
     registerBuiltin(h, new EchoTool());
     registerMcp(h, new StubMcpTool(MCP_ALPHA));
@@ -652,7 +652,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     ]);
   });
 
-  it('hides select_tools when an explicit policy disables disclosure', () => {
+  it('hides SelectTools when an explicit policy disables disclosure', () => {
     const h = createHarness();
     registerMcp(h, new StubMcpTool(MCP_ALPHA));
     const selectTools = h.ix.createInstance(SelectToolsTool);
@@ -883,7 +883,7 @@ describe('AgentToolSelectService.load', () => {
     expect(h.sut.load([MCP_ALPHA]).alreadyAvailable).toEqual([MCP_ALPHA]);
   });
 
-  it('renders the select_tools tool output per name for mixed load results', async () => {
+  it('renders the SelectTools tool output per name for mixed load results', async () => {
     const h = createHarness();
     registerMcp(h, new StubMcpTool(MCP_ALPHA));
     registerMcp(h, new StubMcpTool(MCP_BETA));
@@ -902,7 +902,7 @@ describe('AgentToolSelectService.load', () => {
     });
   });
 
-  it('returns an error when select_tools only receives unknown names', async () => {
+  it('returns an error when SelectTools only receives unknown names', async () => {
     const h = createHarness();
     const selectTools = h.ix.createInstance(SelectToolsTool);
     const ctx = { turnId: 1, toolCallId: 'call-1', signal: new AbortController().signal };
@@ -942,7 +942,7 @@ describe('AgentToolSelectService executor interception', () => {
     expect(results[0]!.result).toEqual({
       output:
         `Tool "${MCP_ALPHA}" is available but not loaded. ` +
-        `Call select_tools with ["${MCP_ALPHA}"] first, then call the tool.`,
+        `Call SelectTools with ["${MCP_ALPHA}"] first, then call the tool.`,
       isError: true,
       stopTurn: false,
     });

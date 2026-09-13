@@ -1733,7 +1733,7 @@ describe('AgentToolPolicyService executor enforcement', () => {
     expect(profileService.data().systemPrompt).toBe('skill-active:false');
   });
 
-  it('does not reject select_tools, the policy-gated disclosure loading entry', async () => {
+  it('does not reject SelectTools, the policy-gated disclosure loading entry', async () => {
     ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass));
     await ctx.get(IAgentProfileService).bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
     const probe = new PolicyProbeTool(SELECT_TOOLS_TOOL_NAME);
@@ -1762,7 +1762,7 @@ describe('AgentToolPolicyService executor enforcement', () => {
       options: {},
       disable: [SELECT_TOOLS_TOOL_NAME],
     },
-  ])('blocks select_tools through an explicit $name', async ({ options, disable }) => {
+  ])('blocks SelectTools through an explicit $name', async ({ options, disable }) => {
     ctx = createTestAgent(options, hostEnvironmentServices(homeDir, hostPathClass));
     await ctx.get(IAgentProfileService).bind({
       profile: DEFAULT_AGENT_PROFILE_NAME,

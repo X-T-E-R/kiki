@@ -14,10 +14,10 @@ describe('builtin agent profiles', () => {
     const agent = profile('agent');
     expect(agent.tools).toEqual(
       expect.arrayContaining([
-        'list_threads',
-        'read_thread',
-        'send_message_to_thread',
-        'wait_threads',
+        'ThreadList',
+        'ThreadRead',
+        'ThreadSend',
+        'ThreadWait',
         'TaskWait',
       ]),
     );

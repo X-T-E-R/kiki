@@ -1,5 +1,7 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
 
+import { SELECT_TOOLS_TOOL_NAME } from './toolSelect';
+
 export const DYNAMIC_TOOL_SCHEMA_VARIANT = 'dynamic_tool_schema';
 
 export const LOADABLE_TOOLS_VARIANT = 'loadable-tools';
@@ -93,7 +95,7 @@ export function renderLoadableToolsAnnouncement(
     sections.push(`<tools_removed>\n${removed.join('\n')}\n</tools_removed>`);
   }
   sections.push(
-    'Use the select_tools tool with exact names to load full tool definitions before calling them. ' +
+    `Use the ${SELECT_TOOLS_TOOL_NAME} tool with exact names to load full tool definitions before calling them. ` +
       'Names listed as removed are no longer loadable — do not select them. ' +
       'Fold all announcements in this conversation in order to get the current list.',
   );

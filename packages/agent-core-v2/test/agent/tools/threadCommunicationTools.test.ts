@@ -27,10 +27,10 @@ describe('thread communication tools', () => {
       (record) => record.options.domain === 'threadCommunication',
     );
     expect(records.map((record) => record.options.name).toSorted()).toEqual([
-      'list_threads',
-      'read_thread',
-      'send_message_to_thread',
-      'wait_threads',
+      'ThreadList',
+      'ThreadRead',
+      'ThreadSend',
+      'ThreadWait',
     ]);
     const main = accessorFor('main');
     const subagent = accessorFor('worker-1');
