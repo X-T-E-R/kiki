@@ -580,7 +580,7 @@ impl BackendManager {
                             ))
                         })?
                         .args(["web", "--no-open", "--port", "0", "--log-level", "warn"])
-                        .env("KIMI_CODE_HOME", &runtime.kiki_home)
+                        .env("KIKI_HOME", &runtime.kiki_home)
                         .env("KIKI_DESKTOP_BUNDLED", "1")
                         .env("KIKI_DESKTOP_OAUTH_HOME", &runtime.oauth_home);
                     let (events, child) = command.spawn().map_err(|error| {
@@ -986,11 +986,10 @@ fn resolve_runtime_paths_with_homes(
     kimi_home: &Path,
     kiki_home: &Path,
 ) -> Result<RuntimePaths, String> {
-    let oauth_home = selected_compatibility_home(&settings.compatibility, kimi_home, kiki_home)?;
     Ok(RuntimePaths {
         kiki_home: kiki_home.to_path_buf(),
         config_path: kiki_home.join("config.toml"),
-        oauth_home,
+        oauth_home: selected_compatibility_home(&settings.compatibility, kimi_home, kiki_home)?,
     })
 }
 
@@ -2715,7 +2714,7 @@ fn sidecar_version_matches(expected: &str, actual: &str) -> bool {
 }
 
 fn authenticated_server_version(port: u16, token: &str) -> Result<String, String> {
-    let response = http_get_body(port, "/api/v1/meta", token, MAX_META_RESPONSE_BYTES)?;
+    let response = http_get_body(port, "/api/meta", token, MAX_META_RESPONSE_BYTES)?;
     parse_meta_server_version_response(&response)
 }
 
@@ -2776,7 +2775,7 @@ fn fetch_workspace_roots(connection: &DesktopConnection) -> Result<Vec<PathBuf>,
     let port = connection_port(connection)?;
     let response = http_get_body(
         port,
-        "/api/v1/workspaces",
+        "/api/workspaces",
         &connection.token,
         MAX_WORKSPACES_RESPONSE_BYTES,
     )?;
@@ -2872,7 +2871,7 @@ fn shutdown_request(connection: &DesktopConnection) -> Result<(), String> {
     http_request(
         connection_port(connection)?,
         "POST",
-        "/api/v1/shutdown",
+        "/api/shutdown",
         &connection.token,
     )
 }
@@ -3229,6 +3228,7 @@ mod tests {
         let custom_paths = resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).unwrap();
         assert_eq!(custom_paths.config_path, kiki.join("config.toml"));
         assert_eq!(custom_paths.oauth_home, custom_home);
+        assert_eq!(selected_compatibility_home(&custom.compatibility, &kimi, &kiki).unwrap(), custom_home);
 
         custom.compatibility.home_kind = CompatibilityHomeKind::Kiki;
         custom.compatibility.custom_home = None;
@@ -3238,6 +3238,7 @@ mod tests {
 
         custom.compatibility.home_kind = CompatibilityHomeKind::Custom;
         custom.compatibility.custom_home = Some("relative".to_string());
+        assert!(selected_compatibility_home(&custom.compatibility, &kimi, &kiki).is_err());
         assert!(resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).is_err());
     }
 
@@ -4256,6 +4257,28 @@ mod tests {
             )
             .is_err());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_path_citations_require_real_paths_without_relaxing_authorization() {
+        let root = env::current_dir().unwrap().join(".tmp").join(format!(
+            "host-reference-{}-{}", std::process::id(), unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("source 中.txt");
+        fs::write(&file, "first\nsecond\n").unwrap();
+        assert!(canonicalize_host_path(&file, false).is_ok());
+        assert!(canonicalize_host_path(&root, false).is_ok());
+        let citation = PathBuf::from(format!("{}:2:3", file.display()));
+        assert!(canonicalize_host_path(&citation, false).is_err());
+        let manager = BackendManager::default();
+        for path in [&file, &root] {
+            for op in [HostPathOp::Open, HostPathOp::Reveal] {
+                let error = manager.require_authorized_host_path(path, op, &|_| panic!("must not prompt")).unwrap_err();
+                assert!(error.contains("not connected"), "{error}");
+            }
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

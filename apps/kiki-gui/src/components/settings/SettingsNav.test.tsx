@@ -68,7 +68,6 @@ describe('SettingsNav grouped tree', () => {
       <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
     );
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
-    // Batch 3 filled "Data & advanced": all six groups render now.
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
       .toEqual(['app', 'ai', 'agents', 'extensions', 'system', 'advanced']);
     for (const group of groups) {
@@ -82,11 +81,13 @@ describe('SettingsNav grouped tree', () => {
     // entry; its tabs live inside the page, not in the nav tree.
     const leaves = [...aiGroup.querySelectorAll('button')].map((button) => button.textContent);
     expect(leaves).toEqual(['Models & providers']);
-    // The extensions group carries the batch-3 split leaves plus Plugins and
-    // the Search & retrieval leaf (nb-search providers/lanes).
     const extensionsGroup = groups[3]!;
     expect([...extensionsGroup.querySelectorAll('button')].map((button) => button.textContent))
-      .toEqual(['Skills', 'MCP', 'Plugins', 'Tools & hooks', 'Search & retrieval']);
+      .toEqual(['Skills', 'MCP', 'Plugins', 'Tools & automations', 'Plan & tasks', 'Search & retrieval']);
+    const advancedGroup = groups[5]!;
+    expect([...advancedGroup.querySelectorAll('button')].map((button) => button.textContent))
+      .toEqual(['Advanced']);
+    expect(container.querySelector('[data-settings-nav-leaf="experimental"]')).toBeNull();
     // About & updates sits outside every group as a clickable top-level leaf.
     const aboutLeaf = container.querySelector('[data-settings-nav-ungrouped="about"]');
     expect(aboutLeaf).not.toBeNull();
@@ -128,6 +129,26 @@ describe('SettingsNav grouped tree', () => {
       .find((element) => element.textContent!.toLowerCase().includes('providers'))!;
     await click(option);
     expect(hits.length).toBe(1);
+  });
+
+  it('renders subtabs under Search & retrieval when active="search" and navigates on subtab click', async () => {
+    const visited: string[] = [];
+    const container = await render(
+      <SettingsNav active="search" searchFocusToken={null} onNavigate={(id) => { visited.push(id); }} onSearchHit={noop} />,
+    );
+    const subtabsContainer = container.querySelector('[data-settings-nav-subtabs="search"]');
+    expect(subtabsContainer).not.toBeNull();
+    const subtabButtons = [...subtabsContainer!.querySelectorAll('button')];
+    expect(subtabButtons.map((b) => b.textContent)).toEqual([
+      'Overview & source',
+      'Search lanes',
+      'Fetch chain',
+      'Services & credentials',
+      'Advanced & diagnostics',
+    ]);
+
+    await click(subtabButtons[2]!);
+    expect(visited).toEqual(['search?tab=fetch']);
   });
 });
 

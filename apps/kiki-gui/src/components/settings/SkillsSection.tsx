@@ -1,6 +1,6 @@
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
@@ -60,6 +60,7 @@ function SkillsDefaultsCard() {
   const [mergeSkills, setMergeSkills] = useState(true);
   const [builtinProductSkills, setBuiltinProductSkills] = useState(true);
   const [extraDirs, setExtraDirs] = useState('');
+  const [baseline, setBaseline] = useState<{ merge: boolean; builtin: boolean; dirs: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [selectingDirs, setSelectingDirs] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -67,13 +68,20 @@ function SkillsDefaultsCard() {
   const canPickDirs = host.pickDirectories !== undefined;
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
+  const dirty = baseline !== null
+    && (mergeSkills !== baseline.merge || builtinProductSkills !== baseline.builtin || extraDirs !== baseline.dirs);
+
   useEffect(() => {
     const config = configQuery.data;
-    if (config === undefined) return;
-    setMergeSkills(config.merge_all_available_skills !== false);
-    setBuiltinProductSkills(config.builtin_product_skills !== false);
-    setExtraDirs((config.extra_skill_dirs ?? []).join('\n'));
-  }, [configQuery.data]);
+    if (config === undefined || dirty) return;
+    const merge = config.merge_all_available_skills !== false;
+    const builtin = config.builtin_product_skills !== false;
+    const dirs = (config.extra_skill_dirs ?? []).join('\n');
+    setMergeSkills(merge);
+    setBuiltinProductSkills(builtin);
+    setExtraDirs(dirs);
+    setBaseline({ merge, builtin, dirs });
+  }, [configQuery.data, dirty]);
 
   const selectExtraDirs = async () => {
     setSelectingDirs(true);
@@ -105,10 +113,16 @@ function SkillsDefaultsCard() {
         builtin_product_skills: builtinProductSkills,
       });
       queryClient.setQueryData(['config'], echoed);
-      setMergeSkills(echoed.merge_all_available_skills !== false);
-      setBuiltinProductSkills(echoed.builtin_product_skills !== false);
-      setExtraDirs((echoed.extra_skill_dirs ?? []).join('\n'));
-      if (builtinProductSkills !== (configQuery.data?.builtin_product_skills !== false)) {
+      const merge = echoed.merge_all_available_skills !== false;
+      const builtin = echoed.builtin_product_skills !== false;
+      const dirs = (echoed.extra_skill_dirs ?? []).join('\n');
+      setMergeSkills(merge);
+      setBuiltinProductSkills(builtin);
+      setExtraDirs(dirs);
+      setBaseline({ merge, builtin, dirs });
+      // Extra dirs feed the catalog above; refresh it so newly added folders show up.
+      await queryClient.invalidateQueries({ queryKey: ['workspace-skills'] });
+      if (builtin !== (configQuery.data?.builtin_product_skills !== false)) {
         markRestartRequired(['builtin_product_skills']);
         setFeedback({ tone: 'success', text: t('st.caps.savedRestart') });
       } else {
@@ -124,8 +138,14 @@ function SkillsDefaultsCard() {
   return (
     <SectionCard id="st-card-caps" title={t('st.caps.title')}>
       <div className="space-y-4">
-        <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
-        <Toggle label={t('st.sidecar.builtinSkills')} checked={builtinProductSkills} onChange={setBuiltinProductSkills} />
+        <div className="space-y-1">
+          <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
+          <Hint>{t('st.caps.mergeSkillsHint')}</Hint>
+        </div>
+        <div className="space-y-1">
+          <Toggle label={t('st.sidecar.builtinSkills')} checked={builtinProductSkills} onChange={setBuiltinProductSkills} />
+          <Hint>{t('st.caps.builtinSkillsHint')}</Hint>
+        </div>
         <div>
           <div className="flex items-center justify-between gap-3">
             <label htmlFor="settings-extra-skill-dirs" className="text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}</label>
@@ -141,8 +161,12 @@ function SkillsDefaultsCard() {
             ) : null}
           </div>
           <textarea id="settings-extra-skill-dirs" className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
+          <Hint>{t('st.caps.extraDirsHint')}</Hint>
         </div>
-        <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
+          {dirty ? <span role="status" className="text-[12px] text-ink-soft">{t('st.tools.unsaved')}</span> : null}
+        </div>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -156,9 +180,18 @@ function SkillsDefaultsCard() {
  * chrome, but the workspace is chosen by the section-level selector and the
  * page header echoes its scope.
  */
-function SkillCatalogCard({ workspaceId }: { workspaceId: string }) {
+function SkillCatalogCard({
+  workspaceId,
+  workspaceOptions,
+  onWorkspaceChange,
+}: {
+  workspaceId: string;
+  workspaceOptions: readonly SearchableSelectOption[];
+  onWorkspaceChange: (workspaceId: string) => void;
+}) {
   const { client } = useConnection();
   const { t } = useI18n();
+  const location = useLocation();
   const [filter, setFilter] = useState('');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -197,6 +230,22 @@ function SkillCatalogCard({ workspaceId }: { workspaceId: string }) {
   return (
     <SectionCard id="st-card-skill-catalog" title={t('st.skills.catalogTitle')}>
       <div className="space-y-3">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-medium text-ink-soft">{t('st.mcp.workspace')}</span>
+            <SearchableSelect
+              id="workspace-skills-select"
+              options={workspaceOptions}
+              value={workspaceId}
+              onChange={onWorkspaceChange}
+              ariaLabel={t('st.mcp.workspace')}
+            />
+            {skillsQuery.data !== undefined ? (
+              <span className="text-[11px] text-ink-faint">{t('st.skills.summary', { count: skillsQuery.data.skills.length })}</span>
+            ) : null}
+          </div>
+          <Hint>{t('st.skills.workspaceHint')}</Hint>
+        </div>
         <input
           type="text"
           value={filter}
@@ -226,7 +275,21 @@ function SkillCatalogCard({ workspaceId }: { workspaceId: string }) {
                 onToggle={() => { toggle(group.id); }}
               >
                 {group.skills.length === 0 ? (
-                  <Hint>{t('cap.emptyGroup')}</Hint>
+                  group.id === 'plugin' ? (
+                    <p className="text-[11px] leading-relaxed text-ink-faint">
+                      {t('st.skills.emptyPlugin')}{' '}
+                      <Link
+                        to={{ pathname: '/settings/plugins', search: location.search }}
+                        className="font-medium text-accent hover:underline"
+                      >
+                        {t('st.plugins.manageLink')}
+                      </Link>
+                    </p>
+                  ) : group.id === 'extra' ? (
+                    <Hint>{t('st.skills.emptyExtra')}</Hint>
+                  ) : (
+                    <Hint>{t('cap.emptyGroup')}</Hint>
+                  )
                 ) : (
                   group.skills.map((skill) => (
                     <SkillCard
@@ -254,17 +317,12 @@ function SkillCatalogCard({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-/**
- * Skills leaf (redesign §8.2 / §10.3): skill defaults + the skill catalog.
- * The `/capabilities` shim lands here (`?from=capabilities`) with a signpost
- * naming the three destinations the old page split into.
- */
+/** Skills leaf: skill defaults plus the workspace skill catalog. */
 export function SkillsSection() {
   const { client } = useConnection();
   const { t } = useI18n();
   const [searchParams] = useSearchParams();
   const requestedWorkspace = searchParams.get('workspace') ?? undefined;
-  const fromCapabilities = searchParams.get('from') === 'capabilities';
   const [workspaceId, setWorkspaceId] = useState('');
 
   const workspacesQuery = useQuery({
@@ -301,40 +359,15 @@ export function SkillsSection() {
     return () => { reportWorkspaceScope(null); };
   }, [reportWorkspaceScope, workspaceScopeName]);
 
-  // The split signpost keeps the deep-link context (server/token/workspace)
-  // when pointing at the sibling leaves; only the `from` marker is dropped.
-  const shimLinkTarget = (section: string) => {
-    const params = new URLSearchParams(searchParams);
-    params.delete('from');
-    const query = params.toString();
-    return `/settings/${section}${query === '' ? '' : `?${query}`}`;
-  };
-
   return (
     <div className="space-y-4">
-      {fromCapabilities ? (
-        <p data-capabilities-shim-note className="rounded-lg border border-hairline bg-panel px-3 py-2 text-[11.5px] text-ink-soft">
-          {t('st.shim.capabilities')}{' '}
-          <Link to={shimLinkTarget('skills')} className="font-medium text-accent hover:underline">{t('st.section.skills')}</Link>
-          {' · '}
-          <Link to={shimLinkTarget('mcp')} className="font-medium text-accent hover:underline">{t('st.section.mcp')}</Link>
-          {' · '}
-          <Link to={shimLinkTarget('plugins')} className="font-medium text-accent hover:underline">{t('st.shim.plugins')}</Link>
-        </p>
-      ) : null}
-      <div className="flex flex-wrap items-center gap-2 px-1">
-        <span className="text-[11px] font-medium text-ink-soft">{t('st.mcp.workspace')}</span>
-        <SearchableSelect
-          id="workspace-skills-select"
-          options={workspaceOptions}
-          value={workspaceId}
-          onChange={setWorkspaceId}
-          ariaLabel={t('st.mcp.workspace')}
-        />
-      </div>
       {workspacesQuery.isError ? <InlineError error={workspacesQuery.error} /> : null}
+      <SkillCatalogCard
+        workspaceId={workspaceId}
+        workspaceOptions={workspaceOptions}
+        onWorkspaceChange={setWorkspaceId}
+      />
       <SkillsDefaultsCard />
-      <SkillCatalogCard workspaceId={workspaceId} />
     </div>
   );
 }

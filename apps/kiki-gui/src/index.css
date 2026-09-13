@@ -345,6 +345,10 @@ body {
   background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 
+.app-rail__board-launcher {
+  margin: -1.25rem -1rem -1rem;
+}
+
 @media (max-width: 767px) {
   .app-sidebar {
     position: fixed;

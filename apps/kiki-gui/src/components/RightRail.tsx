@@ -6,7 +6,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
+import type { Task } from '@kiki/protocol';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -18,7 +18,6 @@ import {
   type AgentTreeNode,
   type SessionViewState,
   type SubagentBlock,
-  type TodoItem,
 } from '@kiki/session-core/session';
 import { sortTasks } from '@kiki/session-core/sessions';
 import {
@@ -28,9 +27,11 @@ import {
   writeLayoutPreferences,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
+import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
-import { usageSessionDeepLink } from '../lib/usageV2';
-import { AgentTreeView } from './AgentTreeView';
+import { AgentSubtreeView, AgentTreeView } from './AgentTreeView';
+import { AgentPanelContainer } from './AgentPanelContainer';
+import { useNow } from './RelativeTime';
 
 /** Differentiated subagent-page rail context (G-3). */
 export interface SubagentRailContext {
@@ -113,67 +114,6 @@ function RailSection({ title, children }: { title: string; children: React.React
     </section>
   );
 }
-
-function todoTone(status: string): { icon: string; className: string } {
-  const normalized = status.toLowerCase();
-  if (normalized === 'completed' || normalized === 'done') {
-    return { icon: '✓', className: 'border-success/50 bg-success/10 text-success' };
-  }
-  if (normalized === 'in_progress' || normalized === 'running' || normalized === 'active') {
-    return { icon: '●', className: 'border-accent/60 bg-accent-soft text-accent' };
-  }
-  if (normalized === 'cancelled' || normalized === 'canceled') {
-    return { icon: '×', className: 'border-hairline-strong bg-paper text-ink-faint' };
-  }
-  return { icon: '', className: 'border-hairline-strong bg-panel text-transparent' };
-}
-
-const TodosSection = memo(function TodosSection({ todos }: { todos: readonly TodoItem[] }) {
-  const { t } = useI18n();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const hiddenBelow = useHiddenBelow(scrollRef);
-  if (todos.length === 0) {
-    return <p className="text-[12px] text-ink-faint">{t('rail.noTodos')}</p>;
-  }
-  const done = todos.filter((todo) => {
-    const status = todo.status.toLowerCase();
-    return status === 'completed' || status === 'done';
-  }).length;
-  return (
-    <div>
-      <p className="mb-1.5 text-[10.5px] text-ink-faint">
-        {t('rail.todosDone', { done, total: todos.length })}
-      </p>
-      <div ref={scrollRef} data-todos-scroll className="max-h-80 overflow-y-auto pr-1">
-        <ul className="space-y-1">
-          {todos.map((todo, index) => {
-            const tone = todoTone(todo.status);
-            return (
-              <li key={`${index}-${todo.title}`} data-rail-item className="flex items-start gap-2">
-                <span
-                  aria-hidden
-                  className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border text-[9px] font-bold ${tone.className}`}
-                >
-                  {tone.icon}
-                </span>
-                <span
-                  className={`text-[12px] leading-snug ${
-                    tone.icon === '✓' ? 'text-ink-faint line-through' : 'text-ink'
-                  }`}
-                >
-                  {todo.title}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-        <div className="sticky bottom-0 bg-panel">
-          <OverflowHint count={hiddenBelow} />
-        </div>
-      </div>
-    </div>
-  );
-});
 
 function taskStatusTone(status: Task['status']): string {
   switch (status) {
@@ -279,61 +219,6 @@ const SubagentsSection = memo(function SubagentsSection({
   );
 });
 
-const GoalSection = memo(function GoalSection({
-  goal,
-  goalUpdatedAt,
-}: {
-  goal: GoalSnapshot | null | undefined;
-  goalUpdatedAt: string | undefined;
-}) {
-  const { t, time } = useI18n();
-  if (goal === undefined) {
-    return <p className="text-[12px] text-ink-faint">{t('rail.goalUnavailable')}</p>;
-  }
-  if (goal === null) {
-    return <p className="text-[12px] text-ink-faint">{t('rail.noGoal')}</p>;
-  }
-  const turnBudget = goal.budget.turnBudget;
-  const tokenBudget = goal.budget.tokenBudget;
-  const ratio =
-    turnBudget !== null && turnBudget > 0
-      ? goal.turnsUsed / turnBudget
-      : tokenBudget !== null && tokenBudget > 0
-        ? goal.tokensUsed / tokenBudget
-        : undefined;
-  return (
-    <div className="rounded-xl border border-amber-rule/40 bg-amber-card/60 p-3">
-      <div className="flex items-center gap-2">
-        <span className="rounded-full bg-panel px-2 py-0.5 text-[10px] font-semibold text-amber-ink">
-          {t(`composer.goalStatus.${goal.status}`)}
-        </span>
-        {goalUpdatedAt !== undefined ? (
-          <span className="ml-auto text-[10px] text-ink-faint">
-            {t('rail.updatedPrefix', { time: time.relativeTime(goalUpdatedAt) })}
-          </span>
-        ) : null}
-      </div>
-      <p className="mt-2 text-[12.5px] font-medium leading-snug text-ink">{goal.objective}</p>
-      {goal.completionCriterion !== undefined ? (
-        <p className="mt-1 text-[10.5px] leading-snug text-ink-soft">
-          {t('rail.doneWhen', { criterion: goal.completionCriterion })}
-        </p>
-      ) : null}
-      {ratio !== undefined ? (
-        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-panel">
-          <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, ratio * 100)}%` }} />
-        </div>
-      ) : null}
-      <p className="mt-1.5 font-mono text-[9.5px] text-ink-faint">
-        {t('rail.goalUsage', {
-          turns: `${goal.turnsUsed}${turnBudget === null ? '' : `/${turnBudget}`}`,
-          tokens: time.formatTokens(goal.tokensUsed),
-        })}
-      </p>
-    </div>
-  );
-});
-
 function subagentStatusChipClass(status: string): string {
   switch (status) {
     case 'running':
@@ -357,20 +242,50 @@ function railTimelineMs(value: string | undefined): number | undefined {
 }
 
 /**
+ * Clamped rail prose (task description / result summary): three lines by
+ * default with an on-demand show more/less toggle when content overflows.
+ */
+function ClampText({ text, className }: { text: string; className: string }) {
+  const { t } = useI18n();
+  const { contentRef, contentId, isOverflowing, expanded, toggle } =
+    useCollapsibleOverflow<HTMLParagraphElement>(text);
+  return (
+    <div>
+      <p
+        ref={contentRef}
+        id={contentId}
+        className={`${className} ${expanded ? '' : 'line-clamp-3'}`}
+      >
+        {text}
+      </p>
+      {isOverflowing || expanded ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          onClick={toggle}
+          className="mt-0.5 text-[10.5px] text-ink-faint transition-colors hover:text-accent"
+        >
+          {expanded ? t('transcript.showLess') : t('transcript.showMore')}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * Subagent task chapter: status chip (+ Needs-input badge), the owning task's
  * description and result summary, and the run's own elapsed / tools / tokens
  * rows — everything the main-agent rail cannot answer for a child.
  */
 const SubagentTaskSection = memo(function SubagentTaskSection({
-  state,
   forest,
   context,
 }: {
-  state: SessionViewState;
   forest: AgentForest;
   context: SubagentRailContext;
 }) {
-  const { t, tp, time } = useI18n();
+  const { t } = useI18n();
   const node: AgentTreeNode | undefined = forest.byId[context.agentId];
   const block = context.block;
   // The timeline card carries the task-entity terminal status; the tree node
@@ -379,22 +294,9 @@ const SubagentTaskSection = memo(function SubagentTaskSection({
     block !== undefined && block.status !== 'unknown'
       ? block.status
       : (node?.status ?? block?.status ?? 'unknown');
-  const description = block?.description ?? block?.instruction;
-  const summary = block?.summary ?? node?.summary;
-  const error = block?.error ?? node?.error;
-  const startMs = railTimelineMs(block?.startedAt ?? node?.startedAt);
-  const endMs = railTimelineMs(block?.endedAt ?? node?.endedAt);
-  const elapsedMs =
-    startMs === undefined ? undefined : Math.max(0, (endMs ?? Date.now()) - startMs);
-  const toolCallCount = Math.max(block?.toolCallCount ?? 0, node?.toolCallCount ?? 0);
-  const usage = block?.usage ?? state.usage?.total;
-  const inputTokens =
-    usage === undefined
-      ? undefined
-      : usage.inputOther + usage.inputCacheRead + usage.inputCacheCreation;
-  const childCount = node?.childIds.length ?? 0;
+  const description = block?.description ?? block?.instruction ?? node?.description;
   return (
-    <div className="rounded-xl border border-hairline bg-panel p-3">
+    <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-1.5">
         <span
           data-agent-status={status}
@@ -412,36 +314,10 @@ const SubagentTaskSection = memo(function SubagentTaskSection({
         ) : null}
       </div>
       {description !== undefined ? (
-        <p className="mt-2 text-[12px] leading-snug text-ink">{description}</p>
+        <div className="mt-2">
+          <ClampText text={description} className="text-[12px] leading-snug text-ink" />
+        </div>
       ) : null}
-      {error !== undefined ? (
-        <p className="mt-1.5 text-[11px] leading-snug text-danger">{error}</p>
-      ) : summary !== undefined ? (
-        <p className="mt-1.5 text-[11px] leading-snug text-ink-soft">
-          {t('rail.result')}: {summary}
-        </p>
-      ) : null}
-      <div className="mt-2 space-y-1 border-t border-hairline pt-2">
-        <MetaRow
-          label={t('rail.elapsed')}
-          value={elapsedMs === undefined ? '—' : time.formatDuration(elapsedMs)}
-          mono
-        />
-        <MetaRow label={t('rail.toolsRow')} value={tp('transcript.toolCalls', toolCallCount)} />
-        {inputTokens !== undefined && usage !== undefined ? (
-          <MetaRow
-            label={t('rail.tokens')}
-            value={t('rail.tokensInOut', {
-              input: time.formatTokens(inputTokens),
-              output: time.formatTokens(usage.output),
-            })}
-            mono
-          />
-        ) : null}
-        {childCount > 0 ? (
-          <MetaRow label={t('rail.childrenRow')} value={tp('subagent.children', childCount)} />
-        ) : null}
-      </div>
     </div>
   );
 });
@@ -522,18 +398,12 @@ const SubagentNavSection = memo(function SubagentNavSection({
         </div>
       ) : null}
       {children.length > 0 ? (
-        <div className="flex flex-wrap gap-1" data-agent-children-nav>
-          {children.map((child) => (
-            <button
-              key={child.agentId}
-              type="button"
-              onClick={() => { onOpenSubagent(child.agentId); }}
-              title={child.label}
-              className="inline-flex min-w-0 max-w-40 items-baseline truncate rounded-full border border-hairline px-2 py-0.5 text-[10.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
-            >
-              {child.label}
-            </button>
-          ))}
+        <div data-agent-children-nav>
+          <AgentSubtreeView
+            forest={forest}
+            agentId={context.agentId}
+            onOpen={onOpenSubagent}
+          />
         </div>
       ) : null}
     </div>
@@ -565,42 +435,24 @@ export function RightRail({
   state: SessionViewState;
   forest: AgentForest;
   selectedAgentId?: string;
-  /** Present on the subagent page: switches the rail to the differentiated
-   *  subagent layout (own task/usage, pending-input badge, parent/sibling
-   *  navigation) instead of the main-agent overview. */
   subagent?: SubagentRailContext;
   onCancelTask: (taskId: string) => void;
   onOpenSubagent: (agentId: string) => void;
   className?: string;
 }) {
   const { t, time } = useI18n();
-  const navigate = useNavigate();
+  useNow();
   const session = state.session;
-  const usage = session?.usage;
-  // Live cumulative usage rides agent.status.updated (state.usage.total);
-  // session.usage stays the snapshot/list fallback (and the only turns source).
-  const liveUsage = state.usage?.total;
-  const liveInputTokens =
-    liveUsage !== undefined
-      ? liveUsage.inputOther + liveUsage.inputCacheRead + liveUsage.inputCacheCreation
-      : undefined;
-  const contextTokens = state.contextTokens ?? usage?.context_tokens;
-  const contextLimit =
-    state.maxContextTokens ?? (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
   const backgroundTasks = useMemo(
-    () => state.tasks.filter((task) => task.kind !== 'subagent'),
+    () => state.tasks.filter((task) => task.kind !== 'subagent' && task.status === 'running'),
     [state.tasks],
   );
-  // Empty sections collapse entirely (header included); when all four are
-  // empty the rail shrinks to just the session meta card below. In subagent
-  // mode the full-tree overview yields to the task/nav chapters — the child
-  // shortcuts live in the nav chapter.
-  const showGoal = state.goal !== undefined && state.goal !== null;
+  // Empty sections collapse entirely (header included). In subagent mode the
+  // task and navigation chapters lead; the child shortcuts live in navigation.
   const showSubagents =
     subagent === undefined &&
     (Object.keys(forest.byId).some((id) => id !== 'main') ||
       forest.roots.some((root) => root.agentId !== 'main'));
-  const showTodos = state.todos.length > 0;
   const showTasks = backgroundTasks.length > 0;
 
   const layoutPrefs = useLayoutPreferences();
@@ -628,7 +480,7 @@ export function RightRail({
       className={
         className ?? 'app-rail'
       }
-      style={{ '--kiki-rail-width': `${railWidthValue}px` } as React.CSSProperties}
+      style={{ '--kiki-rail-width': `${railWidthValue}px`, overflow: 'hidden', display: 'flex', flexDirection: 'column' } as React.CSSProperties}
       data-session-rail
     >
       <div
@@ -639,10 +491,11 @@ export function RightRail({
         onPointerDown={startResize}
         onDoubleClick={reset}
       />
+      <div data-agent-panel-scroll className="min-h-0 flex-1 space-y-5 overflow-y-auto pb-4">
       {subagent !== undefined ? (
         <>
           <RailSection title={t('rail.agentTask')}>
-            <SubagentTaskSection state={state} forest={forest} context={subagent} />
+            <SubagentTaskSection forest={forest} context={subagent} />
           </RailSection>
           <RailSection title={t('rail.agentNav')}>
             <SubagentNavSection forest={forest} context={subagent} onOpenSubagent={onOpenSubagent} />
@@ -650,21 +503,9 @@ export function RightRail({
         </>
       ) : null}
 
-      {showGoal ? (
-        <RailSection title={t('rail.goal')}>
-          <GoalSection goal={state.goal} goalUpdatedAt={state.goalUpdatedAt} />
-        </RailSection>
-      ) : null}
-
       {showSubagents ? (
         <RailSection title={t('rail.subagents')}>
           <SubagentsSection forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpenSubagent} />
-        </RailSection>
-      ) : null}
-
-      {showTodos ? (
-        <RailSection title={t('rail.todos')}>
-          <TodosSection todos={state.todos} />
         </RailSection>
       ) : null}
 
@@ -674,69 +515,19 @@ export function RightRail({
         </RailSection>
       ) : null}
 
+      <AgentPanelContainer key={`${state.sessionId}:${selectedAgentId ?? MAIN_AGENT_ID}`}
+        state={state} forest={forest} agentId={selectedAgentId ?? MAIN_AGENT_ID} />
+
       <RailSection title={t('rail.session')}>
         <div className="space-y-1.5">
-          {state.model !== undefined ? <MetaRow label={t('rail.model')} value={state.model} mono /> : null}
-          {session !== undefined ? (
+          {session !== undefined ? <>
             <MetaRow label={t('rail.directory')} value={session.metadata.cwd} mono />
-          ) : null}
-          {session !== undefined ? (
             <MetaRow label={t('rail.messages')} value={String(session.message_count)} />
-          ) : null}
-          {session !== undefined ? (
             <MetaRow label={t('rail.updatedRow')} value={time.relativeTime(session.updated_at)} />
-          ) : null}
-          {contextTokens !== undefined ? (
-            <MetaRow
-              label={t('rail.context')}
-              value={
-                contextLimit !== undefined
-                  ? `${time.formatTokens(contextTokens)} / ${time.formatTokens(contextLimit)}`
-                  : time.formatTokens(contextTokens)
-              }
-              mono
-            />
-          ) : null}
-          {usage !== undefined && usage.turn_count > 0 ? (
-            <MetaRow label={t('rail.turns')} value={String(usage.turn_count)} />
-          ) : null}
-          {usage !== undefined && usage.total_cost_usd > 0 ? (
-            <MetaRow label={t('rail.cost')} value={`$${usage.total_cost_usd.toFixed(4)}`} mono />
-          ) : null}
-          {liveInputTokens !== undefined && liveUsage !== undefined && (liveInputTokens > 0 || liveUsage.output > 0) ? (
-            <MetaRow
-              label={t('rail.tokens')}
-              value={t('rail.tokensInOut', {
-                input: time.formatTokens(liveInputTokens),
-                output: time.formatTokens(liveUsage.output),
-              })}
-              mono
-            />
-          ) : usage !== undefined && (usage.input_tokens > 0 || usage.output_tokens > 0) ? (
-            <MetaRow
-              label={t('rail.tokens')}
-              value={t('rail.tokensInOut', {
-                input: time.formatTokens(usage.input_tokens),
-                output: time.formatTokens(usage.output_tokens),
-              })}
-              mono
-            />
-          ) : null}
-          {usage !== undefined ? (
-            <div className="pt-1">
-              <button
-                type="button"
-                onClick={() => void navigate(
-                  session !== undefined ? usageSessionDeepLink(session.id) : '/usage',
-                )}
-                className="text-[10.5px] font-medium text-accent transition-colors hover:text-accent-deep"
-              >
-                {t('usage.viewAll')}
-              </button>
-            </div>
-          ) : null}
+          </> : null}
         </div>
       </RailSection>
+      </div>
     </aside>
   );
 }

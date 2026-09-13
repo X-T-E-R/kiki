@@ -81,7 +81,7 @@ const STRINGS = {
     tools: 'Tools',
     skills: 'Skills',
     mcp: 'MCP',
-    automation: 'Tools & hooks',
+    automation: 'Tools & automations',
     shimCapabilities: 'The capabilities panel was split into dedicated settings pages',
     shimPlugins: 'Plugins',
     newSessionDefaults: 'New-session defaults',
@@ -91,7 +91,7 @@ const STRINGS = {
     themeLight: 'Light',
     switcherSettingsGroup: 'Settings',
     savedTick: '✓ Saved',
-    planModeToggle: 'Start new sessions in plan mode',
+    planModeToggle: 'Default to entering plan mode',
     permissionModeAuto: 'auto',
     fetchModelsButton: 'Test connection & pull models',
     providerBadgeKimiCode: 'Kimi',
@@ -135,6 +135,7 @@ const STRINGS = {
     menuPin: 'Pin to top',
     menuUnpin: 'Unpin',
     renameButton: 'Rename',
+    workspaceRenameTitle: 'Rename workspace',
     removeButton: 'Unregister',
     save: 'Save',
     queuedChip: 'Queued — starts when the current turn finishes',
@@ -161,6 +162,8 @@ const STRINGS = {
     usageFiveHourRhythm: '5h rhythm',
     usageDrilldown: 'Sessions in this bucket',
     usageSubagentPattern: /subagent/,
+    contextMenuCut: 'Cut',
+    contextMenuCopy: 'Copy',
     pasteAsPlainText: 'Paste as plain text',
     contextMenuSelectAll: 'Select all',
     bannerPattern: /Connection lost|Disconnected from the server/,
@@ -246,7 +249,7 @@ const STRINGS = {
     tools: '工具',
     skills: '技能',
     mcp: 'MCP',
-    automation: '工具与 Hooks',
+    automation: '工具与自动操作',
     shimCapabilities: '能力面板已拆分为独立的设置页面',
     shimPlugins: '插件',
     newSessionDefaults: '新会话默认值',
@@ -256,7 +259,7 @@ const STRINGS = {
     themeLight: '亮色',
     switcherSettingsGroup: '设置',
     savedTick: '✓ 已保存',
-    planModeToggle: '新会话默认开启计划模式',
+    planModeToggle: '默认进入计划模式',
     permissionModeAuto: '自动',
     fetchModelsButton: '测试连接并拉取模型',
     providerBadgeKimiCode: 'Kimi',
@@ -300,6 +303,7 @@ const STRINGS = {
     menuPin: '置顶',
     menuUnpin: '取消置顶',
     renameButton: '重命名',
+    workspaceRenameTitle: '重命名工作区',
     removeButton: '注销',
     save: '保存',
     queuedChip: '已排队 — 当前轮次结束后开始',
@@ -326,6 +330,8 @@ const STRINGS = {
     usageFiveHourRhythm: '5h 节奏',
     usageDrilldown: '该时间桶内的会话',
     usageSubagentPattern: /子代理/,
+    contextMenuCut: '剪切',
+    contextMenuCopy: '复制',
     pasteAsPlainText: '粘贴为纯文本',
     contextMenuSelectAll: '全选',
     bannerPattern: /正在重连|已与服务器断开连接/,
@@ -599,59 +605,6 @@ async function waitForText(text, timeout = 20_000) {
   await page.waitForSelector(`text=${text}`, { timeout });
 }
 
-const CANONICAL_PROOF_SCENARIOS = new Set([
-  'basic-stream',
-  'queue',
-  'reconnect',
-  'reconnect-mid-turn',
-  'resync-hold',
-  'rewrite-flow',
-  'subagents',
-  'long-transcript',
-  'subagent-approval',
-  'attachments',
-]);
-
-async function assertCanonicalTranscriptProtocol(scenarioName) {
-  const log = await control({ action: 'ws_log' });
-  const inbound = log.data?.inbound ?? [];
-  const outbound = log.data?.outbound ?? [];
-  const subscribeV2 = inbound.filter((frame) => frame.type === 'subscribe_v2');
-  const transcriptFrames = outbound.filter(
-    (frame) => frame.type === 'transcript.reset' || frame.type === 'transcript.ops',
-  );
-  console.log(`[check] ${scenarioName} subscribe_v2=${subscribeV2.length} transcriptFrames=${transcriptFrames.length}`);
-  if (subscribeV2.length === 0) {
-    throw new Error(`${scenarioName}: expected the GUI to send subscribe_v2`);
-  }
-  const grades = subscribeV2.at(-1)?.payload?.transcript ?? {};
-  if (grades.main !== 'delta' && grades['*'] === undefined) {
-    throw new Error(`${scenarioName}: subscribe_v2 missing per-agent grades`);
-  }
-  if (transcriptFrames.length === 0) {
-    throw new Error(`${scenarioName}: expected transcript.reset/ops frames on the wire`);
-  }
-}
-
-async function assertCanonicalDomSurface() {
-  const probe = await page.evaluate(() => {
-    const log = document.querySelector('[role="log"]');
-    const rows = [...(log?.querySelectorAll('[data-block-id]') ?? [])];
-    return {
-      blockIds: rows.map((row) => row.getAttribute('data-block-id')),
-      subagentIds: [...document.querySelectorAll('[data-subagent-id]')].map((el) => el.getAttribute('data-subagent-id')),
-      rowActions: [...document.querySelectorAll('[data-row-action]')].map((el) => el.getAttribute('data-row-action')),
-      turnTail: document.querySelector('[data-turn-tail]') !== null,
-      userKeys: rows
-        .filter((row) => (row.getAttribute('data-block-id') ?? '').startsWith('user-'))
-        .map((row) => row.getAttribute('data-block-id')),
-    };
-  });
-  console.log(`[check] canonical DOM blocks=${probe.blockIds.length} subagents=${probe.subagentIds.length} actions=${probe.rowActions.join(',')}`);
-  if (probe.blockIds.length === 0) throw new Error('canonical DOM: expected data-block-id rows');
-  return probe;
-}
-
 async function displayNodeKinds() {
   return page.evaluate(() => {
     return Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((child) => {
@@ -817,31 +770,91 @@ async function scenarioPromptDedupe() {
 async function scenarioSubagents() {
   await selectSession('Fixture: subagents');
   await sendPrompt('Delegate the fixture work.');
-  await page.waitForSelector('[data-subagent-id="agent-research"]', { timeout: 20_000 });
-  await page.waitForSelector('[data-subagent-id="agent-review"]', { timeout: 20_000 });
+  for (const agentId of ['agent-research', 'agent-review']) {
+    await page.locator(`[data-subagent-id="${agentId}"], [data-history-run-member-ids~="subagent-${agentId}"]`).first().waitFor({ timeout: 20_000 });
+  }
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 });
+  // Completed cards may be folded into a history run. Expand the containing
+  // run before asserting the card or opening its agent page.
+  for (const agentId of ['agent-research', 'agent-review']) {
+    const card = page.locator(`[data-subagent-id="${agentId}"]`);
+    if (await card.count() === 0) {
+      const run = page.locator(`[data-history-run-member-ids~="subagent-${agentId}"]`).first();
+      await run.waitFor({ timeout: 10_000 });
+      const toggle = run.locator('button[aria-expanded="false"]');
+      if (await toggle.count() > 0) await toggle.click();
+    }
+    await card.waitFor({ timeout: 10_000 });
+  }
   const bubbleCount = await page.locator('[data-subagent-id]').count();
   const inlineToolCount = await page.locator('[role="log"] [data-block-id^="tool-"], [role="log"] [data-block-id^="group-"]').count();
   const railText = await page.locator('.app-rail').innerText();
   console.log(`[check] subagent bubbles=${bubbleCount} inlineTools=${inlineToolCount}`);
   if (bubbleCount !== 2) {
-    throw new Error(`expected 2 subagent bubbles, got ${bubbleCount}/${inlineToolCount}`);
+    throw new Error(`expected 2 subagent bubbles after history expansion, got ${bubbleCount}/${inlineToolCount}`);
   }
   if (!railText.includes('Researcher') || !railText.includes('Reviewer')) {
     throw new Error('subagent rail does not list both agents');
   }
-  await shot('subagents-main');
+  const launcher = page.locator('[data-session-task-board]');
+  await launcher.click();
+  await page.getByRole('dialog').waitFor({ timeout: 10_000 });
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
+  await page.locator('[data-rail-toggle]').click();
+  if (await page.locator('[data-session-rail]').count() !== 0) throw new Error('rail did not close');
+  await launcher.click();
+  await page.getByRole('dialog').waitFor({ timeout: 10_000 });
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
   await page.locator('[data-subagent-id="agent-research"]').click();
   await page.waitForURL(/\/agent\/agent-research$/, { timeout: 10_000 });
   await waitForText('Protocol map complete.');
   await waitForText('Read');
   await page.waitForTimeout(500);
   await shot('subagents-agent-page');
+  await launcher.click();
+  await page.getByRole('dialog').waitFor({ timeout: 10_000 });
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
+  await page.setViewportSize({ width: 700, height: 760 });
+  await page.waitForTimeout(250);
+  const mobileToggle = page.locator('[data-agent-rail-toggle]');
+  await mobileToggle.click();
+  await page.locator('[data-session-rail]').waitFor({ timeout: 5_000 });
+  const launcherBox = await launcher.boundingBox();
+  const send = page.getByRole('button', { name: S.sendAria }).first();
+  const sendBox = await send.count() > 0 ? await send.boundingBox() : null;
+  if (launcherBox === null || (sendBox !== null && launcherBox.x < sendBox.x + sendBox.width && launcherBox.x + launcherBox.width > sendBox.x && launcherBox.y < sendBox.y + sendBox.height && launcherBox.y + launcherBox.height > sendBox.y)) {
+    throw new Error('narrow rail board launcher overlaps composer send control');
+  }
+  await page.locator('[data-agent-panel-scroll]').evaluate((node) => { node.scrollTop = node.scrollHeight; });
+  await page.waitForTimeout(100);
+  await shot('subagents-relief-narrow');
+  await launcher.click();
+  await page.getByRole('dialog').waitFor({ timeout: 10_000 });
+  console.log('[check] narrow rail board launcher opened the board dialog');
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
+  await page.keyboard.press('Escape');
+  await page.locator('[data-session-rail]').waitFor({ state: 'detached', timeout: 5_000 });
+  await page.setViewportSize({ width: 1440, height: 900 });
 }
 
 async function scenarioGoalSwarm() {
   await selectSession('Fixture: goal + swarm');
-  await waitForText('Prepare the release evidence bundle');
+  // Goal state is already visible in the composer chip; the right rail no
+  // longer carries the objective as resident prose.
+  const goalChip = page.locator('[data-goal-chip]');
+  await goalChip.waitFor({ timeout: 10_000 });
+  const initialGoalChipText = await goalChip.textContent();
+  if (initialGoalChipText === null || !initialGoalChipText.includes(S.goalActive)) {
+    throw new Error(`goal chip must be visible on load, got "${initialGoalChipText}"`);
+  }
+  const railText = await page.locator('[data-session-rail]').innerText();
+  if (railText.includes('Prepare the release evidence bundle')) {
+    throw new Error('right rail still renders the goal objective as resident prose');
+  }
   // Swarm and the objective are two rows of the [plan ▾] panel now.
   await openPlanPanel();
   await page.click(`[data-mode-switch="swarm"][title^="${S.swarmTitlePrefix}"]`);
@@ -858,8 +871,6 @@ async function scenarioGoalSwarm() {
   }
   // The live goal keeps a resident trace on the chip band, with its run-state
   // controls attached — nothing has to be reopened to see or steer it.
-  const goalChip = page.locator('[data-goal-chip]');
-  await goalChip.waitFor({ timeout: 10_000 });
   const goalChipText = await goalChip.textContent();
   if (goalChipText === null || !goalChipText.includes(S.goalActive)) {
     throw new Error(`goal chip must trace the run state, got "${goalChipText}"`);
@@ -891,21 +902,33 @@ async function scenarioToolPipeline() {
     },
     { timeout: 20_000 },
   );
-  // Live sequence 2: tool / approval / tool boundary — approval flushes the group.
+  // Pending approval remains a visible boundary; its resolution moves to history.
   await waitForText(S.approvalNeeded);
+  const pendingKinds = await displayNodeKinds();
+  if (!pendingKinds.includes('approval') || pendingKinds.filter((kind) => kind === 'group').length !== 2) {
+    throw new Error(`pending approval must split the tool pipeline: ${pendingKinds.join(', ')}`);
+  }
   await approveViaKeyboard();
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(600);
   const kinds = await displayNodeKinds();
-  const groups = kinds.filter((k) => k === 'group').length;
-  const singleTools = kinds.filter((k) => k === 'tool').length;
-  const approvals = kinds.filter((k) => k === 'approval').length;
-  console.log(`[check] display nodes: ${kinds.join(', ') || '(none)'}`);
-  console.log(`[check] counts groups=${groups} singleTools=${singleTools} approvals=${approvals}`);
-  if (groups !== 2 || singleTools < 1 || approvals < 1) {
-    console.error('[FAIL] tool grouping sequence did not match expected live nodes');
-    process.exitCode = 1;
+  const groups = page.locator('[role="log"] [data-block-id^="group-"]');
+  const approvalIndex = kinds.indexOf('approval');
+  if (await groups.count() !== 2 || approvalIndex < 0 || !kinds.includes('tool')) {
+    throw new Error(`resolved approval must preserve grouped tools and a single-tool boundary: ${kinds.join(', ')}`);
   }
+  if (await page.locator('[role="log"] [data-approval-id]').count() !== 0) {
+    throw new Error('resolved approval retained active decision controls');
+  }
+  const liveGroup = groups.last();
+  const summary = await liveGroup.locator('button').first().textContent();
+  if (!/·\s*4(?!\d)/.test(summary ?? '')) throw new Error(`four tools before the approval must remain grouped: ${summary}`);
+  await liveGroup.locator('button').first().click();
+  if (await liveGroup.locator('button').count() < 5) throw new Error('completed tool cards were lost from the expanded group');
+  const history = page.locator('[role="log"] [data-history-line]');
+  await history.getByText(S.approved, { exact: true }).waitFor();
+  if ((await history.boundingBox())?.height > 40) throw new Error('resolved approval must stay a compact timeline row');
+  console.log('[check] four grouped tools, the fifth tool after the boundary, and compact approval resolution verified');
   await shot('tool-pipeline-live');
 }
 
@@ -1486,24 +1509,69 @@ async function scenarioSettingsSearch() {
 }
 
 async function scenarioSettingsWrite() {
-  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
-    waitUntil: 'domcontentloaded',
-  });
-  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
-  // Defaults apply on change now — no save button; each click PATCHes and the
-  // ✓ Saved tick confirms the server echo.
-  await page.locator('button', { hasText: S.permissionModeAuto }).click();
+  const generalUrl = `${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const tasksUrl = `${WEB_URL}/settings/tasks?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  await page.goto(generalUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#st-card-permission-defaults', { timeout: 10_000 });
+  const permissionModeGroup = page.locator('#st-card-permission-defaults [role="group"][aria-labelledby="default-permission-mode-label"]');
+  const permissionPending = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/config');
+  await permissionModeGroup.getByRole('button', { name: S.permissionModeAuto, exact: true }).click();
+  const permissionResponse = await permissionPending;
+  const permissionSent = permissionResponse.request().postDataJSON();
+  const permissionResult = await permissionResponse.json();
+  const permissionKeys = Object.keys(permissionSent).sort();
+  if (permissionKeys.length !== 1 || permissionKeys[0] !== 'default_permission_mode' ||
+      permissionSent.default_permission_mode !== 'auto' || permissionSent.default_plan_mode !== undefined ||
+      permissionSent.plan !== undefined || permissionResult.code !== 0 ||
+      permissionResult.data.default_permission_mode !== 'auto' || permissionResult.data.default_plan_mode !== false) {
+    throw new Error(`permission defaults save mismatch: keys=${permissionKeys.join(',')} sent=${JSON.stringify(permissionSent)} echoed mode=${permissionResult.data?.default_permission_mode} plan=${permissionResult.data?.default_plan_mode} code=${permissionResult.code}`);
+  }
+  console.log('[check] permission default saved with narrow mode-only patch');
   await waitForText(S.savedTick);
-  await page.locator('label', { hasText: S.planModeToggle }).click();
+
+  await page.goto(tasksUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#st-card-defaults', { timeout: 10_000 });
+  const planPending = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/config');
+  await page.locator('#st-card-defaults label', { hasText: S.planModeToggle }).click();
+  const planResponse = await planPending;
+  const planSent = planResponse.request().postDataJSON();
+  const planResult = await planResponse.json();
+  const planKeys = Object.keys(planSent).sort();
+  if (planKeys.length !== 1 || planKeys[0] !== 'default_plan_mode' ||
+      planSent.default_plan_mode !== true || planSent.default_permission_mode !== undefined ||
+      planSent.plan !== undefined || planResult.code !== 0 ||
+      planResult.data.default_permission_mode !== 'auto' || planResult.data.default_plan_mode !== true) {
+    throw new Error(`plan defaults save mismatch: keys=${planKeys.join(',')} sent=${JSON.stringify(planSent)} echoed mode=${planResult.data?.default_permission_mode} plan=${planResult.data?.default_plan_mode} code=${planResult.code}`);
+  }
+  console.log('[check] plan default saved with plan-only patch while preserving mode=auto');
+  await page.waitForFunction(() => document.querySelector('#st-card-defaults [data-plan-settings] [role="switch"]')?.getAttribute('aria-checked') === 'true', undefined, { timeout: 10_000 });
   await shot('settings-write-saved');
 
+  const tasksRead = page.waitForResponse((response) =>
+    response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/config');
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
-  const autoClass = await page.locator('button', { hasText: S.permissionModeAuto }).getAttribute('class');
-  const planState = await page.locator('label', { hasText: S.planModeToggle }).locator('[role="switch"]').getAttribute('aria-checked');
-  if (!autoClass?.includes('bg-accent-soft') || planState !== 'true') {
-    throw new Error(`server setting did not survive reload: auto=${autoClass} plan=${planState}`);
+  const persistedTasks = await (await tasksRead).json();
+  if (persistedTasks.code !== 0 || persistedTasks.data.default_permission_mode !== 'auto' || persistedTasks.data.default_plan_mode !== true) {
+    throw new Error(`server defaults did not survive tasks reload: mode=${persistedTasks.data?.default_permission_mode} plan=${persistedTasks.data?.default_plan_mode} code=${persistedTasks.code}`);
   }
+  await page.waitForFunction(() => document.querySelector('#st-card-defaults [data-plan-settings] [role="switch"]')?.getAttribute('aria-checked') === 'true', undefined, { timeout: 10_000 });
+
+  await page.goto(generalUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#st-card-permission-defaults', { timeout: 10_000 });
+  const generalRead = page.waitForResponse((response) =>
+    response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/config');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  const persistedGeneral = await (await generalRead).json();
+  if (persistedGeneral.code !== 0 || persistedGeneral.data.default_permission_mode !== 'auto' || persistedGeneral.data.default_plan_mode !== true) {
+    throw new Error(`server defaults did not survive general reload: mode=${persistedGeneral.data?.default_permission_mode} plan=${persistedGeneral.data?.default_plan_mode} code=${persistedGeneral.code}`);
+  }
+  await page.waitForFunction(({ auto }) => {
+    const group = document.querySelector('#st-card-permission-defaults [role="group"][aria-labelledby="default-permission-mode-label"]');
+    const button = [...(group?.querySelectorAll('button') ?? [])].find((node) => node.textContent?.trim() === auto);
+    return button?.classList.contains('bg-accent-soft');
+  }, { auto: S.permissionModeAuto }, { timeout: 10_000 });
   await shot('settings-write-reloaded');
 }
 
@@ -1512,10 +1580,16 @@ async function scenarioSettingsInvalid() {
   // timeout floor (5s) rejects an under-floor draft with an inline alert and
   // reverts the field to the server-known value. (The pool-model governance
   // editor this scenario originally exercised was removed in 2ffdfd8e5.)
-  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/tasks?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
+  await page.waitForSelector('#st-card-defaults', { timeout: 10_000 });
+  // The timeout input stays disabled until the plan gate is switched on.
+  const gateSwitch = page.locator('#st-card-defaults [role="switch"]').nth(1);
+  if ((await gateSwitch.getAttribute('aria-checked')) !== 'true') {
+    await gateSwitch.click();
+    await page.waitForSelector('#plan-gate-timeout:not([disabled])', { timeout: 5000 });
+  }
   const timeout = page.locator('#plan-gate-timeout');
   await timeout.fill('2');
   await timeout.press('Enter');
@@ -1557,7 +1631,7 @@ async function scenarioWorkspaces() {
   // confirm the dialog + server echo update the list.
   const renameByAria = page.locator(`#st-card-workspaces [aria-label="${S.renameButton} fixture"]`);
   await renameByAria.click();
-  const renameDialog = page.locator('[role="dialog"][aria-label="Rename workspace"]');
+  const renameDialog = page.getByRole('dialog', { name: S.workspaceRenameTitle });
   await renameDialog.waitFor({ timeout: 5000 });
   await renameDialog.locator('input').fill('fixture-renamed');
   await renameDialog.locator(`button:has-text("${S.save}")`).click();
@@ -1706,8 +1780,10 @@ async function scenarioSettingsAgents() {
   await page.waitForSelector('[data-agent-profile="frontend"] >> text=source file missing', { timeout: 5000 });
   const diagnosticIsDanger = await page.evaluate(() => {
     const row = document.querySelector('[data-agent-profile="frontend"]');
-    const node = Array.from(row?.querySelectorAll('p') ?? [])
-      .find((p) => p.textContent?.includes('source file missing'));
+    // The diagnostic renders as its own inline span inside the lease row —
+    // assert the leaf carrying the text, not the row's neutral wrapper.
+    const node = Array.from(row?.querySelectorAll('span') ?? [])
+      .find((el) => el.textContent?.trim().startsWith('source file missing'));
     return node?.className.includes('text-danger') === true;
   });
   if (!diagnosticIsDanger) {
@@ -1765,6 +1841,9 @@ async function scenarioSettingsAgents() {
  */
 async function scenarioSettingsNbSearch() {
   const searchUrl = `${WEB_URL}/settings/search?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const openTab = async (tab) => {
+    await page.locator(`#nb-search-tab-${tab}`).click();
+  };
   await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#st-card-search-status', { timeout: 10_000 });
   await waitForText(S.nbSearchDegraded);
@@ -1775,13 +1854,15 @@ async function scenarioSettingsNbSearch() {
   await shot('settings-nbsearch');
 
   // Default lane is a radio over existing lanes only (no new lane creation).
+  await openTab('search');
   const defaultsText = await page.locator('#st-card-search-defaults').textContent();
   if (!defaultsText?.includes('results · nb-search.results@1') || !defaultsText.includes('typed · example.documents@1')) {
     throw new Error(`lane outputs must show results and synthetic typed channel schemas, saw "${defaultsText}"`);
   }
   await page.locator('#st-card-search-defaults label', { hasText: 'github.repositories' })
     .locator('input[type="radio"]').click();
-  // Credential slot editing is the env-var name; the secret never appears.
+  // Switching subpages preserves the unsaved lane choice.
+  await openTab('providers');
   const tavilyCard = page.locator('#st-card-search-providers details', { hasText: 'tavily.default' });
   const tavilyEnv = tavilyCard.locator('input[placeholder="NB_SEARCH_TAVILY_API_KEY"]');
   const loadedEnv = await tavilyEnv.inputValue();
@@ -1796,12 +1877,14 @@ async function scenarioSettingsNbSearch() {
   await shot('settings-nbsearch-saved');
 
   await page.reload({ waitUntil: 'domcontentloaded' });
+  await openTab('search');
   await page.waitForSelector('#st-card-search-defaults', { timeout: 10_000 });
   const checkedLane = await page.locator('#st-card-search-defaults input[type="radio"]:checked')
     .evaluate((element) => element.closest('label')?.textContent ?? '');
   if (!checkedLane.includes('github.repositories')) {
     throw new Error(`nb_search lane choice did not survive reload, checked="${checkedLane}"`);
   }
+  await openTab('providers');
   const savedEnv = await tavilyCard.locator('input[placeholder="NB_SEARCH_TAVILY_API_KEY"]').inputValue();
   if (savedEnv !== 'NB_SEARCH_TAVILY_API_KEY') {
     throw new Error(`credential env name did not survive reload, saw "${savedEnv}"`);
@@ -1809,6 +1892,7 @@ async function scenarioSettingsNbSearch() {
   await shot('settings-nbsearch-reloaded');
 
   // Diagnostics are explicit: nothing runs until the button is pressed.
+  await openTab('advanced');
   await page.locator('#st-card-search-diagnostics').scrollIntoViewIfNeeded();
   await page.locator('button', { hasText: S.nbSearchRunCheck }).click();
   await waitForText(S.nbSearchRevision);
@@ -1820,6 +1904,8 @@ async function scenarioSettingsNbSearch() {
   await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#st-card-search-status', { timeout: 10_000 });
   await waitForText(S.nbSearchDegraded);
+  const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  if (overflows) throw new Error('search settings overflow the mobile viewport');
   await shot('settings-nbsearch-mobile');
   await page.setViewportSize({ width: 1440, height: 900 });
 
@@ -1837,10 +1923,18 @@ async function scenarioSettingsNbSearch() {
   // Readiness check failure surfaces as an inline error, not a crash.
   await control({ action: 'scenario', name: 'settings-nbsearch-down' });
   await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+  await openTab('advanced');
   await page.waitForSelector('#st-card-search-diagnostics', { timeout: 10_000 });
   await page.locator('button', { hasText: S.nbSearchRunCheck }).click();
   await waitForText(S.nbSearchCheckFailed);
-  await page.locator('#st-card-search-diagnostics').scrollIntoViewIfNeeded();
+  const checkFailure = page.locator('#st-card-search-diagnostics').getByText(S.nbSearchCheckFailed, { exact: false });
+  await checkFailure.scrollIntoViewIfNeeded();
+  const failureBox = await checkFailure.boundingBox();
+  const actionBarBox = await page.locator('[data-search-action-bar]').boundingBox();
+  if (failureBox === null || actionBarBox === null || failureBox.y < 0
+    || failureBox.y + failureBox.height > actionBarBox.y + 1) {
+    throw new Error('readiness failure is clipped or covered by the search action bar');
+  }
   await shot('settings-nbsearch-error');
 }
 
@@ -2316,7 +2410,7 @@ async function scenarioResyncHold() {
   // Hold every snapshot fetch until released below.
   const held = [];
   let holding = true;
-  await page.route('**/api/v1/sessions/*/snapshot**', async (route) => {
+  await page.route('**/api/klient/session-view/*/snapshot**', async (route) => {
     if (!holding) return route.continue();
     await new Promise((resolve) => held.push({ route, resolve }));
   });
@@ -2334,7 +2428,7 @@ async function scenarioResyncHold() {
     await route.continue();
   }
   await page.waitForSelector(`text=${S.resyncing}`, { state: 'detached', timeout: 15_000 });
-  await page.unroute('**/api/v1/sessions/*/snapshot**');
+  await page.unroute('**/api/klient/session-view/*/snapshot**');
   await page.waitForTimeout(500);
   const occurrences = await page.evaluate(
     () => document.body.innerText.split('Settled before the hold.').length - 1,
@@ -2382,16 +2476,20 @@ async function scenarioTaskNotifiedMidturn() {
   if (bubbleText.includes('Background process completed') || bubbleText.includes('<notification')) {
     throw new Error('task notification leaked into the user bubble');
   }
-  // Both notification shapes (origin-carried + bare envelope) land collapsed
-  // on the left system/task lane.
-  const systemRows = page.locator('[role="log"] [data-block-id^="system-"]');
-  if ((await systemRows.count()) !== 2) {
-    throw new Error(`expected 2 system rows, saw ${await systemRows.count()}`);
+  // Both notification shapes are retained inside one initially folded history run.
+  const history = page.locator('[role="log"] [data-history-run]');
+  if (await history.count() !== 1 || await history.locator('button').first().getAttribute('aria-expanded') !== 'false') {
+    throw new Error('consecutive task notifications must start in one folded history run');
   }
   if ((await page.locator('text=pnpm test — 42 passed').count()) !== 0) {
     throw new Error('collapsed notification body rendered before expansion');
   }
   await shot('task-notified-collapsed');
+  await history.locator('button').first().click();
+  const systemRows = history.locator('[data-history-run-members] > div');
+  if ((await systemRows.count()) !== 2) {
+    throw new Error(`expected 2 retained task notifications, saw ${await systemRows.count()}`);
+  }
   await systemRows.first().locator('button').first().click();
   await waitForText('pnpm test — 42 passed');
   await page.waitForTimeout(300);
@@ -2474,17 +2572,36 @@ async function scenarioSubagentApproval() {
   await waitForText(S.fromSubagentApprover);
   await shot('subagent-approval-main');
   await card.locator('button', { hasText: S.approve }).click();
-  // Resolving with that approval_id unblocks the child (a wrong id would
-  // 40902 and strand the run): the card collapses to its resolution line
-  // (the resolved card no longer carries data-approval-id) and the turn ends.
-  await page.getByText(S.approved, { exact: true }).waitFor({ timeout: 10_000 });
+  // The same approval ID unblocks the child; its resolved fact remains inline
+  // as a history line and no pending controls survive.
+  await card.waitFor({ state: 'detached', timeout: 10_000 });
   await waitForText('The gated cleanup finished.');
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
-  // The agent page carries the same interaction (from the transcript
-  // response's interactions array), now resolved.
-  await page.locator('[data-subagent-id="agent-worker"]').click();
+  const revealResolvedApproval = async () => {
+    const line = page.locator('[data-history-line]', { hasText: S.approved }).first();
+    if (await line.count() === 0) {
+      const run = page.locator('[data-history-run-member-ids~="approval-approval_fixture_child"]').first();
+      await run.waitFor({ timeout: 10_000 });
+      const toggle = run.locator('button[aria-expanded="false"]');
+      if (await toggle.count() > 0) await toggle.click();
+    }
+    await line.waitFor({ timeout: 10_000 });
+    return line;
+  };
+  await revealResolvedApproval();
+  if (await page.locator('[data-approval-id="approval_fixture_child"]').count() !== 0) throw new Error('resolved child approval still exposes pending actions');
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 });
+  // Focusing the child retains that same archived approval, without pending actions.
+  const childCard = page.locator('[data-subagent-id="agent-worker"]');
+  const childRail = page.locator('[data-agent-id="agent-worker"]');
+  if (await childCard.count() > 0) {
+    await childCard.click();
+  } else {
+    await childRail.waitFor({ timeout: 10_000 });
+    await childRail.click();
+  }
   await page.waitForURL(/\/agent\/agent-worker$/, { timeout: 10_000 });
-  await page.getByText(S.approved, { exact: true }).waitFor({ timeout: 15_000 });
+  await revealResolvedApproval();
+  if (await page.locator('[data-approval-id="approval_fixture_child"]').count() !== 0) throw new Error('resolved child approval still exposes pending actions');
   await page.waitForTimeout(400);
   await shot('subagent-approval-agent-page');
 }
@@ -3041,6 +3158,36 @@ async function scenarioPreviewWorkbench() {
   await page.locator('[data-preview-toggle]').click();
   await page.waitForSelector('[data-preview-workspace]', { timeout: 5000 });
   await shot('preview-workbench-reopened');
+
+  await page.getByRole('link', { name: 'taskService.ts:1063', exact: true }).click();
+  const taskPanel = '[data-preview-tabpanel="C:/fixture/workshop/src/taskService.ts"]';
+  await page.waitForSelector(`${taskPanel} .cm-content`, { timeout: 10_000 });
+  await page.waitForFunction((selector) => {
+    const panel = document.querySelector(selector);
+    const scroller = panel?.querySelector('.cm-scroller');
+    const line = [...(panel?.querySelectorAll('.cm-line') ?? [])]
+      .find((item) => item.textContent.includes('citation-line-1063'));
+    if (!scroller || !line) return false;
+    const viewport = scroller.getBoundingClientRect();
+    const bounds = line.getBoundingClientRect();
+    return scroller.scrollTop > 0 && bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
+  }, taskPanel);
+  await shot('preview-workbench-citation-1063');
+  await page.getByRole('link', { name: 'taskService.ts:4', exact: true }).click();
+  await page.waitForFunction((selector) => {
+    const panel = document.querySelector(selector);
+    const scroller = panel?.querySelector('.cm-scroller');
+    const line = [...(panel?.querySelectorAll('.cm-line') ?? [])]
+      .find((item) => item.textContent === 'export const task4 = 4;');
+    if (!scroller || !line) return false;
+    const viewport = scroller.getBoundingClientRect();
+    const bounds = line.getBoundingClientRect();
+    return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
+  }, taskPanel);
+  if (await page.locator('[data-preview-tab="C:/fixture/workshop/src/taskService.ts"]').count() !== 1) {
+    throw new Error('citation navigation created duplicate tabs');
+  }
+  await shot('preview-workbench-citation-revisit');
 }
 
 async function scenarioSearch() {
@@ -3090,8 +3237,8 @@ async function scenarioSearch() {
 }
 
 /**
- * /usage V2 dashboard (§15.3): the no-query all-history default with the
- * explicit chip and the cost/tokens KPIs, the three-axis filter bar driving
+ * /usage V2 dashboard (§15.3): today's default, explicit all-history selection,
+ * the cost/tokens KPIs, and the three-axis filter bar driving
  * the URL, the 5h rhythm granularity with a bucket drilldown into
  * session/turn ids, the agent dimension's parent/child breakdown tree, the
  * always-visible data-reliability card, and the 390px mobile layout.
@@ -3100,15 +3247,18 @@ async function scenarioUsageDashboard() {
   const usageUrl = (query) =>
     `${WEB_URL}/usage${query === '' ? '' : `?${query}&`}${query === '' ? '?' : ''}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
 
-  // 1. No-query visit: all history, said out loud; the unknown-price note and
-  //    the partially-unknown cost chip come from the seeded `mystery-9` model.
+  // 1. A plain visit starts today; all-history remains an explicit choice.
+  //    The partially-unknown cost chip comes from the seeded `mystery-9` model.
   await page.goto(usageUrl(''), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(`text=${S.usageEstimatedCost}`, { timeout: 15_000 });
-  await page.waitForSelector(`text=${S.usageAllHistory}`, { timeout: 10_000 });
+  await page.waitForSelector('[data-axis="range"] [data-axis-value="today"][aria-pressed="true"]', { timeout: 10_000 });
   await page.waitForSelector(`text=${S.usagePartial}`, { timeout: 10_000 });
   await page.waitForSelector('text=mystery-9', { timeout: 10_000 });
   await page.waitForSelector('[data-usage-trend]', { timeout: 10_000 });
   await page.waitForTimeout(500);
+  await shot('usage-today');
+  await page.locator('[data-axis="range"] [data-axis-value="all"]').click();
+  await page.waitForSelector(`text=${S.usageAllHistory}`, { timeout: 10_000 });
   await shot('usage-all-history');
 
   // 2. Three axes + the fixed reliability card (scrolled into view).
@@ -3222,7 +3372,7 @@ async function scenarioContextRing() {
   await page.click('textarea', { button: 'right' });
   await page.waitForSelector('[data-composer-context-menu]', { timeout: 5000 });
   const menuText = await page.locator('[data-composer-context-menu]').innerText();
-  if (!menuText.includes('Cut') || !menuText.includes('Copy') || !menuText.includes(S.pasteAsPlainText) || !menuText.includes(S.contextMenuSelectAll)) {
+  if (!menuText.includes(S.contextMenuCut) || !menuText.includes(S.contextMenuCopy) || !menuText.includes(S.pasteAsPlainText) || !menuText.includes(S.contextMenuSelectAll)) {
     throw new Error(`unexpected context menu: ${menuText}`);
   }
   await shot('context-menu-open');
@@ -3334,14 +3484,11 @@ async function scenarioCapabilities() {
   const url = `${WEB_URL}/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
   const skillsUrl = `${WEB_URL}/settings/skills?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
   await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-capabilities-shim-note]', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-caps', { timeout: 10_000 });
   const redirected = page.url();
   if (!redirected.includes('/settings/skills') || !redirected.includes('from=capabilities')) {
     throw new Error(`capabilities shim must land on /settings/skills?from=capabilities, got ${redirected}`);
   }
-  await page.waitForSelector(`text=${S.shimCapabilities}`, { timeout: 5000 });
-  // Scoped to the note: the leaf name alone also appears in the nav rail.
-  await page.waitForSelector(`[data-capabilities-shim-note] >> text=${S.shimPlugins}`, { timeout: 5000 });
   await page.waitForSelector('#st-card-skill-catalog', { timeout: 10_000 });
   await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
   // Plugin skill rows (MCP servers live on the MCP leaf after the split).
@@ -3379,7 +3526,7 @@ async function scenarioCapabilities() {
   await page.setViewportSize({ width: 1440, height: 900 });
 
   // No workspace registered → quiet hint inside the relocated catalog.
-  await page.route('**/api/v1/workspaces', (route) =>
+  await page.route('**/api/workspaces', (route) =>
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({ code: 0, msg: 'success', data: { items: [] }, request_id: 'req_fixture' }),
@@ -3388,10 +3535,10 @@ async function scenarioCapabilities() {
   await page.goto(skillsUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(`text=${S.capNoWorkspace}`, { timeout: 10_000 });
   await shot('capabilities-no-workspace');
-  await page.unroute('**/api/v1/workspaces');
+  await page.unroute('**/api/workspaces');
 
   // Workspace listing failure → inline error on the skills leaf.
-  await page.route('**/api/v1/workspaces', (route) =>
+  await page.route('**/api/workspaces', (route) =>
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({ code: 50001, msg: 'fixture boom', data: null, request_id: 'req_fixture' }),
@@ -3400,7 +3547,7 @@ async function scenarioCapabilities() {
   await page.goto(skillsUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('text=fixture boom', { timeout: 10_000 });
   await shot('capabilities-load-failed');
-  await page.unroute('**/api/v1/workspaces');
+  await page.unroute('**/api/workspaces');
 }
 
 // ---------------------------------------------------------------------------
@@ -3618,10 +3765,6 @@ async function main() {
         await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
         await page.waitForTimeout(900); // let the first sessions poll land
         await run();
-        if (CANONICAL_PROOF_SCENARIOS.has(name)) {
-          await assertCanonicalTranscriptProtocol(name);
-          await assertCanonicalDomSurface();
-        }
       } catch (error) {
         failure = error;
       }

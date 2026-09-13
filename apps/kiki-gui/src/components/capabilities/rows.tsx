@@ -8,7 +8,7 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 
-import type { McpServer, SkillDescriptor } from '@moonshot-ai/protocol';
+import type { McpServer, SkillDescriptor } from '@kiki/protocol';
 
 import { errorText } from '@kiki/session-core/i18n';
 
@@ -95,7 +95,7 @@ export function McpServerRow({ server }: { server: McpServer }) {
           <div className="min-w-0">
             <p className="truncate text-[13px] font-medium text-ink">{server.name}</p>
             <p className="truncate font-mono text-[10.5px] text-ink-faint">
-              {server.transport} · {server.status} · {t('st.mcp.toolsCount', { count: server.tool_count })}
+              {server.transport} · {t(`st.mcp.status.${server.status}`)} · {t('st.mcp.toolsCount', { count: server.tool_count })}
             </p>
           </div>
         </div>
@@ -109,9 +109,12 @@ export function McpServerRow({ server }: { server: McpServer }) {
         </button>
       </div>
       {server.last_error !== undefined && server.last_error !== '' ? (
-        <p className="mt-1 truncate font-mono text-[10px] text-danger/80" title={server.last_error}>
-          {server.last_error}
-        </p>
+        <div className="mt-1.5 space-y-1 rounded-md border border-danger/30 bg-danger/5 px-2.5 py-2">
+          <p className="break-all font-mono text-[11px] leading-snug text-danger">
+            {server.last_error}
+          </p>
+          <p className="text-[11px] text-ink-soft">{t('st.mcp.errorHint')}</p>
+        </div>
       ) : null}
       <FeedbackLine feedback={feedback} />
     </div>

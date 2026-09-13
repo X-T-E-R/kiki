@@ -15,6 +15,7 @@ import { MsUnitInput } from '../ProviderFields';
 import { useRestartRequirement } from '../RestartBanner';
 import { PRIMARY_BUTTON } from '../ui';
 import { NamedAgentProfilesCard, SubagentGovernanceCard } from './AgentsSection';
+import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
 
 /**
@@ -45,6 +46,8 @@ function SubagentTimeoutCard() {
       setSavedConfig(next);
     }
   }, [configQuery.data]);
+
+  const dirty = config.subagent.timeoutMs !== savedConfig.subagent.timeoutMs;
 
   const save = async () => {
     const validation = validateDesktopConfigDraft({
@@ -85,7 +88,7 @@ function SubagentTimeoutCard() {
           </label>
         </fieldset>
         <Hint>{t('st.subagentTimeout.hint')}</Hint>
-        <button type="button" className={PRIMARY_BUTTON} disabled={configQuery.isLoading || saving} onClick={() => void save()}>{saving ? t('st.sidecar.saving') : t('st.sidecar.save')}</button>
+        <button type="button" className={PRIMARY_BUTTON} disabled={configQuery.isLoading || saving || !dirty} onClick={() => void save()}>{saving ? t('st.sidecar.saving') : t('st.sidecar.save')}</button>
         {restart.required ? <Hint>{t('st.sidecar.pendingFields', { fields: restart.fields.join(', ') })}</Hint> : null}
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
@@ -105,6 +108,11 @@ export function SubagentsSection() {
     <div className="space-y-4">
       <NamedAgentProfilesCard bucket="sub" />
       <SubagentGovernanceCard />
+      <ExperimentalSection
+        featureIds={['subagent_release_idle']}
+        cardId="st-card-subagent-release-idle"
+        titleKey="st.experimental.subagentIdle"
+      />
       <SubagentTimeoutCard />
     </div>
   );

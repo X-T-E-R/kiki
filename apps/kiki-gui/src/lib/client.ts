@@ -1,13 +1,12 @@
 /**
- * REST client for the kap-server `/api/v1` surface.
- *
- * Every route replies HTTP 200 with an envelope `{code, msg, data, request_id}`;
- * `code === 0` means success. A few routes use non-zero codes for domain
- * outcomes (question dismiss reports `40909` with a real payload), so callers
- * can widen the accepted-code set per request.
+ * Compatibility adapter for the GUI's historical client method names.
+ * Transport, envelopes, deadlines, cancellation, and API paths belong to
+ * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@moonshot-ai/protocol';
+import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@kiki/protocol';
+import { createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
+import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
 import type {
   ActivateSkillRequest,
   ActivateSkillResult,
@@ -21,7 +20,6 @@ import type {
   CompactSessionResponse,
   ConfigResponse,
   CreateTerminalRequest,
-  Envelope,
   FileMeta,
   FsSearchResponse,
   GetTerminalResponse,
@@ -73,7 +71,6 @@ import type {
   RestoreSessionResponse,
   Session,
   SessionCreate,
-  SessionSnapshotResponse,
   SetDefaultModelResponse,
   Task,
   Terminal,
@@ -81,8 +78,9 @@ import type {
   UpdateNamedAgentProfileRequest as ProtocolUpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
   Workspace,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
+import { RPCError } from '@kiki/klient';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 import type { UsageResponseWire } from './usageV2';
@@ -106,7 +104,7 @@ export function isSessionNotFoundMessage(message: string): boolean {
 /**
  * Wire shapes for `POST /search` — the global cross-session message search.
  * These live in kap-server (`src/protocol/rest-search.ts`) and are not
- * re-exported by `@moonshot-ai/protocol`, so they are hand-rolled here from
+ * re-exported by `@kiki/protocol`, so they are hand-rolled here from
  * that schema (snake_case on the wire).
  */
 export interface SearchMessagesBody {
@@ -352,7 +350,7 @@ export type ListNamedAgentProfilesResponse = ProtocolListNamedAgentProfilesRespo
 export type UpdateNamedAgentProfileRequest = ProtocolUpdateNamedAgentProfileRequest;
 
 /**
- * Installed-plugin summary from `GET /api/v1/plugins` (mirrors the
+ * Installed-plugin summary from `GET /api/plugins` (mirrors the
  * kap-server `pluginSummarySchema`): identity + enabled/error state + the
  * contribution counts the settings Plugins leaf renders.
  */
@@ -614,7 +612,7 @@ export interface AgentTranscriptMeta {
     /**
      * Wire-owned `agentPhaseSchema` (idle / running / streaming / tool_call /
      * retrying / awaiting_approval / interrupted / ended). The full
-     * discriminated union lives in `@moonshot-ai/transcript`; GUI only
+     * discriminated union lives in `@kiki/transcript`; GUI only
      * pass-throughs it.
      */
     readonly phase?: { readonly kind: string; readonly [key: string]: unknown };
@@ -630,6 +628,8 @@ export interface AgentTranscriptMeta {
  */
 export interface AgentTranscriptResponse {
   readonly agent_id: string;
+  /** Complete agent-history count; absent when only a partial history is known. */
+  readonly tool_call_count?: number;
   readonly items: readonly (
     | AgentTranscriptTurn
     | { kind: 'marker'; markerId: string; marker: string; at?: string }
@@ -653,279 +653,105 @@ export interface AgentTranscriptResponse {
   readonly anchor?: unknown;
 }
 
-export interface SnapshotOptions {
-  readonly transcript?: boolean;
-}
-
-/** Cursor / page options for {@link KikiClient.getAgentTranscript}. */
-export interface GetAgentTranscriptOptions {
-  /** Page toward older turns (`before_turn`). Mutually exclusive with `afterTurn`. */
-  readonly beforeTurn?: string;
-  /** Page toward newer turns (`after_turn`). Mutually exclusive with `beforeTurn`. */
-  readonly afterTurn?: string;
-  /** Turns per page (`page_size`). Defaults to 100, matching the historical client. */
-  readonly pageSize?: number;
-}
-
 /**
  * `GET /sessions` query widened with `workspace_id` — kap-server accepts it
- * (`sessionsListQueryCoercion`) but `@moonshot-ai/protocol`'s
+ * (`sessionsListQueryCoercion`) but `@kiki/protocol`'s
  * `ListSessionsQuery` has not caught up, so the client advertises it locally.
  */
 export interface ListSessionsOptions extends ListSessionsQuery {
   readonly workspace_id?: string;
 }
 
-/** kap-server exposes v1 and v2 side by side; the MCP management plane is v2-only. */
-type ApiVersion = 'v1' | 'v2';
-
-function joinUrl(baseUrl: string, path: string, version: ApiVersion = 'v1'): string {
-  const root = baseUrl === '' ? window.location.origin : baseUrl.replace(/\/+$/, '');
-  return `${root}/api/${version}${path}`;
-}
-
 export class KikiClient {
   readonly baseUrl: string;
-  private readonly token: string | undefined;
-  private readonly timeoutMs: number;
+  readonly klient: ReturnType<typeof createKlient>;
+  readonly sessions: ReturnType<typeof createSessionTransport>;
+  private serverLeaseId: string | undefined;
 
   constructor(options: KikiClientOptions) {
     this.baseUrl = options.baseUrl;
-    this.token = options.token !== undefined && options.token !== '' ? options.token : undefined;
-    this.timeoutMs = options.timeoutMs ?? 30_000;
+    const token = options.token !== undefined && options.token !== '' ? options.token : undefined;
+    this.klient = createKlient({
+      endpoint: this.baseUrl,
+      token,
+      timeoutMs: options.timeoutMs,
+    });
+    this.sessions = createSessionTransport(this.klient);
   }
 
-  private async request<T>(
-    method: string,
-    path: string,
-    options: {
-      body?: unknown;
-      query?: Record<string, string | number | boolean | undefined>;
-      /** Envelope codes treated as success (defaults to [0]). */
-      okCodes?: readonly number[];
-      signal?: AbortSignal;
-      timeout?: boolean;
-      apiVersion?: ApiVersion;
-      allowMissingRoute?: boolean;
-    } = {},
-  ): Promise<T> {
-    const url = new URL(joinUrl(this.baseUrl, path, options.apiVersion));
-    for (const [key, value] of Object.entries(options.query ?? {})) {
-      if (value !== undefined) url.searchParams.set(key, String(value));
-    }
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
-    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  private get rest(): import('@kiki/klient').HttpRestFacade {
+    const rest = this.klient.rest;
+    if (rest === undefined) throw new Error('KAP REST domains are unavailable on this transport');
+    return rest;
+  }
 
-    const controller = new AbortController();
-    let timedOut = false;
-    const onAbort = () => { controller.abort(options.signal?.reason); };
-    if (options.signal?.aborted === true) onAbort();
-    else options.signal?.addEventListener('abort', onAbort, { once: true });
-    const timeout = options.timeout === false
-      ? undefined
-      : setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, this.timeoutMs);
-
+  private async run<T>(operation: Promise<T> | (() => Promise<T>)): Promise<T> {
     try {
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method,
-          headers,
-          body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-          signal: controller.signal,
-        });
-      } catch (error) {
+      return await (typeof operation === 'function' ? operation() : operation);
+    } catch (error) {
+      if (error instanceof RPCError) {
+        const timedOut = error.reason === HTTP_TRANSPORT_TIMEOUT_REASON;
         throw new ApiError({
-          code: timedOut ? API_CODES.TIMEOUT : -1,
-          msg: timedOut
-            ? `Request timed out after ${this.timeoutMs}ms`
-            : error instanceof Error
-              ? error.message
-              : 'network error',
-          data: null,
+          code: timedOut ? API_CODES.TIMEOUT : error.code,
+          msg: timedOut ? error.message.replace('call timed out', 'Request timed out') : error.message,
+          data: error.data ?? null,
+          request_id: error.requestId,
         });
       }
-      if (response.status === 404 && options.allowMissingRoute === true) {
-        return undefined as T;
-      }
-
-      let envelope: Envelope<unknown>;
-      try {
-        envelope = (await response.json()) as Envelope<unknown>;
-      } catch {
-        if (timedOut) {
-          throw new ApiError({
-            code: API_CODES.TIMEOUT,
-            msg: `Request timed out after ${this.timeoutMs}ms`,
-            data: null,
-          });
-        }
-        throw new ApiError({
-          code: response.status,
-          msg: `HTTP ${response.status} — non-JSON response`,
-          data: null,
-        });
-      }
-      const okCodes = options.okCodes ?? [API_CODES.SUCCESS];
-      if (!okCodes.includes(envelope.code)) throw new ApiError(envelope);
-      return envelope.data as T;
-    } finally {
-      clearTimeout(timeout);
-      options.signal?.removeEventListener('abort', onAbort);
+      throw error;
     }
   }
 
-  /** `GET /healthz` — auth-exempt liveness probe used by "detect local server". */
-  async healthz(baseUrlOverride?: string): Promise<boolean> {
-    try {
-      const response = await fetch(joinUrl(baseUrlOverride ?? this.baseUrl, '/healthz'), {
-        headers: { Accept: 'application/json' },
-      });
-      const envelope = (await response.json()) as Envelope<{ ok: boolean } | null>;
-      return envelope.code === 0 && envelope.data?.ok === true;
-    } catch {
-      return false;
-    }
+  healthz(baseUrlOverride?: string): Promise<boolean> {
+    return this.rest.healthz(baseUrlOverride);
   }
 
   meta(): Promise<MetaResponse & { experimental_flags?: Record<string, boolean> }> {
-    return this.request<MetaResponse & { experimental_flags?: Record<string, boolean> }>('GET', '/meta');
+    return this.run(() => this.rest.meta());
   }
 
-  renewLease(body: { readonly clientId: string; readonly kind: 'gui' }): Promise<void> {
-    return this.request<void>('POST', '/leases', { body, allowMissingRoute: true });
+  async renewLease(_body: { readonly clientId: string; readonly kind: 'gui' }): Promise<void> {
+    const lease = await this.run(() => this.rest.renewLease({ lease_id: this.serverLeaseId }));
+    if (lease !== undefined) this.serverLeaseId = lease.lease_id;
   }
 
   listSessions(query: ListSessionsOptions = {}): Promise<PageResponse<Session>> {
-    return this.request<PageResponse<Session>>('GET', '/sessions', {
-      query: {
-        page_size: query.page_size ?? 100,
-        before_id: query.before_id,
-        after_id: query.after_id,
-        busy: query.busy,
-        include_archive: query.include_archive,
-        archived_only: query.archived_only,
-        exclude_empty: query.exclude_empty,
-        workspace_id: query.workspace_id,
-      },
-    });
+    return this.run(() => this.rest.sessions.list(query));
   }
 
   createSession(body: SessionCreate): Promise<Session> {
-    return this.request<Session>('POST', '/sessions', { body });
+    return this.run(() => this.rest.sessions.create(body));
   }
 
-  /**
-   * `GET /api/v2/usage` — the V2 cross-session usage aggregation. All filter
-   * axes travel in the query (see lib/usageV2.buildUsageApiQuery); a page
-   * token must be paired with the exact filter set that produced it.
-   */
+  /** Cross-session usage aggregation. Filter axes travel in the query. */
   getUsage(
     query: Record<string, string | number | boolean | undefined>,
   ): Promise<UsageResponseWire> {
-    return this.request<UsageResponseWire>('GET', '/usage', { query, apiVersion: 'v2' });
+    return this.run(() => this.rest.usage(query));
   }
 
   getSession(sessionId: string): Promise<Session> {
-    return this.request<Session>('GET', `/sessions/${encodeURIComponent(sessionId)}`);
+    return this.sessions.getSession(sessionId);
   }
 
-  /** Rename etc. — `POST /sessions/{id}/profile` with a SessionUpdate body. */
+  /** Rename etc. — `POST /api/sessions/{id}/profile`. */
   updateSessionProfile(
     sessionId: string,
     body: UpdateSessionProfileRequest,
   ): Promise<Session> {
-    return this.request<Session>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/profile`,
-      { body },
-    );
+    return this.run(() => this.rest.sessions.updateProfile(sessionId, body));
   }
 
   archiveSession(sessionId: string): Promise<ArchiveSessionResponse> {
-    return this.request<ArchiveSessionResponse>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}:archive`,
-      { body: {} },
-    );
+    return this.run(() => this.rest.sessions.archive(sessionId));
   }
 
   restoreSession(sessionId: string): Promise<RestoreSessionResponse> {
-    return this.request<RestoreSessionResponse>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}:restore`,
-      { body: {} },
-    );
-  }
-
-  snapshot(sessionId: string, options?: SnapshotOptions): Promise<SessionSnapshotResponse> {
-    return this.request<SessionSnapshotResponse>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/snapshot`,
-      { query: { mode: options?.transcript === true ? 'transcript' : undefined } },
-    );
+    return this.run(() => this.rest.sessions.restore(sessionId));
   }
 
   getSessionGoal(sessionId: string): Promise<GoalSnapshot | null> {
-    return this.request<GoalSnapshot | null>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/goal`,
-    );
-  }
-
-  getTranscriptOps(
-    sessionId: string,
-    agentId: string,
-    since: { readonly seq: number; readonly epoch?: string },
-    grade: 'turn' | 'block' | 'delta' = 'delta',
-  ): Promise<{
-    readonly session_id: string;
-    readonly agent_id: string;
-    readonly epoch: string;
-    readonly batches: readonly { readonly seq: number; readonly ops: readonly unknown[] }[];
-    readonly through_seq: number;
-    readonly complete: boolean;
-  }> {
-    return this.request(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/transcript/ops`,
-      {
-        query: {
-          agent_id: agentId,
-          since_seq: since.seq,
-          epoch: since.epoch,
-          grade,
-        },
-      },
-    );
-  }
-
-  getAgentTranscript(
-    sessionId: string,
-    agentId: string,
-    options?: GetAgentTranscriptOptions,
-  ): Promise<AgentTranscriptResponse> {
-    if (options?.beforeTurn !== undefined && options?.afterTurn !== undefined) {
-      return Promise.reject(
-        new Error('beforeTurn and afterTurn are mutually exclusive'),
-      );
-    }
-    return this.request<AgentTranscriptResponse>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/transcript`,
-      {
-        query: {
-          agent_id: agentId,
-          before_turn: options?.beforeTurn,
-          after_turn: options?.afterTurn,
-          page_size: options?.pageSize ?? 100,
-        },
-      },
-    );
+    return this.run(() => this.rest.sessions.goal(sessionId));
   }
 
   /** Older-history pages: `?before_id=<oldest loaded message id>&page_size=N`. */
@@ -933,46 +759,23 @@ export class KikiClient {
     sessionId: string,
     query: { before_id?: string; page_size?: number } = {},
   ): Promise<PageResponse<Message>> {
-    return this.request<PageResponse<Message>>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/messages`,
-      { query: { before_id: query.before_id, page_size: query.page_size ?? 50 } },
-    );
+    return this.run(() => this.rest.sessions.listMessages(sessionId, query));
   }
 
   listPrompts(sessionId: string): Promise<PromptListResponse> {
-    return this.request<PromptListResponse>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/prompts`,
-    );
+    return this.run(() => this.rest.sessions.listPrompts(sessionId));
   }
 
   submitPrompt(sessionId: string, body: PromptSubmission): Promise<PromptSubmitResult> {
-    return this.request<PromptSubmitResult>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/prompts`,
-      { body, timeout: false },
-    );
+    return this.sessions.submitPrompt(sessionId, body);
   }
 
-  replacePrompt(
-    sessionId: string,
-    promptId: string,
-    body: PromptReplaceRequest,
-  ): Promise<PromptReplaceResult> {
-    return this.request<PromptReplaceResult>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:replace`,
-      { body },
-    );
+  replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult> {
+    return this.sessions.replacePrompt(sessionId, promptId, body);
   }
 
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse> {
-    return this.request<PromptAbortResponse>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:abort`,
-      { body: {}, okCodes: [API_CODES.SUCCESS, API_CODES.PROMPT_ALREADY_COMPLETED] },
-    );
+    return this.sessions.abortPrompt(sessionId, promptId);
   }
 
   /**
@@ -983,19 +786,11 @@ export class KikiClient {
    * left the queue.
    */
   steerPrompt(sessionId: string, promptId: string): Promise<PromptSteerResult> {
-    return this.request<PromptSteerResult>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:steer`,
-      { body: {} },
-    );
+    return this.sessions.steerPrompt(sessionId, promptId);
   }
 
   listPendingApprovals(sessionId: string): Promise<ApprovalRequest[]> {
-    return this.request<{ items: ApprovalRequest[] }>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/approvals`,
-      { query: { status: 'pending' } },
-    ).then((data) => data.items);
+    return this.run(() => this.rest.sessions.listApprovals(sessionId));
   }
 
   /**
@@ -1010,47 +805,23 @@ export class KikiClient {
     approvalId: string,
     body: ApprovalResolveRequest & { readonly selected_option_id?: string },
   ): Promise<ApprovalResolveResult> {
-    return this.request<ApprovalResolveResult>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}`,
-      { body },
-    );
+    return this.sessions.resolveApproval(sessionId, approvalId, body);
   }
 
   listPendingQuestions(sessionId: string): Promise<QuestionRequest[]> {
-    return this.request<{ items: QuestionRequest[] }>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/questions`,
-      { query: { status: 'pending' } },
-    ).then((data) => data.items);
+    return this.run(() => this.rest.sessions.listQuestions(sessionId));
   }
 
-  resolveQuestion(
-    sessionId: string,
-    questionId: string,
-    body: QuestionResolveRequest,
-  ): Promise<QuestionResolveResult> {
-    return this.request<QuestionResolveResult>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(questionId)}`,
-      { body },
-    );
+  resolveQuestion(sessionId: string, questionId: string, body: QuestionResolveRequest): Promise<QuestionResolveResult> {
+    return this.sessions.resolveQuestion(sessionId, questionId, body);
   }
 
-  /** Dismiss reports envelope code 40909 with a real payload — still a success. */
   dismissQuestion(sessionId: string, questionId: string): Promise<QuestionDismissResult> {
-    return this.request<QuestionDismissResult>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(questionId)}:dismiss`,
-      { body: {}, okCodes: [API_CODES.SUCCESS, API_CODES.QUESTION_DISMISSED] },
-    );
+    return this.sessions.dismissQuestion(sessionId, questionId);
   }
 
   listTasks(sessionId: string): Promise<ListTasksResponse> {
-    return this.request<ListTasksResponse>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/tasks`,
-    );
+    return this.run(() => this.rest.sessions.listTasks(sessionId));
   }
 
   /** Single task; `with_output` opts into the tail-of-log preview (≤32KB default). */
@@ -1059,104 +830,76 @@ export class KikiClient {
     taskId: string,
     query: { with_output?: boolean; output_bytes?: number } = {},
   ): Promise<Task> {
-    return this.request<Task>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
-      { query: { with_output: query.with_output, output_bytes: query.output_bytes } },
-    );
+    return this.run(() => this.rest.sessions.getTask(sessionId, taskId, query));
   }
 
-  cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: true }> {
-    return this.request<{ cancelled: true }>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}:cancel`,
-      { body: {}, okCodes: [API_CODES.SUCCESS, API_CODES.TASK_ALREADY_FINISHED] },
-    );
+  cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: boolean }> {
+    return this.sessions.cancelTask(sessionId, taskId);
   }
 
-  /**
-   * Terminal lifecycle over REST (`/sessions/{id}/terminals*`). I/O (attach,
-   * input, resize) rides the shared WebSocket as `terminal_*` control frames —
-   * see `lib/ws.ts`. PTYs are loopback-only on kap-server
-   * (`exposureClass === 'loopback'` gates the routes).
-   */
+  /** Loopback-only PTY lifecycle, owned by the shared Klient HTTP capability. */
   listTerminals(sessionId: string): Promise<ListTerminalsResponse> {
-    return this.request<ListTerminalsResponse>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/terminals`,
-    );
+    return this.klient.terminal.listTerminals(sessionId);
   }
 
   createTerminal(sessionId: string, body: CreateTerminalRequest = {}): Promise<Terminal> {
-    return this.request<Terminal>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/terminals`,
-      { body },
-    );
+    return this.klient.terminal.createTerminal(sessionId, body);
   }
 
   getTerminal(sessionId: string, terminalId: string): Promise<GetTerminalResponse> {
-    return this.request<GetTerminalResponse>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/terminals/${encodeURIComponent(terminalId)}`,
-    );
+    return this.klient.terminal.getTerminal(sessionId, terminalId);
   }
 
-  /** `POST /sessions/{id}/terminals/{tid}:close` — kills the PTY. */
   closeTerminal(sessionId: string, terminalId: string): Promise<CloseTerminalResponse> {
-    return this.request<CloseTerminalResponse>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/terminals/${encodeURIComponent(terminalId)}:close`,
-      { body: {} },
-    );
+    return this.klient.terminal.closeTerminal(sessionId, terminalId);
   }
 
   listModels(): Promise<ListModelsResponse> {
-    return this.request<ListModelsResponse>('GET', '/models');
+    return this.run(this.klient.global.kosong.listModels().then((items) => ({ items: [...items] })));
   }
 
   async getConfig(): Promise<KikiConfigResponse> {
-    return parseKikiConfigResponse(await this.request<unknown>('GET', '/config'));
+    return parseKikiConfigResponse(await this.run(this.rest.config.get()));
   }
 
-  /** `GET /nb-search/capabilities` — secret-free provider/lane/pipeline descriptors. */
+  /** `GET /api/nb-search/capabilities` — secret-free provider/lane/pipeline descriptors. */
   async getNbSearchCapabilities(): Promise<NbSearchCapabilities> {
-    return nbSearchCapabilitiesSchema.parse(await this.request<unknown>('GET', '/nb-search/capabilities'));
+    return nbSearchCapabilitiesSchema.parse(await this.run(this.rest.nbSearch.capabilities()));
   }
 
-  /** `GET /nb-search/test` — on-demand readiness check; callers pass a signal so the panel can cancel. */
+  /** `GET /api/nb-search/test` — on-demand readiness check; callers pass a signal so the panel can cancel. */
   async testNbSearch(signal?: AbortSignal): Promise<NbSearchTestStatus> {
-    return nbSearchTestStatusSchema.parse(await this.request<unknown>('GET', '/nb-search/test', { signal }));
+    return nbSearchTestStatusSchema.parse(await this.run(this.rest.nbSearch.test({ signal })));
   }
 
-  listNamedAgentProfiles(workspaceId?: string): Promise<ListNamedAgentProfilesResponse> {
-    return this.request<ListNamedAgentProfilesResponse>('GET', '/agents', {
-      query: { workspace_id: workspaceId },
-    });
+  listNamedAgentProfiles(
+    query?: string | import('@kiki/protocol').ListNamedAgentProfilesQuery,
+  ): Promise<ListNamedAgentProfilesResponse> {
+    return this.run(this.rest.agents.list(query));
+  }
+
+  getAgentCapabilities(
+    query: import('@kiki/protocol').AgentCapabilitiesQuery,
+    signal?: AbortSignal,
+  ): Promise<import('@kiki/protocol').AgentCapabilitiesResponse> {
+    return this.run(this.klient.global.agentPanel.read(query, { signal }));
   }
 
   updateNamedAgentProfile(
     name: string,
     body: UpdateNamedAgentProfileRequest,
   ): Promise<NamedAgentProfile> {
-    return this.request<NamedAgentProfile>('PATCH', `/agents/${encodeURIComponent(name)}`, { body });
+    return this.run(this.rest.agents.update(name, body));
   }
 
   async readHostFile(path: string): Promise<string> {
-    const response = await this.fetchHostFile(path, 'text/plain');
-    return await response.text();
+    return this.run(this.rest.filesystem.readHostFile(path));
   }
 
-  /**
-   * Binary variant of readHostFile (fs:content streams raw bytes with a
-   * sniffed/extension MIME; the Accept header is ignored server-side).
-   */
+  /** Binary variant of readHostFile, retaining the server MIME. */
   async readHostFileBytes(path: string): Promise<{ bytes: Uint8Array; mime: string }> {
-    const response = await this.fetchHostFile(path, 'application/octet-stream');
-    const mime =
-      response.headers.get('content-type')?.split(';', 1)[0]?.trim() ||
-      'application/octet-stream';
-    return { bytes: new Uint8Array(await response.arrayBuffer()), mime };
+    const result = await this.run(this.rest.filesystem.readHostFileBytes(path));
+    return { bytes: result.bytes, mime: result.mime };
   }
 
   /** Read a canonical transcript attachment (or its staged-upload fallback). */
@@ -1164,289 +907,149 @@ export class KikiClient {
     sessionId: string,
     fileId: string,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
-    const url = new URL(
-      joinUrl(
-        this.baseUrl,
-        `/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(fileId)}`,
-      ),
-    );
-    const response = await this.fetchRawFile(url, 'application/octet-stream');
-    const mime =
-      response.headers.get('content-type')?.split(';', 1)[0]?.trim() ||
-      'application/octet-stream';
-    const disposition = response.headers.get('content-disposition') ?? '';
-    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
-    let name = match?.[1];
-    if (name !== undefined) {
-      try {
-        name = decodeURIComponent(name);
-      } catch {
-        // Keep the server-provided token when it is not URI encoded.
-      }
-    }
-    return { bytes: new Uint8Array(await response.arrayBuffer()), mime, name };
-  }
-
-  private async fetchHostFile(path: string, accept: string): Promise<Response> {
-    const url = new URL(joinUrl(this.baseUrl, '/fs:content'));
-    url.searchParams.set('path', path);
-    return await this.fetchRawFile(url, accept);
-  }
-
-  private async fetchRawFile(url: URL, accept: string): Promise<Response> {
-    const headers: Record<string, string> = { Accept: accept };
-    if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
-    const controller = new AbortController();
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, this.timeoutMs);
-    try {
-      const response = await fetch(url, { method: 'GET', headers, signal: controller.signal });
-      if (response.ok) return response;
-      const envelope = await response.clone().json().catch(() => undefined) as Envelope<unknown> | undefined;
-      if (envelope !== undefined && typeof envelope.code === 'number') throw new ApiError(envelope);
-      throw new ApiError({ code: response.status, msg: `HTTP ${response.status}`, data: null });
-    } catch (error) {
-      if (error instanceof ApiError) throw error;
-      throw new ApiError({
-        code: timedOut ? API_CODES.TIMEOUT : -1,
-        msg: timedOut
-          ? `Request timed out after ${this.timeoutMs}ms`
-          : error instanceof Error
-            ? error.message
-            : 'network error',
-        data: null,
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
+    return this.run(this.rest.sessions.media(sessionId, fileId));
   }
 
   listWorkspaces(): Promise<ListWorkspacesResponse> {
-    return this.request<ListWorkspacesResponse>('GET', '/workspaces');
+    return this.run(this.rest.workspaces.list());
   }
 
-  /** `PATCH /workspaces/{id}` — display-name rename (server echos the workspace). */
+  /** `PATCH /api/workspaces/{id}` — display-name rename. */
   renameWorkspace(workspaceId: string, name: string): Promise<Workspace> {
-    return this.request<Workspace>(
-      'PATCH',
-      `/workspaces/${encodeURIComponent(workspaceId)}`,
-      { body: { name } },
-    );
+    return this.run(this.rest.workspaces.rename(workspaceId, name));
   }
 
-  /** `PATCH /workspaces/{id}` — pin / unpin (server echos the workspace). */
+  /** `PATCH /api/workspaces/{id}` — pin / unpin. */
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<Workspace> {
-    return this.request<Workspace>(
-      'PATCH',
-      `/workspaces/${encodeURIComponent(workspaceId)}`,
-      { body: { pinned } },
-    );
+    return this.run(this.rest.workspaces.setPinned(workspaceId, pinned));
   }
 
-  /** `DELETE /workspaces/{id}` — unregister (does not remove on-disk content). */
+  /** `DELETE /api/workspaces/{id}` — unregister (does not remove on-disk content). */
   removeWorkspace(workspaceId: string): Promise<{ deleted: true }> {
-    return this.request<{ deleted: true }>(
-      'DELETE',
-      `/workspaces/${encodeURIComponent(workspaceId)}`,
-    );
+    return this.run(this.rest.workspaces.remove(workspaceId));
   }
 
   getAuth(): Promise<AuthSummary> {
-    return this.request<AuthSummary>('GET', '/auth');
+    return this.run(this.rest.auth.summary());
   }
 
   listProviders(): Promise<ListProvidersResponse> {
-    return this.request<ListProvidersResponse>('GET', '/providers');
+    return this.run(this.klient.global.kosong.listProviders().then((items) => ({ items: [...items] })));
   }
 
-  /**
-   * `POST /providers/{id}:refresh` — server-side model probe. Uses the stored
-   * key and avoids a browser-direct `/models` fetch (CORS / missing secret).
-   */
+  /** Server-side model probe using the configured provider credentials. */
   refreshProvider(providerId: string): Promise<RefreshProviderModelsResponse> {
-    return this.request<RefreshProviderModelsResponse>(
-      'POST',
-      `/providers/${encodeURIComponent(providerId)}:refresh`,
-    );
+    return this.run(this.klient.global.kosong.refreshProviders({ providerId }));
   }
 
   setDefaultModel(modelId: string): Promise<SetDefaultModelResponse> {
-    return this.request<SetDefaultModelResponse>(
-      'POST',
-      `/models/${encodeURIComponent(modelId)}:set_default`,
-    );
+    return this.run(this.klient.global.kosong.setDefaultModel(modelId));
   }
 
   getOAuthStatus(query: OAuthLoginQuery = {}): Promise<OAuthFlowSnapshot | null> {
-    return this.request<OAuthFlowSnapshot | null>('GET', '/oauth/login', { query });
+    return this.run(this.klient.global.auth.flow(query.provider)).then((value) => value ?? null);
   }
 
   startOAuthLogin(body: OAuthLoginStartRequest = {}): Promise<OAuthFlowStart> {
-    return this.request<OAuthFlowStart>('POST', '/oauth/login', { body });
+    return this.run(this.klient.global.auth.startLogin(body.provider));
   }
 
   cancelOAuthLogin(query: OAuthLoginQuery = {}): Promise<{ cancelled: boolean; status: string }> {
-    return this.request<{ cancelled: boolean; status: string }>('DELETE', '/oauth/login', {
-      query,
-    });
+    return this.run(this.klient.global.auth.cancelLogin(query.provider));
   }
 
   logoutOAuth(body: OAuthLogoutRequest = {}): Promise<OAuthLogoutResponse> {
-    return this.request<OAuthLogoutResponse>('POST', '/oauth/logout', { body });
+    return this.run(this.klient.global.auth.logout(body.provider));
   }
 
   listTools(sessionId?: string): Promise<ListToolsResponse> {
-    return this.request<ListToolsResponse>('GET', '/tools', {
-      query: sessionId !== undefined ? { session_id: sessionId } : {},
-    });
+    return this.run(this.rest.runtime.listTools(sessionId));
   }
 
   listMcpServers(): Promise<ListMcpServersResponse> {
-    return this.request<ListMcpServersResponse>('GET', '/mcp/servers');
+    return this.run(this.rest.runtime.listMcpServers());
   }
 
   listPlugins(): Promise<ListPluginsResponse> {
-    return this.request<ListPluginsResponse>('GET', '/plugins');
+    return this.run(this.klient.global.plugins.list().then((plugins) => ({ plugins: [...plugins] })));
   }
 
   listPluginMarketplace(): Promise<PluginMarketplaceResponse> {
-    return this.request<PluginMarketplaceResponse>('GET', '/plugins/marketplace');
+    return this.run(this.rest.plugins.marketplace());
   }
 
   getPlugin(pluginId: string): Promise<PluginInfo> {
-    return this.request<PluginInfo>('GET', `/plugins/${encodeURIComponent(pluginId)}`);
+    return this.run(this.klient.global.plugins.info(pluginId) as Promise<PluginInfo>);
   }
 
   installPlugin(source: string): Promise<PluginSummary> {
-    return this.request<PluginSummary>('POST', '/plugins', {
-      body: { source },
-      timeout: false,
-    });
+    return this.run(this.rest.plugins.install(source) as Promise<PluginSummary>);
   }
 
   setPluginEnabled(pluginId: string, enabled: boolean): Promise<{ readonly ok: true }> {
-    return this.request<{ readonly ok: true }>(
-      'POST',
-      `/plugins/${encodeURIComponent(pluginId)}:${enabled ? 'enable' : 'disable'}`,
-      { body: {} },
-    );
+    return this.run(this.rest.plugins.setEnabled(pluginId, enabled));
   }
 
   removePlugin(pluginId: string): Promise<{ readonly ok: true }> {
-    return this.request<{ readonly ok: true }>(
-      'POST',
-      `/plugins/${encodeURIComponent(pluginId)}:remove`,
-      { body: {} },
-    );
+    return this.run(this.rest.plugins.remove(pluginId));
   }
 
   restartMcpServer(serverId: string): Promise<RestartMcpServerResult> {
-    return this.request<RestartMcpServerResult>(
-      'POST',
-      `/mcp/servers/${encodeURIComponent(serverId)}:restart`,
-      { body: {} },
-    );
+    return this.run(this.rest.runtime.restartMcpServer(serverId));
   }
 
   listWorkspaceSkills(workspaceId: string): Promise<ListSkillsResponse> {
-    return this.request<ListSkillsResponse>(
-      'GET',
-      `/workspaces/${encodeURIComponent(workspaceId)}/skills`,
-    );
+    return this.run(this.rest.workspaces.listSkills(workspaceId));
   }
 
   /** Session-scoped skill catalog — feeds the composer's slash menu. */
   listSessionSkills(sessionId: string): Promise<ListSkillsResponse> {
-    return this.request<ListSkillsResponse>(
-      'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/skills`,
-    );
+    return this.run(this.rest.sessions.listSkills(sessionId));
   }
 
-  /**
-   * `POST /sessions/{id}/skills/{name}:activate` — the wire-correct path for
-   * slash commands: the server renders the skill prompt and starts a turn
-   * (`skill_activation` origin); progress arrives over the WS stream.
-   */
+  /** Activate a slash skill and start its turn. */
   activateSkill(
     sessionId: string,
     skillName: string,
     body: ActivateSkillRequest = {},
   ): Promise<ActivateSkillResult> {
-    return this.request<ActivateSkillResult>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/skills/${encodeURIComponent(skillName)}:activate`,
-      { body },
-    );
+    return this.run(this.rest.sessions.activateSkill(sessionId, skillName, body));
   }
 
-  /**
-   * `POST /files` — multipart upload for prompt file attachments. Kept off the
-   * JSON `request` helper: the body is a FormData stream (the browser sets the
-   * multipart boundary); the reply is the same envelope shape.
-   */
+  /** Upload prompt bytes through the shared global file facade. */
   async uploadFile(file: File): Promise<FileMeta> {
-    const form = new FormData();
-    form.append('file', file, file.name === '' ? 'attachment' : file.name);
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
-    let response: Response;
-    try {
-      response = await fetch(joinUrl(this.baseUrl, '/files'), {
-        method: 'POST',
-        headers,
-        body: form,
-      });
-    } catch (error) {
-      throw new ApiError({
-        code: -1,
-        msg: error instanceof Error ? error.message : 'network error',
-        data: null,
-      });
-    }
-    const envelope = (await response.json()) as Envelope<unknown>;
-    if (envelope.code !== API_CODES.SUCCESS) throw new ApiError(envelope);
-    return envelope.data as FileMeta;
+    const data = new Uint8Array(await file.arrayBuffer());
+    return this.run(this.klient.global.files.save({
+      data,
+      filename: file.name === '' ? 'attachment' : file.name,
+      mimeType: file.type === '' ? undefined : file.type,
+    }, { timeoutMs: 0 }));
   }
 
-  /**
-   * `POST /sessions/{id}/fs:search` — workspace-scoped fuzzy file search; an
-   * empty query lists the workspace root's top-level entries. This is the
-   * documented feed for `@`-mention file pickers (`rest/fs.ts`).
-   */
+  /** Session-scoped fuzzy file search. */
   fsSearch(
     sessionId: string,
     body: { query: string; limit?: number },
     signal?: AbortSignal,
   ): Promise<FsSearchResponse> {
-    return this.request<FsSearchResponse>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/fs:search`,
-      { body, signal },
-    );
+    return this.run(this.rest.sessions.fsSearch(sessionId, body, { signal }));
   }
 
-  /**
-   * `POST /workspace/fs:search` — session-less variant for the /new draft:
-   * `workspace` is a registered workspace id or an absolute root path.
-   */
+  /** Session-less fuzzy file search for the /new draft. */
   workspaceFsSearch(
     workspace: string,
     body: { query: string; limit?: number },
     signal?: AbortSignal,
   ): Promise<FsSearchResponse> {
-    return this.request<FsSearchResponse>('POST', '/workspace/fs:search', {
-      body: { ...body, workspace },
-      signal,
-    });
+    return this.run(this.rest.filesystem.workspaceFsSearch(workspace, body, { signal }));
   }
 
-  /** `POST /search` — global full-text search across all sessions. */
+  /** Global full-text search across all sessions. */
   searchMessages(body: SearchMessagesBody, signal?: AbortSignal): Promise<SearchMessagesResponse> {
-    return this.request<SearchMessagesResponse>('POST', '/search', { body, signal });
+    return this.run(this.rest.search.messages(body, { signal })).then((result) => ({
+      ...result,
+      items: [...result.items],
+    }));
   }
 
   /**
@@ -1455,44 +1058,15 @@ export class KikiClient {
    * that message and guards against a concurrent rewrite (40937).
    */
   forkSession(sessionId: string, body: KikiForkSessionRequest = {}): Promise<Session> {
-    return this.request<Session>('POST', `/sessions/${encodeURIComponent(sessionId)}:fork`, {
-      body,
-    });
+    return this.sessions.forkSession(sessionId, body);
   }
 
-  /**
-   * `POST /sessions/{sid}/messages/{mid}:edit` — full-replacement edit of a
-   * user message: the server truncates everything from the target onward and
-   * resubmits the new content as a fresh prompt (PromptSubmitResult). 40936
-   * when the message cannot be edited, 40937 on cursor mismatch, 40901 busy.
-   */
-  editMessage(
-    sessionId: string,
-    messageId: string,
-    body: EditMessageRequest,
-  ): Promise<PromptSubmitResult> {
-    return this.request<PromptSubmitResult>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}:edit`,
-      { body },
-    );
+  editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult> {
+    return this.sessions.editMessage(sessionId, messageId, body);
   }
 
-  /**
-   * `POST /sessions/{sid}/messages/{mid}:regenerate` — drop the target
-   * assistant reply (and anything after it) and rerun its turn. Same result
-   * and error codes as :edit.
-   */
-  regenerateMessage(
-    sessionId: string,
-    messageId: string,
-    body: RegenerateMessageRequest,
-  ): Promise<PromptSubmitResult> {
-    return this.request<PromptSubmitResult>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}:regenerate`,
-      { body },
-    );
+  regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult> {
+    return this.sessions.regenerateMessage(sessionId, messageId, body);
   }
 
   /** Compacts older context. 40901 while busy, 40910 when nothing compactable. */
@@ -1500,11 +1074,7 @@ export class KikiClient {
     sessionId: string,
     body: CompactSessionRequest = {},
   ): Promise<CompactSessionResponse> {
-    return this.request<CompactSessionResponse>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}:compact`,
-      { body },
-    );
+    return this.run(this.rest.sessions.compact(sessionId, body));
   }
 
   /** Removes the last `count` turns. 40911 when there is nothing to undo. */
@@ -1512,41 +1082,15 @@ export class KikiClient {
     sessionId: string,
     body: { count?: number; page_size?: number } = {},
   ): Promise<UndoSessionResponse> {
-    return this.request<UndoSessionResponse>(
-      'POST',
-      `/sessions/${encodeURIComponent(sessionId)}:undo`,
-      { body },
-    );
+    return this.run(this.rest.sessions.undo(sessionId, body));
   }
 
-  /**
-   * `POST /sessions/{id}/export` replies with a raw zip stream (not an
-   * envelope), so it bypasses `request()`. Returns the archive bytes plus the
-   * filename from Content-Disposition when the server provides one.
-   */
-  async exportSession(sessionId: string): Promise<{ blob: Blob; filename: string }> {
-    const url = joinUrl(this.baseUrl, `/sessions/${encodeURIComponent(sessionId)}/export`);
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
-    const response = await fetch(url, { method: 'POST', headers, body: '{}' });
-    const contentType = response.headers.get('content-type') ?? '';
-    if (!response.ok || contentType.includes('application/json')) {
-      // Failure replies keep the JSON envelope shape.
-      try {
-        const envelope = (await response.json()) as Envelope<unknown>;
-        throw new ApiError(envelope);
-      } catch (error) {
-        if (error instanceof ApiError) throw error;
-        throw new ApiError({ code: response.status, msg: `HTTP ${response.status}`, data: null });
-      }
-    }
-    const disposition = response.headers.get('content-disposition') ?? '';
-    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
-    const filename = match?.[1] ?? `kiki-session-${sessionId}.zip`;
-    return { blob: await response.blob(), filename };
+  /** Download the diagnostic archive and preserve its server filename. */
+  exportSession(sessionId: string): Promise<{ blob: Blob; filename: string }> {
+    return this.run(this.rest.sessions.export(sessionId));
   }
 
   async patchConfig(body: KikiConfigPatch): Promise<KikiConfigResponse> {
-    return parseKikiConfigResponse(await this.request<unknown>('POST', '/config', { body }));
+    return parseKikiConfigResponse(await this.run(this.rest.config.patch(body as import('@kiki/klient').HttpRestConfigPatch)));
   }
 }

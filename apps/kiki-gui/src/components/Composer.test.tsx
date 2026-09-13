@@ -57,7 +57,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetInputHistoryForTests();
-  listModels.mockReset().mockResolvedValue({ items: [] });
+  listModels.mockReset().mockResolvedValue({ items: [{ model: 'fixture/kiki-pro', provider: 'fixture' }] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
@@ -153,6 +153,8 @@ async function renderComposer(
     });
   };
   await rerender(props);
+  await settle();
+  await settle();
   return { container, root, rerender };
 }
 
@@ -185,7 +187,7 @@ async function click(element: Element): Promise<void> {
 async function waitForTrigger(container: HTMLDivElement): Promise<HTMLButtonElement> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const trigger = container.querySelector<HTMLButtonElement>('#composer-agent-profile-select');
-    if (trigger !== null) return trigger;
+    if (trigger !== null && container.querySelector('[data-selection-diagnostic][role="status"]') === null) return trigger;
     await settle();
   }
   throw new Error('profile select never rendered');
@@ -320,25 +322,20 @@ describe('Composer agent profile picker', () => {
     expect(onChangeAgentProfile).toHaveBeenCalledWith('grok-only');
   });
 
-  it('stays hidden without a change handler or when the catalog is unavailable', async () => {
+  it('hides without a handler but preserves the choice and offers retry when the catalog fails', async () => {
     const { container } = await renderComposer({ agentProfile: 'agent' });
     for (let index = 0; index < 5; index += 1) await settle();
-    // No handler hides the standalone profile control; with no model catalog
-    // and no effort either, the model chip degrades to inert text.
-    expect(container.querySelector('#composer-model-select')).toBeNull();
     expect(container.querySelector('#composer-agent-profile-select')).toBeNull();
 
-    listNamedAgentProfiles.mockRejectedValue(new Error('404'));
-    const second = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-    });
+    listNamedAgentProfiles.mockRejectedValue(new Error('catalog offline'));
+    const second = await renderComposer({ agentProfile: 'agent', onChangeAgentProfile: () => {} });
     for (let index = 0; index < 5; index += 1) await settle();
-    expect(second.container.querySelector('#composer-model-select')).toBeNull();
-    expect(second.container.querySelector('#composer-agent-profile-select')).toBeNull();
+    expect(second.container.querySelector('#composer-agent-profile-select')?.textContent).toContain('agent');
+    expect(second.container.querySelector('[role="alert"]')?.textContent).toContain('catalog offline');
+    expect(second.container.querySelector('[role="alert"] button')?.textContent).toBe('Retry');
   });
 
-  it('keeps a disabled main profile selectable while hiding subagent profiles', async () => {
+  it('excludes disabled main and subagent profiles, preserving an invalid choice with a diagnostic', async () => {
     listNamedAgentProfiles.mockResolvedValue({
       items: [
         { name: 'agent', source: 'builtin', main: true, disabled: true, routes: [] },
@@ -356,9 +353,8 @@ describe('Composer agent profile picker', () => {
     const options = [...container.querySelectorAll('[role="option"]')].map(
       (row) => row.textContent ?? '',
     );
-    expect(options).toHaveLength(1);
-    expect(options[0]).toContain('agent');
-    expect(options.some((text) => text.includes('reviewer'))).toBe(false);
+    expect(options).toHaveLength(0);
+    expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('unavailable');
   });
 
   it('loads workspace main profiles without exposing workspace subagents', async () => {
@@ -415,7 +411,7 @@ describe('Composer agent profile picker', () => {
     });
     await settle();
     expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_beta');
-    expect(rendered.container.querySelector('#composer-agent-profile-select')).toBeNull();
+    expect(rendered.container.querySelector('#composer-agent-profile-select')).not.toBeNull();
 
     workspaceB.resolve({
       items: [
@@ -443,7 +439,7 @@ describe('Composer agent profile picker', () => {
     });
     await settle();
     expect(listNamedAgentProfiles).not.toHaveBeenCalled();
-    expect(rendered.container.querySelector('#composer-agent-profile-select')).toBeNull();
+    expect(rendered.container.querySelector('#composer-agent-profile-select')).not.toBeNull();
 
     await rendered.rerender({
       workspaceId: 'wd_session',
@@ -736,6 +732,7 @@ describe('Composer model chip', () => {
   });
 
   it('keeps the effort row reachable when the catalog is empty', async () => {
+    listModels.mockResolvedValue({ items: [] });
     const onChangeEffort = vi.fn();
     const { container } = await renderComposer({
       efforts: ['low', 'high'],
@@ -958,6 +955,35 @@ describe('Composer slash skill catalog', () => {
     expect(listSessionSkills).not.toHaveBeenCalled();
     expect(listWorkspaceSkills).not.toHaveBeenCalled();
     expect(container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
+  });
+
+  it('selects a command into the draft, shows source and args, and sends its catalog name once', async () => {
+    const command = { ...workspaceSkill, name: 'plan', path: '/workspace/.kiki/commands/plan.md',
+      prompt_command: true, disable_model_invocation: true, argument_hint: '<topic>' };
+    listWorkspaceSkills.mockResolvedValue({ skills: [command] });
+    const onChange = vi.fn();
+    const onActivateSkill = vi.fn();
+    const onChangePlanMode = vi.fn();
+    const attachments = [{ kind: 'file' as const, path: '/workspace/note.txt', name: 'note.txt', isDir: false }];
+    const rendered = await renderComposer({ value: '/', workspaceId: 'workspace-command',
+      onChange, onActivateSkill, onChangePlanMode, attachments });
+    await openSlashMenu(rendered.container);
+    const row = [...rendered.container.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
+      .find((button) => button.textContent?.includes('/skill:plan'))!;
+    expect(row.textContent).toContain('<topic>');
+    expect(row.textContent).toContain('project');
+    await act(async () => { row.click(); });
+    expect(onChange).toHaveBeenLastCalledWith('/skill:plan ');
+    expect(onActivateSkill).not.toHaveBeenCalled();
+    expect(onChangePlanMode).not.toHaveBeenCalled();
+    await rendered.rerender({ value: '/skill:plan menu options', workspaceId: 'workspace-command',
+      onChange, onActivateSkill, onChangePlanMode, attachments });
+    await act(async () => {
+      rendered.container.querySelector('textarea[data-composer]')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('plan', 'menu options', attachments);
+    expect(onChangePlanMode).not.toHaveBeenCalled();
   });
 
   it('runs VS Code autosave preflight before activating a workspace skill', async () => {
@@ -1389,5 +1415,30 @@ describe('Composer skill preview card', () => {
     // …which then follows ArrowDown onto the description-less skill: no card.
     await pressKey(textarea, { key: 'ArrowDown' });
     expect(container.querySelector('[data-skill-preview]')).toBeNull();
+  });
+});
+
+describe('Composer restored selection diagnostics', () => {
+  it('keeps a removed model visible, blocks sending, and keeps the input and reselect path usable', async () => {
+    const onSend = vi.fn();
+    const onChangeModel = vi.fn();
+    const { container } = await renderComposer({ model: 'fixture/deleted', value: 'hello', onSend, onChangeModel });
+    expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('fixture/deleted');
+    const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    expect(input.disabled).toBe(false);
+    await pressKey(input, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    await click(container.querySelector('#composer-model-select')!);
+    const valid = [...container.querySelectorAll('[role="option"]')].find((node) => node.getAttribute('title') === 'fixture/kiki-pro')!;
+    await click(valid);
+    expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-pro');
+  });
+
+  it('preserves an incompatible effort and provides an explicit reset even on a model without efforts', async () => {
+    const onChangeEffort = vi.fn();
+    const { container } = await renderComposer({ effort: 'high', value: 'hello', onChangeEffort });
+    expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('high');
+    await click(container.querySelector('[data-selection-diagnostic] button')!);
+    expect(onChangeEffort).toHaveBeenCalledWith(undefined);
   });
 });

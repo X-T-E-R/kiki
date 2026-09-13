@@ -1,5 +1,5 @@
-import type { SnapshotSubagent, Task } from '@moonshot-ai/protocol';
-import type { AgentState, AgentTranscriptSnapshot } from '@moonshot-ai/transcript';
+import type { SnapshotSubagent, Task } from '@kiki/protocol';
+import type { AgentState, AgentTranscriptSnapshot } from '@kiki/transcript';
 
 import type { AgentTranscriptAgent, AgentTranscriptResponse, AgentTranscriptTask } from '../../transport';
 import {
@@ -140,11 +140,13 @@ export function liveSourcesFromSubagentBlocks(blocks: readonly SubagentBlock[]):
     model: block.model,
     thinkingEffort: block.thinkingEffort,
     status: block.status,
+    description: block.description,
     summary: block.summary,
     error: block.error,
     startedAt: block.startedAt,
     endedAt: block.endedAt,
     toolCallCount: block.toolCallCount,
+    toolCallCountKnown: block.toolCallCountKnown,
   }));
 }
 
@@ -156,11 +158,8 @@ export function rosterFromSnapshotSubagents(
     const agentId = snapshotSubagentAgentId(subagent);
     if (agentId === '') return [];
     const label = presentSnapshotText(subagent.label);
-    const name =
-      label ??
-      presentSnapshotText(subagent.description) ??
-      presentSnapshotText(subagent.profile) ??
-      agentId;
+    const description = presentSnapshotText(subagent.description);
+    const name = label ?? description ?? presentSnapshotText(subagent.profile) ?? agentId;
     return [
       {
         agentId,
@@ -172,8 +171,10 @@ export function rosterFromSnapshotSubagents(
         thinkingEffort: presentSnapshotText(subagent.thinking_effort),
         status: subagent.subagent_phase === 'suspended' ? 'suspended' : subagent.status,
         toolCallCount: subagent.tool_call_count,
+        toolCallCountKnown: subagent.tool_call_count === undefined ? undefined : true,
         startedAt: subagent.started_at ?? subagent.created_at,
         endedAt: subagent.completed_at,
+        description,
         summary: presentSnapshotText(subagent.output_preview),
       } satisfies AgentRosterDescriptor,
     ];
@@ -196,7 +197,18 @@ export function overlayLiveSourcesWithSnapshotSubagents(
   return live.map((source) => {
     const snapshot = rosterById.get(source.subagentId);
     if (snapshot === undefined) return source;
+    const sourceCountAuthoritative = source.toolCallCountAuthoritative === true;
     const snapshotCount = snapshot.toolCallCount;
+    const nextToolCallCount = sourceCountAuthoritative
+      ? source.toolCallCount ?? 0
+      : snapshotCount === undefined
+        ? source.toolCallCount
+        : Math.max(source.toolCallCount ?? 0, snapshotCount);
+    const nextToolCallCountKnown = sourceCountAuthoritative
+      ? source.toolCallCount === undefined
+        ? false
+        : source.toolCallCountKnown !== false
+      : mergeKnown(source.toolCallCountKnown, snapshot.toolCallCountKnown);
     return {
       ...source,
       parentAgentId: source.parentAgentId ?? snapshot.parentAgentId,
@@ -206,16 +218,31 @@ export function overlayLiveSourcesWithSnapshotSubagents(
       model: source.model ?? snapshot.model,
       thinkingEffort: source.thinkingEffort ?? snapshot.thinkingEffort,
       status: source.status === 'unknown' ? snapshot.status ?? source.status : source.status,
+      description: source.description ?? snapshot.description,
       summary: source.summary ?? snapshot.summary,
       error: source.error ?? snapshot.error,
       startedAt: presentSnapshotText(source.startedAt) ?? snapshot.startedAt,
       endedAt: source.endedAt ?? snapshot.endedAt,
-      toolCallCount:
-        snapshotCount === undefined
-          ? source.toolCallCount
-          : Math.max(source.toolCallCount ?? 0, snapshotCount),
+      toolCallCount: nextToolCallCount,
+      toolCallCountKnown: nextToolCallCountKnown,
     };
   });
+}
+
+function mergeKnown(current: boolean | undefined, incoming: boolean | undefined): boolean | undefined {
+  if (current === true || incoming === true) return true;
+  return current ?? incoming;
+}
+
+function canonicalToolCallCountFields(source: {
+  readonly toolCallCount?: number;
+  readonly toolCallCountKnown?: boolean;
+}): { readonly toolCallCount: number; readonly toolCallCountKnown: boolean } {
+  const count = source.toolCallCount;
+  return {
+    toolCallCount: count ?? 0,
+    toolCallCountKnown: count !== undefined && source.toolCallCountKnown !== false,
+  };
 }
 
 function overlayForestDisplayFields(
@@ -229,10 +256,15 @@ function overlayForestDisplayFields(
   for (const [agentId, node] of Object.entries(byId)) {
     const source = liveById.get(agentId);
     if (source === undefined) continue;
-    const nextToolCallCount =
-      source.toolCallCount === undefined
-        ? node.toolCallCount
-        : Math.max(node.toolCallCount, source.toolCallCount);
+    const sourceCountAuthoritative = source.toolCallCountAuthoritative === true;
+    const nextToolCallCount = sourceCountAuthoritative
+      ? source.toolCallCount ?? 0
+      : node.toolCallCount;
+    const nextToolCallCountKnown = sourceCountAuthoritative
+      ? source.toolCallCount === undefined
+        ? false
+        : source.toolCallCountKnown !== false
+      : node.toolCallCountKnown;
     const nextName = node.name !== node.agentId ? node.name : source.name;
     const nextLabel =
       node.label !== node.name && node.label !== node.agentId
@@ -245,8 +277,10 @@ function overlayForestDisplayFields(
       model: node.model ?? source.model,
       thinkingEffort: node.thinkingEffort ?? source.thinkingEffort,
       toolCallCount: nextToolCallCount,
+      toolCallCountKnown: nextToolCallCountKnown,
       startedAt: presentSnapshotText(node.startedAt) ?? source.startedAt,
       endedAt: node.endedAt ?? source.endedAt,
+      description: node.description ?? source.description,
       summary: node.summary ?? source.summary,
       error: node.error ?? source.error,
     };
@@ -254,10 +288,12 @@ function overlayForestDisplayFields(
       next.model !== node.model ||
       next.thinkingEffort !== node.thinkingEffort ||
       next.toolCallCount !== node.toolCallCount ||
+      next.toolCallCountKnown !== node.toolCallCountKnown ||
       next.label !== node.label ||
       next.name !== node.name ||
       next.startedAt !== node.startedAt ||
       next.endedAt !== node.endedAt ||
+      next.description !== node.description ||
       next.summary !== node.summary ||
       next.error !== node.error
     ) {
@@ -299,16 +335,21 @@ export function liveSourcesFromAgentSnapshots(
     const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
     for (const task of tasks) {
       if (task.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
+      const existing = byId.get(task.agentId);
       byId.set(task.agentId, {
         subagentId: task.agentId,
         parentAgentId,
-        parentToolCallId: byId.get(task.agentId)?.parentToolCallId,
-        name: task.name ?? task.subagentName ?? byId.get(task.agentId)?.name ?? task.agentId,
+        parentToolCallId: existing?.parentToolCallId,
+        name: task.name ?? task.subagentName ?? existing?.name ?? task.agentId,
         status: task.state,
+        description: task.description ?? existing?.description,
         summary: task.resultSummary,
         error: task.error,
         startedAt: task.startedAt,
         endedAt: task.endedAt,
+        toolCallCount: existing?.toolCallCount,
+        toolCallCountKnown: existing?.toolCallCountKnown,
+        toolCallCountAuthoritative: existing?.toolCallCountAuthoritative,
       });
     }
     for (const item of snapshot.items) {
@@ -324,11 +365,14 @@ export function liveSourcesFromAgentSnapshots(
               parentToolCallId: frame.toolCallId,
               name: existing?.name ?? ref.agentId,
               status: existing?.status ?? 'running',
+              description: existing?.description,
               summary: existing?.summary,
               error: existing?.error,
               startedAt: existing?.startedAt ?? step.startedAt ?? item.startedAt,
               endedAt: existing?.endedAt,
               toolCallCount: existing?.toolCallCount,
+              toolCallCountKnown: existing?.toolCallCountKnown,
+              toolCallCountAuthoritative: existing?.toolCallCountAuthoritative,
               model: existing?.model,
               thinkingEffort: existing?.thinkingEffort,
             });
@@ -358,13 +402,16 @@ export function liveSourcesFromAgentSnapshots(
   }
   for (const [agentId, snapshot] of snapshots) {
     const meta = snapshot.meta.agent;
-    if (meta === undefined) continue;
     const existing = byId.get(agentId);
     if (existing === undefined) continue;
+    const count = canonicalToolCallCountFields(snapshot);
     byId.set(agentId, {
       ...existing,
-      model: meta.model ?? existing.model,
-      thinkingEffort: meta.thinkingEffort ?? existing.thinkingEffort,
+      model: meta?.model ?? existing.model,
+      thinkingEffort: meta?.thinkingEffort ?? existing.thinkingEffort,
+      toolCallCount: count.toolCallCount,
+      toolCallCountKnown: count.toolCallCountKnown,
+      toolCallCountAuthoritative: true,
     });
   }
   return [...byId.values()];
@@ -382,6 +429,7 @@ export function sessionAgentForestFromAgentSnapshots(
   const roster: AgentRosterDescriptor[] = [];
   for (const [agentId, snapshot] of snapshots) {
     const meta = snapshot.meta.agent;
+    const count = canonicalToolCallCountFields(snapshot);
     roster.push({
       agentId,
       parentAgentId: live.find((entry) => entry.subagentId === agentId)?.parentAgentId,
@@ -392,6 +440,9 @@ export function sessionAgentForestFromAgentSnapshots(
       contextTokens: meta?.contextTokens,
       maxContextTokens: meta?.maxContextTokens,
       usage: meta?.usage,
+      toolCallCount: count.toolCallCount,
+      toolCallCountKnown: count.toolCallCountKnown,
+      toolCallCountAuthoritative: true,
       status: agentStatusFromMeta({
         agent_id: agentId,
         items: [],

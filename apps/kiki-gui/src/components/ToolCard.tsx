@@ -6,7 +6,7 @@
 
 import { memo, useMemo, useState, type ReactNode } from 'react';
 
-import type { ToolInputDisplay } from '@moonshot-ai/protocol';
+import type { ToolInputDisplay } from '@kiki/protocol';
 
 import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
 import type { ToolBlock } from '@kiki/session-core/session';
@@ -144,6 +144,18 @@ function argsSummary(args: unknown): string | undefined {
   return undefined;
 }
 
+function isShellCommandName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.includes('bash') || lower.includes('shell') || lower.includes('cmd');
+}
+
+function hasCommandSummary(block: ToolBlock, summary: string): boolean {
+  if (block.display?.kind === 'command') return summary !== '';
+  if (!isShellCommandName(block.name) || typeof block.args !== 'object' || block.args === null) return false;
+  const command = (block.args as Record<string, unknown>)['command'];
+  return typeof command === 'string' && command !== '' && summary !== '';
+}
+
 function StatusIcon({ block }: { block: ToolBlock }) {
   const { t } = useI18n();
   if (block.status === 'running') {
@@ -269,9 +281,12 @@ function truncateJson(value: unknown, truncatedNote: string, limit = 6000): stri
 
 export const ToolCard = memo(function ToolCard({
   block,
+  agentNames,
   onOpenAgent,
 }: {
   block: ToolBlock;
+  /** subagentId → display name, so agentRef chips read as names, not ids. */
+  agentNames?: ReadonlyMap<string, string>;
   onOpenAgent?: (agentId: string) => void;
 }) {
   const { t, tp, time } = useI18n();
@@ -279,6 +294,7 @@ export const ToolCard = memo(function ToolCard({
   const errorSummary = toolErrorSummary(block);
   const summary = toolSummary(block, t, tp);
   const isCommand = block.display?.kind === 'command';
+  const keepCommandSummary = hasCommandSummary(block, summary);
   // File-carrying displays get a clickable path in the collapsed summary.
   const displayPath =
     block.display !== undefined &&
@@ -308,7 +324,11 @@ export const ToolCard = memo(function ToolCard({
           {toolGlyph(block)}
         </span>
         <span className="shrink-0 text-[12.5px] font-semibold text-ink">{block.name}</span>
-        {errorSummary !== undefined ? (
+        {keepCommandSummary ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-soft">
+            {summary}
+          </span>
+        ) : errorSummary !== undefined ? (
           <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-danger">
             {errorSummary}
           </span>
@@ -417,9 +437,10 @@ export const ToolCard = memo(function ToolCard({
                         key={ref.agentId}
                         type="button"
                         onClick={() => { onOpenAgent(ref.agentId); }}
+                        title={ref.agentId}
                         className="rounded-full border border-hairline bg-paper px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
                       >
-                        {t('tc.openSpawnedAgent', { name: ref.agentId })}
+                        {t('tc.openSpawnedAgent', { name: agentNames?.get(ref.agentId) ?? ref.agentId })}
                       </button>
                     ))}
                   </div>

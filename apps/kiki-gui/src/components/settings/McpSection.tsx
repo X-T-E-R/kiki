@@ -13,6 +13,7 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, PRIMARY_BUTTON } from '../ui';
 import { McpConfigManager } from './McpConfigManager';
+import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
 import { SettingsWorkspaceScopeContext } from './workspaceScope';
 
@@ -32,7 +33,7 @@ function McpStatusCard() {
   const servers = mcpQuery.data?.servers ?? [];
 
   return (
-    <SectionCard id="st-card-mcp-status" title={t('st.mcp.statusTitle')}>
+    <SectionCard id="st-card-mcp-status" title={t('st.mcp.statusTitle')} aside={t('st.mcp.statusScope')}>
       <div className="space-y-2">
         {mcpQuery.isPending ? (
           <Hint>{t('cap.loadingMcp')}</Hint>
@@ -59,16 +60,17 @@ function McpTimeoutsCard() {
   const queryClient = useQueryClient();
   const [startupTimeoutMs, setStartupTimeoutMs] = useState('');
   const [toolTimeoutMs, setToolTimeoutMs] = useState('');
+  const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
     const config = configQuery.data;
-    if (config === undefined) return;
+    if (config === undefined || dirty) return;
     setStartupTimeoutMs(optionalNumberDraft(config.mcp?.startupTimeoutMs));
     setToolTimeoutMs(optionalNumberDraft(config.mcp?.toolTimeoutMs));
-  }, [configQuery.data]);
+  }, [configQuery.data, dirty]);
 
   const save = async () => {
     let patch;
@@ -85,6 +87,7 @@ function McpTimeoutsCard() {
       queryClient.setQueryData(['config'], echoed);
       setStartupTimeoutMs(optionalNumberDraft(echoed.mcp?.startupTimeoutMs));
       setToolTimeoutMs(optionalNumberDraft(echoed.mcp?.toolTimeoutMs));
+      setDirty(false);
       await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
       setFeedback({ tone: 'success', text: t('st.mcp.timeoutsSaved') });
     } catch (error) {
@@ -105,8 +108,9 @@ function McpTimeoutsCard() {
               className={`${INPUT} mt-1 font-mono`}
               inputMode="numeric"
               value={startupTimeoutMs}
-              onChange={(event) => { setStartupTimeoutMs(event.target.value); }}
+              onChange={(event) => { setStartupTimeoutMs(event.target.value); setDirty(true); }}
             />
+            <Hint>{t('st.mcp.startupTimeoutHint')}</Hint>
           </label>
           <label className="text-[11px] font-medium text-ink-soft">
             {t('st.runtime.mcpToolTimeout')}
@@ -114,11 +118,12 @@ function McpTimeoutsCard() {
               className={`${INPUT} mt-1 font-mono`}
               inputMode="numeric"
               value={toolTimeoutMs}
-              onChange={(event) => { setToolTimeoutMs(event.target.value); }}
+              onChange={(event) => { setToolTimeoutMs(event.target.value); setDirty(true); }}
             />
+            <Hint>{t('st.mcp.toolTimeoutHint')}</Hint>
           </label>
         </fieldset>
-        <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('common.save')}</button>
+        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>{saving ? t('common.saving') : t('common.save')}</button>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -205,6 +210,11 @@ export function McpSection() {
       </SectionCard>
       <McpStatusCard />
       <McpTimeoutsCard />
+      <ExperimentalSection
+        featureIds={['external_delegation_mcp']}
+        cardId="st-card-mcp-delegation"
+        titleKey="st.experimental.delegation"
+      />
     </div>
   );
 }

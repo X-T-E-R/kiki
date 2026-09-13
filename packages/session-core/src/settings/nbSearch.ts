@@ -1,12 +1,21 @@
 import type {
   NbSearchCapabilities,
   NbSearchConfigPatch,
+  NbSearchSourceConfig,
   NbSearchTestStatus,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import { LocalizedError } from '../i18n/locale';
 
 export type NbSearchReadiness = NbSearchTestStatus['search'];
+
+export function nbSearchReuseLocalConfig(source: NbSearchSourceConfig | undefined): boolean {
+  return source?.reuse_local_config ?? true;
+}
+
+export function nbSearchSourcePatch(reuseLocalConfig: boolean): { readonly nb_search_source: NbSearchSourceConfig } {
+  return { nb_search_source: { reuse_local_config: reuseLocalConfig } };
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -42,6 +51,10 @@ export function nbSearchReadinessFromCapabilities(capabilities: NbSearchCapabili
   readonly search: NbSearchReadiness;
   readonly fetch: NbSearchReadiness;
 } {
+  if (capabilities.config_source?.availability === 'unavailable') {
+    const readiness = { configured: false, available: false, issues: capabilities.config_source.issues };
+    return { search: readiness, fetch: readiness };
+  }
   const selection = capabilities.search.default_lane;
   const search: NbSearchReadiness = (() => {
     if (selection === undefined) {
@@ -158,7 +171,7 @@ export function setNbSearchCredentialEnv(
   credentialEnv: string,
 ): NbSearchDraft {
   const slotId = draft.providers[providerInstanceId]!.credentialSlotId;
-  const slots = { ...(draft.credentialSlots ?? {}) };
+  const slots = { ...draft.credentialSlots };
   const existing = slots[slotId];
   if (credentialEnv === '') delete slots[slotId];
   else slots[slotId] = { provider_id: existing?.provider_id ?? providerId, env: credentialEnv };

@@ -15,7 +15,7 @@ import { isVscodeWebview, vscodeHost } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
-  resolveFileHref,
+  resolveFileReference,
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
 } from '@kiki/session-core/composer/media';
@@ -102,8 +102,9 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
   const preview = useMediaPreview();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const target = href === undefined ? undefined : (unwrapFileLinkTarget(href) ?? href);
-  const filePath =
-    preview !== null && target !== undefined ? resolveFileHref(target, preview.cwd) : undefined;
+  const fileReference =
+    preview !== null && target !== undefined ? resolveFileReference(target, preview.cwd) : undefined;
+  const filePath = fileReference?.path;
 
   const openMenu = (event: React.MouseEvent) => {
     event.preventDefault();
@@ -113,7 +114,7 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
 
   if (filePath !== undefined && preview !== null && target !== undefined) {
     const entries: MiniMenuEntry[] = [
-      { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(filePath); } },
+      { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(fileReference ?? filePath); } },
       { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(target) },
       {
         key: 'copy-absolute',
@@ -143,7 +144,7 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
           title={filePath}
           onClick={(event) => {
             event.preventDefault();
-            preview.openFile(filePath);
+            preview.openFile(fileReference ?? filePath);
           }}
           onContextMenu={openMenu}
         >

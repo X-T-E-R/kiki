@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { Workspace } from '@moonshot-ai/protocol';
+import type { Workspace } from '@kiki/protocol';
 import {
   Navigate,
   Route,
@@ -32,6 +32,7 @@ import {
 } from 'react-router-dom';
 
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { GlobalTaskBoard } from './components/GlobalTaskBoard';
 import { DirtyGuardContext, shouldGuardNavigation } from './components/dirtyGuard';
 import { NewSessionPage } from './components/NewSessionPage';
 import { CapabilitiesShim } from './components/CapabilitiesShim';
@@ -463,6 +464,14 @@ export function App() {
           <Route path="*" element={<RootRedirect />} />
         </Routes>
       </div>
+
+      <GlobalTaskBoard
+        activeSessionId={activeSessionId}
+        sessions={sessions}
+        workspaceOptions={workspaceOptions}
+        workspacesLoading={workspacesQuery.isPending}
+        onNavigate={navigate}
+      />
 
       {sidebarOpen ? (
         <div

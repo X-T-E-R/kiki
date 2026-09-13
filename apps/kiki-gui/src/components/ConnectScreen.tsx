@@ -260,7 +260,7 @@ function BrowserConnectForm({
         <input
           id="connect-token"
           className="mb-5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
-          placeholder="~/.kimi-code/server.token"
+          placeholder="~/.kiki/server.token"
           value={token}
           onChange={(event) => { setToken(event.target.value); }}
           spellCheck={false}

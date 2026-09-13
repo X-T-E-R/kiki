@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import type { Session } from '@moonshot-ai/protocol';
+import type { Session } from '@kiki/protocol';
 
 import {
   buildSwitcherItems,

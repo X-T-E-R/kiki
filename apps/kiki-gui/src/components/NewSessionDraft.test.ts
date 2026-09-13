@@ -4,7 +4,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionCreate } from '@moonshot-ai/protocol';
+import type { SessionCreate } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
@@ -40,6 +40,7 @@ vi.mock('./dirtyGuard', () => ({
 
 const containers: HTMLDivElement[] = [];
 const roots: Root[] = [];
+const queryClients: QueryClient[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
@@ -63,10 +64,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => {
-    for (const root of roots.splice(0)) root.unmount();
-  });
-  for (const container of containers.splice(0)) container.remove();
+  await unmountDraft();
 });
 
 afterAll(() => {
@@ -74,20 +72,21 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string }) {
+function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string; prefillNavigationKey?: string }) {
   latestDraftState = useNewSessionDraft(props);
   return null;
 }
 
 async function renderDraft(
-  props: { initialWorkspaceId?: string; initialProfile?: string } = {},
-): Promise<void> {
+  props: { initialWorkspaceId?: string; initialProfile?: string; prefillNavigationKey?: string } = {},
+): Promise<QueryClient> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClients.push(queryClient);
   await act(async () => {
     root.render(
       createElement(
@@ -97,6 +96,20 @@ async function renderDraft(
       ),
     );
   });
+  return queryClient;
+}
+
+async function unmountDraft(): Promise<void> {
+  await act(async () => {
+    for (const root of roots.splice(0)) root.unmount();
+  });
+  for (const queryClient of queryClients.splice(0)) queryClient.clear();
+  for (const container of containers.splice(0)) container.remove();
+  latestDraftState = undefined;
+}
+
+function readStoredDraft(): Record<string, unknown> {
+  return JSON.parse(localStorage.getItem('kiki.newSessionDraft') ?? '{}') as Record<string, unknown>;
 }
 
 async function settleDraft(predicate: (state: NewSessionDraftState) => boolean): Promise<NewSessionDraftState> {
@@ -109,12 +122,18 @@ async function settleDraft(predicate: (state: NewSessionDraftState) => boolean):
   throw new Error('new-session draft did not settle');
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: Error) => void;
+} {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 describe('isAbsoluteCwdPath', () => {
@@ -226,7 +245,10 @@ describe('useNewSessionDraft agent profile scope', () => {
     );
     const body = await sentBody(state);
 
-    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith('wd_alpha');
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith({
+      workspace_id: 'wd_alpha',
+      effective: true,
+    });
     expect(client.listNamedAgentProfiles).not.toHaveBeenCalledWith(undefined);
     expect(body).toMatchObject({
       workspace_id: 'wd_alpha',
@@ -238,39 +260,108 @@ describe('useNewSessionDraft agent profile scope', () => {
     });
   });
 
-  it('ignores an initial agent that is not a main profile in the target workspace', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_beta', 'Beta')] });
-    client.listNamedAgentProfiles.mockResolvedValue({
-      items: [profile('agent'), profile('workspace-helper', 'provider/beta', 'low', false)],
-    });
+  it.each(['missing-main', 'workspace-helper', 'disabled-main'])(
+    'preserves invalid initial profile %s until an enabled main is explicitly selected',
+    async (initialProfile) => {
+      client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_beta', 'Beta')] });
+      client.listModels.mockResolvedValue({ items: [model('provider/beta', 'high')] });
+      client.listNamedAgentProfiles.mockResolvedValue({
+        items: [
+          profile('agent'),
+          profile('workspace-main', 'provider/beta', 'high'),
+          profile('workspace-helper', 'provider/beta', 'high', false),
+          { ...profile('disabled-main', 'provider/beta', 'high'), disabled: true },
+        ],
+      });
 
-    await renderDraft({ initialWorkspaceId: 'wd_beta', initialProfile: 'workspace-helper' });
-    const state = await settleDraft((value) => !value.agentProfileCatalogPending);
+      await renderDraft({ initialWorkspaceId: 'wd_beta', initialProfile });
+      let state = await settleDraft((value) => !value.agentProfileCatalogPending);
 
-    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith('wd_beta');
-    expect(state.agentProfile).toBe('agent');
-    expect(state.modelOverride).toBeUndefined();
-  });
+      expect(client.listNamedAgentProfiles).toHaveBeenCalledWith({
+        workspace_id: 'wd_beta',
+        effective: true,
+      });
+      expect(state.agentProfile).toBe(initialProfile);
+      expect(state.modelOverride).toBeUndefined();
+      expect(readStoredDraft()).toMatchObject({ profile: initialProfile });
+      await act(async () => {
+        state.send('Do not silently use agent', []);
+      });
+      expect(client.createSession).not.toHaveBeenCalled();
 
-  it('finishes initial profile validation when the scoped catalog rejects', async () => {
+      await act(async () => {
+        state.setAgentProfile('workspace-main');
+      });
+      state = await settleDraft((value) =>
+        value.agentProfile === 'workspace-main'
+        && value.modelOverride === 'provider/beta'
+        && value.effectiveEffort === 'high'
+      );
+      expect(await sentBody(state)).toMatchObject({
+        workspace_id: 'wd_beta',
+        agent_config: { profile: 'workspace-main', model: 'provider/beta', thinking: 'high' },
+      });
+    },
+  );
+
+  it('ends pending after a catalog error but keeps the initial selection blocked until retry succeeds', async () => {
+    const catalog = deferred<{ items: NamedAgentProfile[] }>();
     client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
-    client.listNamedAgentProfiles.mockRejectedValue(new Error('catalog unavailable'));
+    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
+    client.listNamedAgentProfiles.mockReturnValue(catalog.promise);
 
-    await renderDraft({ initialWorkspaceId: 'wd_alpha', initialProfile: 'workspace-main' });
-    const state = await settleDraft((value) =>
-      !value.agentProfileCatalogPending && value.agentProfile === 'agent'
+    const queryClient = await renderDraft({ initialWorkspaceId: 'wd_alpha', initialProfile: 'workspace-main' });
+    let state = await settleDraft((value) =>
+      value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 1
     );
-    const body = await sentBody(state);
+    await act(async () => {
+      state.send('Still validating', []);
+      catalog.reject(new Error('catalog unavailable'));
+    });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.agentProfile).toBe('workspace-main');
+    expect(state.modelOverride).toBeUndefined();
+    expect(readStoredDraft()).toMatchObject({
+      profile: 'workspace-main', modelFromProfile: true, effortFromProfile: true,
+    });
+    await act(async () => {
+      state.send('An error is not permission to fall back', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
 
-    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith('wd_alpha');
-    expect(client.listNamedAgentProfiles).not.toHaveBeenCalledWith(undefined);
-    expect(body).toMatchObject({
+    const retry = deferred<{ items: NamedAgentProfile[] }>();
+    client.listNamedAgentProfiles.mockReturnValue(retry.promise);
+    await act(async () => {
+      void queryClient.refetchQueries({ queryKey: ['agentProfiles'] });
+    });
+    state = await settleDraft((value) =>
+      value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 2
+    );
+    await act(async () => {
+      state.send('Retry is still pending', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+    retry.resolve({
+      items: [profile('agent'), profile('workspace-main', 'provider/alpha', 'high')],
+    });
+    state = await settleDraft((value) =>
+      !value.agentProfileCatalogPending
+      && value.modelOverride === 'provider/alpha'
+      && value.effectiveEffort === 'high'
+    );
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.listNamedAgentProfiles.mock.calls).toEqual([
+      [{ workspace_id: 'wd_alpha', effective: true }],
+      [{ workspace_id: 'wd_alpha', effective: true }],
+    ]);
+    expect(await sentBody(state)).toMatchObject({
       workspace_id: 'wd_alpha',
-      agent_config: { profile: 'agent' },
+      agent_config: { profile: 'workspace-main', model: 'provider/alpha', thinking: 'high' },
     });
   });
 
-  it('clears a workspace transition barrier when the next scoped catalog rejects', async () => {
+  it('preserves selection and pins after a workspace catalog error until a valid workspace is reselected', async () => {
+    const nextCatalog = deferred<{ items: NamedAgentProfile[] }>();
     client.listWorkspaces.mockResolvedValue({
       items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
     });
@@ -279,126 +370,230 @@ describe('useNewSessionDraft agent profile scope', () => {
       .mockResolvedValueOnce({
         items: [profile('agent'), profile('alpha-only', 'provider/alpha', 'low')],
       })
-      .mockRejectedValueOnce(new Error('catalog unavailable'));
+      .mockReturnValueOnce(nextCatalog.promise);
 
     await renderDraft({ initialWorkspaceId: 'wd_alpha' });
-    let state = await settleDraft(() => client.listNamedAgentProfiles.mock.calls.length === 1);
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
     await act(async () => {
       state.setAgentProfile('alpha-only');
     });
-    state = await settleDraft((value) => value.agentProfile === 'alpha-only');
+    state = await settleDraft((value) => value.modelOverride === 'provider/alpha');
     await act(async () => {
       state.selectWorkspace('wd_beta');
-      state.send('Must not use Alpha', []);
+      state.send('Must not use Alpha in Beta', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
     state = await settleDraft((value) =>
-      !value.agentProfileCatalogPending
-      && value.effectiveWorkspace?.id === 'wd_beta'
-      && value.agentProfile === 'agent'
-      && value.modelOverride === undefined
+      value.agentProfileCatalogPending && value.effectiveWorkspace?.id === 'wd_beta'
     );
-    const body = await sentBody(state);
+    expect(state.agentProfile).toBe('alpha-only');
+    expect(state.modelOverride).toBe('provider/alpha');
+    expect(state.effectiveEffort).toBe('low');
+    nextCatalog.reject(new Error('catalog unavailable'));
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.agentProfile).toBe('alpha-only');
+    expect(state.modelOverride).toBe('provider/alpha');
+    expect(state.effectiveEffort).toBe('low');
+    expect(readStoredDraft()).toMatchObject({
+      workspaceId: 'wd_beta',
+      profile: 'alpha-only',
+      modelOverride: 'provider/alpha',
+      effortOverride: 'low',
+      modelFromProfile: true,
+      effortFromProfile: true,
+    });
+    await act(async () => {
+      state.send('A rejected catalog must still block', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
 
-    expect(client.listNamedAgentProfiles.mock.calls.map(([workspaceId]) => workspaceId)).toEqual([
-      'wd_alpha',
-      'wd_beta',
+    await act(async () => {
+      state.selectWorkspace('wd_alpha');
+    });
+    state = await settleDraft((value) =>
+      !value.agentProfileCatalogPending && value.effectiveWorkspace?.id === 'wd_alpha'
+    );
+    expect(client.listNamedAgentProfiles.mock.calls).toEqual([
+      [{ workspace_id: 'wd_alpha', effective: true }],
+      [{ workspace_id: 'wd_beta', effective: true }],
     ]);
-    expect(client.listNamedAgentProfiles).not.toHaveBeenCalledWith(undefined);
-    expect(body).toMatchObject({
-      workspace_id: 'wd_beta',
-      agent_config: { profile: 'agent' },
+    expect(await sentBody(state)).toMatchObject({
+      workspace_id: 'wd_alpha',
+      agent_config: { profile: 'alpha-only', model: 'provider/alpha', thinking: 'low' },
     });
-    expect(body.agent_config?.model).toBeUndefined();
-    expect(body.agent_config?.thinking).toBeUndefined();
   });
 
-  it('falls back before sending when the selected profile does not exist in the next workspace', async () => {
-    client.listWorkspaces.mockResolvedValue({
-      items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
-    });
-    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low')] });
-    client.listNamedAgentProfiles.mockImplementation(async (workspaceId?: string) => ({
-      items: workspaceId === 'wd_beta'
-        ? [profile('agent'), profile('beta-only')]
-        : [profile('agent'), profile('alpha-only', 'provider/alpha', 'low')],
-    }));
-
-    await renderDraft({ initialWorkspaceId: 'wd_alpha' });
-    let state = await settleDraft((value) =>
-      value.agentProfileCatalogMode.mode === 'workspace'
-      && client.listNamedAgentProfiles.mock.calls.length === 1
-    );
-    await act(async () => {
-      state.setAgentProfile('alpha-only');
-    });
-    state = await settleDraft((value) => value.agentProfile === 'alpha-only');
-    await act(async () => {
-      state.selectWorkspace('wd_beta');
-      state.send('Must not use Alpha', []);
-    });
-    expect(client.createSession).not.toHaveBeenCalled();
-    state = await settleDraft((value) =>
-      !value.agentProfileCatalogPending
-      && value.effectiveWorkspace?.id === 'wd_beta'
-      && value.agentProfile === 'agent'
-      && value.modelOverride === undefined
-    );
-    const body = await sentBody(state);
-
-    expect(body).toMatchObject({
-      workspace_id: 'wd_beta',
-      agent_config: { profile: 'agent' },
-    });
-    expect(body.agent_config?.model).toBeUndefined();
-    expect(body.agent_config?.thinking).toBeUndefined();
-  });
-
-  it('reapplies the next workspace definition before sending a same-name profile', async () => {
+  it('keeps a confirmed missing workspace profile and its pins blocked until a valid main is selected', async () => {
     client.listWorkspaces.mockResolvedValue({
       items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
     });
     client.listModels.mockResolvedValue({
       items: [model('provider/alpha', 'low'), model('provider/beta', 'high')],
     });
-    client.listNamedAgentProfiles.mockImplementation(async (workspaceId?: string) => ({
-      items: workspaceId === 'wd_beta'
+    client.listNamedAgentProfiles.mockImplementation(async (query?: { workspace_id?: string; effective?: boolean }) => ({
+      items: query?.workspace_id === 'wd_beta'
+        ? [profile('agent'), profile('beta-only', 'provider/beta', 'high')]
+        : [profile('agent'), profile('alpha-only', 'provider/alpha', 'low')],
+    }));
+
+    await renderDraft({ initialWorkspaceId: 'wd_alpha' });
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setAgentProfile('alpha-only');
+    });
+    state = await settleDraft((value) => value.modelOverride === 'provider/alpha');
+    await act(async () => {
+      state.selectWorkspace('wd_beta');
+      state.send('Must not use Alpha', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+    state = await settleDraft((value) =>
+      !value.agentProfileCatalogPending && value.effectiveWorkspace?.id === 'wd_beta'
+    );
+    expect(state.agentProfile).toBe('alpha-only');
+    expect(state.modelOverride).toBe('provider/alpha');
+    expect(state.effectiveEffort).toBe('low');
+    expect(readStoredDraft()).toMatchObject({
+      workspaceId: 'wd_beta', profile: 'alpha-only', modelOverride: 'provider/alpha', effortOverride: 'low',
+    });
+    await act(async () => {
+      state.send('Do not silently use agent', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      state.setAgentProfile('beta-only');
+    });
+    state = await settleDraft((value) =>
+      value.agentProfile === 'beta-only'
+      && value.modelOverride === 'provider/beta'
+      && value.effectiveEffort === 'high'
+    );
+    expect(await sentBody(state)).toMatchObject({
+      workspace_id: 'wd_beta',
+      agent_config: { profile: 'beta-only', model: 'provider/beta', thinking: 'high' },
+    });
+  });
+
+  it('reapplies the next workspace definition to profile-derived pins after remount', async () => {
+    client.listWorkspaces.mockResolvedValue({
+      items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
+    });
+    client.listModels.mockResolvedValue({
+      items: [model('provider/alpha', 'low'), model('provider/beta', 'high')],
+    });
+    client.listNamedAgentProfiles.mockImplementation(async (query?: { workspace_id?: string; effective?: boolean }) => ({
+      items: query?.workspace_id === 'wd_beta'
         ? [profile('agent'), profile('workspace-choice', 'provider/beta', 'high')]
         : [profile('agent'), profile('workspace-choice', 'provider/alpha', 'low')],
     }));
 
     await renderDraft({ initialWorkspaceId: 'wd_alpha' });
-    let state = await settleDraft(() => client.listNamedAgentProfiles.mock.calls.length === 1);
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
     await act(async () => {
       state.setAgentProfile('workspace-choice');
     });
     state = await settleDraft((value) =>
       value.modelOverride === 'provider/alpha' && value.effectiveEffort === 'low'
     );
+    expect(readStoredDraft()).toMatchObject({ modelFromProfile: true, effortFromProfile: true });
+    const stored = localStorage.getItem('kiki.newSessionDraft');
+    await unmountDraft();
+    expect(localStorage.getItem('kiki.newSessionDraft')).toBe(stored);
+
+    await renderDraft();
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.agentProfile).toBe('workspace-choice');
+    expect(state.modelOverride).toBe('provider/alpha');
+    expect(state.effectiveEffort).toBe('low');
     await act(async () => {
       state.selectWorkspace('wd_beta');
       state.send('Must not use Alpha pins', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
     state = await settleDraft((value) =>
-      !value.agentProfileCatalogPending
-      && value.agentProfile === 'workspace-choice'
-      && value.modelOverride === 'provider/beta'
-      && value.effectiveEffort === 'high'
+      !value.agentProfileCatalogPending && value.effectiveWorkspace?.id === 'wd_beta'
     );
-    const body = await sentBody(state);
-
-    expect(body).toMatchObject({
+    expect(state.agentProfile).toBe('workspace-choice');
+    expect(state.modelOverride).toBe('provider/beta');
+    expect(state.effectiveEffort).toBe('high');
+    expect(readStoredDraft()).toMatchObject({
+      modelOverride: 'provider/beta',
+      effortOverride: 'high',
+      modelFromProfile: true,
+      effortFromProfile: true,
+    });
+    expect(client.listNamedAgentProfiles.mock.calls).toEqual([
+      [{ workspace_id: 'wd_alpha', effective: true }],
+      [{ workspace_id: 'wd_alpha', effective: true }],
+      [{ workspace_id: 'wd_beta', effective: true }],
+    ]);
+    expect(await sentBody(state)).toMatchObject({
       workspace_id: 'wd_beta',
-      agent_config: {
-        profile: 'workspace-choice',
-        model: 'provider/beta',
-        thinking: 'high',
-      },
+      agent_config: { profile: 'workspace-choice', model: 'provider/beta', thinking: 'high' },
     });
   });
 
-  it('preserves manual model and effort overrides across a workspace profile refresh', async () => {
+  it('restores profile-derived pins from localStorage and sends only after the remounted catalog resolves', async () => {
+    const items = [profile('agent'), profile('workspace-choice', 'provider/alpha', 'low')];
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low')] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items });
+
+    await renderDraft({ initialWorkspaceId: 'wd_alpha' });
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setAgentProfile('workspace-choice');
+    });
+    state = await settleDraft((value) =>
+      value.modelOverride === 'provider/alpha' && value.effectiveEffort === 'low'
+    );
+    expect(readStoredDraft()).toEqual({
+      prefillSource: JSON.stringify(['wd_alpha', null, null]),
+      workspaceId: 'wd_alpha',
+      cwd: '',
+      profile: 'workspace-choice',
+      modelOverride: 'provider/alpha',
+      effortOverride: 'low',
+      modelFromProfile: true,
+      effortFromProfile: true,
+    });
+    const stored = localStorage.getItem('kiki.newSessionDraft');
+    await unmountDraft();
+    expect(localStorage.getItem('kiki.newSessionDraft')).toBe(stored);
+
+    const catalog = deferred<{ items: NamedAgentProfile[] }>();
+    client.listNamedAgentProfiles.mockReturnValue(catalog.promise);
+    await renderDraft();
+    state = await settleDraft((value) =>
+      value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 2
+    );
+    expect(state.workspaceId).toBe('wd_alpha');
+    expect(state.agentProfile).toBe('workspace-choice');
+    expect(state.modelOverride).toBe('provider/alpha');
+    expect(state.effectiveEffort).toBe('low');
+    await act(async () => {
+      state.send('Restored pins are not yet validated', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+
+    catalog.resolve({ items });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.listNamedAgentProfiles.mock.calls).toEqual([
+      [{ workspace_id: 'wd_alpha', effective: true }],
+      [{ workspace_id: 'wd_alpha', effective: true }],
+    ]);
+    expect(await sentBody(state)).toMatchObject({
+      workspace_id: 'wd_alpha',
+      agent_config: { profile: 'workspace-choice', model: 'provider/alpha', thinking: 'low' },
+    });
+  });
+
+  it.each([
+    { label: 'different-valued', selectedModel: 'provider/manual', selectedEffort: 'medium' },
+    { label: 'same-valued', selectedModel: 'provider/alpha', selectedEffort: 'low' },
+  ])('persists $label manual overrides through remount and a same-name workspace profile refresh', async ({ selectedModel, selectedEffort }) => {
     client.listWorkspaces.mockResolvedValue({
       items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
     });
@@ -409,82 +604,280 @@ describe('useNewSessionDraft agent profile scope', () => {
         model('provider/manual', 'medium'),
       ],
     });
-    client.listNamedAgentProfiles.mockImplementation(async (workspaceId?: string) => ({
-      items: workspaceId === 'wd_beta'
+    client.listNamedAgentProfiles.mockImplementation(async (query?: { workspace_id?: string; effective?: boolean }) => ({
+      items: query?.workspace_id === 'wd_beta'
+        ? [profile('agent'), profile('workspace-choice', 'provider/beta', 'high')]
+        : [profile('agent'), profile('workspace-choice', 'provider/alpha', 'low')],
+    }));
+
+    const prefill = { initialWorkspaceId: 'wd_alpha', initialProfile: 'workspace-choice', prefillNavigationKey: 'entry-a' };
+    await renderDraft(prefill);
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'provider/alpha');
+    await act(async () => {
+      state.setModelOverride(selectedModel);
+      state.setEffortOverride(selectedEffort);
+    });
+    state = await settleDraft((value) =>
+      value.modelOverride === selectedModel && value.effectiveEffort === selectedEffort
+    );
+    expect(readStoredDraft()).toMatchObject({
+      profile: 'workspace-choice',
+      modelOverride: selectedModel,
+      effortOverride: selectedEffort,
+      modelFromProfile: false,
+      effortFromProfile: false,
+    });
+    const stored = localStorage.getItem('kiki.newSessionDraft');
+    await unmountDraft();
+    expect(localStorage.getItem('kiki.newSessionDraft')).toBe(stored);
+
+    await renderDraft(prefill);
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.agentProfile).toBe('workspace-choice');
+    expect(state.modelOverride).toBe(selectedModel);
+    expect(state.effectiveEffort).toBe(selectedEffort);
+    await act(async () => {
+      state.selectWorkspace('wd_beta');
+      state.send('Do not send during the workspace transition', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+    state = await settleDraft((value) =>
+      !value.agentProfileCatalogPending && value.effectiveWorkspace?.id === 'wd_beta'
+    );
+    expect(state.agentProfile).toBe('workspace-choice');
+    expect(state.modelOverride).toBe(selectedModel);
+    expect(state.effectiveEffort).toBe(selectedEffort);
+    expect(readStoredDraft()).toMatchObject({
+      workspaceId: 'wd_beta',
+      modelOverride: selectedModel,
+      effortOverride: selectedEffort,
+      modelFromProfile: false,
+      effortFromProfile: false,
+    });
+    expect(await sentBody(state)).toMatchObject({
+      workspace_id: 'wd_beta',
+      agent_config: { profile: 'workspace-choice', model: selectedModel, thinking: selectedEffort },
+    });
+  });
+
+  it.each(['workspace', 'cwd'])('does not replay an old prefill over edited %s/profile/manual choices on remount', async (target) => {
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')] });
+    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low'), model('provider/beta', 'high')] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('profile-p', 'provider/alpha', 'low'), profile('profile-q', 'provider/beta', 'high')] });
+    const prefill = { initialWorkspaceId: 'wd_alpha', initialProfile: 'profile-p', prefillNavigationKey: 'entry-a' };
+    await renderDraft(prefill);
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'provider/alpha');
+    await act(async () => {
+      if (target === 'workspace') state.selectWorkspace('wd_beta');
+      else state.setCwd('/workspace/custom');
+    });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { state.setAgentProfile('profile-q'); });
+    state = await settleDraft((value) => value.modelOverride === 'provider/beta');
+    await act(async () => {
+      state.setModelOverride('provider/beta');
+      state.setEffortOverride('high');
+    });
+    const saved = readStoredDraft();
+    expect(saved).toMatchObject({ profile: 'profile-q', modelFromProfile: false, effortFromProfile: false });
+    await unmountDraft();
+    client.listNamedAgentProfiles.mockClear();
+    await renderDraft(prefill);
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(readStoredDraft()).toEqual(saved);
+    expect(state.agentProfile).toBe('profile-q');
+    expect(state.modelOverride).toBe('provider/beta');
+    expect(state.effectiveEffort).toBe('high');
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith(target === 'workspace'
+      ? { workspace_id: 'wd_beta', effective: true }
+      : { cwd: '/workspace/custom', effective: true });
+    const body = await sentBody(state);
+    expect(body.agent_config).toMatchObject({ profile: 'profile-q', model: 'provider/beta', thinking: 'high' });
+    if (target === 'workspace') expect(body.workspace_id).toBe('wd_beta');
+    else expect(body.metadata?.cwd).toBe('/workspace/custom');
+  });
+
+  it('applies a different deep link and a new navigation to the same deep link instead of permanently preferring saved choices', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')] });
+    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low'), model('provider/beta', 'high')] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('profile-p', 'provider/alpha', 'low'), profile('profile-q', 'provider/beta', 'high')] });
+    const first = { initialWorkspaceId: 'wd_alpha', initialProfile: 'profile-p', prefillNavigationKey: 'entry-a' };
+    await renderDraft(first);
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'provider/alpha');
+    await act(async () => { state.setCwd('/workspace/custom'); state.setAgentProfile('profile-q'); });
+    await settleDraft((value) => !value.agentProfileCatalogPending && value.agentProfile === 'profile-q');
+    await unmountDraft();
+    await renderDraft({ ...first, prefillNavigationKey: 'entry-b' });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'provider/alpha');
+    expect(state.workspaceId).toBe('wd_alpha');
+    expect(state.cwd).toBe('');
+    expect(state.agentProfile).toBe('profile-p');
+    await unmountDraft();
+    await renderDraft({ initialWorkspaceId: 'wd_beta', initialProfile: 'profile-q', prefillNavigationKey: 'entry-c' });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'provider/beta');
+    expect(state.workspaceId).toBe('wd_beta');
+    expect(state.agentProfile).toBe('profile-q');
+    expect(readStoredDraft()).toMatchObject({ modelFromProfile: true, effortFromProfile: true });
+  });
+
+  it('queries an effective cwd catalog and allows selecting its main profile without using workspace pins', async () => {
+    const catalog = deferred<{ items: NamedAgentProfile[] }>();
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listModels.mockResolvedValue({
+      items: [model('provider/alpha', 'low'), model('provider/custom', 'high')],
+    });
+    client.listNamedAgentProfiles.mockImplementation((query?: { workspace_id?: string; cwd?: string; effective?: boolean }) =>
+      query?.cwd === '/workspace/custom'
+        ? catalog.promise
+        : Promise.resolve({ items: [profile('agent'), profile('alpha-only', 'provider/alpha', 'low')] })
+    );
+
+    await renderDraft({ initialWorkspaceId: 'wd_alpha' });
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setAgentProfile('alpha-only');
+    });
+    state = await settleDraft((value) => value.modelOverride === 'provider/alpha');
+    await act(async () => {
+      state.setCwd(' /workspace/custom ');
+      state.send('Do not use the old workspace catalog', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+    state = await settleDraft((value) =>
+      value.agentProfileCatalogMode.mode === 'cwd' && value.agentProfileCatalogPending
+    );
+    await act(async () => {
+      state.send('The directory catalog is still pending', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+    catalog.resolve({ items: [profile('agent'), profile('directory-main', 'provider/custom', 'high')] });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.agentProfileCatalogMode).toEqual({ mode: 'cwd', cwd: '/workspace/custom', effective: true });
+    expect(state.agentProfile).toBe('alpha-only');
+    expect(state.modelOverride).toBe('provider/alpha');
+    await act(async () => {
+      state.send('An absent directory profile must not fall back', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      state.setAgentProfile('directory-main');
+    });
+    state = await settleDraft((value) =>
+      value.agentProfile === 'directory-main'
+      && value.modelOverride === 'provider/custom'
+      && value.effectiveEffort === 'high'
+    );
+    const body = await sentBody(state);
+    expect(client.listNamedAgentProfiles.mock.calls).toEqual([
+      [{ workspace_id: 'wd_alpha', effective: true }],
+      [{ cwd: '/workspace/custom', effective: true }],
+    ]);
+    expect(body).toMatchObject({
+      metadata: { cwd: '/workspace/custom' },
+      agent_config: { profile: 'directory-main', model: 'provider/custom', thinking: 'high' },
+    });
+    expect(body.workspace_id).toBeUndefined();
+  });
+
+  it('keeps a deleted model selected after remount and blocks creation until a valid model is chosen', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listModels.mockResolvedValue({
+      items: [model('provider/removed', 'low'), model('provider/available', 'high')],
+    });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+
+    await renderDraft({ initialWorkspaceId: 'wd_alpha' });
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setModelOverride('provider/removed');
+      state.setEffortOverride('low');
+    });
+    state = await settleDraft((value) => value.modelOverride === 'provider/removed');
+    const stored = localStorage.getItem('kiki.newSessionDraft');
+    await unmountDraft();
+    expect(localStorage.getItem('kiki.newSessionDraft')).toBe(stored);
+
+    client.getConfig.mockResolvedValue({ default_model: 'provider/available' });
+    client.listModels.mockResolvedValue({ items: [model('provider/available', 'high')] });
+    const queryClient = await renderDraft();
+    state = await settleDraft((value) =>
+      !value.agentProfileCatalogPending && queryClient.getQueryState(['models'])?.status === 'success'
+    );
+    expect(state.modelOverride).toBe('provider/removed');
+    expect(state.effectiveEffort).toBe('low');
+    expect(readStoredDraft()).toMatchObject({ modelOverride: 'provider/removed', effortOverride: 'low' });
+    await act(async () => {
+      state.send('Do not silently substitute the default model', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      state.setModelOverride('provider/available');
+      state.setEffortOverride('high');
+    });
+    state = await settleDraft((value) =>
+      value.modelOverride === 'provider/available' && value.effectiveEffort === 'high'
+    );
+    expect(await sentBody(state)).toMatchObject({
+      workspace_id: 'wd_alpha',
+      agent_config: { profile: 'agent', model: 'provider/available', thinking: 'high' },
+    });
+  });
+
+  it('keeps a deleted workspace id after remount instead of falling back to another workspace', async () => {
+    client.listWorkspaces.mockResolvedValue({
+      items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
+    });
+    client.listModels.mockResolvedValue({
+      items: [model('provider/alpha', 'low'), model('provider/beta', 'high')],
+    });
+    client.listNamedAgentProfiles.mockImplementation(async (query?: { workspace_id?: string; effective?: boolean }) => ({
+      items: query?.workspace_id === 'wd_beta'
         ? [profile('agent'), profile('workspace-choice', 'provider/beta', 'high')]
         : [profile('agent'), profile('workspace-choice', 'provider/alpha', 'low')],
     }));
 
     await renderDraft({ initialWorkspaceId: 'wd_alpha' });
-    let state = await settleDraft(() => client.listNamedAgentProfiles.mock.calls.length === 1);
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
     await act(async () => {
       state.setAgentProfile('workspace-choice');
     });
     state = await settleDraft((value) => value.modelOverride === 'provider/alpha');
+    const stored = localStorage.getItem('kiki.newSessionDraft');
+    await unmountDraft();
+    expect(localStorage.getItem('kiki.newSessionDraft')).toBe(stored);
+
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_beta', 'Beta')] });
+    await renderDraft();
+    state = await settleDraft((value) => !value.workspacesLoading && !value.agentProfileCatalogPending);
+    expect(state.workspaceId).toBe('wd_alpha');
+    expect(state.effectiveWorkspace).toBeUndefined();
+    expect(state.agentProfile).toBe('workspace-choice');
+    expect(state.modelOverride).toBe('provider/alpha');
+    expect(state.effectiveEffort).toBe('low');
+    expect(readStoredDraft()).toMatchObject({ workspaceId: 'wd_alpha' });
+    expect(client.listNamedAgentProfiles.mock.calls).toEqual([
+      [{ workspace_id: 'wd_alpha', effective: true }],
+    ]);
     await act(async () => {
-      state.setModelOverride('provider/manual');
-      state.setEffortOverride('medium');
+      state.send('A deleted workspace must not become Beta', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+
+    await act(async () => {
       state.selectWorkspace('wd_beta');
     });
     state = await settleDraft((value) =>
       !value.agentProfileCatalogPending
-      && value.agentProfile === 'workspace-choice'
-      && value.modelOverride === 'provider/manual'
-      && value.effectiveEffort === 'medium'
+      && value.effectiveWorkspace?.id === 'wd_beta'
+      && value.modelOverride === 'provider/beta'
+      && value.effectiveEffort === 'high'
     );
-    const body = await sentBody(state);
-
-    expect(body).toMatchObject({
+    expect(await sentBody(state)).toMatchObject({
       workspace_id: 'wd_beta',
-      agent_config: {
-        profile: 'workspace-choice',
-        model: 'provider/manual',
-        thinking: 'medium',
-      },
+      agent_config: { profile: 'workspace-choice', model: 'provider/beta', thinking: 'high' },
     });
-  });
-
-  it('disables profiles for a custom cwd without querying or submitting another workspace catalog', async () => {
-    client.listWorkspaces.mockResolvedValue({
-      items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
-    });
-    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low')] });
-    client.listNamedAgentProfiles.mockImplementation(async (workspaceId?: string) => ({
-      items: workspaceId === 'wd_beta'
-        ? [profile('agent'), profile('beta-only', 'provider/beta', 'high')]
-        : [profile('agent'), profile('alpha-only', 'provider/alpha', 'low')],
-    }));
-
-    await renderDraft({ initialWorkspaceId: 'wd_alpha' });
-    let state = await settleDraft(() => client.listNamedAgentProfiles.mock.calls.length === 1);
-    await act(async () => {
-      state.setAgentProfile('alpha-only');
-    });
-    state = await settleDraft((value) => value.agentProfile === 'alpha-only');
-    await act(async () => {
-      state.setCwd('/workspace/custom');
-    });
-    state = await settleDraft((value) =>
-      value.agentProfileCatalogMode.mode === 'disabled'
-      && !value.agentProfileCatalogPending
-      && value.agentProfile === 'agent'
-      && value.modelOverride === undefined
-    );
-    await act(async () => {
-      state.setAgentProfile('beta-only');
-    });
-    const body = await sentBody(state);
-
-    expect(client.listNamedAgentProfiles.mock.calls.map(([workspaceId]) => workspaceId)).toEqual([
-      'wd_alpha',
-    ]);
-    expect(client.listNamedAgentProfiles).not.toHaveBeenCalledWith(undefined);
-    expect(body).toMatchObject({
-      metadata: { cwd: '/workspace/custom' },
-      agent_config: { profile: 'agent' },
-    });
-    expect(body.agent_config?.model).toBeUndefined();
-    expect(body.agent_config?.thinking).toBeUndefined();
   });
 });
 
@@ -515,7 +908,7 @@ describe('buildAgentProfileOptions', () => {
     ...overrides,
   });
 
-  it('lists only main profiles, without any main suffix or badge', () => {
+  it('lists only enabled main profiles, without any main suffix or badge', () => {
     const options = buildAgentProfileOptions([
       profile({ name: 'agent', main: true, description: 'General-purpose.' }),
       profile({ name: 'grok-only', source: 'user', main: true }),
@@ -523,6 +916,7 @@ describe('buildAgentProfileOptions', () => {
       // they never appear in the picker, even while enabled.
       profile({ name: 'reviewer', source: 'workspace' }),
       profile({ name: 'legacy', disabled: true }),
+      profile({ name: 'suspended-main', main: true, disabled: true }),
     ]);
     expect(options.map((option) => option.value)).toEqual(['agent', 'grok-only']);
     expect(options[0]?.label).toBe('agent');
@@ -530,14 +924,11 @@ describe('buildAgentProfileOptions', () => {
     expect(options[1]?.label).toBe('grok-only');
   });
 
-  it('keeps a disabled main profile selectable', () => {
-    // Turning a main profile off only stops subagent calls, so the picker
-    // must keep offering it for main sessions.
+  it('does not offer a disabled main profile as a fallback option', () => {
     const options = buildAgentProfileOptions([
       profile({ name: 'suspended-main', main: true, disabled: true }),
     ]);
-    expect(options.map((option) => option.value)).toEqual(['suspended-main']);
-    expect(options[0]?.label).toBe('suspended-main');
+    expect(options).toEqual([]);
   });
 
   it('never promotes a private scoped subagent lease to a selectable profile', () => {

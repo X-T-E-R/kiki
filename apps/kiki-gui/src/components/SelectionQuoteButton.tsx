@@ -10,13 +10,16 @@
  * concerns — this app is a plain DOM tree):
  *   - Shows on mouseup / selection change when the selection is non-empty and
  *     fully inside the transcript container.
- *   - Hides on selection collapse, any scroll (capture — the scroll container
- *     lives inside the transcript), Escape, or a mousedown anywhere else.
- *     While the annotate input is open a collapse is expected (the input took
- *     focus) and does NOT hide the popover — the text is already captured.
+ *   - Hides on selection collapse, scroll (capture — the scroll container
+ *     lives inside the transcript), Escape, or a mousedown anywhere else while
+ *     showing actions. While annotating, collapse and scroll are ignored; an
+ *     outside mousedown only hides the popover temporarily so its draft can be
+ *     resumed by selecting the same text again. A different selection returns
+ *     to the actions pill with a fresh annotation draft; Escape cancels the
+ *     retained draft explicitly.
  *   - Never renders on coarse-pointer (touch) devices.
- *   - The pill itself never steals the selection: mousedown is prevented so
- *     the highlighted text stays put until an action commits.
+ *   - The actions pill never steals the selection: its mousedown is prevented,
+ *     while the annotate input keeps the default mousedown so the caret works.
  */
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
@@ -36,6 +39,7 @@ const INPUT_WIDTH = 320;
 
 type Target = { text: string; top: number; left: number };
 type Mode = 'actions' | 'annotate';
+type AnnotationDraft = { text: string; comment: string };
 
 export function SelectionQuoteButton({
   containerRef,
@@ -51,19 +55,28 @@ export function SelectionQuoteButton({
   // SSR (tests render to static markup) has no window — stay hidden there.
   const [coarse] = useState(() => isCoarsePointer());
   const [target, setTarget] = useState<Target | null>(null);
+  const [visible, setVisible] = useState(false);
   const [mode, setMode] = useState<Mode>('actions');
   const [comment, setComment] = useState('');
   const targetRef = useRef(target);
   targetRef.current = target;
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const composingRef = useRef(false);
+  const submittingRef = useRef(false);
+  const draftRef = useRef<AnnotationDraft | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const close = () => {
+  const close = (clearDraft = true) => {
+    setVisible(false);
     setTarget(null);
     setMode('actions');
     setComment('');
+    if (clearDraft) draftRef.current = null;
+    composingRef.current = false;
   };
   const closeRef = useRef(close);
   closeRef.current = close;
@@ -71,26 +84,50 @@ export function SelectionQuoteButton({
   useEffect(() => {
     if (coarse) return;
     const evaluate = () => {
+      const mode = modeRef.current;
+      const resumingAnnotation = mode === 'annotate' && !visibleRef.current;
       // While the annotate input is open the current text is being edited —
-      // a fresh selection must not swap it out from under the comment.
-      if (modeRef.current === 'annotate') return;
+      // a fresh selection must not swap it out from under the comment. A
+      // temporarily hidden draft may be resumed by selecting its source text.
+      if (mode === 'annotate' && !resumingAnnotation) return;
       const container = containerRef.current;
       const selection = window.getSelection();
       if (container === null || selection === null) {
-        closeRef.current();
+        if (!resumingAnnotation) closeRef.current(draftRef.current === null);
         return;
       }
       const text = selectionTextWithin(container, selection);
       const rect = text === null ? null : selectionAnchorRect(selection);
       if (text === null || rect === null) {
-        closeRef.current();
+        if (!resumingAnnotation) closeRef.current(draftRef.current === null);
         return;
+      }
+      const pendingTarget = targetRef.current;
+      if (resumingAnnotation && (pendingTarget === null || pendingTarget.text !== text)) {
+        // A different selection gets the ordinary actions pill. The one
+        // retained draft stays keyed to its source and is not copied into it.
+        setMode('actions');
+        setComment('');
+        setTarget({
+          text,
+          top: Math.max(rect.top - PILL_HEIGHT - 6, VIEWPORT_MARGIN),
+          left: Math.min(Math.max(rect.left, VIEWPORT_MARGIN), window.innerWidth - PILL_WIDTH),
+        });
+        setVisible(true);
+        return;
+      }
+      const annotation = mode === 'annotate';
+      const width = annotation ? INPUT_WIDTH : PILL_WIDTH;
+      if (resumingAnnotation) {
+        const draft = draftRef.current;
+        if (draft !== null && draft.text === text) setComment(draft.comment);
       }
       setTarget({
         text,
-        top: Math.max(rect.top - PILL_HEIGHT - 6, VIEWPORT_MARGIN),
-        left: Math.min(Math.max(rect.left, VIEWPORT_MARGIN), window.innerWidth - PILL_WIDTH),
+        top: Math.max(rect.top - PILL_HEIGHT - 6 - (annotation ? 58 : 0), VIEWPORT_MARGIN),
+        left: Math.min(Math.max(rect.left, VIEWPORT_MARGIN), window.innerWidth - width),
       });
+      setVisible(true);
     };
     const onMouseUp = () => { evaluate(); };
     const onSelectionChange = () => {
@@ -101,12 +138,20 @@ export function SelectionQuoteButton({
       // mid-drag.
       if (modeRef.current === 'annotate') return;
       const selection = window.getSelection();
-      if (selection === null || selection.isCollapsed) closeRef.current();
+      if (selection === null || selection.isCollapsed) {
+        closeRef.current(draftRef.current === null);
+      }
     };
     const onMouseDown = (event: MouseEvent) => {
       const popover = popoverRef.current;
       if (popover !== null && event.target instanceof Node && popover.contains(event.target)) return;
-      closeRef.current();
+      // Dismissal during annotation is temporary: the selected text and the
+      // comment remain available for a later re-selection.
+      if (modeRef.current === 'annotate') {
+        setVisible(false);
+        return;
+      }
+      closeRef.current(draftRef.current === null);
     };
     // Capture + stopPropagation: while the pill is up, Escape dismisses IT —
     // it must not fall through to the session-level abort handler. In annotate
@@ -114,11 +159,24 @@ export function SelectionQuoteButton({
     // propagation at the target, which equally shields the session handler.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || targetRef.current === null) return;
-      if (modeRef.current === 'annotate') return;
+      if (modeRef.current === 'annotate') {
+        // If an outside click temporarily hid the input, Escape is the
+        // explicit cancellation path for that retained draft.
+        if (!visibleRef.current) {
+          event.stopPropagation();
+          closeRef.current();
+        }
+        return;
+      }
       event.stopPropagation();
       closeRef.current();
     };
-    const onScroll = () => { closeRef.current(); };
+    const onScroll = () => {
+      // Scrolling is expected while an annotation is being edited (including
+      // the input's own horizontal scroll); never discard that draft.
+      if (modeRef.current === 'annotate') return;
+      closeRef.current(draftRef.current === null);
+    };
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('selectionchange', onSelectionChange);
     document.addEventListener('mousedown', onMouseDown);
@@ -133,13 +191,15 @@ export function SelectionQuoteButton({
     };
   }, [coarse, containerRef]);
 
-  // Entering annotate mode moves focus into the comment input (which collapses
-  // the selection — guarded above). The panel is taller than the pill, so it
-  // also shifts up to keep the selected lines uncovered, and re-clamps the
-  // wider panel on screen.
+  // Entering or resuming annotate mode moves focus into the comment input
+  // (which collapses the selection — guarded above). A resume already has an
+  // annotation-sized target, so only a mode change needs to shift the panel.
+  useEffect(() => {
+    if (mode !== 'annotate' || !visible) return;
+    inputRef.current?.focus();
+  }, [mode, visible]);
   useEffect(() => {
     if (mode !== 'annotate') return;
-    inputRef.current?.focus();
     setTarget((current) =>
       current === null
         ? current
@@ -151,7 +211,7 @@ export function SelectionQuoteButton({
     );
   }, [mode]);
 
-  if (target === null) return null;
+  if (target === null || !visible) return null;
 
   if (mode === 'annotate') {
     return (
@@ -161,7 +221,9 @@ export function SelectionQuoteButton({
         data-selection-annotate
         className="anim-enter fixed z-50 w-72 rounded-xl border border-hairline bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
         style={{ top: target.top, left: target.left }}
-        onMouseDown={(event) => { event.preventDefault(); }}
+        onMouseDown={(event) => {
+          if (event.target !== inputRef.current) event.preventDefault();
+        }}
       >
         <p className="mb-1.5 max-h-8 overflow-hidden border-l-2 border-accent/60 pl-1.5 text-[11px] leading-snug whitespace-pre-wrap text-ink-soft">
           {target.text}
@@ -173,17 +235,33 @@ export function SelectionQuoteButton({
           value={comment}
           placeholder={t('composer.annotationPlaceholder')}
           aria-label={t('composer.annotateSelection')}
-          onChange={(event) => { setComment(event.target.value); }}
+          onChange={(event) => {
+            const nextComment = event.target.value;
+            setComment(nextComment);
+            draftRef.current = { text: target.text, comment: nextComment };
+          }}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
           onKeyDown={(event) => {
             event.stopPropagation();
+            const nativeEvent = event.nativeEvent;
+            const imeActive = composingRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229;
+            if ((event.key === 'Enter' || event.key === 'Escape') && imeActive) return;
             if (event.key === 'Enter') {
+              event.preventDefault();
+              if (submittingRef.current) return;
               const trimmed = comment.trim();
               if (trimmed !== '') {
+                submittingRef.current = true;
+                draftRef.current = null;
                 onAnnotate(target.text, trimmed);
                 window.getSelection()?.removeAllRanges();
                 close();
               }
             } else if (event.key === 'Escape') {
+              submittingRef.current = false;
+              composingRef.current = false;
+              draftRef.current = null;
               setMode('actions');
               setComment('');
             }
@@ -208,7 +286,7 @@ export function SelectionQuoteButton({
         onClick={() => {
           onQuote(target.text);
           window.getSelection()?.removeAllRanges();
-          close();
+          close(draftRef.current === null);
         }}
       >
         <span aria-hidden className="text-accent">❝</span>
@@ -219,7 +297,17 @@ export function SelectionQuoteButton({
         type="button"
         data-selection-annotate-action
         className="flex items-center gap-1 px-3 py-1 transition-colors hover:text-amber-ink"
-        onClick={() => { setMode('annotate'); }}
+        onClick={() => {
+          const draft = draftRef.current;
+          const nextComment = draft?.text === target.text ? draft.comment : '';
+          // Starting Annotate on another selection intentionally replaces the
+          // single retained draft; it never reuses its comment for new text.
+          draftRef.current = { text: target.text, comment: nextComment };
+          submittingRef.current = false;
+          composingRef.current = false;
+          setComment(nextComment);
+          setMode('annotate');
+        }}
       >
         <span aria-hidden className="text-amber-ink">✎</span>
         {t('composer.annotateSelection')}

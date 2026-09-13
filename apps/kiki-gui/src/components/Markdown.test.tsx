@@ -14,7 +14,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { I18nProvider } from '../i18n';
 import { Markdown } from './Markdown';
-import { MediaPreviewProvider } from './mediaPreview';
+import { FilePathLink, MediaPreviewProvider } from './mediaPreview';
+import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
+
+const hostMocks = vi.hoisted(() => ({ revealPath: vi.fn(), openPath: vi.fn(), desktop: false }));
+vi.mock('../host', () => ({
+  useHost: () => hostMocks.desktop ? { kind: 'tauri', revealPath: hostMocks.revealPath, openPath: hostMocks.openPath } : { kind: 'browser' },
+}));
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
   const original = await importOriginal<typeof import('./markdown/streamdown-plugins')>();
@@ -62,6 +68,9 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  hostMocks.desktop = false;
+  hostMocks.openPath.mockReset();
+  hostMocks.revealPath.mockReset();
   writeText.mockClear();
   Object.defineProperty(window.navigator, 'clipboard', {
     value: { writeText },
@@ -78,6 +87,59 @@ afterEach(() => {
 });
 
 describe('Markdown link menus', () => {
+  it.each([
+    ['taskService.ts:1063:7', 'C:/work/taskService.ts', 1063, 7],
+    ['/C:/work/中%20a.ts:12', 'C:/work/中 a.ts', 12, undefined],
+    ['file:///C:/work/taskService.ts#L3', 'C:/work/taskService.ts', 3, undefined],
+    ['/C:/work/dir', 'C:/work/dir', undefined, undefined],
+  ])('keeps citation position out of native actions for %s', async (href, path, line, column) => {
+    hostMocks.desktop = true;
+    const openFile = vi.fn();
+    const api: MediaPreviewApi = {
+      cwd: 'C:/work', sessionId: undefined, openFile,
+      openImage: vi.fn(), openAttachment: vi.fn(), previewTabCount: 0,
+      previewPanelOpen: false, togglePreviewPanel: vi.fn(),
+    };
+    const probe = makeRoot();
+    await renderSettled(probe.root,
+      <MediaPreviewContext.Provider value={api}>
+        <Markdown text={`[source](${href})`} />
+      </MediaPreviewContext.Provider>,
+    );
+    const link = probe.container.querySelector('a')!;
+    expect(link).not.toBeNull();
+    await act(async () => { link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); });
+    expect(openFile).toHaveBeenLastCalledWith(expect.objectContaining({ path }));
+    expect(openFile.mock.lastCall?.[0].line).toBe(line);
+    expect(openFile.mock.lastCall?.[0].column).toBe(column);
+    for (const [key, action] of [['show-in-folder', hostMocks.revealPath], ['open-default-app', hostMocks.openPath]] as const) {
+      await rightClick(link);
+      await act(async () => {
+        document.querySelector(`[data-menu-item="${key}"]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(action).toHaveBeenLastCalledWith(path);
+    }
+  });
+
+  it.each([
+    ['/C:/work/a%20b.ts', 'C:/work/a%20b.ts'],
+    ['C:/work/a b.ts', 'C:/work/a b.ts'],
+    ['/work/a.ts:12', '/work/a.ts:12'],
+  ])('preserves raw FilePathLink target %s in preview and native actions', async (input, path) => {
+    hostMocks.desktop = true;
+    const probe = makeRoot();
+    await renderSettled(probe.root,
+      <MediaPreviewProvider cwd="C:/work"><FilePathLink path={input} /></MediaPreviewProvider>,
+    );
+    const link = probe.container.querySelector('[role="link"]')!;
+    for (const [key, action] of [['show-in-folder', hostMocks.revealPath], ['open-default-app', hostMocks.openPath]] as const) {
+      await rightClick(link);
+      await act(async () => { document.querySelector(`[data-menu-item="${key}"]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+      expect(action).toHaveBeenLastCalledWith(path);
+    }
+    await act(async () => { link.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(document.querySelector('[data-preview-tab]')?.getAttribute('data-preview-tab')).toBe(path);
+  });
   it('file links raise the file menu and copy both path forms', async () => {
     const probe = makeRoot();
     await renderSettled(

@@ -36,6 +36,12 @@ export function boot(port: number) {
 }
 `;
 
+const TASK_SERVICE_TS = Array.from({ length: 1200 }, (_, index) =>
+  index === 1062
+    ? "export const selectedTask = 'citation-line-1063';"
+    : `export const task${index + 1} = ${index + 1};`,
+).join('\n');
+
 const DESIGN_MD = `# Board layout
 
 - Header bar in ink
@@ -49,6 +55,7 @@ export default {
   sessions: [sessionRecord(SID, { title: 'Fixture: preview workbench' })],
   fsFiles: {
     'C:/fixture/workshop/src/server.ts': { content: SERVER_TS, mime: 'text/plain' },
+    'C:/fixture/workshop/src/taskService.ts': { content: TASK_SERVICE_TS, mime: 'text/plain' },
     'C:/fixture/workshop/docs/design.md': { content: DESIGN_MD, mime: 'text/plain' },
     'C:/fixture/workshop/shots/board.svg': { base64: BOARD_B64, mime: 'image/svg+xml' },
   },
@@ -70,7 +77,7 @@ export default {
           content: [
             {
               type: 'text',
-              text: 'Workbench notes: 入口在 [server.ts](./src/server.ts)，设计稿在 [design.md](./docs/design.md)，界面截图是 [board.svg](./shots/board.svg)。我逐一核对了一遍。',
+              text: 'Workbench notes: 入口在 [server.ts](./src/server.ts)，设计稿在 [design.md](./docs/design.md)，界面截图是 [board.svg](./shots/board.svg)。任务逻辑见 [taskService.ts:1063](/C:/fixture/workshop/src/taskService.ts:1063:14)，也可返回 [taskService.ts:4](C:/fixture/workshop/src/taskService.ts#L4)。',
             },
           ],
           created_at: ts(4),

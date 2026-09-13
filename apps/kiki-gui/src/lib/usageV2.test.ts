@@ -50,9 +50,9 @@ function bucket(startAt: number, groups: UsageGroupWire[]): UsageTrendBucketWire
 }
 
 describe('parseUsageFilters', () => {
-  it('defaults to all history / day / model with no query', () => {
+  it('defaults to local today / day / model with no query', () => {
     expect(parseUsageFilters('')).toEqual(USAGE_FILTER_DEFAULTS);
-    expect(USAGE_FILTER_DEFAULTS.range).toBe('all');
+    expect(USAGE_FILTER_DEFAULTS.range).toBe('today');
   });
 
   it('parses every axis from the URL', () => {
@@ -73,13 +73,13 @@ describe('parseUsageFilters', () => {
   it('drops unknown values individually instead of failing the whole URL', () => {
     const filters = parseUsageFilters('?granularity=hourly&range=bogus&dimension=model');
     expect(filters.granularity).toBe('day');
-    expect(filters.range).toBe('all');
+    expect(filters.range).toBe('today');
     expect(filters.dimension).toBe('model');
   });
 
   it('accepts custom only with valid bounds', () => {
-    expect(parseUsageFilters('?range=custom').range).toBe('all');
-    expect(parseUsageFilters('?range=custom&start_at=2000&end_at=1000').range).toBe('all');
+    expect(parseUsageFilters('?range=custom').range).toBe('today');
+    expect(parseUsageFilters('?range=custom&start_at=2000&end_at=1000').range).toBe('today');
     const valid = parseUsageFilters('?range=custom&start_at=1000&end_at=2000');
     expect(valid).toMatchObject({ range: 'custom', startAt: 1000, endAt: 2000 });
   });
@@ -109,7 +109,7 @@ describe('detail view deep links', () => {
 });
 
 describe('usageFiltersToSearch', () => {
-  it('omits defaults so the canonical all-history URL has no query', () => {
+  it('omits defaults so the canonical local-today URL has no query', () => {
     expect(usageFiltersToSearch(USAGE_FILTER_DEFAULTS)).toBe('');
   });
 
@@ -130,14 +130,14 @@ describe('usageFiltersToSearch', () => {
 
   it('preserves unrelated params (server/token/session deep-link keys)', () => {
     const search = usageFiltersToSearch(
-      { ...USAGE_FILTER_DEFAULTS, range: 'today' },
+      { ...USAGE_FILTER_DEFAULTS, range: 'last_7_days' },
       '?server=http%3A%2F%2Fexample.com&token=abc&session=s_1',
     );
     const params = new URLSearchParams(search);
     expect(params.get('server')).toBe('http://example.com');
     expect(params.get('token')).toBe('abc');
     expect(params.get('session')).toBe('s_1');
-    expect(params.get('range')).toBe('today');
+    expect(params.get('range')).toBe('last_7_days');
   });
 });
 
@@ -161,7 +161,7 @@ describe('stored filters', () => {
     localStorage.setItem(USAGE_FILTERS_STORAGE_KEY, '{nope');
     expect(readStoredUsageFilters()).toBeUndefined();
     localStorage.setItem(USAGE_FILTERS_STORAGE_KEY, JSON.stringify({ range: 'forever' }));
-    expect(readStoredUsageFilters()?.range).toBe('all');
+    expect(readStoredUsageFilters()?.range).toBe('today');
   });
 });
 
@@ -200,8 +200,11 @@ describe('buildUsageApiQuery', () => {
     expect(query['end_at']).toBeUndefined();
   });
 
-  it('omits range for all history so the server marks defaulted_to_all_history', () => {
-    const query = buildUsageApiQuery(USAGE_FILTER_DEFAULTS, { timezoneOffsetMinutes: 0 });
+  it('omits an explicit all-history range so the server marks defaulted_to_all_history', () => {
+    const query = buildUsageApiQuery(
+      { ...USAGE_FILTER_DEFAULTS, range: 'all' },
+      { timezoneOffsetMinutes: 0 },
+    );
     expect(query['range']).toBeUndefined();
   });
 });
@@ -232,6 +235,27 @@ describe('aggregateDimensionGroups', () => {
       mixedAttribution: false,
     });
     expect(rows[1]).toMatchObject({ costUnknown: true, provider: null });
+  });
+
+  it('treats omitted token provenance as a known true zero', () => {
+    const rows = aggregateDimensionGroups([
+      bucket(1000, [group({ key: 'true-zero', cost_usd_estimated: 0 })]),
+    ]);
+    expect(rows[0]).toMatchObject({ totalTokens: 0, tokensUnknown: false });
+  });
+
+  it('propagates unknown token provenance while retaining a positive known subtotal', () => {
+    const rows = aggregateDimensionGroups([
+      bucket(1000, [
+        group({
+          key: 'mixed',
+          tokens: { input_other: 7, output: 0, input_cache_read: 0, input_cache_creation: 0 },
+          tokens_unknown: true,
+          cost_usd_estimated: 2,
+        }),
+      ]),
+    ]);
+    expect(rows[0]).toMatchObject({ totalTokens: 7, tokensUnknown: true, costUsdEstimated: 2 });
   });
 
   it('flags conflicting attribution instead of guessing', () => {

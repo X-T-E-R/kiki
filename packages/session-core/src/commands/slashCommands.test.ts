@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SkillDescriptor } from '@moonshot-ai/protocol';
+import type { SkillDescriptor } from '@kiki/protocol';
 
 import {
   buildSlashItems,
@@ -98,6 +98,17 @@ describe('buildSlashItems', () => {
     expect(names).not.toContain('fork');
     expect(names).not.toContain('undo');
     expect(names).not.toContain('compact');
+  });
+
+  it('reserves builtin action names and keeps same-name skills selectable', () => {
+    const items = buildSlashItems([skill('plan'), skill('skill:plan'), skill('undo')], { hasSession: true });
+    expect(resolveSlashCommand(items, '/PLAN')?.item.action).toBe('plan');
+    expect(resolveSlashCommand(items, '/skill:skill:plan topic')?.item.skill?.name).toBe('plan');
+    expect(resolveSlashCommand(items, '/skill:plan')?.item.skill?.name).toBe('skill:plan');
+    expect(resolveSlashCommand(items, '/skill:undo')?.item.skill?.name).toBe('undo');
+    const draftItems = buildSlashItems([skill('undo')], { hasSession: false });
+    expect(resolveSlashCommand(draftItems, '/undo')).toBeNull();
+    expect(resolveSlashCommand(draftItems, '/skill:undo')?.item.skill?.name).toBe('undo');
   });
 
   it('marks reference-type skills as disabled', () => {

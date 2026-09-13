@@ -1,5 +1,5 @@
 {
-  // Mirror the repo root tsconfig; @moonshot-ai/protocol is consumed through
+  // Mirror the repo root tsconfig; @kiki/protocol is consumed through
   // source `exports`, so its sources are part of this program too. Only the
   // environment (DOM + vite client types) differs.
   "extends": "../../tsconfig.json",

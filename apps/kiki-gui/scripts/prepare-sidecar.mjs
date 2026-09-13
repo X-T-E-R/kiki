@@ -80,7 +80,7 @@ export function defaultSeaSource(target) {
       `No Kiki SEA target mapping exists for ${target}. Set KIKI_SIDECAR_SOURCE to the matching prebuilt executable.`,
     );
   }
-  const executable = target.includes('windows') ? 'kimi.exe' : 'kimi';
+  const executable = target.includes('windows') ? 'kiki.exe' : 'kiki';
   return resolve(KIKI_ROOT, 'apps', 'kimi-code', 'dist-native', 'bin', seaTarget, executable);
 }
 
@@ -124,7 +124,7 @@ export function stageSidecar({ argv = process.argv.slice(2), env = process.env }
     throw new Error(
       [
         `Kiki SEA sidecar not found for ${target}: ${source}`,
-        'Build it with `pnpm --filter @moonshot-ai/kimi-code run build:native:sea`,',
+        'Build it with `pnpm --filter @kiki/cli run build:native:sea`,',
         'or set KIKI_SIDECAR_SOURCE to an existing target-compatible SEA executable.',
       ].join(' '),
     );

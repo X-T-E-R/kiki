@@ -1,4 +1,4 @@
-import type { Message } from '@moonshot-ai/protocol';
+import type { Message } from '@kiki/protocol';
 
 import { mediaFromContentParts, type MediaRef } from '../../composer/media';
 import type { SystemVariant } from './types';
@@ -69,7 +69,12 @@ export interface ClassifiedText {
   readonly reminders: readonly string[];
   readonly skill?: { readonly source: 'skill' | 'plugin'; readonly name: string; readonly args: string | undefined };
   readonly systemVariant?: SystemVariant;
-  readonly shell?: { readonly commandId: string; readonly output: string; readonly isError: boolean | undefined };
+  readonly shell?: {
+    readonly commandId: string;
+    readonly command: string | undefined;
+    readonly output: string;
+    readonly isError: boolean | undefined;
+  };
 }
 
 const INTERNAL_ORIGIN_KINDS = new Set<string>([
@@ -144,21 +149,23 @@ function splitTaskNotification(text: string): string | undefined {
 function parseHistoricalShell(
   text: string,
   identity?: string,
-): { commandId: string; output: string; isError: boolean | undefined } | undefined {
+): { commandId: string; command: string | undefined; output: string; isError: boolean | undefined } | undefined {
   const input = BASH_INPUT_RE.exec(text);
   const stdout = BASH_STDOUT_RE.exec(text);
   const stderr = BASH_STDERR_RE.exec(text);
   if (input === null && stdout === null && stderr === null) return undefined;
-  const command = input?.[1] === undefined ? '' : unescapeXml(input[1]).trim();
+  const commandText = input?.[1] === undefined ? '' : unescapeXml(input[1]).trim();
+  const command = commandText === '' ? undefined : commandText;
   const out = stdout?.[1] === undefined ? '' : unescapeXml(stdout[1]);
   const err = stderr?.[1] === undefined ? '' : unescapeXml(stderr[1]);
-  const combined = [command === '' ? undefined : `$ ${command}`, out === '' ? undefined : out, err === '' ? undefined : err]
+  const output = [out === '' ? undefined : out, err === '' ? undefined : err]
     .filter((part): part is string => part !== undefined)
     .join('\n');
-  const slug = command.slice(0, 40) || 'shell';
+  const slug = commandText.slice(0, 40) || 'shell';
   return {
     commandId: identity !== undefined && identity !== '' ? `history-${identity}-${slug}` : `history-${slug}`,
-    output: combined,
+    command,
+    output,
     isError: err !== '' ? true : undefined,
   };
 }
@@ -232,6 +239,7 @@ export function classifyTranscriptText(input: {
   if (kind === 'shell_command') {
     const shell = parseHistoricalShell(input.text, input.id) ?? {
       commandId: `shell-${input.id ?? origin?.phase ?? 'cmd'}`,
+      command: undefined,
       output: split.text,
       isError: origin?.isError === true ? true : undefined,
     };

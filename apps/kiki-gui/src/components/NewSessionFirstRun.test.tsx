@@ -10,7 +10,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { AuthSummary } from '@moonshot-ai/protocol';
+import type { AuthSummary } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import {

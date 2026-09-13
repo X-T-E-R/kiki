@@ -30,13 +30,13 @@ import type {
   CreateTerminalRequest,
   ListTerminalsResponse,
   Terminal,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import { appendPlainTail } from '@kiki/session-core/util';
-import { API_CODES, ApiError } from '../lib/client';
-import type { TerminalSignal } from '../lib/ws';
+import { API_CODES } from '../lib/client';
+import { RPCError, type TerminalSignal } from '@kiki/klient';
 
-/** The socket surface the manager needs (KikiSocket satisfies it). */
+/** The shared Klient terminal capability surface used by the renderer store. */
 export interface TerminalTransport {
   terminalAttach(
     sessionId: string,
@@ -261,7 +261,7 @@ export class TerminalManager {
     try {
       await this.client.closeTerminal(this.sessionId, id);
     } catch (error) {
-      if (error instanceof ApiError && error.code === API_CODES.TERMINAL_NOT_FOUND) {
+      if (error instanceof RPCError && error.code === API_CODES.TERMINAL_NOT_FOUND) {
         // Already gone server-side — removing the tab is safe.
       } else {
         this.publish({

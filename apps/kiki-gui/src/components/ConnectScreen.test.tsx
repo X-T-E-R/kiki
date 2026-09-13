@@ -63,7 +63,7 @@ describe('ConnectScreen desktop failure card', () => {
       desktopFailure: {
         message: 'Kiki backend (pid 4242) exited during startup (exit code 1)\nstderr (last 2 lines):\nboom\nbang',
         stderrTail: ['boom', 'bang'],
-        logPath: 'C:/Users/example/.kimi-code/desktop-backend.log',
+        logPath: 'C:/Users/example/.kiki/desktop-backend.log',
       },
     });
     expect(html).toContain('Kiki desktop backend failed to start');

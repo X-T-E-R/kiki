@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PromptListResponse, Session, SessionUsage, Task } from '@moonshot-ai/protocol';
+import type { PromptListResponse, Session, SessionUsage, Task } from '@kiki/protocol';
 
 import {
   buildActivityModel,

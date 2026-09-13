@@ -33,6 +33,34 @@ test('projects a basic stream of session_event frames into reset/ops', () => {
   assert.equal(reset.cursor.seq, projector.latestSeq('main'));
 });
 
+test('full tool result upserts retain the started tool name and display metadata', () => {
+  const projector = new TranscriptProjector('session_fixture_tool_name');
+  projector.ingestFrame({
+    type: 'turn.started',
+    payload: { turnId: 1, origin: { kind: 'user' }, prompt: 'Run the tool.' },
+  });
+  projector.ingestFrame({
+    type: 'tool.call.started',
+    payload: {
+      turnId: 1,
+      toolCallId: 'call-edit',
+      name: 'Edit',
+      args: { file_path: 'C:/fixture/plan.ts' },
+      display: { kind: 'file_io', operation: 'edit', path: 'C:/fixture/plan.ts' },
+    },
+  });
+  projector.ingestFrame({
+    type: 'tool.result',
+    payload: { turnId: 1, toolCallId: 'call-edit', output: 'updated' },
+  });
+  const frame = projector.snapshot('main').items[0].steps[0].frames[0];
+  assert.equal(frame.name, 'Edit');
+  assert.deepEqual(frame.input, { file_path: 'C:/fixture/plan.ts' });
+  assert.deepEqual(frame.display, { kind: 'file_io', operation: 'edit', path: 'C:/fixture/plan.ts' });
+  assert.equal(frame.state, 'done');
+  assert.equal(frame.output, 'updated');
+});
+
 test('filters ops and redacts snapshots by grade', () => {
   const ops = [
     { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' } } },

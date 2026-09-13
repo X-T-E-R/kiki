@@ -6,8 +6,8 @@
  *     style) above the fold;
  *   - the ccusage-style three-axis filter bar (granularity × range ×
  *     dimension) with workspace scope and the archived toggle; the URL query
- *     carries every axis so views are deep-linkable, and the last selection
- *     is persisted for query-less revisits;
+ *     carries every axis so views are deep-linkable, while query-less visits
+ *     always stay bounded to the local-today defaults;
  *   - a real time-bucket trend chart (cost/tokens metric toggle, click a
  *     bucket for the session/turn drilldown);
  *   - detail tabs: Sessions (server-sorted cost-descending, paged), the
@@ -16,9 +16,10 @@
  *   - a permanently visible data-reliability card (coverage, unknown-price
  *     models, deleted-session inclusion, incomplete reasons).
  *
- * Honesty rules: the no-query state is all history (the server's
- * `defaulted_to_all_history` is surfaced, never hidden); cost is labeled an
- * estimate and flagged "partially unknown" whenever `cost_unknown` is set;
+ * Honesty rules: the no-query state is local today; an explicit all-history
+ * query still surfaces the server's `defaulted_to_all_history` flag, never hides
+ * it; cost is labeled an estimate and flagged "partially unknown" whenever
+ * `cost_unknown` is set;
  * `unknown` dimension keys and null provider/parent/profile are shown as
  * missing data, never reconstructed.
  */
@@ -27,7 +28,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
-import type { Session, Workspace } from '@moonshot-ai/protocol';
+import type { Session, Workspace } from '@kiki/protocol';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { readLastSessionId } from '@kiki/session-core/settings';
@@ -43,9 +44,9 @@ import {
   cacheHitRateOf,
   parseUsageFilters,
   parseUsageDetailView,
-  readStoredUsageFilters,
   searchHasUsageParams,
   totalTokensOf,
+  usageTokenTotalIsUnknown,
   USAGE_DIMENSIONS,
   USAGE_FILTER_DEFAULTS,
   USAGE_GRANULARITIES,
@@ -53,6 +54,7 @@ import {
   usageDetailViewToSearch,
   usageFiltersToSearch,
   writeStoredUsageFilters,
+  type UsageAggregateWire,
   type UsageDetailView,
   type UsageDimensionRow,
   type UsageDrilldownSessionWire,
@@ -172,12 +174,88 @@ function fromDateInputValue(value: string): number | undefined {
 
 const DAY_MS = 24 * 3600_000;
 
+function localDateKey(nowMs: number): string {
+  const date = new Date(nowMs);
+  return [date.getFullYear(), date.getMonth() + 1, date.getDate()]
+    .map((part) => String(part).padStart(2, '0'))
+    .join('-');
+}
+
 function bucketTokens(bucket: UsageTrendBucketWire): number {
   return bucket.groups.reduce((sum, group) => sum + totalTokensOf(group), 0);
 }
 
 function bucketCost(bucket: UsageTrendBucketWire): number {
   return bucket.groups.reduce((sum, group) => sum + group.cost_usd_estimated, 0);
+}
+
+function bucketTokenTotalIsUnknown(bucket: UsageTrendBucketWire): boolean {
+  return bucketTokens(bucket) === 0 && bucket.groups.some((group) => group.tokens_unknown === true);
+}
+
+type UsageCoverage = NonNullable<UsageResponseWire['reliability']['usage_coverage']>;
+
+function hasUnknownTokenSubtotal(aggregate: UsageAggregateWire): boolean {
+  return aggregate.tokens_unknown === true && !usageTokenTotalIsUnknown(aggregate);
+}
+
+function UsageAccountingNotices({
+  coverage,
+  knownSubtotal,
+}: {
+  coverage: UsageCoverage | undefined;
+  knownSubtotal: boolean;
+}) {
+  const { t } = useI18n();
+  if (
+    (coverage?.missing_records ?? 0) === 0 &&
+    (coverage?.legacy_zero_records ?? 0) === 0 &&
+    !knownSubtotal
+  ) {
+    return null;
+  }
+  return (
+    <div data-usage-accounting-notices className="space-y-1.5">
+      {coverage !== undefined && coverage.missing_records > 0 ? (
+        <p
+          data-usage-accounting-missing
+          className="rounded-xl border border-amber-rule/40 bg-amber-card px-3 py-2 text-[11px] leading-relaxed text-amber-ink"
+        >
+          {t('usage.accounting.missing', { count: coverage.missing_records })}
+        </p>
+      ) : null}
+      {coverage !== undefined && coverage.legacy_zero_records > 0 ? (
+        <p
+          data-usage-accounting-legacy-zero
+          className="rounded-xl border border-amber-rule/40 bg-amber-card px-3 py-2 text-[11px] leading-relaxed text-amber-ink"
+        >
+          {t('usage.accounting.legacyZero', { count: coverage.legacy_zero_records })}
+        </p>
+      ) : null}
+      {knownSubtotal ? (
+        <p
+          data-usage-accounting-known-subtotal
+          className="rounded-xl border border-accent/25 bg-accent-soft px-3 py-2 text-[11px] leading-relaxed text-ink-soft"
+        >
+          {t('usage.accounting.knownSubtotal')}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function KnownSubtotalMarker() {
+  const { t } = useI18n();
+  return (
+    <span
+      data-usage-accounting-known-subtotal
+      title={t('usage.accounting.knownSubtotal')}
+      aria-label={t('usage.accounting.knownSubtotal')}
+      className="ml-1 text-[9.5px] text-amber-ink"
+    >
+      ◔
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -215,8 +293,11 @@ function LiveStrip() {
 
   const today = todayQuery.data?.summary;
   const todayTokens = today !== undefined ? totalTokensOf(today) : undefined;
+  const todayTokenTotalUnknown = today !== undefined && usageTokenTotalIsUnknown(today);
+  const todayHasUnknownSubtotal = today !== undefined && hasUnknownTokenSubtotal(today);
+  const knownTodayTokens = todayTokenTotalUnknown ? undefined : todayTokens;
   const rate =
-    todayTokens !== undefined ? burnRatePerHour(todayTokens, nowMs) : undefined;
+    knownTodayTokens !== undefined ? burnRatePerHour(knownTodayTokens, nowMs) : undefined;
   const current: Session | undefined = sessionQuery.data;
 
   return (
@@ -242,8 +323,11 @@ function LiveStrip() {
       <span className="flex items-baseline gap-1.5">
         <span className="text-ink-faint">{t('usage.strip.today')}</span>
         {today !== undefined ? (
-          <span className="font-mono text-ink tabular-nums">
-            {time.formatTokens(todayTokens ?? 0)} · {formatCostUsd(today.cost_usd_estimated)}
+          <span data-usage-strip-tokens className="font-mono text-ink tabular-nums">
+            {todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(today))}
+            {' · '}
+            {todayTokenTotalUnknown ? '—' : formatCostUsd(today.cost_usd_estimated)}
+            {todayHasUnknownSubtotal ? <KnownSubtotalMarker /> : null}
           </span>
         ) : (
           <span className="text-ink-faint">…</span>
@@ -461,8 +545,9 @@ function TrendChart({
           const selected = selectedKey === bucket.key;
           const title = [
             bucketLabel(bucket, filters.granularity, locale),
-            `${time.formatTokens(bucketTokens(bucket))} ${t('usage.col.tokens')}`,
-            formatCostUsd(bucketCost(bucket)),
+            `${bucketTokenTotalIsUnknown(bucket) ? '—' : time.formatTokens(bucketTokens(bucket))} ${t('usage.col.tokens')}`,
+            bucketTokenTotalIsUnknown(bucket) ? '—' : formatCostUsd(bucketCost(bucket)),
+            ...(bucket.groups.some((group) => group.tokens_unknown === true) ? [t('usage.kpi.partialUnknown')] : []),
           ].join(' · ');
           return (
             <button
@@ -661,8 +746,11 @@ function DimensionBreakdown({
             ? t('usage.dim.mixedAttribution')
             : (row.provider ?? '')}
         </span>
-        <span className="ml-auto shrink-0 font-mono text-[12px] font-semibold text-ink tabular-nums">
-          {formatCostUsd(row.costUsdEstimated)}
+        <span
+          data-usage-breakdown-cost={row.key}
+          className="ml-auto shrink-0 font-mono text-[12px] font-semibold text-ink tabular-nums"
+        >
+          {row.tokensUnknown && row.totalTokens === 0 ? '—' : formatCostUsd(row.costUsdEstimated)}
           {row.costUnknown ? '◔' : ''}
         </span>
       </div>
@@ -675,10 +763,13 @@ function DimensionBreakdown({
         />
       </div>
       <p
+        data-usage-breakdown-tokens={row.key}
         className="mt-0.5 font-mono text-[10px] text-ink-faint tabular-nums"
         style={{ paddingLeft: depth * 16 + 16 }}
       >
-        {time.formatTokens(row.totalTokens)} {t('usage.col.tokens')}
+        {row.tokensUnknown && row.totalTokens === 0 ? '—' : time.formatTokens(row.totalTokens)}{' '}
+        {t('usage.col.tokens')}
+        {row.tokensUnknown && row.totalTokens > 0 ? <KnownSubtotalMarker /> : null}
       </p>
     </div>
   );
@@ -822,14 +913,21 @@ function SessionsTab({
             <span className="hidden w-28 shrink-0 truncate font-mono text-[10.5px] text-ink-faint sm:block">
               {workspaceName(item.workspace_id)}
             </span>
-            <span className="hidden w-20 shrink-0 text-right font-mono text-[10.5px] text-ink-faint tabular-nums md:block">
-              {time.formatTokens(totalTokensOf(item.usage))}
+            <span
+              data-usage-session-tokens={item.id}
+              className="hidden w-20 shrink-0 text-right font-mono text-[10.5px] text-ink-faint tabular-nums md:block"
+            >
+              {usageTokenTotalIsUnknown(item.usage) ? '—' : time.formatTokens(totalTokensOf(item.usage))}
+              {hasUnknownTokenSubtotal(item.usage) ? <KnownSubtotalMarker /> : null}
             </span>
             <span className="hidden w-20 shrink-0 text-right font-mono text-[10.5px] text-ink-faint lg:block">
               {time.relativeTime(new Date(item.updated_at).toISOString())}
             </span>
-            <span className="w-20 shrink-0 text-right font-mono text-[11.5px] font-semibold text-ink tabular-nums">
-              {formatCostUsd(item.usage.cost_usd_estimated)}
+            <span
+              data-usage-session-cost={item.id}
+              className="w-20 shrink-0 text-right font-mono text-[11.5px] font-semibold text-ink tabular-nums"
+            >
+              {usageTokenTotalIsUnknown(item.usage) ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
             </span>
           </button>
         ))
@@ -897,10 +995,11 @@ function FiveHourTab({
               {bucketLabel(bucket, 'five_hour', locale)}
             </h3>
             <span className="ml-auto shrink-0 font-mono text-[10.5px] text-ink-soft tabular-nums">
-              {time.formatTokens(bucketTokens(bucket))} {t('usage.col.tokens')}
+              {bucketTokenTotalIsUnknown(bucket) ? '—' : time.formatTokens(bucketTokens(bucket))} {t('usage.col.tokens')}
+              {bucket.groups.some((group) => group.tokens_unknown === true) ? <KnownSubtotalMarker /> : null}
             </span>
             <span className="shrink-0 font-mono text-[10.5px] font-semibold text-ink tabular-nums">
-              {formatCostUsd(bucketCost(bucket))}
+              {bucketTokenTotalIsUnknown(bucket) ? '—' : formatCostUsd(bucketCost(bucket))}
             </span>
           </header>
           {bucket.drilldown.sessions.length === 0 ? (
@@ -999,20 +1098,31 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const { t, time } = useI18n();
   const location = useLocation();
   const [, setSearchParams] = useSearchParams();
+  const [usageNowMs, setUsageNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => { setUsageNowMs(Date.now()); }, 60_000);
+    return () => { window.clearInterval(timer); };
+  }, []);
 
   // URL query is the canonical filter state (deep-linkable). A query-less
-  // visit restores the persisted selection; with nothing stored the page
-  // shows all history — there is no implicit 30-day default.
+  // visit always uses the local-today defaults; persisted selections never
+  // silently widen or hide this bounded result set.
   const filters = useMemo<UsageFilters>(
     () =>
       searchHasUsageParams(location.search)
         ? parseUsageFilters(location.search)
-        : (readStoredUsageFilters() ?? USAGE_FILTER_DEFAULTS),
+        : USAGE_FILTER_DEFAULTS,
     [location.search],
   );
   useEffect(() => {
     writeStoredUsageFilters(filters);
   }, [filters]);
+
+  // Today and local bucket boundaries change with the wall clock and browser
+  // timezone. Read the offset directly on every render, rather than memoizing
+  // it at mount, while the tick below makes midnight/zone changes observable.
+  const localUsageDate = localDateKey(usageNowMs);
+  const timezoneOffsetMinutes = browserTimezoneOffsetMinutes();
 
   const sessionParam = new URLSearchParams(location.search).get('session') ?? undefined;
   const [dismissedLocator, setDismissedLocator] = useState<string | null>(null);
@@ -1045,11 +1155,11 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   };
 
   const usageQuery = useInfiniteQuery({
-    queryKey: ['usage-v2', filters],
+    queryKey: ['usage-v2', filters, localUsageDate, timezoneOffsetMinutes],
     queryFn: ({ pageParam }) =>
       client.getUsage(
         buildUsageApiQuery(filters, {
-          timezoneOffsetMinutes: browserTimezoneOffsetMinutes(),
+          timezoneOffsetMinutes,
           pageSize: SESSION_PAGE_SIZE,
           pageToken: pageParam,
         }),
@@ -1105,7 +1215,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   const summary = firstPage?.summary;
   const reliability = firstPage?.reliability;
-  const summaryTokens = summary !== undefined ? totalTokensOf(summary) : 0;
+  const summaryTokenTotalUnknown = summary !== undefined && usageTokenTotalIsUnknown(summary);
+  const summaryHasUnknownSubtotal = summary !== undefined && hasUnknownTokenSubtotal(summary);
   const cacheHit = summary !== undefined ? cacheHitRateOf(summary) : null;
   const showAllHistoryChip = firstPage?.query.range.defaulted_to_all_history === true;
   const incompleteReason = reliability?.incomplete_reason ?? null;
@@ -1187,6 +1298,10 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   {t('usage.partialCost', { models: reliability.unknown_price_models.join(', ') })}
                 </p>
               ) : null}
+              <UsageAccountingNotices
+                coverage={reliability?.usage_coverage}
+                knownSubtotal={summaryHasUnknownSubtotal}
+              />
 
               {summary !== undefined ? (
                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -1194,8 +1309,11 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     <p className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
                       {t('usage.kpi.estimatedCost')}
                     </p>
-                    <p className="mt-1.5 font-mono text-[22px] leading-none font-semibold text-ink tabular-nums">
-                      {formatCostUsd(summary.cost_usd_estimated)}
+                    <p
+                      data-usage-summary-cost
+                      className="mt-1.5 font-mono text-[22px] leading-none font-semibold text-ink tabular-nums"
+                    >
+                      {summaryTokenTotalUnknown ? '—' : formatCostUsd(summary.cost_usd_estimated)}
                     </p>
                     {summary.cost_unknown ? (
                       <p className="mt-1 text-[10px] text-amber-ink">
@@ -1209,10 +1327,13 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     <p className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
                       {t('usage.card.tokens')}
                     </p>
-                    <p className="mt-1.5 font-mono text-[22px] leading-none font-semibold text-ink tabular-nums">
-                      {time.formatTokens(summaryTokens)}
+                    <p
+                      data-usage-summary-tokens
+                      className="mt-1.5 font-mono text-[22px] leading-none font-semibold text-ink tabular-nums"
+                    >
+                      {summaryTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(summary))}
                     </p>
-                    {cacheHit !== null ? (
+                    {cacheHit !== null && !summaryTokenTotalUnknown ? (
                       <p className="mt-1 text-[10px] text-ink-faint" title={t('usage.cacheHitHint')}>
                         {t('usage.cacheHit', { percent: Math.round(cacheHit * 100) })}
                       </p>
@@ -1230,14 +1351,21 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     <p className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
                       {t('usage.tokens.input')} / {t('usage.tokens.output')}
                     </p>
-                    <p className="mt-1.5 font-mono text-[13px] leading-snug font-semibold text-ink tabular-nums">
-                      {time.formatTokens(summary.tokens.input_other)} / {time.formatTokens(summary.tokens.output)}
+                    <p
+                      data-usage-summary-input-output
+                      className="mt-1.5 font-mono text-[13px] leading-snug font-semibold text-ink tabular-nums"
+                    >
+                      {summaryTokenTotalUnknown
+                        ? '— / —'
+                        : `${time.formatTokens(summary.tokens.input_other)} / ${time.formatTokens(summary.tokens.output)}`}
                     </p>
-                    <p className="mt-1 font-mono text-[10px] text-ink-faint tabular-nums">
-                      {t('usage.tokens.cacheRead')} {time.formatTokens(summary.tokens.input_cache_read)}
-                      {' · '}
-                      {t('usage.tokens.cacheWrite')} {time.formatTokens(summary.tokens.input_cache_creation)}
-                    </p>
+                    {!summaryTokenTotalUnknown ? (
+                      <p className="mt-1 font-mono text-[10px] text-ink-faint tabular-nums">
+                        {t('usage.tokens.cacheRead')} {time.formatTokens(summary.tokens.input_cache_read)}
+                        {' · '}
+                        {t('usage.tokens.cacheWrite')} {time.formatTokens(summary.tokens.input_cache_creation)}
+                      </p>
+                    ) : null}
                   </section>
                 </div>
               ) : null}

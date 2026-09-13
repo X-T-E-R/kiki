@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { PermissionMode } from '@moonshot-ai/protocol';
+import type { PermissionMode } from '@kiki/protocol';
 
 import { clearStoredDrafts } from '@kiki/session-core/composer';
 import { errorText, type Locale } from '@kiki/session-core/i18n';
@@ -23,6 +23,8 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { ExperimentalSection } from './ExperimentalSection';
+import { mergeConfigEcho } from './configEcho';
 import { useSavedTick } from './useSavedTick';
 
 function isAbsoluteHomePath(path: string): boolean {
@@ -37,9 +39,6 @@ export function GeneralSection() {
   const [settings, setSettings] = useState(readSettings);
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('manual');
-  const [planMode, setPlanMode] = useState(false);
-  const [planGate, setPlanGate] = useState<'free' | 'gated'>('free');
-  const [planGateTimeoutS, setPlanGateTimeoutS] = useState('60');
   const [compatOpen, setCompatOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -75,9 +74,6 @@ export function GeneralSection() {
     if (config === undefined) return;
     const mode = config.default_permission_mode;
     if (mode === 'manual' || mode === 'auto' || mode === 'yolo') setPermissionMode(mode);
-    setPlanMode(config.default_plan_mode === true);
-    setPlanGate(config.plan?.gate === 'gated' ? 'gated' : 'free');
-    setPlanGateTimeoutS(String((config.plan?.enterApprovalTimeoutMs ?? 60_000) / 1000));
   }, []);
 
   useEffect(() => { syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig]);
@@ -95,25 +91,24 @@ export function GeneralSection() {
     });
   }, [host]);
 
-  // Server defaults apply on change: optimistic local state, echo confirms,
-  // failure reverts to the last server-known config.
-  const applyDefaults = async (mode: PermissionMode, plan: boolean) => {
+  // The permission default saves independently from planning defaults. The
+  // narrow patch keeps the plan configuration untouched on this page.
+  const applyPermissionMode = async (mode: PermissionMode) => {
     setPermissionMode(mode);
-    setPlanMode(plan);
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await client.patchConfig({
-        default_permission_mode: mode,
-        default_plan_mode: plan,
-      });
-      queryClient.setQueryData(['config'], echoed);
-      syncFromConfig(echoed);
-      const echoedMode = echoed.default_permission_mode;
+      const echoed = await client.patchConfig({ default_permission_mode: mode });
+      const merged = mergeConfigEcho(
+        queryClient.getQueryData<KikiConfigResponse>(['config']) ?? configQuery.data,
+        echoed,
+      );
+      queryClient.setQueryData(['config'], merged);
+      syncFromConfig(merged);
+      const echoedMode = merged.default_permission_mode;
       if (echoedMode === 'manual' || echoedMode === 'auto' || echoedMode === 'yolo') {
         writeSettings({ defaultPermissionMode: echoedMode });
       }
-      writeSettings({ defaultPlanMode: echoed.default_plan_mode === true });
       ping();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -127,50 +122,6 @@ export function GeneralSection() {
     const next = { ...settings, ...patch };
     setSettings(next);
     writeSettings(patch);
-  };
-
-  // Same optimistic discipline as applyDefaults: local echo first, server
-  // echo confirms, failure reverts to the last server-known config.
-  const applyPlanGate = async (gate: 'free' | 'gated') => {
-    setPlanGate(gate);
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig({ plan: { gate } });
-      queryClient.setQueryData(['config'], echoed);
-      syncFromConfig(echoed);
-      ping();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-      syncFromConfig(configQuery.data);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // Seconds in the field, milliseconds on the wire (`enter_approval_timeout_ms`,
-  // floor 5000). Commits on blur/Enter; an invalid draft reverts to the config.
-  const commitPlanGateTimeout = async () => {
-    const ms = Math.round(Number(planGateTimeoutS) * 1000);
-    if (!Number.isFinite(ms) || ms < 5000) {
-      setFeedback({ tone: 'error', text: t('st.defaults.planGateTimeoutInvalid') });
-      syncFromConfig(configQuery.data);
-      return;
-    }
-    if (configQuery.data?.plan?.enterApprovalTimeoutMs === ms) return;
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig({ plan: { enter_approval_timeout_ms: ms } });
-      queryClient.setQueryData(['config'], echoed);
-      syncFromConfig(echoed);
-      ping();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-      syncFromConfig(configQuery.data);
-    } finally {
-      setSaving(false);
-    }
   };
 
   const persistCompatibility = async (next: CompatibilitySettings) => {
@@ -317,29 +268,25 @@ export function GeneralSection() {
   return (
     <div className="space-y-3">
       <SectionCard id="st-card-language" title={t('st.language.title')}>
-        <div className="space-y-3">
-          <div>
-            <label htmlFor="language-select" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
-              {t('st.language.title')}
-            </label>
-            <select
-              id="language-select"
-              className={SMALL_INPUT}
-              value={locale}
-              onChange={(event) => { setLocale(event.target.value as Locale); }}
-            >
-              <option value="en">English</option>
-              <option value="zh">中文</option>
-            </select>
-          </div>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <Hint>{t('st.language.hint')}</Hint>
+          <select
+            id="language-select"
+            aria-label={t('st.language.title')}
+            className={SMALL_INPUT}
+            value={locale}
+            onChange={(event) => { setLocale(event.target.value as Locale); }}
+          >
+            <option value="en">English</option>
+            <option value="zh">中文</option>
+          </select>
         </div>
       </SectionCard>
 
       <SectionCard id="st-card-appearance" title={t('st.appearance.title')}>
-        <div className="space-y-3">
-          <div>
-            <span id="theme-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <span id="theme-label" className="text-[12.5px] font-medium text-ink">
               {t('st.appearance.theme')}
             </span>
             <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="theme-label">
@@ -365,17 +312,17 @@ export function GeneralSection() {
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-defaults" title={t('st.defaults.title')}>
-        <div className="space-y-3">
-          <div>
-            <span id="default-permission-mode-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">{t('st.defaults.permissionMode')}</span>
+      <SectionCard id="st-card-permission-defaults" title={t('st.defaults.title')}>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <span id="default-permission-mode-label" className="text-[12.5px] font-medium text-ink">{t('st.defaults.permissionMode')}</span>
             <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="default-permission-mode-label">
               {(['manual', 'auto', 'yolo'] as PermissionMode[]).map((mode) => (
                 <button
                   key={mode}
                   type="button"
                   disabled={saving}
-                  onClick={() => void applyDefaults(mode, planMode)}
+                  onClick={() => void applyPermissionMode(mode)}
                   className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors disabled:opacity-50 ${
                     permissionMode === mode
                       ? 'border-accent bg-accent-soft text-accent'
@@ -388,44 +335,19 @@ export function GeneralSection() {
               <SavedTick show={tick} />
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-            <Toggle label={t('st.defaults.planMode')} checked={planMode} disabled={saving} onChange={(checked) => void applyDefaults(permissionMode, checked)} />
-            <Toggle
-              label={t('st.defaults.planGate')}
-              checked={planGate === 'gated'}
-              disabled={saving}
-              onChange={(checked) => void applyPlanGate(checked ? 'gated' : 'free')}
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            <label htmlFor="plan-gate-timeout" className="text-[11px] font-medium text-ink-soft">
-              {t('st.defaults.planGateTimeout')}
-            </label>
-            <input
-              id="plan-gate-timeout"
-              type="number"
-              min={5}
-              step={1}
-              disabled={saving}
-              className={`${SMALL_INPUT} py-1`}
-              value={planGateTimeoutS}
-              onChange={(event) => { setPlanGateTimeoutS(event.target.value); }}
-              onBlur={() => void commitPlanGateTimeout()}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') event.currentTarget.blur();
-              }}
-            />
-          </div>
-          <Hint>{t('st.defaults.planGateHint')} {t('st.defaults.hint')}</Hint>
+          <p className={`text-[11px] leading-relaxed ${permissionMode === 'yolo' ? 'text-amber-ink' : 'text-ink-faint'}`}>
+            {t(`composer.mode.${permissionMode}Hint`)}
+          </p>
+          <Hint>{t('st.defaults.hint')}</Hint>
           <FeedbackLine feedback={feedback} />
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         </div>
       </SectionCard>
 
       <SectionCard id="st-card-composer" title={t('st.composer.title')}>
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            <label htmlFor="send-shortcut-select" className="text-[11px] font-medium text-ink-soft">{t('st.composer.sendShortcut')}</label>
+        <div className="space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <label htmlFor="send-shortcut-select" className="text-[12.5px] font-medium text-ink">{t('st.composer.sendShortcut')}</label>
             <select
               id="send-shortcut-select"
               className={SMALL_INPUT}
@@ -436,17 +358,25 @@ export function GeneralSection() {
               <option value="cmd-enter">{t('st.composer.shortcutCmdEnter')}</option>
             </select>
           </div>
-          <Toggle
-            label={t('st.composer.persistDrafts')}
-            checked={settings.draftPersistence}
-            onChange={(checked) => {
-              updateLocal({ draftPersistence: checked });
-              if (!checked) clearStoredDrafts();
-            }}
-          />
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <Toggle
+              label={t('st.composer.persistDrafts')}
+              checked={settings.draftPersistence}
+              onChange={(checked) => {
+                updateLocal({ draftPersistence: checked });
+                if (!checked) clearStoredDrafts();
+              }}
+            />
+          </div>
           <Hint>{t('st.composer.persistDraftsHint')}</Hint>
         </div>
       </SectionCard>
+
+      <ExperimentalSection
+        featureIds={['auto_session_title']}
+        cardId="st-card-session-title"
+        titleKey="st.experimental.sessionTitle"
+      />
 
       <SectionCard id="st-card-desktop" title={t('st.desktop.title')} badge="desktop" aside={isDesktop ? undefined : t('st.desktop.browserHint')}>
         {isDesktop ? (

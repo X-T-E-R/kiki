@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQueries } from '@tanstack/react-query';
 
-import type { Session } from '@moonshot-ai/protocol';
+import type { Session } from '@kiki/protocol';
 
 import { buildActivityModel, formatElapsedClock, type ActivityEntry } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';

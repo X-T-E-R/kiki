@@ -15,7 +15,7 @@
  * main turn is no longer running.
  */
 
-import type { Message, PromptListResponse, Session, Task } from '@moonshot-ai/protocol';
+import type { Message, PromptListResponse, Session, Task } from '@kiki/protocol';
 
 import { switcherSessionLabel } from './quickSwitcher';
 

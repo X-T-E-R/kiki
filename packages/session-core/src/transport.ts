@@ -19,8 +19,8 @@ import type {
   RequestIdentityPolicyWire,
   Session,
   SessionSnapshotResponse,
-} from '@moonshot-ai/protocol';
-import type { TranscriptCursor, TranscriptGradeSpec } from '@moonshot-ai/transcript';
+} from '@kiki/protocol';
+import type { TranscriptCursor, TranscriptGradeSpec } from '@kiki/transcript';
 
 export class ApiError extends Error {
   readonly code: number;
@@ -401,6 +401,8 @@ export interface AgentTranscriptResponse {
     | { kind: 'taskref'; refId: string; taskId: string; at?: string }
   )[];
   readonly has_more: boolean;
+  readonly tool_call_count?: number;
+  readonly cursor?: { readonly seq: number; readonly epoch?: string };
   readonly interactions?: readonly AgentTranscriptInteraction[];
   readonly agents?: readonly AgentTranscriptAgent[];
   readonly tasks?: readonly AgentTranscriptTask[];
@@ -415,29 +417,10 @@ export interface AgentTranscriptResponse {
 }
 
 export interface SessionTransport {
-  snapshot(sessionId: string, options?: { readonly transcript?: boolean }): Promise<SessionSnapshotResponse>;
   getSession(sessionId: string): Promise<Session>;
-  getAgentTranscript(
-    sessionId: string,
-    agentId: string,
-    options?: { readonly beforeTurn?: string; readonly afterTurn?: string; readonly pageSize?: number },
-  ): Promise<AgentTranscriptResponse>;
-  getTranscriptOps(
-    sessionId: string,
-    agentId: string,
-    since: { readonly seq: number; readonly epoch?: string },
-    grade?: 'turn' | 'block' | 'delta',
-  ): Promise<{
-    readonly session_id: string;
-    readonly agent_id: string;
-    readonly epoch: string;
-    readonly batches: readonly { readonly seq: number; readonly ops: readonly unknown[] }[];
-    readonly through_seq: number;
-    readonly complete: boolean;
-  }>;
   submitPrompt(sessionId: string, body: PromptSubmission): Promise<PromptSubmitResult>;
-  editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<unknown>;
-  regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<unknown>;
+  editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
+  regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session>;
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse>;
   replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
@@ -453,19 +436,7 @@ export interface SessionTransport {
     body: QuestionResolveRequest,
   ): Promise<QuestionResolveResult>;
   dismissQuestion(sessionId: string, questionId: string): Promise<QuestionDismissResult>;
-  cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: true }>;
-}
-
-export interface SessionSocket {
-  readonly connectionGeneration: number;
-  subscribe(sessionId: string, cursor: SessionCursor, grades?: TranscriptGradeSpec): void;
-  unsubscribe(sessionId: string): void;
-  restartGeneration(): void;
-  updateCursor(sessionId: string, cursor: SessionCursor): void;
-  setTranscriptGrades(sessionId: string, grades: TranscriptGradeSpec): void;
-  clearTranscriptSince(sessionId: string): void;
-  updateTranscriptSince(sessionId: string, agentId: string, cursor: TranscriptCursor): void;
-  abort(sessionId: string, promptId: string): void;
+  cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: boolean }>;
 }
 
 export interface SessionListTransport {

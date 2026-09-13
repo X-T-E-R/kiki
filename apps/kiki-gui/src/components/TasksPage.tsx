@@ -19,7 +19,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import type { Task, TaskStatus } from '@moonshot-ai/protocol';
+import type { Task, TaskStatus } from '@kiki/protocol';
 
 import { sortTasks } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';

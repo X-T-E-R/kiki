@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PageResponse, Session, Workspace } from '@moonshot-ai/protocol';
+import type { PageResponse, Session, Workspace } from '@kiki/protocol';
 
 import {
   arrangePinnedFirst,

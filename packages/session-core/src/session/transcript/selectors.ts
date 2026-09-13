@@ -1,5 +1,5 @@
-import type { Session, SessionPendingInteraction } from '@moonshot-ai/protocol';
-import type { AgentTranscriptSnapshot, TranscriptItem } from '@moonshot-ai/transcript';
+import type { Session, SessionPendingInteraction } from '@kiki/protocol';
+import type { AgentTranscriptSnapshot, TranscriptItem } from '@kiki/transcript';
 
 import type { AgentTranscriptResponse } from '../../transport';
 import { MAIN_AGENT_ID, countToolBlocks, type AgentForest, type AgentTreeNode } from '../agentTree';
@@ -203,8 +203,11 @@ export function agentTranscriptPageFromResponse(
   readonly usage: unknown;
   readonly busy: undefined;
   readonly toolCallCount: number;
+  readonly toolCallCountKnown?: boolean;
 } {
   const firstTurn = response.items.find((item) => item.kind === 'turn');
+  const visibleToolCallCount = countToolBlocks(blocks);
+  const suppliedToolCallCount = response.tool_call_count;
   return {
     blocks,
     hasMore: response.has_more,
@@ -216,7 +219,8 @@ export function agentTranscriptPageFromResponse(
     maxContextTokens: response.meta?.agent?.maxContextTokens,
     usage: response.meta?.agent?.usage,
     busy: undefined,
-    toolCallCount: countToolBlocks(blocks),
+    toolCallCount: Math.max(suppliedToolCallCount ?? 0, visibleToolCallCount),
+    toolCallCountKnown: suppliedToolCallCount !== undefined,
   };
 }
 

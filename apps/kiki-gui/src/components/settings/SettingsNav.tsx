@@ -99,12 +99,10 @@ export function SettingsSearch({
 }
 
 /**
- * The candidate-A navigation tree: non-clickable group headers with clickable
+ * The settings navigation tree: non-clickable group headers with clickable
  * leaf sections, plus top-level leaves (About & updates) that belong to no
- * group. Groups with zero leaves (Data & advanced this batch) are part of the
- * adjudicated topology but skipped here until content lands. Shared by the
- * desktop rail and the mobile drawer so both breakpoints present the same
- * hierarchy.
+ * group. Shared by the desktop rail and the mobile drawer so both breakpoints
+ * present the same hierarchy.
  */
 export function SettingsNavTree({
   active,
@@ -134,6 +132,15 @@ export function SettingsNavTree({
       </button>
     );
   };
+
+  const nbSearchSubtabs: readonly { tab: string; labelEn: string; labelZh: string }[] = [
+    { tab: 'overview', labelEn: 'Overview & source', labelZh: '概览与配置来源' },
+    { tab: 'search', labelEn: 'Search lanes', labelZh: '搜索 Lane' },
+    { tab: 'fetch', labelEn: 'Fetch chain', labelZh: '抓取链' },
+    { tab: 'providers', labelEn: 'Services & credentials', labelZh: '服务与凭证' },
+    { tab: 'advanced', labelEn: 'Advanced & diagnostics', labelZh: '高级与诊断' },
+  ];
+
   return (
     <div className="mt-2 flex flex-col gap-3" data-settings-nav-tree>
       {SETTINGS_NAV_TREE.map((node) => {
@@ -147,7 +154,29 @@ export function SettingsNavTree({
               {t(node.labelKey)}
             </p>
             <div className="flex flex-col">
-              {node.sections.map((id) => leafButton(id))}
+              {node.sections.map((id) => (
+                <div key={id} className="flex flex-col">
+                  {leafButton(id)}
+                  {id === 'search' && active === 'search' ? (
+                    <div className="ml-3 my-0.5 flex flex-col gap-0.5 border-l border-hairline pl-2" data-settings-nav-subtabs="search">
+                      {nbSearchSubtabs.map((sub) => (
+                        <button
+                          key={sub.tab}
+                          type="button"
+                          data-settings-nav-subtab={sub.tab}
+                          onClick={() => {
+                            onNavigate(`search?tab=${sub.tab}` as unknown as SectionId);
+                            onAfterNavigate?.();
+                          }}
+                          className="rounded px-2 py-1 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
+                        >
+                          {document.documentElement.lang.startsWith('zh') ? sub.labelZh : sub.labelEn}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
             </div>
           </div>
         );

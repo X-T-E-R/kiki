@@ -12,9 +12,10 @@
 import { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Composer } from './Composer';
+import { AgentCapabilitiesPanel } from './AgentCapabilitiesPanel';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
 import { isAbsoluteCwdPath, WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
@@ -119,6 +120,14 @@ function ProviderSetupCard() {
 }
 
 export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
+  const location = useLocation();
+  return <NewSessionPageContent key={`${location.key}:${location.search}`} onToggleSidebar={onToggleSidebar} prefillNavigationKey={location.key} />;
+}
+
+function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
+  onToggleSidebar: () => void;
+  prefillNavigationKey: string;
+}) {
   const { client } = useConnection();
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -127,7 +136,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
   const agentParam = searchParams.get('agent') ?? undefined;
   const { slots } = useConversationShell();
 
-  const state = useNewSessionDraft({ initialWorkspaceId: workspaceParam, initialProfile: agentParam });
+  const state = useNewSessionDraft({ initialWorkspaceId: workspaceParam, initialProfile: agentParam, prefillNavigationKey });
 
   const recentQuery = useQuery({
     queryKey: ['sessions', 'recent'],
@@ -136,11 +145,9 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
   });
   const recentSessions = useMemo(() => recentQuery.data?.items ?? [], [recentQuery.data]);
 
-  // Busy/loading locks the textarea; a missing workspace or absolute path
-  // only blocks sending so the draft and the pickers stay usable — a hint
-  // under the workspace chip and the send button's tooltip say what to do.
-  const composerDisabled =
-    state.busy || state.workspacesLoading || state.agentProfileCatalogPending;
+  // Only creation locks input. Catalog validation and missing targets block
+  // sending while keeping the draft and selection controls editable.
+  const composerDisabled = state.busy;
   const cwd = state.cwd.trim();
   const sendDisabled =
     state.effectiveWorkspace === undefined && (cwd === '' || !isAbsoluteCwdPath(cwd));
@@ -289,6 +296,14 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
         {showTargetHint ? (
           <p className="mt-2 text-[11.5px] text-ink-faint">{t('new.noTargetHint')}</p>
         ) : null}
+        {state.workspaceId !== '' && cwd === '' && !state.workspacesLoading && state.effectiveWorkspace === undefined ? (
+          <p role="alert" className="mt-2 text-[11.5px] text-danger">{t('selection.workspaceInvalid', { value: state.workspaceId })}</p>
+        ) : null}
+        {state.agentProfileCatalogMode.mode === 'cwd' || state.agentProfileCatalogMode.mode === 'workspace' ? <div className="mt-2 w-full max-w-[var(--kiki-chat-content-width,760px)]">
+          <AgentCapabilitiesPanel query={state.agentProfileCatalogMode.mode === 'cwd'
+            ? { cwd: state.agentProfileCatalogMode.cwd, profile: state.agentProfile }
+            : { workspace_id: state.agentProfileCatalogMode.workspaceId, profile: state.agentProfile }} />
+        </div> : null}
       </div>
 
       {state.error !== null && slots.dock !== null

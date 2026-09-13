@@ -3,7 +3,7 @@
  * Write-create chain as journaled messages; on prompt, two live sequences:
  *   1) three consecutive tool calls (Read + Edit + Bash) → one "Steps · 3" group;
  *   2) a tool/approval/tool boundary (Glob → approval → Bash) where the
- *      approval flushes the group so the tools do NOT fold together.
+ *      pending approval separates the tools; resolving archives it and allows regrouping.
  * The Edit uses real old/new strings with >6 unchanged lines between two
  * changes so the DiffCard shows two hunks and a "… unchanged lines" separator.
  */
@@ -29,6 +29,7 @@ const WRITE1 = fid('call');
 const LIVE_READ = fid('call');
 const LIVE_EDIT = fid('call');
 const LIVE_BASH = fid('call');
+const LIVE_VERIFY = fid('call');
 const BOUND_GLOB = fid('call');
 const BOUND_BASH = fid('call');
 
@@ -79,7 +80,7 @@ export default {
     turnStart(1),
     workChanged(true),
     { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 1 } } },
-    // Sequence 1: three consecutive tools with no non-tool block between them.
+    // Sequence 1: four consecutive non-shell tools with no non-tool block between them.
     {
       frame: {
         type: 'tool.call.started',
@@ -111,14 +112,29 @@ export default {
       frame: {
         type: 'tool.call.started',
         payload: {
-          turnId: 1, toolCallId: LIVE_BASH, name: 'Bash',
-          args: { command: 'node -e "console.log(JSON.stringify(require(\'./plan.ts\').plan.version))"' },
-          display: { kind: 'command', command: 'node plan.ts --print-version' },
+          turnId: 1, toolCallId: LIVE_BASH, name: 'Glob',
+          args: { pattern: 'src/**/*.ts' },
+          display: { kind: 'file_io', operation: 'list', path: 'C:/fixture/workshop/src' },
         },
       },
     },
-    { delay: 600 },
-    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_BASH, output: { kind: 'command_output', exit_code: 0, stdout: '2\n' } } } },
+    { delay: 250 },
+    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_BASH, output: ['src/plan.ts', 'src/notes.ts'] } } },
+    { delay: 250 },
+    {
+      frame: {
+        type: 'tool.call.started',
+        payload: {
+          turnId: 1, toolCallId: LIVE_VERIFY, name: 'Read',
+          args: { file_path: FILE },
+          display: { kind: 'file_io', operation: 'read', path: FILE },
+        },
+      },
+    },
+    { delay: 250 },
+    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_VERIFY, output: { kind: 'file_content', path: FILE, content: EDIT_AFTER } } } },
+    { delay: 200 },
+    { frame: { type: 'assistant.delta', offset: 0, payload: { turnId: 1, delta: 'Preparing the gated boundary.' } } },
     { delay: 200 },
     // Sequence 2: tool / approval / tool boundary — approval must flush the group.
     {
@@ -152,10 +168,10 @@ export default {
     { delay: 200 },
     { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 1 } } },
     { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 2 } } },
-    ...streamSteps('assistant.delta', 1, 'Both sequences completed: three tools folded and the approval boundary split the second pair.', { per: 24 }),
+    ...streamSteps('assistant.delta', 1, 'Both sequences completed: four tools folded and the approval boundary split the final tool.', { per: 24 }),
     { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 2 } } },
     turnEnd(1),
-    commitAssistant('$SID', 'Both sequences completed: three tools folded and the approval boundary split the second pair.'),
+    commitAssistant('$SID', 'Both sequences completed: four tools folded and the approval boundary split the final tool.'),
     { frame: { type: 'prompt.completed', payload: { promptId: '$PROMPT', finishedAt: new Date().toISOString(), reason: 'completed' } } },
     workChanged(false),
   ],

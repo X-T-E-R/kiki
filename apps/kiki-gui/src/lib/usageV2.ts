@@ -1,19 +1,20 @@
 /**
- * Usage V2 — the client half of `GET /api/v2/usage` (kap-server
+ * Usage dashboard — the client half of `GET /api/usage` (kap-server
  * `protocol/rest-usage.ts`). This module owns:
  *
  *   - the wire types (mirrored locally; the schema lives in kap-server and is
- *     not re-exported through @moonshot-ai/protocol);
+ *     not re-exported through @kiki/protocol);
  *   - the three-axis filter model (granularity × range × dimension) plus its
  *     URL query serialization — the URL is the canonical, shareable state;
- *   - localStorage persistence so a query-less revisit restores the last
- *     selection instead of bouncing back to a default;
+ *   - localStorage persistence for filter selections; the page intentionally
+ *     ignores stored bounds on query-less visits so the default stays bounded;
  *   - pure derivations the page needs: cross-bucket dimension rollups,
  *     agent parent/child trees, cache hit rate, bucket labels, burn rate.
  *
  * Contract notes honored here (see the V2-b consumer contract):
- *   - no implicit 30-day window: the default range is 'all' and the server's
- *     `query.range.defaulted_to_all_history` flag is surfaced, never hidden;
+ *   - the GUI no-query default range is 'today'; an explicit 'all' range still
+ *     omits `range` so the server's `query.range.defaulted_to_all_history` flag
+ *     is surfaced, never hidden;
  *   - trend buckets arrive time-ascending, session items cost-descending;
  *   - `cost_usd_estimated` is only the priced part when `cost_unknown`;
  *   - dimension keys are modelAlias for model, 'unknown' for old records —
@@ -70,8 +71,10 @@ export interface UsageTokensWire {
 
 export interface UsageAggregateWire {
   readonly tokens: UsageTokensWire;
+  /** True when token accounting is missing or historical zero-record provenance is unknown. */
+  readonly tokens_unknown?: boolean;
   readonly cost_usd_estimated: number;
-  /** True when some records priced unknown models; the estimate is partial. */
+  /** True when pricing or token accounting is uncertain; the estimate is only the known portion. */
   readonly cost_unknown: boolean;
 }
 
@@ -138,6 +141,11 @@ export interface UsageResponseWire {
     readonly next_page_token: string | null;
   };
   readonly reliability: {
+    readonly usage_coverage?: {
+      readonly known_records: number;
+      readonly missing_records: number;
+      readonly legacy_zero_records: number;
+    };
     readonly coverage: {
       readonly earliest_at: number | null;
       readonly latest_at: number | null;
@@ -166,10 +174,10 @@ export interface UsageFilters {
   readonly endAt: number | undefined;
 }
 
-/** The no-query state: all history, daily trend, model breakdown. */
+/** The no-query state: local today, daily trend, model breakdown. */
 export const USAGE_FILTER_DEFAULTS: UsageFilters = {
   granularity: 'day',
-  range: 'all',
+  range: 'today',
   dimension: 'model',
   workspaceId: undefined,
   includeArchived: true,
@@ -273,7 +281,7 @@ export function usageDetailViewToSearch(view: UsageDetailView, existing?: string
 
 /**
  * Filters → URL query. Defaults are omitted so the no-query URL stays the
- * canonical all-history state; non-default axes are always explicit so the
+ * canonical local-today state; non-default axes are always explicit so the
  * link is shareable and refresh-stable. Preserves unrelated params (server /
  * token deep-link keys, the session locator).
  */
@@ -309,7 +317,7 @@ export function usageFiltersToSearch(filters: UsageFilters, existing?: string): 
   return query === '' ? '' : `?${query}`;
 }
 
-/** Persist the last selection so a query-less revisit restores it. */
+/** Read a persisted selection; query-less `/usage` visits intentionally ignore it. */
 export function readStoredUsageFilters(): UsageFilters | undefined {
   try {
     const raw = localStorage.getItem(USAGE_FILTERS_STORAGE_KEY);
@@ -375,9 +383,8 @@ export interface UsageApiQueryOptions {
 }
 
 /**
- * Filters → `GET /api/v2/usage` query params. `range` is omitted for the
- * all-history default so the server can mark the response
- * `defaulted_to_all_history` (the chip the no-query state is identified by);
+ * Filters → `GET /api/usage` query params. An explicit `range=all` is
+ * omitted so the server can mark the response `defaulted_to_all_history`;
  * every other axis is sent explicitly so the server's defaults never diverge
  * from what the UI displays. A page token is passed through untouched (and
  * only ever paired with the filter set that produced it).
@@ -418,6 +425,11 @@ export function totalTokensOf(aggregate: UsageAggregateWire): number {
   );
 }
 
+/** True when the aggregate has no known token total to display. */
+export function usageTokenTotalIsUnknown(aggregate: UsageAggregateWire): boolean {
+  return aggregate.tokens_unknown === true && totalTokensOf(aggregate) === 0;
+}
+
 /** cache_read / total input (input_other + cache_read + cache_creation). */
 export function cacheHitRateOf(aggregate: UsageAggregateWire): number | null {
   const input =
@@ -436,6 +448,7 @@ export interface UsageDimensionRow {
   readonly profileName: string | null;
   readonly tokens: UsageTokensWire;
   readonly totalTokens: number;
+  readonly tokensUnknown: boolean;
   readonly costUsdEstimated: number;
   readonly costUnknown: boolean;
   /** True when rows for this key reported conflicting providers/etc. */
@@ -456,6 +469,7 @@ export function aggregateDimensionGroups(
     string,
     {
       tokens: { input_other: number; output: number; input_cache_read: number; input_cache_creation: number };
+      tokensUnknown: boolean;
       costUsdEstimated: number;
       costUnknown: boolean;
       provider: string | null;
@@ -480,6 +494,7 @@ export function aggregateDimensionGroups(
         rows.get(group.key) ??
         {
           tokens: { input_other: 0, output: 0, input_cache_read: 0, input_cache_creation: 0 },
+          tokensUnknown: false,
           costUsdEstimated: 0,
           costUnknown: false,
           provider: null,
@@ -494,6 +509,7 @@ export function aggregateDimensionGroups(
       row.tokens.input_cache_read += group.tokens.input_cache_read;
       row.tokens.input_cache_creation += group.tokens.input_cache_creation;
       row.costUsdEstimated += group.cost_usd_estimated;
+      row.tokensUnknown ||= group.tokens_unknown === true;
       row.costUnknown ||= group.cost_unknown;
       for (const [field, next] of [
         ['provider', group.provider],
@@ -523,6 +539,7 @@ export function aggregateDimensionGroups(
         row.tokens.output +
         row.tokens.input_cache_read +
         row.tokens.input_cache_creation,
+      tokensUnknown: row.tokensUnknown,
       costUsdEstimated: row.costUsdEstimated,
       costUnknown: row.costUnknown,
       mixedAttribution: row.mixedAttribution,

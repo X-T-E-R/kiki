@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protocol';
+import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
@@ -211,7 +211,7 @@ export function ModelCatalogCard() {
                   ) : null}
                   {providerDefault !== undefined && providerDefault !== null && providerDefault !== '' ? (
                     <span
-                      className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-ink-faint"
+                      className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] font-medium text-ink-faint"
                       title={t('st.models.providerDefaultHint')}
                     >
                       {t('st.models.providerDefault')} · {shortModelId(providerDefault, group.provider)}
@@ -294,29 +294,31 @@ export function GlobalDefaultsCard() {
   return (
     <SectionCard id="st-card-global-defaults" title={t('st.defaults.globalTitle')}>
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="text-[11px] font-medium text-ink-soft">{t('st.models.providerLabel')}
+        <div className="grid items-center gap-x-3 gap-y-2 sm:grid-cols-[6.5rem_minmax(0,1fr)]">
+          <span className="text-[11px] font-medium text-ink-soft">{t('st.models.providerLabel')}</span>
+          <div className="flex items-center gap-2">
             <select
-              className={`${SMALL_INPUT} ml-2`}
+              aria-label={t('st.models.providerLabel')}
+              className={SMALL_INPUT}
               value={defaultProvider}
               disabled={busy}
               onChange={(event) => void selectDefaultProvider(event.target.value)}
             >
               {(providersQuery.data?.items ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
             </select>
-          </label>
-          <SavedTick show={tick} />
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
-          <span className="font-medium text-ink-soft">{t('st.defaults.globalModelLabel')}</span>
-          <span className="font-mono text-[12px] text-ink">{defaultModel ?? t('st.auth.none')}</span>
-          <button
-            type="button"
-            className={SECONDARY_BUTTON}
-            onClick={() => { navigate('/settings/ai?tab=models'); }}
-          >
-            {t('st.defaults.pickModel')}
-          </button>
+            <SavedTick show={tick} />
+          </div>
+          <span className="text-[11px] font-medium text-ink-soft">{t('st.defaults.globalModelLabel')}</span>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="truncate font-mono text-[12px] text-ink">{defaultModel ?? t('st.auth.none')}</span>
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              onClick={() => { navigate('/settings/ai?tab=models'); }}
+            >
+              {t('st.defaults.pickModel')}
+            </button>
+          </div>
         </div>
         <Hint>{t('st.defaults.globalHint')}</Hint>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
@@ -381,32 +383,34 @@ export function ThinkingCard() {
   return (
     <SectionCard id="st-card-thinking" title={t('st.thinking.title')}>
       <div className="space-y-3">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Toggle label={t('st.thinking.enable')} checked={thinkingEnabled} disabled={busy} onChange={(checked) => void saveThinking(checked, effort)} />
+          {defaultItem?.support_efforts !== undefined && defaultItem.support_efforts.length > 0 ? (
+            <select
+              aria-label={t('st.thinking.title')}
+              className={SMALL_INPUT}
+              value={effort}
+              disabled={!thinkingEnabled || busy}
+              onChange={(event) => void saveThinking(thinkingEnabled, event.target.value)}
+            >
+              {defaultItem.support_efforts.map((level) => <option key={level} value={level}>{level}</option>)}
+            </select>
+          ) : (
+            <input
+              aria-label={t('st.thinking.title')}
+              className={`${SMALL_INPUT} w-32`}
+              value={effort}
+              disabled={!thinkingEnabled || busy}
+              onChange={(event) => { setEffort(event.target.value); }}
+              onBlur={() => void saveThinking(thinkingEnabled, effort)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void saveThinking(thinkingEnabled, effort);
+              }}
+              placeholder={t('st.thinking.placeholder')}
+            />
+          )}
           <SavedTick show={tick} />
         </div>
-        {defaultItem?.support_efforts !== undefined && defaultItem.support_efforts.length > 0 ? (
-          <select
-            className={SMALL_INPUT}
-            value={effort}
-            disabled={!thinkingEnabled || busy}
-            onChange={(event) => void saveThinking(thinkingEnabled, event.target.value)}
-          >
-            {defaultItem.support_efforts.map((level) => <option key={level} value={level}>{level}</option>)}
-          </select>
-        ) : (
-          <input
-            className={INPUT}
-            value={effort}
-            disabled={!thinkingEnabled || busy}
-            onChange={(event) => { setEffort(event.target.value); }}
-            onBlur={() => void saveThinking(thinkingEnabled, effort)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') void saveThinking(thinkingEnabled, effort);
-            }}
-            placeholder={t('st.thinking.placeholder')}
-          />
-        )}
         <Hint>{t('st.thinking.hint')}</Hint>
         <FeedbackLine feedback={feedback} />
       </div>
@@ -525,8 +529,10 @@ export function ModelsTab() {
 
 /** Tab 3 body: global default provider/model, request identity, thinking. */
 export function DefaultsTab() {
+  const { t } = useI18n();
   return (
     <div className="space-y-4">
+      <Hint>{t('st.defaults.tabHint')}</Hint>
       <GlobalDefaultsCard />
       <GlobalRequestIdentityCard />
       <ThinkingCard />

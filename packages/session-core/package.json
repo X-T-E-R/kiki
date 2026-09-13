@@ -3,6 +3,15 @@
   "version": "0.0.1",
   "private": true,
   "description": "Framework-free session state and command logic for Kiki clients.",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
+    "directory": "packages/session-core"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/kiki/issues"
+  },
   "license": "MIT",
   "type": "module",
   "imports": {
@@ -63,9 +72,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@moonshot-ai/klient": "workspace:^",
-    "@moonshot-ai/protocol": "workspace:^",
-    "@moonshot-ai/transcript": "workspace:^",
+    "@kiki/klient": "workspace:^",
+    "@kiki/protocol": "workspace:^",
+    "@kiki/transcript": "workspace:^",
     "diff": "^8.0.2"
   }
 }

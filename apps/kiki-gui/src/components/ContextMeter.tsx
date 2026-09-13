@@ -19,7 +19,7 @@ import { createContext, useContext, useId, useState, type ReactNode } from 'reac
 
 import { Link } from 'react-router-dom';
 
-import type { SessionUsage } from '@moonshot-ai/protocol';
+import type { SessionUsage } from '@kiki/protocol';
 
 import { formatCostUsd } from '@kiki/session-core/util';
 import type { ContextBreakdown } from '@kiki/session-core/wire';

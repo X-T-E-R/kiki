@@ -1,7 +1,7 @@
 /**
  * Usage formatting helpers shared by the ContextMeter detail card, the
  * transcript turn-tail readout, and the /usage dashboard. The dashboard's
- * aggregation moved server-side with the V2 usage API (`GET /api/v2/usage`;
+ * aggregation moved server-side with the usage API (`GET /api/usage`;
  * see lib/usageV2 for the client half) — this module keeps only the
  * deterministic, locale-independent formatters.
  */

@@ -49,7 +49,17 @@ function tokens(inputOther: number, cacheRead = 0) {
 function usageResponse(overrides: {
   defaulted?: boolean;
   costUnknown?: boolean;
+  tokensUnknown?: boolean;
+  summaryTokens?: ReturnType<typeof tokens>;
+  sessionTokens?: ReturnType<typeof tokens>;
+  trendTokens?: ReturnType<typeof tokens>;
+  summaryCost?: number;
   unknownPriceModels?: string[];
+  usageCoverage?: {
+    known_records: number;
+    missing_records: number;
+    legacy_zero_records: number;
+  };
   incompleteReason?: 'session_cap' | 'record_budget' | 'deadline' | null;
   incompleteSessions?: number;
   sessions?: { id: string; title?: string; cost?: number }[];
@@ -67,7 +77,8 @@ function usageResponse(overrides: {
       archived: false,
       deleted: false,
       usage: {
-        tokens: tokens(1000, 500),
+        tokens: overrides.sessionTokens ?? tokens(1000, 500),
+        tokens_unknown: overrides.tokensUnknown,
         cost_usd_estimated: item.cost ?? 1,
         cost_unknown: overrides.costUnknown ?? false,
       },
@@ -90,8 +101,9 @@ function usageResponse(overrides: {
       timezone_offset_minutes: 0,
     },
     summary: {
-      tokens: tokens(5000, 2500),
-      cost_usd_estimated: 3.25,
+      tokens: overrides.summaryTokens ?? tokens(5000, 2500),
+      tokens_unknown: overrides.tokensUnknown,
+      cost_usd_estimated: overrides.summaryCost ?? 3.25,
       cost_unknown: overrides.costUnknown ?? false,
       session_count: items.length,
     },
@@ -103,9 +115,10 @@ function usageResponse(overrides: {
         groups: (overrides.trendGroups ?? [{ key: 'k2-thinking', cost: 3.25, provider: 'kimi' }]).map(
           (group) => ({
             key: group.key,
-            tokens: tokens(5000, 2500),
+            tokens: overrides.trendTokens ?? tokens(5000, 2500),
+            tokens_unknown: overrides.tokensUnknown,
             cost_usd_estimated: group.cost,
-            cost_unknown: false,
+            cost_unknown: overrides.costUnknown ?? false,
             provider: group.provider ?? null,
             model_alias: group.key === 'unknown' ? null : group.key,
             agent_id: null,
@@ -134,6 +147,7 @@ function usageResponse(overrides: {
       next_page_token: overrides.nextPageToken ?? null,
     },
     reliability: {
+      usage_coverage: overrides.usageCoverage,
       coverage: { earliest_at: day, latest_at: day + 2 * 24 * 3600_000 },
       scanned_sessions: items.length,
       incomplete_sessions: overrides.incompleteSessions ?? 0,
@@ -149,7 +163,7 @@ function LocationProbe() {
   return <span data-location-probe>{`${location.pathname}${location.search}`}</span>;
 }
 
-async function renderPage(entry = '/usage') {
+async function renderPage(entry = '/usage', options: { flush?: boolean } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const container = document.createElement('div');
   document.body.append(container);
@@ -167,17 +181,19 @@ async function renderPage(entry = '/usage') {
       </QueryClientProvider>,
     );
   });
-  // Flush react-query promise resolution + re-render (a few macrotask turns).
-  for (let i = 0; i < 5; i += 1) {
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  if (options.flush !== false) {
+    // Flush react-query promise resolution + re-render (a few macrotask turns).
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
   }
   return { container, root };
 }
 
-/** Calls to the main paged query (the live strip asks for range=today). */
+/** Calls to the main paged query (it requests the 25-row session page). */
 function mainCalls() {
   return getUsage.mock.calls.filter(
-    ([query]) => (query as Record<string, unknown>)['range'] !== 'today',
+    ([query]) => (query as Record<string, unknown>)['page_size'] === 25,
   );
 }
 
@@ -186,27 +202,118 @@ beforeEach(() => {
   getUsage.mockReset();
   getSession.mockReset();
   listWorkspaces.mockReset();
-  getUsage.mockImplementation(async () => usageResponse({ defaulted: true }));
+  getUsage.mockImplementation(async (query: Record<string, unknown>) =>
+    usageResponse({ defaulted: query['range'] === undefined }),
+  );
   getSession.mockRejectedValue(new Error('no session'));
   listWorkspaces.mockResolvedValue({ items: [{ id: 'wd_1', name: 'Workspace One' }] });
 });
 
 describe('UsagePage (V2)', () => {
-  it('defaults to all history and says so explicitly', async () => {
+  it('defaults to local today without an all-history notice', async () => {
     const { container } = await renderPage();
     const main = mainCalls();
     expect(main.length).toBeGreaterThan(0);
-    // range is omitted so the server marks the response defaulted_to_all_history.
+    expect(main[0]?.[0]).toMatchObject({
+      granularity: 'day',
+      range: 'today',
+      dimension: 'model',
+    });
+    expect(container.querySelector('[data-usage-all-history]')).toBeNull();
+    expect(container.querySelector('[data-usage-reliability]')).not.toBeNull();
+    expect(container.textContent).toContain('Deleted sessions are not included');
+  });
+
+  it('keeps explicit all-history URL semantics', async () => {
+    const { container } = await renderPage('/usage?range=all');
+    const main = mainCalls();
     expect(main[0]?.[0]).toMatchObject({ granularity: 'day', dimension: 'model' });
     expect((main[0]?.[0] as Record<string, unknown>)['range']).toBeUndefined();
     expect(container.querySelector('[data-usage-all-history]')?.textContent).toContain(
       'All history',
     );
-    expect(container.querySelector('[data-usage-reliability]')).not.toBeNull();
-    expect(container.textContent).toContain('Deleted sessions are not included');
+  });
+
+  it.each([
+    ['all', { range: 'all' }],
+    ['last_7_days', { range: 'last_7_days' }],
+    ['custom', { range: 'custom', startAt: 1000, endAt: 2000 }],
+  ] as const)('always defaults a query-less visit to today despite stored %s', async (_label, storedRange) => {
+    localStorage.setItem(
+      USAGE_FILTERS_STORAGE_KEY,
+      JSON.stringify({
+        granularity: 'month',
+        dimension: 'agent',
+        workspaceId: 'ws-old',
+        includeArchived: false,
+        ...storedRange,
+      }),
+    );
+    const { container } = await renderPage();
+    const main = mainCalls();
+    expect(main.length).toBeGreaterThan(0);
+    expect(main[0]?.[0]).toMatchObject({
+      granularity: 'day',
+      range: 'today',
+      dimension: 'model',
+      include_archived: 'true',
+    });
+    expect((main[0]?.[0] as Record<string, unknown>)['workspace.id']).toBeUndefined();
+    expect((main[0]?.[0] as Record<string, unknown>)['start_at']).toBeUndefined();
+    expect((main[0]?.[0] as Record<string, unknown>)['end_at']).toBeUndefined();
+    expect(container.querySelector('[data-usage-all-history]')).toBeNull();
+  });
+
+  it('refetches today usage when local midnight and the timezone offset change', async () => {
+    vi.useFakeTimers();
+    const timezone = vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(480);
+    try {
+      vi.setSystemTime(new Date(2026, 8, 1, 23, 59, 30));
+      await renderPage('/usage?range=today', { flush: false });
+      for (let i = 0; i < 5; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      }
+      const initial = mainCalls()[0]?.[0] as Record<string, unknown>;
+      expect(initial).toMatchObject({ range: 'today', timezone_offset_minutes: -480 });
+
+      const callsBeforeMidnight = mainCalls().length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      for (let i = 0; i < 5; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      }
+      expect(mainCalls().length).toBeGreaterThan(callsBeforeMidnight);
+      expect(mainCalls().at(-1)?.[0]).toMatchObject({
+        range: 'today',
+        timezone_offset_minutes: -480,
+      });
+
+      const callsBeforeOffsetChange = mainCalls().length;
+      timezone.mockReturnValue(360);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      for (let i = 0; i < 5; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      }
+      expect(mainCalls().length).toBeGreaterThan(callsBeforeOffsetChange);
+      expect(mainCalls().at(-1)?.[0]).toMatchObject({
+        range: 'today',
+        timezone_offset_minutes: -360,
+      });
+    } finally {
+      timezone.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('carries every URL axis into the API query', async () => {
+    localStorage.setItem(
+      USAGE_FILTERS_STORAGE_KEY,
+      JSON.stringify({
+        granularity: 'day',
+        range: 'all',
+        dimension: 'project',
+        includeArchived: true,
+      }),
+    );
     await renderPage(
       '/usage?granularity=five_hour&range=last_7_days&dimension=agent&workspace=wd_1&include_archived=false',
     );
@@ -219,6 +326,24 @@ describe('UsagePage (V2)', () => {
     });
   });
 
+  it('does not render zero-valued statistics while usage is loading', async () => {
+    getUsage.mockImplementation(() => new Promise<UsageResponseWire>(() => {}));
+    const { container, root } = await renderPage();
+    expect(container.textContent).not.toContain('Estimated cost');
+    expect(container.querySelector('[data-usage-reliability]')).toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('shows a failed request and retry rather than empty statistics', async () => {
+    getUsage.mockRejectedValue(new Error('usage fixture unavailable'));
+    const { container, root } = await renderPage();
+    expect(container.textContent).toContain('usage fixture unavailable');
+    expect(container.textContent).toContain('Retry');
+    expect(container.textContent).not.toContain('Estimated cost');
+    expect(container.querySelector('[data-usage-reliability]')).toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
   it('flags partially-unknown pricing on the cost KPI', async () => {
     getUsage.mockImplementation(async () =>
       usageResponse({ defaulted: true, costUnknown: true, unknownPriceModels: ['mystery-1'] }),
@@ -227,6 +352,123 @@ describe('UsagePage (V2)', () => {
     expect(container.textContent).toContain('partially unknown');
     expect(container.textContent).toContain('mystery-1');
     expect(container.textContent).toContain('Estimated cost');
+  });
+
+  it.each([
+    [
+      'provider-missing',
+      true,
+      { known_records: 0, missing_records: 2, legacy_zero_records: 0 },
+    ],
+    ['true-zero', false, { known_records: 1, missing_records: 0, legacy_zero_records: 0 }],
+  ] as const)(
+    'distinguishes %s token totals from a known zero',
+    async (_label, tokensUnknown, usageCoverage) => {
+      getUsage.mockImplementation(async () =>
+        usageResponse({
+          tokensUnknown,
+          summaryTokens: tokens(0),
+          sessionTokens: tokens(0),
+          trendTokens: tokens(0),
+          summaryCost: 0,
+          sessions: [{ id: 's_accounting', title: 'Accounting', cost: 0 }],
+          trendGroups: [{ key: 'accounting', cost: 0 }],
+          usageCoverage,
+        }),
+      );
+      const { container } = await renderPage();
+      const summaryTokens = container.querySelector('[data-usage-summary-tokens]')?.textContent;
+      const summaryCost = container.querySelector('[data-usage-summary-cost]')?.textContent;
+      const stripTokens = container.querySelector('[data-usage-strip-tokens]')?.textContent;
+      const sessionTokens = container.querySelector('[data-usage-session-tokens="s_accounting"]')?.textContent;
+      const sessionCost = container.querySelector('[data-usage-session-cost="s_accounting"]')?.textContent;
+      if (tokensUnknown) {
+        expect(summaryTokens).toContain('—');
+        expect(summaryCost).toContain('—');
+        expect(stripTokens).toContain('—');
+        expect(sessionTokens).toContain('—');
+        expect(sessionCost).toContain('—');
+        expect(container.querySelector('[data-usage-trend] [data-bucket]')?.getAttribute('title')).toContain('—');
+        expect(container.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
+      } else {
+        expect(summaryTokens).not.toContain('—');
+        expect(summaryTokens).toContain('0');
+        expect(summaryCost).not.toContain('—');
+        expect(stripTokens).not.toContain('—');
+        expect(sessionTokens).not.toContain('—');
+        expect(sessionCost).not.toContain('—');
+        expect(container.querySelector('[data-usage-accounting-missing]')).toBeNull();
+      }
+    },
+  );
+
+  it('keeps absent accounting metadata backward compatible with known zeros', async () => {
+    getUsage.mockImplementation(async () =>
+      usageResponse({
+        summaryTokens: tokens(0),
+        sessionTokens: tokens(0),
+        trendTokens: tokens(0),
+        summaryCost: 0,
+        sessions: [{ id: 's_legacy-client', title: 'Legacy client', cost: 0 }],
+        trendGroups: [{ key: 'legacy-client', cost: 0 }],
+      }),
+    );
+    const { container } = await renderPage();
+    expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).toContain('0');
+    expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toContain('—');
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).not.toContain('—');
+    expect(container.querySelector('[data-usage-accounting-notices]')).toBeNull();
+  });
+
+  it('shows a distinct legacy-zero provenance notice', async () => {
+    getUsage.mockImplementation(async () =>
+      usageResponse({
+        tokensUnknown: true,
+        summaryTokens: tokens(0),
+        sessionTokens: tokens(0),
+        trendTokens: tokens(0),
+        summaryCost: 0,
+        usageCoverage: { known_records: 0, missing_records: 0, legacy_zero_records: 3 },
+      }),
+    );
+    const { container } = await renderPage();
+    expect(container.querySelector('[data-usage-accounting-missing]')).toBeNull();
+    expect(container.querySelector('[data-usage-accounting-legacy-zero]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).toContain('—');
+  });
+
+  it('retains positive known subtotals when some token records are missing', async () => {
+    getUsage.mockImplementation(async () =>
+      usageResponse({
+        tokensUnknown: true,
+        summaryTokens: tokens(10),
+        sessionTokens: tokens(10),
+        trendTokens: tokens(10),
+        summaryCost: 2,
+        sessions: [{ id: 's_mixed', title: 'Mixed', cost: 2 }],
+        trendGroups: [{ key: 'mixed', cost: 2 }],
+        usageCoverage: { known_records: 1, missing_records: 2, legacy_zero_records: 0 },
+      }),
+    );
+    const { container } = await renderPage('/usage?view=breakdown&dimension=model');
+    expect(container.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toContain('—');
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).not.toContain('—');
+    expect(container.querySelector('[data-usage-breakdown-tokens="mixed"]')?.textContent).not.toContain('—');
+    expect(container.querySelector('[data-usage-breakdown-cost="mixed"]')?.textContent).not.toContain('—');
+  });
+
+  it('shows positive token and cost subtotals when pricing is unknown', async () => {
+    getUsage.mockImplementation(async () =>
+      usageResponse({ defaulted: true, costUnknown: true, unknownPriceModels: ['mystery-1'] }),
+    );
+    const { container } = await renderPage();
+    expect(container.textContent).toContain('partially unknown');
+    expect(container.textContent).toContain('mystery-1');
+    expect(container.textContent).toContain('Estimated cost');
+    expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toContain('—');
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).not.toContain('—');
   });
 
   it('shows the incomplete notice when the server reports one', async () => {
@@ -259,7 +501,7 @@ describe('UsagePage (V2)', () => {
   it('pages sessions with the server token and keeps the filters', async () => {
     let calls = 0;
     getUsage.mockImplementation(async (query: Record<string, unknown>) => {
-      if (query['range'] === 'today') return usageResponse();
+      if (query['page_size'] === 1) return usageResponse();
       calls += 1;
       return calls === 1
         ? usageResponse({ hasMore: true, nextPageToken: 'tok_2', sessions: [{ id: 's_1' }] })
@@ -281,7 +523,7 @@ describe('UsagePage (V2)', () => {
 
   it('auto-pages until a deep-linked session on a later page is found', async () => {
     getUsage.mockImplementation(async (query: Record<string, unknown>) => {
-      if (query['range'] === 'today') return usageResponse();
+      if (query['page_size'] === 1) return usageResponse();
       const token = query['page_token'];
       if (token === undefined) {
         return usageResponse({ hasMore: true, nextPageToken: 'tok_2', sessions: [{ id: 's_1' }] });
@@ -309,7 +551,7 @@ describe('UsagePage (V2)', () => {
 
   it('reports not-in-page only after the locator walk exhausts every page', async () => {
     getUsage.mockImplementation(async (query: Record<string, unknown>) => {
-      if (query['range'] === 'today') return usageResponse();
+      if (query['page_size'] === 1) return usageResponse();
       const token = query['page_token'];
       if (token === undefined) {
         return usageResponse({ hasMore: true, nextPageToken: 'tok_2', sessions: [{ id: 's_1' }] });
@@ -328,7 +570,7 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-locating]')).toBeNull();
   });
 
-  it('persists the range selection for query-less revisits', async () => {
+  it('persists an explicit range selection for URL revisits', async () => {
     await renderPage('/usage?range=this_month');
     const stored = localStorage.getItem(USAGE_FILTERS_STORAGE_KEY);
     expect(stored).not.toBeNull();

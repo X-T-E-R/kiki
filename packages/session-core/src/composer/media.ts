@@ -14,7 +14,7 @@
  *       { type: 'image_url', imageUrl: { url: 'data:…' } }, …]`.
  */
 
-import type { Message } from '@moonshot-ai/protocol';
+import type { Message } from '@kiki/protocol';
 
 /** A renderable (or at least describable) media reference from a message part. */
 export interface MediaRef {
@@ -170,7 +170,26 @@ const WINDOWS_ABS_RE = /^[A-Za-z]:[\\/]/;
 const UNC_RE = /^\\\\/;
 const SCHEME_RE = /^[a-z][a-z\d+.-]*:/i;
 /** Bare or ./ ../-prefixed relative tokens that look like files (have an extension). */
-const RELATIVE_FILE_RE = /^\.?\.?\/|^(?:[^\s/]+\/)*[^\s/]+\.[A-Za-z0-9]{1,10}$/;
+const RELATIVE_FILE_RE = /^\.?\.?[\\/]|^(?:[^/\\]+[/\\])*[^/\\]+\.[A-Za-z0-9]{1,10}$/;
+
+export interface FileReference {
+  readonly path: string;
+  /** One-based source position, separate from the filesystem path. */
+  readonly line?: number;
+  readonly column?: number;
+}
+
+function splitFilePosition(value: string): FileReference {
+  const match = /^(.*?)(?::([1-9]\d*)(?::([1-9]\d*))?|#L([1-9]\d*)(?:C([1-9]\d*))?)$/.exec(value);
+  if (match === null) return { path: value };
+  const path = match[1]!;
+  const line = Number(match[2] ?? match[4]);
+  const column = match[3] === undefined && match[5] === undefined ? undefined : Number(match[3] ?? match[5]);
+  if (!Number.isSafeInteger(line) || (column !== undefined && !Number.isSafeInteger(column))) return { path: value };
+  // Bare scheme names and arbitrary colon-bearing filenames are not citations.
+  if (!RELATIVE_FILE_RE.test(path) && !/[\\/]/.test(path)) return { path: value };
+  return { path, line, column };
+}
 
 /**
  * Streamdown's sanitize+harden pipeline drops or mangles local-file link
@@ -183,10 +202,11 @@ export const FILE_LINK_SENTINEL = '/__kiki-file/';
 
 /** True when a markdown link target names a local file (any platform form). */
 export function isLocalFileLinkTarget(url: string): boolean {
-  if (SCHEME_RE.test(url) && !WINDOWS_ABS_RE.test(url)) return /^file:\/\//i.test(url);
-  if (WINDOWS_ABS_RE.test(url) || UNC_RE.test(url)) return true;
-  if (url.startsWith('/')) return false; // posix absolute passes sanitize untouched
-  return RELATIVE_FILE_RE.test(url);
+  const path = splitFilePosition(url).path;
+  if (SCHEME_RE.test(path) && !WINDOWS_ABS_RE.test(path)) return /^file:\/\//i.test(path);
+  if (WINDOWS_ABS_RE.test(path) || UNC_RE.test(path) || /^\/[A-Za-z]:[\\/]/.test(path)) return true;
+  if (path.startsWith('/')) return false; // posix absolute passes sanitize untouched
+  return RELATIVE_FILE_RE.test(path);
 }
 
 /** Wrap a local-file link target in the sentinel, undefined when not a file. */
@@ -210,8 +230,9 @@ const APP_ROUTE_PREFIXES = ['/new', '/s', '/settings', '/usage', '/capabilities'
 
 /** Href targets react-router should keep handling (app routes, not files). */
 export function isAppRouteHref(href: string): boolean {
-  if (href === '/') return true;
-  return APP_ROUTE_PREFIXES.some((prefix) => href === prefix || href.startsWith(`${prefix}/`));
+  const path = href.split(/[?#]/, 1)[0]!;
+  if (path === '/') return true;
+  return APP_ROUTE_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
 function parseFileUrl(value: string): string | undefined {
@@ -250,21 +271,32 @@ export function joinPath(base: string, relative: string): string {
  * when the href is not a file reference (external URL, app route, anchor).
  * Relative references need the session cwd to anchor against.
  */
-export function resolveFileHref(href: string, cwd: string | undefined): string | undefined {
+export function resolveFileReference(href: string, cwd: string | undefined): FileReference | undefined {
   const value = href.trim();
-  if (value === '') return undefined;
-  const fileUrl = parseFileUrl(value);
-  if (fileUrl !== undefined) return fileUrl;
-  // Windows drive / UNC paths must win over the scheme check ('C:' looks like
-  // a scheme otherwise).
-  if (WINDOWS_ABS_RE.test(value) || UNC_RE.test(value)) return value;
-  // Any other explicit scheme (http:, mailto:, ms:) is not a local file.
-  if (SCHEME_RE.test(value)) return undefined;
-  if (value.startsWith('/')) return isAppRouteHref(value) ? undefined : value;
-  if (value.startsWith('#')) return undefined;
-  if (cwd === undefined || cwd.trim() === '') return undefined;
-  if (!RELATIVE_FILE_RE.test(value)) return undefined;
-  return joinPath(cwd, value);
+  if (value === '' || value.startsWith('#') || value.startsWith('//') || isAppRouteHref(value)) return undefined;
+  // Split before URL decoding: %3A and %23 can name literal filename characters.
+  const reference = splitFilePosition(value);
+  let path = reference.path;
+  const fileUrl = parseFileUrl(path);
+  if (fileUrl !== undefined) return { ...reference, path: fileUrl };
+  if (SCHEME_RE.test(path) && !WINDOWS_ABS_RE.test(path)) return undefined;
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // A literal percent is a valid host filename character.
+  }
+  // Only the explicit slash + drive-root form is Windows, not arbitrary POSIX paths.
+  if (/^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
+  if (WINDOWS_ABS_RE.test(path) || UNC_RE.test(path)) return { ...reference, path };
+  if (path.startsWith('/')) return isAppRouteHref(path) ? undefined : { ...reference, path };
+  if (cwd === undefined || cwd.trim() === '' || !RELATIVE_FILE_RE.test(path)) return undefined;
+  const base = /^\/[A-Za-z]:[\\/]/.test(cwd) ? cwd.slice(1) : cwd;
+  return { ...reference, path: joinPath(base, path) };
+}
+
+/** Path-only compatibility helper for filesystem operations. */
+export function resolveFileHref(href: string, cwd: string | undefined): string | undefined {
+  return resolveFileReference(href, cwd)?.path;
 }
 
 export type PreviewKind = 'image' | 'markdown' | 'text' | 'binary';

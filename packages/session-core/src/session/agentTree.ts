@@ -54,11 +54,14 @@ export interface AgentLiveSource {
   readonly maxContextTokens?: number;
   readonly usage?: AgentUsageSummary;
   readonly status: string;
+  readonly description?: string;
   readonly summary?: string;
   readonly error?: string;
   readonly startedAt?: string;
   readonly endedAt?: string;
   readonly toolCallCount?: number;
+  readonly toolCallCountKnown?: boolean;
+  readonly toolCallCountAuthoritative?: boolean;
 }
 
 /**
@@ -79,9 +82,12 @@ export interface AgentRosterDescriptor {
   readonly status?: string;
   readonly busy?: boolean;
   readonly toolCallCount?: number;
+  readonly toolCallCountKnown?: boolean;
+  readonly toolCallCountAuthoritative?: boolean;
   readonly startedAt?: string;
   readonly endedAt?: string;
   readonly disposedAt?: string;
+  readonly description?: string;
   readonly summary?: string;
   readonly error?: string;
 }
@@ -127,8 +133,10 @@ export interface AgentTreeNode {
   readonly status: AgentStatus;
   readonly busy: boolean;
   readonly toolCallCount: number;
+  readonly toolCallCountKnown?: boolean;
   readonly startedAt?: string;
   readonly endedAt?: string;
+  readonly description?: string;
   readonly summary?: string;
   readonly error?: string;
   readonly childIds: readonly string[];
@@ -215,8 +223,11 @@ interface DraftNode {
   disposedAt: number | undefined;
   busy: boolean | undefined;
   toolCallCount: number;
+  toolCallCountKnown: boolean;
+  toolCallCountAuthoritative: boolean;
   startedAt: string | undefined;
   endedAt: string | undefined;
+  description: string | undefined;
   summary: string | undefined;
   error: string | undefined;
 }
@@ -310,8 +321,10 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
     a.status === b.status &&
     a.busy === b.busy &&
     a.toolCallCount === b.toolCallCount &&
+    a.toolCallCountKnown === b.toolCallCountKnown &&
     a.startedAt === b.startedAt &&
     a.endedAt === b.endedAt &&
+    a.description === b.description &&
     a.summary === b.summary &&
     a.error === b.error &&
     a.childIds.length === b.childIds.length &&
@@ -480,8 +493,10 @@ export function buildAgentForest(
       status,
       busy: busyFromStatus(status, draft.busy),
       toolCallCount: draft.toolCallCount,
+      toolCallCountKnown: draft.toolCallCountKnown,
       startedAt: draft.startedAt,
       endedAt: draft.endedAt,
+      description: draft.description,
       summary: draft.summary,
       error: draft.error,
       childIds: childIds.get(draft.agentId) ?? [],
@@ -678,13 +693,33 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
     disposedAt: undefined,
     busy: undefined,
     toolCallCount: 0,
+    toolCallCountKnown: false,
+    toolCallCountAuthoritative: false,
     startedAt: undefined,
     endedAt: undefined,
+    description: undefined,
     summary: undefined,
     error: undefined,
   };
   drafts.set(agentId, created);
   return created;
+}
+
+function applyToolCallCount(
+  draft: DraftNode,
+  count: number | undefined,
+  known: boolean | undefined,
+  authoritative: boolean | undefined,
+): void {
+  if (authoritative === true) {
+    draft.toolCallCount = count ?? 0;
+    draft.toolCallCountKnown = count !== undefined && known !== false;
+    draft.toolCallCountAuthoritative = true;
+    return;
+  }
+  if (draft.toolCallCountAuthoritative || count === undefined) return;
+  draft.toolCallCount = Math.max(draft.toolCallCount, count);
+  if (known !== false) draft.toolCallCountKnown = true;
 }
 
 function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
@@ -695,6 +730,7 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
   draft.parentToolCallId =
     draft.parentToolCallId ?? cleanId(task.parentToolCallId ?? task.parent_tool_call_id);
   draft.name = draft.name ?? firstPresent(task.name, task.description);
+  draft.description = firstPresent(task.description) ?? draft.description;
   const accepted =
     status === undefined
       ? draft.status === undefined && draft.disposedAt === undefined
@@ -720,6 +756,13 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   draft.parentToolCallId = firstPresent(entry.parentToolCallId) ?? draft.parentToolCallId;
   draft.name = firstPresent(entry.name, entry.label) ?? draft.name;
   draft.label = firstPresent(entry.label) ?? draft.label;
+  draft.description = firstPresent(entry.description) ?? draft.description;
+  applyToolCallCount(
+    draft,
+    entry.toolCallCount,
+    entry.toolCallCountKnown,
+    entry.toolCallCountAuthoritative,
+  );
   const disposedAt = parseStatusTimestamp(entry.disposedAt);
   if (disposedAt !== undefined && (draft.disposedAt === undefined || disposedAt > draft.disposedAt)) {
     draft.disposedAt = disposedAt;
@@ -747,9 +790,6 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   draft.maxContextTokens = entry.maxContextTokens ?? draft.maxContextTokens;
   draft.usage = entry.usage ?? draft.usage;
   if (entry.busy !== undefined) draft.busy = entry.busy;
-  if (entry.toolCallCount !== undefined) {
-    draft.toolCallCount = Math.max(draft.toolCallCount, entry.toolCallCount);
-  }
   draft.startedAt ??= firstPresent(entry.startedAt);
   draft.endedAt ??= firstPresent(entry.endedAt);
   draft.summary = firstPresent(entry.summary) ?? draft.summary;
@@ -761,6 +801,13 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
   draft.parentToolCallId = firstPresent(block.parentToolCallId) ?? draft.parentToolCallId;
   draft.name = firstPresent(block.name) ?? draft.name;
   draft.label = firstPresent(block.label) ?? draft.label;
+  draft.description = firstPresent(block.description) ?? draft.description;
+  applyToolCallCount(
+    draft,
+    block.toolCallCount,
+    block.toolCallCountKnown,
+    block.toolCallCountAuthoritative,
+  );
   const status = normalizeStatus(block.status);
   const accepted =
     status === undefined
@@ -774,9 +821,6 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
   draft.maxContextTokens = block.maxContextTokens ?? draft.maxContextTokens;
   draft.usage = block.usage ?? draft.usage;
   if (status !== undefined) draft.busy = isActiveStatus(status);
-  if (block.toolCallCount !== undefined) {
-    draft.toolCallCount = Math.max(draft.toolCallCount, block.toolCallCount);
-  }
   draft.startedAt ??= firstPresent(block.startedAt);
   draft.endedAt ??= firstPresent(block.endedAt);
   draft.summary = firstPresent(block.summary) ?? draft.summary;
@@ -952,7 +996,6 @@ function clearRunFields(draft: DraftNode): void {
   draft.maxContextTokens = undefined;
   draft.usage = undefined;
   draft.busy = undefined;
-  draft.toolCallCount = 0;
   draft.startedAt = undefined;
   draft.endedAt = undefined;
   draft.summary = undefined;

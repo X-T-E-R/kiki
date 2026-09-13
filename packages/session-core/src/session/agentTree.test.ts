@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import type { SnapshotSubagent } from '@kiki/protocol';
+import type { AgentTranscriptSnapshot } from '@kiki/transcript';
+
 import {
   advanceAgentHistoryCursor,
   agentChildren,
@@ -18,6 +21,10 @@ import {
   type AgentTimelineBlock,
   type AgentTranscriptPage,
 } from './agentTree';
+import {
+  liveSourcesFromAgentSnapshots,
+  sessionAgentForestFromAgentSnapshots,
+} from './transcript/forest';
 
 function live(overrides: Partial<AgentLiveSource> & Pick<AgentLiveSource, 'subagentId'>): AgentLiveSource {
   return {
@@ -40,6 +47,35 @@ function task(overrides: Partial<AgentTaskItem> & { agentId?: string; id?: strin
   return {
     kind: 'subagent',
     status: 'completed',
+    ...overrides,
+  };
+}
+
+function snapshot(overrides: Partial<AgentTranscriptSnapshot> = {}): AgentTranscriptSnapshot {
+  return {
+    items: [],
+    tasks: [],
+    interactions: [],
+    attachments: [],
+    todos: [],
+    prompts: [],
+    toolCallCount: undefined,
+    toolCallCountKnown: false,
+    meta: {},
+    hasMoreOlder: false,
+    ...overrides,
+  };
+}
+
+function compactSnapshot(
+  overrides: Partial<SnapshotSubagent> & Pick<SnapshotSubagent, 'id'>,
+): SnapshotSubagent {
+  return {
+    session_id: 'session_test',
+    kind: 'subagent',
+    description: 'Compact child request',
+    status: 'completed',
+    created_at: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
 }
@@ -275,6 +311,7 @@ describe('buildAgentForest', () => {
           name: '',
           model: 'kimi-code/k3',
           status: 'failed',
+          description: 'live description',
           summary: 'live summary',
           error: 'boom',
           toolCallCount: 4,
@@ -287,6 +324,7 @@ describe('buildAgentForest', () => {
           name: 'Roster Name',
           model: 'stale-model',
           status: 'running',
+          description: 'stale description',
           summary: 'stale',
           toolCallCount: 1,
         }),
@@ -297,9 +335,191 @@ describe('buildAgentForest', () => {
     expect(node.name).toBe('Roster Name');
     expect(node.model).toBe('kimi-code/k3');
     expect(node.status).toBe('failed');
+    expect(node.description).toBe('live description');
     expect(node.summary).toBe('live summary');
+    expect(node.description).not.toBe(node.summary);
     expect(node.error).toBe('boom');
     expect(node.toolCallCount).toBe(4);
+    expect(node.toolCallCountKnown).toBe(true);
+  });
+
+  it('keeps missing counts unknown while distinguishing explicit zero counts', () => {
+    const missing = buildAgentForest([live({ subagentId: 'agent-missing' })]).byId['agent-missing']!;
+    const untrustedZero = buildAgentForest([
+      live({ subagentId: 'agent-untrusted-zero', toolCallCount: 0, toolCallCountKnown: false }),
+    ]).byId['agent-untrusted-zero']!;
+    const inferredZero = buildAgentForest([
+      live({ subagentId: 'agent-inferred-zero', toolCallCount: 0 }),
+    ]).byId['agent-inferred-zero']!;
+    const explicitZero = buildAgentForest([
+      live({ subagentId: 'agent-explicit-zero', toolCallCount: 0, toolCallCountKnown: true }),
+    ]).byId['agent-explicit-zero']!;
+
+    expect(missing).toMatchObject({ toolCallCount: 0, toolCallCountKnown: false });
+    expect(untrustedZero).toMatchObject({ toolCallCount: 0, toolCallCountKnown: false });
+    expect(inferredZero).toMatchObject({ toolCallCount: 0, toolCallCountKnown: true });
+    expect(explicitZero).toMatchObject({ toolCallCount: 0, toolCallCountKnown: true });
+  });
+
+  it('STAT-R2 keeps an authoritative live count below stale compact and fallback counts', () => {
+    const forest = buildAgentForest(
+      [
+        live({
+          subagentId: 'agent-1',
+          toolCallCount: 9,
+          toolCallCountKnown: true,
+          toolCallCountAuthoritative: true,
+        }),
+        live({ subagentId: 'agent-1', toolCallCount: 10, toolCallCountKnown: true }),
+      ],
+      [roster({ agentId: 'agent-1', toolCallCount: 10, toolCallCountKnown: true })],
+    );
+
+    expect(forest.byId['agent-1']).toMatchObject({
+      toolCallCount: 9,
+      toolCallCountKnown: true,
+    });
+  });
+
+  it('STAT-R3 treats authoritative unavailable and explicit zero counts exactly', () => {
+    const unavailable = buildAgentForest(
+      [live({ subagentId: 'agent-1', toolCallCount: 10, toolCallCountKnown: true })],
+      [
+        roster({
+          agentId: 'agent-1',
+          toolCallCount: undefined,
+          toolCallCountKnown: false,
+          toolCallCountAuthoritative: true,
+        }),
+      ],
+    );
+    const explicitZero = buildAgentForest(
+      [live({ subagentId: 'agent-2', toolCallCount: 10, toolCallCountKnown: true })],
+      [
+        roster({
+          agentId: 'agent-2',
+          toolCallCount: 0,
+          toolCallCountKnown: true,
+          toolCallCountAuthoritative: true,
+        }),
+      ],
+    );
+
+    expect(unavailable.byId['agent-1']).toMatchObject({
+      toolCallCount: 0,
+      toolCallCountKnown: false,
+    });
+    expect(explicitZero.byId['agent-2']).toMatchObject({
+      toolCallCount: 0,
+      toolCallCountKnown: true,
+    });
+  });
+
+  it('STAT-R3 keeps a legitimate compact count when no canonical child snapshot exists', () => {
+    const forest = buildAgentForest([], [
+      roster({ agentId: 'agent-1', toolCallCount: 7, toolCallCountKnown: true }),
+    ]);
+
+    expect(forest.byId['agent-1']).toMatchObject({
+      toolCallCount: 7,
+      toolCallCountKnown: true,
+    });
+  });
+
+  it('maps canonical child snapshot counts as authoritative without relying on agent meta', () => {
+    const parent = snapshot({
+      tasks: [
+        {
+          taskId: 'task-child',
+          kind: 'subagent',
+          state: 'running',
+          detached: false,
+          agentId: 'agent-1',
+          outputTail: '',
+        },
+      ],
+    });
+    const child = snapshot({ toolCallCount: 9, toolCallCountKnown: true });
+    const missing = snapshot({ toolCallCount: undefined, toolCallCountKnown: false });
+
+    const knownSources = liveSourcesFromAgentSnapshots(
+      new Map<string, AgentTranscriptSnapshot>([
+        ['main', parent],
+        ['agent-1', child],
+      ]),
+    );
+    const unavailableSources = liveSourcesFromAgentSnapshots(
+      new Map<string, AgentTranscriptSnapshot>([
+        ['main', parent],
+        ['agent-1', missing],
+      ]),
+    );
+
+    expect(knownSources).toEqual([
+      expect.objectContaining({
+        subagentId: 'agent-1',
+        toolCallCount: 9,
+        toolCallCountKnown: true,
+        toolCallCountAuthoritative: true,
+      }),
+    ]);
+    expect(unavailableSources).toEqual([
+      expect.objectContaining({
+        subagentId: 'agent-1',
+        toolCallCount: 0,
+        toolCallCountKnown: false,
+        toolCallCountAuthoritative: true,
+      }),
+    ]);
+  });
+
+  it('keeps canonical snapshot counts ahead of compact overlays while using compact fallback otherwise', () => {
+    const parent = snapshot({
+      tasks: [
+        {
+          taskId: 'task-child',
+          kind: 'subagent',
+          state: 'running',
+          detached: false,
+          agentId: 'agent-1',
+          outputTail: '',
+        },
+      ],
+    });
+    const compact = [
+      compactSnapshot({ id: 'agent-1', agent_id: 'agent-1', tool_call_count: 10 }),
+    ];
+    const canonical = sessionAgentForestFromAgentSnapshots(
+      new Map<string, AgentTranscriptSnapshot>([
+        ['main', parent],
+        ['agent-1', snapshot({ toolCallCount: 9, toolCallCountKnown: true })],
+      ]),
+      compact,
+    );
+    const unavailable = sessionAgentForestFromAgentSnapshots(
+      new Map<string, AgentTranscriptSnapshot>([
+        ['main', parent],
+        ['agent-1', snapshot({ toolCallCount: undefined, toolCallCountKnown: false })],
+      ]),
+      compact,
+    );
+    const fallback = sessionAgentForestFromAgentSnapshots(
+      new Map<string, AgentTranscriptSnapshot>([['main', parent]]),
+      [compactSnapshot({ id: 'agent-1', agent_id: 'agent-1', tool_call_count: 7 })],
+    );
+
+    expect(canonical.byId['agent-1']).toMatchObject({
+      toolCallCount: 9,
+      toolCallCountKnown: true,
+    });
+    expect(unavailable.byId['agent-1']).toMatchObject({
+      toolCallCount: 0,
+      toolCallCountKnown: false,
+    });
+    expect(fallback.byId['agent-1']).toMatchObject({
+      toolCallCount: 7,
+      toolCallCountKnown: true,
+    });
   });
 
   it('uses task fallback when roster and live omit identity fields', () => {
@@ -314,10 +534,15 @@ describe('buildAgentForest', () => {
           model: 'kimi-k2',
           thinking_effort: 'high',
           started_at: '2026-01-01T00:00:00.000Z',
+          summary: 'Task result',
+          output_preview: 'Task output preview',
         }),
       ],
     );
     expect(forest.byId['agent-1']!.name).toBe('Fallback name');
+    expect(forest.byId['agent-1']!.description).toBe('Fallback name');
+    expect(forest.byId['agent-1']!.summary).toBe('Task result');
+    expect(forest.byId['agent-1']!.description).not.toBe(forest.byId['agent-1']!.summary);
     expect(forest.byId['agent-1']!.model).toBe('kimi-k2');
     expect(forest.byId['agent-1']!.thinkingEffort).toBe('high');
     expect(forest.byId['agent-1']!.startedAt).toBe('2026-01-01T00:00:00.000Z');
@@ -379,7 +604,8 @@ describe('buildAgentForest', () => {
       expect(forest.byId['agent-1']).toMatchObject({
         status: 'unknown',
         busy: false,
-        toolCallCount: 0,
+        toolCallCount: 5,
+        toolCallCountKnown: true,
       });
     }
   });
@@ -491,12 +717,14 @@ describe('buildAgentForest', () => {
       started_at: '2026-01-01T00:03:00.000Z',
       model: 'current-model',
       thinking_effort: 'high',
+      description: 'current request',
       summary: 'current run',
     });
     const liveTerminal = live({
       subagentId: 'agent-1',
       name: 'Live identity',
       status: 'failed',
+      description: 'late live request',
       startedAt: '2026-01-01T00:01:00.000Z',
       endedAt: '2026-01-01T00:04:00.000Z',
       model: 'stale-live-model',
@@ -518,6 +746,7 @@ describe('buildAgentForest', () => {
       endedAt: '2026-01-01T00:04:00.000Z',
       model: 'stale-roster-model',
       thinkingEffort: 'low',
+      description: 'late roster request',
       contextTokens: 888,
       maxContextTokens: 2_000,
       usage: {
@@ -530,14 +759,19 @@ describe('buildAgentForest', () => {
 
     const fromLive = buildAgentForest([liveTerminal], undefined, [current]).byId['agent-1']!;
     const fromRoster = buildAgentForest([], [rosterTerminal], [current]).byId['agent-1']!;
-    for (const node of [fromLive, fromRoster]) {
+    for (const [node, toolCallCount, description] of [
+      [fromLive, 9, 'late live request'],
+      [fromRoster, 8, 'late roster request'],
+    ] as const) {
       expect(node).toMatchObject({
         status: 'background',
         busy: true,
         model: 'current-model',
         thinkingEffort: 'high',
-        toolCallCount: 0,
+        toolCallCount,
+        toolCallCountKnown: true,
         startedAt: '2026-01-01T00:03:00.000Z',
+        description,
         summary: 'current run',
       });
       expect(node.contextTokens).toBeUndefined();
@@ -614,7 +848,8 @@ describe('buildAgentForest', () => {
         label: 'Roster label',
         status: 'background',
         busy: true,
-        toolCallCount: 0,
+        toolCallCount: 9,
+        toolCallCountKnown: true,
         startedAt: '2026-01-01T00:03:00.000Z',
         summary: 'current run',
       });
@@ -656,7 +891,8 @@ describe('buildAgentForest', () => {
     expect(forest.byId['agent-1']).toMatchObject({
       status: 'running',
       busy: true,
-      toolCallCount: 0,
+      toolCallCount: 7,
+      toolCallCountKnown: true,
       startedAt: '2026-01-01T00:03:00.000Z',
     });
     expect(forest.byId['agent-1']!.model).toBeUndefined();
@@ -992,6 +1228,23 @@ describe('stabilizeAgentForest', () => {
   it('returns the previous forest when a rebuild is semantically identical', () => {
     const previous = buildAgentForest([], rosterItems('running'));
     expect(stabilizeAgentForest(previous, buildAgentForest([], rosterItems('running')))).toBe(previous);
+  });
+
+  it('refreshes a node when its description or count knowledge changes', () => {
+    const previous = buildAgentForest([], [
+      roster({ agentId: 'agent-1', description: 'first request', toolCallCount: 0, toolCallCountKnown: false }),
+    ]);
+    const next = buildAgentForest([], [
+      roster({ agentId: 'agent-1', description: 'second request', toolCallCount: 0, toolCallCountKnown: true }),
+    ]);
+    const stable = stabilizeAgentForest(previous, next);
+
+    expect(stable.byId['agent-1']).not.toBe(previous.byId['agent-1']);
+    expect(stable.byId['agent-1']).toMatchObject({
+      description: 'second request',
+      toolCallCount: 0,
+      toolCallCountKnown: true,
+    });
   });
 
   it('shares unaffected history while refreshing the changed branch and its ancestors', () => {

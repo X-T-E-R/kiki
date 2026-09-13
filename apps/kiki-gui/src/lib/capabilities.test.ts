@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { McpServer, SkillDescriptor, Workspace } from '@moonshot-ai/protocol';
+import type { McpServer, SkillDescriptor, Workspace } from '@kiki/protocol';
 
 import {
   filterMcpServers,

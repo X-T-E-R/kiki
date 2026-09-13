@@ -20,8 +20,10 @@ import {
   type SubagentGovernanceDraft,
 } from '@kiki/session-core/settings';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
+import type { NamedAgentSubagentLease } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
-import { loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
+import { agentProfileCatalogQueryKey, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
+import { AgentCapabilitiesPanel } from '../AgentCapabilitiesPanel';
 import type {
   ListNamedAgentProfilesResponse,
   NamedAgentProfile,
@@ -29,12 +31,17 @@ import type {
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { ExperimentalSection } from './ExperimentalSection';
+import { PromptConfigCard } from './PromptConfigCard';
+import { SubagentLimitsSettings } from './SubagentLimitsSettings';
 
 const LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
   description: 'st.namedAgents.description',
   whenToUse: 'st.namedAgents.whenToUse',
+  contextBudget: 'st.namedAgents.contextBudget',
+  maxCompletionTokens: 'st.namedAgents.maxCompletionTokens',
   serviceTier: 'st.namedAgents.serviceTier',
   delegationNotice: 'st.namedAgents.delegationNotice',
   promptMode: 'st.namedAgents.promptMode',
@@ -53,17 +60,28 @@ const LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
 const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
 export function SubagentGovernanceCard() {
+  return <><SubagentLimitsSettings /><SubagentModelGovernanceCard /></>;
+}
+
+function SubagentModelGovernanceCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<SubagentGovernanceDraft>(EMPTY_SUBAGENT_GOVERNANCE);
+  const [savedDraft, setSavedDraft] = useState<SubagentGovernanceDraft>(EMPTY_SUBAGENT_GOVERNANCE);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
-    if (configQuery.data !== undefined) setDraft(subagentGovernanceFromConfig(configQuery.data));
+    if (configQuery.data !== undefined) {
+      const next = subagentGovernanceFromConfig(configQuery.data);
+      setDraft(next);
+      setSavedDraft(next);
+    }
   }, [configQuery.data]);
+
+  const dirty = draft.denyModels !== savedDraft.denyModels;
 
   const save = async () => {
     setSaving(true);
@@ -71,7 +89,10 @@ export function SubagentGovernanceCard() {
     try {
       const echoed = await client.patchConfig(subagentGovernancePatch(draft));
       queryClient.setQueryData(['config'], echoed);
-      setDraft(subagentGovernanceFromConfig(echoed));
+      await invalidateAgentProfileCatalogs(queryClient);
+      const next = subagentGovernanceFromConfig(echoed);
+      setDraft(next);
+      setSavedDraft(next);
       setFeedback({ tone: 'success', text: t('st.subagents.saved') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -94,7 +115,7 @@ export function SubagentGovernanceCard() {
             />
           </label>
         </fieldset>
-        <button type="button" className={PRIMARY_BUTTON} disabled={configQuery.isLoading || saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.subagents.save')}</button>
+        <button type="button" className={PRIMARY_BUTTON} disabled={configQuery.isLoading || saving || !dirty} onClick={() => void save()}>{saving ? t('common.saving') : t('st.subagents.save')}</button>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -108,7 +129,9 @@ function NamedAgentProfileRow({
   onUpdated,
   onToggleEnabled,
   toggleSaving,
+  effective,
 }: {
+  effective: boolean;
   profile: NamedAgentProfile;
   workspaceFallbackId?: string;
   overrideRelation?: NamedAgentOverrideRelation;
@@ -123,13 +146,10 @@ function NamedAgentProfileRow({
     profile.workspace_id !== undefined &&
     profile.source_file !== undefined &&
     (profile.source === 'user' || profile.source === 'workspace' || profile.source === 'extra');
-  // Built-ins and named profiles toggle through different config lists, but
-  // the switch reads the same either way. For a main profile, "off" only
-  // stops subagent calls — main sessions keep working.
-  const toggleTitle = profile.source === 'builtin'
-    ? profile.main === true
-      ? t('st.namedAgents.defaultToggleHint')
-      : t('st.namedAgents.builtinToggleHint')
+  // The default main binding survives discovery disable lists.
+  const defaultMain = effective && profile.name === 'agent' && profile.main === true;
+  const toggleTitle = defaultMain ? t('st.namedAgents.defaultToggleHint')
+    : profile.source === 'builtin' ? t('st.namedAgents.builtinToggleHint')
     : t('st.namedAgents.namedToggleHint');
   const workspaceIds = profile.workspace_ids ?? (profile.workspace_id === undefined ? [] : [profile.workspace_id]);
   const workspaceChips = workspaceChipDisplay(workspaceIds);
@@ -139,7 +159,7 @@ function NamedAgentProfileRow({
   // profile loses it too: a session under its name would silently run the
   // same-named built-in instead.
   const shadowed = overrideRelation?.kind === 'shadowed';
-  const newSessionBlocked = namedAgentNewSessionBlocked(profile, overrideRelation);
+  const newSessionBlocked = !effective || namedAgentNewSessionBlocked(profile, overrideRelation);
   const newSessionTitle = shadowed
     ? t('st.namedAgents.newSessionShadowed')
     : newSessionBlocked
@@ -157,8 +177,18 @@ function NamedAgentProfileRow({
     constraints.allowed_efforts === undefined ? null : `${t('st.namedAgents.allowedEfforts')} ${constraints.allowed_efforts.join(', ')}`,
     constraints.disallowed_tools === undefined ? null : `${t('st.namedAgents.disallowedTools')} ${constraints.disallowed_tools.join(', ')}`,
   ].filter((segment) => segment !== null).join(' · ');
+  const contextBudget = profile.context_budget !== undefined && profile.context_budget > 0
+    ? profile.context_budget
+    : undefined;
+  const maxCompletionTokens = profile.max_completion_tokens !== undefined && profile.max_completion_tokens > 0
+    ? profile.max_completion_tokens
+    : undefined;
+  const hasProfileBudget = contextBudget !== undefined
+    || maxCompletionTokens !== undefined
+    || (profile.request_params !== undefined && Object.keys(profile.request_params).length > 0);
   const hasProjection =
-    (profile.model_profiles?.length ?? 0) > 0
+    hasProfileBudget
+    || (profile.model_profiles?.length ?? 0) > 0
     || spawnSummary !== ''
     || (profile.subagents?.length ?? 0) > 0;
   const [editing, setEditing] = useState(false);
@@ -198,6 +228,7 @@ function NamedAgentProfileRow({
       const echoed = await client.updateNamedAgentProfile(profile.name, {
         scope: profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra',
         workspace_id: profile.workspace_id,
+        source_file: profile.source_file,
         description: description.trim(),
         when_to_use: whenToUse.trim() === '' ? null : whenToUse.trim(),
         pinned_model_alias: modelAlias.trim() === '' ? null : modelAlias.trim(),
@@ -247,6 +278,7 @@ function NamedAgentProfileRow({
       const echoed = await client.updateNamedAgentProfile(profile.name, {
         scope: profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra',
         workspace_id: profile.workspace_id,
+        source_file: profile.source_file,
         raw_text: rawText,
       });
       onUpdated(echoed);
@@ -265,6 +297,32 @@ function NamedAgentProfileRow({
       : overrideRelation?.kind === 'shadowed'
         ? 'shadowed'
         : undefined;
+
+  // First-glance summary (read mode only): the pinned model/effort and spawn
+  // constraints ride as chips, and the callable-subagent list — the row's
+  // first-class answer to "what can this agent dispatch?" — surfaces without
+  // opening the technical-details fold.
+  const summaryChips: string[] = [];
+  if (profile.pinned_model_alias !== undefined && profile.pinned_model_alias !== '') {
+    summaryChips.push(`${t('st.namedAgents.modelPin')} ${profile.pinned_model_alias}`);
+  }
+  if (profile.thinking_effort !== undefined && profile.thinking_effort !== '') {
+    summaryChips.push(`${t('st.namedAgents.defaultModelThinkingEffort')} ${profile.thinking_effort}`);
+  }
+  if (constraints !== undefined) {
+    if (constraints.allowed_models !== undefined && constraints.allowed_models.length > 0) {
+      summaryChips.push(`${t('st.namedAgents.allowedModels')} ${constraints.allowed_models.join(', ')}`);
+    }
+    if (constraints.allowed_efforts !== undefined && constraints.allowed_efforts.length > 0) {
+      summaryChips.push(`${t('st.namedAgents.allowedEfforts')} ${constraints.allowed_efforts.join(', ')}`);
+    }
+    if (constraints.disallowed_tools !== undefined && constraints.disallowed_tools.length > 0) {
+      summaryChips.push(`${t('st.namedAgents.disallowedTools')} ${constraints.disallowed_tools.join(', ')}`);
+    }
+  }
+  const stringSubagents = (profile.subagents ?? []).filter((lease): lease is string => typeof lease === 'string');
+  const leaseSubagents = (profile.subagents ?? []).filter((lease): lease is NamedAgentSubagentLease => typeof lease !== 'string');
+  const subagentChipClass = 'rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint';
 
   // A built-in shadowed by an overriding same-name file profile collapses to
   // a single muted line — rendering it as a normal enabled row would suggest
@@ -295,8 +353,13 @@ function NamedAgentProfileRow({
       data-agent-profile={profile.name}
       data-agent-source={profile.source}
       data-override-state={overrideState}
-      className={`rounded-lg border border-hairline bg-paper px-3 py-2 transition-opacity ${profile.disabled ? 'opacity-60' : ''}`}
+      data-default-agent={defaultMain ? 'true' : undefined}
+      className={`rounded-lg border bg-paper px-3 py-2 transition-opacity ${defaultMain ? 'border-accent/50 ring-1 ring-accent/10' : 'border-hairline'} ${profile.disabled && !defaultMain ? 'opacity-60' : ''}`}
     >
+      {defaultMain ? <div className="mb-3 border-b border-accent/20 pb-2">
+        <p className="text-[12px] font-semibold text-accent">{t('st.mainAgents.defaultTitle')}</p>
+        <Hint>{t('st.mainAgents.defaultHint')}</Hint>
+      </div> : null}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="font-mono text-[12.5px] font-medium text-ink">
@@ -307,7 +370,7 @@ function NamedAgentProfileRow({
               </span>
             ) : null}
           </p>
-          {profile.disabled && profile.main === true ? (
+          {profile.disabled && defaultMain ? (
             <p className="mt-0.5 text-[10.5px] text-ink-faint">{t('st.namedAgents.disabledMainHint')}</p>
           ) : null}
           {!editing && profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
@@ -364,12 +427,16 @@ function NamedAgentProfileRow({
           </label>
           <label className="block text-[11px] font-medium text-ink-soft">
             {t('st.namedAgents.modelPin')}
-            <input className={`${INPUT} mt-1 font-mono`} value={modelAlias} placeholder="provider/model" onChange={(event) => { setModelAlias(event.target.value); }} />
+            <input data-agent-model-alias className={`${INPUT} mt-1 font-mono`} value={modelAlias} placeholder="provider/model" onChange={(event) => {
+              const next = event.target.value;
+              if (next.trim() !== modelAlias.trim()) setThinkingEffort('');
+              setModelAlias(next);
+            }} />
           </label>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-[11px] font-medium text-ink-soft">
-              {t('st.namedAgents.thinkingEffort')}
-              <select className={`${INPUT} mt-1`} value={thinkingEffort} onChange={(event) => { setThinkingEffort(event.target.value); }}>
+              {t('st.namedAgents.defaultModelThinkingEffort')}
+              <select data-agent-thinking-effort className={`${INPUT} mt-1`} value={thinkingEffort} onChange={(event) => { setThinkingEffort(event.target.value); }}>
                 <option value="">{t('st.namedAgents.inherit')}</option>
                 {['low', 'medium', 'high', 'xhigh', 'max'].map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
@@ -412,6 +479,46 @@ function NamedAgentProfileRow({
         </fieldset>
       ) : (
         <>
+          {summaryChips.length > 0 ? (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {summaryChips.map((chip) => (
+                <span key={chip} className={subagentChipClass}>{chip}</span>
+              ))}
+            </div>
+          ) : null}
+          {stringSubagents.length > 0 || leaseSubagents.length > 0 ? (
+            <div className="mt-1.5 space-y-1">
+              <p className="text-[10.5px] font-medium text-ink-soft">{t('st.namedAgents.availableSubagents')}</p>
+              {stringSubagents.length > 0 ? (
+                <p className="flex flex-wrap gap-1.5">
+                  {stringSubagents.map((name) => (
+                    <span key={name} className={subagentChipClass}>{name}</span>
+                  ))}
+                </p>
+              ) : null}
+              {leaseSubagents.map((lease, index) => {
+                const leaseSummary = summarizeNamedAgentLease(lease);
+                return (
+                  <p key={`${lease.name}:${index}`} className="flex flex-wrap items-center gap-1.5 break-all font-mono text-[10.5px] text-ink-soft">
+                    <span>{leaseSummary.headline}</span>
+                    {leaseSummary.scoped ? (
+                      <span className="rounded-full border border-accent/40 bg-accent-soft px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-accent">
+                        {t('st.namedAgents.scopedBadge')}
+                      </span>
+                    ) : null}
+                    {leaseSummary.status !== undefined ? (
+                      <span className={leaseSummary.status === 'unavailable' ? 'text-danger' : 'text-success'}>
+                        {t(leaseSummary.status === 'unavailable' ? 'st.namedAgents.leaseUnavailable' : 'st.namedAgents.leaseReady')}
+                      </span>
+                    ) : null}
+                    {leaseSummary.diagnostic !== undefined ? (
+                      <span className="text-danger">{leaseSummary.diagnostic}</span>
+                    ) : null}
+                  </p>
+                );
+              })}
+            </div>
+          ) : null}
           <details className="mt-2 rounded-lg border border-hairline bg-panel px-2.5 py-1.5" data-technical-details>
             <summary className="cursor-pointer select-none text-[10.5px] font-medium text-ink-faint hover:text-ink-soft">
               {t('st.namedAgents.technicalDetails')}
@@ -437,8 +544,15 @@ function NamedAgentProfileRow({
             ) : null}
             {profile.when_to_use !== undefined ? <p>{t('st.namedAgents.whenToUse')}: {profile.when_to_use}</p> : null}
             {profile.pinned_model_alias !== undefined ? <p>{t('st.namedAgents.modelPin')}: {profile.pinned_model_alias}</p> : null}
-            {profile.thinking_effort !== undefined ? <p>{t('st.namedAgents.thinkingEffort')}: {profile.thinking_effort}</p> : null}
+            {profile.thinking_effort !== undefined ? <p>{t('st.namedAgents.defaultModelThinkingEffort')}: {profile.thinking_effort}</p> : null}
             {profile.service_tier !== undefined ? <p>{t('st.namedAgents.serviceTier')}: {profile.service_tier}</p> : null}
+            {hasProfileBudget ? (
+              <>
+                <p>{t('st.namedAgents.contextBudget')}: {contextBudget ?? t('st.namedAgents.unspecified')}</p>
+                <p>{t('st.namedAgents.maxCompletionTokens')}: {maxCompletionTokens ?? t('st.namedAgents.unspecified')}</p>
+                <p>{t('st.namedAgents.requestParams')}: {profile.request_params === undefined || Object.keys(profile.request_params).length === 0 ? t('st.namedAgents.unspecified') : JSON.stringify(profile.request_params)}</p>
+              </>
+            ) : null}
             {profile.routes.map((route) => (
               <p key={route.id}>
                 {t('st.namedAgents.route')}: {route.id}
@@ -521,6 +635,11 @@ function NamedAgentProfileRow({
           ) : null}
         </div>
       ) : null}
+      {effective && profile.main === true && workspaceFallbackId !== undefined ? (
+        <div className="mt-3 border-t border-hairline pt-2">
+          <AgentCapabilitiesPanel query={{ workspace_id: workspaceFallbackId, profile: profile.name }} />
+        </div>
+      ) : null}
       <FeedbackLine feedback={feedback} />
     </div>
   );
@@ -536,9 +655,27 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [toggleSaving, setToggleSaving] = useState<string | null>(null);
+  const [workspaceId, setWorkspaceId] = useState<string>();
+  const workspacesQuery = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: () => client.listWorkspaces(),
+    staleTime: 30_000,
+  });
+  const selectedWorkspaceId = workspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
+  const profilesQueryKey = ['named-agent-profiles', selectedWorkspaceId ?? 'global'];
   const profilesQuery = useQuery({
-    queryKey: ['named-agent-profiles'],
-    queryFn: () => loadAgentProfileCatalog(client, { mode: 'global' }),
+    queryKey: profilesQueryKey,
+    queryFn: () => loadAgentProfileCatalog(client, selectedWorkspaceId === undefined
+      ? { mode: 'global' } : { mode: 'workspace', workspaceId: selectedWorkspaceId }),
+    enabled: !workspacesQuery.isPending,
+    staleTime: 15_000,
+  });
+  const effectiveMode = selectedWorkspaceId === undefined ? { mode: 'disabled' as const }
+    : { mode: 'workspace' as const, workspaceId: selectedWorkspaceId, effective: true };
+  const effectiveQuery = useQuery({
+    queryKey: agentProfileCatalogQueryKey(effectiveMode),
+    queryFn: () => loadAgentProfileCatalog(client, effectiveMode),
+    enabled: selectedWorkspaceId !== undefined,
     staleTime: 15_000,
   });
   const configQuery = useQuery({
@@ -546,16 +683,9 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     queryFn: () => client.getConfig(),
     staleTime: 60_000,
   });
-  // Workspace-less (builtin) profiles still need a workspace for the
-  // new-session deep link: fall back to the most recent one.
-  const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
-    staleTime: 30_000,
-  });
   const updateEcho = (updated: NamedAgentProfile) => {
     queryClient.setQueryData<ListNamedAgentProfilesResponse>(
-      ['named-agent-profiles'],
+      profilesQueryKey,
       (current) => current === undefined
         ? { items: [updated] }
         : {
@@ -568,25 +698,15 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
             ),
           },
     );
+    void invalidateAgentProfileCatalogs(queryClient);
   };
   const toggleEnabled = async (profile: NamedAgentProfile, enabled: boolean) => {
     setToggleSaving(profile.name);
     try {
       const echoed = await client.patchConfig(disabledProfilePatch(configQuery.data ?? {}, profile, enabled));
       queryClient.setQueryData(['config'], echoed);
-      // Named profiles disable globally by name; built-ins only by name+source.
-      queryClient.setQueryData<ListNamedAgentProfilesResponse>(
-        ['named-agent-profiles'],
-        (current) => current === undefined
-          ? current
-          : {
-              items: current.items.map((item) =>
-                item.name === profile.name && (profile.source !== 'builtin' || item.source === 'builtin')
-                  ? { ...item, disabled: !enabled }
-                  : item,
-              ),
-            },
-      );
+      await invalidateAgentProfileCatalogs(queryClient);
+
     } finally {
       setToggleSaving(null);
     }
@@ -597,23 +717,47 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     () => mergeNamedAgentProfiles(profilesQuery.data?.items ?? []),
     [profilesQuery.data],
   );
-  const fallbackWorkspaceId = useMemo(
-    () => sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id,
-    [workspacesQuery.data],
-  );
+  const isEffective = (profile: NamedAgentProfile) => selectedWorkspaceId === undefined
+    ? profile.source === 'builtin' && !profile.disabled
+    : effectiveQuery.data?.items.some((item) => item.name === profile.name
+      && item.source === profile.source && item.source_file === profile.source_file) === true;
+  const workspaceSelector = (workspacesQuery.data?.items.length ?? 0) > 0 ? (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <label className="flex items-center gap-2 text-[11px] font-medium text-ink-soft">{t('new.workspace')}
+        <select className={SMALL_INPUT} value={selectedWorkspaceId ?? ''}
+          onChange={(event) => { setWorkspaceId(event.target.value); }}>
+          {workspacesQuery.data?.items.map((workspace) => (
+            <option key={workspace.id} value={workspace.id}>{workspace.name ?? workspace.root}</option>
+          ))}
+        </select>
+      </label>
+      <Hint>{t('st.namedAgents.workspaceHint')}</Hint>
+    </div>
+  ) : null;
   // `main === true` lands in the main-agent card; everything else is a
   // subagent profile. Enabled toggle and edit affordances are identical.
   const buckets = useMemo(() => partitionNamedAgentProfiles(profiles), [profiles]);
-  // Same-name built-in/file override relations: an overriding file profile is
-  // the effective row, its built-in collapses to a shadow note, and a
-  // non-override same-name file row carries a not-in-effect warning.
-  const overrideRelations = useMemo(() => namedAgentOverrideRelations(profiles), [profiles]);
+  const overrideRelations = useMemo(() => {
+    const winners = effectiveQuery.data?.items ?? [];
+    const relations = new Map(namedAgentOverrideRelations(profiles.filter((profile) =>
+      profile.source === 'builtin' || winners.some((winner) => winner.name === profile.name
+        && winner.source === profile.source && winner.source_file === profile.source_file)
+    )));
+    for (const profile of profiles) {
+      if (profile.source !== 'builtin' && profile.override !== true
+        && winners.some((winner) => winner.name === profile.name && winner.source === 'builtin')) {
+        relations.set(profile, { kind: 'shadowed', builtinName: profile.name });
+      }
+    }
+    return relations;
+  }, [profiles, effectiveQuery.data]);
 
   const renderRow = (profile: NamedAgentProfile, index: number) => (
     <NamedAgentProfileRow
       key={`${profile.name}:${profile.source}:${profile.source_file ?? profile.workspace_id ?? ''}:${index}`}
       profile={profile}
-      workspaceFallbackId={fallbackWorkspaceId}
+      workspaceFallbackId={selectedWorkspaceId}
+      effective={isEffective(profile)}
       overrideRelation={overrideRelations.get(profile)}
       onUpdated={updateEcho}
       onToggleEnabled={toggleEnabled}
@@ -625,6 +769,8 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     return (
       <SectionCard id="st-card-subagent-profiles" title={t('st.subagentProfiles.title')}>
         <div className="space-y-3">
+          {workspaceSelector}
+          {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
           <div className="space-y-2">
             {buckets.sub.map(renderRow)}
             {profilesQuery.data !== undefined && buckets.sub.length === 0 ? <Hint>{t('st.subagentProfiles.empty')}</Hint> : null}
@@ -637,9 +783,12 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   return (
     <SectionCard id="st-card-main-agents" title={t('st.mainAgents.title')}>
       <div className="space-y-3">
+        {workspaceSelector}
         <Hint>{t('st.namedAgents.editHint')}</Hint>
+        {workspacesQuery.isError ? <InlineError error={workspacesQuery.error} /> : null}
+        {effectiveQuery.isError ? <InlineError error={effectiveQuery.error} /> : null}
         <div className="space-y-2">
-          {buckets.main.map(renderRow)}
+          {buckets.main.toSorted((a, b) => Number(b.name === 'agent' && isEffective(b)) - Number(a.name === 'agent' && isEffective(a))).map(renderRow)}
           {profilesQuery.data !== undefined && buckets.main.length === 0 ? <Hint>{t('st.mainAgents.empty')}</Hint> : null}
           {profilesQuery.isLoading ? <Hint>{t('st.namedAgents.loading')}</Hint> : null}
           {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
@@ -651,11 +800,15 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
 }
 
 export function AgentsSection() {
-  const { t } = useI18n();
   return (
     <div className="space-y-4">
-      <Hint>{t('st.agents.webHint')}</Hint>
       <NamedAgentProfilesCard bucket="main" />
+      <PromptConfigCard />
+      <ExperimentalSection
+        featureIds={['agent-profile-routes']}
+        cardId="st-card-agent-profile-routes"
+        titleKey="st.experimental.agentRoutes"
+      />
     </div>
   );
 }

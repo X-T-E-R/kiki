@@ -63,7 +63,7 @@ export default {
       },
     },
   },
-  // /api/v1/nb-search/* — secret-free capabilities + on-demand readiness for
+  // /api/nb-search/* — secret-free capabilities + on-demand readiness for
   // the Search & retrieval settings leaf. Matches the partial nb_search seed
   // above: WebSearch ready on exa.search, FetchURL degraded (jina.reader has
   // no credential), tavily/searxng attention states for the provider cards.
@@ -229,7 +229,7 @@ export default {
       tool_count: 1,
     },
   ],
-  // /api/v1/plugins — the settings Plugins leaf lists this one contributor.
+  // /api/plugins — the settings Plugins leaf lists this one contributor.
   plugins: [
     {
       id: 'fixture-plugin',
@@ -310,7 +310,7 @@ export default {
       updateAvailable: true,
     },
   ],
-  // /api/v2/mcp/servers — one writable user-level entry and one read-only
+  // /api/mcp/servers — one writable user-level entry and one read-only
   // plugin entry, so the manager's editable/read-only split is exercised.
   mcpManagedServers: [
     {

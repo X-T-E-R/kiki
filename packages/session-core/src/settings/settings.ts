@@ -4,7 +4,7 @@ import {
   type PatchConfigRequest,
   type ProviderCatalogItem,
   type RequestIdentityPolicyWire,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
@@ -602,11 +602,22 @@ export function parseAdvancedServerConfig(value: string): AdvancedServerConfigPa
   };
 }
 
-/**
- * The automation leaf's hooks editor: a raw JSON array, nothing else. Invalid
- * JSON and non-array shapes reuse the advanced editor's validation keys.
- */
-export function parseHooksJson(value: string): unknown[] {
+export const HOOK_EVENTS = [
+  'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionResult',
+  'UserPromptSubmit', 'UserPromptQueued', 'TurnStarted', 'Stop', 'StopFailure', 'Interrupt',
+  'SessionStart', 'SessionEnd', 'SessionHeartbeat', 'SubagentStart', 'SubagentStop',
+  'TaskStarted', 'PreCompact', 'PostCompact', 'Notification',
+] as const;
+
+export interface SettingsHook {
+  event: (typeof HOOK_EVENTS)[number];
+  command: string;
+  matcher?: string;
+  timeout?: number;
+}
+
+/** Mirrors the externalHooks config section, not its broader runtime HookDef. */
+export function parseHooksJson(value: string): SettingsHook[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -616,7 +627,21 @@ export function parseHooksJson(value: string): unknown[] {
   if (!Array.isArray(parsed)) {
     throw new LocalizedError({ key: 'val.advancedHooks' });
   }
-  return parsed;
+  for (const [index, value] of parsed.entries()) {
+    const fail = (field: string): never => { throw new LocalizedError({ key: 'st.hooks.invalid', params: { rule: index + 1, field } }); };
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) fail('rule');
+    const hook = value as Record<string, unknown>;
+    const unknown = Object.keys(hook).find((key) => !['event', 'command', 'matcher', 'timeout'].includes(key));
+    if (unknown !== undefined) fail(unknown);
+    if (!HOOK_EVENTS.includes(hook['event'] as SettingsHook['event'])) fail('event');
+    if (typeof hook['command'] !== 'string' || hook['command'].length === 0) fail('command');
+    if (hook['matcher'] !== undefined) {
+      if (typeof hook['matcher'] !== 'string') fail('matcher');
+      try { void new RegExp(hook['matcher'] as string); } catch { fail('matcher'); }
+    }
+    if (hook['timeout'] !== undefined && (typeof hook['timeout'] !== 'number' || !Number.isInteger(hook['timeout']) || hook['timeout'] < 1 || hook['timeout'] > 600)) fail('timeout');
+  }
+  return parsed as SettingsHook[];
 }
 
 /**
@@ -1244,11 +1269,11 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'mcp', labelKey: 'st.section.mcp' },
   { id: 'plugins', labelKey: 'st.section.plugins' },
   { id: 'automation', labelKey: 'st.section.automation' },
+  { id: 'tasks', labelKey: 'st.section.tasks' },
   { id: 'search', labelKey: 'st.section.search' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
   { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'runtime', labelKey: 'st.section.runtime' },
-  { id: 'experimental', labelKey: 'st.section.experimental' },
   { id: 'advanced', labelKey: 'st.section.advanced' },
   { id: 'about', labelKey: 'st.section.about' },
 ];
@@ -1260,11 +1285,9 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
  * visual groups (they never own a page), plus top-level leaves that belong to
  * no group — "About & updates" is one, per the adjudicated tree.
  *
- * Batch 3 landed the capabilities split (redesign §10.3): the old single
- * "capabilities" leaf dissolved into skills / mcp / automation under
- * "Capabilities & extensions", runtime moved to "System", and experimental
- * flags plus raw JSON fill "Data & advanced".
- * Groups with zero leaves are not rendered — every group now has content.
+ * Capability settings stay with the capability they govern; the task board and
+ * agent-local todo page therefore live under "Capabilities & extensions".
+ * Runtime and the remaining raw configuration fill "Data & advanced".
  */
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
@@ -1284,9 +1307,9 @@ export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'app', labelKey: 'st.group.app', sections: ['general'] },
   { kind: 'group', id: 'ai', labelKey: 'st.group.ai', sections: ['ai'] },
   { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents', 'subagents'] },
-  { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'automation', 'search'] },
+  { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'automation', 'tasks', 'search'] },
   { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection', 'runtime'] },
-  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['experimental', 'advanced'] },
+  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['advanced'] },
   { kind: 'leaf', section: 'about' },
 ];
 
@@ -1318,22 +1341,27 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   mcp: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.mcp' },
   plugins: { scopes: ['server'], purposeKey: 'st.purpose.plugins' },
   automation: { scopes: ['server'], purposeKey: 'st.purpose.automation' },
+  tasks: { scopes: ['server'], purposeKey: 'st.purpose.tasks' },
   search: { scopes: ['server'], purposeKey: 'st.purpose.search' },
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
   runtime: { scopes: ['server'], purposeKey: 'st.purpose.runtime' },
-  experimental: { scopes: ['server'], purposeKey: 'st.purpose.experimental' },
   advanced: { scopes: ['server'], purposeKey: 'st.purpose.advanced' },
   about: { scopes: ['app', 'server'], purposeKey: 'st.purpose.about' },
 };
 
 export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
+  { section: 'tasks', cardId: 'st-card-agent-todo', titleKey: 'st.agentTodo.title', keywordKeys: ['st.agentTodo.hint'], synonyms: ['TodoList', 'todo'] },
+  { section: 'tasks', cardId: 'st-card-defaults', titleKey: 'st.plan.title', keywordKeys: ['st.plan.hint', 'st.defaults.planMode', 'st.defaults.planGate', 'st.defaults.planGateTimeout'], synonyms: ['plan', 'plan mode', '计划', '计划模式'] },
+  { section: 'tasks', cardId: 'st-card-agent-board', titleKey: 'st.agentBoard.title', keywordKeys: ['st.boardStorage.policy', 'st.boardStorage.noMove'], synonyms: ['board', '看板', 'storage'] },
+  { section: 'subagents', cardId: 'st-card-subagent-limits', titleKey: 'st.subagentLimits.title', keywordKeys: ['st.subagentLimits.timeout', 'st.subagentLimits.direct', 'st.subagentLimits.total'], synonyms: ['timeout', '超时', '限额'] },
   { section: 'general', cardId: 'st-card-language', titleKey: 'st.language.title', keywordKeys: ['st.language.hint'] },
   { section: 'general', cardId: 'st-card-appearance', titleKey: 'st.appearance.title', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system'] },
-  { section: 'general', cardId: 'st-card-defaults', titleKey: 'st.defaults.title', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.planMode', 'st.defaults.hint'] },
+  { section: 'general', cardId: 'st-card-permission-defaults', titleKey: 'st.defaults.title', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.hint'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'general', cardId: 'st-card-compatibility-home', titleKey: 'st.compat.title', keywordKeys: ['st.compat.home', 'st.compat.credentialPath', 'st.compat.configImportTitle', 'st.compat.migrateUserSkills'] },
+  { section: 'general', cardId: 'st-card-session-title', titleKey: 'st.experimental.sessionTitle', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['session title', '会话标题'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'], synonyms: ['模型目录', 'model catalog', '模型列表'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.sidecar.catalogInterval', 'st.sidecar.refreshOnStart'], synonyms: ['模型目录刷新', 'catalog refresh'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },
@@ -1348,22 +1376,30 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'skills', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs', 'st.sidecar.builtinSkills'], synonyms: ['能力', 'skills', '技能'] },
   { section: 'skills', cardId: 'st-card-skill-catalog', titleKey: 'st.skills.catalogTitle', keywordKeys: ['cap.filterPlaceholder'], synonyms: ['能力', 'capabilities', '技能目录', 'skill catalog'] },
   { section: 'runtime', cardId: 'st-card-runtime', titleKey: 'st.runtime.title', keywordKeys: ['st.runtime.cron', 'st.runtime.communication', 'st.runtime.resources', 'st.runtime.task', 'st.runtime.agents'] },
-  { section: 'experimental', cardId: 'st-card-experimental', titleKey: 'st.experimental.title', keywordKeys: ['st.experimental.hint', 'st.experimental.overrideLabel'] },
+  { section: 'advanced', cardId: 'st-card-performance-storage', titleKey: 'st.advanced.performanceTitle', keywordKeys: ['st.experimental.searchWorker', 'st.experimental.readModel', 'st.experimental.unknownFeature'], synonyms: ['experimental features', '实验特性', 'performance', 'storage'] },
   { section: 'advanced', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
   { section: 'subagents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'], synonyms: ['子 agent', '子代理'] },
-  { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.mainAgents.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin'], synonyms: ['主 agent'] },
   { section: 'subagents', cardId: 'st-card-subagent-profiles', titleKey: 'st.subagentProfiles.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin', 'st.namedAgents.route'], synonyms: ['子 agent', '子代理', 'profiles', 'profile'] },
   { section: 'subagents', cardId: 'st-card-subagent-timeout', titleKey: 'st.subagentTimeout.title', keywordKeys: ['st.sidecar.subagentTimeout', 'st.subagentTimeout.hint'], synonyms: ['子 agent 超时', 'subagent timeout'] },
-  { section: 'automation', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: [] },
+  { section: 'subagents', cardId: 'st-card-subagent-release-idle', titleKey: 'st.experimental.subagentIdle', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['release idle', '空闲实例'] },
+  { section: 'automation', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: ['st.tools.allowlist', 'st.tools.followAgent'], synonyms: ['allowlist', '白名单'] },
+  { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.mainAgents.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin'], synonyms: ['主 agent'] },
+  { section: 'agents', cardId: 'st-card-prompt-config', titleKey: 'st.prompt.title', keywordKeys: ['st.prompt.hint', 'st.prompt.variables', 'st.prompt.tools'], synonyms: ['shared prompt', '共享提示', 'prompt variables', '提示变量'] },
+  { section: 'agents', cardId: 'st-card-agent-profile-routes', titleKey: 'st.experimental.agentRoutes', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['profile routes', '配置路由'] },
+  { section: 'automation', cardId: 'st-card-tool-experiments', titleKey: 'st.experimental.toolsTitle', keywordKeys: ['st.experimental.taskWait'], synonyms: ['tool-select', 'task_wait', 'TaskWait', '按需加载'] },
   { section: 'automation', cardId: 'st-card-hooks', titleKey: 'st.hooks.title', keywordKeys: ['st.hooks.hint'], synonyms: ['hooks', '钩子'] },
   { section: 'search', cardId: 'st-card-search-status', titleKey: 'st.nbSearch.statusTitle', keywordKeys: ['st.nbSearch.statusHint'], synonyms: ['web search', 'fetch', '联网搜索', '网页抓取', 'nb-search', 'nb_search'] },
-  { section: 'search', cardId: 'st-card-search-defaults', titleKey: 'st.nbSearch.defaultsTitle', keywordKeys: ['st.nbSearch.defaultLaneLabel', 'st.nbSearch.fetchChainLabel'], synonyms: ['搜索 lane', 'search lane', 'fetch chain', '抓取链'] },
+  { section: 'search', cardId: 'st-card-search-source', titleKey: 'st.nbSearch.source.title', keywordKeys: ['st.nbSearch.source.hint', 'st.nbSearch.source.reuseLocalLabel'], synonyms: ['配置来源', 'config source', 'nb-search config', '本地配置', 'local config'] },
+  { section: 'search', cardId: 'st-card-search-defaults', titleKey: 'st.nbSearch.defaultsTitle', keywordKeys: ['st.nbSearch.defaultLaneLabel'], synonyms: ['搜索 lane', 'search lane', 'default lane'] },
+  { section: 'search', cardId: 'st-card-search-fetch', titleKey: 'st.nbSearch.fetchChainLabel', keywordKeys: ['st.nbSearch.fetchChainHint'], synonyms: ['fetch chain', '抓取链', 'pipeline chain', 'fallback'] },
   { section: 'search', cardId: 'st-card-search-providers', titleKey: 'st.nbSearch.providersTitle', keywordKeys: ['st.nbSearch.credentialEnvLabel', 'st.nbSearch.baseUrlLabel'], synonyms: ['exa', 'tavily', 'brave', 'searxng', 'jina', '搜索提供商'] },
   { section: 'search', cardId: 'st-card-search-execution', titleKey: 'st.nbSearch.executionTitle', keywordKeys: ['st.nbSearch.groupBudgets', 'st.nbSearch.groupTimeouts', 'st.nbSearch.groupFetchLimits'], synonyms: ['搜索超时', 'search timeout', 'concurrency', '并发'] },
   { section: 'search', cardId: 'st-card-search-diagnostics', titleKey: 'st.nbSearch.diagnosticsTitle', keywordKeys: ['st.nbSearch.diagnosticsHint'], synonyms: ['搜索诊断', 'search diagnostics', 'test'] },
   { section: 'mcp', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace'], synonyms: ['能力', 'mcp 服务器', 'mcp server'] },
   { section: 'mcp', cardId: 'st-card-mcp-status', titleKey: 'st.mcp.statusTitle', keywordKeys: ['st.mcp.restart', 'st.mcp.toolsCount'], synonyms: ['mcp 状态', 'mcp status'] },
   { section: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
+  { section: 'mcp', cardId: 'st-card-mcp-delegation', titleKey: 'st.experimental.delegation', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['external delegation', '外部委派'] },
+  { section: 'tasks', cardId: 'st-card-task-board', titleKey: 'st.experimental.taskBoard', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['task board', '任务看板'] },
   { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理'] },
   { section: 'plugins', cardId: 'st-card-plugins-add', titleKey: 'st.plugins.addTitle', keywordKeys: ['st.plugins.addHint', 'st.plugins.tab.marketplace'], synonyms: ['marketplace', '插件市场', '安装插件'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
@@ -1438,15 +1474,15 @@ export type SettingsRouteResolution =
 /**
  * Hidden aliases for renamed sections, so an old bookmark still lands on its
  * content instead of the "unknown setting" page. Batch 2 merged `models` and
- * `providers` into the `ai` entry (redesign §10.3); batch 3 split
- * `capabilities` into skills / mcp / automation — the bare section lands on
- * skills, and a precise card hash still follows the card via the card-aware
- * fallback in `resolveSettingsRoute`.
+ * `providers` into the `ai` entry (redesign §10.3); later splits keep each
+ * capability flag with its owning leaf. The retired `experimental` leaf lands
+ * on `advanced`, while precise card hashes still follow their current owner.
  */
 export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> = {
   models: 'ai',
   providers: 'ai',
   capabilities: 'skills',
+  experimental: 'advanced',
 };
 
 /**
@@ -1457,6 +1493,7 @@ export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> =
  */
 export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: string; readonly cardId: string }>> = {
   'st-card-sidecar': { section: 'subagents', cardId: 'st-card-subagent-timeout' },
+  'st-card-experimental': { section: 'advanced', cardId: 'st-card-performance-storage' },
 };
 
 /** Which tab a legacy section bookmark maps to (redesign §10.3's route table). */
@@ -1631,7 +1668,7 @@ async function serverRequest<T>(
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (connection.token.trim() !== '') headers['Authorization'] = `Bearer ${connection.token.trim()}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const response = await fetch(`${base}/api/v1${path}`, {
+  const response = await fetch(`${base}/api${path}`, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),

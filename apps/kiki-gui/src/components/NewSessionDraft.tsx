@@ -19,12 +19,15 @@ import type {
   PermissionMode,
   SessionCreate,
   Workspace,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import {
   buildPromptContent,
+  clearNewSessionDraft,
   readDraft,
+  readNewSessionDraft,
   writeDraft,
+  writeNewSessionDraft,
   type ComposerAttachment,
 } from '@kiki/session-core/composer';
 import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '@kiki/session-core/sessions';
@@ -111,10 +114,13 @@ export function needsProviderSetup(
 export function useNewSessionDraft({
   initialWorkspaceId,
   initialProfile,
+  prefillNavigationKey,
 }: {
   initialWorkspaceId?: string;
   /** `?agent=` prefill — the profile the new session binds at creation. */
   initialProfile?: string;
+  /** Router history-entry identity survives reload/back but changes on a new navigation. */
+  prefillNavigationKey?: string;
 } = {}) {
   const host = useHost();
   const { client } = useConnection();
@@ -126,32 +132,44 @@ export function useNewSessionDraft({
     settingsServerSnapshot,
   );
   const settings = useMemo(() => readSettings(), []);
+  const initialRestoredDraft = useMemo(() => readNewSessionDraft(), []);
+  const [prefillSource] = useState(() => initialWorkspaceId !== undefined || initialProfile !== undefined
+    ? JSON.stringify([initialWorkspaceId ?? null, initialProfile ?? null, prefillNavigationKey ?? null])
+    : initialRestoredDraft.prefillSource);
+  const applyPrefill = prefillSource !== initialRestoredDraft.prefillSource;
 
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [workspaceId, setWorkspaceId] = useState(initialWorkspaceId ?? '');
-  const [cwd, setCwd] = useState('');
+  const [workspaceId, setWorkspaceId] = useState(
+    (applyPrefill ? initialWorkspaceId : undefined) ?? initialRestoredDraft.workspaceId ?? '',
+  );
+  const [cwd, setCwd] = useState(
+    applyPrefill && initialWorkspaceId !== undefined ? '' : (initialRestoredDraft.cwd ?? ''),
+  );
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode);
   const [planMode, setPlanMode] = useState(settings.defaultPlanMode);
   const [swarmMode, setSwarmMode] = useState(false);
   const [goalObjective, setGoalObjective] = useState('');
   const [modelOverride, setModelOverrideState] = useState(() =>
-    resolveSessionModelOverride(undefined),
+    resolveSessionModelOverride(initialRestoredDraft.modelOverride),
   );
-  const [agentProfile, setAgentProfileState] = useState(DEFAULT_AGENT_PROFILE);
+  const [agentProfile, setAgentProfileState] = useState(
+    (applyPrefill ? initialProfile : undefined) ?? initialRestoredDraft.profile ?? DEFAULT_AGENT_PROFILE,
+  );
   // The selected effort is the wire value. When the model catalog supplies a
   // visible default, sending without touching the select still submits it.
-  const [effortOverride, setEffortOverrideState] = useState<string | undefined>(undefined);
-  const [initialProfileValidated, setInitialProfileValidated] = useState(
-    initialProfile === undefined,
+  const [effortOverride, setEffortOverrideState] = useState<string | undefined>(
+    initialRestoredDraft.effortOverride,
   );
+  const [selectionRevision, setSelectionRevision] = useState(0);
   const [profileCatalogTransitionPending, setProfileCatalogTransitionPending] = useState(false);
   const profileCatalogTransitionRef = useRef(false);
-  const modelOverrideFromProfile = useRef(false);
-  const effortOverrideFromProfile = useRef(false);
+  const hasNewProfilePrefill = applyPrefill && initialProfile !== undefined;
+  const modelOverrideFromProfile = useRef(hasNewProfilePrefill || (initialRestoredDraft.modelFromProfile ?? initialRestoredDraft.profile === undefined));
+  const effortOverrideFromProfile = useRef(hasNewProfilePrefill || (initialRestoredDraft.effortFromProfile ?? initialRestoredDraft.profile === undefined));
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
@@ -163,8 +181,8 @@ export function useNewSessionDraft({
 
   const effectiveWorkspace: Workspace | undefined = useMemo(
     () =>
-      workspaces.find((w) => w.id === workspaceId) ??
-      sortWorkspacesByRecency(workspaces)[0],
+      workspaceId === '' ? sortWorkspacesByRecency(workspaces)[0]
+        : workspaces.find((w) => w.id === workspaceId),
     [workspaces, workspaceId],
   );
 
@@ -181,19 +199,17 @@ export function useNewSessionDraft({
     staleTime: 60_000,
   });
   const agentProfileCatalogMode = useMemo<AgentProfileCatalogMode>(() => {
-    if (
-      cwd.trim() !== ''
-      || workspacesQuery.data === undefined
-      || effectiveWorkspace === undefined
-    ) {
-      return { mode: 'disabled' };
-    }
-    return { mode: 'workspace', workspaceId: effectiveWorkspace.id };
-  }, [cwd, effectiveWorkspace, workspacesQuery.data]);
+    const directory = cwd.trim();
+    if (directory !== '') return isAbsoluteCwdPath(directory)
+      ? { mode: 'cwd', cwd: directory, effective: true }
+      : { mode: 'disabled' };
+    if (effectiveWorkspace === undefined) return { mode: 'disabled' };
+    return { mode: 'workspace', workspaceId: effectiveWorkspace.id, effective: true };
+  }, [cwd, effectiveWorkspace]);
   const agentProfilesQuery = useQuery({
     queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
     queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
-    enabled: agentProfileCatalogMode.mode === 'workspace',
+    enabled: agentProfileCatalogMode.mode !== 'disabled',
     staleTime: 60_000,
     retry: false,
   });
@@ -219,9 +235,9 @@ export function useNewSessionDraft({
   );
   const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.model === effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
-  const effectiveEffort = resolveSelectedEffort(
+  const effectiveEffort = effortOverride ?? resolveSelectedEffort(
     supportedEfforts,
-    effortOverride,
+    undefined,
     catalogItem?.default_effort,
   );
 
@@ -232,10 +248,12 @@ export function useNewSessionDraft({
   const setModelOverride = useCallback((model: string | undefined) => {
     modelOverrideFromProfile.current = false;
     setModelOverrideState(model);
+    setSelectionRevision((value) => value + 1);
   }, []);
   const setEffortOverride = useCallback((thinking: string | undefined) => {
     effortOverrideFromProfile.current = false;
     setEffortOverrideState(thinking);
+    setSelectionRevision((value) => value + 1);
   }, []);
   const applyAgentProfile = useCallback((
     items: readonly NamedAgentProfile[],
@@ -247,78 +265,59 @@ export function useNewSessionDraft({
     effortOverrideFromProfile.current = true;
     setModelOverrideState(defaults.model);
     setEffortOverrideState(defaults.thinking);
+    setSelectionRevision((value) => value + 1);
   }, []);
 
   useEffect(() => {
-    const items = agentProfilesQuery.data?.items;
-    if (
-      agentProfileCatalogMode.mode === 'workspace'
-      && !agentProfilesQuery.isError
-      && (agentProfilesQuery.isLoading || agentProfilesQuery.isPending)
-    ) return;
-    if (
-      agentProfileCatalogMode.mode === 'disabled'
-      && cwd.trim() === ''
-      && workspacesQuery.data === undefined
-    ) return;
-
-    const profiles = agentProfilesQuery.isError ? [] : items ?? [];
-    const validatingInitialProfile = initialProfile !== undefined && !initialProfileValidated;
-    const requestedProfile = validatingInitialProfile ? initialProfile : agentProfile;
-    const nextProfile = profiles.find((item) =>
-      item.name === requestedProfile && item.main
-    )?.name ?? DEFAULT_AGENT_PROFILE;
-    const defaults = composerDefaultsForProfile(profiles, nextProfile);
-    setAgentProfileState(nextProfile);
-    if (validatingInitialProfile || modelOverrideFromProfile.current) {
-      modelOverrideFromProfile.current = true;
-      setModelOverrideState(defaults.model);
+    if (agentProfileCatalogMode.mode !== 'disabled' && agentProfilesQuery.isPending) return;
+    const profiles = agentProfilesQuery.data?.items;
+    const selected = profiles?.find((item) =>
+      item.name === agentProfile && item.main === true && !item.disabled
+    );
+    // Errors and confirmed-invalid selections are different states. Neither
+    // authorizes replacing the user's choice (or its persisted source).
+    if (!agentProfilesQuery.isError && selected !== undefined && profiles !== undefined) {
+      const defaults = composerDefaultsForProfile(profiles, agentProfile);
+      if (modelOverrideFromProfile.current) setModelOverrideState(defaults.model);
+      if (effortOverrideFromProfile.current) setEffortOverrideState(defaults.thinking);
     }
-    if (validatingInitialProfile || effortOverrideFromProfile.current) {
-      effortOverrideFromProfile.current = true;
-      setEffortOverrideState(defaults.thinking);
-    }
-    if (validatingInitialProfile) setInitialProfileValidated(true);
     profileCatalogTransitionRef.current = false;
     setProfileCatalogTransitionPending(false);
-  }, [
-    agentProfile,
-    agentProfileCatalogMode,
-    agentProfilesQuery.data,
-    agentProfilesQuery.isError,
-    agentProfilesQuery.isLoading,
-    agentProfilesQuery.isPending,
-    cwd,
-    initialProfile,
-    initialProfileValidated,
-    workspacesQuery.data,
-  ]);
+  }, [agentProfile, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isError, agentProfilesQuery.isPending]);
+
+  useEffect(() => {
+    writeNewSessionDraft({
+      workspaceId: workspaceId || effectiveWorkspace?.id,
+      cwd,
+      profile: agentProfile,
+      modelOverride,
+      effortOverride,
+      modelFromProfile: modelOverrideFromProfile.current,
+      effortFromProfile: effortOverrideFromProfile.current,
+      prefillSource,
+    });
+  }, [workspaceId, effectiveWorkspace?.id, cwd, agentProfile, modelOverride, effortOverride, selectionRevision, prefillSource]);
 
   const updateDraft = useCallback((text: string) => {
     setDraft(text);
     writeDraft(DRAFT_KEY, text);
   }, []);
 
-  const agentProfileCatalogPending =
-    !initialProfileValidated
-    || profileCatalogTransitionPending
-    || (
-      cwd.trim() === ''
-      && (
-        workspacesQuery.data === undefined
-        || (
-          agentProfileCatalogMode.mode === 'workspace'
-          && !agentProfilesQuery.isError
-          && (agentProfilesQuery.isLoading || agentProfilesQuery.isPending)
-        )
-      )
-    );
+  const agentProfileCatalogPending = profileCatalogTransitionPending
+    || (cwd.trim() === '' && workspacesQuery.isPending)
+    || (agentProfileCatalogMode.mode !== 'disabled' && agentProfilesQuery.isPending);
+  const selectionBlocked = agentProfileCatalogMode.mode === 'disabled'
+    || agentProfilesQuery.isError
+    || !agentProfilesQuery.data?.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled)
+    || !modelsQuery.isSuccess
+    || (effectiveModel !== undefined && catalogItem === undefined)
+    || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride));
 
   // Refs keep the send path stable across renders: the /new page publishes a
   // memoized composer element into the conversation shell, and a send that
   // changes identity on every keystroke would defeat the memo.
   const sendContextRef = useRef({
-    busy,
+    busy: busy || selectionBlocked,
     agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
@@ -331,7 +330,7 @@ export function useNewSessionDraft({
     goalObjective,
   });
   sendContextRef.current = {
-    busy,
+    busy: busy || selectionBlocked,
     agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
@@ -378,6 +377,7 @@ export function useNewSessionDraft({
       .createSession(body)
       .then((session) => {
         writeDraft(DRAFT_KEY, '');
+        clearNewSessionDraft();
         // react-router's navigate returns a promise in data routers; the
         // navigation is fire-and-forget here (the catch below covers createSession).
         void navigate(`/s/${session.id}`, {
@@ -456,7 +456,7 @@ export function useNewSessionDraft({
   const setAgentProfile = useCallback((name: string) => {
     const items = agentProfilesQuery.data?.items;
     if (items === undefined) return;
-    const profile = items.find((item) => item.name === name && item.main);
+    const profile = items.find((item) => item.name === name && item.main === true && !item.disabled);
     if (profile === undefined) return;
     applyAgentProfile(items, profile.name);
   }, [agentProfilesQuery.data, applyAgentProfile]);

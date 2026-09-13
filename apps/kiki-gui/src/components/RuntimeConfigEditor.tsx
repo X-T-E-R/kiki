@@ -12,15 +12,7 @@ import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from './controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
-
-function ConfigCard({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
-  return (
-    <section id={id} className="rounded-2xl border border-hairline bg-panel p-5 shadow-[0_2px_4px_rgba(28,25,23,0.03)]">
-      <h2 className="mb-4 font-display text-[16px] font-semibold text-ink">{title}</h2>
-      {children}
-    </section>
-  );
-}
+import { SectionCard } from './settings/SectionCard';
 
 function NumberField({ label, value, onChange, placeholder }: {
   label: string;
@@ -83,13 +75,16 @@ function StringListEditor({ label, values, onChange, placeholder }: {
   );
 }
 
+/** One settings cluster: a quiet heading plus a one-line "what it affects". */
 function Group({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
-    <fieldset className="space-y-3 rounded-xl border border-hairline bg-paper p-3">
-      <legend className="px-1 text-[12px] font-semibold text-ink">{title}</legend>
-      {hint !== undefined ? <Hint>{hint}</Hint> : null}
+    <section className="space-y-3 border-t border-hairline pt-3 first:border-t-0 first:pt-0">
+      <div>
+        <h3 className="text-[12px] font-semibold text-ink">{title}</h3>
+        {hint !== undefined ? <p className="mt-0.5 text-[11px] leading-relaxed text-ink-faint">{hint}</p> : null}
+      </div>
       {children}
-    </fieldset>
+    </section>
   );
 }
 
@@ -98,27 +93,34 @@ export function RuntimeConfigEditor() {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<RuntimeConfigDraft | null>(null);
+  const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
-    if (configQuery.data !== undefined) setDraft(runtimeConfigDraftFromConfig(configQuery.data));
-  }, [configQuery.data]);
+    if (configQuery.data !== undefined && !dirty) setDraft(runtimeConfigDraftFromConfig(configQuery.data));
+  }, [configQuery.data, dirty]);
 
   if (draft === null) {
     return (
-      <ConfigCard id="st-card-runtime" title={t('st.runtime.title')}>
+      <SectionCard id="st-card-runtime" title={t('st.runtime.title')}>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
-      </ConfigCard>
+      </SectionCard>
     );
   }
 
+  const updateDraft = (next: RuntimeConfigDraft) => {
+    setDraft(next);
+    setDirty(true);
+  };
   const updateTask = (patch: Partial<RuntimeConfigDraft['task']>) => {
     setDraft((current) => current === null ? current : { ...current, task: { ...current.task, ...patch } });
+    setDirty(true);
   };
   const updateCron = (patch: Partial<RuntimeConfigDraft['cron']>) => {
     setDraft((current) => current === null ? current : { ...current, cron: { ...current.cron, ...patch } });
+    setDirty(true);
   };
 
   const save = async () => {
@@ -137,6 +139,7 @@ export function RuntimeConfigEditor() {
       const echoed = await client.patchConfig(patch);
       queryClient.setQueryData(['config'], echoed);
       setDraft(runtimeConfigDraftFromConfig(echoed));
+      setDirty(false);
       if (identityChanged) markRestartRequired(['identity']);
       // The patch is narrow: the mcp and tools domains belong to the MCP
       // timeouts card and the automation leaf's tool policy card, so nothing
@@ -150,53 +153,12 @@ export function RuntimeConfigEditor() {
   };
 
   return (
-    <>
-      <ConfigCard id="st-card-runtime" title={t('st.runtime.title')}>
+    <div className="space-y-3">
+      <SectionCard id="st-card-runtime" title={t('st.runtime.title')}>
         <div className="space-y-4">
           <Hint>{t('st.runtime.hint')}</Hint>
-          <fieldset disabled={saving} className="space-y-4 disabled:opacity-60">
-            <Group title={t('st.runtime.cron')} hint={t('st.runtime.cronHint')}>
-              {/* cron is env-driven (KIMI_CRON_*) and never persisted — read-only display. */}
-              <fieldset disabled className="space-y-3 opacity-60">
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <Toggle label={t('st.runtime.cronDebug')} checked={draft.cron.debug} onChange={(debug) => { updateCron({ debug }); }} />
-                  <Toggle label={t('st.runtime.cronNoJitter')} checked={draft.cron.noJitter} onChange={(noJitter) => { updateCron({ noJitter }); }} />
-                  <Toggle label={t('st.runtime.cronNoStale')} checked={draft.cron.noStale} onChange={(noStale) => { updateCron({ noStale }); }} />
-                  <Toggle label={t('st.runtime.cronDisabled')} checked={draft.cron.disabled} onChange={(disabled) => { updateCron({ disabled }); }} />
-                  <Toggle label={t('st.runtime.cronManualTick')} checked={draft.cron.manualTick} onChange={(manualTick) => { updateCron({ manualTick }); }} />
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-[11px] font-medium text-ink-soft">{t('st.runtime.cronClock')}
-                    <input className={`${INPUT} mt-1 font-mono`} value={draft.cron.clock} onChange={(event) => { updateCron({ clock: event.target.value }); }} />
-                  </label>
-                  <NumberField label={t('st.runtime.cronPoll')} value={draft.cron.pollIntervalMs} placeholder={t('st.runtime.cronPollPlaceholder')} onChange={(pollIntervalMs) => { updateCron({ pollIntervalMs }); }} />
-                </div>
-              </fieldset>
-            </Group>
-
-            <Group title={t('st.runtime.communication')}>
-              <Toggle label={t('st.runtime.threadCommunication')} checked={draft.threadCommunicationEnabled} onChange={(threadCommunicationEnabled) => { setDraft({ ...draft, threadCommunicationEnabled }); }} />
-              <label className="block text-[11px] font-medium text-ink-soft">{t('st.runtime.tokenCounting')}
-                <select className={`${SMALL_INPUT} mt-1 block`} value={draft.tokenCountingStrategy} onChange={(event) => { setDraft({ ...draft, tokenCountingStrategy: event.target.value as RuntimeConfigDraft['tokenCountingStrategy'] }); }}>
-                  <option value="measured+estimated">measured+estimated</option>
-                  <option value="measured">measured</option>
-                  <option value="estimated">estimated</option>
-                </select>
-              </label>
-            </Group>
-
-            <Group title={t('st.runtime.resources')}>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <NumberField label={t('st.runtime.workspaceIdle')} value={draft.workspaceIdleTtlMs} onChange={(workspaceIdleTtlMs) => { setDraft({ ...draft, workspaceIdleTtlMs }); }} />
-                <NumberField label={t('st.runtime.imageMaxEdge')} value={draft.imageMaxEdgePx} onChange={(imageMaxEdgePx) => { setDraft({ ...draft, imageMaxEdgePx }); }} />
-                <NumberField label={t('st.runtime.imageBudget')} value={draft.imageReadByteBudget} onChange={(imageReadByteBudget) => { setDraft({ ...draft, imageReadByteBudget }); }} />
-                {/* MCP startup/tool timeouts live on Settings → MCP
-                    (st-card-mcp-timeouts) since the batch-3 split; the
-                    runtime draft and patch no longer carry the mcp domain. */}
-              </div>
-            </Group>
-
-            <Group title={t('st.runtime.task')}>
+          <fieldset disabled={saving} className="min-w-0 space-y-4 disabled:opacity-60">
+            <Group title={t('st.runtime.task')} hint={t('st.runtime.taskHint')}>
               <div className="grid gap-3 sm:grid-cols-2">
                 <NumberField label={t('st.runtime.maxRunningTasks')} value={draft.task.maxRunningTasks} onChange={(maxRunningTasks) => { updateTask({ maxRunningTasks }); }} />
                 <NumberField label={t('st.runtime.bashTimeout')} value={draft.task.bashTaskTimeoutS} onChange={(bashTaskTimeoutS) => { updateTask({ bashTaskTimeoutS }); }} />
@@ -217,24 +179,73 @@ export function RuntimeConfigEditor() {
               </div>
             </Group>
 
-            <Group title={t('st.runtime.agents')}>
+            <Group title={t('st.runtime.resources')} hint={t('st.runtime.resourcesHint')}>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <NumberField label={t('st.runtime.workspaceIdle')} value={draft.workspaceIdleTtlMs} onChange={(workspaceIdleTtlMs) => { updateDraft({ ...draft, workspaceIdleTtlMs }); }} />
+                <NumberField label={t('st.runtime.imageMaxEdge')} value={draft.imageMaxEdgePx} onChange={(imageMaxEdgePx) => { updateDraft({ ...draft, imageMaxEdgePx }); }} />
+                <NumberField label={t('st.runtime.imageBudget')} value={draft.imageReadByteBudget} onChange={(imageReadByteBudget) => { updateDraft({ ...draft, imageReadByteBudget }); }} />
+                {/* MCP startup/tool timeouts live on Settings → MCP
+                    (st-card-mcp-timeouts) since the batch-3 split; the
+                    runtime draft and patch no longer carry the mcp domain. */}
+              </div>
+            </Group>
+
+            <Group title={t('st.runtime.communication')} hint={t('st.runtime.communicationHint')}>
+              <Toggle label={t('st.runtime.threadCommunication')} checked={draft.threadCommunicationEnabled} onChange={(threadCommunicationEnabled) => { updateDraft({ ...draft, threadCommunicationEnabled }); }} />
+              <label className="block text-[11px] font-medium text-ink-soft">{t('st.runtime.tokenCounting')}
+                <select className={`${SMALL_INPUT} mt-1 block`} value={draft.tokenCountingStrategy} onChange={(event) => { updateDraft({ ...draft, tokenCountingStrategy: event.target.value as RuntimeConfigDraft['tokenCountingStrategy'] }); }}>
+                  <option value="measured+estimated">measured+estimated</option>
+                  <option value="measured">measured</option>
+                  <option value="estimated">estimated</option>
+                </select>
+              </label>
+            </Group>
+
+            <Group title={t('st.runtime.agents')} hint={t('st.runtime.agentsHint')}>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="text-[11px] font-medium text-ink-soft">{t('st.runtime.identityName')}
-                  <input className={`${INPUT} mt-1`} value={draft.identityName} onChange={(event) => { setDraft({ ...draft, identityName: event.target.value }); }} />
+                  <input className={`${INPUT} mt-1`} value={draft.identityName} onChange={(event) => { updateDraft({ ...draft, identityName: event.target.value }); }} />
                 </label>
                 <label className="text-[11px] font-medium text-ink-soft">{t('st.runtime.identitySlug')}
-                  <input className={`${INPUT} mt-1 font-mono`} value={draft.identitySlug} onChange={(event) => { setDraft({ ...draft, identitySlug: event.target.value }); }} />
+                  <input className={`${INPUT} mt-1 font-mono`} value={draft.identitySlug} onChange={(event) => { updateDraft({ ...draft, identitySlug: event.target.value }); }} />
                 </label>
               </div>
-              <StringListEditor label={t('st.runtime.extraAgentDirs')} values={draft.extraAgentDirs} placeholder="C:\\agents" onChange={(extraAgentDirs) => { setDraft({ ...draft, extraAgentDirs }); }} />
-              <StringListEditor label={t('st.runtime.disabledProfiles')} values={draft.disabledBuiltinProfiles} placeholder="profile-name" onChange={(disabledBuiltinProfiles) => { setDraft({ ...draft, disabledBuiltinProfiles }); }} />
+              <StringListEditor label={t('st.runtime.extraAgentDirs')} values={draft.extraAgentDirs} placeholder="C:\agents" onChange={(extraAgentDirs) => { updateDraft({ ...draft, extraAgentDirs }); }} />
+              <StringListEditor label={t('st.runtime.disabledProfiles')} values={draft.disabledBuiltinProfiles} placeholder="profile-name" onChange={(disabledBuiltinProfiles) => { updateDraft({ ...draft, disabledBuiltinProfiles }); }} />
             </Group>
           </fieldset>
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.runtime.save')}</button>
+          <div className="flex flex-wrap items-center gap-3 border-t border-hairline pt-3">
+            <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
+              {saving ? t('common.saving') : t('st.runtime.save')}
+            </button>
+            {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
+          </div>
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
           <FeedbackLine feedback={feedback} />
         </div>
-      </ConfigCard>
-    </>
+      </SectionCard>
+
+      <SectionCard title={t('st.runtime.cron')}>
+        <div className="space-y-3">
+          {/* cron is env-driven (KIMI_CRON_*) and never persisted — read-only display. */}
+          <Hint>{t('st.runtime.cronHint')}</Hint>
+          <fieldset disabled className="min-w-0 space-y-3 opacity-60">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Toggle label={t('st.runtime.cronDebug')} checked={draft.cron.debug} onChange={(debug) => { updateCron({ debug }); }} />
+              <Toggle label={t('st.runtime.cronNoJitter')} checked={draft.cron.noJitter} onChange={(noJitter) => { updateCron({ noJitter }); }} />
+              <Toggle label={t('st.runtime.cronNoStale')} checked={draft.cron.noStale} onChange={(noStale) => { updateCron({ noStale }); }} />
+              <Toggle label={t('st.runtime.cronDisabled')} checked={draft.cron.disabled} onChange={(disabled) => { updateCron({ disabled }); }} />
+              <Toggle label={t('st.runtime.cronManualTick')} checked={draft.cron.manualTick} onChange={(manualTick) => { updateCron({ manualTick }); }} />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-[11px] font-medium text-ink-soft">{t('st.runtime.cronClock')}
+                <input className={`${INPUT} mt-1 font-mono`} value={draft.cron.clock} onChange={(event) => { updateCron({ clock: event.target.value }); }} />
+              </label>
+              <NumberField label={t('st.runtime.cronPoll')} value={draft.cron.pollIntervalMs} placeholder={t('st.runtime.cronPollPlaceholder')} onChange={(pollIntervalMs) => { updateCron({ pollIntervalMs }); }} />
+            </div>
+          </fieldset>
+        </div>
+      </SectionCard>
+    </div>
   );
 }

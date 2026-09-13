@@ -20,8 +20,9 @@ const mocks = vi.hoisted(() => ({
     closed: boolean;
     close: ReturnType<typeof vi.fn>;
     global: { mcp: { list: ReturnType<typeof vi.fn> } };
+    events: { on: ReturnType<typeof vi.fn> };
   }>,
-  sockets: [] as Array<{
+  terminalSubscriptions: [] as Array<{
     baseUrl: string;
     connect: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -46,57 +47,38 @@ vi.mock('@tauri-apps/api/event', () => ({
   }),
 }));
 
-vi.mock('@moonshot-ai/klient/http', () => ({
-  createKlient: (options: { endpoint: string; token?: string }) => {
-    const klient: (typeof mocks.klients)[number] = {
-      ...options,
-      closed: false,
-      close: vi.fn(),
-      global: { mcp: { list: vi.fn() } },
-    };
-    klient.close.mockImplementation(async () => {
-      klient.closed = true;
-    });
-    klient.global.mcp.list.mockImplementation(async () => {
-      if (klient.closed) throw new Error('klient closed');
-      return [];
-    });
-    mocks.klients.push(klient);
-    return klient;
-  },
-}));
-
 vi.mock('../lib/client', () => ({
   ApiError: class ApiError extends Error {},
   KikiClient: class KikiClient {
     readonly baseUrl: string;
+    readonly klient;
 
-    constructor(options: { baseUrl: string }) {
+    constructor(options: { baseUrl: string; token?: string }) {
       this.baseUrl = options.baseUrl;
+      const klient = {
+        endpoint: options.baseUrl, token: options.token, closed: false,
+        close: vi.fn(async () => { klient.closed = true; }),
+        global: { mcp: { list: vi.fn(async () => {
+          if (klient.closed) throw new Error('klient closed');
+          return [];
+        }) } },
+        events: { on: vi.fn(() => ({ dispose: vi.fn(), ready: Promise.resolve() })) },
+        terminal: {
+          nudge: vi.fn(),
+          onStatus: vi.fn(() => {
+            const subscription = { baseUrl: options.baseUrl, connect: vi.fn(), close: vi.fn() };
+            subscription.connect();
+            mocks.terminalSubscriptions.push(subscription);
+            return subscription.close;
+          }),
+        },
+      };
+      this.klient = klient;
+      mocks.klients.push(klient);
     }
 
-    meta() {
-      return mocks.meta(this.baseUrl);
-    }
-
-    renewLease(body: { clientId: string; kind: 'gui' }) {
-      return mocks.renewLease(body);
-    }
-  },
-}));
-
-vi.mock('../lib/ws', () => ({
-  KikiSocket: class KikiSocket {
-    readonly connectionGeneration = 0;
-    readonly baseUrl: string;
-    readonly connect = vi.fn();
-    readonly close = vi.fn();
-    readonly nudge = vi.fn();
-
-    constructor(options: { baseUrl: string }) {
-      this.baseUrl = options.baseUrl;
-      mocks.sockets.push(this);
-    }
+    meta() { return mocks.meta(this.baseUrl); }
+    renewLease(body: { clientId: string; kind: 'gui' }) { return mocks.renewLease(body); }
   },
 }));
 
@@ -161,7 +143,7 @@ beforeEach(() => {
   mocks.renewLease.mockReset();
   mocks.renewLease.mockResolvedValue(undefined);
   mocks.klients.length = 0;
-  mocks.sockets.length = 0;
+  mocks.terminalSubscriptions.length = 0;
   mocks.stageListener = undefined;
   localStorage.clear();
 });
@@ -221,6 +203,20 @@ async function emitStage(payload: unknown): Promise<void> {
 }
 
 describe('ConnectionProvider Klient ownership', () => {
+  it('refreshes model and provider queries from typed Klient global events', async () => {
+    localStorage.setItem('kiki.connection', JSON.stringify({ url: 'http://127.0.0.1:41001', token: 'test-token' }));
+    mocks.meta.mockResolvedValue({ serverVersion: 'test' });
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+    try {
+      await mountProvider(true);
+      const client = mocks.klients.find((entry) => !entry.closed)!;
+      const registration = client.events.on.mock.calls.find(([name]) => name === 'kosong.changed')!;
+      expect(registration).toBeDefined();
+      await act(async () => { registration[1]({ changed: [], unchanged: [], failed: [] }); });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['models'] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['providers'] });
+    } finally { invalidate.mockRestore(); }
+  });
   it('rebuilds the StrictMode lease and owns normalized pair changes through final unmount', async () => {
     localStorage.setItem('kiki.connection', JSON.stringify({
       url: 'http://127.0.0.1:41001/',
@@ -298,13 +294,13 @@ describe('ConnectionProvider desktop backend recovery', () => {
 
     const container = await mountProvider();
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(oldConfig.url);
-    expect(mocks.sockets).toHaveLength(1);
+    expect(mocks.terminalSubscriptions).toHaveLength(1);
     expect(mocks.klients).toHaveLength(1);
     expect(mocks.klients[0]).toMatchObject({ endpoint: oldConfig.url, token: oldConfig.token });
 
     await emitStage('waiting');
     await flush();
-    expect(mocks.sockets[0]!.close).toHaveBeenCalledTimes(1);
+    expect(mocks.terminalSubscriptions[0]!.close).toHaveBeenCalledTimes(1);
     expect(mocks.klients[0]!.close).toHaveBeenCalledTimes(1);
     expect(mocks.klients).toHaveLength(2);
     expect(mocks.meta).toHaveBeenCalledTimes(2);
@@ -317,7 +313,7 @@ describe('ConnectionProvider desktop backend recovery', () => {
     await flush();
     expect(container.textContent).toContain('waiting for it to become ready');
     expect(container.querySelector('[data-connected-url]')).toBeNull();
-    expect(mocks.sockets).toHaveLength(1);
+    expect(mocks.terminalSubscriptions).toHaveLength(1);
     expect(mocks.klients[1]!.close).toHaveBeenCalledTimes(1);
 
     newDesktopConnection.resolve({ config: newConfig, persist: false });
@@ -328,11 +324,11 @@ describe('ConnectionProvider desktop backend recovery', () => {
     newMeta.resolve({ serverVersion: 'test' });
     await flush();
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(newConfig.url);
-    expect(mocks.sockets).toHaveLength(2);
+    expect(mocks.terminalSubscriptions).toHaveLength(2);
     expect(mocks.klients).toHaveLength(3);
     expect(mocks.klients[2]).toMatchObject({ endpoint: newConfig.url, token: newConfig.token });
-    expect(mocks.sockets[1]!.baseUrl).toBe(newConfig.url);
-    expect(mocks.sockets[1]!.connect).toHaveBeenCalledTimes(1);
+    expect(mocks.terminalSubscriptions[1]!.baseUrl).toBe(newConfig.url);
+    expect(mocks.terminalSubscriptions[1]!.connect).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a failed recovery visible when an old meta promise resolves later', async () => {
@@ -365,8 +361,8 @@ describe('ConnectionProvider desktop backend recovery', () => {
 
     expect(container.textContent).toContain('backend recovery exhausted');
     expect(container.querySelector('[data-connected-url]')).toBeNull();
-    expect(mocks.sockets).toHaveLength(1);
-    expect(mocks.sockets[0]!.close).toHaveBeenCalledTimes(1);
+    expect(mocks.terminalSubscriptions).toHaveLength(1);
+    expect(mocks.terminalSubscriptions[0]!.close).toHaveBeenCalledTimes(1);
   });
 
   it('builds lease client ids without crypto.randomUUID', () => {

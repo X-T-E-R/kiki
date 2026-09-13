@@ -9,9 +9,10 @@ import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
-import type { PermissionMode, PromptPlanGate, Session } from '@moonshot-ai/protocol';
+import type { PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
 
 import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
+import { revealSubagentCard } from './ActivityHistory';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort } from './Composer';
 import { ContextBreakdownProvider, ContextMeter } from './ContextMeter';
@@ -159,7 +160,7 @@ function useActiveController(
   sessionId: string | undefined,
   focusedAgentId?: string,
 ): SessionController | null {
-  const { client, socket } = useConnection();
+  const { client, klient } = useConnection();
   const registry = useControllerRegistry();
   const [controller, setController] = useState<SessionController | null>(null);
 
@@ -168,7 +169,7 @@ function useActiveController(
       setController(null);
       return;
     }
-    const next = new SessionController(client, socket, sessionId);
+    const next = new SessionController(client.sessions, klient.session(sessionId).view, sessionId);
     next.setFocusedAgent(focusedAgentId);
     registry.add(next);
     setController(next);
@@ -181,7 +182,7 @@ function useActiveController(
       next.close();
       setController(null);
     };
-  }, [client, socket, sessionId, registry]);
+  }, [client, klient, sessionId, registry]);
 
   return controller;
 }
@@ -790,6 +791,19 @@ export function resolveProfileSwitchSubmission(input: {
 }
 
 /**
+ * A failed send clears the pending profile pick only when the SERVER answered
+ * with a business rejection (e.g. route-locked) — the pick was definitively
+ * refused. Network failures (-1) and timeouts (API_CODES.TIMEOUT) prove
+ * nothing about the pick: keep the selection (and the draft) so the user can
+ * retry deliberately; nothing is resent automatically.
+ */
+export function shouldClearPendingProfileOnSendError(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.code !== -1 && error.code !== API_CODES.TIMEOUT
+  );
+}
+
+/**
  * Batch approval resolution: settles every pending card, reporting how many
  * decisions failed to send (individual cards keep their own retry path).
  */
@@ -1018,36 +1032,37 @@ export function agentDetailPath(sessionId: string, agentId: string): string {
   return `/s/${sessionId}/agent/${encodeURIComponent(agentId)}`;
 }
 
-function ResyncStatusBanner({
+export function ResyncStatusBanner({
   resyncing,
   resyncFailed,
+  error,
   onRetry,
 }: {
   resyncing: boolean;
   resyncFailed: boolean;
+  error?: SessionViewState['resyncError'];
   onRetry?: () => void;
 }) {
   const { t } = useI18n();
-  if (!resyncing && !resyncFailed) return null;
+  if (!resyncing && !resyncFailed && error === undefined) return null;
   return (
-    <div className="flex items-center gap-2 px-6 pt-1">
-      <span className="mx-auto flex items-center gap-2 text-[11px] text-ink-faint">
-        <KikiMark className="status-dot-busy" />
-        <span>
-          {resyncing ? t('sv.resyncing') : t('sv.resyncFailed')}
-          {' · '}
-          {t('sv.sendPaused')}
-        </span>
-        {resyncFailed && !resyncing && onRetry !== undefined ? (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
-          >
-            {t('sv.resyncRetryNow')}
-          </button>
-        ) : null}
-      </span>
+    <div className="px-6 pt-1" data-resync-status role={resyncing ? 'status' : 'alert'}>
+      <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)] space-y-1 rounded-lg border border-hairline bg-panel px-3 py-2 text-[11.5px] text-ink-soft">
+        <div className="flex flex-wrap items-center gap-2">
+          {resyncing ? <KikiMark className="status-dot-busy" /> : null}
+          <span>{resyncing ? t('sv.resyncing') : t('sv.resyncFailed')} · {t('sv.sendPaused')}</span>
+          {!resyncing && onRetry !== undefined ? (
+            <button type="button" onClick={onRetry}
+              className="rounded-full border border-hairline px-2 py-0.5 font-medium transition-colors hover:border-accent hover:text-accent">
+              {t('sv.resyncRetryNow')}
+            </button>
+          ) : null}
+        </div>
+        {error !== undefined ? <div className="break-words text-danger">
+          <p>{error.message}</p>
+          {error.code !== undefined || error.requestId !== undefined ? <p className="break-all font-mono text-[10.5px]">{[error.code, error.requestId].filter(Boolean).join(' · ')}</p> : null}
+        </div> : null}
+      </div>
     </div>
   );
 }
@@ -1347,8 +1362,8 @@ export function SessionView({
     setAttachments(updated);
   }, []);
 
-  // Capture the composer chrome that should survive a session switch:
-  // attachment chips and pill overrides, memory-only (see lib/drafts.ts).
+  // Capture in-memory chrome for session switches. The storage owner mirrors
+  // only model/effort overrides to disk, never attachments or run controls.
   useEffect(() => {
     writeComposerState(sessionId, {
       attachments,
@@ -1473,38 +1488,33 @@ export function SessionView({
     staleTime: 60_000,
   });
   const profileWorkspaceId = sessionAgentProfileWorkspaceId(state.session);
+  const profileCwd = state.session?.metadata.cwd;
   const agentProfileCatalogMode = useMemo<AgentProfileCatalogMode>(
-    () => profileWorkspaceId === undefined
-      ? { mode: 'disabled' }
-      : { mode: 'workspace', workspaceId: profileWorkspaceId },
-    [profileWorkspaceId],
+    () => profileCwd !== undefined && profileCwd !== ''
+      ? { mode: 'cwd', cwd: profileCwd, effective: true }
+      : profileWorkspaceId === undefined
+        ? { mode: 'disabled' }
+        : { mode: 'workspace', workspaceId: profileWorkspaceId, effective: true },
+    [profileCwd, profileWorkspaceId],
   );
   const agentProfilesQuery = useQuery({
     queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
     queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
-    enabled: agentProfileCatalogMode.mode === 'workspace',
+    enabled: agentProfileCatalogMode.mode !== 'disabled',
     staleTime: 60_000,
     retry: false,
   });
 
   const sessionModel = state.model;
-  // Server default first: the local mirror is a stale-prone echo of the same
-  // server field, so it only fills in when the server has not reported one.
   const inheritedDefault = serverDefaultModel ?? liveSettings.defaultModel;
   const effectiveModel = resolveEffectiveModel(modelOverride, sessionModel, inheritedDefault);
   const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.model === effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
-  // Retire an explicit effort override only when the effective model's catalog
-  // no longer lists it — never on mere model resolution, so a user pick (or a
-  // /new hand-off) survives the snapshot landing.
-  useEffect(() => {
-    if (effortOverride === undefined) return;
-    if (supportedEfforts === undefined || supportedEfforts.length === 0) return;
-    if (!supportedEfforts.includes(effortOverride)) setEffortOverride(undefined);
-  }, [effortOverride, supportedEfforts]);
-  const effectiveEffort = resolveSelectedEffort(
+  // Keep the local choice through delayed bindings and catalog changes. The
+  // Composer diagnoses incompatibility without destroying the saved value.
+  const effectiveEffort = effortOverride ?? resolveSelectedEffort(
     supportedEfforts,
-    effortOverride,
+    effectiveModel === sessionModel ? state.thinkingEffort : undefined,
     catalogItem?.default_effort,
   );
 
@@ -1518,7 +1528,7 @@ export function SessionView({
     setModelOverride(model);
     if (pendingProfile !== undefined) setProfileModelTouched(true);
   }, [pendingProfile]);
-  const handleEffortChange = useCallback((effort: string) => {
+  const handleEffortChange = useCallback((effort: string | undefined) => {
     setEffortOverride(effort);
     if (pendingProfile !== undefined) setProfileModelTouched(true);
   }, [pendingProfile]);
@@ -1693,9 +1703,13 @@ export function SessionView({
               tone: 'error',
               text: error instanceof Error ? error.message : String(error),
             });
-            // A rejected rebind (e.g. route-locked) drops the pending pick so
-            // the pill falls back to the live binding.
-            if (profileSwitch.profile !== undefined) {
+            // Only a definitive server-side business rejection (e.g.
+            // route-locked) drops the pending pick; a network failure or
+            // timeout keeps the selection and the draft for a manual retry.
+            if (
+              profileSwitch.profile !== undefined &&
+              shouldClearPendingProfileOnSendError(error)
+            ) {
               setPendingProfile(undefined);
               setProfileModelTouched(false);
             }
@@ -2387,7 +2401,9 @@ export function SessionView({
     ).length;
     // Parent jump-back: navigate to the spawning agent's timeline, then
     // smooth-scroll to this agent's card there (retried briefly while the
-    // target view mounts and publishes its first blocks).
+    // target view mounts and publishes its first blocks). The card may sit
+    // inside a collapsed history run; revealSubagentCard expands that run on
+    // the way, so the retry loop converges once the run is mounted.
     const handleJumpToSpawn = (): void => {
       const parentId = selectedNode?.parentAgentId ?? selectedSubagent?.parentAgentId;
       const path =
@@ -2396,11 +2412,7 @@ export function SessionView({
           : agentDetailPath(sessionId, parentId);
       if (location.pathname !== path) void navigate(path);
       const scrollToCard = (attemptsLeft: number): void => {
-        const target = document.querySelector(`[data-subagent-id="${CSS.escape(selectedAgentId)}"]`);
-        if (target !== null) {
-          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          return;
-        }
+        if (revealSubagentCard(selectedAgentId)) return;
         if (attemptsLeft > 0) window.setTimeout(() => { scrollToCard(attemptsLeft - 1); }, 150);
       };
       window.setTimeout(() => { scrollToCard(12); }, 150);
@@ -2557,6 +2569,7 @@ export function SessionView({
               <ResyncStatusBanner
                 resyncing={state.resyncing}
                 resyncFailed={state.resyncFailed}
+                error={state.resyncError}
                 onRetry={controller === null ? undefined : () => { void controller.resync(); }}
               />,
               slots.dock,
@@ -2696,6 +2709,7 @@ export function SessionView({
               <ResyncStatusBanner
                 resyncing={state.resyncing}
                 resyncFailed={state.resyncFailed}
+                error={state.resyncError}
                 onRetry={controller === null ? undefined : () => { void controller.resync(); }}
               />
               {queuedItems.length > 0 ? (

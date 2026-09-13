@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import type { Session } from '@moonshot-ai/protocol';
+import type { Session } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';

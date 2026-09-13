@@ -6,7 +6,7 @@
 
 import { createContext, useContext } from 'react';
 
-import type { MediaRef } from '@kiki/session-core/composer/media';
+import type { FileReference, MediaRef } from '@kiki/session-core/composer/media';
 
 export interface MediaPreviewApi {
   /** Session owning canonical or staged media IDs. */
@@ -15,8 +15,10 @@ export interface MediaPreviewApi {
   readonly cwd: string | undefined;
   /** Open the fullscreen image lightbox for a ready URL (data:/blob:/http). */
   readonly openImage: (src: string, name?: string) => void;
-  /** Open (or activate) the host file's tab in the preview workspace + focus it. */
-  readonly openFile: (path: string) => void;
+  /** Open a raw filesystem path or an already-resolved FileReference. Strings
+   * are never URI-decoded or stripped of citation suffixes; Markdown resolves
+   * its href before calling this API. */
+  readonly openFile: (reference: string | FileReference) => void;
   /** Open an attachment backed by a canonical session media id. */
   readonly openAttachment: (item: MediaRef) => void;
   /** Number of open preview tabs (0 → the header toggle hides itself). */

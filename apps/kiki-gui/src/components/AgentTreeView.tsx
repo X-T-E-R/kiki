@@ -132,7 +132,9 @@ const AgentTreeRow = memo(function AgentTreeRow({
                   {node.thinkingEffort !== undefined
                     ? ` · ${t('subagent.effort', { effort: node.thinkingEffort })}`
                     : ''}
-                  {` · ${t('subagent.tools', { count: node.toolCallCount })}`}
+                  {node.toolCallCountKnown === false
+                    ? ` · ${t('diagnostics.unknown')}`
+                    : ` · ${t('subagent.tools', { count: node.toolCallCount })}`}
                   {children.length > 0 ? ` · ${tp('subagent.children', children.length)}` : ''}
                 </span>
               </span>
@@ -163,6 +165,40 @@ const AgentTreeRow = memo(function AgentTreeRow({
     (next.selectedAgentId === next.node.agentId) &&
   previous.onOpen === next.onOpen,
 );
+
+/**
+ * One agent's children as a recursive tree (status dot, label, click to open;
+ * rows auto-expand so deep nesting is visible). Used by the subagent rail to
+ * replace the old flat child chips.
+ */
+export const AgentSubtreeView = memo(function AgentSubtreeView({
+  forest,
+  agentId,
+  selectedAgentId,
+  onOpen,
+}: {
+  forest: AgentForest;
+  agentId: string;
+  selectedAgentId?: string;
+  onOpen: (agentId: string) => void;
+}) {
+  const children = agentChildren(forest, agentId);
+  if (children.length === 0) return null;
+  return (
+    <ul data-agent-subtree={agentId} className="space-y-1">
+      {children.map((child) => (
+        <AgentTreeRow
+          key={child.agentId}
+          forest={forest}
+          node={child}
+          depth={0}
+          selectedAgentId={selectedAgentId}
+          onOpen={onOpen}
+        />
+      ))}
+    </ul>
+  );
+});
 
 export const AgentTreeView = memo(function AgentTreeView({
   forest,

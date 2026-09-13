@@ -2,6 +2,16 @@
   "name": "@kiki/gui",
   "version": "0.1.0-beta.1",
   "private": true,
+  "description": "Kiki browser and desktop GUI",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
+    "directory": "apps/kiki-gui"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/kiki/issues"
+  },
   "license": "MIT",
   "type": "module",
   "imports": {
@@ -44,6 +54,7 @@
     "proof:test": "node --test scripts/visual-proof-options.test.mjs scripts/fixture-transcript.test.mjs"
   },
   "dependencies": {
+    "@kiki/agent-profiles": "workspace:^",
     "@kiki/session-core": "workspace:^",
     "@codemirror/commands": "^6.11.0",
     "@codemirror/language": "^6.12.4",
@@ -54,9 +65,9 @@
     "@fontsource-variable/fraunces": "^5.2.5",
     "@fontsource/jetbrains-mono": "^5.2.5",
     "@fontsource/space-grotesk": "^5.2.5",
-    "@moonshot-ai/klient": "workspace:^",
-    "@moonshot-ai/protocol": "workspace:^",
-    "@moonshot-ai/transcript": "workspace:^",
+    "@kiki/klient": "workspace:^",
+    "@kiki/protocol": "workspace:^",
+    "@kiki/transcript": "workspace:^",
     "@streamdown/code": "^1.0.2",
     "@tanstack/react-query": "^5.74.4",
     "@tanstack/react-virtual": "3.14.10",

@@ -130,10 +130,10 @@ export const tauriHost: TauriHostAdapter = {
     return typeof selected === 'string' ? selected : (selected[0] ?? null);
   },
   async revealPath(path) {
-    await invoke('reveal_host_path', { path });
+    await invoke('reveal_host_path', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path });
   },
   async openPath(path) {
-    await invoke('open_host_path', { path });
+    await invoke('open_host_path', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path });
   },
   async writeFileText(path, text) {
     await invoke('write_host_file_text', { path, text });

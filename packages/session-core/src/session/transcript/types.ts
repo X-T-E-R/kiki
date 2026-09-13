@@ -12,7 +12,7 @@ import type {
   TokenUsage,
   ToolInputDisplay,
   UsageStatus,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import type { I18nKey, I18nParams } from '../../i18n/locale';
 import type { MediaRef } from '../../composer/media';
@@ -138,6 +138,7 @@ export interface ShellBlock {
   readonly kind: 'shell';
   readonly id: string;
   readonly commandId: string;
+  readonly command: string | undefined;
   readonly output: string;
   readonly done: boolean;
   readonly isError: boolean | undefined;
@@ -171,6 +172,8 @@ export interface SubagentBlock {
   readonly startedAt?: string;
   readonly endedAt: string | undefined;
   readonly toolCallCount: number;
+  /** False means the numeric count is a placeholder, not evidence of zero tool calls. */
+  readonly toolCallCountKnown?: boolean;
   readonly transcript: readonly Block[];
   readonly orphaned?: boolean;
 }
@@ -351,6 +354,12 @@ export interface SessionViewState {
   readonly resyncing: boolean;
   readonly resyncFailed: boolean;
   readonly resyncAttempt: number;
+  readonly resyncError?: {
+    readonly message: string;
+    readonly code?: number;
+    readonly requestId?: string;
+    readonly retryable: boolean;
+  };
   readonly loaded: boolean;
   readonly loadError: string | undefined;
   readonly hasMoreHistory: boolean;

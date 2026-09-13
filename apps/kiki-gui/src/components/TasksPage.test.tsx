@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Task } from '@moonshot-ai/protocol';
+import type { Task } from '@kiki/protocol';
 
 import { createViewState } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
@@ -213,26 +213,29 @@ describe('RightRail tasks view-all entry', () => {
     document.body.append(container);
     containers.push(container);
     const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
-        <I18nProvider>
-          <MemoryRouter initialEntries={['/s/sess-1']}>
-            <Routes>
-              <Route
-                path="/s/:id"
-                element={
-                  <RightRail
-                    state={state as never}
-                    forest={{ byId: {}, roots: [] }}
-                    onCancelTask={() => {}}
-                    onOpenSubagent={() => {}}
-                  />
-                }
-              />
-              <Route path="/s/:id/tasks" element={<div data-tasks-page-destination />} />
-            </Routes>
-          </MemoryRouter>
-        </I18nProvider>,
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <MemoryRouter initialEntries={['/s/sess-1']}>
+              <Routes>
+                <Route
+                  path="/s/:id"
+                  element={
+                    <RightRail
+                      state={state as never}
+                      forest={{ byId: {}, roots: [] }}
+                      onCancelTask={() => {}}
+                      onOpenSubagent={() => {}}
+                    />
+                  }
+                />
+                <Route path="/s/:id/tasks" element={<div data-tasks-page-destination />} />
+              </Routes>
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
       );
     });
     const viewAll = [...container.querySelectorAll('button')].find((button) =>

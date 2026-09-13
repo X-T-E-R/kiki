@@ -1,11 +1,13 @@
 /** Per-session composer drafts: in-memory for this app run, optionally mirrored to `kiki.drafts`. */
 
-import type { PermissionMode, PromptPlanGate } from '@moonshot-ai/protocol';
+import type { PermissionMode, PromptPlanGate } from '@kiki/protocol';
 
 import type { ComposerAttachment } from './attachments';
 import { readSettings } from '../settings/settings';
 
 const KEY = 'kiki.drafts';
+const PERSISTED_COMPOSER_STATE_KEY = 'kiki.composerStates';
+const PERSISTED_NEW_SESSION_DRAFT_KEY = 'kiki.newSessionDraft';
 
 const memory = new Map<string, string>();
 let hydratedFromDisk = false;
@@ -66,6 +68,8 @@ export function writeDraft(sessionId: string, text: string): void {
 export function clearStoredDrafts(): void {
   try {
     localStorage.removeItem(KEY);
+    localStorage.removeItem(PERSISTED_COMPOSER_STATE_KEY);
+    localStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
   } catch {
     // ignore
   }
@@ -82,14 +86,12 @@ export function resetDraftMemoryForTests(): void {
   hydratedFromDisk = false;
 }
 
-// ---- per-session composer chrome (memory-only) ----
+// ---- per-session composer chrome ----
 
 /**
- * Composer state beyond text that should survive a session switch: attachment
- * chips and the pill overrides. Mirrors the draft map's in-memory layer, but
- * deliberately never touches localStorage — image attachments carry base64
- * payloads and pills are session-scoped chrome, not durable content. An
- * app restart starts every composer fresh; only the text draft persists.
+ * In-memory chrome survives session switches. Only model/effort overrides
+ * are optionally mirrored to disk; attachments and execution controls never
+ * cross that persistence boundary.
  */
 export interface ComposerSessionState {
   attachments: readonly ComposerAttachment[];
@@ -109,21 +111,155 @@ export interface ComposerSessionState {
   effortOverride: string | undefined;
 }
 
+export interface PersistedComposerScalars {
+  readonly modelOverride?: string;
+  readonly effortOverride?: string;
+}
+
+export interface PersistedNewSessionDraft {
+  readonly workspaceId?: string;
+  readonly cwd?: string;
+  readonly profile?: string;
+  readonly modelOverride?: string;
+  readonly effortOverride?: string;
+  readonly modelFromProfile?: boolean;
+  readonly effortFromProfile?: boolean;
+  readonly prefillSource?: string;
+}
+
 const composerMemory = new Map<string, ComposerSessionState>();
+
+function readAllStoredComposerScalars(): Record<string, PersistedComposerScalars> {
+  try {
+    const raw = localStorage.getItem(PERSISTED_COMPOSER_STATE_KEY);
+    if (raw === null) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+    const result: Record<string, PersistedComposerScalars> = {};
+    for (const [sessionId, value] of Object.entries(parsed)) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      const modelOverride = typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined;
+      const effortOverride = typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined;
+      if (modelOverride !== undefined || effortOverride !== undefined) {
+        Object.defineProperty(result, sessionId, { value: { modelOverride, effortOverride }, enumerable: true, configurable: true, writable: true });
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function persistComposerScalars(
+  sessionId: string,
+  scalars: PersistedComposerScalars,
+): void {
+  if (!draftsEnabled()) return;
+  const all = readAllStoredComposerScalars();
+  if (scalars.modelOverride === undefined && scalars.effortOverride === undefined) {
+    delete all[sessionId];
+  } else {
+    all[sessionId] = scalars;
+  }
+  try {
+    if (Object.keys(all).length === 0) {
+      localStorage.removeItem(PERSISTED_COMPOSER_STATE_KEY);
+    } else {
+      localStorage.setItem(PERSISTED_COMPOSER_STATE_KEY, JSON.stringify(all));
+    }
+  } catch {
+    // storage full / unavailable
+  }
+}
+
+export function readNewSessionDraft(): PersistedNewSessionDraft {
+  if (!draftsEnabled()) return {};
+  try {
+    const raw = localStorage.getItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
+    if (raw === null) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return {};
+    const record = parsed as Record<string, unknown>;
+    return {
+      workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
+      cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
+      profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
+      modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
+      effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
+      modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
+      effortFromProfile: typeof record['effortFromProfile'] === 'boolean' ? record['effortFromProfile'] : undefined,
+      prefillSource: typeof record['prefillSource'] === 'string' ? record['prefillSource'] : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function writeNewSessionDraft(draft: PersistedNewSessionDraft): void {
+  if (!draftsEnabled()) return;
+  try {
+    const hasValues =
+      (draft.workspaceId !== undefined && draft.workspaceId !== '') ||
+      (draft.cwd !== undefined && draft.cwd !== '') ||
+      (draft.profile !== undefined && draft.profile !== '') ||
+      (draft.modelOverride !== undefined && draft.modelOverride !== '') ||
+      (draft.effortOverride !== undefined && draft.effortOverride !== '');
+    if (!hasValues) {
+      localStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
+    } else {
+      localStorage.setItem(PERSISTED_NEW_SESSION_DRAFT_KEY, JSON.stringify({
+        workspaceId: draft.workspaceId,
+        cwd: draft.cwd,
+        profile: draft.profile,
+        modelOverride: draft.modelOverride,
+        effortOverride: draft.effortOverride,
+        modelFromProfile: draft.modelFromProfile,
+        effortFromProfile: draft.effortFromProfile,
+        prefillSource: draft.prefillSource,
+      }));
+    }
+  } catch {
+    // storage unavailable
+  }
+}
+
+export function clearNewSessionDraft(): void {
+  try {
+    localStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
+  } catch {
+    // ignore
+  }
+}
 
 /** Restored composer chrome for a session; `{}` when none was captured yet. */
 export function readComposerState(
   sessionId: string,
 ): Partial<ComposerSessionState> {
-  return composerMemory.get(sessionId) ?? {};
+  const inMemory = composerMemory.get(sessionId);
+  if (inMemory !== undefined) return inMemory;
+  if (!draftsEnabled()) return {};
+  const stored = readAllStoredComposerScalars()[sessionId];
+  if (typeof stored !== 'object' || stored === null) return {};
+  return {
+    modelOverride: typeof stored.modelOverride === 'string' ? stored.modelOverride : undefined,
+    effortOverride: typeof stored.effortOverride === 'string' ? stored.effortOverride : undefined,
+  };
 }
 
 export function writeComposerState(sessionId: string, state: ComposerSessionState): void {
   composerMemory.set(sessionId, state);
+  persistComposerScalars(sessionId, {
+    modelOverride: state.modelOverride,
+    effortOverride: state.effortOverride,
+  });
 }
 
 export function clearComposerState(sessionId: string): void {
   composerMemory.delete(sessionId);
+  if (draftsEnabled()) {
+    persistComposerScalars(sessionId, {});
+  }
 }
 
 /** Test-only: forget every session's captured composer chrome. */

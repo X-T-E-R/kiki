@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation } from '@moonshot-ai/transcript';
-import type { Message, Session, SessionSnapshotResponse, SnapshotSubagent } from '@moonshot-ai/protocol';
+import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation } from '@kiki/transcript';
+import type { Message, Session, SessionSnapshotResponse, SnapshotSubagent } from '@kiki/protocol';
 
 import {
   CHILD_AGENT_ID,
@@ -23,6 +23,7 @@ import { buildAgentForest } from './agentTree';
 import { groupBlocks } from './grouping';
 
 import {
+  agentTranscriptPageFromResponse,
   appendLocalUserMessage,
   agentTranscriptToBlocks,
   applyTranscriptShell,
@@ -137,6 +138,26 @@ describe('classifyTranscriptText', () => {
     ).toMatchObject({ lane: 'you', text: 'Inspect the renderer' });
   });
 
+  it('keeps historical shell commands separate from their output', () => {
+    const classified = classifyTranscriptText({
+      text: '<bash-input>\necho hello\n</bash-input><bash-stdout>hello\n</bash-stdout>',
+      role: 'user',
+      origin: { kind: 'shell_command', phase: 'output' },
+    });
+    expect(classified).toMatchObject({
+      lane: 'shell',
+      shell: { commandId: 'history-echo hello', command: 'echo hello', output: 'hello\n' },
+    });
+
+    const outputOnly = classifyTranscriptText({
+      text: '<bash-stdout>only output</bash-stdout>',
+      role: 'user',
+      origin: { kind: 'shell_command', phase: 'output' },
+    });
+    expect(outputOnly.shell?.command).toBeUndefined();
+    expect(outputOnly.shell?.output).toBe('only output');
+  });
+
   it('keeps task notification envelopes off the user lane', () => {
     const notification =
       '<notification id="task:task-2:completed" category="task" type="task.completed" source_kind="background_task" source_id="task-2">\n' +
@@ -239,6 +260,13 @@ describe('floor navigation model', () => {
 });
 
 describe('transcript authority projection', () => {
+  it('does not invent a binding for an unbound main or child with sparse transcript metadata', () => {
+    for (const agentId of ['main', CHILD_AGENT_ID]) {
+      const state = projectAgentTranscriptView(createViewState('session_test'), agentId, emptySnapshot());
+      expect(state.model).toBeUndefined();
+    }
+  });
+
   it('does not adopt snapshot messages or in-flight text in the transcript shell', () => {
     const state = applyTranscriptShell('session_test', {
       as_of_seq: 4,
@@ -490,6 +518,22 @@ describe('transcript authority projection', () => {
     expect(forest.byId['ghost-child']).toBeUndefined();
   });
 
+  it('carries a child snapshot full-history count through the forest without requiring agent meta', () => {
+    const main = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([
+      ['main', main],
+      [CHILD_AGENT_ID, emptySnapshot({ toolCallCount: 7, hasMoreOlder: true })],
+    ]);
+    expect(liveSourcesFromAgentSnapshots(snapshots).find((entry) => entry.subagentId === CHILD_AGENT_ID)).toMatchObject({
+      toolCallCount: 7,
+      toolCallCountKnown: true,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots).byId[CHILD_AGENT_ID]).toMatchObject({
+      toolCallCount: 7,
+      toolCallCountKnown: true,
+    });
+  });
+
   it('overlays snapshot.subagents onto live sources without inventing missing counts', () => {
     const overlaid = overlayLiveSourcesWithSnapshotSubagents(
       [
@@ -521,6 +565,49 @@ describe('transcript authority projection', () => {
   });
 });
 
+describe('transcript response selectors', () => {
+  it('uses REST tool-call aggregates without losing visible tool blocks', () => {
+    const blocks: ToolBlock[] = [
+      {
+        kind: 'tool',
+        id: 'tool-1',
+        toolCallId: 'call-1',
+        name: 'Bash',
+        argsText: '',
+        args: {},
+        display: undefined,
+        description: undefined,
+        status: 'done',
+        output: undefined,
+        isError: undefined,
+        durationMs: undefined,
+        progressText: undefined,
+      },
+    ];
+    const response: AgentTranscriptResponse = {
+      agent_id: 'main',
+      items: [],
+      has_more: true,
+      tool_call_count: 5,
+    };
+    const supplied = agentTranscriptPageFromResponse(response, blocks);
+    expect(supplied.toolCallCount).toBe(5);
+    expect(supplied.toolCallCountKnown).toBe(true);
+
+    const absent = agentTranscriptPageFromResponse({ ...response, tool_call_count: undefined }, blocks);
+    expect(absent.toolCallCount).toBe(1);
+    expect(absent.toolCallCountKnown).toBe(false);
+
+    const oldestPage = agentTranscriptPageFromResponse(
+      { ...response, has_more: false, tool_call_count: undefined },
+      [],
+    );
+    expect(oldestPage.toolCallCount).toBe(0);
+    expect(oldestPage.toolCallCountKnown).toBe(false);
+    const knownZero = agentTranscriptPageFromResponse({ ...response, has_more: false, tool_call_count: 0 }, []);
+    expect(knownZero.toolCallCountKnown).toBe(true);
+  });
+});
 
 describe('transcript projection cache', () => {
   it('reuses blocks projected from unchanged settled transcript items', () => {
@@ -638,11 +725,61 @@ describe('transcript projection cache', () => {
     });
 
     expect(first.find((block) => block.kind === 'shell')).toMatchObject({
+      command: 'pwd',
       output: 'partial',
       done: false,
     });
     expect(second.find((block) => block.kind === 'shell')).toMatchObject({
+      command: 'pwd',
       output: 'complete',
+      done: true,
+    });
+  });
+
+  it('retains a previously projected command when a result refresh omits the input', () => {
+    const item: AgentTranscriptSnapshot['items'][number] = {
+      kind: 'turn',
+      turnId: 't-task-refresh',
+      ordinal: 1,
+      state: 'completed',
+      origin: { kind: 'user' },
+      startedAt: FIXED_AT,
+      steps: [
+        {
+          kind: 'step',
+          stepId: 't-task-refresh.1',
+          turnId: 't-task-refresh',
+          ordinal: 1,
+          state: 'completed',
+          frames: [
+            {
+              kind: 'tool',
+              frameId: 'f-task-refresh',
+              toolCallId: 'command-task-refresh',
+              name: 'Bash',
+              state: 'running',
+              input: { command: 'printf retained' },
+            },
+          ],
+        },
+      ],
+    };
+    const initial = agentTranscriptToBlocks({ agent_id: 'main', items: [item] });
+    const resultOnly = {
+      ...item,
+      steps: item.steps.map((step) => ({
+        ...step,
+        frames: step.frames.map((frame) =>
+          frame.kind === 'tool'
+            ? { ...frame, state: 'done' as const, input: undefined, output: 'result' }
+            : frame,
+        ),
+      })),
+    };
+    const refreshed = agentTranscriptToBlocks({ agent_id: 'main', items: [resultOnly] }, initial);
+    expect(refreshed.find((block) => block.kind === 'shell')).toMatchObject({
+      command: 'printf retained',
+      output: 'result',
       done: true,
     });
   });
@@ -996,6 +1133,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(card?.model).toBeUndefined();
     expect(card?.thinkingEffort).toBeUndefined();
     expect(card?.toolCallCount).toBe(0);
+    expect(card?.toolCallCountKnown).toBe(false);
   });
 
   it('prefers live card fields over compact snapshot.subagents', () => {
@@ -1765,6 +1903,11 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       const resumed = projected.blocks.find(
         (block) => block.kind === 'subagent-event' && block.event === 'resumed',
       );
+      for (const id of ['tool-call-send-1', 'tool-call-resume-1']) {
+        expect(projected.blocks.find((block) => block.id === id)).toMatchObject({
+          agentRefs: [{ agentId: 'agent-1' }],
+        });
+      }
       expect(sent).toMatchObject({
         id: 'subagent-event-agent-1-send-call-send-1',
         subagentId: 'agent-1',
@@ -2749,6 +2892,29 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(shellIndex).toBeLessThan(secondTurnIndex);
   });
 
+  it('does not turn a task description into a missing shell command', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [{ kind: 'taskref', refId: 'ref-shell-missing-command', taskId: 'task-shell-missing-command', at: FIXED_AT }],
+        tasks: [
+          {
+            taskId: 'task-shell-missing-command',
+            kind: 'shell',
+            state: 'completed',
+            detached: true,
+            description: '$ description is not a command fact',
+            outputTail: '',
+          },
+        ],
+      }),
+    );
+    const shell = projected.blocks.find((block) => block.kind === 'shell');
+    expect(shell).toMatchObject({ output: '', done: true });
+    expect(shell?.command).toBeUndefined();
+  });
+
   it('merges a task-backed shell into its command frame and anchors interactions by command id', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),
@@ -2824,6 +2990,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       expect.objectContaining({
         id: 'shell-command-1',
         commandId: 'command-1',
+        command: 'pwd',
         output: 'canonical task output',
       }),
     ]);

@@ -16,7 +16,6 @@ import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
 import { AutomationSection } from './settings/AutomationSection';
 import { ConnectionSection } from './settings/ConnectionSection';
-import { ExperimentalSection } from './settings/ExperimentalSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { McpSection } from './settings/McpSection';
 import { NbSearchSection } from './settings/NbSearchSection';
@@ -27,40 +26,29 @@ import { SettingsFlashContext } from './settings/SectionCard';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
 import { SkillsSection } from './settings/SkillsSection';
 import { SubagentsSection } from './settings/SubagentsSection';
+import { TasksSection } from './settings/TasksSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
 import { SettingsWorkspaceScopeContext } from './settings/workspaceScope';
 import { WorkspacesSection } from './settings/WorkspacesSection';
 
 export { mcpConfigFromDraft, parseNamedAgentTools } from '@kiki/session-core/settings';
 
-/** Page-top signpost: what this page is for and whose behavior its edits change. */
+/** Compact page signpost: purpose stays visible, scopes stay auditable. */
 function ScopeHeader({ section, workspaceName }: { section: SectionId; workspaceName: string | null }) {
   const { t } = useI18n();
   const meta = SETTINGS_SECTION_META[section];
   if (meta === undefined) return null;
-  const labelKey = SECTIONS.find((candidate) => candidate.id === section)?.labelKey;
+  const scopes = meta.scopes.map((scope) =>
+    scope === 'workspace' && workspaceName !== null
+      ? `${t('st.scope.workspace')} · ${workspaceName}`
+      : t(`st.scope.${scope}` as I18nKey),
+  ).join(' · ');
   return (
-    <header data-settings-scope-header={meta.scopes.join('+')} className="py-3">
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <h2 className="font-display text-[15px] font-semibold tracking-tight text-ink">
-          {labelKey === undefined ? section : t(labelKey)}
-        </h2>
-        {/* Until the batches 2/3 split lands a page can write more than one
-            scope; show every one of them instead of a flattering single badge.
-            A workspace scope with a known selection upgrades to the named form. */}
-        {meta.scopes.map((scope) => (
-          <span
-            key={scope}
-            className="rounded-full border border-hairline bg-paper px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-ink-faint"
-            title={t('st.scope.label')}
-          >
-            {scope === 'workspace' && workspaceName !== null
-              ? `${t('st.scope.workspace')} · ${workspaceName}`
-              : t(`st.scope.${scope}` as I18nKey)}
-          </span>
-        ))}
-      </div>
-      <p className="mt-0.5 text-[12px] leading-relaxed text-ink-soft">{t(meta.purposeKey)}</p>
+    <header data-settings-scope-header={meta.scopes.join('+')} className="flex flex-wrap items-center gap-x-2 gap-y-1 py-2">
+      <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-ink-soft">{t(meta.purposeKey)}</p>
+      <span className="shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-ink-faint" title={t('st.scope.label')}>
+        {scopes}
+      </span>
     </header>
   );
 }
@@ -206,10 +194,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'mcp' ? <McpSection />
     : active === 'plugins' ? <PluginsSection />
     : active === 'automation' ? <AutomationSection />
+    : active === 'tasks' ? <TasksSection />
     : active === 'search' ? <NbSearchSection />
     : active === 'workspaces' ? <WorkspacesSection />
     : active === 'runtime' ? <RuntimeSection />
-    : active === 'experimental' ? <ExperimentalSection />
     : active === 'advanced' ? <AdvancedSection />
     : <AboutSection />;
 

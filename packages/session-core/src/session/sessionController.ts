@@ -13,7 +13,7 @@ import type {
   PromptSubmitResult,
   QuestionResponse,
   Session,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 import {
   AgentTranscript,
   gradeFor,
@@ -23,18 +23,18 @@ import {
   type TranscriptEvent,
   type TranscriptGradeSpec,
   type TranscriptOperation,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 
 import {
   API_CODES,
   ApiError,
   DEFAULT_TRANSCRIPT_GRADES,
   transcriptGradesForFocus,
+  type AgentTranscriptResponse,
   type SessionCursor,
-  type SessionSocket,
   type SessionTransport,
 } from '../transport';
-import { isHistoryRewrittenEvent, type ResyncRequiredPayload, type SessionEventFrame } from '../wire';
+import { RPCError, type SessionViewFacade, type SessionViewSignal, type SessionViewSubscription } from '@kiki/klient/session-view';
 import {
   MAIN_AGENT_ID,
   applyTranscriptShell,
@@ -55,7 +55,7 @@ import {
   type SessionViewState,
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
-import type { AgentForest } from './agentTree';
+import { stabilizeAgentForest, type AgentForest } from './agentTree';
 
 export type Listener = () => void;
 
@@ -92,6 +92,19 @@ interface PendingTranscriptBatch {
    */
   throughSeq: number;
 }
+
+interface ToolCountObservation {
+  readonly count: number;
+  readonly cursor: TranscriptCursor;
+}
+
+interface ToolCountSpan {
+  readonly from: TranscriptCursor;
+  readonly through: TranscriptCursor;
+  readonly delta: number | undefined;
+}
+
+const TOOL_COUNT_SPAN_LIMIT = 128;
 
 interface RewriteHold {
   readonly token: number;
@@ -130,7 +143,9 @@ function errorMessage(error: unknown, fallback: string): string {
 
 export class SessionController {
   private readonly client: SessionTransport;
-  private readonly socket: SessionSocket;
+  private viewHandle: SessionViewSubscription | undefined;
+  private connectionGeneration: number | undefined;
+  private viewAttachment = 0;
   readonly sessionId: string;
   private state: SessionViewState;
   private publishedState: SessionViewState;
@@ -154,6 +169,8 @@ export class SessionController {
   private readonly agentTranscripts = new Map<string, AgentTranscript>();
   private readonly olderPages = new Map<string, AgentTranscriptSnapshot>();
   private readonly transcriptCursors = new Map<string, TranscriptCursor>();
+  private readonly toolCountObservations = new Map<string, ToolCountObservation>();
+  private readonly toolCountSpans = new Map<string, ToolCountSpan[]>();
   private readonly pendingTranscriptBatches = new Map<string, PendingTranscriptBatch>();
   private readonly pendingTranscriptAgents = new Set<string>();
   private readonly forestDirtyAgents = new Set<string>();
@@ -171,12 +188,11 @@ export class SessionController {
 
   constructor(
     client: SessionTransport,
-    socket: SessionSocket,
+    private readonly view: SessionViewFacade,
     sessionId: string,
     options: { scheduler?: PublicationScheduler; rewriteResetTimeoutMs?: number } = {},
   ) {
     this.client = client;
-    this.socket = socket;
     this.sessionId = sessionId;
     this.scheduler = options.scheduler ?? browserScheduler;
     this.usesBrowserScheduler = options.scheduler === undefined;
@@ -212,13 +228,18 @@ export class SessionController {
   getAgentState = (agentId: string): SessionViewState =>
     this.publishedAgentStates.get(agentId) ?? this.agentStates.get(agentId) ?? this.emptyAgentState;
 
+  /** Observe summary state, explicitly admitting cold history at turn grade without taking timeline focus. */
   subscribeAgent = (agentId: string, listener: Listener): (() => void) => {
     const listeners = this.agentListeners.get(agentId) ?? new Set<Listener>();
     listeners.add(listener);
     this.agentListeners.set(agentId, listeners);
+    this.refreshTranscriptGrades();
     return () => {
       listeners.delete(listener);
-      if (listeners.size === 0) this.agentListeners.delete(agentId);
+      if (listeners.size === 0) {
+        this.agentListeners.delete(agentId);
+        this.refreshTranscriptGrades();
+      }
     };
   };
 
@@ -291,19 +312,34 @@ export class SessionController {
   /** Initial sync: snapshot shell → subscribe_v2 with per-agent grades. */
   async open(): Promise<void> {
     try {
-      const snapshot = await this.client.snapshot(this.sessionId, { transcript: true });
+      const snapshot = await this.view.snapshot();
       if (this.closed) return;
       this.setState(applyTranscriptShell(this.sessionId, snapshot, this.state));
-      this.transcriptGrades = transcriptGradesForFocus(this.focusedAgentId);
-      this.socket.subscribe(
-        this.sessionId,
-        { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
-        this.transcriptGrades,
-      );
+      this.transcriptGrades = this.requestedTranscriptGrades();
+      this.attachView({ seq: snapshot.as_of_seq, epoch: snapshot.epoch });
     } catch (error) {
       if (this.closed) return;
       this.setState(setLoadError(this.state, errorMessage(error, 'Could not load session')));
     }
+  }
+
+  private attachView(sessionCursor: SessionCursor): void {
+    const attachment = ++this.viewAttachment;
+    this.droppedWithLiveWork = false;
+    const previous = this.viewHandle;
+    this.viewHandle = undefined;
+    previous?.close();
+    this.viewHandle = this.view.subscribe({
+      sessionCursor,
+      transcriptGrades: this.transcriptGrades,
+      transcriptSince: this.transcriptCursors.size === 0 ? undefined : Object.fromEntries(this.transcriptCursors),
+    }, (signal) => {
+      if (attachment === this.viewAttachment) this.handleSignal(signal);
+    });
+  }
+
+  nudge(): void {
+    this.viewHandle?.nudge();
   }
 
   async retryOpen(): Promise<void> {
@@ -327,7 +363,9 @@ export class SessionController {
     if (this.state.loadingOlder || this.state.olderError !== undefined) {
       this.state = { ...this.state, loadingOlder: false, olderError: undefined };
     }
-    this.socket.unsubscribe(this.sessionId);
+    this.viewAttachment += 1;
+    this.viewHandle?.close();
+    this.viewHandle = undefined;
   }
 
   private clearResyncTimer(): void {
@@ -340,7 +378,7 @@ export class SessionController {
   private beginRewriteHold(): void {
     if (this.rewriteHold !== undefined) return;
     const token = (this.rewriteHoldToken += 1);
-    const generation = this.socket.connectionGeneration;
+    const generation = this.connectionGeneration;
     const pendingMain = this.pendingTranscriptBatches.get(MAIN_AGENT_ID);
     const hold: RewriteHold = {
       token,
@@ -363,9 +401,9 @@ export class SessionController {
     if (hold === undefined || hold.token !== token) return;
     hold.subscribeToken = token;
     if (hold.mainEpoch !== undefined) return;
-    const generation = this.socket.connectionGeneration;
-    hold.generation = Number.isInteger(generation) ? generation + 1 : undefined;
-    this.socket.restartGeneration();
+    const generation = this.connectionGeneration;
+    hold.generation = generation === undefined ? undefined : generation + 1;
+    this.viewHandle?.restart();
   }
 
   private clearRewriteHold(token?: number): void {
@@ -378,7 +416,7 @@ export class SessionController {
   private recoverRewriteHold(token: number): void {
     if (this.closed || this.rewriteHold?.token !== token) return;
     this.clearRewriteHold(token);
-    this.socket.restartGeneration();
+    this.viewHandle?.restart();
     if (this.resyncInFlight) {
       this.hardResyncQueued = true;
       return;
@@ -437,32 +475,92 @@ export class SessionController {
       version: this.state.version + 1,
       cursor: { seq: cursor.seq, epoch: cursor.epoch },
     });
-    this.socket.updateCursor(this.sessionId, { seq: cursor.seq, epoch: cursor.epoch });
+    this.viewHandle?.updateSessionCursor(cursor);
   }
 
   setFocusedAgent(agentId: string | undefined): void {
+    if (this.closed) return;
     this.focusedAgentId = agentId;
-    this.transcriptGrades = transcriptGradesForFocus(agentId);
-    this.socket.setTranscriptGrades(this.sessionId, this.transcriptGrades);
+    this.refreshTranscriptGrades();
   }
 
-  handleFrame(frame: SessionEventFrame): void {
-    if (this.closed || frame.session_id !== this.sessionId) return;
-    if (typeof frame.seq === 'number' && frame.volatile !== true) {
-      this.advanceSessionCursor({ seq: frame.seq, epoch: frame.epoch ?? this.state.cursor.epoch });
+  private requestedTranscriptGrades(): TranscriptGradeSpec {
+    const grades = { ...transcriptGradesForFocus(this.focusedAgentId) };
+    for (const agentId of this.agentListeners.keys()) {
+      if (!Object.hasOwn(grades, agentId)) grades[agentId] = 'turn';
     }
-    if (isHistoryRewrittenEvent(frame.payload)) {
-      void this.resync({ rewrite: true });
-    }
+    return grades;
   }
 
-  handleResyncRequired(payload: ResyncRequiredPayload): void {
-    if (payload.session_id !== this.sessionId) return;
-    void this.resync({ rewrite: payload.reason === 'history_rewritten' });
+  private refreshTranscriptGrades(): void {
+    if (this.closed) return;
+    const nextGrades = this.requestedTranscriptGrades();
+    const previous = this.transcriptGrades;
+    if (Object.keys(previous).length === Object.keys(nextGrades).length &&
+        Object.entries(nextGrades).every(([id, grade]) => previous[id] === grade)) return;
+    for (const id of this.agentTranscripts.keys()) {
+      if (gradeFor(this.transcriptGrades, id) !== gradeFor(nextGrades, id)) {
+        this.bumpHistoryGeneration(id);
+        this.catchupReplay.delete(id);
+      }
+    }
+    this.transcriptGrades = nextGrades;
+    this.viewHandle?.setTranscriptGrades(this.transcriptGrades);
+  }
+
+  handleSignal(signal: SessionViewSignal): void {
+    if (this.closed || (this.connectionGeneration !== undefined && signal.generation < this.connectionGeneration)) return;
+    this.connectionGeneration = signal.generation;
+    switch (signal.type) {
+      case 'status':
+        if (signal.status !== 'open') this.handleWsDrop();
+        return;
+      case 'ready':
+        if (this.state.cursor.epoch !== undefined && signal.currentSessionCursor.epoch !== this.state.cursor.epoch) {
+          this.handleSubscribeRejected(signal.generation);
+          return;
+        }
+        this.advanceSessionCursor(signal.currentSessionCursor);
+        if (signal.reconnected) this.handleReconnectAck();
+        return;
+      case 'sessionCursorAdvanced':
+        this.advanceSessionCursor(signal.cursor);
+        return;
+      case 'historyRewritten':
+        this.advanceSessionCursor(signal.cursor);
+        if (this.state.resyncError?.retryable !== false) void this.resync({ rewrite: true });
+        return;
+      case 'transcript':
+        this.handleTranscript(signal.event, signal.generation);
+        return;
+      case 'protocolError': {
+        if (this.state.resyncError?.retryable === false) return;
+        this.setState({
+          ...setResyncFailed(setResyncing(this.state, false), true, this.state.resyncAttempt + 1),
+          resyncError: { message: signal.detail, code: API_CODES.INVALID_RESPONSE, retryable: signal.recoverable },
+        });
+        if (signal.recoverable) void this.resync();
+        else {
+          this.clearResyncTimer();
+          this.clearRewriteHold();
+          this.hardResyncQueued = false;
+          this.rewriteResyncQueued = false;
+          this.viewAttachment += 1;
+          this.viewHandle?.close();
+          this.viewHandle = undefined;
+        }
+        return;
+      }
+      case 'resyncRequired':
+        if (this.state.resyncError?.retryable === false) return;
+        if (this.rewriteHold !== undefined) this.handleSubscribeRejected(signal.generation);
+        else void this.resync({ rewrite: signal.reason === 'history_rewritten' });
+        return;
+    }
   }
 
   handleSubscribeRejected(generation?: number): void {
-    if (this.closed) return;
+    if (this.closed || this.state.resyncError?.retryable === false) return;
     const hold = this.rewriteHold;
     if (hold === undefined) {
       void this.resync();
@@ -486,7 +584,7 @@ export class SessionController {
   }
 
   handleReconnectAck(): void {
-    if (this.closed || !this.droppedWithLiveWork) return;
+    if (this.closed || !this.droppedWithLiveWork || this.state.resyncError?.retryable === false) return;
     this.droppedWithLiveWork = false;
     const agents = [...this.agentTranscripts.keys()];
     if (agents.length === 0) {
@@ -511,18 +609,19 @@ export class SessionController {
       return;
     }
     this.resyncInFlight = true;
+    for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
     if (rewrite) this.rewriteResyncQueued = false;
     this.clearResyncTimer();
     this.setState(setResyncing(this.state, true));
+    const attachment = this.viewAttachment;
     try {
-      const snapshot = await this.client.snapshot(this.sessionId, { transcript: true });
-      if (this.closed) return;
+      const snapshot = await this.view.snapshot();
+      if (this.closed || attachment !== this.viewAttachment) return;
       for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
       this.pendingTranscriptBatches.clear();
       this.pendingTranscriptAgents.clear();
       this.catchupReplay.clear();
       this.transcriptCursors.clear();
-      this.socket.clearTranscriptSince(this.sessionId);
       this.setState(
         setResyncing(
           {
@@ -533,29 +632,43 @@ export class SessionController {
           false,
         ),
       );
-      this.socket.subscribe(
-        this.sessionId,
-        { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
-        this.transcriptGrades,
-      );
+      this.attachView({ seq: snapshot.as_of_seq, epoch: snapshot.epoch });
       if (rewriteHoldToken !== undefined) this.armRewriteSubscription(rewriteHoldToken);
-    } catch {
+    } catch (error) {
       if (rewriteHoldToken !== undefined) this.clearRewriteHold(rewriteHoldToken);
-      if (!this.closed) {
+      if (!this.closed && (attachment === this.viewAttachment || this.state.resyncError?.retryable !== false)) {
         const attempt = this.state.resyncAttempt + 1;
-        this.setState(setResyncFailed(setResyncing(this.state, false), true, attempt));
-        this.scheduleResyncRetry();
+        const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+        const retryable = code === undefined || code === -1 || code === API_CODES.TIMEOUT ||
+          code === API_CODES.SESSION_INDEX_BUILDING || code === 408 || code === 429 ||
+          (code >= 500 && code < 600) || code >= 50000;
+        this.setState({
+          ...setResyncFailed(setResyncing(this.state, false), true, attempt),
+          resyncError: {
+            message: errorMessage(error, 'Could not restore session'),
+            code,
+            requestId: error instanceof ApiError ? error.requestId : undefined,
+            retryable,
+          },
+        });
+        if (retryable) this.scheduleResyncRetry();
+        else {
+          this.clearRewriteHold();
+          this.hardResyncQueued = false;
+          this.rewriteResyncQueued = false;
+        }
       }
     } finally {
       this.resyncInFlight = false;
-      if (this.closed) return;
-      if (this.hardResyncQueued) {
-        this.hardResyncQueued = false;
-        this.rewriteResyncQueued = false;
-        queueMicrotask(() => void this.resync());
-      } else if (this.rewriteResyncQueued) {
-        this.rewriteResyncQueued = false;
-        queueMicrotask(() => void this.resync({ rewrite: true }));
+      if (!this.closed) {
+        if (this.hardResyncQueued) {
+          this.hardResyncQueued = false;
+          this.rewriteResyncQueued = false;
+          queueMicrotask(() => void this.resync());
+        } else if (this.rewriteResyncQueued) {
+          this.rewriteResyncQueued = false;
+          queueMicrotask(() => void this.resync({ rewrite: true }));
+        }
       }
     }
   }
@@ -619,7 +732,8 @@ export class SessionController {
     const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
     this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
     try {
-      const page = await this.client.getAgentTranscript(this.sessionId, agentId, {
+      const page = await this.view.transcript.page({
+        agentId,
         beforeTurn,
         pageSize: 20,
       });
@@ -630,6 +744,7 @@ export class SessionController {
       ) {
         return false;
       }
+      if (this.flushPendingTranscriptBatch(agentId)) this.observeToolCount(agentId, page);
       const older: AgentTranscriptSnapshot = {
         items: page.items as AgentTranscriptSnapshot['items'],
         tasks: currentSnapshot.tasks,
@@ -642,6 +757,7 @@ export class SessionController {
       };
       const merged = prependOlderTranscriptSnapshot(this.olderPages.get(agentId) ?? emptyOlderSnapshot(), older);
       this.olderPages.set(agentId, merged);
+      this.forestDirtyAgents.add(agentId);
       this.publishProjectedAgent(agentId, store, {
         loadingOlder: false,
         fetchedOlder: true,
@@ -677,7 +793,7 @@ export class SessionController {
     if (coverage.kind === 'full') this.olderPages.delete(agentId);
     store.apply([{ op: 'reset', agentId, snapshot, coverage }]);
     this.transcriptCursors.set(agentId, cursor);
-    this.socket.updateTranscriptSince(this.sessionId, agentId, cursor);
+    this.viewHandle?.updateTranscriptCursor(agentId, cursor);
     this.forestDirtyAgents.add(agentId);
     this.publishProjectedAgent(agentId, store, {
       loadingOlder: false,
@@ -696,13 +812,16 @@ export class SessionController {
     const pending = this.pendingTranscriptBatches.get(agentId);
     const last = pending?.cursor ?? this.transcriptCursors.get(agentId);
     if (last?.epoch !== undefined && cursor.epoch !== undefined && cursor.epoch !== last.epoch) {
-      void this.resync();
+      if (this.state.resyncError?.retryable !== false) void this.resync();
       return;
     }
+    const seenThrough = pending === undefined ? last?.seq : Math.max(pending.cursor.seq, pending.throughSeq);
+    if (seenThrough !== undefined && throughSeq <= seenThrough) return;
+    const freshOps = seenThrough !== undefined && cursor.seq <= seenThrough ? [] : ops;
     if (pending === undefined) {
-      this.pendingTranscriptBatches.set(agentId, { ops: [...ops], cursor, throughSeq });
+      this.pendingTranscriptBatches.set(agentId, { ops: [...freshOps], cursor, throughSeq });
     } else {
-      pending.ops.push(...ops);
+      pending.ops.push(...freshOps);
       if (cursor.seq >= pending.cursor.seq) pending.cursor = cursor;
       if (throughSeq > pending.throughSeq) pending.throughSeq = throughSeq;
     }
@@ -728,8 +847,11 @@ export class SessionController {
         ? { seq: batch.throughSeq, epoch: batch.cursor.epoch }
         : batch.cursor;
     const store = this.ensureAgentTranscript(agentId);
+    const priorCursor = this.transcriptCursors.get(agentId);
     const result = store.apply(batch.ops);
     if (result.gap !== undefined) {
+      this.toolCountSpans.delete(agentId);
+      this.toolCountObservations.delete(agentId);
       const replay = this.catchupReplay.get(agentId);
       this.catchupReplay.set(agentId, {
         ops: replay === undefined ? batch.ops : [...replay.ops, ...batch.ops],
@@ -741,9 +863,11 @@ export class SessionController {
       if (startCatchUp) void this.catchUpAgent(agentId);
       return false;
     }
+    this.recordToolCountSpan(agentId, priorCursor, resumeCursor, result.toolCallCountDelta);
     this.transcriptCursors.set(agentId, resumeCursor);
-    this.socket.updateTranscriptSince(this.sessionId, agentId, resumeCursor);
-    if (result.accepted.length > 0) {
+    this.viewHandle?.updateTranscriptCursor(agentId, resumeCursor);
+    const adoptedCount = this.adoptToolCountObservation(agentId);
+    if (result.accepted.length > 0 || adoptedCount) {
       if (opsAffectForest(result.accepted)) this.forestDirtyAgents.add(agentId);
       this.pendingTranscriptAgents.add(agentId);
     }
@@ -765,17 +889,19 @@ export class SessionController {
   }
 
   private async runCatchUpAgent(agentId: string): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.resyncInFlight || this.rewriteHold !== undefined || this.state.resyncError?.retryable === false) return;
+    const generation = this.historyGeneration.get(agentId) ?? 0;
+    const isCurrent = (): boolean => !this.closed &&
+      (this.historyGeneration.get(agentId) ?? 0) === generation;
     try {
       const last = this.transcriptCursors.get(agentId) ?? { seq: 0 };
       const grade = gradeFor(this.transcriptGrades, agentId);
-      const result = await this.client.getTranscriptOps(
-        this.sessionId,
+      const result = await this.view.transcript.catchUp({
         agentId,
-        last,
-        grade === 'off' ? 'turn' : grade,
-      );
-      if (this.closed) return;
+        since: last,
+        grade: grade === 'off' ? 'turn' : grade,
+      });
+      if (!isCurrent()) return;
       if (result.complete === false || (last.epoch !== undefined && result.epoch !== last.epoch)) {
         this.catchupReplay.delete(agentId);
         await this.resync();
@@ -811,21 +937,80 @@ export class SessionController {
         if (retry.accepted.length > 0) changed = true;
         if (opsAffectForest(retry.accepted)) this.forestDirtyAgents.add(agentId);
       }
+      this.toolCountSpans.delete(agentId);
       this.transcriptCursors.set(agentId, cursor);
-      this.socket.updateTranscriptSince(this.sessionId, agentId, cursor);
-      if (changed) {
+      this.viewHandle?.updateTranscriptCursor(agentId, cursor);
+      const adoptedCount = this.adoptToolCountObservation(agentId);
+      if (changed || adoptedCount) {
         this.pendingTranscriptAgents.add(agentId);
         this.scheduleFrameFlush();
       }
     } catch {
+      if (!isCurrent()) return;
       this.catchupReplay.delete(agentId);
-      if (!this.closed) await this.resync();
+      await this.resync();
     }
   }
 
   private bumpHistoryGeneration(agentId: string): void {
     this.historyGeneration.set(agentId, (this.historyGeneration.get(agentId) ?? 0) + 1);
     this.inFlightOlder.delete(agentId);
+    this.catchupByAgent.delete(agentId);
+    this.toolCountSpans.delete(agentId);
+    this.toolCountObservations.delete(agentId);
+  }
+
+  private observeToolCount(agentId: string, page: AgentTranscriptResponse): void {
+    const count = page.tool_call_count;
+    const cursor = page.cursor;
+    if (count === undefined || !Number.isSafeInteger(count) || count < 0 || typeof cursor?.epoch !== 'string' || !Number.isSafeInteger(cursor.seq) || cursor.seq < 0) return;
+    this.toolCountObservations.set(agentId, { count, cursor });
+    this.adoptToolCountObservation(agentId);
+  }
+
+  private adoptToolCountObservation(agentId: string): boolean {
+    const observation = this.toolCountObservations.get(agentId);
+    if (observation === undefined) return false;
+    const store = this.agentTranscripts.get(agentId);
+    const current = this.transcriptCursors.get(agentId);
+    if (store === undefined || current === undefined || current.epoch === undefined || current.epoch !== observation.cursor.epoch) {
+      this.toolCountObservations.delete(agentId);
+      return false;
+    }
+    if (store.snapshot().toolCallCount !== undefined) {
+      this.toolCountObservations.delete(agentId);
+      return false;
+    }
+    if (current.seq < observation.cursor.seq) return false;
+    let count = observation.count;
+    let through = observation.cursor.seq;
+    for (const span of this.toolCountSpans.get(agentId) ?? []) {
+      if (through === current.seq) break;
+      if (span.through.seq <= through) continue;
+      if (span.from.epoch !== current.epoch || span.from.seq !== through || span.through.seq > current.seq || span.delta === undefined) break;
+      count += span.delta;
+      through = span.through.seq;
+    }
+    this.toolCountObservations.delete(agentId);
+    if (through !== current.seq || !Number.isSafeInteger(count) || count < 0) return false;
+    const result = store.apply([{ op: 'tool.count.set', count }]);
+    if (result.accepted.length === 0) return false;
+    this.toolCountSpans.delete(agentId);
+    this.forestDirtyAgents.add(agentId);
+    return true;
+  }
+
+  private recordToolCountSpan(agentId: string, from: TranscriptCursor | undefined, through: TranscriptCursor, delta: number | undefined): void {
+    if (this.agentTranscripts.get(agentId)?.snapshot().toolCallCount !== undefined) {
+      this.toolCountSpans.delete(agentId);
+      return;
+    }
+    if (from === undefined || from.epoch !== through.epoch || from.seq >= through.seq) return;
+    const spans = this.toolCountSpans.get(agentId) ?? [];
+    const grade = gradeFor(this.transcriptGrades, agentId);
+    spans.push({ from, through, delta: grade === 'block' || grade === 'delta' ? delta : undefined });
+    if (spans.length > TOOL_COUNT_SPAN_LIMIT) spans.splice(0, spans.length - TOOL_COUNT_SPAN_LIMIT);
+    this.toolCountSpans.set(agentId, spans);
   }
 
   private ensureAgentTranscript(agentId: string): AgentTranscript {
@@ -872,9 +1057,12 @@ export class SessionController {
             fetchedOlder: options.fetchedOlder ?? next.fetchedOlder,
             olderError: options.olderError ?? next.olderError,
           };
+    const forestChanged = this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
+      ? this.publishForest()
+      : false;
     this.publishAgentView(agentId, projected);
-    if (this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined) {
-      this.publishForest();
+    if (forestChanged && agentId !== MAIN_AGENT_ID) {
+      this.setState({ ...this.state, version: this.state.version + 1 });
     }
   }
 
@@ -890,13 +1078,15 @@ export class SessionController {
 
   forestPublishCount = 0;
 
-  private publishForest(): void {
+  private publishForest(): boolean {
     const snapshots = new Map<string, AgentTranscriptSnapshot>();
     for (const [agentId] of this.agentTranscripts) {
       snapshots.set(agentId, this.composeAgentSnapshot(agentId));
     }
-    this.publishedForest = sessionAgentForestFromAgentSnapshots(snapshots, this.state.snapshotSubagents);
+    const previous = this.publishedForest;
+    this.publishedForest = stabilizeAgentForest(previous, sessionAgentForestFromAgentSnapshots(snapshots, this.state.snapshotSubagents));
     this.forestPublishCount += 1;
+    return previous !== this.publishedForest;
   }
 
   async sendPrompt(input: {
@@ -933,8 +1123,8 @@ export class SessionController {
       thinking: input.thinking,
       permission_mode: input.permissionMode,
       plan_gate: input.planGate,
-      plan_mode: input.planMode === true ? true : undefined,
-      swarm_mode: input.swarmMode === true ? true : undefined,
+      plan_mode: input.planMode,
+      swarm_mode: input.swarmMode,
       goal_objective:
         input.goalObjective !== undefined && input.goalObjective.trim() !== ''
           ? input.goalObjective.trim()
@@ -1048,7 +1238,6 @@ export class SessionController {
   }
 
   async abortPrompt(promptId: string): Promise<void> {
-    if (promptId === this.state.activePromptId) this.socket.abort(this.sessionId, promptId);
     await this.client.abortPrompt(this.sessionId, promptId);
     await this.refreshPrompts();
   }
@@ -1177,13 +1366,14 @@ function opsAffectForest(ops: readonly TranscriptOperation[]): boolean {
   return ops.some((op) => {
     switch (op.op) {
       case 'reset':
+      case 'tool.count.set':
       case 'task.upsert':
       case 'meta.merge':
       case 'turn.upsert':
       case 'step.upsert':
-        return true;
       case 'frame.upsert':
-        return op.frame.kind === 'tool' && op.frame.agentRefs !== undefined && op.frame.agentRefs.length > 0;
+      case 'items.remove':
+        return true;
       default:
         return false;
     }

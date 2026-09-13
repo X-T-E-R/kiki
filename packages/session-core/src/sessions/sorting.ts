@@ -4,7 +4,7 @@
  * and stay unit-testable without a DOM.
  */
 
-import type { Task, Workspace } from '@moonshot-ai/protocol';
+import type { Task, Workspace } from '@kiki/protocol';
 
 /**
  * Most-recently-opened first; workspaces without a usable timestamp sink to

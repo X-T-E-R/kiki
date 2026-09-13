@@ -1,6 +1,6 @@
 /**
  * Wire types that the kap-server broadcaster emits but
- * `@moonshot-ai/protocol` does not export as named TS types:
+ * `@kiki/protocol` does not export as named TS types:
  *
  *   - the `session_event` WS envelope (`wsEventEnvelopeSchema(eventSchema)`)
  *   - interaction events (`event.approval.*` / `event.question.*`), which the
@@ -9,7 +9,7 @@
  *   - the server→client system frames we handle
  *
  * Everything else (Session, Message, ApprovalRequest, …) is imported straight
- * from `@moonshot-ai/protocol`; these shapes reuse those base types.
+ * from `@kiki/protocol`; these shapes reuse those base types.
  */
 
 import type {
@@ -18,7 +18,7 @@ import type {
   ApprovalRequest,
   ApprovalScope,
   QuestionRequest,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 /** `event.approval.requested` payload = ApprovalRequest + agent routing. */
 export interface ApprovalRequestedEvent extends ApprovalRequest {

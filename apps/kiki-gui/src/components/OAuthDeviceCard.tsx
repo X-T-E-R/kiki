@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 
-import type { OAuthFlowSnapshot } from '@moonshot-ai/protocol';
+import type { OAuthFlowSnapshot } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
 import { SECONDARY_BUTTON } from './ui';

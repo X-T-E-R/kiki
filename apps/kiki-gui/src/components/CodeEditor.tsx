@@ -34,7 +34,7 @@ import {
 import { languages } from '@codemirror/language-data';
 import { highlightSelectionMatches } from '@codemirror/search';
 
-import { basenameOf } from '@kiki/session-core/composer/media';
+import { basenameOf, type FileReference } from '@kiki/session-core/composer/media';
 
 /** Kiki-palette chrome: paper surface, hairline gutters, accent caret. */
 const KIKI_THEME = EditorView.theme({
@@ -74,6 +74,7 @@ export interface CodeEditorProps {
   /** Initial document; later external replacements ride `generation`. */
   readonly value: string;
   readonly generation: number;
+  readonly navigation?: FileReference;
   readonly readOnly: boolean;
   readonly onChange: (text: string) => void;
   /** Mod-S inside the editor. */
@@ -85,6 +86,7 @@ export function CodeEditor({
   path,
   value,
   generation,
+  navigation,
   readOnly,
   onChange,
   onSaveShortcut,
@@ -174,6 +176,15 @@ export function CodeEditor({
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
     }
   }, [generation, value]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (view === null || navigation?.line === undefined) return;
+    const line = view.state.doc.line(Math.max(1, Math.min(navigation.line, view.state.doc.lines)));
+    const anchor = Math.min(line.to, line.from + Math.max(0, (navigation.column ?? 1) - 1));
+    view.dispatch({ selection: { anchor }, effects: EditorView.scrollIntoView(anchor, { y: 'center' }) });
+    view.focus();
+  }, [navigation, generation]);
 
   // Read-only flips without a rebuild.
   useEffect(() => {

@@ -9,7 +9,7 @@
  * from older fixtures), so grouping normalizes instead of trusting the type.
  */
 
-import type { McpServer, SkillDescriptor, Workspace } from '@moonshot-ai/protocol';
+import type { McpServer, SkillDescriptor, Workspace } from '@kiki/protocol';
 
 export type SkillGroupId = 'plugin' | 'project' | 'user' | 'extra' | 'builtin' | 'other';
 

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * GeneralSection plan-gate defaults slice: the toggle writes `[plan] gate`
+ * PlanSettings plan-gate defaults slice: the toggle writes `[plan] gate`
  * and the seconds field writes `enter_approval_timeout_ms` (floor 5000).
  */
 
@@ -13,12 +13,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { I18nProvider } from '../../i18n';
 import type { KikiConfigResponse } from '../../lib/client';
 import { GeneralSection } from './GeneralSection';
+import { PlanSettings } from './PlanSettings';
 
 const getConfig = vi.fn();
 const patchConfig = vi.fn();
+const meta = vi.fn();
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { getConfig, patchConfig } }),
+  useConnection: () => ({ client: { getConfig, patchConfig, meta } }),
 }));
 vi.mock('../../host', () => ({
   useHost: () => ({ kind: 'browser' }),
@@ -43,8 +45,15 @@ beforeAll(() => {
 
 beforeEach(() => {
   getConfig.mockReset().mockResolvedValue(CONFIG);
+  meta.mockReset().mockResolvedValue({ experimental_flags: { auto_session_title: true } });
   patchConfig.mockReset().mockImplementation(async (patch: Record<string, unknown>) => ({
     ...CONFIG,
+    ...(typeof patch['default_permission_mode'] === 'string'
+      ? { default_permission_mode: patch['default_permission_mode'] }
+      : {}),
+    ...(typeof patch['default_plan_mode'] === 'boolean'
+      ? { default_plan_mode: patch['default_plan_mode'] }
+      : {}),
     ...(typeof patch['plan'] === 'object' && patch['plan'] !== null
       ? { plan: { ...CONFIG.plan, ...(patch['plan'] as Record<string, unknown>) } }
       : {}),
@@ -61,7 +70,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderSection(): Promise<HTMLDivElement> {
+async function renderSection(section: 'general' | 'plan' = 'plan'): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -72,7 +81,7 @@ async function renderSection(): Promise<HTMLDivElement> {
     root.render(
       <QueryClientProvider client={client}>
         <I18nProvider>
-          <GeneralSection />
+          {section === 'plan' ? <PlanSettings /> : <GeneralSection />}
         </I18nProvider>
       </QueryClientProvider>,
     );
@@ -100,15 +109,15 @@ async function setInputValue(input: HTMLInputElement, value: string): Promise<vo
 
 function gateSwitch(container: HTMLDivElement): HTMLElement {
   const row = [...container.querySelectorAll('label')].find(
-    (label) => label.textContent === 'Require approval to enter or leave plan mode',
+    (label) => label.textContent === 'Require approval when the model changes plan mode',
   );
   expect(row).toBeDefined();
   return row!.querySelector<HTMLElement>('[role="switch"]')!;
 }
 
-describe('GeneralSection plan gate defaults', () => {
+describe('PlanSettings plan gate defaults', () => {
   it('reflects the server plan gate and timeout', async () => {
-    const container = await renderSection();
+    const container = await renderSection('plan');
     const toggle = gateSwitch(container);
     // gate: 'gated' reads as the approval switch being on.
     expect(toggle.getAttribute('aria-checked')).toBe('true');
@@ -117,7 +126,7 @@ describe('GeneralSection plan gate defaults', () => {
   });
 
   it('writes plan.gate on toggle', async () => {
-    const container = await renderSection();
+    const container = await renderSection('plan');
     const toggle = gateSwitch(container);
     await click(toggle);
     await act(async () => {
@@ -127,7 +136,7 @@ describe('GeneralSection plan gate defaults', () => {
   });
 
   it('writes enter_approval_timeout_ms in milliseconds on blur', async () => {
-    const container = await renderSection();
+    const container = await renderSection('plan');
     const input = container.querySelector<HTMLInputElement>('#plan-gate-timeout')!;
     await setInputValue(input, '30');
     await act(async () => {
@@ -142,7 +151,7 @@ describe('GeneralSection plan gate defaults', () => {
   });
 
   it('rejects a timeout below the 5s floor without patching', async () => {
-    const container = await renderSection();
+    const container = await renderSection('plan');
     const input = container.querySelector<HTMLInputElement>('#plan-gate-timeout')!;
     await setInputValue(input, '3');
     await act(async () => {
@@ -154,5 +163,37 @@ describe('GeneralSection plan gate defaults', () => {
     expect(patchConfig).not.toHaveBeenCalled();
     expect(container.textContent).toContain('at least 5 seconds');
     expect(input.value).toBe('15');
+  });
+
+  it('merges a partial plan echo without dropping other config fields', async () => {
+    const container = await renderSection('plan');
+    patchConfig.mockResolvedValueOnce({ default_plan_mode: true } as KikiConfigResponse);
+    const defaultPlanSwitch = container.querySelector<HTMLElement>('[data-plan-settings] [role="switch"]')!;
+    await click(defaultPlanSwitch);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(defaultPlanSwitch.getAttribute('aria-checked')).toBe('true');
+    expect(gateSwitch(container).getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector<HTMLInputElement>('#plan-gate-timeout')?.value).toBe('15');
+  });
+
+  it('reverts a failed plan save to the server draft and keeps the error visible', async () => {
+    const container = await renderSection('plan');
+    patchConfig.mockRejectedValueOnce(new Error('fixture offline'));
+    const defaultPlanSwitch = container.querySelector<HTMLElement>('[data-plan-settings] [role="switch"]')!;
+    await click(defaultPlanSwitch);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(defaultPlanSwitch.getAttribute('aria-checked')).toBe('false');
+    expect(container.textContent).toContain('fixture offline');
+  });
+
+  it('keeps permission defaults on General without mounting plan controls', async () => {
+    const container = await renderSection('general');
+    expect(container.querySelector('#st-card-permission-defaults')).not.toBeNull();
+    expect(container.querySelector('#plan-gate-timeout')).toBeNull();
+    expect(container.textContent).toContain('Default permission mode');
   });
 });

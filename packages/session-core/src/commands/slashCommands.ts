@@ -13,7 +13,7 @@
  * (`classifySlashSubmission`) so a typo asks before shipping as prompt text.
  */
 
-import type { SkillDescriptor } from '@moonshot-ai/protocol';
+import type { SkillDescriptor } from '@kiki/protocol';
 
 export type SlashActionId = 'plan' | 'goal' | 'new' | 'fork' | 'undo' | 'compact';
 
@@ -53,17 +53,33 @@ export function isSkillActivatable(skill: SkillDescriptor): boolean {
   return skill.type !== 'reference';
 }
 
+export function buildSkillSlashItems(
+  skills: readonly SkillDescriptor[],
+  reservedNames: readonly string[],
+): SlashItem[] {
+  const reserved = new Set(reservedNames.map((name) => name.toLowerCase()));
+  const occupied = new Set([...reserved, ...skills.map((skill) => skill.name.toLowerCase())]);
+  return skills.map((skill) => {
+    let name = skill.name;
+    if (reserved.has(name.toLowerCase())) {
+      do { name = `skill:${name}`; } while (occupied.has(name.toLowerCase()));
+      occupied.add(name.toLowerCase());
+    }
+    return {
+      kind: 'skill',
+      name,
+      description: skill.description,
+      disabled: !isSkillActivatable(skill),
+      skill,
+    };
+  });
+}
+
 export function buildSlashItems(
   skills: readonly SkillDescriptor[],
   options: { hasSession: boolean },
 ): SlashItem[] {
-  const skillItems: SlashItem[] = skills.map((skill) => ({
-    kind: 'skill',
-    name: skill.name,
-    description: skill.description,
-    disabled: !isSkillActivatable(skill),
-    skill,
-  }));
+  const skillItems = buildSkillSlashItems(skills, SLASH_ACTIONS.map((spec) => spec.name));
   const actionItems: SlashItem[] = SLASH_ACTIONS.filter(
     (spec) => !spec.needsSession || options.hasSession,
   ).map((spec) => ({

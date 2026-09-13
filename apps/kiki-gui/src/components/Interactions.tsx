@@ -19,7 +19,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import type { ApprovalDecision, QuestionAnswer, QuestionItem } from '@moonshot-ai/protocol';
+import type { ApprovalDecision, QuestionAnswer, QuestionItem } from '@kiki/protocol';
 
 import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
@@ -703,10 +703,17 @@ export function QuestionCard({
           ? t('ia.question.dismissed')
           : t('ia.question.expired');
     return (
-      <div className="anim-enter flex items-center gap-2 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-[12px] text-ink-faint">
-        <span aria-hidden>·</span>
-        <span className="font-medium">{label}</span>
-      </div>
+      <details className="anim-enter rounded-lg border border-hairline bg-panel px-3 py-1.5 text-[12px] text-ink-faint" data-question-history>
+        <summary className="cursor-pointer font-medium">{label}</summary>
+        <div className="mt-2 space-y-2 text-ink-soft">
+          {block.request.questions.map((item) => <div key={item.id}>
+            <p className="break-words">{item.question}</p>
+            <ul className="mt-1 list-inside list-disc text-[11px]">
+              {item.options.map((option) => <li key={option.id}>{option.label}</li>)}
+            </ul>
+          </div>)}
+        </div>
+      </details>
     );
   }
 

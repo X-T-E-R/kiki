@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Session, Workspace } from '@moonshot-ai/protocol';
+import type { Session, Workspace } from '@kiki/protocol';
 
 import {
   SEARCH_DEBOUNCE_MS,

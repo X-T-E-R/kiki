@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protocol';
+import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {

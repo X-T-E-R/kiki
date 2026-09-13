@@ -15,7 +15,7 @@ export default {
           items: [
             {
               kind: 'turn',
-              turnId: '1',
+              turnId: 't1',
               ordinal: 1,
               state: 'completed',
               origin: { kind: 'user' },
@@ -25,8 +25,8 @@ export default {
               steps: [
                 {
                   kind: 'step',
-                  stepId: 'research-step-1',
-                  turnId: '1',
+                  stepId: 't1.1',
+                  turnId: 't1',
                   ordinal: 1,
                   state: 'completed',
                   startedAt: new Date().toISOString(),
@@ -35,7 +35,7 @@ export default {
                     { kind: 'thinking', frameId: 'research-thinking', text: 'Tracing the event envelope and model binding fields.' },
                     {
                       kind: 'tool',
-                      frameId: 'research-read-frame',
+                      frameId: 'tool-research-read',
                       toolCallId: 'research-read',
                       name: 'Read',
                       state: 'done',
@@ -56,7 +56,7 @@ export default {
           items: [
             {
               kind: 'turn',
-              turnId: '1',
+              turnId: 't1',
               ordinal: 1,
               state: 'completed',
               origin: { kind: 'user' },
@@ -64,12 +64,12 @@ export default {
               steps: [
                 {
                   kind: 'step',
-                  stepId: 'review-step-1',
-                  turnId: '1',
+                  stepId: 't1.1',
+                  turnId: 't1',
                   ordinal: 1,
                   state: 'completed',
                   frames: [
-                    { kind: 'tool', frameId: 'review-check-frame', toolCallId: 'review-check', name: 'Check', state: 'done', input: { surface: 'main transcript' }, output: 'No inline subagent tools in the main thread.' },
+                    { kind: 'tool', frameId: 'tool-review-check', toolCallId: 'review-check', name: 'Check', state: 'done', input: { surface: 'main transcript' }, output: 'No inline subagent tools in the main thread.' },
                     { kind: 'text', frameId: 'review-report', role: 'assistant', text: 'Presentation contract verified with no inline child tool cards.' },
                   ],
                 },

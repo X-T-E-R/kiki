@@ -22,16 +22,22 @@ export default {
           items: [
             {
               kind: 'turn',
-              turnId: '2',
+              turnId: 't2',
+              ordinal: 2,
+              state: 'running',
+              origin: { kind: 'user' },
               prompt: 'Clean the build output.',
               steps: [
                 {
                   kind: 'step',
-                  stepId: 'worker-step-1',
+                  stepId: 't2.1',
+                  turnId: 't2',
+                  ordinal: 1,
+                  state: 'running',
                   frames: [
                     {
                       kind: 'tool',
-                      frameId: 'worker-rm-frame',
+                      frameId: 'tool-child-rm',
                       toolCallId: 'child-rm',
                       name: 'Bash',
                       state: 'running',

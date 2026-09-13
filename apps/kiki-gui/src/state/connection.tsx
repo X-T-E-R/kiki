@@ -26,20 +26,18 @@ import {
   type ReactNode,
 } from 'react';
 
-import type { Klient } from '@moonshot-ai/klient';
-import { createKlient } from '@moonshot-ai/klient/http';
-import type { MetaResponse } from '@moonshot-ai/protocol';
+import type { Klient } from '@kiki/klient';
+import type { MetaResponse } from '@kiki/protocol';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import { ConnectScreen } from '../components/ConnectScreen';
 import { useHost } from '../host';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import type { SessionController } from '@kiki/session-core/session';
-import type { SessionEventFrame } from '@kiki/session-core/wire';
 import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { ApiError, KikiClient } from '../lib/client';
-import { KikiSocket, type WsStatus } from '../lib/ws';
+import type { TerminalFacade, TerminalConnectionStatus as WsStatus } from '@kiki/klient';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -80,7 +78,7 @@ function scrubUrl(): void {
 }
 
 export function handleGlobalConnectionFrame(
-  frame: Pick<SessionEventFrame, 'type'>,
+  frame: { readonly type: string },
   queryClient: Pick<QueryClient, 'invalidateQueries'>,
 ): boolean {
   if (frame.type !== 'event.model_catalog.changed') return false;
@@ -93,7 +91,7 @@ interface ConnectionValue {
   readonly config: ConnectionConfig;
   readonly client: KikiClient;
   readonly klient: Klient;
-  readonly socket: KikiSocket;
+  readonly socket: TerminalFacade;
   readonly meta: MetaResponse;
   readonly wsStatus: WsStatus;
   readonly disconnect: () => void;
@@ -185,7 +183,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const desktopCancelledRef = useRef(false);
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
   const controllersRef = useRef(new LiveControllerRegistry());
-  const liveSocketRef = useRef<KikiSocket | null>(null);
   const connectionEpochRef = useRef(0);
   const leaseClientIdRef = useRef(nextGuiLeaseClientId());
 
@@ -323,18 +320,16 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   const endpoint = config?.url.trim().replace(/\/+$/, '') ?? null;
   const token = config?.token.trim() ?? null;
-  const client = useMemo(
-    () => endpoint === null || token === null ? null : new KikiClient({ baseUrl: endpoint, token }),
-    [endpoint, token],
-  );
-  const [klient, setKlient] = useState<Klient | null>(null);
+  const [clients, setClients] = useState<{ endpoint: string; token: string; client: KikiClient } | null>(null);
+  const client = clients?.endpoint === endpoint && clients.token === token ? clients.client : null;
+  const klient = client?.klient ?? null;
 
   useEffect(() => {
     if (endpoint === null || token === null) return;
-    const instance = createKlient({ endpoint, token });
-    setKlient(instance);
+    const instance = new KikiClient({ baseUrl: endpoint, token });
+    setClients({ endpoint, token, client: instance });
     return () => {
-      void instance.close();
+      void instance.klient.close();
     };
   }, [endpoint, token]);
 
@@ -390,78 +385,26 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     };
   }, [client, connected]);
 
-  const socket = useMemo(() => {
-    if (!connected || config === null || client === null || meta === null) return null;
-    const instance = new KikiSocket({
-      baseUrl: config.url.trim().replace(/\/+$/, ''),
-      token: config.token.trim(),
-      events: {
-        onStatus: (status, _detail, generation) => {
-          if (liveSocketRef.current !== instance) return;
-          if (generation !== undefined && generation !== instance.connectionGeneration) return;
-          if (status !== 'open') {
-            for (const controller of controllersRef.current) controller.handleWsDrop();
-          }
-          setWsStatus(status);
-        },
-        onFrame: (frame, generation) => {
-          if (liveSocketRef.current !== instance) return;
-          if (generation !== undefined && generation !== instance.connectionGeneration) return;
-          if (handleGlobalConnectionFrame(frame, queryClient)) return;
-          for (const controller of controllersRef.current) controller.handleFrame(frame);
-        },
-        onTranscript: (event, generation) => {
-          if (liveSocketRef.current !== instance) return;
-          if (generation !== undefined && generation !== instance.connectionGeneration) return;
-          for (const controller of controllersRef.current) {
-            if (controller.sessionId === event.session_id) controller.handleTranscript(event, generation);
-          }
-        },
-        onResyncRequired: (payload, generation) => {
-          if (liveSocketRef.current !== instance) return;
-          if (generation !== undefined && generation !== instance.connectionGeneration) return;
-          for (const controller of controllersRef.current) {
-            controller.handleResyncRequired(payload);
-          }
-        },
-        onSubscribeAck: (accepted, resyncRequired, cursors, reconnected, generation) => {
-          if (liveSocketRef.current !== instance) return;
-          if (generation !== undefined && generation !== instance.connectionGeneration) return;
-          for (const controller of controllersRef.current) {
-            const offered = cursors?.[controller.sessionId];
-            const localEpoch = controller.getState().cursor.epoch;
-            const epochChanged =
-              offered?.epoch !== undefined &&
-              localEpoch !== undefined &&
-              offered.epoch !== localEpoch;
-            if (resyncRequired.includes(controller.sessionId) || epochChanged) {
-              controller.handleSubscribeRejected(generation);
-              continue;
-            }
-            if (!accepted.includes(controller.sessionId)) continue;
-            if (reconnected) controller.handleReconnectAck();
-          }
-        },
-      },
-    });
-    return instance;
-  }, [client, config, connected, queryClient]);
+  const socket = connected ? klient?.terminal ?? null : null;
 
   useEffect(() => {
-    liveSocketRef.current = socket;
-    if (socket === null) return;
-    socket.connect();
+    if (socket === null || klient === null) return;
+    const offStatus = socket.onStatus(setWsStatus);
+    const catalog = klient.events.on('kosong.changed', () => {
+      handleGlobalConnectionFrame({ type: 'event.model_catalog.changed' }, queryClient);
+    });
     return () => {
-      if (liveSocketRef.current === socket) liveSocketRef.current = null;
-      socket.close();
+      offStatus();
+      catalog.dispose();
     };
-  }, [socket]);
+  }, [socket, klient, queryClient]);
 
   // Browser recovery events nudge a parked socket without adding periodic work.
   useEffect(() => {
     if (socket === null) return;
     const nudge = () => {
       socket.nudge();
+      for (const controller of controllersRef.current) controller.nudge();
     };
     const onVisibility = () => {
       if (document.visibilityState === 'visible') nudge();

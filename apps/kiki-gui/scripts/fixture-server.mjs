@@ -4,10 +4,18 @@
  *
  *   node scripts/fixture-server.mjs [--port 58901] [--scenario basic-stream]
  *
- * Serves the exact subset of `/api/v1` the GUI consumes plus the `/api/v1/ws`
+ * Serves the exact `/api` REST routes the GUI consumes plus the `/api/ws`
  * handshake and `session_event` frames in the real envelope shapes (WS
  * protocol v2: server_hello → client_hello → subscribe ack with {seq, epoch}
  * cursors; durable frames advance seq, volatile frames carry it + `offset`).
+ * Current GUI views use `/api/klient/session-view/*` and `/api/klient/events`
+ * via fixture-klient.mjs: production schemas, ordered replay, independent
+ * transcript checkpoints, heartbeat and reconnect. The core event bus and
+ * typed global facade calls used by the GUI are supported; unseeded capability
+ * policy is explicitly unavailable. Shared-socket terminal attach/input/resize/
+ * detach reuse FakeTerminal with replay and session isolation. Unsupported
+ * facade calls and frames reject. Run `node scripts/fixture-klient-proof.mjs`
+ * for isolated first-open/reconnect screenshots under `.tmp/fixture-klient-proof`.
  * Bearer auth accepts the fixed token `kiki-fixture-token` (also via the
  * `kimi-code.bearer.*` WS subprotocol, like kap-server).
  *
@@ -58,6 +66,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { WebSocketServer } from 'ws';
+import { FixtureKlient } from './fixture-klient.mjs';
 
 import {
   TranscriptProjector,
@@ -435,15 +444,17 @@ class FixtureServer {
     this.lastFileUpload = null; // last POST /files meta (walker assertions)
     this.lastFsWrite = null; // last POST /fs:write body (walker assertions)
     this.fileCounter = 0;
+    this.files = new Map(); // global file facade uploads: id → { meta, bytes }
     this.workspaces = []; // mutable registered workspaces (PATCH/DELETE editable)
     this.agentProfiles = []; // expanded named-agent rows; GET /agents merges them
-    this.mcpManaged = []; // mutable /api/v2/mcp/servers catalog
-    this.plugins = []; // mutable /api/v1/plugins catalog
-    this.oauthOverride = null; // mutable oauth flow state (POST/DELETE /oauth/login)
+    this.mcpManaged = []; // mutable /mcp/servers management catalog
+    this.plugins = []; // mutable /plugins catalog
+    this.oauthOverride = null; // mutable OAuth flow state (POST/DELETE /oauth/login)
     this.wsInbound = [];
     this.wsOutbound = [];
     this.http = createServer((req, res) => void this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
+    this.klient = new FixtureKlient(this);
   }
 
   async loadScenario(name) {
@@ -479,7 +490,9 @@ class FixtureServer {
       try { ws.terminate(); } catch { /* closing */ }
     }
     this.sockets.clear();
+    this.files.clear();
     this.lastSearchBody = null;
+    this.lastFileUpload = null;
     this.lastFsWrite = null;
     this.oauthOverride = null;
     this.wsInbound = [];
@@ -487,21 +500,54 @@ class FixtureServer {
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
   }
 
-  // /agents helpers: disabled synthesis mirrors kap-server's config channels.
-  agentProfilesWithDisabled() {
-    const disabledBuiltin = this.config.disabled_builtin_profiles ?? [];
-    const disabledNamed = this.config.disabled_named_profiles ?? [];
-    return this.agentProfiles.map((profile) => ({
-      routes: [],
-      ...profile,
-      disabled: (profile.source === 'builtin' ? disabledBuiltin : disabledNamed).includes(profile.name),
-    }));
+  // /agents helpers: disabled synthesis and effective winner selection mirror
+  // the server's config channels and profile source priorities.
+  agentProfilesWithDisabled(workspaceId) {
+    const disabledBuiltin = new Set(this.config.disabled_builtin_profiles ?? []);
+    const disabledNamed = new Set(this.config.disabled_named_profiles ?? []);
+    return this.agentProfiles
+      .filter((profile) => workspaceId === undefined || profile.workspace_id === undefined || profile.workspace_id === workspaceId)
+      .map((profile) => ({
+        routes: [],
+        ...profile,
+        disabled: profile.disabled === true || (profile.source === 'builtin' ? disabledBuiltin : disabledNamed).has(profile.name),
+      }));
   }
 
-  mergedAgentProfiles() {
+  profilePriority(profile) {
+    if (Number.isFinite(profile.priority)) return profile.priority;
+    return { builtin: 0, extra: 10, user: 20, workspace: 30 }[profile.source] ?? 0;
+  }
+
+  effectiveAgentProfiles(workspaceId) {
+    const byName = new Map();
+    for (const profile of this.agentProfilesWithDisabled(workspaceId)) {
+      const entries = byName.get(profile.name) ?? [];
+      entries.push(profile);
+      byName.set(profile.name, entries);
+    }
+    const winners = [];
+    for (const entries of byName.values()) {
+      const enabled = entries.filter((profile) => !profile.disabled);
+      const builtin = enabled.find((profile) => profile.source === 'builtin');
+      const files = enabled
+        .filter((profile) => profile.source !== 'builtin')
+        .toSorted((left, right) => this.profilePriority(right) - this.profilePriority(left) || String(left.source_file ?? '').localeCompare(String(right.source_file ?? '')));
+      const winner = files.find((profile) => profile.override === true) ?? builtin ?? files[0];
+      const defaultMain = entries.find((profile) => profile.name === 'agent' && profile.source === 'builtin' && profile.main === true);
+      if (winner !== undefined) {
+        winners.push(winner.name === 'agent' && winner.main === true ? { ...winner, disabled: false } : winner);
+      } else if (defaultMain !== undefined) {
+        winners.push({ ...defaultMain, disabled: false });
+      }
+    }
+    return winners;
+  }
+
+  mergedAgentProfiles(workspaceId) {
     const merged = [];
     const indexByKey = new Map();
-    for (const profile of this.agentProfilesWithDisabled()) {
+    for (const profile of this.agentProfilesWithDisabled(workspaceId)) {
       const key = `${profile.name}\n${profile.source}\n${profile.source_file ?? ''}`;
       const ids = profile.workspace_ids ?? (profile.workspace_id === undefined ? [] : [profile.workspace_id]);
       const existingIndex = indexByKey.get(key);
@@ -565,6 +611,7 @@ class FixtureServer {
     for (const connection of this.sockets) {
       if (connection.subscriptions?.has(sessionId)) this.sendFrame(connection, frame);
     }
+    this.klient.emit(sessionId, frame);
     // Rewrite routes ingest locally, reseed the journal user, start the new
     // prompt, then fanout a single transcript.reset. Fanout here would push
     // items.remove before that reset, wiping the GUI's previous user so the
@@ -591,10 +638,19 @@ class FixtureServer {
       ...extras,
     };
     const batches = session.transcript.ingestFrame(frame, merged) ?? [];
-    for (const batch of batches) this.fanoutTranscriptOps(session, batch.agentId, batch);
+    for (const batch of batches) {
+      // Fixture state merges interaction patches; the shared wire upsert replaces
+      // the entire entity. Journal the full fact at this revision, not a patch.
+      const interactions = session.transcript.snapshot(batch.agentId).interactions;
+      for (const op of batch.ops) if (op.op === 'interaction.upsert') {
+        op.interaction = structuredClone(interactions.find((entry) => entry.interactionId === op.interaction.interactionId));
+      }
+      this.fanoutTranscriptOps(session, batch.agentId, batch);
+    }
   }
 
   fanoutTranscriptOps(session, agentId, batch) {
+    this.klient.transcript(session, agentId, batch);
     for (const connection of this.sockets) {
       const spec = connection.transcriptGrades?.get(session.record.id);
       if (spec === undefined) continue;
@@ -612,6 +668,7 @@ class FixtureServer {
   }
 
   fanoutTranscriptReset(session, agentId) {
+    this.klient.transcript(session, agentId);
     const payload = session.transcript.resetEvent(agentId);
     for (const connection of this.sockets) {
       const spec = connection.transcriptGrades?.get(session.record.id);
@@ -903,7 +960,7 @@ class FixtureServer {
       return;
     }
 
-    if (url.pathname === '/api/v1/healthz') {
+    if (url.pathname === '/api/healthz') {
       this.envelope(res, { ok: true });
       return;
     }
@@ -935,10 +992,15 @@ class FixtureServer {
       return;
     }
 
+    if (url.pathname.startsWith('/api/klient/')) {
+      const body = req.method === 'POST' ? await this.readBody(req) : undefined;
+      return this.klient.route(res, url, body, req.method);
+    }
+
     // Multipart upload: the real server streams the bytes into its file store
     // and answers FileMeta; the fixture keeps the meta (plus the multipart
     // byte count as a size stand-in) for walker assertions.
-    if (url.pathname === '/api/v1/files' && req.method === 'POST') {
+    if (url.pathname === '/api/files' && req.method === 'POST') {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const raw = Buffer.concat(chunks);
@@ -956,15 +1018,22 @@ class FixtureServer {
       return this.envelope(res, meta);
     }
 
-    // v1 and v2 share path shapes (`/mcp/servers` means different things in
-    // each), so the version has to survive the prefix strip.
-    const apiVersion = url.pathname.startsWith('/api/v2/') ? 'v2' : 'v1';
-    const path = url.pathname.replace(/^\/api\/v[12]/, '');
+    if (!url.pathname.startsWith('/api/')) {
+      return this.envelope(res, null, 40404, `fixture: no route ${url.pathname}`);
+    }
+    const path = url.pathname.slice('/api'.length);
     const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
       ? await this.readBody(req)
       : undefined;
     try {
-      if (apiVersion === 'v2') this.routeV2(res, path, url.searchParams, body, req.method);
+      // The unified path keeps the former advanced-session, usage, and MCP
+      // management domains distinct from the flat session/runtime routes.
+      const advanced = path === '/usage'
+        || path === '/sessions/query'
+        || path === '/mcp/servers'
+        || path.startsWith('/mcp/servers/')
+        || path.startsWith('/mcp/servers:');
+      if (advanced) this.routeV2(res, path, url.searchParams, body, req.method);
       else this.route(res, path, url.searchParams, body, req.method);
     } catch (error) {
       console.error('[fixture] route error', path, error);
@@ -972,8 +1041,11 @@ class FixtureServer {
     }
   }
 
-  /** `/api/v2/mcp/*` — the unified MCP management plane the settings page writes through. */
+  /** Unified advanced-session, usage, and MCP management routes. */
   routeV2(res, path, query, body, method) {
+    if (path === '/sessions/query' && method === 'GET') {
+      return this.querySessionsResponse(res, query);
+    }
     if (path === '/usage' && method === 'GET') {
       return this.usageV2Response(res, query);
     }
@@ -1006,7 +1078,93 @@ class FixtureServer {
       const name = body?.name ?? body?.server?.name ?? 'server';
       return this.envelope(res, { success: true, output: `fixture probe reached ${name}` });
     }
-    return this.envelope(res, null, 40404, `no fixture v2 route for ${method} ${path}`);
+    return this.envelope(res, null, 40404, `no fixture advanced route for ${method} ${path}`);
+  }
+
+  querySessionsResponse(res, query) {
+    const workspaceIds = query.getAll('workspace.id');
+    const statuses = query.getAll('activity.status');
+    const archived = query.get('meta.archived') ?? 'false';
+    const sort = query.get('sort') ?? 'meta.updated_at_desc';
+    const fields = new Set((query.get('fields') ?? '').split(',').map((value) => value.trim()).filter(Boolean));
+    const projection = fields.size > 0;
+    if (!['false', 'true', 'all'].includes(archived)
+      || !['meta.updated_at_desc', 'meta.updated_at_asc', 'meta.created_at_desc'].includes(sort)
+      || (projection && !(fields.size === 2 && fields.has('id') && fields.has('archived')))) {
+      return this.envelope(res, null, 40001, 'invalid advanced session query');
+    }
+    let records = [...this.sessions.values()].map((session) => session.record);
+    if (workspaceIds.length > 0) records = records.filter((record) => workspaceIds.includes(record.workspace_id));
+    if (archived !== 'all') records = records.filter((record) => (record.archived === true ? 'true' : 'false') === archived);
+    if (statuses.length > 0) records = records.filter((record) => {
+      const status = record.pending_interaction === 'approval'
+        ? 'approval'
+        : record.pending_interaction === 'question'
+          ? 'question'
+          : record.busy === true
+            ? 'running'
+            : 'idle';
+      return statuses.includes(status);
+    });
+    const timestamp = (value) => {
+      const parsed = Date.parse(value ?? '');
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    records.sort((left, right) => {
+      const leftTime = timestamp(sort === 'meta.created_at_desc' ? left.created_at : left.updated_at);
+      const rightTime = timestamp(sort === 'meta.created_at_desc' ? right.created_at : right.updated_at);
+      const order = sort === 'meta.updated_at_asc' ? leftTime - rightTime : rightTime - leftTime;
+      return order || (sort === 'meta.updated_at_asc' ? left.id.localeCompare(right.id) : right.id.localeCompare(left.id));
+    });
+    const pageSize = Math.max(1, Number(query.get('page_size') ?? 50) || 50);
+    const pageToken = query.get('page_token');
+    const pageNumber = query.get('page');
+    const offset = pageToken !== null
+      ? Number(pageToken)
+      : pageNumber === null
+        ? 0
+        : (Number(pageNumber) - 1) * pageSize;
+    if (!Number.isInteger(offset) || offset < 0) return this.envelope(res, null, 40922, 'page_token is invalid');
+    const page = records.slice(offset, offset + pageSize);
+    const workspace = (record) => {
+      const item = this.workspaces.find((candidate) => candidate.id === record.workspace_id);
+      return { id: record.workspace_id, cwd: item?.root ?? record.metadata?.cwd ?? null };
+    };
+    const items = page.map((record) => {
+      if (projection) return { id: record.id, archived: record.archived === true };
+      const item = {
+        id: record.id,
+        workspace: workspace(record),
+        meta: {
+          title: record.title || null,
+          last_prompt: record.last_prompt ?? null,
+          created_at: timestamp(record.created_at),
+          updated_at: timestamp(record.updated_at),
+          archived: record.archived === true,
+          archived_at: record.archived_at === undefined || record.archived_at === null ? null : timestamp(record.archived_at),
+        },
+        activity: {
+          status: record.pending_interaction === 'approval'
+            ? 'approval'
+            : record.pending_interaction === 'question'
+              ? 'question'
+              : record.busy === true
+                ? 'running'
+                : 'idle',
+        },
+      };
+      if (query.get('include')?.split(',').map((value) => value.trim()).includes('git')) {
+        item.git = { branch: null, pull_request: null };
+      }
+      return item;
+    });
+    const hasMore = offset + page.length < records.length;
+    return this.envelope(res, {
+      items,
+      total: records.length,
+      has_more: hasMore,
+      next_page_token: hasMore ? String(offset + page.length) : null,
+    });
   }
 
   managedMcpServers() {
@@ -1014,7 +1172,7 @@ class FixtureServer {
   }
 
   /**
-   * `GET /api/v2/usage` — serves the scenario's prebuilt `usageV2` seed. The
+   * `GET /api/usage` — serves the scenario's prebuilt usage seed. The
    * seed carries per-granularity trends (plus an agent-dimension variant);
    * the handler echoes the requested axes, honors `range=today` with the
    * smaller summary, and paginates session items by numeric offset tokens so
@@ -1033,23 +1191,28 @@ class FixtureServer {
     const pageSize = Math.min(100, Math.max(1, Number(query.get('page_size') ?? 25) || 25));
     const offset = Math.max(0, Number(query.get('page_token') ?? 0) || 0);
 
-    let items = seed.sessions;
+    let items = range === 'today' ? (seed.sessionsToday ?? seed.sessions) : seed.sessions;
     if (!includeArchived) items = items.filter((item) => item.archived !== true);
     if (workspace !== null) items = items.filter((item) => item.workspace_id === workspace);
     const pageItems = items.slice(offset, offset + pageSize);
     const hasMore = offset + pageItems.length < items.length;
 
+    const timezoneOffset = Number(query.get('timezone_offset_minutes') ?? 0) || 0;
+    const dayMs = 24 * 60 * 60 * 1000;
+    const todayStart = Math.floor((Date.now() + timezoneOffset * 60_000) / dayMs) * dayMs - timezoneOffset * 60_000;
     const dimensionTrend = seed.trendByDimension?.[dimension];
-    const trend =
-      dimensionTrend?.[granularity] ?? seed.trend[granularity] ?? seed.trend.day ?? [];
+    const allTrend = dimensionTrend?.[granularity] ?? seed.trend[granularity] ?? seed.trend.day ?? [];
+    const trend = range === 'today'
+      ? allTrend.filter((bucket) => bucket.end_at > todayStart && bucket.start_at < todayStart + dayMs)
+      : allTrend;
 
     return this.envelope(res, {
       query: {
         granularity,
         range: {
           preset: range,
-          start_at: query.get('start_at') !== null ? Number(query.get('start_at')) : null,
-          end_at: query.get('end_at') !== null ? Number(query.get('end_at')) : null,
+          start_at: range === 'today' ? todayStart : query.get('start_at') !== null ? Number(query.get('start_at')) : null,
+          end_at: range === 'today' ? todayStart + dayMs : query.get('end_at') !== null ? Number(query.get('end_at')) : null,
           defaulted_to_all_history: query.get('range') === null,
         },
         dimension,
@@ -1111,24 +1274,66 @@ class FixtureServer {
     // scenario (`nbSearchCapabilities` / `nbSearchTest`). A seed shaped
     // `{ __error: 'message' }` makes the route fail so error states render.
     // Everything is static — no real search or fetch ever leaves this server.
+    // A scenario that seeds `config_source` additionally follows the saved
+    // `nb_search_source.reuse_local_config` toggle: off means the local file
+    // and credentials read as ignored, layers lose the local tier, and
+    // credentials come from the server environment alone. No files are read.
     if (path === '/nb-search/capabilities') {
       const seed = this.scenario?.data.nbSearchCapabilities ?? NB_SEARCH_EMPTY_CAPABILITIES;
       if (seed.__error !== undefined) return this.envelope(res, null, 50000, seed.__error);
-      return this.envelope(res, seed);
+      if (seed.config_source === undefined) return this.envelope(res, seed);
+      const reuse = this.config?.nb_search_source?.reuse_local_config ?? true;
+      if (reuse) return this.envelope(res, seed);
+      return this.envelope(res, {
+        ...seed,
+        config_source: {
+          ...seed.config_source,
+          reuse_local_config: false,
+          layers: seed.config_source.layers.filter((layer) => layer !== 'local'),
+          local_config: 'ignored',
+          local_credentials: 'ignored',
+          credential_source: 'environment',
+          availability: 'ready',
+          issues: [],
+        },
+      });
     }
     if (path === '/nb-search/test') {
       const seed = this.scenario?.data.nbSearchTest ?? NB_SEARCH_EMPTY_TEST;
       if (seed.__error !== undefined) return this.envelope(res, null, 50000, seed.__error);
       return this.envelope(res, seed);
     }
-    // Named agent profiles: `disabled` is synthesized from the two config
-    // channels; the default view merges duplicate name+source+file rows
-    // across workspaces into one item with `workspace_ids`, `?expand=1`
-    // returns the raw per-workspace rows.
+    // Named agent profiles: the raw directory keeps every row and its
+    // disabled flag; `effective=true` returns only the enabled same-name
+    // winners for the requested workspace or cwd.
     if (path === '/agents') {
-      const items = query.get('expand') === '1'
-        ? this.agentProfilesWithDisabled()
-        : this.mergedAgentProfiles();
+      let workspaceId;
+      const requestedWorkspace = query.get('workspace_id');
+      if (requestedWorkspace !== null) workspaceId = requestedWorkspace;
+      const cwd = query.get('cwd');
+      if (cwd !== null) {
+        const normalize = (value) => String(value).replaceAll('\\', '/').replace(/\/+$/u, '').toLowerCase();
+        const normalizedCwd = normalize(cwd);
+        const workspace = this.workspaces.find((candidate) => {
+          const root = normalize(candidate.root);
+          return normalizedCwd === root || normalizedCwd.startsWith(`${root}/`);
+        });
+        if (workspace !== undefined) workspaceId = workspace.id;
+        else {
+          const sessionWorkspace = [...this.sessions.values()].find((session) => {
+            const root = normalize(session.record.metadata?.cwd);
+            return normalizedCwd === root || normalizedCwd.startsWith(`${root}/`);
+          });
+          if (sessionWorkspace !== undefined) workspaceId = sessionWorkspace.record.workspace_id;
+          else if (this.workspaces.length === 0 && normalizedCwd.startsWith('c:/fixture')) workspaceId = 'wd_fixture_000000000000';
+          else return this.envelope(res, null, 40410, 'workspace.not_found');
+        }
+      }
+      const items = query.get('effective') === 'true'
+        ? this.effectiveAgentProfiles(workspaceId)
+        : query.get('expand') === '1'
+          ? this.agentProfilesWithDisabled()
+          : this.mergedAgentProfiles();
       return this.envelope(res, { items });
     }
     const agentMatch = /^\/agents\/([^/]+)$/.exec(path);
@@ -1260,7 +1465,7 @@ class FixtureServer {
         tools: this.scenario?.data.tools ?? [],
       });
     }
-    if (path === '/mcp/servers') {
+    if (path === '/mcp/runtime/servers' && method === 'GET') {
       return this.envelope(res, {
         servers: this.scenario?.data.mcpServers ?? [],
       });
@@ -1331,8 +1536,11 @@ class FixtureServer {
         plugins: this.plugins,
       });
     }
-    const mcpRestartMatch = /^\/mcp\/servers\/([^/]+):restart$/.exec(path);
-    if (mcpRestartMatch !== null && body !== undefined) {
+    const mcpRestartMatch = /^\/mcp\/runtime\/servers\/([^/]+):restart$/.exec(path);
+    if (mcpRestartMatch !== null && method === 'POST' && body !== undefined) {
+      const serverId = decodeURIComponent(mcpRestartMatch[1]);
+      const server = (this.scenario?.data.mcpServers ?? []).find((entry) => entry.id === serverId);
+      if (server === undefined) return this.envelope(res, null, 40408, `MCP server "${serverId}" was not found`);
       return this.envelope(res, { restarting: true });
     }
     const workspaceSkillsMatch = /^\/workspaces\/([^/]+)\/skills$/.exec(path);
@@ -2012,7 +2220,7 @@ class FixtureServer {
         // Echo the origin agent so both the main store and the child's
         // sub-store mark their cards resolved.
         agentId: approval.agentId ?? 'main',
-        payload: { approval_id: approval.approval_id, decision: body.decision, scope: body.scope, resolved_at: now() },
+        payload: { approval_id: approval.approval_id, tool_call_id: approval.tool_call_id, decision: body.decision, scope: body.scope, resolved_at: now() },
       });
       this.resolveWaiters(session, 'approval');
       return this.envelope(res, { resolved: true, resolved_at: now() });
@@ -2161,6 +2369,7 @@ class FixtureServer {
         if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
         session.epoch = `ep_fixture_${Date.now().toString(36)}`;
         session.transcript.epoch = session.epoch;
+        this.klient.resync(session);
         for (const connection of this.sockets) {
           if (connection.subscriptions?.has(session.record.id)) {
             this.sendFrame(connection, {
@@ -2204,7 +2413,8 @@ class FixtureServer {
   }
 
   handleUpgrade(req, socket, head) {
-    if (!req.url?.startsWith('/api/v1/ws')) {
+    const path = new URL(req.url ?? '/', 'http://fixture').pathname;
+    if (path !== '/api/ws' && path !== '/api/klient/events') {
       socket.destroy();
       return;
     }
@@ -2217,7 +2427,8 @@ class FixtureServer {
     }
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       ws.subprotocol = bearer;
-      this.onConnection(ws);
+      if (path === '/api/klient/events') this.klient.connect(ws);
+      else this.onConnection(ws);
     });
   }
 

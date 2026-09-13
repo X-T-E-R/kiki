@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ListWorkspacesResponse, Workspace } from '@moonshot-ai/protocol';
+import type { ListWorkspacesResponse, Workspace } from '@kiki/protocol';
 
 import { errorText } from '@kiki/session-core/i18n';
 import { filterWorkspaces, sortWorkspacesByPinnedThenRecency } from '@kiki/session-core/sessions';
@@ -16,7 +16,7 @@ import { SectionCard } from './SectionCard';
 
 export function WorkspacesSection() {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { t, tp, locale, time } = useI18n();
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
@@ -57,6 +57,7 @@ export function WorkspacesSection() {
   return (
     <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}>
       <div className="space-y-2">
+        <Hint>{t('st.workspaces.hint')}</Hint>
         {items.length > 0 ? (
           <input
             type="text"
@@ -68,8 +69,23 @@ export function WorkspacesSection() {
           />
         ) : null}
         {visible.map((workspace) => (
-          <div key={workspace.id} className="flex items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
-            <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink" title={workspace.name}>{workspace.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint" title={workspace.root}>{workspace.root}</p></div>
+          <div key={workspace.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="truncate text-[13px] font-medium text-ink" title={workspace.name}>{workspace.name}</p>
+                {workspace.pinned ? (
+                  <span className="rounded bg-accent/15 border border-accent/30 px-1.5 py-0.5 text-[9.5px] font-semibold text-accent">
+                    {t('st.workspaces.pinnedBadge')}
+                  </span>
+                ) : null}
+              </div>
+              <p className="truncate font-mono text-[10.5px] text-ink-faint" title={workspace.root}>{workspace.root}</p>
+              <p className="mt-0.5 text-[10.5px] text-ink-faint">
+                {tp('st.workspaces.sessionCount', workspace.session_count)}
+                {' · '}
+                {t('st.workspaces.lastOpened', { time: time.relativeTime(workspace.last_opened_at) })}
+              </p>
+            </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <button type="button" onClick={() => void navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>{t('st.workspaces.newSession')}</button>
               <button
@@ -106,7 +122,7 @@ export function WorkspacesSection() {
                 onClick={() => setRemoving(workspace)}
                 aria-label={t('st.workspaces.removeAria', { name: workspace.name })}
                 title={t('st.workspaces.remove')}
-                className="rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-danger hover:text-danger"
+                className="rounded-md border border-danger/40 bg-paper px-2 py-1.5 text-[12px] text-danger transition-colors hover:bg-danger/5"
               >
                 ×
               </button>
@@ -116,8 +132,22 @@ export function WorkspacesSection() {
         {visible.length === 0 && filter.trim() !== '' ? <Hint>{t('st.workspaces.noMatches', { query: filter.trim() })}</Hint> : null}
         {query.isLoading ? <Hint>{t('st.workspaces.loading')}</Hint> : null}
         {query.isError ? <InlineError error={query.error} /> : null}
+        {!query.isLoading && !query.isError && items.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-hairline bg-paper/60 px-4 py-8 text-center">
+            <p className="text-[13px] font-medium text-ink">{t('st.workspaces.emptyTitle')}</p>
+            <p className="mx-auto mt-1 max-w-md text-[11.5px] leading-relaxed text-ink-faint">
+              {t('st.workspaces.emptyBody')}
+            </p>
+            <button
+              type="button"
+              className={`${SECONDARY_BUTTON} mt-3`}
+              onClick={() => void navigate('/new')}
+            >
+              {t('st.workspaces.newSession')}
+            </button>
+          </div>
+        ) : null}
         {feedback !== null ? <FeedbackLine feedback={feedback} /> : null}
-        <Hint>{t('st.workspaces.hint')}</Hint>
       </div>
 
       {renaming !== null ? (
@@ -139,6 +169,14 @@ export function WorkspacesSection() {
           overlayId="confirm-workspace-remove"
           title={t('st.workspaces.removeTitle', { name: removing.name })}
           body={t('st.workspaces.removeBody')}
+          consequences={
+            removing.session_count > 0
+              ? [
+                  tp('st.workspaces.removeKeepSessions', removing.session_count),
+                  t('st.workspaces.removeNoNewSessions'),
+                ]
+              : [t('st.workspaces.removeNoNewSessions')]
+          }
           confirmLabel={t('st.workspaces.remove')}
           tone="danger"
           onCancel={() => setRemoving(null)}

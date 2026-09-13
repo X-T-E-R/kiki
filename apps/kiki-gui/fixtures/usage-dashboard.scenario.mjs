@@ -45,7 +45,7 @@ const ETA = 'session_fixture_usage_eta';
 const THETA = 'session_fixture_usage_theta';
 
 // ---------------------------------------------------------------------------
-// /api/v2/usage seed (consumed by routeV2 in fixture-server.mjs). Times are
+// /api/usage seed (consumed by the unified advanced route in fixture-server.mjs). Times are
 // epoch ms computed at load so screenshots always look fresh. The day trend
 // spreads three model groups across two weeks; the five_hour trend covers
 // today with drilldown into the busy sessions; the agent-dimension day trend
@@ -255,6 +255,14 @@ const usageV2 = {
     session_count: 3,
   },
   sessions: sessionItems,
+  sessionsToday: [
+    sessionItem(ETA, 'Fixture: production migration', 8, [96_400, 6_900, 224_000, 15_200, 0.46]),
+    sessionItem(ZETA, 'Fixture: usage aggregation rework', 3, [58_200, 4_300, 138_000, 9_600, 0.27]),
+    sessionItem(THETA, 'Fixture: reference corpus index', 16, [8_100, 640, 0, 0, 0], {
+      cost_unknown: true,
+      unknown_price_models: ['mystery-9'],
+    }),
+  ],
   reliability: {
     coverage: { earliest_at: dayStart(31), latest_at: msAgo(2) },
     scanned_sessions: sessionItems.length,

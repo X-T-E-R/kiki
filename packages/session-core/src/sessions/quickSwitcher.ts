@@ -6,7 +6,7 @@
  * visual group headers from item kinds.
  */
 
-import type { Session } from '@moonshot-ai/protocol';
+import type { Session } from '@kiki/protocol';
 
 import type { SearchMessageHit } from '../transport';
 

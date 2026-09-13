@@ -1,6 +1,6 @@
 /**
  * Shared builders for fixture scenarios. Everything here produces wire shapes
- * matching @moonshot-ai/protocol (plus the broadcaster-synthesized approval
+ * matching @kiki/protocol (plus the broadcaster-synthesized approval
  * and question frames documented in src/lib/types.ts).
  */
 

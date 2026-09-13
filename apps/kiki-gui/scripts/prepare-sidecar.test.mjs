@@ -32,9 +32,9 @@ test('uses Tauri externalBin target suffixes', () => {
   assert.equal(sidecarFileName('aarch64-apple-darwin'), 'kiki-server-aarch64-apple-darwin');
 });
 
-test('maps supported Rust targets to the existing SEA layout', () => {
-  assert.match(defaultSeaSource('x86_64-pc-windows-msvc'), /win32-x64[\\/]kimi\.exe$/);
-  assert.match(defaultSeaSource('aarch64-apple-darwin'), /darwin-arm64[\\/]kimi$/);
+test('maps supported Rust targets to the Kiki SEA layout', () => {
+  assert.match(defaultSeaSource('x86_64-pc-windows-msvc'), /win32-x64[\\/]kiki\.exe$/);
+  assert.match(defaultSeaSource('aarch64-apple-darwin'), /darwin-arm64[\\/]kiki$/);
   assert.throws(() => defaultSeaSource('wasm32-unknown-unknown'), /KIKI_SIDECAR_SOURCE/);
 });
 

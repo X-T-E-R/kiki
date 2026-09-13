@@ -24,7 +24,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEv
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
-import type { FsSearchHit, PermissionMode, PromptPlanGate, SessionUsage } from '@moonshot-ai/protocol';
+import type { FsSearchHit, PermissionMode, PromptPlanGate, SessionUsage } from '@kiki/protocol';
 
 import {
   buildSlashItems,
@@ -105,16 +105,14 @@ export const DEFAULT_AGENT_PROFILE = 'agent';
 /**
  * Profile picker options: only main profiles (`main === true`) are listed —
  * subagent profiles exist to be dispatched, not to headline a conversation.
- * A disabled main profile stays selectable: turning a main agent off only
- * stops subagent calls; main sessions still run it. Every listed profile is
- * a main profile, so no badge or suffix marks them; the description rides
- * the hint line.
+ * Disabled profiles are not offered. A previously selected one remains
+ * visible on the trigger with a diagnostic until the user reselects.
  */
 export function buildAgentProfileOptions(
   items: readonly NamedAgentProfile[],
 ): SearchableSelectOption[] {
   return items
-    .filter((item) => item.main === true)
+    .filter((item) => item.main === true && !item.disabled)
     .map((item) => ({
       value: item.name,
       label: item.name,
@@ -289,7 +287,7 @@ export function Composer({
   onChangeSwarmMode: (on: boolean) => void;
   onChangeGoalObjective: (objective: string) => void;
   onChangeGoalControl: (control: 'pause' | 'resume' | 'cancel' | undefined) => void;
-  onChangeEffort: (effort: string) => void;
+  onChangeEffort: (effort: string | undefined) => void;
   onSend: (text: string, attachments: readonly ComposerAttachment[]) => void;
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
@@ -428,8 +426,8 @@ export function Composer({
     [models, defaultModel, serverDefaultModel, modelSource, t],
   );
 
-  // A server that predates the /agents route errors the query and the control
-  // simply never renders — session creation/rebind then leave profile unset.
+  // The effective catalog validates selections without erasing them on an
+  // unavailable server or directory; the picker remains a recovery path.
   const agentProfilesQuery = useQuery({
     queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
     queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
@@ -441,6 +439,17 @@ export function Composer({
     () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? []),
     [agentProfilesQuery.data],
   );
+  const validateProfile = agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
+  const validatingModel = model ?? defaultModel ?? serverDefaultModel;
+  const selectedModel = models.find((item) => item.model === validatingModel);
+  const selectionLoading = modelsQuery.isPending || (validateProfile && agentProfilesQuery.isPending);
+  const selectionCatalogError = modelsQuery.error ?? (validateProfile ? agentProfilesQuery.error : null);
+  const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
+    && !agentProfileOptions.some((item) => item.value === agentProfile);
+  const invalidModel = modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
+  const invalidEffort = modelsQuery.isSuccess && selectedModel !== undefined
+    && effort !== undefined && !selectedModel.support_efforts?.includes(effort);
+  const selectionBlocked = selectionLoading || selectionCatalogError !== null || invalidProfile || invalidModel || invalidEffort;
 
   // The composer mount now survives route changes (the conversation shell owns
   // it), so session-scoped transient UI must reset when the session under it
@@ -475,6 +484,11 @@ export function Composer({
   });
   const skills = skillsQuery.data?.skills ?? [];
   const skillCatalogReady = sessionId !== undefined || workspaceId !== undefined;
+  const slashMenuOpen = menu?.kind === 'slash';
+  const refetchSkills = skillsQuery.refetch;
+  useEffect(() => {
+    if (slashMenuOpen && skillCatalogReady) void refetchSkills();
+  }, [slashMenuOpen, skillCatalogReady, refetchSkills]);
 
   const slashItems = useMemo(
     () => buildSlashItems(skills, { hasSession: sessionId !== undefined }),
@@ -549,6 +563,7 @@ export function Composer({
     (text.trim() !== '' || attachments.length > 0) &&
     !disabled &&
     !sendDisabled &&
+    !selectionBlocked &&
     !pendingAttachments &&
     !turnInFlight;
 
@@ -875,7 +890,7 @@ export function Composer({
         return;
       }
       if (classified.item.kind === 'skill' && onActivateSkill !== undefined) {
-        activateSkill(classified.item.name, classified.args);
+        activateSkill(classified.item.skill?.name ?? classified.item.name, classified.args);
         return;
       }
       if (classified.item.kind === 'action' && classified.item.action !== undefined) {
@@ -1049,6 +1064,15 @@ export function Composer({
       {/* One width axis with the transcript: the conversation shell declares
           --kiki-chat-content-width; the 760px fallback is defensive. */}
       <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
+        {selectionBlocked ? <div data-selection-diagnostic role={selectionLoading ? 'status' : 'alert'} className="mb-2 space-y-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
+          {selectionLoading ? <p className="text-ink-soft">{t('selection.loading')}</p> : null}
+          {selectionCatalogError !== null ? <p>{t('selection.catalogError', { detail: selectionCatalogError.message })}</p> : null}
+          {invalidProfile ? <p>{t('selection.profileInvalid', { value: agentProfile! })}</p> : null}
+          {invalidModel ? <p>{t('selection.modelInvalid', { value: validatingModel! })}</p> : null}
+          {invalidEffort ? <p>{t('selection.effortInvalid', { value: effort! })}</p> : null}
+          {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); }}>{t('common.retry')}</button> : null}
+          {invalidEffort ? <button type="button" className="underline" onClick={() => { onChangeEffort(resolveSelectedEffort(selectedModel?.support_efforts, undefined, selectedModel?.default_effort)); }}>{t('selection.resetEffort')}</button> : null}
+        </div> : null}
         <div
           className={`relative rounded-2xl border bg-panel shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)] transition-[border-color,box-shadow] ${
             dragActive ? 'border-accent ring-2 ring-accent/40' : 'border-hairline'
@@ -1086,7 +1110,7 @@ export function Composer({
               wrapper only renders when at least one chip/banner exists so the
               textarea keeps its comfortable top padding on an empty draft. */}
           {hasChips ? (
-            <div className="pt-2">
+            <div className="pt-2 pb-1.5">
           {quote !== undefined && quote !== null ? (
             <div
               data-quote-chip
@@ -1187,7 +1211,7 @@ export function Composer({
             </div>
           ) : null}
           {attachments.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1.5 px-3.5 pt-2" data-attachment-chips>
+            <div className="flex flex-wrap items-center gap-1.5 px-3.5 pt-2 pb-1" data-attachment-chips>
               {attachments.map((attachment, index) =>
                 attachment.kind === 'file' ? (
                   <span
@@ -1485,7 +1509,7 @@ export function Composer({
                 goalOpen={goalOpen}
                 onGoalOpenChange={setGoalOpen}
               />
-              {onChangeAgentProfile !== undefined && agentProfilesQuery.data !== undefined ? (
+              {onChangeAgentProfile !== undefined && agentProfile !== undefined ? (
                 <div className="min-w-0">
                   <SearchableSelect
                     id="composer-agent-profile-select"
@@ -1632,6 +1656,9 @@ function SlashMenuBody({
         <span className="shrink-0 font-mono text-[12px] font-medium text-accent">
           /{item.name}
         </span>
+        {item.skill?.argument_hint !== undefined ? (
+          <span className="max-w-32 truncate font-mono text-[10px] text-ink-faint">{item.skill.argument_hint}</span>
+        ) : null}
         <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-soft">
           {item.kind === 'action' && item.action !== undefined
             ? t(SLASH_ACTION_DESCRIPTIONS[item.action])
@@ -1640,7 +1667,7 @@ function SlashMenuBody({
         {item.disabled === true ? (
           <span className="shrink-0 text-[9.5px] text-ink-faint">{t('composer.slash.notActivatable')}</span>
         ) : item.kind === 'skill' ? (
-          <span className="shrink-0 text-[9.5px] text-ink-faint">{t('composer.slash.skillBadge')}</span>
+          <span title={item.skill?.path} className="shrink-0 text-[9.5px] text-ink-faint">{item.skill?.source}</span>
         ) : null}
       </button>
     );

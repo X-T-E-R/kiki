@@ -17,7 +17,7 @@
  *     lands; sending blocks while an upload is in flight.
  */
 
-import type { FileContent, ImageContent, MessageContent } from '@moonshot-ai/protocol';
+import type { FileContent, ImageContent, MessageContent } from '@kiki/protocol';
 
 import { LocalizedError, type ValidationIssue } from '../i18n/locale';
 

@@ -12,7 +12,7 @@
  * flag by defining scroll/clientHeight on the element.
  */
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useLayoutEffect, useId, useRef, useState } from 'react';
 
 export interface CollapsibleOverflow<T extends HTMLElement> {
   readonly contentRef: React.RefObject<T | null>;
@@ -31,7 +31,7 @@ export function useCollapsibleOverflow<T extends HTMLElement>(
   const [expanded, setExpanded] = useState(false);
   const contentId = useId();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (expanded) return;
     const element = contentRef.current;
     if (element === null) return;

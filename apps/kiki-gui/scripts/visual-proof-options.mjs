@@ -34,7 +34,7 @@ export function selectProofOutput(root, argv, scenarioNames) {
     mode: updateGoldens ? 'update-goldens' : 'disposable',
     outputDir: updateGoldens
       ? join(root, 'screenshots', 'batch3')
-      : join(root, '.tmp', 'visual-proof', 'batch3'),
+      : process.env.KIKI_PROOF_OUTPUT_DIR ?? join(root, '.tmp', 'visual-proof', 'batch3'),
     only,
   };
 }

@@ -4,7 +4,7 @@ import { Link, useLocation } from 'react-router-dom';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { mcpConfigFromDraft, type McpEditorDraft } from '@kiki/session-core/settings';
-import type { GlobalMcpServerConfig } from '@moonshot-ai/klient';
+import type { GlobalMcpServerConfig } from '@kiki/klient';
 import type {
   McpManagedServer,
   McpManagedServerConfig,
@@ -182,11 +182,11 @@ export function McpConfigManager({
   return (
     <div className="space-y-3 border-t border-hairline pt-4">
       <div className="flex items-center justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">{t('st.mcp.configTitle')}</p>
           <Hint>{t('st.mcp.configHint')}</Hint>
         </div>
-        <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={() => { setDraft(mcpDraft()); setFeedback(null); }}>{t('st.mcp.add')}</button>
+        <button type="button" className={`${SECONDARY_BUTTON} shrink-0`} disabled={saving} onClick={() => { setDraft(mcpDraft()); setFeedback(null); }}>{t('st.mcp.add')}</button>
       </div>
       <div className="space-y-2">
         {entries.map((entry) => (
@@ -195,7 +195,10 @@ export function McpConfigManager({
               <p className="truncate text-[13px] font-medium text-ink">
                 {entry.name}
                 {entry.mutable ? null : (
-                  <span className="ml-2 rounded border border-hairline px-1.5 py-0.5 text-[10px] font-normal uppercase tracking-wide text-ink-faint">
+                  <span
+                    className="ml-2 rounded border border-hairline px-1.5 py-0.5 text-[10px] font-normal uppercase tracking-wide text-ink-faint"
+                    title={t('st.mcp.readOnlyHint')}
+                  >
                     {t('st.mcp.readOnly')}
                   </span>
                 )}
@@ -212,22 +215,22 @@ export function McpConfigManager({
                 </Link>
               ) : null}
             </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className={SECONDARY_BUTTON}
-                disabled={saving || !entry.mutable}
-                title={entry.mutable ? undefined : t('st.mcp.readOnlyHint')}
-                onClick={() => { setDraft(mcpDraft(entry)); setFeedback(null); }}
-              >{t('st.mcp.edit')}</button>
-              <button
-                type="button"
-                className={SECONDARY_BUTTON}
-                disabled={saving || !entry.mutable}
-                title={entry.mutable ? undefined : t('st.mcp.readOnlyHint')}
-                onClick={() => { setPendingDelete(entry); }}
-              >{t('st.mcp.delete')}</button>
-            </div>
+            {entry.mutable ? (
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  disabled={saving}
+                  onClick={() => { setDraft(mcpDraft(entry)); setFeedback(null); }}
+                >{t('st.mcp.edit')}</button>
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  disabled={saving}
+                  onClick={() => { setPendingDelete(entry); }}
+                >{t('st.mcp.delete')}</button>
+              </div>
+            ) : null}
           </div>
         ))}
         {loading ? <Hint>{t('st.mcp.configLoading')}</Hint> : null}
@@ -236,10 +239,16 @@ export function McpConfigManager({
       </div>
       {draft !== null ? (
         <fieldset className="space-y-3 rounded-xl border border-hairline bg-paper p-3" disabled={saving}>
+          <p className="text-[12px] font-semibold text-ink">
+            {draft.original === undefined
+              ? t('st.mcp.add')
+              : t('st.mcp.formTitleEdit')}
+          </p>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1 text-[11px] font-medium text-ink-soft">
               {t('st.mcp.name')}
-              <input className={INPUT} value={draft.name} onChange={(event) => { setDraft({ ...draft, name: event.target.value }); }} />
+              <input className={INPUT} value={draft.name} placeholder={t('st.mcp.namePlaceholder')} onChange={(event) => { setDraft({ ...draft, name: event.target.value }); }} />
+              <Hint>{t('st.mcp.nameHint')}</Hint>
             </label>
             <label className="space-y-1 text-[11px] font-medium text-ink-soft">
               {t('st.mcp.transport')}
@@ -274,8 +283,8 @@ export function McpConfigManager({
             </label>
           )}
           <div className="flex gap-2">
-            <button type="button" className={PRIMARY_BUTTON} onClick={() => void save()}>{saving ? t('common.saving') : t('common.save')}</button>
-            <button type="button" className={SECONDARY_BUTTON} disabled={testing} onClick={() => void test()}>{testing ? t('st.mcp.testing') : t('st.mcp.test')}</button>
+            <button type="button" className={PRIMARY_BUTTON} disabled={draft.name.trim() === ''} onClick={() => void save()}>{saving ? t('common.saving') : t('common.save')}</button>
+            <button type="button" className={SECONDARY_BUTTON} disabled={testing || draft.name.trim() === ''} onClick={() => void test()}>{testing ? t('st.mcp.testing') : t('st.mcp.test')}</button>
             <button type="button" className={SECONDARY_BUTTON} onClick={() => { setDraft(null); }}>{t('common.cancel')}</button>
           </div>
         </fieldset>

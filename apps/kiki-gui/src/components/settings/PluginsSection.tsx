@@ -180,6 +180,14 @@ function PluginRow({
             {t('st.plugins.error')}
           </span>
         ) : null}
+        <span className="ms-auto shrink-0">
+          <Toggle
+            label={plugin.enabled ? t('st.plugins.enabled') : t('st.plugins.disabled')}
+            checked={plugin.enabled}
+            disabled={busy}
+            onChange={(checked) => { onToggle(plugin, checked); }}
+          />
+        </span>
       </div>
       <p className="mt-0.5 text-[11px] leading-snug text-ink-soft">{contributionSummary(plugin, t, tp)}</p>
       {plugin.originalSource !== undefined ? (
@@ -188,12 +196,6 @@ function PluginRow({
         </p>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <Toggle
-          label={t('st.plugins.enabled')}
-          checked={plugin.enabled}
-          disabled={busy}
-          onChange={(checked) => { onToggle(plugin, checked); }}
-        />
         <button
           type="button"
           className={SECONDARY_BUTTON}
@@ -274,17 +276,31 @@ function InstalledPluginsCard() {
         ) : pluginsQuery.isError ? (
           <QueryRetry error={pluginsQuery.error} onRetry={() => { void pluginsQuery.refetch(); }} />
         ) : plugins.length === 0 ? (
-          <Hint>{t('st.plugins.empty')}</Hint>
+          <div className="space-y-2 rounded-lg border border-dashed border-hairline bg-panel px-3 py-4">
+            <p className="text-[12px] text-ink-soft">{t('st.plugins.empty')}</p>
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              onClick={() => { document.querySelector('#st-card-plugins-add')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+            >
+              {t('st.plugins.emptyAction')}
+            </button>
+          </div>
         ) : (
-          plugins.map((plugin) => (
-            <PluginRow
-              key={plugin.id}
-              plugin={plugin}
-              busyId={busyId}
-              onToggle={(target, enabled) => { void toggle(target, enabled); }}
-              onUninstall={setRemoving}
-            />
-          ))
+          <>
+            <p className="text-[11px] text-ink-faint">
+              {t('st.plugins.summary', { total: plugins.length, enabled: plugins.filter((plugin) => plugin.enabled).length })}
+            </p>
+            {plugins.map((plugin) => (
+              <PluginRow
+                key={plugin.id}
+                plugin={plugin}
+                busyId={busyId}
+                onToggle={(target, enabled) => { void toggle(target, enabled); }}
+                onUninstall={setRemoving}
+              />
+            ))}
+          </>
         )}
         <FeedbackLine feedback={feedback} />
       </div>

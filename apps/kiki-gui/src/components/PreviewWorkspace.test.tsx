@@ -16,7 +16,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import { I18nProvider } from '../i18n';
-import { MediaPreviewProvider, useMediaPreview } from './mediaPreview';
+import { MediaPartList, MediaPreviewProvider, useMediaPreview } from './mediaPreview';
+import { ToolCard } from './ToolCard';
+import { Markdown } from './Markdown';
 import { relativeToCwd } from './PreviewWorkspace';
 
 const FILES: Record<string, string> = {
@@ -56,14 +58,18 @@ vi.mock('./CodeEditor', () => ({
   CodeEditor: ({
     value,
     readOnly,
+    navigation,
     onChange,
   }: {
     value: string;
     readOnly: boolean;
+    navigation?: { line?: number; column?: number };
     onChange: (text: string) => void;
   }) => (
     <textarea
       data-testid="editor"
+      data-line={navigation?.line}
+      data-column={navigation?.column}
       value={value}
       readOnly={readOnly}
       onChange={(event) => { onChange(event.target.value); }}
@@ -84,10 +90,10 @@ function makeRoot(): { root: Root; container: HTMLDivElement } {
 }
 
 /** Probe button opening a file through the preview context, like FilePathLink. */
-function OpenButton({ path }: { path: string }) {
+function OpenButton({ path, reference }: { path: string; reference?: { path: string; line?: number; column?: number } }) {
   const preview = useMediaPreview();
   return (
-    <button type="button" data-open-file={path} onClick={() => preview?.openFile(path)}>
+    <button type="button" data-open-file={path} onClick={() => preview?.openFile(reference ?? path)}>
       open
     </button>
   );
@@ -139,6 +145,61 @@ describe('PreviewWorkspace', () => {
     }
     for (const container of containers.splice(0)) container.remove();
     document.body.innerHTML = '';
+  });
+
+  it.each(['tool', 'media', 'markdown'] as const)('keeps coexisting literal-percent and space files distinct through %s', async (entry) => {
+    const rawPath = 'C:/work/a%20b.ts';
+    const spacedPath = 'C:/work/a b.ts';
+    FILES[rawPath] = 'literal percent file';
+    FILES[spacedPath] = 'space file';
+    const probe = makeRoot();
+    const content = entry === 'tool' ? (
+      <ToolCard block={{
+        kind: 'tool', id: 'tool-1', toolCallId: 'call-1', name: 'Read',
+        argsText: '', args: {}, display: { kind: 'file_io', path: rawPath, operation: 'read' },
+        description: undefined, status: 'done', output: undefined, isError: false,
+        durationMs: undefined, progressText: undefined,
+      }} />
+    ) : entry === 'media' ? <MediaPartList media={[{ kind: 'file', path: rawPath }]} />
+      : <Markdown text={`[source](${rawPath})`} />;
+    await renderSettled(probe.root, <MediaPreviewProvider cwd="C:/work">{content}</MediaPreviewProvider>);
+    const selector = entry === 'tool' ? '[role="link"]' : entry === 'media' ? 'button' : 'a';
+    await act(async () => { probe.container.querySelector(selector)!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); });
+    const expected = entry === 'markdown' ? spacedPath : rawPath;
+    expect(tabs()).toEqual([expected]);
+    const editor = workspace().querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+    expect(editor.value).toBe(FILES[expected]);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, 'edited correct file');
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { workspace().querySelector('[data-save-button]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(writeMock).toHaveBeenCalledWith(expected, 'edited correct file');
+    expect(FILES[entry === 'markdown' ? rawPath : spacedPath]).toBe(entry === 'markdown' ? 'literal percent file' : 'space file');
+  });
+
+  it('loads content by the undecorated path, reuses its tab and updates citation navigation', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="src/server.ts:2:3" reference={{ path: '/work/src/server.ts', line: 2, column: 3 }} />
+        <OpenButton path="/work/src/server.ts:1" reference={{ path: '/work/src/server.ts', line: 1 }} />
+        <OpenButton path="docs/design.md:3" reference={{ path: '/work/docs/design.md', line: 3 }} />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, 'src/server.ts:2:3');
+    expect(tabs()).toEqual(['/work/src/server.ts']);
+    let editor = workspace().querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+    expect(editor.value).toBe(FILES['/work/src/server.ts']);
+    expect(editor.dataset['line']).toBe('2');
+    expect(editor.dataset['column']).toBe('3');
+    await openFile(probe.container, '/work/src/server.ts:1');
+    expect(tabs()).toEqual(['/work/src/server.ts']);
+    expect(editor.dataset['line']).toBe('1');
+    await openFile(probe.container, 'docs/design.md:3');
+    editor = workspace().querySelector<HTMLTextAreaElement>('[data-preview-tabpanel="/work/docs/design.md"] [data-testid="editor"]')!;
+    expect(editor.value).toBe(FILES['/work/docs/design.md']);
+    expect(editor.dataset['line']).toBe('3');
   });
 
   it('opens files as tabs and activates the newest one', async () => {

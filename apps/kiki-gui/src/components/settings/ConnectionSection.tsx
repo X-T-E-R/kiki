@@ -55,7 +55,34 @@ export function ConnectionSection() {
   return (
     <div className="space-y-4">
       <SectionCard id="st-card-conn-server" title={t('st.conn.connectedTitle')}>
-        <div className="space-y-3">
+        <div className="space-y-4">
+          <div
+            role="group"
+            aria-label={t('st.conn.statusTitle')}
+            className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-hairline bg-paper px-3 py-2.5"
+          >
+            <dl className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[12px]">
+              <div className="flex items-center gap-1.5">
+                <span
+                  aria-hidden
+                  className={`inline-block h-2 w-2 rounded-full ${wsStatus === 'open' ? 'bg-success' : 'bg-amber-ink'}`}
+                />
+                <dt className="text-ink-faint">{t('st.conn.wsLabel')}</dt>
+                <dd className={wsStatus === 'open' ? 'font-medium text-success' : 'font-medium text-amber-ink'}>
+                  {t(`st.conn.ws.${wsStatus}`)}
+                </dd>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <dt className="text-ink-faint">{t('st.conn.version')}</dt>
+                <dd className="font-mono text-ink">{meta.server_version}</dd>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <dt className="text-ink-faint">{t('st.conn.backend')}</dt>
+                <dd className="font-mono text-ink">{meta.backend ?? 'v1'}</dd>
+              </div>
+            </dl>
+            <button type="button" onClick={() => { socket?.nudge(); }} className={SECONDARY_BUTTON}>{t('st.conn.reconnect')}</button>
+          </div>
           <form
             className="space-y-3"
             onSubmit={(event) => {
@@ -84,18 +111,13 @@ export function ConnectionSection() {
                 onChange={(event) => { setTokenDraft(event.target.value); }}
                 spellCheck={false}
               />
+              <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">{t('st.conn.tokenHint')}</p>
             </div>
             <div className="flex items-center gap-3">
               <button type="submit" className={PRIMARY_BUTTON} disabled={!draftsDirty}>{t('st.conn.apply')}</button>
               <span className="text-[11px] leading-snug text-ink-faint">{t('st.conn.applyHint')}</span>
             </div>
           </form>
-          <div className="space-y-1 border-t border-hairline pt-3 text-[12.5px] text-ink-soft">
-            <p>{t('st.conn.version')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
-            <p>{t('st.conn.backend')}: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
-            <p>{t('st.conn.wsLabel')}: <span className={wsStatus === 'open' ? 'font-medium text-success' : 'font-medium text-amber-ink'}>{t(`st.conn.ws.${wsStatus}`)}</span></p>
-            <button type="button" onClick={() => { socket?.nudge(); }} className={SECONDARY_BUTTON}>{t('st.conn.reconnect')}</button>
-          </div>
         </div>
       </SectionCard>
 

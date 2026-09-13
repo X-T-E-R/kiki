@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Task, Workspace } from '@moonshot-ai/protocol';
+import type { Task, Workspace } from '@kiki/protocol';
 
 import {
   compareWorkspacesByRecency,

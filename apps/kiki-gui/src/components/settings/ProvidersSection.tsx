@@ -5,6 +5,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { useGuardedNavigate } from '../dirtyGuard';
 import { OAuthDeviceCard } from '../OAuthDeviceCard';
 import { NewProviderWizard, ProviderEditor } from '../ProviderFields';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -19,6 +20,7 @@ import { SectionCard } from './SectionCard';
 export function ConnectionsTab() {
   const { client, config: connection } = useConnection();
   const { t, locale } = useI18n();
+  const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const [oauthBusy, setOauthBusy] = useState(false);
   const [oauthCancelling, setOauthCancelling] = useState(false);
@@ -124,6 +126,9 @@ export function ConnectionsTab() {
     ? snapshot
     : null;
 
+  const providerItems = providersQuery.data?.items ?? [];
+  const unconfiguredCount = providerItems.filter((provider) => !provider.has_api_key).length;
+
   return (
     <div className="space-y-4">
       <SectionCard id="st-card-auth" title={t('st.auth.title')}>
@@ -136,6 +141,9 @@ export function ConnectionsTab() {
                 <p className="text-ink-soft">{t('st.auth.summary', { count: authQuery.data.providers_count, model: authQuery.data.default_model ?? t('st.auth.none') })}</p>
                 {authQuery.data.managed_provider ? (
                   <p className="text-ink-soft">{t('st.auth.managed', { status: authQuery.data.managed_provider.status })}</p>
+                ) : null}
+                {!authQuery.data.ready ? (
+                  <Hint>{t('st.auth.signInNextHint')}</Hint>
                 ) : null}
               </div>
             </div>
@@ -161,7 +169,8 @@ export function ConnectionsTab() {
 
       <SectionCard id="st-card-providers" title={t('st.providers.title')}>
         <div className="space-y-3">
-          {(providersQuery.data?.items ?? []).map((provider) => (
+          {providerItems.length > 0 ? <Hint>{t('st.providers.listHint')}</Hint> : null}
+          {providerItems.map((provider) => (
             <ProviderEditor
               key={provider.id}
               provider={provider}
@@ -172,14 +181,35 @@ export function ConnectionsTab() {
             />
           ))}
           {providersQuery.isLoading ? <Hint>{t('st.providers.loading')}</Hint> : null}
-          {providersQuery.data?.items.length === 0 ? <Hint>{t('st.providers.empty')}</Hint> : null}
+          {providersQuery.data?.items.length === 0 ? (
+            <div className="space-y-1.5 rounded-lg border border-dashed border-hairline-strong px-3 py-4">
+              <p className="text-[12.5px] text-ink-soft">{t('st.providers.empty')}</p>
+              <Hint>{t('st.providers.emptyGo')}</Hint>
+            </div>
+          ) : null}
           {providersQuery.isError ? <InlineError error={providersQuery.error} /> : null}
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-providers-add" title={t('st.providers.addTitle')}>
+      <SectionCard id="st-card-providers-add" title={t('st.providers.addTitle')} aside={t('st.providers.addAside')}>
         <NewProviderWizard connection={connection} onSaved={refreshProviderData} />
       </SectionCard>
+
+      {providerItems.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-hairline bg-panel px-3 py-2.5">
+          <Hint>
+            {t('st.providers.nextStepHint')}
+            {unconfiguredCount > 0 ? ` ${t('st.providers.nextStepUnconfigured', { count: unconfiguredCount })}` : ''}
+          </Hint>
+          <button
+            type="button"
+            className={`${SECONDARY_BUTTON} ml-auto`}
+            onClick={() => { navigate('/settings/ai?tab=models'); }}
+          >
+            {t('st.defaults.pickModel')}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

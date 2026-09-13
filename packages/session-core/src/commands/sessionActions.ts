@@ -5,7 +5,7 @@
  * kap-server `routes/sessionExport.ts`.
  */
 
-import type { Session } from '@moonshot-ai/protocol';
+import type { Session } from '@kiki/protocol';
 
 import { translate, type I18nKey, type Locale } from '../i18n/locale';
 import { API_CODES, ApiError } from '../transport';

@@ -1,7 +1,13 @@
 import { QueryClient } from '@tanstack/react-query';
+import { createKlient } from '@kiki/klient/http';
+
+function transcriptView(sessionId: string, validate = false) {
+  return createKlient({ endpoint: 'http://example.test', validate }).session(sessionId).view;
+}
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  API_CODES,
   ApiError,
   isSessionIndexBuildingError,
   isSessionNotFoundMessage,
@@ -41,9 +47,14 @@ describe('isSessionIndexBuildingError', () => {
 });
 
 describe('KikiClient.refreshProvider', () => {
-  it('posts the existing /providers/{id}:refresh action', async () => {
-    const fetchMock = vi.fn(async (url: string | URL) => {
-      expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/providers/example:refresh');
+  it('uses the shared provider discovery facade for refresh', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/klient/call');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(init?.body as string)).toEqual({
+        procedure: { scope: 'core', service: 'providerDiscovery', method: 'refreshProviderModels' },
+        params: [{ providerId: 'example' }],
+      });
       return new Response(JSON.stringify({
         code: 0,
         msg: 'success',
@@ -63,6 +74,51 @@ describe('KikiClient.refreshProvider', () => {
   });
 });
 
+describe('KikiClient transport error mapping', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('does not reinterpret a server INTERNAL_ERROR 50001 as a timeout', async () => {
+    const data = { request: 'server-error', retryable: false };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      code: 50001,
+      msg: 'server.internal_error',
+      data,
+      request_id: 'req-server-50001',
+      reason: 'server.internal_error',
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+
+    const failure = await client.meta().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).code).toBe(50001);
+    expect((failure as ApiError).message).toContain('server.internal_error');
+    expect((failure as ApiError).data).toEqual(data);
+    expect((failure as ApiError).requestId).toBe('req-server-50001');
+  });
+
+  it('maps an actual transport deadline to the GUI timeout code and text', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => { reject(new Error('aborted')); }, { once: true });
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', timeoutMs: 5 });
+    const pending = client.meta().catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(5);
+    const failure = await pending;
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).code).toBe(API_CODES.TIMEOUT);
+    expect((failure as ApiError).message).toContain('Request timed out after 5ms');
+  });
+});
+
 describe('KikiClient config responses', () => {
   const stubConfigResponse = (data: unknown) => {
     vi.stubGlobal('fetch', vi.fn(async () =>
@@ -79,7 +135,7 @@ describe('KikiClient config responses', () => {
 
   it('sends server-file settings through the kap-server config API', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
-      expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/config');
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/config');
       expect(init?.method).toBe('POST');
       expect(JSON.parse(init?.body as string)).toEqual({
         agents: { enabled: false },
@@ -185,7 +241,7 @@ describe('KikiClient config responses', () => {
 describe('KikiClient.listNamedAgentProfiles', () => {
   it('gets the additive /agents catalog endpoint', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
-      expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/agents');
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/agents');
       expect(init?.method).toBe('GET');
       return new Response(JSON.stringify({
         code: 0,
@@ -214,7 +270,7 @@ describe('KikiClient.listNamedAgentProfiles', () => {
   it('scopes the catalog to the requested workspace id', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       expect(String(url)).toBe(
-        'http://127.0.0.1:8080/api/v1/agents?workspace_id=wd_workspace%2Fmain',
+        'http://127.0.0.1:8080/api/agents?workspace_id=wd_workspace%2Fmain',
       );
       expect(init?.method).toBe('GET');
       return new Response(JSON.stringify({
@@ -233,10 +289,51 @@ describe('KikiClient.listNamedAgentProfiles', () => {
   });
 });
 
+describe('KikiClient agent capability queries', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('preserves launch admission separately from default binding availability', async () => {
+    const data = { context: 'live', owner: { profile: 'lead', agent_id: 'main' }, available: true,
+      targets: [{ profile: 'helper', executor: 'external', defaults_available: true,
+        launch_allowed: false, launch_unavailable_reason: 'Research-readonly dispatch requires the native executor.',
+        execution_restriction: 'research-readonly' }] };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ code: 0, msg: 'success', data }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+    const response = await client.getAgentCapabilities({ session_id: 'session', agent_id: 'main' });
+    expect(response).toEqual(data);
+    expect(response.targets[0]?.launch_allowed).toBe(false);
+    expect(response.targets[0]?.defaults_available).toBe(true);
+  });
+
+  it('sends effective cwd and live caller queries without creating a session', async () => {
+    const urls: URL[] = [];
+    const bodies: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      urls.push(new URL(String(url)));
+      const isPanel = init?.method === 'POST';
+      if (isPanel) bodies.push(JSON.parse(init.body as string));
+      const data = isPanel ? { context: 'live', owner: { agent_id: 'main' }, available: false, targets: [] } : { items: [] };
+      return new Response(JSON.stringify({ code: 0, msg: 'success', data }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+    await client.listNamedAgentProfiles({ cwd: 'C:/workspace one', effective: true });
+    await client.getAgentCapabilities({ session_id: 'session/one', agent_id: 'main' });
+    expect(urls[0]?.pathname).toBe('/api/agents');
+    expect(Object.fromEntries(urls[0]!.searchParams)).toEqual({ cwd: 'C:/workspace one', effective: 'true' });
+    expect(urls[1]?.pathname).toBe('/api/klient/call');
+    expect(bodies).toEqual([{ procedure: { scope: 'core', service: 'agentPanelService', method: 'read' }, params: [{ session_id: 'session/one', agent_id: 'main' }] }]);
+    await client.klient.close();
+  });
+});
+
 describe('KikiClient.updateNamedAgentProfile', () => {
   it('PATCHes editable fields and returns the server echo used by the settings cache', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
-      expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/agents/reviewer%20ui');
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/agents/reviewer%20ui');
       expect(init?.method).toBe('PATCH');
       expect(JSON.parse(init?.body as string)).toEqual({
         scope: 'project',
@@ -297,10 +394,10 @@ describe('KikiClient.readHostFile', () => {
   it('reads raw file content from the fs:content endpoint', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const parsed = new URL(String(url));
-      expect(parsed.pathname).toBe('/api/v1/fs:content');
+      expect(parsed.pathname).toBe('/api/fs:content');
       expect(parsed.searchParams.get('path')).toBe('C:/agents/reviewer ui.md');
       expect(init?.method).toBe('GET');
-      expect((init?.headers as Record<string, string>)['Authorization']).toBe('Bearer token');
+      expect((init?.headers as Record<string, string>)['authorization']).toBe('Bearer token');
       return new Response('---\nname: reviewer\n---\n', { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -315,10 +412,10 @@ describe('KikiClient.readHostFileBytes', () => {
   it('reads binary content with the response MIME from the fs:content endpoint', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const parsed = new URL(String(url));
-      expect(parsed.pathname).toBe('/api/v1/fs:content');
+      expect(parsed.pathname).toBe('/api/fs:content');
       expect(parsed.searchParams.get('path')).toBe('/work/shots/home.png');
       expect(init?.method).toBe('GET');
-      expect((init?.headers as Record<string, string>)['Authorization']).toBe('Bearer token');
+      expect((init?.headers as Record<string, string>)['authorization']).toBe('Bearer token');
       return new Response(new Uint8Array([1, 2, 3]), {
         status: 200,
         headers: { 'content-type': 'image/png' },
@@ -338,9 +435,9 @@ describe('KikiClient.readSessionMediaBytes', () => {
   it('reads canonical session media with auth, MIME, and server filename', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const parsed = new URL(String(url));
-      expect(parsed.pathname).toBe('/api/v1/sessions/session%20one/media/file%2Fdiagram');
+      expect(parsed.pathname).toBe('/api/sessions/session%20one/media/file%2Fdiagram');
       expect(init?.method).toBe('GET');
-      expect((init?.headers as Record<string, string>)['Authorization']).toBe('Bearer token');
+      expect((init?.headers as Record<string, string>)['authorization']).toBe('Bearer token');
       return new Response(new Uint8Array([4, 5, 6]), {
         status: 200,
         headers: {
@@ -400,13 +497,68 @@ describe('KikiClient.listSessions', () => {
 });
 
 describe('KikiClient.renewLease', () => {
-  it('posts the GUI lease and treats an older server 404 as unsupported', async () => {
+  it('creates and renews an instance-local server lease without sending legacy keys', async () => {
+    const original = globalThis.fetch;
+    const bodies: unknown[] = [];
+    let call = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new URL(String(input)).pathname).toBe('/api/leases');
+      expect(init?.method).toBe('POST');
+      bodies.push(JSON.parse(init?.body as string));
+      call += 1;
+      if (call === 4) {
+        return new Response(JSON.stringify({
+          code: 40001,
+          msg: 'leases.invalid',
+          data: { field: 'lease_id' },
+          request_id: 'req-lease-invalid',
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      const leaseId = call % 2 === 0 ? 'lease-b' : 'lease-a';
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: { lease_id: leaseId, expires_at: 123 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      const first = new KikiClient({ baseUrl: 'http://example.test', token: 'home-token' });
+      const second = new KikiClient({ baseUrl: 'http://example.test', token: 'home-token' });
+
+      await expect(first.renewLease({ clientId: 'gui-first', kind: 'gui' })).resolves.toBeUndefined();
+      await expect(second.renewLease({ clientId: 'gui-second', kind: 'gui' })).resolves.toBeUndefined();
+      await expect(first.renewLease({ clientId: 'gui-first', kind: 'gui' })).resolves.toBeUndefined();
+      const failure = await first.renewLease({ clientId: 'gui-first', kind: 'gui' }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ApiError);
+      expect(failure).toMatchObject({
+        code: 40001,
+        data: { field: 'lease_id' },
+        requestId: 'req-lease-invalid',
+      });
+      expect((failure as ApiError).message).toBe('leases.invalid (code 40001)');
+      await expect(first.renewLease({ clientId: 'gui-first', kind: 'gui' })).resolves.toBeUndefined();
+      await expect(second.renewLease({ clientId: 'gui-second', kind: 'gui' })).resolves.toBeUndefined();
+
+      expect(bodies).toEqual([
+        {},
+        {},
+        { lease_id: 'lease-a' },
+        { lease_id: 'lease-a' },
+        { lease_id: 'lease-a' },
+        { lease_id: 'lease-b' },
+      ]);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('treats an older server 404 as unsupported after sending an empty body', async () => {
     const original = globalThis.fetch;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(new URL(String(input)).pathname).toBe('/api/v1/leases');
+      expect(new URL(String(input)).pathname).toBe('/api/leases');
       expect(init?.method).toBe('POST');
-      expect(init?.headers).toMatchObject({ Authorization: 'Bearer home-token' });
-      expect(JSON.parse(init?.body as string)).toEqual({ clientId: 'gui-window', kind: 'gui' });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer home-token' });
+      expect(JSON.parse(init?.body as string)).toEqual({});
       return new Response(JSON.stringify({ statusCode: 404 }), {
         status: 404,
         headers: { 'content-type': 'application/json' },
@@ -435,7 +587,7 @@ describe('KikiClient workspace lifecycle', () => {
     };
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      expect(url.pathname).toBe('/api/v1/workspaces/wd_demo_000000000000');
+      expect(url.pathname).toBe('/api/workspaces/wd_demo_000000000000');
       expect(init?.method).toBe('PATCH');
       expect(JSON.parse(init?.body as string)).toEqual({ name: 'Renamed' });
       return envelope(echo);
@@ -453,7 +605,7 @@ describe('KikiClient workspace lifecycle', () => {
     const original = globalThis.fetch;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      expect(url.pathname).toBe('/api/v1/workspaces/wd_demo_000000000000');
+      expect(url.pathname).toBe('/api/workspaces/wd_demo_000000000000');
       expect(init?.method).toBe('PATCH');
       expect(JSON.parse(init?.body as string)).toEqual({ pinned: true });
       return envelope({
@@ -479,7 +631,7 @@ describe('KikiClient workspace lifecycle', () => {
     const original = globalThis.fetch;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      expect(url.pathname).toBe('/api/v1/workspaces/wd_demo_000000000000');
+      expect(url.pathname).toBe('/api/workspaces/wd_demo_000000000000');
       expect(init?.method).toBe('DELETE');
       return envelope({ deleted: true });
     }) as typeof fetch;
@@ -501,6 +653,7 @@ describe('KikiClient.getAgentTranscript', () => {
   it('keeps the full agents roster including parentAgentId and sibling wire fields', async () => {
     const payload: AgentTranscriptResponse = {
       agent_id: 'child-1',
+      tool_call_count: 37,
       items: [],
       has_more: false,
       interactions: [
@@ -560,9 +713,9 @@ describe('KikiClient.getAgentTranscript', () => {
     const original = globalThis.fetch;
     globalThis.fetch = vi.fn(async () => envelope(payload)) as typeof fetch;
     try {
-      const client = new KikiClient({ baseUrl: 'http://example.test' });
-      const response = await client.getAgentTranscript('sess-1', 'child-1');
+      const response = await transcriptView('sess-1').transcript.page({ agentId: 'child-1' }) as unknown as AgentTranscriptResponse;
       expect(response.agent_id).toBe('child-1');
+      expect(response.tool_call_count).toBe(37);
       expect(response.seq).toBe(42);
       expect(response.pending_interactions).toEqual(['appr-1']);
       expect(response.tasks?.[0]?.agentId).toBe('child-1');
@@ -607,31 +760,21 @@ describe('KikiClient.getAgentTranscript', () => {
       }),
     ) as typeof fetch;
     try {
-      const client = new KikiClient({ baseUrl: 'http://example.test' });
-      const response = await client.getAgentTranscript('sess-1', 'main');
-      expect(response).toEqual({
-        agent_id: 'main',
-        items: [{ kind: 'marker', markerId: 'm1', marker: 'compaction' }],
-        has_more: true,
-      });
-      expect(response.agents).toBeUndefined();
-      expect(response.seq).toBeUndefined();
-      expect(response.pending_interactions).toBeUndefined();
+      await expect(transcriptView('sess-1', true).transcript.page({ agentId: 'main' })).rejects.toThrow();
     } finally {
       globalThis.fetch = original;
     }
   });
 
-  it('keeps the two-arg call compatible and defaults page_size to 100', async () => {
+  it('uses the Klient session view route and its server default page size', async () => {
     const captured = captureFetch();
     try {
-      const client = new KikiClient({ baseUrl: 'http://example.test' });
-      await client.getAgentTranscript('sess-1', 'main');
+      await transcriptView('sess-1').transcript.page({ agentId: 'main' });
       expect(captured.calls).toHaveLength(1);
       const url = captured.calls[0]!;
-      expect(url.pathname).toBe('/api/v1/sessions/sess-1/transcript');
+      expect(url.pathname).toBe('/api/klient/session-view/sess-1/transcript');
       expect(url.searchParams.get('agent_id')).toBe('main');
-      expect(url.searchParams.get('page_size')).toBe('100');
+      expect(url.searchParams.has('page_size')).toBe(false);
       expect(url.searchParams.has('before_turn')).toBe(false);
       expect(url.searchParams.has('after_turn')).toBe(false);
     } finally {
@@ -642,8 +785,8 @@ describe('KikiClient.getAgentTranscript', () => {
   it('sends before_turn and page_size without after_turn', async () => {
     const captured = captureFetch();
     try {
-      const client = new KikiClient({ baseUrl: 'http://example.test' });
-      await client.getAgentTranscript('sess-1', 'child-1', {
+      await transcriptView('sess-1').transcript.page({
+        agentId: 'child-1',
         beforeTurn: 'turn-9',
         pageSize: 20,
       });
@@ -660,12 +803,11 @@ describe('KikiClient.getAgentTranscript', () => {
   it('sends after_turn without before_turn', async () => {
     const captured = captureFetch();
     try {
-      const client = new KikiClient({ baseUrl: 'http://example.test' });
-      await client.getAgentTranscript('sess-1', 'main', { afterTurn: 'turn-3' });
+      await transcriptView('sess-1').transcript.page({ agentId: 'main', afterTurn: 'turn-3' });
       const params = captured.calls[0]!.searchParams;
       expect(params.get('after_turn')).toBe('turn-3');
       expect(params.has('before_turn')).toBe(false);
-      expect(params.get('page_size')).toBe('100');
+      expect(params.has('page_size')).toBe(false);
     } finally {
       captured.restore();
     }
@@ -674,9 +816,9 @@ describe('KikiClient.getAgentTranscript', () => {
   it('rejects mutually exclusive beforeTurn and afterTurn without fetching', async () => {
     const captured = captureFetch();
     try {
-      const client = new KikiClient({ baseUrl: 'http://example.test' });
       await expect(
-        client.getAgentTranscript('sess-1', 'main', {
+        transcriptView('sess-1', true).transcript.page({
+          agentId: 'main',
           beforeTurn: 'turn-1',
           afterTurn: 'turn-2',
         }),
@@ -698,7 +840,7 @@ describe('KikiClient message-closure routes', () => {
   it('posts :edit with full-replacement content and the expected cursor', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       expect(String(url)).toBe(
-        'http://127.0.0.1:8080/api/v1/sessions/s1/messages/m1:edit',
+        'http://127.0.0.1:8080/api/sessions/s1/messages/m1:edit',
       );
       expect(init?.method).toBe('POST');
       expect(JSON.parse(init?.body as string)).toEqual({
@@ -726,34 +868,40 @@ describe('KikiClient message-closure routes', () => {
   it('posts :regenerate with the expected cursor', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       expect(String(url)).toBe(
-        'http://127.0.0.1:8080/api/v1/sessions/s1/messages/m9:regenerate',
+        'http://127.0.0.1:8080/api/sessions/s1/messages/m9:regenerate',
       );
       expect(JSON.parse(init?.body as string)).toEqual({
-        expected_cursor: { seq: 7 },
+        expected_cursor: { seq: 7, epoch: 'epoch-1' },
       });
       return okResponse({
         prompt_id: 'p2',
         user_message_id: 'm8',
         status: 'running',
-        content: [],
+        content: [{ type: 'text', text: 'rerun' }],
         created_at: '2026-01-01T00:00:00.000Z',
       });
     });
     vi.stubGlobal('fetch', fetchMock);
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
-    await client.regenerateMessage('s1', 'm9', { expected_cursor: { seq: 7 } });
+    await client.regenerateMessage('s1', 'm9', { expected_cursor: { seq: 7, epoch: 'epoch-1' } });
     expect(fetchMock).toHaveBeenCalledOnce();
     vi.unstubAllGlobals();
   });
 
   it('sends the fork truncation pair on :fork', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
-      expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/sessions/s1:fork');
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/sessions/s1:fork');
       expect(JSON.parse(init?.body as string)).toEqual({
         through_message_id: 'm3',
         expected_cursor: { seq: 11, epoch: 'ep1' },
       });
-      return okResponse({ id: 's2' });
+      return okResponse({
+        id: 's2', workspace_id: 'wd_test_000000000000', title: 'Fork',
+        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        busy: false, metadata: { cwd: '/workspace' }, agent_config: { model: 'example' },
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 0, context_tokens: 0, context_limit: 0, turn_count: 0 },
+        permission_rules: [], message_count: 0, last_seq: 0,
+      });
     });
     vi.stubGlobal('fetch', fetchMock);
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
@@ -775,7 +923,7 @@ describe('KikiClient message-closure routes', () => {
     vi.stubGlobal('fetch', fetchMock);
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
     const failure = await client
-      .regenerateMessage('s1', 'm9', { expected_cursor: { seq: 1 } })
+      .regenerateMessage('s1', 'm9', { expected_cursor: { seq: 1, epoch: 'stale-epoch' } })
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(ApiError);
     expect((failure as ApiError).code).toBe(40937);
@@ -859,7 +1007,7 @@ describe('KikiClient.replacePrompt', () => {
   it('posts replacement content to the queued prompt action', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       expect(String(url)).toBe(
-        'http://127.0.0.1:8080/api/v1/sessions/s1/prompts/prompt%20one:replace',
+        'http://127.0.0.1:8080/api/sessions/s1/prompts/prompt%20one:replace',
       );
       expect(init?.method).toBe('POST');
       expect(JSON.parse(init?.body as string)).toEqual({
@@ -922,11 +1070,9 @@ describe('KikiClient transcript protocol', () => {
     vi.unstubAllGlobals();
   });
 
-  it('exposes GET /sessions/{id}/transcript/ops catch-up', async () => {
-    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
-    expect(client).toHaveProperty('getTranscriptOps');
+  it('uses the Klient transcript catch-up route', async () => {
     const fetchMock = vi.fn(async (url: string | URL) => {
-      expect(String(url)).toContain('/api/v1/sessions/s1/transcript/ops');
+      expect(String(url)).toContain('/api/klient/session-view/s1/transcript/catch-up');
       expect(String(url)).toContain('agent_id=main');
       expect(String(url)).toContain('since_seq=3');
       return new Response(JSON.stringify({
@@ -943,7 +1089,7 @@ describe('KikiClient transcript protocol', () => {
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
-    await client.getTranscriptOps('s1', 'main', { seq: 3, epoch: 'e1' });
+    await transcriptView('s1', true).transcript.catchUp({ agentId: 'main', since: { seq: 3, epoch: 'e1' } });
     expect(fetchMock).toHaveBeenCalledOnce();
     vi.unstubAllGlobals();
   });

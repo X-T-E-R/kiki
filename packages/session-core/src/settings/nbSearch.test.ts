@@ -4,7 +4,7 @@ import {
   nbSearchTestStatusSchema,
   type NbSearchCapabilities,
   type NbSearchConfigPatch,
-} from '@moonshot-ai/protocol';
+} from '@kiki/protocol';
 
 import {
   formatNbSearchOutput,
@@ -14,6 +14,8 @@ import {
   nbSearchDraftFromConfig,
   nbSearchIssueCodes,
   nbSearchReadinessFromCapabilities,
+  nbSearchReuseLocalConfig,
+  nbSearchSourcePatch,
   setNbSearchCredentialEnv,
 } from './nbSearch';
 
@@ -188,6 +190,27 @@ describe('shared nb-search contracts', () => {
     });
     expect(parsed.search.configured).toBe(false);
     expect(parsed.fetch.selection).toBe('direct.fetch -> jina.reader');
+  });
+});
+
+describe('nb-search source preference', () => {
+  it('defaults to local-base reuse and saves only the separate host preference', () => {
+    expect(nbSearchReuseLocalConfig(undefined)).toBe(true);
+    expect(nbSearchReuseLocalConfig({ reuse_local_config: false })).toBe(false);
+    expect(nbSearchSourcePatch(false)).toEqual({ nb_search_source: { reuse_local_config: false } });
+    expect(nbSearchSourcePatch(true)).toEqual({ nb_search_source: { reuse_local_config: true } });
+  });
+
+  it('does not derive a ready fetch fallback when the effective source is invalid', () => {
+    const readiness = nbSearchReadinessFromCapabilities({
+      ...CAPABILITIES,
+      config_source: {
+        reuse_local_config: true, layers: ['defaults', 'local', 'environment', 'kiki'],
+        local_config: 'present', availability: 'unavailable', issues: ['EFFECTIVE_CONFIG_INVALID'],
+      },
+    });
+    expect(readiness.search).toEqual({ configured: false, available: false, issues: ['EFFECTIVE_CONFIG_INVALID'] });
+    expect(readiness.fetch).toEqual(readiness.search);
   });
 });
 

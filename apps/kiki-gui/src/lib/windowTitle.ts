@@ -3,7 +3,7 @@
  * carries no page context (or the session list has not loaded the record yet).
  */
 
-import type { Session } from '@moonshot-ai/protocol';
+import type { Session } from '@kiki/protocol';
 
 export type WindowRoute =
   | { kind: 'session'; sessionId: string }

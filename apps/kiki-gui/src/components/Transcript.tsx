@@ -15,7 +15,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { parseMarkdownIntoBlocks } from 'streamdown';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
-import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
+import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -50,11 +50,21 @@ import {
 import { formatTokensPerSecond } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
+import {
+  groupHistoryRuns,
+  HistoryLine,
+  HistoryRunRow,
+  historyRunsEqual,
+  isMarkerNotice,
+  type GroupedDisplayNode,
+} from './ActivityHistory';
 import { FloorNavRail } from './FloorNavRail';
 import { ApprovalCard, QuestionCard } from './Interactions';
 import { Markdown } from './Markdown';
 import { MediaPartList } from './mediaPreview';
+import { RelativeTime, useNow } from './RelativeTime';
 import { MessageRowActions, UserMessageEditor } from './RowActions';
+import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
 import { ToolCard } from './ToolCard';
 import { KikiMark, Wordmark } from './Wordmark';
 
@@ -200,7 +210,7 @@ const UserMessage = memo(function UserMessage({
         <span className="text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
           {t('transcript.you')}
         </span>
-        <span className="text-xs text-ink-faint">{time.relativeTime(block.createdAt)}</span>
+        <span className="text-xs text-ink-faint"><RelativeTime at={block.createdAt} /></span>
       </span>
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
@@ -433,7 +443,7 @@ const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBloc
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
   return (
-    <div className="anim-enter border-l-2 border-hairline pl-3" title={time.absoluteTime(block.createdAt)}>
+    <div data-system={block.variant} className="anim-enter border-l-2 border-hairline pl-3" title={time.absoluteTime(block.createdAt)}>
       <button
         type="button"
         onClick={() => { setOpen((value) => !value); }}
@@ -496,9 +506,8 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
 const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
   const { t } = useI18n();
   // Collapsed by default — running and finished alike (the full log was
-  // eating the timeline). The header keeps the status (busy dot / failure),
-  // and while collapsed the latest output line rides it as a muted preview so
-  // a live command still shows motion without the body.
+  // eating the timeline). The header keeps the status and the command, while
+  // the latest output line remains a separate muted preview.
   const [open, setOpen] = useState(false);
   const preview = latestLineOf(block.output);
   return (
@@ -523,12 +532,35 @@ const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }
         {block.done && block.isError === true ? (
           <span className="shrink-0 font-mono text-[10.5px] text-danger">{t('transcript.failed')}</span>
         ) : null}
+        {block.command !== undefined ? (
+          <span
+            data-shell-command-preview
+            title={block.command}
+            className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-shell-ink-strong"
+          >
+            <span className="mr-1 text-accent">$ </span>
+            {block.command}
+          </span>
+        ) : null}
         {!open && preview !== '' ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-shell-ink-soft">
+          <span
+            className={`min-w-0 truncate font-mono text-[10.5px] text-shell-ink-soft ${
+              block.command === undefined ? 'flex-1' : 'max-w-[42%] border-l border-white/10 pl-2'
+            }`}
+          >
             {preview}
           </span>
         ) : null}
       </button>
+      {open && block.command !== undefined ? (
+        <div
+          data-shell-command-full
+          className="border-t border-white/10 px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-shell-ink-strong"
+        >
+          <span className="mr-2 text-accent">$ </span>
+          {block.command}
+        </div>
+      ) : null}
       {open ? (
         <pre className="max-h-80 overflow-auto border-t border-white/10 px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
           {block.output === '' ? '…' : block.output}
@@ -551,19 +583,26 @@ function parseTimelineMs(value: string | undefined): number | undefined {
 /**
  * Elapsed time for a subagent card. undefined when either end is genuinely
  * unknown (the card then shows an explicit "—" instead of a fabricated 0ms);
- * a running agent with a real start ticks against the live clock.
+ * a live run ticks against the live clock. The forest node is the
+ * authoritative source for the CURRENT run (a resume re-stamps its timing);
+ * the block's frozen dispatch snapshot is only the fallback, and its stale
+ * endedAt must never pin a live run at 0ms.
  */
-function useSubagentElapsed(block: SubagentBlock): number | undefined {
-  const live = block.endedAt === undefined && block.status === 'running';
+function useSubagentElapsed(
+  block: SubagentBlock,
+  node: AgentTreeNode | undefined,
+  status: AgentTreeNode['status'] | SubagentBlock['status'],
+): number | undefined {
+  const live = status === 'running' || status === 'background' || status === 'suspended';
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!live) return;
     const timer = setInterval(() => { setNow(Date.now()); }, 1000);
     return () => { clearInterval(timer); };
   }, [live]);
-  const start = parseTimelineMs(block.startedAt);
+  const start = parseTimelineMs(node?.startedAt) ?? parseTimelineMs(block.startedAt);
   if (start === undefined) return undefined;
-  const end = live ? now : parseTimelineMs(block.endedAt);
+  const end = live ? now : (parseTimelineMs(node?.endedAt) ?? parseTimelineMs(block.endedAt));
   if (end === undefined) return undefined;
   return Math.max(0, end - start);
 }
@@ -590,6 +629,7 @@ function SubagentCardBody({
   model,
   status,
   toolCallCount,
+  toolCallCountKnown,
   childCount,
   thinkingEffort,
   description,
@@ -600,6 +640,8 @@ function SubagentCardBody({
   model?: string;
   status: AgentTreeNode['status'] | SubagentBlock['status'];
   toolCallCount: number;
+  /** false = neither the task nor the roster ever reported a count. */
+  toolCallCountKnown: boolean;
   childCount: number;
   thinkingEffort?: string;
   description?: string;
@@ -631,7 +673,7 @@ function SubagentCardBody({
       <div className="mt-1 flex items-center gap-2 pl-5 text-[10.5px] text-ink-faint">
         <span>{t(`subagent.status.${status}` as I18nKey)}</span>
         <span>·</span>
-        <span>{tp('transcript.toolCalls', toolCallCount)}</span>
+        <span>{toolCallCountKnown ? tp('transcript.toolCalls', toolCallCount) : t('diagnostics.unknown')}</span>
         {childCount > 0 ? (
           <>
             <span>·</span>
@@ -662,6 +704,18 @@ function SubagentCardBody({
 export type SubagentCardForm = 'full' | 'compact';
 
 /**
+ * Automatic card form: only a genuinely active run (running / background)
+ * earns the full card. Completed, suspended and unknown runs stay compact
+ * one-liners — a completed parent whose own child still runs does NOT
+ * inflate; the child carries its own card.
+ */
+export function subagentAutoForm(
+  status: AgentTreeNode['status'] | SubagentBlock['status'],
+): SubagentCardForm {
+  return status === 'running' || status === 'background' ? 'full' : 'compact';
+}
+
+/**
  * Compact collapsed form of a subagent card (terminal runs land here by
  * default): one row with status dot, name, terminal status, result summary,
  * duration and tool count. Click jumps to the agent page; the trailing
@@ -670,20 +724,28 @@ export type SubagentCardForm = 'full' | 'compact';
 function SubagentCompactCard({
   block,
   status,
+  error,
+  summary,
   elapsed,
   depth,
+  toolCalls,
   onOpenAgent,
   onExpand,
 }: {
   block: SubagentBlock;
   status: AgentTreeNode['status'] | SubagentBlock['status'];
+  /** Terminal-run error for the current run; undefined while a live run is active. */
+  error: string | undefined;
+  /** Result summary, live-node first with the frozen block as fallback. */
+  summary: string | undefined;
   elapsed: number | undefined;
   depth: number;
+  toolCalls: SubagentToolCalls;
   onOpenAgent?: (agentId: string) => void;
   onExpand?: () => void;
 }) {
   const { t, tp, time } = useI18n();
-  const summary = block.error ?? block.summary;
+  const line = error ?? summary;
   return (
     <div
       data-subagent-id={block.subagentId}
@@ -704,9 +766,9 @@ function SubagentCompactCard({
           <span className="shrink-0 text-[10.5px] text-ink-faint">
             {t(`subagent.status.${status}` as I18nKey)}
           </span>
-          {summary !== undefined ? (
-            <span className={`min-w-0 flex-1 truncate text-[11px] ${block.error !== undefined ? 'text-danger' : 'text-ink-soft'}`}>
-              {summary}
+          {line !== undefined ? (
+            <span className={`min-w-0 flex-1 truncate text-[11px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}>
+              {line}
             </span>
           ) : (
             <span className="min-w-0 flex-1" />
@@ -718,7 +780,7 @@ function SubagentCompactCard({
             {elapsed === undefined ? '—' : time.formatDuration(elapsed)}
           </span>
           <span className="shrink-0 text-[10px] text-ink-faint">
-            {tp('transcript.toolCalls', block.toolCallCount)}
+            {toolCalls.known ? tp('transcript.toolCalls', toolCalls.count) : t('diagnostics.unknown')}
           </span>
           <span aria-hidden className="shrink-0 text-[10px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
         </button>
@@ -759,36 +821,38 @@ const SubagentCard = memo(function SubagentCard({
   onToggleForm?: (agentId: string, form: SubagentCardForm) => void;
 }) {
   const { t } = useI18n();
-  const elapsed = useSubagentElapsed(block);
   const node = forest?.byId[block.subagentId];
   const children = forest === undefined ? [] : agentChildren(forest, block.subagentId);
-  const hasActiveChild = children.some(
-    (child) => child.status === 'running' || child.status === 'suspended' || child.status === 'background',
-  );
   const status = displayStatus ?? node?.status ?? block.status;
-  const autoFull =
-    status === 'running' ||
-    status === 'suspended' ||
-    status === 'background' ||
-    status === 'unknown' ||
-    hasActiveChild;
-  const full = formOverride !== undefined ? formOverride === 'full' : autoFull;
-  const [expanded, setExpanded] = useState(
-    () => status === 'running' || status === 'suspended' || status === 'background' || hasActiveChild,
-  );
+  const elapsed = useSubagentElapsed(block, node, status);
+  const runIsLive = status === 'running' || status === 'background' || status === 'suspended';
+  // The forest node tracks the CURRENT run (a resume re-stamps model, effort
+  // and timing and clears the terminal error); the block is a frozen dispatch
+  // snapshot. Live values win; the block is the fallback when no node exists.
+  const model = node?.model ?? block.model;
+  const thinkingEffort = node?.thinkingEffort ?? block.thinkingEffort;
+  const runError = runIsLive ? undefined : (node?.error ?? block.error);
+  const runSummary = node?.summary ?? block.summary;
+  // Only a genuinely active run owns the full card; a completed parent whose
+  // child still runs stays compact — the child has its own card.
+  const active = subagentAutoForm(status) === 'full';
+  const full = formOverride !== undefined ? formOverride === 'full' : active;
+  const [expanded, setExpanded] = useState(() => active);
   useEffect(() => {
-    if (status === 'running' || status === 'suspended' || status === 'background' || hasActiveChild) {
-      setExpanded(true);
-    }
-  }, [status, hasActiveChild]);
+    if (active) setExpanded(true);
+  }, [active]);
   const childCount = node?.childIds.length ?? children.length;
+  const toolCalls = resolveSubagentToolCalls(block, node);
   if (!full) {
     return (
       <SubagentCompactCard
         block={block}
         status={status}
+        error={runError}
+        summary={runSummary}
         elapsed={elapsed}
         depth={depth}
+        toolCalls={toolCalls}
         onOpenAgent={onOpenAgent}
         onExpand={
           onToggleForm === undefined
@@ -799,17 +863,18 @@ const SubagentCard = memo(function SubagentCard({
     );
   }
   const cardClass =
-    'anim-enter group block w-full rounded-xl border border-hairline bg-panel/80 px-3 py-2.5 text-left transition-all hover:-translate-y-px hover:border-accent/50 hover:shadow-[0_8px_24px_-16px_rgba(28,25,23,0.35)]';
+    'anim-enter group flex items-start gap-1 rounded-xl border border-hairline bg-panel/80 px-3 py-2.5 transition-all hover:-translate-y-px hover:border-accent/50 hover:shadow-[0_8px_24px_-16px_rgba(28,25,23,0.35)]';
   const body = (
     <SubagentCardBody
       name={block.name}
-      model={block.model ?? node?.model}
+      model={model}
       status={status}
-      toolCallCount={Math.max(block.toolCallCount, node?.toolCallCount ?? 0)}
+      toolCallCount={toolCalls.count}
+      toolCallCountKnown={toolCalls.known}
       childCount={childCount}
-      thinkingEffort={block.thinkingEffort ?? node?.thinkingEffort}
+      thinkingEffort={thinkingEffort}
       description={block.description}
-      error={block.error}
+      error={runError}
       elapsed={elapsed}
     />
   );
@@ -824,21 +889,35 @@ const SubagentCard = memo(function SubagentCard({
       <div className="flex items-stretch gap-1">
         {depth > 0 ? <span aria-hidden className="w-px shrink-0 bg-hairline" /> : null}
         <div className="min-w-0 flex-1">
-          <button
-            type="button"
-            onClick={() => { onOpenAgent?.(block.subagentId); }}
-            data-agent-open={block.subagentId}
-            className={cardClass}
-          >
-            {body}
-          </button>
+          <div className={cardClass}>
+            <button
+              type="button"
+              onClick={() => { onOpenAgent?.(block.subagentId); }}
+              data-agent-open={block.subagentId}
+              className="min-w-0 flex-1 text-left"
+            >
+              {body}
+            </button>
+            {onToggleForm !== undefined ? (
+              <button
+                type="button"
+                data-card-collapse={block.subagentId}
+                aria-label={t('subagent.collapseCard')}
+                title={t('subagent.collapseCard')}
+                onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
+                className="-mt-0.5 -mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[10px] text-ink-faint transition-colors hover:bg-paper hover:text-accent"
+              >
+                ▾
+              </button>
+            ) : null}
+          </div>
           {block.orphaned === true ? (
             <p className="mt-1 pl-1 text-[10.5px] text-ink-faint italic">
               {t('transcript.orphanedSubagent')}
             </p>
           ) : null}
-          <div className="flex items-center gap-1">
-            {childCount > 0 ? (
+          {childCount > 0 ? (
+            <div className="flex items-center gap-1">
               <button
                 type="button"
                 aria-expanded={expanded}
@@ -849,20 +928,8 @@ const SubagentCard = memo(function SubagentCard({
               >
                 {expanded ? t('subagent.collapseChildren') : t('subagent.expandChildren')}
               </button>
-            ) : null}
-            {onToggleForm !== undefined ? (
-              <button
-                type="button"
-                data-card-collapse={block.subagentId}
-                aria-label={t('subagent.collapseCard')}
-                title={t('subagent.collapseCard')}
-                onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
-                className="mt-1 rounded px-1.5 py-0.5 text-[10.5px] text-ink-faint transition-colors hover:text-accent"
-              >
-                ▾
-              </button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
           {expanded && children.length > 0 ? (
             <div className="mt-1 space-y-1">
               {children.map((child) => {
@@ -921,7 +988,7 @@ const SubagentEventRow = memo(function SubagentEventRow({
           {t(`subagent.event.${block.event}` as I18nKey)}
         </span>
         <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-faint">
-          {block.at === undefined ? '' : time.relativeTime(block.at)}
+          {block.at === undefined ? '' : <RelativeTime at={block.at} />}
         </span>
         <span aria-hidden className="shrink-0 text-[9.5px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
       </button>
@@ -978,9 +1045,11 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
 const ToolGroupRow = memo(
   function ToolGroupRow({
     group,
+    agentNames,
     onOpenAgent,
   }: {
     group: ToolGroup;
+    agentNames?: ReadonlyMap<string, string>;
     onOpenAgent?: (agentId: string) => void;
   }) {
   const { t } = useI18n();
@@ -1026,7 +1095,7 @@ const ToolGroupRow = memo(
       {expanded ? (
         <div className="space-y-2 border-t border-hairline px-3 py-2.5">
           {group.tools.map((tool) => (
-            <ToolCard key={tool.id} block={tool} onOpenAgent={onOpenAgent} />
+            <ToolCard key={tool.id} block={tool} agentNames={agentNames} onOpenAgent={onOpenAgent} />
           ))}
         </div>
       ) : null}
@@ -1037,6 +1106,7 @@ const ToolGroupRow = memo(
   // keep identity, so element-wise comparison preserves the memo.
   (prev, next) =>
     prev.group.tools.length === next.group.tools.length &&
+    prev.agentNames === next.agentNames &&
     prev.onOpenAgent === next.onOpenAgent &&
     prev.group.tools.every((tool, index) => tool === next.group.tools[index]),
 );
@@ -1137,7 +1207,11 @@ const BlockView = memo(function BlockView({
     case 'notice':
       return <Notice block={block} />;
     case 'approval':
-      return readOnly ? (
+      // Terminal facts stay inline as one compact history line (readOnly or
+      // not); only a PENDING approval keeps the full interactive card.
+      return block.resolution !== undefined ? (
+        <HistoryLine node={block} originName={originAgentName ?? originFallback} />
+      ) : readOnly ? (
         <Notice
           block={{
             kind: 'notice',
@@ -1157,7 +1231,9 @@ const BlockView = memo(function BlockView({
         />
       );
     case 'question':
-      return readOnly ? (
+      return block.outcome !== undefined ? (
+        <HistoryLine node={block} originName={originAgentName ?? originFallback} />
+      ) : readOnly ? (
         <Notice
           block={{
             kind: 'notice',
@@ -1182,9 +1258,74 @@ function nodeKey(node: DisplayNode): string {
 }
 
 /** Turn a display node belongs to (tool groups take their first tool's). */
-function displayNodeTurnId(node: DisplayNode): string | undefined {
+function displayNodeTurnId(node: GroupedDisplayNode): string | undefined {
+  if (node.kind === 'history-run') {
+    const first = node.nodes[0];
+    return first === undefined ? undefined : displayNodeTurnId(first);
+  }
   if (node.kind === 'tool-group') return node.tools[0]?.turnId;
   return 'turnId' in node ? node.turnId : undefined;
+}
+
+/**
+ * Compact-history predicate: which nodes may fold into a history run. Only
+ * TERMINAL facts qualify — resolved approvals/questions, goal/plan markers,
+ * settled subagent lifecycle events and compact-form subagent cards. Failed
+ * or cancelled entries stay individually visible (never swallowed); pending
+ * interactions keep their full cards and break the run.
+ */
+/**
+ * Background-task terminal notifications project as `system` blocks (variant
+ * 'task') whose text leads with the producer's title line — `Background agent
+ * failed`, a format agent-core owns — or, for stripped-XML history, carries a
+ * `Severity: warning` header line. Successes may fold; failures must not.
+ */
+function isFailedTaskNotificationText(text: string): boolean {
+  const firstLine = text.split('\n', 1)[0] ?? '';
+  return (
+    /^(?:Title:\s*)?Background \S+ (?:failed|timed_out|killed|lost)\b/.test(firstLine) ||
+    /^Severity:\s*warning\s*$/m.test(text)
+  );
+}
+
+function isCompactHistoryNode(
+  node: DisplayNode,
+  forest: AgentForest | undefined,
+  cardForms: ReadonlyMap<string, SubagentCardForm>,
+): boolean {
+  switch (node.kind) {
+    case 'approval':
+      return node.resolution !== undefined;
+    case 'question':
+      return node.outcome !== undefined;
+    case 'notice':
+      return isMarkerNotice(node);
+    case 'system':
+      return node.variant === 'task' && !isFailedTaskNotificationText(node.text);
+    case 'subagent-event':
+      return (
+        node.event === 'spawned' ||
+        node.event === 'resumed' ||
+        node.event === 'sent' ||
+        node.event === 'completed'
+      );
+    case 'subagent': {
+      const status = forest?.byId[node.subagentId]?.status ?? node.status;
+      const form = cardForms.get(node.subagentId) ?? subagentAutoForm(status);
+      return (
+        form === 'compact' &&
+        status !== 'failed' &&
+        status !== 'cancelled' &&
+        node.error === undefined
+      );
+    }
+    default:
+      return false;
+  }
+}
+
+function groupedNodeKey(node: GroupedDisplayNode): string {
+  return node.kind === 'history-run' ? node.id : nodeKey(node);
 }
 
 /**
@@ -1252,7 +1393,7 @@ const TRANSCRIPT_OVERSCAN = 6;
 const TRANSCRIPT_END_THRESHOLD = 80;
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 
-type TranscriptVirtualNode = DisplayNode | undefined;
+type TranscriptVirtualNode = GroupedDisplayNode | undefined;
 type TranscriptViewportAnchor = {
   atEnd: boolean;
   key: string | undefined;
@@ -1266,7 +1407,7 @@ type PendingResetRestore = {
 };
 
 function virtualNodeKey(node: TranscriptVirtualNode): string {
-  return node === undefined ? EMPTY_TRANSCRIPT_ITEM_KEY : nodeKey(node);
+  return node === undefined ? EMPTY_TRANSCRIPT_ITEM_KEY : groupedNodeKey(node);
 }
 
 function captureTranscriptAnchor(
@@ -1282,7 +1423,7 @@ function captureTranscriptAnchor(
 }
 
 type TranscriptRowProps = {
-  node: DisplayNode;
+  node: GroupedDisplayNode;
   readOnly: boolean;
   approvalShortcutHints: boolean;
   agentNames: ReadonlyMap<string, string>;
@@ -1292,8 +1433,8 @@ type TranscriptRowProps = {
   latestFinalAssistantId?: string;
   /** External-executor badge shown above the first row of the turn. */
   executionBadge?: TurnExecutionInfo;
-  /** Resolved manual form override for subagent card rows (undefined = auto). */
-  subagentFormOverride?: SubagentCardForm;
+  /** Manual subagent card form overrides, keyed by subagentId (empty = auto). */
+  subagentFormOverrides: ReadonlyMap<string, SubagentCardForm>;
   onToggleSubagentForm?: (agentId: string, form: SubagentCardForm) => void;
   onResolveApproval: (
     approvalId: string,
@@ -1307,15 +1448,24 @@ type TranscriptRowProps = {
   onOpenAgent?: (agentId: string) => void;
 };
 
-function nodeUsesAgentNames(node: DisplayNode): boolean {
-  return node.kind === 'approval' || node.kind === 'question';
+function nodeUsesAgentNames(node: GroupedDisplayNode): boolean {
+  return (
+    node.kind === 'approval' ||
+    node.kind === 'question' ||
+    node.kind === 'tool' ||
+    node.kind === 'tool-group' ||
+    node.kind === 'history-run'
+  );
 }
 
 function subagentBranchEqual(
-  node: DisplayNode,
+  node: GroupedDisplayNode,
   previousForest: AgentForest | undefined,
   nextForest: AgentForest | undefined,
 ): boolean {
+  if (node.kind === 'history-run') {
+    return node.nodes.every((member) => subagentBranchEqual(member, previousForest, nextForest));
+  }
   if (node.kind !== 'subagent') return true;
   return previousForest?.byId[node.subagentId] === nextForest?.byId[node.subagentId];
 }
@@ -1337,7 +1487,7 @@ const TranscriptRow = memo(
     rowActions,
     latestFinalAssistantId,
     executionBadge,
-    subagentFormOverride,
+    subagentFormOverrides,
     onToggleSubagentForm,
     onResolveApproval,
     onAnswerQuestion,
@@ -1349,37 +1499,50 @@ const TranscriptRow = memo(
     // /usage drilldown's ?turn= locator scrolls to it); absent on turn-less
     // nodes, so the attribute simply doesn't render there.
     const rowTurnId = displayNodeTurnId(node);
+    const renderNode = (member: DisplayNode): ReactNode =>
+      member.kind === 'tool-group' ? (
+        <ToolGroupRow group={member} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+      ) : member.kind === 'tool' ? (
+        <ToolCard block={member} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+      ) : (
+        <BlockView
+          block={member}
+          onResolveApproval={onResolveApproval}
+          onAnswerQuestion={onAnswerQuestion}
+          onDismissQuestion={onDismissQuestion}
+          onCancelQueued={onCancelQueued}
+          agentNames={agentNames}
+          approvalShortcutHints={approvalShortcutHints}
+          readOnly={readOnly}
+          forest={forest}
+          childBlocks={childBlocks}
+          subagentFormOverride={
+            member.kind === 'subagent' ? subagentFormOverrides.get(member.subagentId) : undefined
+          }
+          onToggleSubagentForm={onToggleSubagentForm}
+          onOpenAgent={onOpenAgent}
+          rowActions={rowActions}
+          latestFinalAssistantId={latestFinalAssistantId}
+        />
+      );
+    if (node.kind === 'history-run') {
+      return (
+        <div data-block-id={node.id} data-turn-id={rowTurnId}>
+          {executionBadge !== undefined ? <TurnExecutionBadge execution={executionBadge} /> : null}
+          <HistoryRunRow run={node} renderMember={renderNode} />
+        </div>
+      );
+    }
     return (
       <div data-block-id={nodeKey(node)} data-turn-id={rowTurnId}>
         {executionBadge !== undefined ? <TurnExecutionBadge execution={executionBadge} /> : null}
-        {node.kind === 'tool-group' ? (
-          <ToolGroupRow group={node} onOpenAgent={onOpenAgent} />
-        ) : node.kind === 'tool' ? (
-          <ToolCard block={node} onOpenAgent={onOpenAgent} />
-        ) : (
-          <BlockView
-            block={node}
-            onResolveApproval={onResolveApproval}
-            onAnswerQuestion={onAnswerQuestion}
-            onDismissQuestion={onDismissQuestion}
-            onCancelQueued={onCancelQueued}
-            agentNames={agentNames}
-            approvalShortcutHints={approvalShortcutHints}
-            readOnly={readOnly}
-            forest={forest}
-            childBlocks={childBlocks}
-            subagentFormOverride={subagentFormOverride}
-            onToggleSubagentForm={onToggleSubagentForm}
-            onOpenAgent={onOpenAgent}
-            rowActions={rowActions}
-            latestFinalAssistantId={latestFinalAssistantId}
-          />
-        )}
+        {renderNode(node)}
       </div>
     );
   },
   (prev, next) =>
-    displayNodesEqual(prev.node, next.node) &&
+    (displayNodesEqual(prev.node as DisplayNode, next.node as DisplayNode) ||
+      historyRunsEqual(prev.node, next.node)) &&
     prev.readOnly === next.readOnly &&
     prev.approvalShortcutHints === next.approvalShortcutHints &&
     (!nodeUsesAgentNames(prev.node) || prev.agentNames === next.agentNames) &&
@@ -1387,7 +1550,7 @@ const TranscriptRow = memo(
     prev.rowActions === next.rowActions &&
     prev.latestFinalAssistantId === next.latestFinalAssistantId &&
     prev.executionBadge === next.executionBadge &&
-    prev.subagentFormOverride === next.subagentFormOverride &&
+    prev.subagentFormOverrides === next.subagentFormOverrides &&
     prev.onToggleSubagentForm === next.onToggleSubagentForm &&
     prev.onResolveApproval === next.onResolveApproval &&
     prev.onAnswerQuestion === next.onAnswerQuestion &&
@@ -1607,6 +1770,7 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({
  */
 export const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTailInfo }) {
   const { t, time } = useI18n();
+  useNow();
   const facts: string[] = [time.relativeTime(tail.endedAt)];
   if (tail.durationMs !== undefined) {
     facts.push(t('transcript.ranFor', { duration: time.formatDuration(tail.durationMs) }));
@@ -1664,6 +1828,25 @@ export function Transcript({
   // The forest prop is rebuilt per publish upstream; stabilize it by content
   // so row memos survive unrelated deltas (Finding: forest identity).
   const stableForest = useStableForest(forest);
+  // Manual subagent card form overrides (G-4): once the user expands or
+  // collapses a card by hand the automatic active→full / terminal→compact
+  // rule no longer touches that agent's card. Keyed by subagentId so the
+  // choice survives block identity churn across publishes.
+  const [cardForms, setCardForms] = useState<ReadonlyMap<string, SubagentCardForm>>(new Map());
+  const handleToggleSubagentForm = useCallback((agentId: string, form: SubagentCardForm) => {
+    setCardForms((previous) => {
+      const next = new Map(previous);
+      next.set(agentId, form);
+      return next;
+    });
+  }, []);
+  // Fold runs of consecutive terminal history entries (resolved interactions,
+  // markers, settled lifecycle events, compact subagent cards) into one
+  // expandable summary row. Runs never span a user message or a failure.
+  const groupedNodes = useMemo(
+    () => groupHistoryRuns(nodes, (node) => isCompactHistoryNode(node, stableForest, cardForms)),
+    [nodes, stableForest, cardForms],
+  );
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
     for (const block of blocks) {
@@ -1705,18 +1888,18 @@ export function Transcript({
   const executionBadges = useStableMap(() => {
     const map = new Map<string, TurnExecutionInfo>();
     const seenTurns = new Set<string>();
-    for (const node of nodes) {
+    for (const node of groupedNodes) {
       const turnId = displayNodeTurnId(node);
       if (turnId === undefined || seenTurns.has(turnId)) continue;
       seenTurns.add(turnId);
       const execution = state.turnExecutions[turnId];
-      if (execution !== undefined) map.set(nodeKey(node), execution);
+      if (execution !== undefined) map.set(groupedNodeKey(node), execution);
     }
     return map;
   });
   const virtualNodes = useMemo<readonly TranscriptVirtualNode[]>(
-    () => nodes.length === 0 ? [undefined] : nodes,
-    [nodes],
+    () => groupedNodes.length === 0 ? [undefined] : groupedNodes,
+    [groupedNodes],
   );
   const nodeIndexes = useMemo(() => {
     const map = new Map<string, number>();
@@ -1726,18 +1909,6 @@ export function Transcript({
   const nodeIndexesRef = useRef(nodeIndexes);
   nodeIndexesRef.current = nodeIndexes;
   const [editingBlockIds, setEditingBlockIds] = useState<readonly string[]>([]);
-  // Manual subagent card form overrides (G-4): once the user expands or
-  // collapses a card by hand the automatic active→full / terminal→compact
-  // rule no longer touches that agent's card. Keyed by subagentId so the
-  // choice survives block identity churn across publishes.
-  const [cardForms, setCardForms] = useState<ReadonlyMap<string, SubagentCardForm>>(new Map());
-  const handleToggleSubagentForm = useCallback((agentId: string, form: SubagentCardForm) => {
-    setCardForms((previous) => {
-      const next = new Map(previous);
-      next.set(agentId, form);
-      return next;
-    });
-  }, []);
   const pinnedIndexes = useMemo(() => {
     const indexes = new Set<number>();
     virtualNodes.forEach((node, index) => {
@@ -1784,7 +1955,7 @@ export function Transcript({
     paddingEnd: 60,
     gap: 16,
     initialRect: { width: 760, height: 600 },
-    useAnimationFrameWithResizeObserver: true,
+    useAnimationFrameWithResizeObserver: false,
     useFlushSync: false,
     directDomUpdates: true,
     directDomUpdatesMode: 'position',
@@ -1953,10 +2124,8 @@ export function Transcript({
                       forest={stableForest}
                       rowActions={rowActions}
                       latestFinalAssistantId={latestFinalAssistantId}
-                      executionBadge={executionBadges.get(nodeKey(node))}
-                      subagentFormOverride={
-                        node.kind === 'subagent' ? cardForms.get(node.subagentId) : undefined
-                      }
+                      executionBadge={executionBadges.get(virtualNodeKey(node))}
+                      subagentFormOverrides={cardForms}
                       onToggleSubagentForm={handleToggleSubagentForm}
                       onResolveApproval={onResolveApproval}
                       onAnswerQuestion={onAnswerQuestion}

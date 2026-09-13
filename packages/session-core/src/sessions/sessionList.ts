@@ -1,7 +1,7 @@
 /** Session-list cache helpers: page-1 poll merge + overlap dedupe, plus
  * client-local pin state keyed off the wire `Session.metadata`. */
 
-import type { PageResponse, Session, Workspace } from '@moonshot-ai/protocol';
+import type { PageResponse, Session, Workspace } from '@kiki/protocol';
 
 export interface SessionListData {
   readonly pages: PageResponse<Session>[];

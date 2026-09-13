@@ -713,7 +713,10 @@ describe('settings search index', () => {
     expect(index.length).toBeGreaterThan(10);
     expect(searchSettings(index, 'language')[0]?.cardId).toBe('st-card-language');
     expect(searchSettings(index, 'Models').some((hit) => hit.section === 'ai')).toBe(true);
-    expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-experimental')).toBe(true);
+    expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-performance-storage')).toBe(true);
+    expect(searchSettings(index, 'Task board').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-task-board')).toBe(true);
+    expect(searchSettings(index, 'plan mode').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-defaults')).toBe(true);
+    expect(searchSettings(index, 'conversation titles').some((hit) => hit.section === 'general' && hit.cardId === 'st-card-session-title')).toBe(true);
     expect(searchSettings(index, 'denied subagent models').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-subagent-profiles')).toBe(true);
     expect(searchSettings(index, 'Main agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
@@ -766,17 +769,17 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_NAV_TREE[0]).toMatchObject({ kind: 'group', id: 'app' });
     expect(SETTINGS_NAV_TREE.at(-1)).toEqual({ kind: 'leaf', section: 'about' });
     expect(settingsGroupForSection('ai')?.id).toBe('ai');
-    // Batch 3 split: the capabilities leaf dissolved into skills / mcp /
-    // automation under extensions; runtime moved to system; the advanced
-    // tails fill "Data & advanced".
+    // The Plan & tasks leaf owns plan defaults and the task board; runtime stays
+    // under system and the remaining advanced controls stay in Data & advanced.
     expect(settingsGroupForSection('skills')?.id).toBe('extensions');
     expect(settingsGroupForSection('mcp')?.id).toBe('extensions');
     expect(settingsGroupForSection('plugins')?.id).toBe('extensions');
     expect(settingsGroupForSection('automation')?.id).toBe('extensions');
+    expect(settingsGroupForSection('tasks')?.id).toBe('extensions');
     expect(settingsGroupForSection('search')?.id).toBe('extensions');
     expect(settingsGroupForSection('subagents')?.id).toBe('agents');
     expect(settingsGroupForSection('runtime')?.id).toBe('system');
-    expect(settingsGroupForSection('experimental')?.id).toBe('advanced');
+    expect(settingsGroupForSection('experimental')).toBeUndefined();
     expect(settingsGroupForSection('advanced')?.id).toBe('advanced');
     expect(settingsGroupForSection('workspaces')?.id).toBe('system');
     expect(settingsGroupForSection('connection')?.id).toBe('system');
@@ -806,7 +809,7 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(SETTINGS_SECTION_META['runtime']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['automation']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['search']?.scopes).toEqual(['server']);
-    expect(SETTINGS_SECTION_META['experimental']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['tasks']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['advanced']?.scopes).toEqual(['server']);
   });
 });
@@ -889,6 +892,19 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-auth', tab: 'providers' });
   });
 
+  it('redirects the retired experimental page and keeps feature card owners precise', () => {
+    expect(resolveSettingsRoute('experimental', ''))
+      .toEqual({ status: 'ok', section: 'advanced', cardId: undefined, tab: undefined });
+    expect(resolveSettingsRoute('experimental', '#st-card-experimental'))
+      .toEqual({ status: 'ok', section: 'advanced', cardId: 'st-card-performance-storage', tab: undefined });
+    expect(resolveSettingsRoute('experimental', '#st-card-tool-experiments'))
+      .toEqual({ status: 'ok', section: 'automation', cardId: 'st-card-tool-experiments', tab: undefined });
+    expect(resolveSettingsRoute('agents', '#st-card-task-board'))
+      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-task-board', tab: undefined });
+    expect(resolveSettingsRoute('general', '#st-card-defaults'))
+      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-defaults', tab: undefined });
+  });
+
   it('follows a card hash whose content moved to another section', () => {
     // A bookmark written before a content move: section says general, card
     // says the card now lives under mcp — the precise half wins.
@@ -939,9 +955,13 @@ describe('settings route resolver', () => {
 });
 
 describe('hooks and MCP timeout patches (batch 3 split)', () => {
-  it('parses the hooks editor draft as a JSON array only', () => {
+  it('validates the supported hook config fields without running commands', () => {
     expect(parseHooksJson('[]')).toEqual([]);
-    expect(parseHooksJson('[{"event":"PreToolUse"}]')).toEqual([{ event: 'PreToolUse' }]);
+    const hook = { event: 'PreToolUse', command: 'echo example', matcher: '^Read$', timeout: 600 };
+    expect(parseHooksJson(JSON.stringify([hook]))).toEqual([hook]);
+    for (const invalid of [null, {}, { ...hook, event: 'Unknown' }, { ...hook, command: '' }, { ...hook, matcher: '[' }, { ...hook, matcher: 1 }, { ...hook, timeout: 0 }, { ...hook, timeout: 601 }, { ...hook, timeout: 1.5 }, { ...hook, enabled: false }, { ...hook, cwd: '/tmp' }, { ...hook, env: {} }]) {
+      expect(() => parseHooksJson(JSON.stringify([invalid]))).toThrowError();
+    }
     expect(() => parseHooksJson('{not json')).toThrowError();
     expect(() => parseHooksJson('{"hooks":[]}')).toThrowError();
   });

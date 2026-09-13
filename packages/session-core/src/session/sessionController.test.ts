@@ -1,18 +1,62 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { MessageContent, Session, SessionSnapshotResponse } from '@moonshot-ai/protocol';
+import type { MessageContent, Session, SessionSnapshotResponse } from '@kiki/protocol';
 
 import type {
   AgentTranscriptResponse,
-  SessionSocket as KikiSocket,
   SessionTransport as KikiClient,
 } from '../transport';
 import { resolveSelectedEffort } from '../settings/agentSettings';
+import { resolveEffectiveModel } from '../settings/settings';
 import type { SessionEventFrame } from '../wire';
-import type { TranscriptEvent } from '@moonshot-ai/transcript';
+import type { TranscriptEvent } from '@kiki/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
 import type { SubagentBlock, ToolBlock, UserBlock } from './transcript';
+
+import type { SessionViewFacade } from '@kiki/klient/session-view';
+
+function fakeView(client: object, socket: object, sessionId = 'session_test'): SessionViewFacade {
+  const reads = client as {
+    snapshot(sessionId: string, options: { transcript: boolean }): Promise<SessionSnapshotResponse>;
+    getAgentTranscript(sessionId: string, agentId: string, options: object): Promise<AgentTranscriptResponse>;
+    getTranscriptOps(sessionId: string, agentId: string, since: object, grade?: string): ReturnType<SessionViewFacade['transcript']['catchUp']>;
+  };
+  const controls = socket as Record<string, (...args: unknown[]) => void>;
+  return {
+    snapshot: () => reads.snapshot(sessionId, { transcript: true }),
+    transcript: {
+      page: ({ agentId, ...options }) => reads.getAgentTranscript(sessionId, agentId, options) as ReturnType<SessionViewFacade['transcript']['page']>,
+      catchUp: ({ agentId, since, grade }) => reads.getTranscriptOps(sessionId, agentId, since, grade) as ReturnType<SessionViewFacade['transcript']['catchUp']>,
+    },
+    subscribe: (input) => {
+      controls['subscribe']?.(sessionId, input.sessionCursor, input.transcriptGrades);
+      return {
+        updateSessionCursor: (cursor) => { controls['updateCursor']?.(sessionId, cursor); },
+        setTranscriptGrades: (grades) => { controls['setTranscriptGrades']?.(sessionId, grades); },
+        updateTranscriptCursor: (agentId, cursor) => { controls['updateTranscriptSince']?.(sessionId, agentId, cursor); },
+        restart: () => { controls['restartGeneration']?.(); },
+        nudge: () => {},
+        close: () => { controls['unsubscribe']?.(sessionId); },
+      };
+    },
+  };
+}
+
+function deliverFrame(controller: SessionController, frame: SessionEventFrame): void {
+  if (frame.session_id !== controller.sessionId) return;
+  const cursor = { seq: frame.seq, epoch: frame.epoch };
+  if (frame.payload.type === 'event.session.history_rewritten') {
+    controller.handleSignal({ type: 'historyRewritten', cursor, generation: 0, reason: 'regenerate', targetMessageId: 'message-test' });
+  } else if (frame.volatile !== true) {
+    controller.handleSignal({ type: 'sessionCursorAdvanced', cursor, generation: 0 });
+  }
+}
+
+function deliverResync(controller: SessionController, payload: { session_id: string; reason: 'history_rewritten' | 'epoch_changed' | 'session_recreated' | 'buffer_overflow'; current_seq: number; epoch?: string }): void {
+  if (payload.session_id !== controller.sessionId) return;
+  controller.handleSignal({ type: 'resyncRequired', generation: 0, reason: payload.reason, currentSessionCursor: { seq: payload.current_seq, epoch: payload.epoch } });
+}
 
 function asTranscriptEvent(event: Record<string, unknown>): TranscriptEvent {
   const sessionId = typeof event['session_id'] === 'string' ? event['session_id'] : 'session_test';
@@ -259,7 +303,7 @@ async function openController(options: { defaultScheduler?: boolean } = {}): Pro
   const { scheduler, flushAll } = manualScheduler();
   const controller = new SessionController(
     client as unknown as KikiClient,
-    socket as unknown as KikiSocket,
+    fakeView(client, socket),
     'session_test',
     options.defaultScheduler === true ? undefined : { scheduler },
   );
@@ -291,7 +335,98 @@ describe('assertSessionWritable', () => {
 });
 
 
+describe('SessionController prompt runtime projection', () => {
+  it.each([true, false, undefined])('preserves GUI plan/swarm selections including false and omission: %s', async (enabled) => {
+    const { controller, client } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'runtime-projection', user_message_id: 'runtime-message', status: 'queued',
+      content: [{ type: 'text', text: 'follow-up' }], created_at: '2026-01-01T00:00:02.000Z',
+    });
+    await controller.sendPrompt({ text: 'follow-up', permissionMode: 'manual',
+      planMode: enabled, swarmMode: enabled, goalObjective: 'same objective' });
+    expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({
+      plan_mode: enabled, swarm_mode: enabled, goal_objective: 'same objective',
+    }));
+    controller.close();
+  });
+});
+
 describe('SessionController pipeline', () => {
+  it('recovers one malformed view baseline and stops on a terminal protocol error', async () => {
+    const read = vi.fn(async () => snapshot());
+    const callbacks: Parameters<SessionViewFacade['subscribe']>[1][] = [];
+    const closes = vi.fn();
+    const view: SessionViewFacade = {
+      ...fakeView({ snapshot: read }, {}),
+      subscribe: (_input, callback) => {
+        callbacks.push(callback);
+        return {
+          close: closes, restart: vi.fn(), nudge: vi.fn(),
+          updateSessionCursor: vi.fn(), updateTranscriptCursor: vi.fn(), setTranscriptGrades: vi.fn(),
+        };
+      },
+    };
+    const controller = new SessionController({} as KikiClient, view, 'session_test');
+    await controller.open();
+    callbacks[0]!({ type: 'protocolError', generation: 1, recoverable: true, detail: 'Invalid session view signal.' });
+    await waitFor(() => callbacks.length === 2);
+    expect(read).toHaveBeenCalledTimes(2);
+    callbacks[0]!({ type: 'sessionCursorAdvanced', generation: 1, cursor: { seq: 999, epoch: 'stale' } });
+    expect(controller.getState().cursor).toEqual({ seq: 10, epoch: 'epoch-1' });
+    const pending = deferred<SessionSnapshotResponse>();
+    read.mockImplementationOnce(() => pending.promise);
+    const restoring = controller.resync();
+    callbacks[1]!({ type: 'protocolError', generation: 1, recoverable: false, detail: 'Invalid session view signal.' });
+    expect(controller.getState()).toMatchObject({
+      resyncing: false, resyncFailed: true,
+      resyncError: { message: 'Invalid session view signal.', retryable: false },
+    });
+    pending.resolve(snapshot({ as_of_seq: 999 }));
+    await restoring;
+    callbacks[1]!({ type: 'ready', generation: 1, currentSessionCursor: { seq: 999 }, reconnected: true });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(callbacks).toHaveLength(2);
+    expect(controller.getState().cursor.seq).toBe(10);
+    expect(controller.getState().resyncError?.retryable).toBe(false);
+    expect(closes).toHaveBeenCalledTimes(2);
+    controller.close();
+  });
+
+  it('admits observed cold agents at turn grade without taking focus or closing the main view', async () => {
+    const client = { snapshot: vi.fn(async () => snapshot()) };
+    const socket = { subscribe: vi.fn(), unsubscribe: vi.fn(), setTranscriptGrades: vi.fn() };
+    const controller = new SessionController(client as unknown as KikiClient, fakeView(client, socket), 'session_test');
+    const releaseFirst = controller.subscribeAgent('cold-child', vi.fn());
+    await controller.open();
+    expect(socket.subscribe).toHaveBeenCalledWith('session_test', expect.any(Object), {
+      '*': 'turn', main: 'delta', 'cold-child': 'turn',
+    });
+    const releaseSecond = controller.subscribeAgent('cold-child', vi.fn());
+    expect(socket.setTranscriptGrades).not.toHaveBeenCalled();
+    controller.setFocusedAgent('focused-child');
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+      '*': 'turn', main: 'delta', 'focused-child': 'delta', 'cold-child': 'turn',
+    });
+    releaseFirst();
+    expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(1);
+    releaseSecond();
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+      '*': 'turn', main: 'delta', 'focused-child': 'delta',
+    });
+    const releaseLate = controller.subscribeAgent('late-child', vi.fn());
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+      '*': 'turn', main: 'delta', 'focused-child': 'delta', 'late-child': 'turn',
+    });
+    controller.setFocusedAgent('late-child');
+    releaseLate();
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+      '*': 'turn', main: 'delta', 'late-child': 'delta',
+    });
+    expect(socket.unsubscribe).not.toHaveBeenCalled();
+    controller.close();
+  });
+
   it('preserves an agent focus set before the initial snapshot finishes', async () => {
     const client = {
       snapshot: vi.fn(async () => snapshot()),
@@ -303,7 +438,7 @@ describe('SessionController pipeline', () => {
     };
     const controller = new SessionController(
       client as unknown as KikiClient,
-      socket as unknown as KikiSocket,
+      fakeView(client, socket),
       'session_test',
     );
 
@@ -534,6 +669,33 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('exposes terminal restore errors without retrying and allows manual recovery', async () => {
+    vi.useFakeTimers();
+    const { ApiError } = await import('../transport');
+    const { controller, client } = await openController();
+    try {
+      client.snapshot.mockRejectedValueOnce(new ApiError({
+        code: 40401, msg: 'Session was not found', data: null, request_id: 'request-example',
+      }));
+      await controller.resync();
+      expect(controller.getState()).toMatchObject({
+        resyncFailed: true, resyncing: false, resyncAttempt: 1,
+        resyncError: { code: 40401, requestId: 'request-example', retryable: false, message: 'Session was not found (code 40401)' },
+      });
+      controller.handleSubscribeRejected();
+      deliverResync(controller, { session_id: 'session_test', reason: 'history_rewritten', current_seq: 10 });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(client.snapshot).toHaveBeenCalledTimes(2);
+      await controller.resync();
+      expect(client.snapshot).toHaveBeenCalledTimes(3);
+      expect(controller.getState().resyncFailed).toBe(false);
+      expect(controller.getState().resyncError).toBeUndefined();
+    } finally {
+      controller.close();
+      vi.useRealTimers();
+    }
+  });
+
   it('marks a failed resync and retries with backoff until a snapshot lands', async () => {
     const { controller, client } = await openController();
     client.snapshot
@@ -570,7 +732,7 @@ describe('SessionController message closure', () => {
     );
     const calls = () => client.snapshot.mock.calls.length;
     const before = calls();
-    controller.handleFrame(
+    deliverFrame(controller,
       frame(
         {
           type: 'event.session.history_rewritten',
@@ -596,7 +758,7 @@ describe('SessionController message closure', () => {
     const { controller, client } = await openController();
     const calls = () => client.snapshot.mock.calls.length;
     const before = calls();
-    controller.handleResyncRequired({
+    deliverResync(controller, {
       session_id: 'session_test',
       reason: 'history_rewritten',
       current_seq: 12,
@@ -648,7 +810,7 @@ describe('SessionController message closure', () => {
   it('advances the message-closure cursor on durable session events, not volatile deltas', async () => {
     const { controller, client, socket } = await openController();
     expect(controller.getState().cursor).toEqual({ seq: 10, epoch: 'epoch-1' });
-    controller.handleFrame({
+    deliverFrame(controller, {
       type: 'assistant.delta',
       seq: 10,
       epoch: 'epoch-1',
@@ -658,7 +820,7 @@ describe('SessionController message closure', () => {
       payload: { type: 'assistant.delta', turnId: 1, delta: 'x' },
     } as SessionEventFrame);
     expect(controller.getState().cursor).toEqual({ seq: 10, epoch: 'epoch-1' });
-    controller.handleFrame({
+    deliverFrame(controller, {
       type: 'turn.ended',
       seq: 14,
       epoch: 'epoch-1',
@@ -750,13 +912,38 @@ describe('SessionController transcript authority', () => {
     const { scheduler, flushAll } = manualScheduler();
     const controller = new SessionController(
       client as unknown as KikiClient,
-      socket as unknown as KikiSocket,
+      fakeView(client, socket),
       'session_test',
       { scheduler, rewriteResetTimeoutMs: options.rewriteResetTimeoutMs },
     );
     await controller.open();
     return { controller, client, socket, flushAll };
   }
+
+  it('retains the reopened bound model through sparse resets but accepts explicit transcript model changes', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    client.snapshot.mockResolvedValue(snapshot({ session: { ...session, agent_config: { model: 'bound-first', profile: 'pinned-profile' } } }));
+    await controller.open();
+    flushAll();
+    expect(controller.getState().model).toBe('bound-first');
+    const reset = (seq: number, meta: object) => {
+      controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.reset', agent_id: 'main', seq,
+        snapshot: { items: [], agents: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta },
+      }));
+      flushAll();
+    };
+    reset(1, {});
+    expect(controller.getState().model).toBe('bound-first');
+    expect(resolveEffectiveModel(undefined, controller.getState().model, 'unavailable-default')).toBe('bound-first');
+    expect(resolveEffectiveModel('user-override', controller.getState().model, 'unavailable-default')).toBe('user-override');
+    expect(controller.getState().profile).toBe('pinned-profile');
+    reset(2, { agent: { model: 'explicit-second' } });
+    expect(controller.getState().model).toBe('explicit-second');
+    reset(3, { agent: { usage: { total: { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 } } } });
+    expect(controller.getState().model).toBe('explicit-second');
+    controller.close();
+  });
 
   it('does not adopt snapshot messages or in-flight text on open', async () => {
     const { controller, client, socket } = await openTranscriptController();
@@ -825,7 +1012,7 @@ describe('SessionController transcript authority', () => {
     expect(assistants).toHaveLength(1);
     expect(assistants[0]).toMatchObject({ id: 'agent-frame-f1', text: 'Hello world' });
 
-    controller.handleFrame(
+    deliverFrame(controller,
       frame({ type: 'assistant.delta', turnId: 1, delta: ' extra' } as never, { volatile: true, offset: 11 }),
     );
     flushAll();
@@ -1045,6 +1232,52 @@ describe('SessionController transcript authority', () => {
     }));
     expect(controller.getState().blocks.some((block) => block.id.includes('t1'))).toBe(false);
     expect(controller.getState().blocks.some((block) => block.id.includes('t9'))).toBe(true);
+    controller.close();
+  });
+
+  it.each([
+    { agentId: 'main', initialCount: undefined },
+    { agentId: 'child-1', initialCount: undefined },
+    { agentId: 'main', initialCount: 10 },
+    { agentId: 'child-1', initialCount: 10 },
+  ])('publishes older REST aggregate for $agentId without rewinding $initialCount', async ({ agentId, initialCount }) => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset', agent_id: agentId, has_more_older: true, seq: 1,
+      snapshot: {
+        items: [{ kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'new', steps: [] }],
+        tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
+        toolCallCount: initialCount, hasMoreOlder: true,
+      },
+    }));
+    expect(controller.getForest()?.byId[agentId]).toMatchObject({
+      toolCallCount: initialCount ?? 0,
+      toolCallCountKnown: initialCount !== undefined,
+    });
+    let resolvePage!: (page: AgentTranscriptResponse) => void;
+    client.getAgentTranscript.mockImplementationOnce(() => new Promise<AgentTranscriptResponse>((resolve) => { resolvePage = resolve; }));
+    const pending = controller.loadOlderMessages(agentId);
+    if (initialCount !== undefined) {
+      controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.ops', agent_id: agentId, seq: 2,
+        ops: [{ op: 'frame.upsert', turnId: 't2', stepId: 't2.1', frame: { kind: 'tool', frameId: 'late-tool', toolCallId: 'late-call', name: 'Read', state: 'done' } }],
+      }));
+      flushAll();
+      expect(controller.getForest()?.byId[agentId]?.toolCallCount).toBe(11);
+    }
+    const olderTurn = { kind: 'turn' as const, turnId: 't1', ordinal: 1, state: 'completed' as const, origin: { kind: 'user' as const }, prompt: 'older', steps: [] };
+    resolvePage({
+      agent_id: agentId, has_more: false, tool_call_count: 7,
+      cursor: { seq: 1, epoch: 'epoch-1' },
+      items: [olderTurn],
+    });
+    await expect(pending).resolves.toBe(true);
+    expect(controller.getForest()?.byId[agentId]).toMatchObject({
+      toolCallCount: initialCount === undefined ? 7 : 11,
+      toolCallCountKnown: true,
+    });
+    await expect(controller.loadOlderMessages(agentId)).resolves.toBe(false);
+    expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
     controller.close();
   });
 
@@ -1974,7 +2207,7 @@ describe('SessionController transcript authority', () => {
         meta: {},
       },
     }));
-    Object.assign(socket, { connectionGeneration: 7 });
+    controller.handleSignal({ type: 'status', status: 'open', generation: 7 });
     void controller.resync({ rewrite: true });
     await waitFor(() => client.snapshot.mock.calls.length === 2);
     await waitFor(() => !controller.getState().resyncing);
@@ -2060,7 +2293,7 @@ describe('SessionController transcript authority', () => {
         meta: {},
       },
     }));
-    Object.assign(socket, { connectionGeneration: 4 });
+    controller.handleSignal({ type: 'status', status: 'open', generation: 4 });
     void controller.resync({ rewrite: true });
     await waitFor(() => client.snapshot.mock.calls.length === 2);
     await waitFor(() => !controller.getState().resyncing);
@@ -2148,7 +2381,7 @@ describe('SessionController transcript authority', () => {
 
   it('hard resyncs when the rewrite subscription is rejected', async () => {
     const { controller, client, socket } = await openTranscriptController();
-    Object.assign(socket, { connectionGeneration: 9 });
+    controller.handleSignal({ type: 'status', status: 'open', generation: 9 });
     void controller.resync({ rewrite: true });
     await waitFor(() => client.snapshot.mock.calls.length === 2);
     await waitFor(() => !controller.getState().resyncing);
@@ -2245,6 +2478,213 @@ describe('SessionController transcript authority', () => {
       snapshot: textTurnSnapshot(frameId, text),
     }));
   }
+
+  it.each([
+    { agentId: 'main', initialCount: undefined },
+    { agentId: 'child-1', initialCount: undefined },
+    { agentId: 'main', initialCount: 10 },
+    { agentId: 'child-1', initialCount: 10 },
+  ])('STAT-R2 owns a mutable canonical baseline for $agentId / $initialCount', async ({ agentId, initialCount }) => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    const tool = { kind: 'tool', frameId: 'count-tool', toolCallId: 'count-call', name: 'Read', state: 'done' };
+    const source = textTurnSnapshot('body', 'body');
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset', agent_id: agentId, has_more_older: true, seq: 1,
+      snapshot: {
+        ...source, toolCallCount: initialCount, hasMoreOlder: true,
+        items: initialCount === undefined ? source.items : source.items.map((turn) => ({
+          ...turn, steps: turn.steps.map((step) => ({ ...step, frames: [...step.frames, tool] })),
+        })),
+      },
+    }));
+    const page = { agent_id: agentId, items: [{ kind: 'turn' as const, turnId: 't0', prompt: 'older', steps: [] }], has_more: false,
+      tool_call_count: initialCount ?? 7, cursor: { epoch: 'epoch-1', seq: 1 } };
+    client.getAgentTranscript.mockResolvedValueOnce(page);
+    await controller.loadOlderMessages(agentId);
+    expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: initialCount ?? 7, toolCallCountKnown: true });
+    for (const seq of [2, 3]) {
+      controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: agentId, seq,
+        ops: [{ op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: tool }] }));
+      flushAll();
+      expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: initialCount === undefined ? 8 : 10, toolCallCountKnown: true });
+    }
+    for (const seq of [4, 5]) {
+      controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: agentId, seq,
+        ops: [{ op: 'items.remove', ids: ['t1'] }] }));
+      flushAll();
+      expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: initialCount === undefined ? 7 : 9, toolCallCountKnown: true });
+    }
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.reset', agent_id: agentId, seq: 6,
+      snapshot: { ...textTurnSnapshot('fresh', 'fresh'), toolCallCount: 0 } }));
+    expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: 0, toolCallCountKnown: true });
+    const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    expect(state.blocks.some((block) => block.id.includes('t0'))).toBe(false);
+    controller.close();
+  });
+
+  it.each(['main', 'child-1'])('STAT-R2 aligns late and future REST watermarks for %s', async (agentId) => {
+    for (const order of ['late', 'future'] as const) {
+      const { controller, client, flushAll } = await openTranscriptController();
+      controller.setFocusedAgent(agentId);
+      controller.handleTranscript(asTranscriptEvent({ type: 'transcript.reset', agent_id: agentId, seq: 1, has_more_older: true,
+        snapshot: { ...textTurnSnapshot('body', 'body'), hasMoreOlder: true } }));
+      const held = deferred<AgentTranscriptResponse>();
+      client.getAgentTranscript.mockImplementationOnce(() => held.promise);
+      const pending = controller.loadOlderMessages(agentId);
+      const live = () => {
+        controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: agentId, seq: 2,
+          ops: [{ op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: { kind: 'tool', frameId: 'new', toolCallId: 'new', name: 'Read', state: 'done' } }] }));
+        flushAll();
+      };
+      if (order === 'late') live();
+      const page = { agent_id: agentId, items: [{ kind: 'turn' as const, turnId: 't0', prompt: 'older', steps: [] }], has_more: false,
+        tool_call_count: order === 'late' ? 7 : 8, cursor: { epoch: 'epoch-1', seq: order === 'late' ? 1 : 2 } };
+      held.resolve(page);
+      await pending;
+      if (order === 'future') {
+        expect(controller.getForest()?.byId[agentId]?.toolCallCountKnown).toBe(false);
+        live();
+      }
+      expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: 8, toolCallCountKnown: true });
+      controller.close();
+    }
+  });
+
+  it.each([
+    { label: 'missing', count: undefined, known: false },
+    { label: 'failed partial backfill', count: undefined, known: false },
+    { label: 'readable empty wire', count: 0, known: true },
+  ])('STAT-R3 keeps $label knowledge through full WS reset and forest', async ({ label, count, known }) => {
+    const { controller } = await openTranscriptController();
+    const source = textTurnSnapshot('body', 'body');
+    const items = label === 'failed partial backfill' ? source.items.map((turn) => ({
+      ...turn, steps: turn.steps.map((step) => ({ ...step, frames: [...step.frames,
+        { kind: 'tool', frameId: 'partial-tool', toolCallId: 'partial-call', name: 'Read', state: 'done' },
+      ] })),
+    })) : source.items;
+    for (const agentId of ['main', 'child-1']) {
+      controller.handleTranscript(asTranscriptEvent({ type: 'transcript.reset', agent_id: agentId, seq: 1,
+        snapshot: { ...source, items, toolCallCount: count, toolCallCountKnown: known } }));
+      expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: 0, toolCallCountKnown: known });
+    }
+    controller.close();
+  });
+
+  it.each(['main', 'child-1'])('STAT-R3 publishes count-only authority and rejects replay for %s', async (agentId) => {
+    const { controller, flushAll } = await openTranscriptController();
+    seedTextAgent(controller, agentId, 'body', 'body');
+    const mainBefore = controller.getState();
+    const notifiedCounts: (number | undefined)[] = [];
+    controller.subscribe(() => { notifiedCounts.push(controller.getForest()?.byId[agentId]?.toolCallCount); });
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: agentId, seq: 2,
+      ops: [{ op: 'tool.count.set', count: 4 }] }));
+    flushAll();
+    expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: 4, toolCallCountKnown: true });
+    expect(notifiedCounts.at(-1)).toBe(4);
+    expect(controller.getState()).not.toBe(mainBefore);
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: agentId, seq: 3,
+      ops: [{ op: 'tool.count.set' }] }));
+    flushAll();
+    expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: 0, toolCallCountKnown: false });
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: agentId, seq: 2,
+      ops: [{ op: 'tool.count.set', count: 4 }] }));
+    flushAll();
+    expect(controller.getForest()?.byId[agentId]?.toolCallCountKnown).toBe(false);
+    controller.close();
+  });
+
+  it.each([undefined, { epoch: 'wrong-epoch', seq: 1 }])('STAT-R2 does not guess an unaligned REST cursor %s', async (cursor) => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.reset', agent_id: 'main', seq: 1, has_more_older: true,
+      snapshot: { ...textTurnSnapshot('body', 'body'), hasMoreOlder: true } }));
+    const page = { agent_id: 'main', items: [], has_more: false, tool_call_count: 7, cursor };
+    client.getAgentTranscript.mockResolvedValueOnce(page);
+    await controller.loadOlderMessages('main');
+    expect(controller.getForest()?.byId['main']?.toolCallCountKnown).toBe(false);
+    controller.close();
+  });
+
+  it('STAT-R2 does not restore an older REST count across a fresh unavailable statement', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.reset', agent_id: 'main', seq: 1, has_more_older: true,
+      snapshot: { ...textTurnSnapshot('body', 'body'), hasMoreOlder: true } }));
+    const held = deferred<AgentTranscriptResponse>();
+    client.getAgentTranscript.mockImplementationOnce(() => held.promise);
+    const pending = controller.loadOlderMessages('main');
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 2,
+      ops: [{ op: 'tool.count.set' }] }));
+    flushAll();
+    held.resolve({ agent_id: 'main', items: [], has_more: false, tool_call_count: 7, cursor: { seq: 1, epoch: 'epoch-1' } });
+    await pending;
+    expect(controller.getForest()?.byId['main']?.toolCallCountKnown).toBe(false);
+    controller.close();
+  });
+
+  it('STAT-R2 does not treat filtered turn-grade history as a zero tool delta', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.reset', agent_id: 'child-1', seq: 1, has_more_older: true,
+      snapshot: { ...textTurnSnapshot('body', 'body'), hasMoreOlder: true } }));
+    const held = deferred<AgentTranscriptResponse>();
+    client.getAgentTranscript.mockImplementationOnce(() => held.promise);
+    const pending = controller.loadOlderMessages('child-1');
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'child-1', seq: 2, ops: [] }));
+    flushAll();
+    held.resolve({ agent_id: 'child-1', items: [], has_more: false, tool_call_count: 7, cursor: { seq: 1, epoch: 'epoch-1' } });
+    await pending;
+    expect(controller.getForest()?.byId['child-1']?.toolCallCountKnown).toBe(false);
+    controller.close();
+  });
+
+  it('cancels a rewrite watchdog queued behind a terminally failed ordinary resync', async () => {
+    vi.useFakeTimers();
+    const { ApiError } = await import('../transport');
+    const { controller, client, socket } = await openTranscriptController();
+    try {
+      seedTextAgent(controller, 'main', 'f1', 'Retained');
+      const held = deferred<SessionSnapshotResponse>();
+      client.snapshot.mockImplementationOnce(() => held.promise);
+      const ordinary = controller.resync();
+      await controller.resync({ rewrite: true });
+      held.reject(new ApiError({ code: 40401, msg: 'Not found', data: null }));
+      await ordinary;
+      expect(controller.getState()).toMatchObject({ resyncing: false, resyncFailed: true, resyncError: { retryable: false } });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(client.snapshot).toHaveBeenCalledTimes(2);
+      expect(socket.restartGeneration).not.toHaveBeenCalled();
+      expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({ text: 'Retained' });
+      await controller.resync();
+      expect(client.snapshot).toHaveBeenCalledTimes(3);
+      expect(controller.getState()).toMatchObject({ resyncing: false, resyncFailed: false, resyncError: undefined });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.restartGeneration).not.toHaveBeenCalled();
+    } finally {
+      controller.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops every automatic recovery entry after a terminal restore error', async () => {
+    const { ApiError } = await import('../transport');
+    const { controller, client, flushAll } = await openTranscriptController();
+    seedTextAgent(controller, 'main', 'f1', 'Retained');
+    client.snapshot.mockRejectedValueOnce(new ApiError({ code: 40401, msg: 'Not found', data: null }));
+    await controller.resync();
+    deliverFrame(controller, frame({ type: 'event.session.history_rewritten' } as SessionEventFrame['payload']));
+    controller.handleWsDrop();
+    controller.handleReconnectAck();
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', cursor: { epoch: 'new-epoch', seq: 3 }, ops: [] }));
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 3,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 100, text: 'gap' }],
+    }));
+    flushAll();
+    await Promise.resolve();
+    expect(client.snapshot).toHaveBeenCalledTimes(2);
+    expect(client.getTranscriptOps).not.toHaveBeenCalled();
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({ text: 'Retained' });
+    await controller.resync();
+    expect(controller.getState().resyncError).toBeUndefined();
+    controller.close();
+  });
 
   it('applies grade-filtered seq skips for main and child without REST catchup or resync', async () => {
     const { controller, client, socket, flushAll } = await openTranscriptController();
@@ -2540,6 +2980,88 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  it.each(['same-epoch', 'new-epoch', 'resync', 'rewrite', 'focus', 'close'])(
+    'discards catchup responses after %s invalidates their history',
+    async (boundary) => {
+      const { controller, client, socket, flushAll } = await openTranscriptController();
+      const agentId = boundary === 'focus' ? 'child-1' : 'main';
+      const held = deferred<Awaited<ReturnType<SessionViewFacade['transcript']['catchUp']>>>();
+      client.getTranscriptOps.mockImplementationOnce((async () => held.promise) as never);
+      seedTextAgent(controller, agentId, 'f1', 'OLD');
+      const gap = () => {
+        controller.handleTranscript(asTranscriptEvent({
+          type: 'transcript.ops', agent_id: agentId, seq: 3,
+          ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 20, text: '!' }],
+        }));
+        flushAll();
+      };
+      gap();
+      expect(client.getTranscriptOps).toHaveBeenCalledTimes(1);
+      const heldSnapshot = deferred<SessionSnapshotResponse>();
+      let resync: Promise<void> | undefined;
+      if (boundary === 'resync' || boundary === 'rewrite') {
+        client.snapshot.mockImplementationOnce(async () => heldSnapshot.promise);
+        resync = controller.resync({ rewrite: boundary === 'rewrite' });
+      }
+      if (boundary === 'focus') controller.setFocusedAgent(agentId);
+      const reset = boundary === 'same-epoch' || boundary === 'new-epoch';
+      if (reset) controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.reset', agent_id: agentId,
+        cursor: { seq: 1, epoch: boundary === 'new-epoch' ? 'epoch-2' : 'epoch-1' },
+        snapshot: textTurnSnapshot('f1', 'NEW'),
+      }));
+      if (boundary === 'close') controller.close();
+      const calls = socket.updateTranscriptSince.mock.calls.length;
+      held.resolve({
+        session_id: 'session_test', agent_id: agentId, epoch: 'epoch-1', through_seq: 99, complete: true,
+        batches: [{ seq: 2, ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 3, text: ' RECOVERED' }] }],
+      });
+      await held.promise;
+      await Promise.resolve();
+      flushAll();
+      const view = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+      expect(view.blocks.find((block) => block.kind === 'assistant')).toMatchObject({ text: reset ? 'NEW' : 'OLD' });
+      expect(socket.updateTranscriptSince).toHaveBeenCalledTimes(calls);
+      heldSnapshot.resolve(snapshot());
+      await resync;
+      controller.close();
+    },
+  );
+
+  it('allows a new generation catchup while an obsolete request is unresolved', async () => {
+    const { controller, client, socket, flushAll } = await openTranscriptController();
+    const old = deferred<Awaited<ReturnType<SessionViewFacade['transcript']['catchUp']>>>();
+    const fresh = deferred<Awaited<ReturnType<SessionViewFacade['transcript']['catchUp']>>>();
+    client.getTranscriptOps.mockImplementationOnce((async () => old.promise) as never)
+      .mockImplementationOnce((async () => fresh.promise) as never);
+    const gap = () => {
+      controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.ops', agent_id: 'main', seq: 3,
+        ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 4, text: '!' }],
+      }));
+      flushAll();
+    };
+    seedTextAgent(controller, 'main', 'f1', 'OLD');
+    gap();
+    seedTextAgent(controller, 'main', 'f1', 'NEW');
+    gap();
+    expect(client.getTranscriptOps).toHaveBeenCalledTimes(2);
+    old.reject(new Error('obsolete transport failure'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.snapshot).toHaveBeenCalledTimes(1);
+    fresh.resolve({
+      session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 2, complete: true,
+      batches: [{ seq: 2, ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 3, text: '+' }] }],
+    });
+    await fresh.promise;
+    await Promise.resolve();
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({ text: 'NEW+!' });
+    expect(socket.updateTranscriptSince).toHaveBeenLastCalledWith('session_test', 'main', { seq: 3, epoch: 'epoch-1' });
+    controller.close();
+  });
+
   it('coalesces concurrent gaps on the same agent into one catchup', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     const held = deferred<{
@@ -2721,16 +3243,7 @@ describe('SessionController transcript authority', () => {
           meta: {},
         })),
       } as unknown as KikiClient,
-      {
-        subscribe: vi.fn(),
-        unsubscribe: vi.fn(),
-        updateCursor: vi.fn(),
-        abort: vi.fn(),
-        setTranscriptGrades: vi.fn(),
-        restartGeneration: vi.fn(),
-        updateTranscriptSince: vi.fn(),
-        clearTranscriptSince: vi.fn(),
-      } as unknown as KikiSocket,
+      fakeView({ snapshot: vi.fn(async () => snapshot({ session: { ...session, id: 'session_other' } })) }, {}, 'session_other'),
       'session_other',
       { scheduler: { schedule: (cb: () => void) => { cb(); return 0; }, cancel: () => {} } },
     );

@@ -16,7 +16,7 @@ import {
   workspaceChipDisplay,
   type SubagentGovernanceDraft,
 } from './agentSettings';
-import type { NamedAgentProfile, NamedAgentSubagentLease } from '@moonshot-ai/protocol';
+import type { NamedAgentProfile, NamedAgentSubagentLease } from '@kiki/protocol';
 
 const validDraft: SubagentGovernanceDraft = {
   denyModels: 'provider/blocked\nprovider/legacy',
@@ -412,6 +412,23 @@ describe('model profile read-only summary', () => {
       { label: 'allowedEfforts', value: 'low, medium' },
       { label: 'promptMode', value: 'wrap' },
       { label: 'prompt', value: 'Be terse.' },
+    ]);
+  });
+
+  it('surfaces budgets, service tier, and request params without requiring when', () => {
+    const summary = summarizeNamedAgentModelProfile({
+      alias: 'fast',
+      context_budget: 4096,
+      max_completion_tokens: 512,
+      service_tier: 'flex',
+      request_params: { temperature: 0.2, stream: true },
+    });
+    expect(summary.headline).toBe('fast');
+    expect(summary.details).toEqual([
+      { label: 'contextBudget', value: '4096' },
+      { label: 'maxCompletionTokens', value: '512' },
+      { label: 'serviceTier', value: 'flex' },
+      { label: 'requestParams', value: '{"temperature":0.2,"stream":true}' },
     ]);
   });
 

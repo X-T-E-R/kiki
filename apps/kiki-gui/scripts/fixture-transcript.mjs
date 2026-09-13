@@ -791,6 +791,7 @@ export class TranscriptProjector {
         const toolCallId = payload.toolCallId ?? payload.tool_call_id;
         const turnId = agent.live.turnId ?? turnIdOf(payload);
         const stepId = agent.live.stepId ?? stepIdOf(turnId, 1);
+        const existing = findFrame(findStep(findTurn(agent.snapshot, turnId), stepId), `tool-${toolCallId}`);
         projected = {
           agentId,
           ops: [
@@ -799,10 +800,11 @@ export class TranscriptProjector {
               turnId,
               stepId,
               frame: {
+                ...existing,
                 kind: 'tool',
                 frameId: `tool-${toolCallId}`,
                 toolCallId,
-                name: payload.name ?? 'tool',
+                name: payload.name ?? existing?.name ?? 'tool',
                 state: 'running',
                 progress: payload.update ?? payload.progress,
               },
@@ -816,6 +818,7 @@ export class TranscriptProjector {
         const turnId = agent.live.turnId ?? turnIdOf(payload);
         const stepId = agent.live.stepId ?? stepIdOf(turnId, 1);
         const isError = payload.is_error === true || payload.isError === true;
+        const existing = findFrame(findStep(findTurn(agent.snapshot, turnId), stepId), `tool-${toolCallId}`);
         projected = {
           agentId,
           ops: [
@@ -824,10 +827,11 @@ export class TranscriptProjector {
               turnId,
               stepId,
               frame: {
+                ...existing,
                 kind: 'tool',
                 frameId: `tool-${toolCallId}`,
                 toolCallId,
-                name: payload.name ?? 'tool',
+                name: payload.name ?? existing?.name ?? 'tool',
                 state: isError ? 'error' : 'done',
                 output: payload.output,
                 error: isError ? String(payload.output ?? 'error') : undefined,
@@ -909,6 +913,7 @@ export class TranscriptProjector {
                 interactionKind: 'approval',
                 toolCallId: payload.tool_call_id,
                 origin: { agentId },
+                anchor: payload.tool_call_id === undefined ? undefined : { kind: 'tool_call', toolCallId: payload.tool_call_id },
                 state: 'pending',
                 request: {
                   turnId: payload.turn_id,
@@ -1246,9 +1251,25 @@ function textOfMessage(message) {
     .join('\n');
 }
 
+/** Media URL carried by an image part (`image.source.url` / `image_url.imageUrl.url`). */
+function imageUrlOf(part) {
+  if (part?.type === 'image') return part.source?.kind === 'url' ? part.source.url : undefined;
+  if (part?.type === 'image_url') return part.imageUrl?.url;
+  return undefined;
+}
+
+/** Best-effort MIME from a data URI header; defaults to PNG (the common paste). */
+function mediaTypeOf(url) {
+  const match = /^data:([^;,]+)[;,]/.exec(url);
+  return match?.[1] ?? 'image/png';
+}
+
 /**
  * Fold journaled snapshot messages into canonical turns so a transcript-mode
  * attach has the same settled history the legacy snapshot page showed.
+ * Image parts on user messages surface as turn attachments (matching the
+ * served-history contract: `attachmentIds` on the turn + `attachments` on
+ * the snapshot), so fixtures exercise the real media rendering path.
  */
 export function seedMessages(projector, messages, options = {}) {
   const older = options.older ?? [];
@@ -1260,6 +1281,16 @@ export function seedMessages(projector, messages, options = {}) {
   agent.snapshot.hasMoreOlder = options.hasMore === true || older.length > 0;
 
   let current = null;
+  // Frame ids must stay unique across the WHOLE turn: the virtual timeline
+  // keys rows by the projected block id, and a per-message part index
+  // collides whenever one turn holds several assistant messages (duplicate
+  // keys leave only one measured element → stale positions → overlap).
+  const frameSeqByTurn = new Map();
+  const nextFrameSeq = (turnId) => {
+    const seq = frameSeqByTurn.get(turnId) ?? 0;
+    frameSeqByTurn.set(turnId, seq + 1);
+    return seq;
+  };
   const flush = () => {
     if (current === undefined || current === null) return;
     agent.snapshot.items.push(current);
@@ -1272,6 +1303,18 @@ export function seedMessages(projector, messages, options = {}) {
       ordinal += 1;
       const turnId = `t${ordinal}`;
       const prompt = textOfMessage(message);
+      const attachmentIds = [];
+      for (const part of message.content ?? []) {
+        const url = imageUrlOf(part);
+        if (typeof url !== 'string' || url === '') continue;
+        const attachmentId = `att-${turnId}-${attachmentIds.length}`;
+        attachmentIds.push(attachmentId);
+        upsertList(agent.snapshot.attachments, 'attachmentId', attachmentId, {
+          attachmentId,
+          mediaType: mediaTypeOf(url),
+          source: { kind: 'url', url },
+        });
+      }
       current = {
         kind: 'turn',
         turnId,
@@ -1283,6 +1326,7 @@ export function seedMessages(projector, messages, options = {}) {
           message.id,
         ),
         prompt,
+        attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         startedAt: message.created_at,
         endedAt: message.created_at,
         steps: [
@@ -1303,15 +1347,16 @@ export function seedMessages(projector, messages, options = {}) {
     if (current === null) continue;
     const step = current.steps[0];
     if (message.role === 'assistant') {
-      for (const [index, part] of (message.content ?? []).entries()) {
+      for (const part of message.content ?? []) {
         if (part.type === 'text') {
+          const seq = nextFrameSeq(current.turnId);
           step.frames.push({
             kind: 'text',
-            frameId: `asst-${current.turnId}-${index}`,
+            frameId: `asst-${current.turnId}-${seq}`,
             role: 'assistant',
             text: part.text,
             part: {
-              partId: `part-asst-${current.turnId}-${index}`,
+              partId: `part-asst-${current.turnId}-${seq}`,
               messageId: message.id,
               revision: 1,
               provenance: { source: 'engine' },
@@ -1320,7 +1365,7 @@ export function seedMessages(projector, messages, options = {}) {
         } else if (part.type === 'thinking') {
           step.frames.push({
             kind: 'thinking',
-            frameId: `think-${current.turnId}-${index}`,
+            frameId: `think-${current.turnId}-${nextFrameSeq(current.turnId)}`,
             text: part.thinking,
           });
         } else if (part.type === 'tool_use') {

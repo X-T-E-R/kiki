@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Message } from '@moonshot-ai/protocol';
+import type { Message } from '@kiki/protocol';
 
 import {
   FILE_LINK_SENTINEL,
@@ -12,6 +12,7 @@ import {
   mediaFromContentParts,
   previewKindOf,
   resolveFileHref,
+  resolveFileReference,
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
 } from './media';
@@ -100,6 +101,38 @@ describe('extractToolOutputMedia', () => {
     expect(extractToolOutputMedia({ kind: 'text', text: 'x' })).toBeUndefined();
     expect(extractToolOutputMedia([{ type: 'text', text: 'only text' }])).toBeUndefined();
     expect(extractToolOutputMedia([{ a: 1 }, { b: 2 }])).toBeUndefined();
+  });
+});
+
+describe('file reference positions', () => {
+  it.each([
+    ['taskService.ts:1063', '/work/taskService.ts', 1063, undefined],
+    ['src/taskService.ts:1063:7', '/work/src/taskService.ts', 1063, 7],
+    ['C:\\work\\taskService.ts:1063:7', 'C:\\work\\taskService.ts', 1063, 7],
+    ['/C:/work/taskService.ts:1063', 'C:/work/taskService.ts', 1063, undefined],
+    ['file:///C:/work/%E4%B8%AD%20a.ts:12:3', 'C:/work/中 a.ts', 12, 3],
+    ['file:///work/app.ts#L12C3', '/work/app.ts', 12, 3],
+    ['src/中 a.ts:2', '/work/src/中 a.ts', 2, undefined],
+    ['src/a%20b.ts:2', '/work/src/a b.ts', 2, undefined],
+  ])('separates %s', (href, path, line, column) => {
+    expect(resolveFileReference(href, '/work')).toEqual({ path, line, column });
+    expect(resolveFileHref(href, '/work')).toBe(path);
+    if (!href.startsWith('/') || href.startsWith('/C:')) expect(wrapFileLinkTarget(href)).toBeDefined();
+  });
+
+  it('normalizes only explicit Windows drive roots and preserves filename punctuation', () => {
+    for (const path of ['/C:/work/中 dir', '/C:\\work\\dir']) {
+      expect(resolveFileHref(path, undefined)).toBe(path.slice(1));
+    }
+    for (const path of ['/var/a:b.ts', '/work/a.ts:notes', '/C:relative', '/work/a.ts:0']) {
+      expect(resolveFileReference(path, undefined)).toEqual({ path });
+    }
+    expect(resolveFileReference('file:///work/a.ts%3A12', undefined)).toEqual({ path: '/work/a.ts:12' });
+    expect(resolveFileReference('/work/a.ts%2312', undefined)).toEqual({ path: '/work/a.ts#12' });
+  });
+
+  it.each(['https://example.test/a.ts:12', '//example.test/a.ts:12', 'mailto:a@example.test', 'ms://file/a.ts:12', '/s/session/file.ts:12', '/settings/general', '/settings?tab=general', '/usage#today', '#L12'])('does not capture %s', (href) => {
+    expect(resolveFileReference(href, '/work')).toBeUndefined();
   });
 });
 

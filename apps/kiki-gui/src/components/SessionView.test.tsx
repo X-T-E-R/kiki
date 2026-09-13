@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { Session } from '@moonshot-ai/protocol';
+import type { Session } from '@kiki/protocol';
 
 import {
   assistantMessageIdFromBlock,
@@ -28,6 +28,11 @@ import { AgentTreeView } from './AgentTreeView';
 import { Transcript } from './Transcript';
 import { ContextMeter } from './ContextMeter';
 import { RightRail } from './RightRail';
+
+vi.mock('./AgentPanelContainer', () => ({
+  AgentPanelContainer: ({ state }: { state: { todos: readonly { title: string }[] } }) =>
+    <div data-panel-props>{state.todos.map((todo) => todo.title).join('\n')}</div>,
+}));
 import { PendingBadge } from './PendingBadge';
 import { QueueStrip } from './QueueStrip';
 import { toolErrorSummary } from './ToolCard';
@@ -59,10 +64,12 @@ import {
   sessionAgentProfileWorkspaceId,
   SessionRouteView,
   shouldClearModeOverride,
+  shouldClearPendingProfileOnSendError,
   shouldCloseSessionChromeOnEscape,
   shouldHandleApprovalShortcut,
   isTerminalShortcut,
 } from './SessionView';
+import { API_CODES, ApiError } from '../lib/client';
 
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
 
@@ -487,6 +494,26 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: 'low',
       }),
     ).toEqual({ profile: 'reviewer', model: 'provider/other', thinking: 'low' });
+  });
+});
+
+describe('shouldClearPendingProfileOnSendError', () => {
+  it('keeps the pending pick (and draft) on network failure and timeout', () => {
+    expect(
+      shouldClearPendingProfileOnSendError(new ApiError({ code: -1, msg: 'network down', data: null })),
+    ).toBe(false);
+    expect(
+      shouldClearPendingProfileOnSendError(
+        new ApiError({ code: API_CODES.TIMEOUT, msg: 'timed out', data: null }),
+      ),
+    ).toBe(false);
+    expect(shouldClearPendingProfileOnSendError(new Error('boom'))).toBe(false);
+  });
+
+  it('clears the pick only on a definitive server-side business rejection', () => {
+    expect(
+      shouldClearPendingProfileOnSendError(new ApiError({ code: 40001, msg: 'route locked', data: null })),
+    ).toBe(true);
   });
 });
 
@@ -1234,11 +1261,11 @@ describe('agent tree chrome', () => {
         </I18nProvider>
       </MemoryRouter>,
     );
-    // Own task chapter: description, result summary, status, usage rows.
+    // Own task chapter stays focused on status and task description.
     expect(html).toContain('Review the presentation contract');
-    expect(html).toContain('Presentation contract verified.');
+    expect(html).not.toContain('Presentation contract verified.');
     expect(html).toContain('data-agent-status="completed"');
-    expect(html).toContain('30.0s');
+    expect(html).not.toContain('30.0s');
     // Needs-input badge with the pending count.
     expect(html).toContain('data-needs-input');
     expect(html).toContain('Needs input');

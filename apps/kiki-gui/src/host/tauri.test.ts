@@ -44,6 +44,21 @@ describe('native desktop bridge', () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([
+    ['/C:/work/中 dir', 'C:/work/中 dir'],
+    ['/D:\\work\\dir', 'D:\\work\\dir'],
+    ['/var/a:b.ts', '/var/a:b.ts'],
+    ['C:/work/a%20b.ts', 'C:/work/a%20b.ts'],
+    ['C:/work/a b.ts', 'C:/work/a b.ts'],
+    ['/work/a.ts:12', '/work/a.ts:12'],
+    ['//server/share/file.ts', '//server/share/file.ts'],
+  ])('passes real host path %s to both native openers', async (input, path) => {
+    await tauriHost.revealPath(input);
+    await tauriHost.openPath(input);
+    expect(invoke).toHaveBeenNthCalledWith(1, 'reveal_host_path', { path });
+    expect(invoke).toHaveBeenNthCalledWith(2, 'open_host_path', { path });
+  });
+
   it('checks and installs a desktop update through native commands', async () => {
     invoke.mockResolvedValueOnce({
       currentVersion: '0.1.0-beta.1',

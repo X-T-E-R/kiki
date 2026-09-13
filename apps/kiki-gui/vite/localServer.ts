@@ -56,9 +56,7 @@ interface DetectLocalServerOptions {
 }
 
 function kikiHomeDir(): string {
-  return process.env['KIKI_HOME']
-    ?? process.env['KIMI_CODE_HOME']
-    ?? join(homedir(), '.kiki');
+  return process.env['KIKI_HOME'] ?? join(homedir(), '.kiki');
 }
 
 function pidAlive(pid: number): boolean {
@@ -148,7 +146,7 @@ export function rankServerInstances(
 
 async function probeServer(url: string, token: string): Promise<boolean> {
   try {
-    const response = await fetch(`${url}/api/v1/meta`, {
+    const response = await fetch(`${url}/api/meta`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(IDENTITY_PROBE_TIMEOUT_MS),
     });

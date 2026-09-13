@@ -1,4 +1,4 @@
-import type { NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease } from '@moonshot-ai/protocol';
+import type { NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease } from '@kiki/protocol';
 
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
 import { configObjectOrEmpty, normalizeConfigStringList } from './settings';
@@ -216,6 +216,8 @@ export function namedAgentNewSessionBlocked(
 export type NamedAgentLeaseDetailLabel =
   | 'description'
   | 'whenToUse'
+  | 'contextBudget'
+  | 'maxCompletionTokens'
   | 'serviceTier'
   | 'delegationNotice'
   | 'promptMode'
@@ -244,9 +246,9 @@ export interface NamedAgentLeaseSummary {
 }
 
 export interface NamedAgentModelProfileSummary {
-  /** `alias → when · thinking_effort`, skipping an empty effort. */
+  /** `alias → when · thinking_effort`, skipping optional fields. */
   readonly headline: string;
-  /** One entry per non-empty allowed_efforts/prompt_mode/prompt field. */
+  /** One entry per non-empty model profile parameter or prompt field. */
   readonly details: readonly { readonly label: NamedAgentLeaseDetailLabel; readonly value: string }[];
 }
 
@@ -257,8 +259,15 @@ export interface NamedAgentModelProfileSummary {
  * produces a visible detail.
  */
 export function summarizeNamedAgentModelProfile(entry: NamedAgentModelProfile): NamedAgentModelProfileSummary {
-  const headline = `${entry.alias} → ${entry.when}${entry.thinking_effort === undefined ? '' : ` · ${entry.thinking_effort}`}`;
+  const when = entry.when?.trim();
+  const headline = `${entry.alias}${when === undefined || when === '' ? '' : ` → ${when}`}${entry.thinking_effort === undefined ? '' : ` · ${entry.thinking_effort}`}`;
   const details: { readonly label: NamedAgentLeaseDetailLabel; readonly value: string }[] = [];
+  if (entry.context_budget !== undefined && entry.context_budget > 0) details.push({ label: 'contextBudget', value: String(entry.context_budget) });
+  if (entry.max_completion_tokens !== undefined && entry.max_completion_tokens > 0) details.push({ label: 'maxCompletionTokens', value: String(entry.max_completion_tokens) });
+  if (entry.service_tier !== undefined) details.push({ label: 'serviceTier', value: entry.service_tier });
+  if (entry.request_params !== undefined && Object.keys(entry.request_params).length > 0) {
+    details.push({ label: 'requestParams', value: JSON.stringify(entry.request_params) });
+  }
   if (entry.allowed_efforts !== undefined && entry.allowed_efforts.length > 0) {
     details.push({ label: 'allowedEfforts', value: entry.allowed_efforts.join(', ') });
   }

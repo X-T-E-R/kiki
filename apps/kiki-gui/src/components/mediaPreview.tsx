@@ -19,7 +19,7 @@ import { createPortal } from 'react-dom';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { basenameOf, formatBytes, type MediaRef } from '@kiki/session-core/composer/media';
+import { basenameOf, formatBytes, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import { useOptionalConnection } from '../state/connection';
 import {
   closeAllPreviewTabs,
@@ -43,6 +43,11 @@ import {
 } from './mediaPreviewContext';
 
 export { useMediaPreview } from './mediaPreviewContext';
+
+// Filesystem paths are not URI/citation text: preserve percent escapes and colons.
+function normalizeRawPath(path: string): string {
+  return /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path;
+}
 
 const WIDTH_STORAGE_KEY = 'kiki.previewPanelWidth';
 const DEFAULT_WIDTH = 420;
@@ -106,8 +111,12 @@ export function MediaPreviewProvider({
   } | null>(null);
   const shell = useOptionalConversationShell();
 
-  const openFile = useCallback((path: string) => {
-    setTabsState((state) => openPreviewTab(state, path));
+  const [navigation, setNavigation] = useState<FileReference | undefined>();
+  const openFile = useCallback((input: string | FileReference) => {
+    const raw = typeof input === 'string' ? { path: input } : input;
+    const reference = { ...raw, path: normalizeRawPath(raw.path) };
+    setTabsState((state) => openPreviewTab(state, reference.path));
+    setNavigation(reference);
     setPanelOpen(true);
   }, []);
 
@@ -190,6 +199,7 @@ export function MediaPreviewProvider({
     <PreviewWorkspace
       tabs={tabsState.tabs}
       active={tabsState.active}
+      navigation={navigation}
       dirtyPaths={dirtyPaths}
       width={width}
       onActivate={(path) => { setTabsState((state) => ({ ...state, active: path })); }}
@@ -653,6 +663,7 @@ export function FilePathLink({ path, className }: { path: string; className?: st
   const preview = useMediaPreview();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   if (preview === null) return <span className={className}>{path}</span>;
+  const filePath = normalizeRawPath(path);
   const entries: MiniMenuEntry[] = [
     { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(path); } },
     { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(path) },
@@ -662,12 +673,12 @@ export function FilePathLink({ path, className }: { path: string; className?: st
           {
             key: 'show-in-folder',
             label: t('file.showInFolder'),
-            run: () => host.revealPath?.(path),
+            run: () => host.revealPath?.(filePath),
           } as const,
           {
             key: 'open-default-app',
             label: t('file.openDefaultApp'),
-            run: () => host.openPath?.(path),
+            run: () => host.openPath?.(filePath),
           } as const,
         ]
       : []),

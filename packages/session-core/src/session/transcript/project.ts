@@ -13,15 +13,15 @@ import type {
   TokenUsage,
   ToolInputDisplay,
   UsageStatus,
-} from '@moonshot-ai/protocol';
-import { transcriptValueEquals } from '@moonshot-ai/transcript';
+} from '@kiki/protocol';
+import { transcriptValueEquals } from '@kiki/transcript';
 import type {
   AgentState,
   AgentTranscriptSnapshot,
   TranscriptItem,
   TranscriptPrompt,
   TranscriptTask,
-} from '@moonshot-ai/transcript';
+} from '@kiki/transcript';
 
 import type {
   AgentTranscriptAgent,
@@ -159,6 +159,7 @@ function classifiedTextToBlocks(input: {
     case 'shell': {
       const shell = classified.shell ?? {
         commandId: input.id,
+        command: undefined,
         output: classified.text,
         isError: undefined,
       };
@@ -166,6 +167,7 @@ function classifiedTextToBlocks(input: {
         kind: 'shell',
         id: `shell-${shell.commandId}`,
         commandId: shell.commandId,
+        command: shell.command,
         output: shell.output,
         done: true,
         isError: shell.isError,
@@ -236,6 +238,30 @@ function turnMessageId(item: object): string | undefined {
 function frameMessageId(frame: object): string | undefined {
   const part = (frame as { readonly part?: { readonly messageId?: string } }).part;
   return part?.messageId;
+}
+
+function shellCommandFromFrame(frame: {
+  readonly input?: unknown;
+  readonly inputText?: string;
+}): string | undefined {
+  const input = frame.input;
+  const direct =
+    typeof input === 'object' && input !== null
+      ? (input as { readonly command?: unknown }).command
+      : undefined;
+  if (typeof direct === 'string' && direct.trim() !== '') return direct;
+  const inputText = frame.inputText;
+  if (typeof inputText !== 'string' || inputText.trim() === '') return undefined;
+  try {
+    const parsed = JSON.parse(inputText) as unknown;
+    if (typeof parsed === 'object' && parsed !== null) {
+      const parsedCommand = (parsed as { readonly command?: unknown }).command;
+      if (typeof parsedCommand === 'string' && parsedCommand.trim() !== '') return parsedCommand;
+    }
+  } catch {
+    return inputText;
+  }
+  return inputText;
 }
 
 function isLiveStreamingFrame(
@@ -581,6 +607,7 @@ function overlaySubagentBlock(block: SubagentBlock, snapshot: SnapshotSubagent):
     summary: block.summary ?? presentText(snapshot.output_preview),
     toolCallCount:
       snapshotCount === undefined ? block.toolCallCount : Math.max(block.toolCallCount, snapshotCount),
+    toolCallCountKnown: snapshotCount === undefined ? block.toolCallCountKnown : true,
   };
 }
 
@@ -845,6 +872,7 @@ function subagentBlocksFromSnapshot(
         startedAt,
         endedAt: task.endedAt ?? existing?.endedAt,
         toolCallCount: existing?.toolCallCount ?? 0,
+        toolCallCountKnown: existing?.toolCallCountKnown ?? false,
         transcript: [],
       });
       admittedTaskIds.add(task.taskId);
@@ -869,7 +897,10 @@ function subagentBlocksFromSnapshot(
         if (frame.kind !== 'tool') continue;
         const frameAt = frame.startedAt ?? step.startedAt ?? item.startedAt;
         const resumedTargets = new Set<string>();
-        for (const raw of resumeTargetsFromToolArgs(frame.input)) {
+        const resumeTargets = frame.name === 'AgentRun' || frame.name === 'AgentSwarm' || frame.name === 'Agent'
+          ? resumeTargetsFromToolArgs(frame.input)
+          : [];
+        for (const raw of resumeTargets) {
           const targetId = resolveKnownAgentId(raw, byAgent, tasksByAgentKeySet, nameToAgentId);
           if (targetId === undefined || resumedTargets.has(targetId)) continue;
           resumedTargets.add(targetId);
@@ -929,6 +960,7 @@ function subagentBlocksFromSnapshot(
             startedAt: task?.startedAt ?? existing?.startedAt ?? frame.startedAt,
             endedAt: task?.endedAt ?? existing?.endedAt,
             toolCallCount: existing?.toolCallCount ?? 0,
+            toolCallCountKnown: existing?.toolCallCountKnown ?? false,
             transcript: [],
           });
         }
@@ -1776,7 +1808,8 @@ export function agentTranscriptToBlocks(
           kind: 'shell',
           id: `shell-${task.taskId}`,
           commandId: task.taskId,
-          output: task.outputTail === '' ? (task.description ?? task.taskId) : task.outputTail,
+          command: undefined,
+          output: task.outputTail,
           done: task.state !== 'running',
           isError:
             task.state === 'failed' ||
@@ -1931,16 +1964,17 @@ export function agentTranscriptToBlocks(
                 frame.inputText !== undefined ||
                 typeof frame.input === 'object')
             ) {
-              const command =
-                typeof (frame.input as { command?: unknown } | undefined)?.command === 'string'
-                  ? `$ ${(frame.input as { command: string }).command}`
-                  : frame.inputText ?? '';
+              const previousCommand = previous.findLast(
+                (block): block is ShellBlock =>
+                  block.kind === 'shell' && block.commandId === frame.toolCallId,
+              )?.command;
+              const command = shellCommandFromFrame(frame) ?? previousCommand;
               const frameOutput =
                 typeof frame.output === 'string'
                   ? frame.output
                   : typeof frame.output === 'object' && frame.output !== null && 'stdout' in (frame.output as object)
                     ? String((frame.output as { stdout?: unknown }).stdout ?? '')
-                    : frame.error ?? command;
+                    : frame.error ?? '';
               const output =
                 shellTask?.outputTail === '' || shellTask?.outputTail === undefined
                   ? frameOutput
@@ -1949,7 +1983,8 @@ export function agentTranscriptToBlocks(
                 kind: 'shell',
                 id: `shell-${frame.toolCallId}`,
                 commandId: frame.toolCallId,
-                output: output === '' ? command : output,
+                command,
+                output,
                 done: shellTask === undefined ? frame.state !== 'running' : shellTask.state !== 'running',
                 isError:
                   shellTask === undefined
@@ -2018,7 +2053,24 @@ export function agentTranscriptToBlocks(
     insertByTimeline(withTaskBlocks, block);
   }
   const projectedSubagents = subagentBlocksFromSnapshot(response, response.agent_id);
-  const withSubagents = insertSubagentBlocks(withTaskBlocks, projectedSubagents.blocks, previous);
+  const targetsByTool = new Map<string, Set<string>>();
+  for (const event of projectedSubagents.events) {
+    if (event.anchorToolCallId === undefined) continue;
+    const targets = targetsByTool.get(event.anchorToolCallId) ?? new Set<string>();
+    targets.add(event.subagentId);
+    targetsByTool.set(event.anchorToolCallId, targets);
+  }
+  const navigableBlocks = withTaskBlocks.map((block) => {
+    if (block.kind !== 'tool') return block;
+    const targets = targetsByTool.get(block.toolCallId);
+    if (targets === undefined) return block;
+    const refs = [...(block.agentRefs ?? [])];
+    for (const agentId of targets) {
+      if (!refs.some((ref) => ref.agentId === agentId)) refs.push({ agentId });
+    }
+    return refs.length === block.agentRefs?.length ? block : { ...block, agentRefs: refs };
+  });
+  const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous);
   const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
   return insertInteractionBlocks(
     withSubagentEvents,
@@ -2256,7 +2308,7 @@ export function projectAgentTranscriptView(
     loadError: undefined,
     busy: agentBusyFromMeta(source) === true,
     turnStartedAt: Number.isNaN(parsedTurnStartedAt) ? undefined : parsedTurnStartedAt,
-    model: meta?.model,
+    model: meta?.model ?? previous.model,
     thinkingEffort: meta?.thinkingEffort,
     contextTokens: meta?.contextTokens,
     maxContextTokens: meta?.maxContextTokens,
@@ -2318,6 +2370,7 @@ export function applyTranscriptShell(
     loadError: undefined,
     resyncFailed: false,
     resyncAttempt: 0,
+    resyncError: undefined,
   };
 }
 
@@ -2329,7 +2382,7 @@ function transcriptItemId(item: TranscriptItem): string {
 
 export function prependOlderTranscriptSnapshot(
   current: AgentTranscriptSnapshot,
-  older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments'> & { readonly hasMore?: boolean; readonly has_more?: boolean },
+  older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments' | 'hasMoreOlder'> & { readonly hasMore?: boolean; readonly has_more?: boolean },
 ): AgentTranscriptSnapshot {
   const existingIds = new Set(current.items.map(transcriptItemId));
   const prepended = older.items.filter((item) => !existingIds.has(transcriptItemId(item)));
@@ -2341,7 +2394,7 @@ export function prependOlderTranscriptSnapshot(
     ...current,
     items: [...prepended, ...current.items],
     attachments: [...olderAttachments, ...current.attachments],
-    hasMoreOlder: older.hasMore ?? older.has_more ?? current.hasMoreOlder,
+    hasMoreOlder: older.hasMoreOlder ?? older.hasMore ?? older.has_more ?? current.hasMoreOlder,
   };
 }
 

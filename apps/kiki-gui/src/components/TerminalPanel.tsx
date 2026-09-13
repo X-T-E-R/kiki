@@ -25,7 +25,7 @@ import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { runToastAction } from '../lib/toasts';
 import { onThemeChange } from '../lib/theme';
-import type { WsStatus } from '../lib/ws';
+import type { TerminalConnectionStatus as WsStatus } from '@kiki/klient';
 import type { TerminalManager, TerminalTab } from '../state/terminalManager';
 
 /**

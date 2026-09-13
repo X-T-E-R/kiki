@@ -27,12 +27,16 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
+import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
+import type { AgentTranscriptSnapshot } from '@kiki/transcript';
 
 import {
   SessionController,
+  agentTranscriptToBlocks,
   assistantMessageIdFromBlockId,
+  buildAgentForest,
   createViewState,
+  type AgentForest,
   type Block,
   type SessionViewState,
 } from '@kiki/session-core/session';
@@ -53,13 +57,15 @@ import {
 } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import { I18nProvider } from '../i18n';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
-import type { KikiSocket } from '../lib/ws';
+import { revealSubagentCard } from './ActivityHistory';
 import { Markdown } from './Markdown';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { resolveSubagentToolCalls } from './subagentToolCalls';
 import { ToolCard } from './ToolCard';
 import {
   splitPrefixSegments,
   splitStreamingText,
+  subagentAutoForm,
   Transcript,
   TurnTailLine,
   type TranscriptRowActions,
@@ -435,6 +441,33 @@ describe('splitPrefixSegments streaming differential', () => {
     );
     expect(probe.container.querySelector('[data-turn-tail]')?.textContent).toContain('20 tok/s');
   });
+
+  it('ages the turn-tail clock instead of freezing at first render', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <TurnTailLine
+        tail={{
+          turnId: '1',
+          endedAt: new Date(Date.now() - 9_000).toISOString(),
+          durationMs: 4_200,
+          ttftMs: 1_500,
+          usage: {
+            inputOther: 100,
+            output: 30,
+            inputCacheRead: 20,
+            inputCacheCreation: 10,
+          },
+          tokensPerSecond: 19.6,
+        }}
+      />,
+    );
+    const text = () => probe.container.querySelector('[data-turn-tail]')?.textContent ?? '';
+    expect(text()).toContain('just now');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2_200)); });
+    expect(text()).toMatch(/\d+s ago/);
+    expect(text()).not.toContain('just now');
+  });
 });
 
 describe('media preview wiring', () => {
@@ -726,6 +759,7 @@ describe('live and event chrome', () => {
         kind: 'shell',
         id: 'shell-1',
         commandId: 'bash-1',
+        command: 'pnpm test',
         output: 'first line\nSuite is green — 42 passed.',
         done: true,
         isError: undefined,
@@ -736,8 +770,9 @@ describe('live and event chrome', () => {
 
     expect(shell).not.toBeNull();
     expect(trigger?.getAttribute('aria-expanded')).toBe('false');
-    // Collapsed: no log body, but the header still carries a tail preview.
+    // Collapsed: no log body, but the header keeps the command and output tail.
     expect(shell?.querySelector('pre')).toBeNull();
+    expect(shell?.textContent).toContain('$ pnpm test');
     expect(shell?.textContent).toContain('Suite is green — 42 passed.');
     expect(shell?.textContent).not.toContain('first line');
 
@@ -745,7 +780,33 @@ describe('live and event chrome', () => {
       flushSync(() => { click(trigger!); });
     });
     expect(trigger?.getAttribute('aria-expanded')).toBe('true');
+    expect(shell?.textContent).toContain('$ pnpm test');
     expect(shell?.querySelector('pre')?.textContent).toContain('first line');
+  });
+
+  it('shows the full long command only after expanding while keeping output separate', async () => {
+    const command = 'node -e ' + 'x'.repeat(180);
+    const container = await renderTranscript([
+      {
+        kind: 'shell',
+        id: 'shell-long',
+        commandId: 'bash-long',
+        command,
+        output: 'done',
+        done: true,
+        isError: undefined,
+      },
+    ]);
+    const shell = container.querySelector('[data-shell]')!;
+    const trigger = shell.querySelector('button')!;
+    const commandPreview = shell.querySelector('[data-shell-command-preview]');
+    expect(commandPreview?.className).toContain('truncate');
+    expect(commandPreview?.textContent).toContain('$ ' + command);
+    await act(async () => {
+      flushSync(() => { click(trigger); });
+    });
+    expect(shell.querySelector('[data-shell-command-full]')?.textContent).toContain(command);
+    expect(shell.querySelector('pre')?.textContent).toBe('done');
   });
 });
 
@@ -776,6 +837,9 @@ describe('explicit unknown timing', () => {
   it('shows an explicit dash instead of 0ms when a subagent start or end is unknown', async () => {
     const container = await renderTranscript([
       subagentBlock({ subagentId: 'agent-no-times' }),
+      // Adjacent compact cards fold into a history run; a non-compact entry
+      // between them keeps both cards individually visible for this probe.
+      { kind: 'notice', id: 'break', text: 'boundary', tone: 'danger' },
       subagentBlock({
         subagentId: 'agent-no-end',
         startedAt: '2026-01-01T00:00:00.000Z',
@@ -841,6 +905,33 @@ describe('explicit unknown timing', () => {
     await renderSettled(root, <ToolCard block={block as Extract<Block, { kind: 'tool' }>} />);
     return container;
   }
+
+  it('keeps a failed Bash command summary instead of replacing it with the error', async () => {
+    const container = await renderToolCard({
+      kind: 'tool',
+      id: 'tool-bash-failed',
+      toolCallId: 'bash-failed',
+      name: 'Bash',
+      argsText: '{"command":"pnpm test"}',
+      args: { command: 'pnpm test' },
+      display: undefined,
+      description: undefined,
+      status: 'error',
+      output: 'permission denied',
+      isError: true,
+      startedAt: undefined,
+      durationMs: undefined,
+      progressText: undefined,
+    });
+    const trigger = container.querySelector('button')!;
+    expect(trigger.textContent).toContain('pnpm test');
+    expect(trigger.textContent).not.toContain('permission denied');
+    await act(async () => {
+      flushSync(() => { click(trigger); });
+    });
+    expect(container.textContent).toContain('pnpm test');
+    expect(container.textContent).toContain('permission denied');
+  });
 
   it('marks a settled tool duration as unknown instead of showing the turn-level fallback', async () => {
     // The projection falls back to the TURN's durationMs when frame-level
@@ -1160,7 +1251,21 @@ async function openLiveTranscript() {
   const pending: (() => void)[] = [];
   const controller = new SessionController(
     client as unknown as KikiClient,
-    socket as unknown as KikiSocket,
+    {
+      snapshot: client.snapshot,
+      transcript: {
+        page: client.getAgentTranscript as unknown as import('@kiki/klient/session-view').SessionViewFacade['transcript']['page'],
+        catchUp: vi.fn(),
+      },
+      subscribe: () => ({
+        updateSessionCursor: socket.updateCursor,
+        setTranscriptGrades: socket.setTranscriptGrades,
+        updateTranscriptCursor: socket.updateTranscriptSince,
+        restart: socket.restartGeneration,
+        nudge: vi.fn(),
+        close: socket.unsubscribe,
+      }),
+    },
     'session_test',
     {
       scheduler: {
@@ -1353,6 +1458,23 @@ function transcriptDistanceFromEnd(scroll: HTMLElement): number {
 }
 
 describe('virtualized transcript scrolling', () => {
+  it('positions the next row in the same resize delivery instead of a later animation frame', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([
+      userBlock({ id: 'growing-user', text: 'long message' }),
+      assistantBlock('next-reply', 'must stay below the user message'),
+    ])));
+    await settleVirtualizer();
+    const first = container.querySelector<HTMLElement>('[data-transcript-virtual-item][data-index="0"]')!;
+    const second = container.querySelector<HTMLElement>('[data-transcript-virtual-item][data-index="1"]')!;
+    act(() => {
+      resizeElement(first, 900);
+      expect(virtualItemStart(second)).toBe(virtualItemStart(first) + 900 + 16);
+      resizeElement(first, 120);
+      expect(virtualItemStart(second)).toBe(virtualItemStart(first) + 120 + 16);
+    });
+  });
+
   it('keeps the mounted block DOM bounded for a large transcript', async () => {
     const blocks = virtualBlocks(1000);
     const { root, container } = makeRoot();
@@ -1966,6 +2088,7 @@ describe('subagent timeline dual form (G-4)', () => {
   async function renderWithAgents(
     blocks: Block[],
     opened: string[],
+    forest?: AgentForest,
   ): Promise<HTMLDivElement> {
     const { root, container } = makeRoot();
     await renderSettled(
@@ -1976,18 +2099,27 @@ describe('subagent timeline dual form (G-4)', () => {
         onResolveApproval={() => noopActions()}
         onAnswerQuestion={() => noopActions()}
         onDismissQuestion={() => noopActions()}
+        forest={forest}
         onOpenAgent={(agentId) => { opened.push(agentId); }}
       />,
     );
     return container;
   }
 
-  it('renders a compact lifecycle row that jumps to the agent page', async () => {
+  it('folds consecutive lifecycle rows into a history run that expands in place', async () => {
     const opened: string[] = [];
     const container = await renderWithAgents(
       [eventBlock('agent-1', 'sent'), eventBlock('agent-1', 'completed')],
       opened,
     );
+    // Two consecutive terminal events collapse behind one summary row…
+    expect(container.querySelectorAll('[data-subagent-event]')).toHaveLength(0);
+    const runToggle = container.querySelector('[data-history-run] > button');
+    expect(runToggle?.textContent).toContain('2');
+    await act(async () => {
+      flushSync(() => { click(runToggle!); });
+    });
+    // …and expand back to the individual rows, in order, still clickable.
     const rows = [...container.querySelectorAll('[data-subagent-event]')];
     expect(rows).toHaveLength(2);
     expect(rows[0]?.textContent).toContain('Input sent');
@@ -1996,6 +2128,18 @@ describe('subagent timeline dual form (G-4)', () => {
       flushSync(() => { click(rows[0]!); });
     });
     expect(opened).toEqual(['agent-1']);
+  });
+
+  it('keeps failed and cancelled lifecycle events out of the fold', async () => {
+    const container = await renderWithAgents(
+      [eventBlock('agent-1', 'sent'), eventBlock('agent-1', 'failed')],
+      [],
+    );
+    // The failed event must stay individually visible; nothing folds.
+    expect(container.querySelector('[data-history-run]')).toBeNull();
+    const rows = [...container.querySelectorAll('[data-subagent-event]')];
+    expect(rows).toHaveLength(2);
+    expect(rows[1]?.textContent).toContain('Failed');
   });
 
   it('collapses a terminal card to compact with summary, duration, and tools', async () => {
@@ -2057,5 +2201,358 @@ describe('subagent timeline dual form (G-4)', () => {
     });
     expect(card()?.getAttribute('data-card-form')).toBe('full');
     expect(card()?.textContent).toContain('the task brief');
+  });
+
+  it('auto form: only running/background go full; suspended, completed and unknown stay compact', () => {
+    expect(subagentAutoForm('running')).toBe('full');
+    expect(subagentAutoForm('background')).toBe('full');
+    expect(subagentAutoForm('suspended')).toBe('compact');
+    expect(subagentAutoForm('completed')).toBe('compact');
+    expect(subagentAutoForm('failed')).toBe('compact');
+    expect(subagentAutoForm('cancelled')).toBe('compact');
+    expect(subagentAutoForm('unknown')).toBe('compact');
+  });
+
+  it('renders a suspended card compact and a completed parent does not inflate for a running child', async () => {
+    const forest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'Main' },
+        { agentId: 'agent-parent', parentAgentId: 'main', name: 'Parent', status: 'completed', toolCallCount: 1 },
+        { agentId: 'agent-grand', parentAgentId: 'agent-parent', name: 'Grand', status: 'running', toolCallCount: 0 },
+      ],
+    );
+    const container = await renderWithAgents(
+      [
+        lifecycleSubagentBlock('agent-suspended', { status: 'suspended', name: 'Sleeper' }),
+        // A non-compact entry between the cards keeps both individually visible.
+        { kind: 'notice', id: 'break', text: 'boundary', tone: 'danger' },
+        lifecycleSubagentBlock('agent-parent', { name: 'Parent' }),
+      ],
+      [],
+      forest,
+    );
+    // Neither suspension nor an active grandchild inflates a card.
+    const cards = [...container.querySelectorAll('[data-card-form]')];
+    const byId = new Map(cards.map((card) => [card.getAttribute('data-subagent-id'), card]));
+    expect(byId.get('agent-suspended')?.getAttribute('data-card-form')).toBe('compact');
+    expect(byId.get('agent-parent')?.getAttribute('data-card-form')).toBe('compact');
+  });
+
+  it('folds consecutive compact cards but leaves a failed card individually visible', async () => {
+    const container = await renderWithAgents(
+      [
+        lifecycleSubagentBlock('agent-a', { name: 'Alpha' }),
+        lifecycleSubagentBlock('agent-b', { name: 'Beta' }),
+        lifecycleSubagentBlock('agent-c', {
+          name: 'Gamma',
+          status: 'failed',
+          error: 'model request failed',
+        }),
+      ],
+      [],
+    );
+    // Alpha + Beta fold; the failed Gamma card stays on the timeline.
+    const visible = [...container.querySelectorAll('[data-card-form]')];
+    expect(visible.map((card) => card.getAttribute('data-subagent-id'))).toEqual(['agent-c']);
+    expect(visible[0]?.textContent).toContain('model request failed');
+    const runToggle = container.querySelector('[data-history-run] > button');
+    expect(runToggle?.textContent).toContain('2');
+    await act(async () => {
+      flushSync(() => { click(runToggle!); });
+    });
+    const expanded = [...container.querySelectorAll('[data-card-form]')];
+    expect(expanded.map((card) => card.getAttribute('data-subagent-id'))).toEqual([
+      'agent-a',
+      'agent-b',
+      'agent-c',
+    ]);
+  });
+
+  it('shows "not reported" when neither task nor roster ever reported a tool count', async () => {
+    const container = await renderWithAgents(
+      [
+        lifecycleSubagentBlock('agent-live', {
+          status: 'running',
+          endedAt: undefined,
+          toolCallCount: 0,
+          toolCallCountKnown: false,
+        }),
+      ],
+      [],
+    );
+    const card = container.querySelector('[data-subagent-id="agent-live"]');
+    expect(card?.getAttribute('data-card-form')).toBe('full');
+    expect(card?.textContent).toContain('Not reported');
+    expect(card?.textContent).not.toContain('0 tool');
+  });
+
+  it('shows the authoritative node count instead of a stale larger block snapshot', async () => {
+    // The forest node is re-projected on every child update and may revise the
+    // tally DOWN; the parent-timeline block keeps its stale snapshot. The node
+    // declaration must win.
+    const forest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'Main' },
+        {
+          agentId: 'agent-live',
+          parentAgentId: 'main',
+          name: 'Live',
+          status: 'running',
+          toolCallCount: 4,
+          toolCallCountKnown: true,
+          toolCallCountAuthoritative: true,
+        },
+      ],
+    );
+    const container = await renderWithAgents(
+      [
+        lifecycleSubagentBlock('agent-live', {
+          status: 'running',
+          endedAt: undefined,
+          toolCallCount: 17,
+          toolCallCountKnown: true,
+        }),
+      ],
+      [],
+      forest,
+    );
+    const card = container.querySelector('[data-subagent-id="agent-live"]');
+    expect(card?.textContent).toContain('4 tool');
+    expect(card?.textContent).not.toContain('17 tool');
+  });
+
+  it('follows the live forest node when a resume outdates the dispatch block', async () => {
+    // The block is the frozen snapshot of the previous (failed) run; the
+    // forest node carries the fresh resumed run. Model, effort and the
+    // terminal error must follow the node, and the stale endedAt must not
+    // pin the resumed run at a fake 0ms.
+    const forest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'Main' },
+        {
+          agentId: 'agent-live',
+          parentAgentId: 'main',
+          name: 'Live',
+          status: 'running',
+          model: 'new-route/k3-256k',
+          thinkingEffort: 'high',
+          startedAt: new Date(Date.now() - 5_000).toISOString(),
+        },
+      ],
+    );
+    const container = await renderWithAgents(
+      [
+        lifecycleSubagentBlock('agent-live', {
+          status: 'failed',
+          error: 'stale quota error',
+          model: 'old-route/k3',
+          thinkingEffort: 'low',
+        }),
+      ],
+      [],
+      forest,
+    );
+    const card = container.querySelector('[data-subagent-id="agent-live"]');
+    expect(card?.getAttribute('data-card-form')).toBe('full');
+    expect(card?.textContent).toContain('new-route/k3-256k');
+    expect(card?.textContent).not.toContain('old-route/k3');
+    expect(card?.textContent).not.toContain('stale quota error');
+    expect(card?.textContent).toContain('high');
+    expect(card?.textContent).not.toContain('1m 30s');
+    expect(card?.textContent).not.toContain('0ms');
+  });
+
+  it('shows "not reported" when the authoritative node withdraws known-ness', async () => {
+    const forest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'Main' },
+        {
+          agentId: 'agent-live',
+          parentAgentId: 'main',
+          name: 'Live',
+          status: 'running',
+          toolCallCount: 4,
+          toolCallCountKnown: false,
+          toolCallCountAuthoritative: true,
+        },
+      ],
+    );
+    const container = await renderWithAgents(
+      [
+        lifecycleSubagentBlock('agent-live', {
+          status: 'running',
+          endedAt: undefined,
+          toolCallCount: 17,
+          toolCallCountKnown: true,
+        }),
+      ],
+      [],
+      forest,
+    );
+    const card = container.querySelector('[data-subagent-id="agent-live"]');
+    expect(card?.textContent).toContain('Not reported');
+    expect(card?.textContent).not.toContain('17 tool');
+  });
+
+  it('resolves the tally with node declarations winning over stale blocks', () => {
+    // Authoritative downward revision: node 4/known beats block 17/known.
+    expect(
+      resolveSubagentToolCalls(
+        { toolCallCount: 17, toolCallCountKnown: true },
+        { toolCallCount: 4, toolCallCountKnown: true },
+      ),
+    ).toEqual({ count: 4, known: true });
+    // The node may also withdraw known-ness entirely.
+    expect(
+      resolveSubagentToolCalls(
+        { toolCallCount: 17, toolCallCountKnown: true },
+        { toolCallCount: 4, toolCallCountKnown: false },
+      ),
+    ).toEqual({ count: 4, known: false });
+    // Without a node declaration the block's own declaration stands.
+    expect(
+      resolveSubagentToolCalls({ toolCallCount: 7, toolCallCountKnown: true }, undefined),
+    ).toEqual({ count: 7, known: true });
+    expect(
+      resolveSubagentToolCalls(
+        { toolCallCount: 7, toolCallCountKnown: true },
+        { toolCallCount: 2 },
+      ),
+    ).toEqual({ count: 7, known: true });
+    // Only when nothing declares does the legacy max of raw counts show,
+    // treated as trustworthy (legacy blocks predate the known-ness flag).
+    expect(
+      resolveSubagentToolCalls({ toolCallCount: 17 }, { toolCallCount: 4 }),
+    ).toEqual({ count: 17, known: true });
+    expect(resolveSubagentToolCalls(undefined, undefined)).toEqual({ count: 0, known: true });
+  });
+
+  it('jump-to-spawn reveals a card folded inside a collapsed history run', async () => {
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      const container = await renderWithAgents(
+        [
+          lifecycleSubagentBlock('agent-jump-a', { name: 'JumpAlpha' }),
+          lifecycleSubagentBlock('agent-jump-b', { name: 'JumpBeta' }),
+        ],
+        [],
+      );
+      // Both compact cards fold behind the run; neither card is mounted.
+      expect(container.querySelector('[data-subagent-id]')).toBeNull();
+      expect(container.querySelector('[data-history-run]')).not.toBeNull();
+      let found = true;
+      await act(async () => {
+        flushSync(() => {
+          found = revealSubagentCard('agent-jump-b');
+        });
+      });
+      // First pass only expands the run; the card mounts on the re-render.
+      expect(found).toBe(false);
+      expect(container.querySelector('[data-subagent-id="agent-jump-b"]')).not.toBeNull();
+      await act(async () => {
+        flushSync(() => {
+          found = revealSubagentCard('agent-jump-b');
+        });
+      });
+      expect(found).toBe(true);
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+});
+
+describe('background task notification folding (TUI-01)', () => {
+  type SnapshotItem = AgentTranscriptSnapshot['items'][number];
+
+  // Real wire shape: a background task's terminal notification arrives as a
+  // user-role text frame carrying the task origin (wireAdapter's
+  // taskNotificationOp), and projects to a system block with variant 'task'.
+  function taskNotificationItem(turnId: string, ordinal: number, text: string): SnapshotItem {
+    return {
+      kind: 'turn',
+      turnId,
+      ordinal,
+      state: 'completed',
+      origin: { kind: 'task', taskId: `task-${turnId}` },
+      steps: [
+        {
+          kind: 'step',
+          stepId: `${turnId}.1`,
+          turnId,
+          ordinal: 1,
+          state: 'completed',
+          frames: [
+            {
+              kind: 'text',
+              frameId: `f-${turnId}`,
+              role: 'user',
+              origin: { kind: 'task', taskId: `task-${turnId}` },
+              text,
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  function userPromptItem(turnId: string, ordinal: number, prompt: string): SnapshotItem {
+    return {
+      kind: 'turn',
+      turnId,
+      ordinal,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt,
+      steps: [],
+    };
+  }
+
+  it('folds consecutive successful notifications and breaks the run on user input', async () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [
+        taskNotificationItem('t-n1', 1, 'Background agent completed\nSearch config completed.'),
+        taskNotificationItem('t-n2', 2, 'Background agent completed\nIndex rebuild completed.'),
+        userPromptItem('t-u1', 3, 'break the run here'),
+        taskNotificationItem('t-n3', 4, 'Background agent completed\nWrap-up completed.'),
+      ],
+    });
+    expect(
+      blocks.filter((block) => block.kind === 'system' && block.variant === 'task'),
+    ).toHaveLength(3);
+    const container = await renderTranscript(blocks);
+    const runToggle = container.querySelector('[data-history-run] > button');
+    expect(runToggle?.textContent).toContain('2');
+    // The user message broke the group, so the third success stays individual.
+    expect(container.querySelectorAll('[data-system="task"]')).toHaveLength(1);
+    expect(container.textContent).toContain('break the run here');
+    await act(async () => {
+      flushSync(() => {
+        click(runToggle!);
+      });
+    });
+    expect(container.querySelectorAll('[data-system="task"]')).toHaveLength(3);
+  });
+
+  it('keeps failed and timed-out notifications individually visible', async () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [
+        taskNotificationItem('t-f1', 1, 'Background agent failed\nProvider returned 403.'),
+        // Served history carries the stripped-XML shape with header lines.
+        taskNotificationItem('t-f2', 2, 'Title: Background agent timed_out\nSeverity: warning\nDeadline exceeded.'),
+        taskNotificationItem('t-f3', 3, 'Background agent completed\nDone.'),
+      ],
+    });
+    const container = await renderTranscript(blocks);
+    expect(container.querySelector('[data-history-run]')).toBeNull();
+    expect(container.querySelectorAll('[data-system="task"]')).toHaveLength(3);
   });
 });

@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Terminal } from '@moonshot-ai/protocol';
+import type { Terminal } from '@kiki/protocol';
 
-import { ApiError } from '../lib/client';
-import type { TerminalSignal } from '../lib/ws';
+import { RPCError, type TerminalSignal } from '@kiki/klient';
 import {
   activeTerminalManager,
   shellDisplayName,
@@ -296,7 +295,7 @@ describe('TerminalManager.create / kill', () => {
     const manager = makeManager(rest, transport);
     await manager.open();
 
-    rest.closeError = new ApiError({ code: 40414, msg: 'terminal.not_found', data: null });
+    rest.closeError = new RPCError(40414, 'terminal.not_found');
     await expect(manager.kill('term_a')).resolves.toBe(true);
     expect(manager.getState().tabs).toHaveLength(0);
     expect(manager.getState().error).toBeUndefined();

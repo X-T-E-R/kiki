@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { Session, Workspace } from '@moonshot-ai/protocol';
+import type { Session, Workspace } from '@kiki/protocol';
 
 import {
   compactSessionContext,
@@ -56,6 +56,7 @@ import { clampOverlayPosition } from '../lib/overlayPosition';
 import { runToastAction } from '../lib/toasts';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
+import { RelativeTime } from './RelativeTime';
 import { ActivityPanel } from './ActivityPanel';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
@@ -561,7 +562,7 @@ export function Sidebar({
                         <span className="rounded border border-hairline px-1 font-mono">
                           {hit.role}
                         </span>
-                        <span>{time.relativeTime(new Date(hit.time).toISOString())}</span>
+                        <span><RelativeTime at={new Date(hit.time).toISOString()} /></span>
                       </span>
                     </button>
                   ))}
@@ -704,7 +705,7 @@ export function Sidebar({
                       </span>
                       <span className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-ink-faint">
                         <span className="truncate font-mono">{shortCwd(session.metadata.cwd)}</span>
-                        <span className="shrink-0">· {time.relativeTime(session.updated_at)}</span>
+                        <span className="shrink-0">· <RelativeTime at={session.updated_at} /></span>
                         {archived ? <span className="shrink-0">· {t('sidebar.archived')}</span> : null}
                       </span>
                     </span>

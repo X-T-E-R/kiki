@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
-import { basenameOf, formatBytes, previewKindOf } from '@kiki/session-core/composer/media';
+import { basenameOf, formatBytes, previewKindOf, type FileReference } from '@kiki/session-core/composer/media';
 import { useHost, type HostAdapter } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
@@ -30,6 +30,7 @@ import { Markdown } from './Markdown';
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly string[];
   readonly active: string | null;
+  readonly navigation?: FileReference;
   readonly dirtyPaths: ReadonlySet<string>;
   readonly width: number;
   readonly onActivate: (path: string) => void;
@@ -88,6 +89,7 @@ function mentionTokenFor(path: string, cwd: string | undefined): string {
 export function PreviewWorkspace({
   tabs,
   active,
+  navigation,
   dirtyPaths,
   width,
   onActivate,
@@ -183,6 +185,7 @@ export function PreviewWorkspace({
             key={path}
             path={path}
             visible={path === active}
+            navigation={navigation?.path === path && active === path ? navigation : undefined}
             onOpenImage={onOpenImage}
             reportDirty={reportDirty}
           />
@@ -452,11 +455,13 @@ async function downloadHostFile(
 function PreviewTabView({
   path,
   visible,
+  navigation,
   onOpenImage,
   reportDirty,
 }: {
   readonly path: string;
   readonly visible: boolean;
+  readonly navigation?: FileReference;
   readonly onOpenImage: (src: string, name?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
 }) {
@@ -473,7 +478,7 @@ function PreviewTabView({
       ) : kind === 'binary' ? (
         <BinaryTabView path={path} />
       ) : (
-        <TextTabView path={path} markdown={kind === 'markdown'} reportDirty={reportDirty} />
+        <TextTabView path={path} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} />
       )}
     </div>
   );
@@ -607,10 +612,12 @@ const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
 function TextTabView({
   path,
   markdown,
+  navigation,
   reportDirty,
 }: {
   readonly path: string;
   readonly markdown: boolean;
+  readonly navigation?: FileReference;
   readonly reportDirty: (path: string, dirty: boolean) => void;
 }) {
   const host = useHost();
@@ -619,6 +626,9 @@ function TextTabView({
   const client = connection?.client;
   const [controller, setController] = useState<HostFileEditorController | null>(null);
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
+  useEffect(() => {
+    if (navigation?.line !== undefined) setMode('source');
+  }, [navigation]);
 
   useEffect(() => {
     if (client === undefined) {
@@ -784,6 +794,7 @@ function TextTabView({
             path={path}
             value={snap.draft}
             generation={snap.generation}
+            navigation={navigation}
             readOnly={!editable}
             onChange={(text) => { controller?.setDraft(text); }}
             onSaveShortcut={() => { void controller?.saveNow(); }}
