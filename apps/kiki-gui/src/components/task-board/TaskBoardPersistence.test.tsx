@@ -164,7 +164,7 @@ describe('board container and controlled forms (mock transport, no persistence c
     expect(write.mock.calls[2]![0]).toMatchObject({ action: 'update', id: card.id, storage, expectedRevision: 3, patch: { title: 'Retained edit', sessionIds: ['session-a'] } });
   });
 
-  it('loads all workspace requirements by default even inside a session view', async () => {
+  it('loads the active session workspace by default inside a session view', async () => {
     const read = vi.fn<BoardClient['read']>().mockResolvedValue({ ok: true, value: { workspaceId: 'workspace-a', storage, cards: [summary], issues: [] } });
     const write = vi.fn<BoardClient['write']>().mockResolvedValue({ ok: true, value: card });
     await act(async () => renderWithI18n(<TaskBoardContainer client={{ read, write }} workspaceIds={['workspace-a']} currentWorkspaceId="workspace-a" currentSessionId="session-a" workspaces={[{ id: 'workspace-a', title: 'Example' }]} sessions={[{ id: 'session-a', title: 'First' }]} />));
@@ -336,7 +336,7 @@ describe('board container and controlled forms (mock transport, no persistence c
     expect(source.closeCount()).toBe(0);
   });
 
-  it('defaults to the active workspace while loading every registered workspace', async () => {
+  it('loads only the active workspace by default and rescopes through the header switcher', async () => {
     const secondCurrentWorkspaceCard = {
       ...summary,
       id: 'task-current-second',
@@ -380,22 +380,24 @@ describe('board container and controlled forms (mock transport, no persistence c
         sessions={[{ id: 'session-a', title: 'First' }, { id: 'session-b', title: 'Second' }]}
       />,
     ));
-    const workspaceFilter = container.querySelector('select') as HTMLSelectElement;
-    expect(workspaceFilter.value).toBe('workspace-a');
+    const scopeSelect = container.querySelector('[data-task-board-scope]') as HTMLSelectElement;
+    expect(scopeSelect.value).toBe('workspace-a');
     expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(2);
-    const listInputs = read.mock.calls
-      .map(([input]) => input)
-      .filter(isScopedListRead);
-    expect(listInputs.map(({ workspaceId }) => workspaceId)).toEqual([
-      'workspace-a',
-      'workspace-b',
-    ]);
-    const sessionFilter = [...container.querySelectorAll('select')].find((entry) => entry.textContent?.includes('全部会话关联')) as HTMLSelectElement;
-    expect(sessionFilter.value).toBe('all');
-    workspaceFilter.value = 'workspace-b';
-    await act(async () => workspaceFilter.dispatchEvent(new Event('change', { bubbles: true })));
+    const scopedListWorkspaceIds = () => read.mock.calls.map(([input]) => input).filter(isScopedListRead).map(({ workspaceId }) => workspaceId);
+    expect(scopedListWorkspaceIds()).toEqual(['workspace-a']);
+
+    // Switching the scope reloads that workspace instead of filtering locally.
+    scopeSelect.value = 'workspace-b';
+    await act(async () => scopeSelect.dispatchEvent(new Event('change', { bubbles: true })));
     expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
     expect(container.textContent).toContain('Beta task');
+    expect(scopedListWorkspaceIds()).toEqual(['workspace-a', 'workspace-b']);
+
+    // The 'all' scope fans out to every registered workspace.
+    scopeSelect.value = 'all';
+    await act(async () => scopeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(3);
+    expect(scopedListWorkspaceIds()).toEqual(['workspace-a', 'workspace-b', 'workspace-a', 'workspace-b']);
   });
 
   it('keeps healthy workspace cards and degrades gracefully when one workspace store is unavailable', async () => {
@@ -583,6 +585,30 @@ describe('board container and controlled forms (mock transport, no persistence c
     expect(snapshot.cards).toHaveLength(0);
     expect(snapshot.issues).toHaveLength(2);
     expect(snapshot.cardIssues).toHaveLength(0);
+  });
+
+  it('reads a single workspace directly even when the overview endpoint exists', async () => {
+    // The overview endpoint reads every registered workspace server-side, so a
+    // single-workspace refresh must stay on that workspace's own list read.
+    const overview = vi.fn(async () => {
+      throw new Error('The overview must not run for a single-workspace refresh.');
+    });
+    const read = vi.fn<BoardClient['read']>().mockImplementation(async (input) => {
+      if (input.action !== 'list' || input.workspaceId === undefined) {
+        throw new Error('This fixture only handles scoped list reads.');
+      }
+      return { ok: true, value: { workspaceId: input.workspaceId, storage, cards: [summary], issues: [] } };
+    });
+    const write = vi.fn<BoardClient['write']>().mockResolvedValue({ ok: true, value: card });
+    const controller = new TaskBoardController({ read, write, overview });
+
+    await controller.refresh(['workspace-a']);
+
+    expect(overview).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls[0]![0]).toMatchObject({ action: 'list', workspaceId: 'workspace-a' });
+    expect(controller.getSnapshot().cards).toHaveLength(1);
+    expect(controller.getSnapshot().refreshFailed).toBe(false);
   });
 
   it('uses one overview call and preserves healthy cards when another workspace fails', async () => {

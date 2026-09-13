@@ -40,6 +40,8 @@ export const en = {
   'taskBoard.column.cancelled': 'Cancelled',
   'taskBoard.column.superseded': 'Superseded',
   'taskBoard.refresh': 'Refresh',
+  'taskBoard.scope.label': 'Board data scope',
+  'taskBoard.scope.all': 'All workspaces',
   'taskBoard.issues.partial.one': '{count} workspace could not load its board data',
   'taskBoard.issues.partial.other': '{count} workspaces could not load their board data',
   'taskBoard.issues.cards.one': '{count} card could not load its board data',

@@ -29,6 +29,10 @@ export interface TaskBoardProps {
   readonly sessions?: readonly BoardSessionOption[];
   readonly currentWorkspaceId?: string;
   readonly currentSessionId?: string;
+  /** Controlled load scope ('all' or a workspace id); paired with onScopeSelectionChange. */
+  readonly scopeSelection?: string;
+  /** When set, the workspace selector drives the board's load scope instead of a local view filter. */
+  readonly onScopeSelectionChange?: (selection: string) => void;
   readonly loading?: boolean;
   readonly error?: string | null;
   /** Refresh-time degradation: workspaces whose board data could not load. */
@@ -61,6 +65,8 @@ export const TaskBoard = memo(function TaskBoard({
   sessions = [],
   currentWorkspaceId,
   currentSessionId,
+  scopeSelection,
+  onScopeSelectionChange,
   loading = false,
   error = null,
   issues = [],
@@ -90,6 +96,11 @@ export const TaskBoard = memo(function TaskBoard({
     currentWorkspaceId ?? 'all',
   );
   const [selectedSessionFilter, setSelectedSessionFilter] = useState<string>('all');
+  // When the host controls the load scope, the workspace selector reflects and
+  // drives that scope; otherwise it stays a pure client-side filter.
+  const workspaceFilterValue = onScopeSelectionChange !== undefined
+    ? (scopeSelection ?? 'all')
+    : selectedWorkspaceFilter;
 
   // Active modals
   const [selectedTask, setSelectedTask] = useState<BoardTask | null>(null);
@@ -133,8 +144,8 @@ export const TaskBoard = memo(function TaskBoard({
       }
 
       // 2. Workspace Filter
-      if (selectedWorkspaceFilter !== 'all') {
-        if (task.workspaceId !== selectedWorkspaceFilter) return false;
+      if (workspaceFilterValue !== 'all') {
+        if (task.workspaceId !== workspaceFilterValue) return false;
       }
 
       // 3. Session Filter
@@ -144,7 +155,7 @@ export const TaskBoard = memo(function TaskBoard({
 
       return true;
     });
-  }, [tasks, searchQuery, selectedWorkspaceFilter, selectedSessionFilter]);
+  }, [tasks, searchQuery, workspaceFilterValue, selectedSessionFilter]);
 
   return (
     <div
@@ -230,13 +241,19 @@ export const TaskBoard = memo(function TaskBoard({
             className="w-60 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-3 py-1.5 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden"
           />
 
-          {/* Workspace Filter (All / Specific Workspace) */}
+          {/* Workspace scope (All / Specific Workspace) — drives the load scope when controlled */}
           <select
-            value={selectedWorkspaceFilter}
-            onChange={(e) => setSelectedWorkspaceFilter(e.target.value)}
+            data-task-board-scope
+            aria-label={t('taskBoard.scope.label')}
+            title={t('taskBoard.scope.label')}
+            value={workspaceFilterValue}
+            onChange={(e) => {
+              if (onScopeSelectionChange !== undefined) onScopeSelectionChange(e.target.value);
+              else setSelectedWorkspaceFilter(e.target.value);
+            }}
             className="w-52 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink focus:border-accent focus:outline-hidden font-mono"
           >
-            <option value="all">全工作区总览</option>
+            <option value="all">{t('taskBoard.scope.all')}</option>
             {workspaces.map((ws) => (
               <option key={ws.id} value={ws.id}>
                 📁 {ws.title}

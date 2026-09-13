@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { BoardCard, BoardPatch, BoardStatus, BoardSummary } from '@kiki/klient/contract/board/types';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
@@ -61,7 +61,15 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
   }), [sessionClient, klient, registry]);
   const controller = useMemo(() => new TaskBoardController(client), [client]);
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
-  const scopeKey = JSON.stringify(workspaceIds);
+  // Load scope: opening the board from a session reads only that session's
+  // workspace (~tens of ms) instead of aggregating every registered one; the
+  // header switcher opts back into the full cross-workspace overview.
+  const [scopeSelection, setScopeSelection] = useState<string>(currentWorkspaceId ?? 'all');
+  const scopedWorkspaceIds = useMemo(
+    () => (scopeSelection === 'all' || !workspaceIds.includes(scopeSelection) ? workspaceIds : [scopeSelection]),
+    [scopeSelection, workspaceIds],
+  );
+  const scopeKey = JSON.stringify(scopedWorkspaceIds);
   useEffect(() => { void controller.refresh(JSON.parse(scopeKey) as string[]); }, [controller, scopeKey]);
   const tasks = useMemo(() => snapshot.cards.map((card) => view(card, workspaces)), [snapshot.cards, workspaces]);
   const columns = useMemo(
@@ -71,7 +79,7 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
     })),
     [t],
   );
-  const refresh = () => controller.refresh(workspaceIds);
+  const refresh = () => controller.refresh(scopedWorkspaceIds);
   return (
     <BoardAssociatedTodosProvider manager={associatedTodoManager}>
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
@@ -79,6 +87,7 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
         tasks={tasks} columns={columns} prototypeMode={false}
         onRefresh={refresh} refreshDisabled={snapshot.loading} refreshLabel={t('taskBoard.refresh')}
         workspaces={workspaces} sessions={sessions} currentWorkspaceId={currentWorkspaceId} currentSessionId={currentSessionId}
+        scopeSelection={scopeSelection} onScopeSelectionChange={setScopeSelection}
         loading={snapshot.loading} error={snapshot.error} pendingTaskIds={snapshot.pendingKeys}
         issues={snapshot.issues} cardIssues={snapshot.cardIssues} unavailable={snapshot.refreshFailed} onOpenSettings={onOpenSettings}
         onOpenTask={(key) => controller.open(key)} onOpenSession={onOpenSession} onCloseBoard={onCloseBoard}

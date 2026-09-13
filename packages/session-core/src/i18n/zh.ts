@@ -40,6 +40,8 @@ export const zh: Record<I18nKey, string> = {
   'taskBoard.column.cancelled': '已取消',
   'taskBoard.column.superseded': '已替代',
   'taskBoard.refresh': '刷新',
+  'taskBoard.scope.label': '看板数据范围',
+  'taskBoard.scope.all': '全工作区总览',
   'taskBoard.issues.partial.one': '{count} 个工作区的看板数据暂未加载',
   'taskBoard.issues.partial.other': '{count} 个工作区的看板数据暂未加载',
   'taskBoard.issues.cards.one': '{count} 张卡片的看板数据暂未加载',

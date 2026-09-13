@@ -12,25 +12,25 @@ import {
 } from './GlobalTaskBoard';
 
 const board = {
-  read: vi.fn(async () => ({
+  read: vi.fn(async (_input: { action: string; workspaceId?: string }) => ({
     ok: true as const,
     value: { cards: [], issues: [], storage: { root: '/store', storageId: 'store-a', kind: 'embedded' as const } },
   })),
   write: vi.fn(),
   overview: vi.fn(async () => ({
     ok: true as const,
-    value: [{
-      workspaceId: 'workspace-a',
+    value: ['workspace-a', 'workspace-b'].map((workspaceId) => ({
+      workspaceId,
       result: {
         ok: true as const,
         value: {
-          workspaceId: 'workspace-a',
+          workspaceId,
           cards: [],
           issues: [],
           storage: { root: '/store', storageId: 'store-a', kind: 'embedded' as const },
         },
       },
-    }],
+    })),
   })),
 };
 
@@ -145,7 +145,10 @@ describe('global task board dialog rendering', () => {
   const sessions = [
     { id: 'session-a', title: 'Alpha session', workspace_id: 'workspace-a' },
   ] as unknown as readonly Session[];
-  const workspaceOptions = [{ id: 'workspace-a', name: 'Alpha' }] as unknown as readonly Workspace[];
+  const workspaceOptions = [
+    { id: 'workspace-a', name: 'Alpha' },
+    { id: 'workspace-b', name: 'Beta' },
+  ] as unknown as readonly Workspace[];
 
   async function mount(): Promise<void> {
     await act(async () => {
@@ -173,7 +176,7 @@ describe('global task board dialog rendering', () => {
     expect(launcher).not.toBeNull();
   });
 
-  it('opens the board dialog from the launcher without throwing', async () => {
+  it('opens the board dialog from the launcher scoped to the session workspace', async () => {
     document.body.append(rail);
     await mount();
     const launcher = rail.querySelector<HTMLButtonElement>('[data-session-task-board]');
@@ -186,7 +189,30 @@ describe('global task board dialog rendering', () => {
     expect(panel!.className).toContain('max-w-[1280px]');
     expect(panel!.querySelector('[data-task-board-container]')).not.toBeNull();
     expect(panel!.querySelectorAll('[data-board-column]')).toHaveLength(6);
+    // Opening from the rail reads only the active session's workspace; the
+    // cross-workspace overview must stay cold until the user asks for it.
+    expect(board.overview).not.toHaveBeenCalled();
+    expect(board.read).toHaveBeenCalledTimes(1);
+    expect(board.read.mock.calls[0]![0]).toMatchObject({ action: 'list', workspaceId: 'workspace-a' });
+    const scopeSelect = panel!.querySelector<HTMLSelectElement>('[data-task-board-scope]');
+    expect(scopeSelect).not.toBeNull();
+    expect(scopeSelect!.value).toBe('workspace-a');
+  });
+
+  it('switches to the all-workspaces overview only from the explicit scope switcher', async () => {
+    document.body.append(rail);
+    await mount();
+    const launcher = rail.querySelector<HTMLButtonElement>('[data-session-task-board]');
+    await act(async () => { launcher!.click(); });
+
+    const scopeSelect = document.querySelector<HTMLSelectElement>('[data-task-board-scope]')!;
+    expect(scopeSelect.value).toBe('workspace-a');
+
+    scopeSelect.value = 'all';
+    await act(async () => { scopeSelect.dispatchEvent(new Event('change', { bubbles: true })); });
+
     expect(board.overview).toHaveBeenCalledTimes(1);
-    expect(board.read).not.toHaveBeenCalled();
+    expect(board.read).toHaveBeenCalledTimes(1);
+    expect(scopeSelect.value).toBe('all');
   });
 });

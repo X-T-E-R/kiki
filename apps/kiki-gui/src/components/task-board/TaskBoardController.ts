@@ -149,7 +149,10 @@ export class TaskBoardController {
     // is bounded; results merge in `unique` order so the published snapshot is
     // deterministic regardless of completion order.
     let pages: WorkspaceRefresh[];
-    if (unique.length > 0 && sessionId === undefined && !this.overviewUnavailable && this.client.overview !== undefined) {
+    // The overview endpoint reads every registered workspace server-side, so
+    // it only pays off for a multi-workspace scope; a single-workspace refresh
+    // always goes straight to that workspace's own list read.
+    if (unique.length > 1 && sessionId === undefined && !this.overviewUnavailable && this.client.overview !== undefined) {
       try {
         pages = await this.readOverview(unique);
       } catch (error) {
