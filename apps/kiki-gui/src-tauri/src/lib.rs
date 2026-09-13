@@ -1167,25 +1167,33 @@ enum HostPathOp {
 
 impl BackendManager {
     fn current_connection(&self) -> Result<DesktopConnection, String> {
-        self.inner
+        let state = self
+            .inner
             .lock()
-            .map_err(|_| "Kiki backend lifecycle lock was poisoned".to_string())?
+            .map_err(|_| "Kiki backend lifecycle lock was poisoned".to_string())?;
+        state
             .backend
             .as_ref()
             .and_then(|backend| backend.connection.clone())
+            .or_else(|| state.attached.clone())
             .ok_or_else(|| "Kiki backend is not connected".to_string())
     }
 
     /// The generation of the CURRENT live backend connection, if any. Grants
     /// recorded under any other generation — or while no live connection
     /// exists (backend removed, exited, or mid-restart) — authorize nothing.
+    /// An attached backend has no exit monitor; its generation was bumped at
+    /// attach time, and a dead peer fails the registry fetch closed anyway.
     fn live_connection_generation(&self) -> Option<u64> {
         let state = self.inner.lock().ok()?;
-        let backend = state.backend.as_ref()?;
-        backend.connection.as_ref()?;
-        if backend.monitor.exit().is_some() {
-            return None;
+        if let Some(backend) = state.backend.as_ref() {
+            backend.connection.as_ref()?;
+            if backend.monitor.exit().is_some() {
+                return None;
+            }
+            return Some(state.generation);
         }
+        state.attached.as_ref()?;
         Some(state.generation)
     }
 
@@ -4279,6 +4287,30 @@ mod tests {
                 assert!(error.contains("not connected"), "{error}");
             }
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_path_gate_accepts_attached_backend_connection() {
+        let root = env::current_dir().unwrap().join(".tmp").join(format!(
+            "host-attached-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("note.txt");
+        fs::write(&file, "x").unwrap();
+        let port = spawn_stub_server("200 OK", registry_body(&[root.as_path()]), 4);
+        let manager = BackendManager::default();
+        assert!(manager.publish_attached(stub_connection(port)).is_some());
+        manager
+            .require_authorized_host_path(&file, HostPathOp::Reveal, &|_| true)
+            .unwrap();
+        manager
+            .require_authorized_host_path(&file, HostPathOp::Open, &|_| {
+                panic!("grant must be remembered within the attach generation")
+            })
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
