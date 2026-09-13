@@ -249,7 +249,8 @@ describe('Session.prompt events', () => {
           reason: 'completed',
         }),
       );
-      expect(fakeProviderState.calls[0]?.systemPrompt).toContain('You are Kimi Code CLI');
+      expect(fakeProviderState.calls[0]?.systemPrompt).toContain('You are Kiki,');
+      expect(fakeProviderState.calls[0]?.systemPrompt).toContain('`<home>/docs`');
       expect(fakeProviderState.calls[0]?.systemPrompt).toContain('Available skills');
       // The engine composes the provider from the protocol adapter config: the
       // vendor is `providerType`, the wire shape it speaks is `protocol`.

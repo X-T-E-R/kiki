@@ -12,7 +12,7 @@ import {
   installGlobalProxyDispatcher,
   log,
   resolveGlobalLogPath,
-  resolveKimiHome,
+  resolveKikiHome,
 } from '@kiki/node-sdk';
 
 import { createProgram } from './cli/commands';
@@ -29,6 +29,7 @@ import { PROCESS_NAME } from './constant/app';
 import { cleanupStaleNativeCacheForCurrent } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
+import { installKikiDocs } from './native/product-docs';
 import { installKapSearchWorker } from './native/search-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
@@ -111,6 +112,14 @@ function bootstrap(): void {
         ? `model-pricing:failed code=${pricingInstall.errorCode} sha256=${pricingInstall.assetSha256 ?? 'unknown'}`
         : `model-pricing:${pricingInstall.status}`,
   );
+  const docsInstall = installKikiDocs({ kikiHome: resolveKikiHome() });
+  startupTrace(
+    docsInstall.status === 'installed'
+      ? `product-docs:installed source=${docsInstall.source} files=${docsInstall.fileCount} written=${docsInstall.writtenFiles} removed=${docsInstall.removedFiles} backed-up=${docsInstall.backedUpFiles} sha256=${docsInstall.contentSha256}`
+      : docsInstall.status === 'failed'
+        ? `product-docs:failed code=${docsInstall.errorCode}`
+        : `product-docs:${docsInstall.status}`,
+  );
   if (runNativeAssetSmokeIfRequested()) return;
 
   // Start the background cleanup of stale native cache. Fire-and-forget; must not block startup or throw.
@@ -160,7 +169,7 @@ function bootstrap(): void {
               operation,
             }),
           );
-          process.stderr.write(`See log: ${resolveGlobalLogPath(resolveKimiHome())}\n`);
+          process.stderr.write(`See log: ${resolveGlobalLogPath(resolveKikiHome())}\n`);
           process.exit(1);
         });
     },

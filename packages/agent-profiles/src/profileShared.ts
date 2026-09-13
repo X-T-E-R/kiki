@@ -45,7 +45,7 @@ export function profileNotAllowedMessage(
 const WINDOWS_NOTES =
   'IMPORTANT: You are on Windows. The Bash tool runs through Git Bash, so use Unix shell syntax inside Bash commands — `/dev/null` not `NUL`, and forward slashes in paths. For file operations, always prefer the built-in tools (Read, Write, Edit, Glob, Grep) over Bash commands — they work reliably across all platforms.';
 
-export const DEFAULT_PRODUCT_NAME = 'Kimi Code CLI';
+export const DEFAULT_PRODUCT_NAME = 'Kiki';
 
 export const DEFAULT_REPLY_STYLE_GUIDE =
   "Your text replies render as Markdown in the user's terminal. Use light Markdown that reads well there: short paragraphs, `-` bullets for lists, backticks for code, commands, paths, and identifiers, and fenced blocks for multi-line code. Keep structure shallow — avoid deep nesting, large tables, and heavy headings in ordinary replies. Do not use emoji unless the user does first or asks for it. Default to prose; reach for a list only when the content is genuinely a set of items or steps. When you point to a specific code location, cite it as `path/to/file.ts:42` — a precise, consistent reference the user can navigate to.";

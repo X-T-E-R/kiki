@@ -19,6 +19,17 @@ export const KAP_MODEL_PRICES_ASSET = Object.freeze({
   mode: 0o644,
 });
 
+export const KIKI_DOCS_ASSET_KEY_PREFIX = 'kiki-docs/';
+export const KIKI_DOCS_RUNTIME_PATH_PREFIX = 'runtime/kiki-docs/';
+
+export function kikiDocsAsset(relativePath) {
+  return Object.freeze({
+    key: `${KIKI_DOCS_ASSET_KEY_PREFIX}${relativePath}`,
+    relativePath: `${KIKI_DOCS_RUNTIME_PATH_PREFIX}${relativePath}`,
+    mode: 0o644,
+  });
+}
+
 export function buildManifestKey(target) {
   return `native/${target}/manifest.json`;
 }

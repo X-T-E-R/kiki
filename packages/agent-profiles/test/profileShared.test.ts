@@ -146,7 +146,7 @@ describe('systemPromptVars', () => {
   it('defaults host-identity variables to the CLI text', () => {
     const vars = systemPromptVars({}, { skillActive: true });
 
-    expect(vars['product_name']).toBe('Kimi Code CLI');
+    expect(vars['product_name']).toBe('Kiki');
     expect(vars['reply_style_guide']).toBe(DEFAULT_REPLY_STYLE_GUIDE);
   });
 
@@ -400,9 +400,11 @@ describe('renderSystemPromptResult', () => {
     expect(prompt).not.toMatch(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/);
   });
 
-  it('renders the host identity from the context, defaulting to the CLI text', () => {
+  it('renders the host identity from the context, defaulting to Kiki', () => {
     const fallback = renderSystemPromptResult('', {}, { skillActive: true }).text;
-    expect(fallback).toContain('Kimi Code CLI');
+    expect(fallback).toContain('You are Kiki,');
+    expect(fallback).toContain('`<home>/docs`');
+    expect(fallback).toContain('do not consult upstream Kimi Code sites');
     expect(fallback).toContain(DEFAULT_REPLY_STYLE_GUIDE);
 
     const overridden = renderSystemPromptResult(
@@ -410,9 +412,9 @@ describe('renderSystemPromptResult', () => {
       { productName: 'Kimi Desktop', replyStyleGuide: 'GUI_STYLE' },
       { skillActive: true },
     ).text;
-    expect(overridden).toContain('Kimi Desktop');
+    expect(overridden).toContain('You are Kimi Desktop,');
     expect(overridden).toContain('GUI_STYLE');
-    expect(overridden).not.toContain('Kimi Code CLI');
+    expect(overridden).not.toContain('You are Kiki,');
   });
 
   it('returns disclosure metadata for the builtin now section', () => {

@@ -1,18 +1,18 @@
 # Configuration files
 
-Kimi Code CLI writes all long-term preferences — which model to use, which API key to fill in, how many steps an Agent can run per turn — into TOML (a plain-text configuration format with a clear structure) files. Change them once and they take effect on every startup. Agent and runtime settings live in `config.toml`; terminal-UI and client preferences (theme, editor, notifications, auto-update) live in a companion `tui.toml`.
+Kiki writes all long-term preferences — which model to use, which API key to fill in, how many steps an Agent can run per turn — into TOML (a plain-text configuration format with a clear structure) files. Change them once and they take effect on every startup. Agent and runtime settings live in `config.toml`; terminal-UI and client preferences (theme, editor, notifications, auto-update) live in a companion `tui.toml`.
 
-Default location: `~/.kimi-code/config.toml`, created automatically on first run.
+Default location: `~/.kiki/config.toml`, created automatically on first run.
 
 ## Config file location
 
-The CLI reads configuration from `~/.kimi-code/config.toml`. To relocate the data directory, override it with the `KIMI_CODE_HOME` environment variable:
+The CLI reads configuration from `~/.kiki/config.toml`. To relocate the data directory, override it with the `KIKI_HOME` environment variable:
 
 ```sh
-export KIMI_CODE_HOME=/path/to/kimi-home
+export KIKI_HOME=/path/to/kiki-home
 ```
 
-The config file path then becomes `$KIMI_CODE_HOME/config.toml`. Regardless of where the directory lives, the file name is always `config.toml`.
+The config file path then becomes `$KIKI_HOME/config.toml`. Regardless of where the directory lives, the file name is always `config.toml`.
 
 ::: tip
 TOML field names always use snake_case, for example `default_model` and `max_context_size`. If a key contains `.`, you must quote it — for example `[models."gpt-4.1"]` — otherwise TOML treats `.` as a nested table separator.
@@ -85,7 +85,7 @@ pattern = "Bash(rm -rf*)"
 [[hooks]]
 event = "PreToolUse"
 matcher = "Bash"
-command = "node ~/.kimi-code/hooks/check-bash.mjs"
+command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
@@ -102,7 +102,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |
 | `extra_agent_dirs` | `array<string>` | — | Extra custom agent search directories, layered on top of the default directories |
 | `disabled_builtin_profiles` | `array<string>` | `[]` | Built-in profile names to remove from subagent discovery and dispatch: `agent`, `coder`, `explore`, or `plan`. Dispatching a disabled profile fails as an unknown role. Disabling `agent` leaves the main agent's default binding available; a same-name file profile no longer needs `override: true` when its built-in is disabled |
-| `builtin_product_skills` | `boolean` | `true` | Whether the built-in skills that document Kimi Code itself are offered to the model: `update-config`, `custom-theme`, `mcp-config`, `check-kimi-code-docs`, and `import-from-cc-codex`. Turning them off trims their names and descriptions from the system prompt, at the cost of the guided flows for those tasks |
+| `builtin_product_skills` | `boolean` | `true` | Whether the built-in skills that document Kiki itself are offered to the model: `update-config`, `custom-theme`, `mcp-config`, `check-kiki-docs`, and `import-from-cc-codex`. Turning them off trims their names and descriptions from the system prompt, at the cost of the guided flows for those tasks |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
@@ -116,8 +116,9 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `permission` | `table` | — | Initial permission rules → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
+| `prompt` | `table` | `{}` | Shared prompt additions, variables, and per-tool guidance → [`prompt`](#prompt) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `agents`, `thread_communication`, `tools`, `image`, `services`, and `permission`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `agents`, `thread_communication`, `tools`, `image`, `services`, `permission`, and `prompt`.
 
 ## `providers`
 
@@ -156,6 +157,7 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `capabilities` | `array<string>` | No | Capability tags to add explicitly: `thinking`, `always_thinking`, `image_in`, `video_in`, `audio_in`, `tool_use`. Unioned with the capabilities auto-detected by the provider — entries can only be added, never removed |
 | `support_efforts` | `array<string>` | No | Thinking effort levels the model accepts. For `kimi`, selecting another value at runtime fails; when model resolution carries an unsupported configured or previous value, the session falls back to the target model's `default_effort` and reports that effective value to the UI. A Thinking-capable Kimi model without this field uses boolean `on` / `off`. Other providers pass concrete values unchanged when their protocol has a native effort field; protocols that expose only levels or token budgets perform the required format conversion. Managed and open-platform refreshes may rewrite this field; to pin it manually, set `[models."<alias>".overrides] support_efforts` instead |
 | `default_effort` | `string` | No | Default thinking effort for the model. Managed and open-platform refreshes may rewrite this field; to pin it manually, set `[models."<alias>".overrides] default_effort` instead |
+| `service_tier` | `string` | No | Service tier for every request using this model: `auto`, `default`, `flex`, or `priority`. Overrides profile, route, and per-request tiers, including main-agent and subagent requests. Only `openai_responses` encodes it; other protocols ignore it. Omit to retain the requesting profile or request's tier |
 | `off_effort` | `string` | No | Effort value sent on the wire to disable thinking (e.g. `none` for xai grok). Only meaningful for models that declare such an encoding (catalog imports set it): turning thinking Off then sends this value instead of omitting the effort field — the only way to actually stop reasoning on models that reason by default |
 | `base_url` | `string` | No | Per-model endpoint override (written by catalog imports for gateway models served away from the provider default). Resolution prefers it over the provider's `base_url`; only takes effect together with `protocol` |
 | `display_name` | `string` | No | Name shown in the UI; falls back to `model` when unset |
@@ -218,7 +220,7 @@ max_context_size = 131072
 display_name = "Kimi for Coding (custom)"
 ```
 
-`[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_input_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, `default_effort`, and `off_effort`. It does not accept identity / routing fields: `provider`, `model`, `protocol`, `beta_api`, and `base_url`.
+`[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_input_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, `default_effort`, `off_effort`, `service_tier`, `request_params`, `context_budget`, and `max_completion_tokens`. It does not accept identity / routing fields: `provider`, `model`, `protocol`, `beta_api`, and `base_url`. For these added fields, resolve the model alias configuration, including its `overrides`, first; then apply model alias → top-level profile → matching `model_profiles` entry. Merge `request_params` by key and use the last explicit `service_tier`; `context_budget` and `max_completion_tokens` are limits, so take the smallest declared value across layers within the model's capacity and output cap. Omitting a limit adds no restriction.
 
 You can also switch models temporarily without touching the config file — by setting `KIMI_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi-model).
 
@@ -235,7 +237,7 @@ You can also switch models temporarily without touching the config file — by s
 | `anchor_steps` | `integer` | `1` | How many model requests at the start of an anchored turn use the `anchor` text; must be at least 1 |
 | `anchor_scope` | `string` | `session` | `session` anchors only the session's first turn; `turn` anchors the opening steps of every turn |
 
-Paths are relative to the [data root directory](./data-locations.md#data-root-directory) (`~/.kimi-code` by default). Absolute paths, paths that resolve outside the data root (including through a symlink), and missing files are rejected when the profile binds, with an error naming the field and the path — a typo stops the session instead of silently sending an unconditioned prompt. A declared file that exists but is empty is skipped; when every file declared for one field is empty, that field behaves as unset.
+Paths are relative to the [data root directory](./data-locations.md#data-root-directory) (`~/.kiki` by default). Absolute paths, paths that resolve outside the data root (including through a symlink), and missing files are rejected when the profile binds, with an error naming the field and the path — a typo stops the session instead of silently sending an unconditioned prompt. A declared file that exists but is empty is skipped; when every file declared for one field is empty, that field behaves as unset.
 
 The three fields differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads once, before your request. `steering` sits directly after your prompt as an ordinary user message — not a `<system-reminder>` — and the same text is re-injected on every new turn, including after compaction re-arms the context, so the cue never drifts away from the latest request.
 
@@ -264,13 +266,13 @@ anchor_steps = 3
 steering = "cognition/flash-steering.md"
 ```
 
-`~/.kimi-code/cognition/flash-anchor.md`:
+`~/.kiki/cognition/flash-anchor.md`:
 
 ```
 You are a helpful software engineer assistant.
 ```
 
-`~/.kimi-code/cognition/flash-steering.md`:
+`~/.kiki/cognition/flash-steering.md`:
 
 ```
 Router: classify this task (build or fix) now, then adopt the matching style — build: direct production; fix: inspect-first. Let's first understand the problem and devise a plan; then let's carry out the plan and act.
@@ -283,7 +285,7 @@ Treat that wording as a starting point rather than a setting. Which phrasing act
 ## Subagent model binding
 
 A subagent's model comes from exactly two places: the `model_alias` passed
-with the dispatch (`AgentRun` / `AgentSwarm` / `TowerSpawn`), or the pin on
+with the dispatch (`AgentRun` / `TowerSpawn`), or the pin on
 the profile, route, or caller lease that the dispatch selects. Nothing else
 supplies one — a subagent never runs on its caller's model, and there is no
 configured default to fall back on. A dispatch that names no model and
@@ -344,28 +346,32 @@ Retries only apply to transient failures — connection errors, timeouts, HTTP 4
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `max_running_tasks` | `integer` | — | Maximum number of background tasks running concurrently |
-| `keep_alive_on_exit` | `boolean` | `false` | Whether to keep still-running background tasks when the session closes. By default, Kimi Code requests that all background tasks stop before the process exits; set this to `true` only when you want tasks to outlive the session. In print mode (`kimi -p`), this is only a legacy fallback used when `print_background_mode` is unset: `true` is equivalent to `print_background_mode = "drain"` |
-| `kill_grace_period_ms` | `integer` | `5000` | Grace period in milliseconds after session close, a manual stop, or a task timeout requests graceful termination. If a task is still running after this period, Kimi Code attempts to force-stop it |
+| `keep_alive_on_exit` | `boolean` | `false` | Whether to keep still-running background tasks when the session closes. By default, Kiki requests that all background tasks stop before the process exits; set this to `true` only when you want tasks to outlive the session. In print mode (`kiki -p`), this is only a legacy fallback used when `print_background_mode` is unset: `true` is equivalent to `print_background_mode = "drain"` |
+| `kill_grace_period_ms` | `integer` | `5000` | Grace period in milliseconds after session close, a manual stop, or a task timeout requests graceful termination. If a task is still running after this period, Kiki attempts to force-stop it |
 | `bash_auto_background_on_timeout` | `boolean` | `true` | When a foreground `Bash` command hits its timeout, move it to a background task instead of killing it — the agent is notified when it completes, and the backgrounded command is bounded by the `bash_task_timeout_s` default background timeout. Set to `false` to kill timed-out foreground commands instead |
-| `bash_task_timeout_s` | `integer` | `600` | Default timeout (seconds) for background `Bash` tasks when the call omits `timeout`; also used to re-arm foreground commands moved to the background on timeout. `0` means no timeout — the task runs until it exits or the model stops it. Explicit per-call `timeout` values are unaffected. In print mode (`kimi -p`) the default is `0` unless explicitly set |
-| `print_background_mode` | `"exit" \| "drain" \| "steer"` | `"steer"` | Print mode (`kimi -p`) only. Governs how pending background tasks are handled once the main agent's turn ends: `"exit"` exits immediately; `"drain"` waits for every background task to reach a terminal state before exiting (results are not fed back to the main agent); `"steer"` stays alive so a completing background task — like a background subagent — injects a synthetic user message that steers the main agent into a new turn, looping until a turn ends with no pending background tasks or a limit is hit. Takes precedence over the `keep_alive_on_exit` print fallback |
-| `print_wait_ceiling_s` | `integer` | `2147483` | In print mode (`kimi -p`), the wall-clock ceiling (seconds) for the wait/steer loop when `print_background_mode` is `"drain"` or `"steer"` (the default is ~24.8 days — effectively unbounded). Has no effect outside print mode or when it is `"exit"` |
-| `print_max_turns` | `integer` | `100000` | In print mode (`kimi -p`) with `print_background_mode = "steer"`, the maximum number of new turns that may be triggered by background-task completions, to keep the steering loop bounded (the default is effectively unbounded) |
+| `bash_task_timeout_s` | `integer` | `600` | Default timeout (seconds) for background `Bash` tasks when the call omits `timeout`; also used to re-arm foreground commands moved to the background on timeout. `0` means no timeout — the task runs until it exits or the model stops it. Explicit per-call `timeout` values are unaffected. In print mode (`kiki -p`) the default is `0` unless explicitly set |
+| `print_background_mode` | `"exit" \| "drain" \| "steer"` | `"steer"` | Print mode (`kiki -p`) only. Governs how pending background tasks are handled once the main agent's turn ends: `"exit"` exits immediately; `"drain"` waits for every background task to reach a terminal state before exiting (results are not fed back to the main agent); `"steer"` stays alive so a completing background task — like a background subagent — injects a synthetic user message that steers the main agent into a new turn, looping until a turn ends with no pending background tasks or a limit is hit. Takes precedence over the `keep_alive_on_exit` print fallback |
+| `print_wait_ceiling_s` | `integer` | `2147483` | In print mode (`kiki -p`), the wall-clock ceiling (seconds) for the wait/steer loop when `print_background_mode` is `"drain"` or `"steer"` (the default is ~24.8 days — effectively unbounded). Has no effect outside print mode or when it is `"exit"` |
+| `print_max_turns` | `integer` | `100000` | In print mode (`kiki -p`) with `print_background_mode = "steer"`, the maximum number of new turns that may be triggered by background-task completions, to keep the steering loop bounded (the default is effectively unbounded) |
 
-`keep_alive_on_exit` can be overridden by the `KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` environment variable, and `max_running_tasks` by `KIMI_CODE_BACKGROUND_MAX_RUNNING_TASKS`; both take higher priority than `config.toml`.
+`keep_alive_on_exit` can be overridden by the `KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT` environment variable, and `max_running_tasks` by `KIKI_BACKGROUND_MAX_RUNNING_TASKS`; both take higher priority than `config.toml`.
 
-In print mode (`kimi -p "<prompt>"`), Kimi Code stays alive after the main agent's turn as long as background tasks are still pending: each completion is fed back to the main agent as a synthetic user message, steering it into a new turn (`print_background_mode = "steer"` by default), and the run exits once a turn ends with nothing pending. The loop is bounded by `print_wait_ceiling_s` and `print_max_turns`, both effectively unbounded by default. Background work is never killed by a wall-clock cap in print mode either: background `Bash` tasks default to no timeout (`bash_task_timeout_s = 0`), and subagents run without a timeout (`[subagent] timeout_ms = 0`), so only the model itself stops a task. Set `print_background_mode` to `"drain"` to wait for tasks without feeding results back, or `"exit"` to end the run as soon as the main agent finishes.
+In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's turn as long as background tasks are still pending: each completion is fed back to the main agent as a synthetic user message, steering it into a new turn (`print_background_mode = "steer"` by default), and the run exits once a turn ends with nothing pending. The loop is bounded by `print_wait_ceiling_s` and `print_max_turns`, both effectively unbounded by default. Background work is never killed by a wall-clock cap in print mode either: background `Bash` tasks default to no timeout (`bash_task_timeout_s = 0`), and subagents run without a timeout (`[subagent] timeout_ms = 0`), so only the model itself stops a task. Set `print_background_mode` to `"drain"` to wait for tasks without feeding results back, or `"exit"` to end the run as soon as the main agent finishes.
 
 ## `subagent`
 
-`subagent` controls how spawned subagents (`AgentRun` / `AgentSwarm`) run.
+`subagent` controls how spawned subagents (`AgentRun`) run.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `deny_models` | `string[]` | — | Denylist applied to every subagent model binding after alias resolution, whether the alias came from the dispatch or from a profile pin |
-| `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`AgentRun` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kimi -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
+| `max_direct_children` | `integer` | `16` | Maximum simultaneous dispatched child runs per caller, including startup and cancellation; `0` disables this limit |
+| `max_total_subagents` | `integer` | `0` | Maximum simultaneous dispatched subagent runs throughout one session tree, including grandchildren and deeper descendants but not main; `0` disables this limit |
+| `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`AgentRun`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kiki -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
-`timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There is no environment variable for `deny_models`.
+`timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `deny_models` or the two concurrency limits.
+
+The limits are global configuration defaults, but counts are isolated to each session. Idle and historical children do not count. A running descendant still counts after its parent finishes; resuming a child takes an execution slot without creating another agent. Admission reserves capacity before asynchronous startup and releases it after startup failure or execution completion. Exceeding either limit immediately returns `dispatch.limit_exceeded` with `layer`, `current`, `limit`, and `owner` (REST business code `42904`); it does not queue work or stop another agent. Wait for an active run to finish or explicitly raise the relevant configuration limit. Automatic task-completion wakeups obey the same limits. If a wakeup is rejected, the finished task and its output remain available through `TaskOutput`; the notification is not marked delivered.
 
 ## `agents`
 
@@ -399,7 +405,7 @@ Per-workspace overrides are persisted separately and managed through the local R
 | `startup_timeout_ms` | `integer` | `30000` (30 seconds) | Global default connection (startup + tool discovery) timeout in milliseconds for all MCP servers. Accepts `1`–`2147483647`. A per-server `startupTimeoutMs` in `mcp.json` always wins over this section and the environment variable; when neither is set, the default applies |
 | `tool_timeout_ms` | `integer` | `60000` (60 seconds) | Global default single tool-call timeout in milliseconds for all MCP servers. Accepts `1`–`2147483647`. A per-server `toolTimeoutMs` in `mcp.json` always wins over this section and the environment variable; when neither is set, the client built-in default applies |
 
-`startup_timeout_ms` and `tool_timeout_ms` can be overridden by the `KIMI_MCP_STARTUP_TIMEOUT_MS` and `KIMI_MCP_TOOL_TIMEOUT_MS` environment variables respectively, which take higher priority than `config.toml`. See [MCP](../customization/mcp.md) for the full MCP server configuration.
+`startup_timeout_ms` and `tool_timeout_ms` can be overridden by the `KIKI_MCP_STARTUP_TIMEOUT_MS` and `KIKI_MCP_TOOL_TIMEOUT_MS` environment variables respectively, which take higher priority than `config.toml`. See [MCP](../customization/mcp.md) for the full MCP server configuration.
 
 ## `identity`
 
@@ -416,7 +422,7 @@ name = "Acme Dev Agent"
 slug = "acme-dev"        # optional
 ```
 
-Both fields can be set through the `KIMI_CODE_IDENTITY_NAME` and `KIMI_CODE_IDENTITY_SLUG` environment variables, which take higher priority than `config.toml` and are never written back to it — convenient for containers and CI, where writing a config file is awkward.
+Both fields can be set through the `KIKI_IDENTITY_NAME` and `KIKI_IDENTITY_SLUG` environment variables, which take higher priority than `config.toml` and are never written back to it — convenient for containers and CI, where writing a config file is awkward.
 
 A name that contains no ASCII letters or digits (for example a purely Chinese name) leaves nothing to derive a slug from and falls back to `agent`; write `slug` explicitly if you need a specific protocol token.
 
@@ -475,7 +481,18 @@ Like the `tools` / `disallowedTools` fields of an agent file, this section shape
 | `defaults.fetch_chain` | `array<table>` | No | Fetch pipeline chain by input kind and representation; the SDK default for URLs is `direct.fetch` followed by `jina.reader` |
 | `execution` | `table` | No | Provider-call, concurrency, retry, timeout, inline-output, response-size, redirect, content-size, and quality budgets |
 
-Credential values are never stored in `config.toml`. Put the environment-variable name in a credential slot's `env` field, then set the actual secret in the process environment.
+Credential values are never stored in `config.toml`. Put the environment-variable name in a credential slot's `env` field. The Kiki server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki can fill missing variables from nb-search's `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It only imports variables for matching credential slots and checks the provider, endpoint, slot, and file protection before use. Changes that redirect imported credentials are rejected rather than silently rebinding them. The runtime does not read variables from another terminal or automatically load separate `.env` files. Neither secret values nor the credential file are sent to the GUI.
+
+By default, settings are layered in this order: nb-search defaults, the server's local nb-search configuration, the server environment, then Kiki's `nb_search` overrides. The local file is selected by `NB_SEARCH_CONFIG`, or by `config.json` under `NB_SEARCH_HOME` (default: `~/.nb-search`). A missing default file is allowed; an explicit path that is missing or unreadable makes that source unavailable.
+
+Use **Settings → Search & retrieval → Overview & source** to inspect the source and control reuse, or set the separate host option:
+
+```toml
+[nb_search_source]
+reuse_local_config = false
+```
+
+`reuse_local_config` defaults to `true`. Setting it to `false` skips the server's local nb-search configuration and credential files without editing them or removing Kiki's saved settings and credential environment. Isolated default search storage lives under Kiki's cache; explicit `nb_search.home` and `nb_search.jobs_root` settings still take precedence. Changes apply on the next runtime request without a restart. Saving the source selection does not guarantee that a search lane is ready; check the reported source and tool readiness separately. When connected to a remote Kiki server, these files and environment variables belong to that server, not the browser's machine.
 
 ```toml
 [nb_search.credential_slots."exa.default"]
@@ -511,7 +528,7 @@ max_redirects = 5
 | `pattern` | `string` | Yes | Match pattern in the form `ToolName` or `ToolName(arg-pattern)`, e.g. `Read` or `Bash(rm -rf*)` |
 | `reason` | `string` | No | Rule description for debugging and auditing |
 
-Built-in tool names are listed in [Built-in tools](../reference/tools.md). Most built-in tools that accept rule arguments define their own matching subject, such as `Bash(command-pattern)` or `Read(path-pattern)`. `AgentSwarm`, MCP tools, and custom tools can only be matched by tool name — argument patterns are not supported for them.
+Built-in tool names are listed in [Built-in tools](../reference/tools.md). Most built-in tools that accept rule arguments define their own matching subject, such as `Bash(command-pattern)` or `Read(path-pattern)`. MCP tools and custom tools can only be matched by tool name — argument patterns are not supported for them.
 
 ```toml
 [[permission.rules]]
@@ -549,12 +566,37 @@ dangerous_bash = "default"
 ```
 
 ::: tip
-MCP server declarations are configured in `~/.kimi-code/mcp.json` or the project-local `.kimi-code/mcp.json`, not in `config.toml`. The interactive configuration entry point is `/mcp-config`; see [Model Context Protocol](../customization/mcp.md).
+MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`. The interactive configuration entry point is `/mcp-config`; see [Model Context Protocol](../customization/mcp.md).
 :::
+
+## `prompt`
+
+`prompt` adds user-authored text to the system prompt without forking any agent profile.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `shared` | `string` | — | Free-form text appended once to the final system prompt for the main agent and each child agent |
+| `variables` | `record<string, string>` | `{}` | Named variables referenced by `${name}` from `shared` or any `tools` entry. Variable names must match `[A-Za-z_][A-Za-z0-9_]*`; built-in names are reserved and cannot be redefined here |
+| `tools` | `record<string, string>` | `{}` | Per-tool guidance appended to each tool's description. Keys must match `[A-Za-z][A-Za-z0-9_-]*` and name an enabled tool exactly; only tools the agent actually has enabled receive the supplement |
+
+`${name}` substitution is a single pass over plain text — no recursion, no script execution. Only variables declared under `[prompt.variables]` are usable; reserved built-in names (`product_name`, `cwd`, `skills`, and others) cannot be used as `${name}` here. Any `${name}` whose name is missing from `variables` is rejected at parse time.
+
+```toml
+[prompt]
+shared = "When citing web sources, prefer the primary page and link the exact URL you opened."
+
+[prompt.variables]
+search_guidance = "Favor recent results unless the question asks for historical context."
+
+[prompt.tools]
+WebSearch = "Prefer ${search_guidance} when results span multiple years."
+```
+
+In the desktop GUI, open **Settings → Agents → Prompt** to edit this section. The card is collapsed by default — expand it before editing.
 
 ## `tui.toml`
 
-Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a companion `tui.toml` in the same directory (`~/.kimi-code/tui.toml`, or `$KIMI_CODE_HOME/tui.toml` when overridden). It is created with defaults on first run, and the interactive commands `/config`, `/theme`, and `/editor` write to it for you — so you rarely need to edit it by hand. If the file is malformed, the CLI falls back to defaults and shows a notice instead of failing to start.
+Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a companion `tui.toml` in the same directory (`~/.kiki/tui.toml`, or `$KIKI_HOME/tui.toml` when overridden). It is created with defaults on first run, and the interactive commands `/config`, `/theme`, and `/editor` write to it for you — so you rarely need to edit it by hand. If the file is malformed, the CLI falls back to defaults and shows a notice instead of failing to start.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -569,7 +611,7 @@ Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a c
 | `[status_line].command` | `string` | `""` | Custom status line command. Its first stdout line replaces the first footer line, with a JSON snapshot (model, cwd, git branch, permission mode, plan mode, context usage, session id, version) passed on stdin. Runs are capped at 300ms and throttled to once per second; failures fall back to the built-in layout |
 
 ```toml
-# ~/.kimi-code/tui.toml
+# ~/.kiki/tui.toml
 theme = "auto" # "auto" | "dark" | "light" | custom theme name
 render_latex = true # false keeps LaTeX math in messages as raw source
 disable_paste_burst = false # true disables non-bracketed paste-burst fallback
@@ -584,14 +626,14 @@ notification_condition = "unfocused" # "unfocused" | "always"
 
 # [status_line]
 # items = ["mode", "goal", "model", "tasks", "cwd", "git", "tips"]
-# command = "~/.kimi-code/statusline.sh"
+# command = "~/.kiki/statusline.sh"
 ```
 
 Changes apply on the next start, or immediately with `/reload-tui` (which reloads only `tui.toml`); `/reload` reloads both `config.toml` and `tui.toml`.
 
 ## Project-local configuration
 
-In addition to the user-level files under `~/.kimi-code`, Kimi Code reads a project-local configuration file at `<project-root>/.kimi-code/local.toml`. It holds settings that are specific to one project checkout and typically should not be shared with teammates.
+In addition to the user-level files under `~/.kiki`, Kiki reads a project-local configuration file at `<project-root>/.kiki/local.toml`. It holds settings that are specific to one project checkout and typically should not be shared with teammates. The legacy `.kimi-code/local.toml` path is not loaded automatically; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`.
 
 The file is created automatically when you add an extra workspace directory with [`/add-dir`](../reference/slash-commands.md) and choose to remember it for the project. You rarely need to edit it by hand.
 
@@ -608,10 +650,10 @@ The `[workspace]` table groups project-level workspace settings:
 additional_dir = ["/absolute/path/to/shared"]
 ```
 
-Because directories are stored as absolute paths, which are specific to your machine, we recommend adding `.kimi-code/local.toml` to your project's `.gitignore` so it is not committed.
+Because directories are stored as absolute paths, which are specific to your machine, we recommend adding `.kiki/local.toml` to your project's `.gitignore` so it is not committed.
 
 ## Next steps
 
 - [Providers and models](./providers.md) — connection examples for each provider type (Kimi, Claude, OpenAI, Gemini)
 - [Config overrides](./overrides.md) — priority rules for CLI options, config file, and environment variables
-- [Environment variables](./env-vars.md) — complete list of runtime variables like `KIMI_CODE_HOME`
+- [Environment variables](./env-vars.md) — complete list of runtime variables like `KIKI_HOME`

@@ -1,6 +1,6 @@
 ---
 name: custom-theme
-description: Create or edit a kimi-code custom color theme — a JSON file under the resolved KIMI_CODE_HOME data directory that recolors the TUI. Use when the user wants their own theme, asks for a specific palette or mood, or wants to tweak an existing custom theme's colors.
+description: Create or edit a kimi-code custom color theme — a JSON file under the resolved KIKI_HOME data directory that recolors the TUI. Use when the user wants their own theme, asks for a specific palette or mood, or wants to tweak an existing custom theme's colors.
 ---
 
 # Create a kimi-code custom theme (custom-theme)
@@ -10,26 +10,26 @@ Help the user design, write, and apply a custom color theme for the kimi-code TU
 ## Rules of engagement
 
 - **Never write a theme until the user has explicitly clarified what they want.** This skill may only run after the user has confirmed light vs dark, the style or mood, any specific colors they care about, and the intended filename. If any of these are missing, ask before creating files.
-- **Never assume the data directory is `~/.kimi-code`.** Always resolve `$KIMI_CODE_HOME` first with the Bash command below.
+- **Never assume the data directory is `~/.kiki`.** Always resolve `$KIKI_HOME` first with the Bash command below.
 - **Never edit a live theme file in place.** Always create a `.json.new` candidate, validate it, back up the old file, and then `mv` it into place.
 - **Never overwrite an existing theme without reading it first.** Read, back up, then overwrite only after the user confirms.
 
 ## Where a theme lives
 
-The kimi-code runtime resolves the data directory as `KIMI_CODE_HOME` first, falling back to `~/.kimi-code`. Theme files live inside the `themes/` subdirectory of that data directory.
+The kimi-code runtime resolves the data directory as `KIKI_HOME` first, falling back to `~/.kiki`. Theme files live inside the `themes/` subdirectory of that data directory.
 
-Before doing anything, resolve the actual data root with Bash so you don't write to the wrong place. Check whether `KIMI_CODE_HOME` is set and fall back to `~/.kimi-code` when it is empty:
+Before doing anything, resolve the actual data root with Bash so you don't write to the wrong place. Check whether `KIKI_HOME` is set and fall back to `~/.kiki` when it is empty:
 
 ```bash
-echo "$KIMI_CODE_HOME"
-echo "$HOME/.kimi-code"
+echo "$KIKI_HOME"
+echo "$HOME/.kiki"
 ```
 
-Use the first line when it is non-empty; otherwise use the second line. In the rest of this skill, `<KIMI_CODE_HOME>` means that resolved data root — **never assume `~/.kimi-code`**. Theme files live at `<KIMI_CODE_HOME>/themes/<name>.json`. Create the `themes/` directory if it doesn't exist.
+Use the first line when it is non-empty; otherwise use the second line. In the rest of this skill, `<KIKI_HOME>` means that resolved data root — **never assume `~/.kiki`**. Theme files live at `<KIKI_HOME>/themes/<name>.json`. Create the `themes/` directory if it doesn't exist.
 
 ## What a theme is
 
-- A theme lives at `<KIMI_CODE_HOME>/themes/<name>.json`.
+- A theme lives at `<KIKI_HOME>/themes/<name>.json`.
 - **The filename is the theme name**: `ember.json` shows up in the `/theme` picker as `Custom: ember`.
 - Shape:
 
@@ -91,9 +91,9 @@ Only set tokens from this set — unknown keys are silently ignored at load. If 
    For the discrete choices (light vs dark, a few style options), prefer **AskUserQuestion** if it is available. If you are running in **auto mode** and `AskUserQuestion` is unavailable, ask the same question as a plain-text message with clear numbered or bulleted options, and wait for the user's reply. Don't start picking colors until you at least know light-vs-dark and the rough style.
 
 2. **Resolve the actual theme directory and current theme(s).**
-   - Resolve the data root by checking `echo "$KIMI_CODE_HOME"`; if empty, use `echo "$HOME/.kimi-code"`. Use `<root>/themes` for every subsequent step.
-   - If tweaking an existing custom theme, **Read** `<KIMI_CODE_HOME>/themes/<name>.json` first — never overwrite a theme you haven't read.
-   - Starting fresh: build a `colors` object from the token table. You can `ls <KIMI_CODE_HOME>/themes/` and Read one of the user's existing themes as a reference for the format.
+   - Resolve the data root by checking `echo "$KIKI_HOME"`; if empty, use `echo "$HOME/.kiki"`. Use `<root>/themes` for every subsequent step.
+   - If tweaking an existing custom theme, **Read** `<KIKI_HOME>/themes/<name>.json` first — never overwrite a theme you haven't read.
+   - Starting fresh: build a `colors` object from the token table. You can `ls <KIKI_HOME>/themes/` and Read one of the user's existing themes as a reference for the format.
 
 3. **Pick a starting point and choose colors deliberately.**
    - Every value is a 6-digit hex `#RRGGBB` (not 3-digit, not a named color).
@@ -102,7 +102,7 @@ Only set tokens from this set — unknown keys are silently ignored at load. If 
    - `roleUser` is the one role color meant to stand on its own — give it a distinct hue.
 
 4. **Create a candidate file; never edit the live theme in place.**
-   - Use Bash to create a candidate. If the target theme already exists, copy it verbatim: `cp <name>.json <name>.json.new` (inside `<KIMI_CODE_HOME>/themes/`). If it doesn't exist, use **Write** to create a minimal skeleton named `<name>.json.new`.
+   - Use Bash to create a candidate. If the target theme already exists, copy it verbatim: `cp <name>.json <name>.json.new` (inside `<KIKI_HOME>/themes/`). If it doesn't exist, use **Write** to create a minimal skeleton named `<name>.json.new`.
    - Use **Edit** on the candidate to change only the intended keys. Keep every existing entry, comment, and formatting intact.
 
 5. **Validate the candidate before overwriting.**

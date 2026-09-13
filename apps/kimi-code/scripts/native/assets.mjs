@@ -12,6 +12,7 @@ import {
   NATIVE_ASSET_MANIFEST_VERSION,
   buildManifestKey,
   buildRuntimeAssetKey,
+  kikiDocsAsset,
 } from './manifest.mjs';
 import { resolveTargetDeps, SUPPORTED_TARGETS } from './native-deps.mjs';
 
@@ -67,6 +68,22 @@ async function listFiles(root) {
 
   await walk(root);
   return files;
+}
+
+async function listKikiDocs(appRoot) {
+  const docsRoot = resolve(appRoot, '..', '..', 'docs');
+  const files = [];
+  for (const locale of ['en', 'zh']) {
+    const localeRoot = resolve(docsRoot, locale);
+    for (const path of await listFiles(localeRoot)) {
+      if (extname(path) !== '.md') continue;
+      files.push({
+        path,
+        relativePath: `${locale}/${toPosixPath(relative(localeRoot, path))}`,
+      });
+    }
+  }
+  return files.toSorted((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
 function resolvePackageRootGeneric(requireFromApp, packageName, parentPackageName, appRoot, target) {
@@ -308,6 +325,20 @@ export async function collectNativeAssets({ appRoot, target }) {
       mode: asset.mode,
     });
     assets[runtimeAssetKey] = runtimeSource;
+  }
+
+  for (const doc of await listKikiDocs(appRoot)) {
+    const asset = kikiDocsAsset(doc.relativePath);
+    const runtimeBytes = await readFile(doc.path);
+    const runtimeAssetKey = buildRuntimeAssetKey(target, asset.key);
+    runtimeFiles.push({
+      key: asset.key,
+      assetKey: runtimeAssetKey,
+      relativePath: asset.relativePath,
+      sha256: sha256(runtimeBytes),
+      mode: asset.mode,
+    });
+    assets[runtimeAssetKey] = doc.path;
   }
 
   const manifest = {

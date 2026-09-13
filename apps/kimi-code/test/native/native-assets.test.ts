@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,6 +30,7 @@ import {
 } from '#/native/native-assets';
 import { installMinidbTextBuildWorker } from '#/native/minidb-worker';
 import { loadNativePackage } from '#/native/native-require';
+import { installKikiDocs, resolveKikiDocsSourceDir } from '#/native/product-docs';
 
 function sha256(bytes: Buffer | string): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -96,15 +107,60 @@ function sourceForManifest(manifest: unknown): NativeAssetSource {
   };
 }
 
+function fakeDocsSource(files: Record<string, string>): {
+  manifest: NativeAssetManifest;
+  source: NativeAssetSource;
+} {
+  const manifestKey = 'native/test-target/manifest.json';
+  const runtimeFiles = Object.entries(files).map(([relativePath, content]) => {
+    const key = `kiki-docs/${relativePath}`;
+    return {
+      key,
+      assetKey: `native/test-target/runtime/${key}`,
+      relativePath: `runtime/kiki-docs/${relativePath}`,
+      sha256: sha256(content),
+      mode: 0o644,
+    };
+  });
+  const manifest: NativeAssetManifest = {
+    version: NATIVE_ASSET_MANIFEST_VERSION,
+    target: 'test-target',
+    packages: [],
+    runtimeFiles,
+  };
+  const assets = new Map<string, Buffer>([
+    [manifestKey, Buffer.from(JSON.stringify(manifest))],
+    ...runtimeFiles.map((file) => [file.assetKey, Buffer.from(files[file.key.slice('kiki-docs/'.length)]!)] as const),
+  ]);
+  return {
+    manifest,
+    source: {
+      getAssetKeys: () => [...assets.keys()],
+      getRawAsset: (assetKey) => {
+        const asset = assets.get(assetKey);
+        if (asset === undefined) throw new Error(`missing test asset: ${assetKey}`);
+        return asset;
+      },
+    },
+  };
+}
+
+function writeDocsTree(root: string, english: string, chinese: string): void {
+  mkdirSync(join(root, 'en'), { recursive: true });
+  mkdirSync(join(root, 'zh'), { recursive: true });
+  writeFileSync(join(root, 'en', 'index.md'), english);
+  writeFileSync(join(root, 'zh', 'index.md'), chinese);
+}
+
 afterEach(() => {
   resetTextBuildWorkerRuntime();
 });
 
 describe('native assets', () => {
-  it('uses KIMI_CODE_CACHE_DIR as the native cache base when present', () => {
+  it('uses KIKI_CACHE_DIR as the native cache base when present', () => {
     expect(
       getNativeCacheBase({
-        env: { KIMI_CODE_CACHE_DIR: '/tmp/kimi-cache' },
+        env: { KIKI_CACHE_DIR: '/tmp/kimi-cache' },
         homeDir: '/home/kimi',
         platform: 'linux',
       }),
@@ -332,5 +388,101 @@ describe('native assets', () => {
         'test-target',
       ),
     ).toThrow(/duplicate assetKey/);
+  });
+
+  it('materializes SEA docs by content hash and backs up user edits before refresh', () => {
+    const home = mkdtempSync(join(tmpdir(), 'kiki-sea-docs-'));
+    try {
+      const initial = fakeDocsSource({
+        'en/index.md': '# English v1\n',
+        'zh/index.md': '# 中文 v1\n',
+      });
+      expect(installKikiDocs({ ...initial, kikiHome: home })).toMatchObject({
+        status: 'installed',
+        source: 'sea',
+        fileCount: 2,
+        writtenFiles: 3,
+        backedUpFiles: 0,
+      });
+
+      const chinesePath = join(home, 'docs', 'zh', 'index.md');
+      const fixedTime = new Date('2024-01-02T03:04:05.000Z');
+      utimesSync(chinesePath, fixedTime, fixedTime);
+      expect(installKikiDocs({ ...initial, kikiHome: home })).toMatchObject({
+        status: 'installed',
+        writtenFiles: 0,
+        backedUpFiles: 0,
+      });
+      expect(statSync(chinesePath).mtimeMs).toBe(fixedTime.getTime());
+
+      const englishPath = join(home, 'docs', 'en', 'index.md');
+      writeFileSync(englishPath, '# user edit\n');
+      const updated = fakeDocsSource({
+        'en/index.md': '# English v2\n',
+        'zh/index.md': '# 中文 v1\n',
+      });
+      expect(installKikiDocs({ ...updated, kikiHome: home })).toMatchObject({
+        status: 'installed',
+        writtenFiles: 2,
+        backedUpFiles: 1,
+      });
+      expect(readFileSync(englishPath, 'utf-8')).toBe('# English v2\n');
+      expect(readFileSync(`${englishPath}.bak`, 'utf-8')).toBe('# user edit\n');
+      expect(statSync(chinesePath).mtimeMs).toBe(fixedTime.getTime());
+    } finally {
+      rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('resolves and materializes npm package docs from dist', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kiki-package-docs-'));
+    const packageRoot = join(root, 'package');
+    const docsRoot = join(packageRoot, 'dist', 'docs');
+    const home = join(root, 'home');
+    try {
+      writeDocsTree(docsRoot, '# Package English\n', '# Package 中文\n');
+      expect(resolveKikiDocsSourceDir(packageRoot, join(packageRoot, 'dist'))).toEqual({
+        path: docsRoot,
+        source: 'package',
+      });
+      expect(
+        installKikiDocs({
+          source: null,
+          packageRoot,
+          runtimeDir: join(packageRoot, 'dist'),
+          kikiHome: home,
+        }),
+      ).toMatchObject({ status: 'installed', source: 'package', fileCount: 2 });
+      expect(readFileSync(join(home, 'docs', 'en', 'index.md'), 'utf-8')).toBe(
+        '# Package English\n',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('prefers repository docs over stale dist docs when running from source', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kiki-workspace-docs-'));
+    const packageRoot = join(root, 'apps', 'kimi-code');
+    const workspaceDocsRoot = join(root, 'docs');
+    const staleDocsRoot = join(packageRoot, 'dist', 'docs');
+    const runtimeDir = join(packageRoot, 'src', 'native');
+    const home = join(root, 'home');
+    try {
+      writeDocsTree(workspaceDocsRoot, '# Workspace English\n', '# Workspace 中文\n');
+      writeDocsTree(staleDocsRoot, '# Stale English\n', '# Stale 中文\n');
+      expect(resolveKikiDocsSourceDir(packageRoot, runtimeDir)).toEqual({
+        path: workspaceDocsRoot,
+        source: 'workspace',
+      });
+      expect(
+        installKikiDocs({ source: null, packageRoot, runtimeDir, kikiHome: home }),
+      ).toMatchObject({ status: 'installed', source: 'workspace', fileCount: 2 });
+      expect(readFileSync(join(home, 'docs', 'en', 'index.md'), 'utf-8')).toBe(
+        '# Workspace English\n',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 });

@@ -5,6 +5,7 @@ import {
   NATIVE_ASSET_MANIFEST_VERSION,
   buildManifestKey,
   isManifestVersionSupported,
+  kikiDocsAsset,
 } from '../../../scripts/native/manifest.mjs';
 
 describe('NATIVE_ASSET_MANIFEST_VERSION', () => {
@@ -24,6 +25,14 @@ describe('buildManifestKey', () => {
     expect(KAP_MODEL_PRICES_ASSET).toMatchObject({
       key: 'kap-model-prices',
       relativePath: 'runtime/kap-server/model_prices_and_context_window.json',
+      mode: 0o644,
+    });
+  });
+
+  it('maps Kiki docs into the SEA runtime asset tree', () => {
+    expect(kikiDocsAsset('en/index.md')).toEqual({
+      key: 'kiki-docs/en/index.md',
+      relativePath: 'runtime/kiki-docs/en/index.md',
       mode: 0o644,
     });
   });

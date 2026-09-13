@@ -1,18 +1,18 @@
 # 配置文件
 
-Kimi Code CLI 把所有长期偏好写进 `~/.kimi-code/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。改一次，每次启动都生效。Agent 与运行时设置放在 `config.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
+Kiki 把所有长期偏好写进 `~/.kiki/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。改一次，每次启动都生效。Agent 与运行时设置放在 `config.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
 
-默认位置：`~/.kimi-code/config.toml`，首次运行时自动创建。
+默认位置：`~/.kiki/config.toml`，首次运行时自动创建。
 
 ## 配置文件位置
 
-CLI 从 `~/.kimi-code/config.toml` 读取配置。如需把数据目录迁移到别处，可用 `KIMI_CODE_HOME` 环境变量覆盖：
+CLI 从 `~/.kiki/config.toml` 读取配置。如需把数据目录迁移到别处，可用 `KIKI_HOME` 环境变量覆盖：
 
 ```sh
-export KIMI_CODE_HOME=/path/to/kimi-home
+export KIKI_HOME=/path/to/kiki-home
 ```
 
-此时配置文件路径变为 `$KIMI_CODE_HOME/config.toml`。无论目录在哪里，文件名固定是 `config.toml`。
+此时配置文件路径变为 `$KIKI_HOME/config.toml`。无论目录在哪里，文件名固定是 `config.toml`。
 
 ::: tip
 TOML 字段名一律用下划线（snake_case），如 `default_model`、`max_context_size`。字段名里若含 `.`，需用引号包住，例如 `[models."gpt-4.1"]`——否则 TOML 会把 `.` 解释为嵌套表分隔符。
@@ -85,7 +85,7 @@ pattern = "Bash(rm -rf*)"
 [[hooks]]
 event = "PreToolUse"
 matcher = "Bash"
-command = "node ~/.kimi-code/hooks/check-bash.mjs"
+command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
@@ -102,7 +102,7 @@ timeout = 5
 | `extra_skill_dirs` | `array<string>` | — | 额外 Skill 搜索目录，叠加到默认目录之上 |
 | `extra_agent_dirs` | `array<string>` | — | 额外自定义 Agent 搜索目录，叠加到默认目录之上 |
 | `disabled_builtin_profiles` | `array<string>` | `[]` | 从 subagent 发现与派发列表中移除的内置 profile 名称：`agent`、`coder`、`explore` 或 `plan`。派发已禁用 profile 时按未知角色报错。禁用 `agent` 不影响 main agent 的默认绑定；文件 profile 与已禁用内置 profile 同名时不再需要 `override: true` |
-| `builtin_product_skills` | `boolean` | `true` | 是否向模型提供介绍 Kimi Code 自身的内置 Skills：`update-config`、`custom-theme`、`mcp-config`、`check-kimi-code-docs`、`import-from-cc-codex`。关闭后它们的名称和描述不再进入系统提示词，代价是失去这些任务的引导流程 |
+| `builtin_product_skills` | `boolean` | `true` | 是否向模型提供介绍 Kiki 自身的内置 Skills：`update-config`、`custom-theme`、`mcp-config`、`check-kiki-docs`、`import-from-cc-codex`。关闭后它们的名称和描述不再进入系统提示词，代价是失去这些任务的引导流程 |
 | `providers` | `table` | `{}` | API 供应商表 → [`providers`](#providers) |
 | `models` | `table` | — | 模型别名表 → [`models`](#models) |
 | `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
@@ -116,8 +116,9 @@ timeout = 5
 | `permission` | `table` | — | 初始权限规则 → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
+| `prompt` | `table` | `{}` | 共享提示词补充、变量与工具级补充 → [`prompt`](#prompt) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`agents`、`thread_communication`、`image`、`services`、`permission` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`agents`、`thread_communication`、`image`、`services`、`permission`、`prompt` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -156,6 +157,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `capabilities` | `array<string>` | 否 | 显式追加的能力标签：`thinking`、`always_thinking`、`image_in`、`video_in`、`audio_in`、`tool_use`。与供应商自动识别的能力取并集，只能追加不能移除 |
 | `support_efforts` | `array<string>` | 否 | 模型接受的 Thinking 档位。对 `kimi` 而言，在运行时选择列表外的值会报错；模型解析时若配置值或之前的值不受目标模型支持，会回落到目标模型的 `default_effort`，并将该有效值同步给 UI。支持 Thinking 但没有此字段的 Kimi 模型使用布尔 `on` / `off`。其他 provider 在协议提供原生 effort 字段时会原样传递具体值；协议仅提供等级或 token budget 时，只做必要的格式转换。managed 和 open-platform 刷新可能会改写该字段；如需手动固定，请改用 `[models."<alias>".overrides] support_efforts` |
 | `default_effort` | `string` | 否 | 模型的默认 Thinking 档位。managed 和 open-platform 刷新可能会改写该字段；如需手动固定，请改用 `[models."<alias>".overrides] default_effort` |
+| `service_tier` | `string` | 否 | 使用此模型的每个请求采用的服务档位：`auto`、`default`、`flex` 或 `priority`。优先于 profile、route 和单次请求的档位，对主 Agent 和子 Agent 均生效。只有 `openai_responses` 会编码此字段，其他协议忽略它；省略时保留 profile 或单次请求的档位 |
 | `off_effort` | `string` | 否 | 关闭 Thinking 时在线上传输的 effort 编码（如 xai grok 的 `none`）。仅对声明了该编码的模型（catalog 会导入）有意义：设置后选择 Off 会发送这个值而不是省略 effort 字段——对默认就会推理的模型，这是真正关闭推理的唯一方式 |
 | `base_url` | `string` | 否 | 模型级端点覆盖（catalog 导入网关模型时写入，这些模型与供应商默认端点不同）。解析时优先于供应商的 `base_url`；仅在与 `protocol` 配合时生效 |
 | `display_name` | `string` | 否 | UI 中显示的名称，未设时回退到 `model` |
@@ -218,7 +220,7 @@ max_context_size = 131072
 display_name = "Kimi for Coding (custom)"
 ```
 
-`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort` 和 `off_effort`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。
+`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
 
 无需修改配置文件也可以临时切换模型——通过 `KIMI_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kimi-model)。
 
@@ -235,7 +237,7 @@ display_name = "Kimi for Coding (custom)"
 | `anchor_steps` | `integer` | `1` | 被锚定的一轮开头有多少次模型请求使用 `anchor` 正文；必须至少为 1 |
 | `anchor_scope` | `string` | `session` | `session` 只锚定会话的第一轮；`turn` 锚定每一轮的开头若干步 |
 
-路径相对于[数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kimi-code`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径——写错路径会让会话停下来，而不是静默送出未经调节的提示词。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。
+路径相对于[数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kiki`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径——写错路径会让会话停下来，而不是静默送出未经调节的提示词。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。
 
 三个字段离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前只读一次。`steering` 紧接在你的提示词之后，作为普通 User 消息注入——不是 `<system-reminder>`——并且每一轮新开始时都会重新注入同一段正文，压缩后重新装填上下文时也一样，因此这条提示不会从最近一次请求旁边漂走。
 
@@ -264,13 +266,13 @@ anchor_steps = 3
 steering = "cognition/flash-steering.md"
 ```
 
-`~/.kimi-code/cognition/flash-anchor.md`：
+`~/.kiki/cognition/flash-anchor.md`：
 
 ```
 You are a helpful software engineer assistant.
 ```
 
-`~/.kimi-code/cognition/flash-steering.md`：
+`~/.kiki/cognition/flash-steering.md`：
 
 ```
 Router: classify this task (build or fix) now, then adopt the matching style — build: direct production; fix: inspect-first. Let's first understand the problem and devise a plan; then let's carry out the plan and act.
@@ -282,8 +284,7 @@ Router: classify this task (build or fix) now, then adopt the matching style —
 
 ## 子 Agent 的模型绑定
 
-子 Agent 的模型只有两个来源：派发时传入的 `model_alias`（`AgentRun` /
-`AgentSwarm` / `TowerSpawn`），或所选 profile、route、caller lease 上的 pin。
+子 Agent 的模型只有两个来源：派发时传入的 `model_alias`（`AgentRun` / `TowerSpawn`），或所选 profile、route、caller lease 上的 pin。
 没有第三个来源——子 Agent 不会跑在调用方的模型上，也没有可回退的配置默认值。
 既没有传 `model_alias`、所选 profile 又没有 pin 的派发会以 `model.not_configured`
 失败，子 Agent 不会被创建。
@@ -341,28 +342,32 @@ thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析�
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `max_running_tasks` | `integer` | — | 同时运行的最大后台任务数 |
-| `keep_alive_on_exit` | `boolean` | `false` | 会话关闭时是否保留仍在运行的后台任务。默认情况下，Kimi Code 会在进程退出前请求停止所有后台任务；只有希望任务在会话结束后继续运行时才设为 `true`。在 print 模式（`kimi -p`）下，本字段仅作为 `print_background_mode` 未设置时的兼容回退：`true` 等价于 `print_background_mode = "drain"` |
-| `kill_grace_period_ms` | `integer` | `5000` | 会话关闭、手动停止或任务超时请求正常终止后，等待任务自行结束的宽限时间（毫秒）。超过该时间仍在运行时，Kimi Code 会尝试强制停止该任务 |
+| `keep_alive_on_exit` | `boolean` | `false` | 会话关闭时是否保留仍在运行的后台任务。默认情况下，Kiki 会在进程退出前请求停止所有后台任务；只有希望任务在会话结束后继续运行时才设为 `true`。在 print 模式（`kiki -p`）下，本字段仅作为 `print_background_mode` 未设置时的兼容回退：`true` 等价于 `print_background_mode = "drain"` |
+| `kill_grace_period_ms` | `integer` | `5000` | 会话关闭、手动停止或任务超时请求正常终止后，等待任务自行结束的宽限时间（毫秒）。超过该时间仍在运行时，Kiki 会尝试强制停止该任务 |
 | `bash_auto_background_on_timeout` | `boolean` | `true` | 前台 `Bash` 命令触及超时时间时，将其转为后台任务而不是直接终止：命令完成时 agent 会收到通知，转入后台的命令受 `bash_task_timeout_s` 默认后台超时约束。设为 `false` 则恢复超时即终止的行为 |
-| `bash_task_timeout_s` | `integer` | `600` | 后台 `Bash` 任务在调用未传 `timeout` 时的默认超时（秒）；前台命令超时转后台后也按此值重新计时。`0` 表示无超时——任务一直运行到自行结束或被模型手动停止。显式传入的 `timeout` 不受影响。在 print 模式（`kimi -p`）下未显式设置时默认为 `0` |
-| `print_background_mode` | `"exit" \| "drain" \| "steer"` | `"steer"` | 仅 print 模式（`kimi -p`）生效，决定 main agent 的 turn 结束后如何处理未返回的后台任务：`"exit"` 立即退出；`"drain"` 退出前等待所有后台任务进入终态（结果不回馈给 main agent）；`"steer"` 不退出，让后台任务完成时像后台 subagent 一样以合成 user 消息 steer main agent 进入新 turn，直到某 turn 结束时无未决后台任务或触及上限。设置后优先级高于 `keep_alive_on_exit` 的 print 回退 |
-| `print_wait_ceiling_s` | `integer` | `2147483` | print 模式（`kimi -p`）下，`print_background_mode` 为 `"drain"` 或 `"steer"` 时，等待/steer 循环的墙钟上限（秒；默认约 24.8 天，近似不设限）。在非 print 模式或 `"exit"` 时无效 |
-| `print_max_turns` | `integer` | `100000` | print 模式（`kimi -p`）且 `print_background_mode = "steer"` 时，允许由后台任务完成触发的新 turn 的最大数量，防止 steer 循环失控（默认值近似不设限） |
+| `bash_task_timeout_s` | `integer` | `600` | 后台 `Bash` 任务在调用未传 `timeout` 时的默认超时（秒）；前台命令超时转后台后也按此值重新计时。`0` 表示无超时——任务一直运行到自行结束或被模型手动停止。显式传入的 `timeout` 不受影响。在 print 模式（`kiki -p`）下未显式设置时默认为 `0` |
+| `print_background_mode` | `"exit" \| "drain" \| "steer"` | `"steer"` | 仅 print 模式（`kiki -p`）生效，决定 main agent 的 turn 结束后如何处理未返回的后台任务：`"exit"` 立即退出；`"drain"` 退出前等待所有后台任务进入终态（结果不回馈给 main agent）；`"steer"` 不退出，让后台任务完成时像后台 subagent 一样以合成 user 消息 steer main agent 进入新 turn，直到某 turn 结束时无未决后台任务或触及上限。设置后优先级高于 `keep_alive_on_exit` 的 print 回退 |
+| `print_wait_ceiling_s` | `integer` | `2147483` | print 模式（`kiki -p`）下，`print_background_mode` 为 `"drain"` 或 `"steer"` 时，等待/steer 循环的墙钟上限（秒；默认约 24.8 天，近似不设限）。在非 print 模式或 `"exit"` 时无效 |
+| `print_max_turns` | `integer` | `100000` | print 模式（`kiki -p`）且 `print_background_mode = "steer"` 时，允许由后台任务完成触发的新 turn 的最大数量，防止 steer 循环失控（默认值近似不设限） |
 
-`keep_alive_on_exit` 可被环境变量 `KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` 覆盖，`max_running_tasks` 可被 `KIMI_CODE_BACKGROUND_MAX_RUNNING_TASKS` 覆盖，优先级均高于配置文件。
+`keep_alive_on_exit` 可被环境变量 `KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT` 覆盖，`max_running_tasks` 可被 `KIKI_BACKGROUND_MAX_RUNNING_TASKS` 覆盖，优先级均高于配置文件。
 
-在 print 模式（`kimi -p "<prompt>"`）下，只要还有未决的后台任务，Kimi Code 在 main agent 的 turn 结束后不会退出：每个任务完成都会以合成 user 消息回馈给 main agent，steer 出新的 turn（默认 `print_background_mode = "steer"`），直到某 turn 结束时没有任何未决任务才退出。该循环受 `print_wait_ceiling_s` 与 `print_max_turns` 约束，默认值都近似不设限。print 模式下后台工作也不会被墙钟超时杀掉：后台 `Bash` 任务默认无超时（`bash_task_timeout_s = 0`），subagent 默认无超时（`[subagent] timeout_ms = 0`），只有模型自己能停止任务。将 `print_background_mode` 设为 `"drain"` 可等待任务结束但不回馈结果，设为 `"exit"` 则在 main agent 结束后立即退出。
+在 print 模式（`kiki -p "<prompt>"`）下，只要还有未决的后台任务，Kiki 在 main agent 的 turn 结束后不会退出：每个任务完成都会以合成 user 消息回馈给 main agent，steer 出新的 turn（默认 `print_background_mode = "steer"`），直到某 turn 结束时没有任何未决任务才退出。该循环受 `print_wait_ceiling_s` 与 `print_max_turns` 约束，默认值都近似不设限。print 模式下后台工作也不会被墙钟超时杀掉：后台 `Bash` 任务默认无超时（`bash_task_timeout_s = 0`），subagent 默认无超时（`[subagent] timeout_ms = 0`），只有模型自己能停止任务。将 `print_background_mode` 设为 `"drain"` 可等待任务结束但不回馈结果，设为 `"exit"` 则在 main agent 结束后立即退出。
 
 ## `subagent`
 
-`subagent` 控制派生 subagent（`AgentRun` / `AgentSwarm`）的运行方式。
+`subagent` 控制派生 subagent（`AgentRun`）的运行方式。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `deny_models` | `string[]` | — | alias 解析后应用于所有 subagent 模型绑定的黑名单，无论该 alias 来自派发参数还是 profile pin |
-| `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`AgentRun` / `AgentSwarm`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kimi -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
+| `max_direct_children` | `integer` | `16` | 每个派遣者同时在途的直属子 Agent 执行数上限，包括启动中和取消中；`0` 表示不限 |
+| `max_total_subagents` | `integer` | `0` | 单棵会话树同时在途的子 Agent 执行总数上限，包括孙代及更深后代，不含 main；`0` 表示不限 |
+| `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`AgentRun`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kiki -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
 
-`timeout_ms` 可被环境变量 `KIMI_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。`deny_models` 没有对应的环境变量。
+`timeout_ms` 可被环境变量 `KIMI_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。`deny_models` 和两个并发限额没有对应的环境变量。
+
+限额是全局配置默认值，计数则按会话隔离。空闲子 Agent 和历史记录不计数；父 Agent 结束后仍运行的后代继续计数。恢复已有子 Agent 会占用执行名额，不会重复创建 Agent。派遣在异步启动前占位，启动失败或执行真正结束后释放。触及任一层上限会立即返回 `dispatch.limit_exceeded`，附带 `layer`、`current`、`limit`、`owner`（REST 业务码为 `42904`），不会排队或停止其他 Agent。可等待正在执行的任务结束，或显式调高对应配置限额。任务完成后的自动唤醒也遵守相同限额；唤醒被拒绝时，已完成任务及其输出仍可通过 `TaskOutput` 读取，通知不会被标记为已送达。
 
 ## `agents`
 
@@ -396,7 +401,7 @@ thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析�
 | `startup_timeout_ms` | `integer` | `30000`（30 秒） | 所有 MCP server 的全局默认连接（启动 + 工具发现）超时（毫秒），取值范围为 `1`–`2147483647`。`mcp.json` 中单个 server 的 `startupTimeoutMs` 始终优先于本节与环境变量；都未设置时使用默认值 |
 | `tool_timeout_ms` | `integer` | `60000`（60 秒） | 所有 MCP server 的全局默认单次工具调用超时（毫秒），取值范围为 `1`–`2147483647`。`mcp.json` 中单个 server 的 `toolTimeoutMs` 始终优先于本节与环境变量；都未设置时使用客户端内置默认值 |
 
-`startup_timeout_ms` 和 `tool_timeout_ms` 可分别被环境变量 `KIMI_MCP_STARTUP_TIMEOUT_MS` 和 `KIMI_MCP_TOOL_TIMEOUT_MS` 覆盖，优先级高于配置文件。MCP server 的完整配置方式见 [MCP](../customization/mcp.md)。
+`startup_timeout_ms` 和 `tool_timeout_ms` 可分别被环境变量 `KIKI_MCP_STARTUP_TIMEOUT_MS` 和 `KIKI_MCP_TOOL_TIMEOUT_MS` 覆盖，优先级高于配置文件。MCP server 的完整配置方式见 [MCP](../customization/mcp.md)。
 
 ## `identity`
 
@@ -413,7 +418,7 @@ name = "Acme Dev Agent"
 slug = "acme-dev"        # 可选
 ```
 
-两个字段都可以通过 `KIMI_CODE_IDENTITY_NAME` 和 `KIMI_CODE_IDENTITY_SLUG` 环境变量设置，优先级高于 `config.toml`，且不会被写回配置文件——适合不便写配置文件的容器和 CI 场景。
+两个字段都可以通过 `KIKI_IDENTITY_NAME` 和 `KIKI_IDENTITY_SLUG` 环境变量设置，优先级高于 `config.toml`，且不会被写回配置文件——适合不便写配置文件的容器和 CI 场景。
 
 如果名称中不含任何 ASCII 字母或数字（例如纯中文名称），就无法派生出 slug，此时回退为 `agent`；需要特定协议标识请显式填写 `slug`。
 
@@ -472,7 +477,18 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | `defaults.fetch_chain` | `array<table>` | 否 | 按输入类型和 representation 配置 fetch pipeline chain；URL 的 SDK 默认值为 `direct.fetch`，随后尝试 `jina.reader` |
 | `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 
-凭据值不会写入 `config.toml`。请在凭据槽的 `env` 字段中填写环境变量名，再把实际 secret 设置到进程环境中。
+凭据值不会写入 `config.toml`。请在凭据槽的 `env` 字段中填写环境变量名。Kiki 服务器进程中的环境变量优先，包括显式设置的空值。开启本机复用后，Kiki 可以从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 nb-search `secrets.json` 补充缺少的变量，只导入匹配凭证槽的变量，并在使用前校验提供商、地址、凭证槽及文件保护。会重定向已导入凭证的配置变更将被拒绝，不会静默重新绑定。运行时不读取其他终端的变量，也不会自动加载独立的 `.env` 文件。密钥值与凭证文件均不会发送到 GUI。
+
+默认按以下顺序合并设置：nb-search 默认值、服务器本机的 nb-search 配置、服务器环境变量、Kiki 的 `nb_search` 覆盖项。本机文件由 `NB_SEARCH_CONFIG` 指定；未指定时，使用 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 `config.json`。默认文件不存在时仍可使用其他配置层；显式路径不存在或文件不可读时，该来源会显示不可用。
+
+在「设置 → 搜索与抓取 → 概览与配置来源」中查看来源并控制复用，也可以设置独立的宿主选项：
+
+```toml
+[nb_search_source]
+reuse_local_config = false
+```
+
+`reuse_local_config` 默认为 `true`。设为 `false` 后会跳过服务器本机的 nb-search 配置与凭证文件，不修改原文件，也不删除 Kiki 已保存的配置或凭证环境变量。隔离模式的默认搜索存储位于 Kiki 缓存目录下，显式设置的 `nb_search.home` 和 `nb_search.jobs_root` 仍优先生效。修改无需重启，下次运行时请求即使用新配置。来源选择保存成功不代表搜索 Lane 已就绪，需要分别查看配置来源与工具的就绪状态。连接远程 Kiki 服务器时，这些文件和环境变量属于服务器，而非浏览器所在机器。
 
 ```toml
 [nb_search.credential_slots."exa.default"]
@@ -508,7 +524,7 @@ max_redirects = 5
 | `pattern` | `string` | 是 | 匹配模式，格式为 `工具名` 或 `工具名(参数模式)`，如 `Read`、`Bash(rm -rf*)` |
 | `reason` | `string` | 否 | 规则说明，仅用于调试和审计 |
 
-内置工具名见[内置工具](../reference/tools.md)。大多数支持规则参数的内置工具会定义自己的匹配对象，例如 `Bash(command-pattern)` 或 `Read(path-pattern)`。`AgentSwarm`、MCP 工具和自定义工具只能按工具名匹配，不支持参数模式。
+内置工具名见[内置工具](../reference/tools.md)。大多数支持规则参数的内置工具会定义自己的匹配对象，例如 `Bash(command-pattern)` 或 `Read(path-pattern)`。MCP 工具和自定义工具只能按工具名匹配，不支持参数模式。
 
 ```toml
 [[permission.rules]]
@@ -546,12 +562,37 @@ dangerous_bash = "default"
 ```
 
 ::: tip
-MCP server 的声明配置写在 `~/.kimi-code/mcp.json` 或项目内 `.kimi-code/mcp.json` 中，不在 `config.toml` 里。交互式配置入口是 `/mcp-config`，详见 [Model Context Protocol](../customization/mcp.md)。
+MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径只作为迁移来源；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。交互式配置入口是 `/mcp-config`，详见 [Model Context Protocol](../customization/mcp.md)。
 :::
+
+## `prompt`
+
+`prompt` 在不动 Agent profile 的前提下向系统提示词追加用户撰写的文本。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `shared` | `string` | — | 任意文本，在主 Agent 与每个子 Agent 的最终系统提示词尾部各自追加一次 |
+| `variables` | `record<string, string>` | `{}` | 由 `${name}` 在 `shared` 或 `tools` 条目中引用的命名变量。变量名须匹配 `[A-Za-z_][A-Za-z0-9_]*`；内置名称为保留名，不能在此重定义 |
+| `tools` | `record<string, string>` | `{}` | 追加到工具描述之后的工具级补充。key 须匹配 `[A-Za-z][A-Za-z0-9_-]*` 并精确指向一个已启用的工具；只有该 Agent 实际启用的工具会得到这段补充 |
+
+`${name}` 的展开是单遍纯文本替换：不递归、不执行脚本。可用的变量仅限 `[prompt.variables]` 中声明的那些；内置保留名（如 `product_name`、`cwd`、`skills` 等）不能作为 `${name}` 在此引用。任何 `${name}` 在 `variables` 中找不到时，都会在解析时直接报错。
+
+```toml
+[prompt]
+shared = "引用网络来源时，优先给出打开过的那一页原文 URL。"
+
+[prompt.variables]
+search_guidance = "除非问题明确要求历史信息，否则优先用最近的结果。"
+
+[prompt.tools]
+WebSearch = "结果跨多年时遵循 ${search_guidance}。"
+```
+
+桌面 GUI 中，请进入「设置 → 智能体 → 提示词」编辑本节；该卡片默认折叠，展开后再编辑。
 
 ## `tui.toml`
 
-除了 `config.toml`，CLI 还在同一目录下用一份配套的 `tui.toml` 保存终端界面与客户端偏好（`~/.kimi-code/tui.toml`，或覆盖后的 `$KIMI_CODE_HOME/tui.toml`）。它在首次运行时以默认值创建，交互式命令 `/config`、`/theme`、`/editor` 会自动写入，通常无需手动编辑。文件格式有误时，CLI 会回退到默认值并给出提示，而不是启动失败。
+除了 `config.toml`，CLI 还在同一目录下用一份配套的 `tui.toml` 保存终端界面与客户端偏好（`~/.kiki/tui.toml`，或覆盖后的 `$KIKI_HOME/tui.toml`）。它在首次运行时以默认值创建，交互式命令 `/config`、`/theme`、`/editor` 会自动写入，通常无需手动编辑。文件格式有误时，CLI 会回退到默认值并给出提示，而不是启动失败。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -566,7 +607,7 @@ MCP server 的声明配置写在 `~/.kimi-code/mcp.json` 或项目内 `.kimi-cod
 | `[status_line].command` | `string` | `""` | 自定义状态栏命令。其 stdout 第一行替换状态栏第一行，stdin 会收到 JSON 快照（model、cwd、git 分支、permission 模式、plan 模式、上下文用量、session id、版本）。运行上限 300ms、每秒最多一次；失败时回退内置布局 |
 
 ```toml
-# ~/.kimi-code/tui.toml
+# ~/.kiki/tui.toml
 theme = "auto" # "auto" | "dark" | "light" | 自定义主题名
 render_latex = true # false 表示消息中的 LaTeX 公式保留原始源码
 disable_paste_burst = false # true 表示禁用非 bracketed paste 的粘贴突发兜底
@@ -581,14 +622,14 @@ notification_condition = "unfocused" # "unfocused" | "always"
 
 # [status_line]
 # items = ["mode", "goal", "model", "tasks", "cwd", "git", "tips"]
-# command = "~/.kimi-code/statusline.sh"
+# command = "~/.kiki/statusline.sh"
 ```
 
 修改在下次启动时生效，或用 `/reload-tui` 立即生效（只重载 `tui.toml`）；`/reload` 会同时重载 `config.toml` 和 `tui.toml`。
 
 ## 项目级本地配置
 
-除了 `~/.kimi-code` 下的用户级文件，Kimi Code 还会读取位于 `<项目根目录>/.kimi-code/local.toml` 的项目级本地配置文件。它保存的是与某一个项目检出相关、通常不应与队友共享的设置。
+除了 `~/.kiki` 下的用户级文件，Kiki 还会读取位于 `<项目根目录>/.kiki/local.toml` 的项目级本地配置文件。它保存的是与某一个项目检出相关、通常不应与队友共享的设置。旧的 `.kimi-code/local.toml` 路径不会自动加载；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。
 
 该文件会在你通过 [`/add-dir`](../reference/slash-commands.md) 添加额外工作目录并选择记入项目时自动创建，通常无需手动编辑。
 
@@ -605,10 +646,10 @@ notification_condition = "unfocused" # "unfocused" | "always"
 additional_dir = ["/absolute/path/to/shared"]
 ```
 
-目录以绝对路径存储，与具体机器相关。因此建议把 `.kimi-code/local.toml` 加入项目的 `.gitignore`，避免被提交。
+目录以绝对路径存储，与具体机器相关。因此建议把 `.kiki/local.toml` 加入项目的 `.gitignore`，避免被提交。
 
 ## 下一步
 
 - [平台与模型](./providers.md) — 各供应商类型（Kimi、Claude、OpenAI、Gemini）的接入示例
 - [配置覆盖](./overrides.md) — CLI 选项、配置文件、环境变量的优先级规则
-- [环境变量](./env-vars.md) — `KIMI_CODE_HOME` 等运行时变量的完整列表
+- [环境变量](./env-vars.md) — `KIKI_HOME` 等运行时变量的完整列表

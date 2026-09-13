@@ -40,27 +40,25 @@ tools exist and the user didn't name one, ask which.
 Config lives in three files; on key collision, later entries in this
 precedence order override earlier ones.
 
-The kimi-code runtime resolves the user-global directory as `KIMI_CODE_HOME`
-first, falling back to `~/.kimi-code`. Before touching the user-global file,
+The Kiki runtime resolves the user-global directory from `KIKI_HOME`
+when defined, otherwise `~/.kiki`. Before touching the user-global file,
 resolve the actual directory with Bash so you don't read or write the wrong
-one. Check whether `KIMI_CODE_HOME` is set and fall back to `~/.kimi-code`
-when it is empty:
+one. An explicitly empty value resolves to the current directory; it does
+not select the default home:
 
 ```bash
-echo "$KIMI_CODE_HOME"
-echo "$HOME/.kimi-code"
+node -e 'const p = require("node:path"); const o = require("node:os"); console.log(p.resolve(process.env.KIKI_HOME ?? p.join(o.homedir(), ".kiki")))'
 ```
 
-Use the first line when it is non-empty; otherwise use the second line. In the
-rest of this skill, `<KIMI_CODE_HOME>` means that resolved data root —
-**never assume `~/.kimi-code`**.
+In the rest of this skill, `<KIKI_HOME>` means that resolved data root —
+**never assume `~/.kiki`**.
 
-- User-global: `<KIMI_CODE_HOME>/mcp.json`. Use for servers you want
+- User-global: `<KIKI_HOME>/mcp.json`. Use for servers you want
   everywhere.
 - Project-root: `<project root>/.mcp.json`, where project root is found
   by walking up from `<cwd>` to the nearest `.git`. Use for
   Claude-compatible, repo-shared, or cross-agent servers.
-- Project-local: `<cwd>/.kimi-code/mcp.json`. Use for Kimi-specific
+- Project-local: `<cwd>/.kiki/mcp.json`. Use for Kiki-specific
   overrides in the current working directory.
 
 Mention once that project-root and project-local stdio entries spawn
@@ -83,12 +81,12 @@ above handles them. `transport` is inferred from `command` vs `url`, so
 omit it. For less common fields (`enabled`, `startupTimeoutMs`,
 `toolTimeoutMs`, `enabledTools`, `disabledTools`, `headers`) the source of
 truth is `McpServerStdioConfigSchema` / `McpServerHttpConfigSchema` in
-`packages/agent-core/src/config/schema.ts`.
+`packages/agent-core-v2/src/mcpCore/config-schema.ts`.
 
 When the user wants to change a timeout for *every* server, don't write
 `startupTimeoutMs` / `toolTimeoutMs` into each entry — the global defaults
 live in `config.toml` (`[mcp] startup_timeout_ms` / `[mcp] tool_timeout_ms`)
-or the `KIMI_MCP_STARTUP_TIMEOUT_MS` / `KIMI_MCP_TOOL_TIMEOUT_MS` env vars;
+or the `KIKI_MCP_STARTUP_TIMEOUT_MS` / `KIKI_MCP_TOOL_TIMEOUT_MS` env vars;
 per-server fields override them. Every timeout must be an integer from `1` to
 `2147483647` milliseconds.
 
@@ -102,7 +100,7 @@ For changes, the flow is:
 1. **Pick a scope.** Infer it from the user's words when you can
    (global / everywhere / all projects → user-global; root / repo /
    shared / cross-agent / Claude / `.mcp.json` → project-root; cwd /
-   current directory / Kimi-specific / `.kimi-code` → project-local). When
+   current directory / Kiki-specific / `.kiki` → project-local). When
    the request is genuinely scope-less, use one `AskUserQuestion` to ask
    user-global vs project-root vs project-local, defaulting to
    user-global. Use plain text for every other question — `AskUserQuestion`
