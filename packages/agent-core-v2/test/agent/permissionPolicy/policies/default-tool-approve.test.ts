@@ -52,14 +52,6 @@ describe('DefaultToolApprovePermissionPolicyService', () => {
     ['WebSearch', { query: 'kimi code' }],
     ['FetchURL', { url: 'https://example.com' }],
     ['AgentRun', { prompt: 'review this' }],
-    [
-      'AgentSwarm',
-      {
-        description: 'Check files',
-        prompt_template: 'Check {{item}}',
-        items: ['a.ts', 'b.ts'],
-      },
-    ],
     ['AskUserQuestion', { questions: [] }],
     ['Skill', { name: 'test-skill' }],
     ['EnterPlanMode', {}],

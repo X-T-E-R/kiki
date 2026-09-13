@@ -784,9 +784,9 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       },
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
-      systemPrompt: anchoredPrompt !== undefined || overrides.systemPrompt !== undefined
-        ? appendSharedPrompt(injectDelegationContext(anchoredPrompt ?? resolvedSystemPrompt, this.profile.data().boundProfile?.promptBase?.delegationSnippet), promptConfig)
-        : resolvedSystemPrompt,
+      systemPrompt: anchoredPrompt ?? (overrides.systemPrompt !== undefined
+        ? appendSharedPrompt(injectDelegationContext(resolvedSystemPrompt, this.profile.data().boundProfile?.promptBase?.delegationSnippet), promptConfig)
+        : resolvedSystemPrompt),
       tools: (overrides.tools ?? this.defaultTools()).map((tool) => ({
         ...tool,
         description: supplementToolDescription(tool.name, tool.description, promptConfig),

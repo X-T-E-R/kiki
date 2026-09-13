@@ -318,6 +318,8 @@ describe('AgentExecutorPreflightService', () => {
         executorProtocol: 'acp-v1',
         executorDescriptorRevision: first.descriptor.revision,
       }),
+      preparePromptConfiguration: async () => false,
+      getSystemPrompt: () => '',
     });
     services.stub(IAgentStateService, { contributeState: () => ({ dispose: () => {} }) });
     services.stub(IAgentLoopService, {});
