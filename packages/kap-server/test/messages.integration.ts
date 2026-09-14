@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   IAgentContextMemoryService,
   IAgentLifecycleService,
+  IAppendLogStore,
   IAuthSummaryService,
   IWireService,
   getLiveSessionById,
@@ -527,6 +528,92 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     );
     expect(newer.body.data.items.map((m) => m.id)).toEqual([idsDesc[0], idsDesc[1]]);
     expect(newer.body.data.has_more).toBe(false);
+  });
+
+  it('does not reread the append log or rehydrate beyond the requested page', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(
+      id,
+      Array.from({ length: 250 }, (_, index) => ({
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: `m${index}` }],
+        toolCalls: [],
+      })),
+    );
+    await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=2`);
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const originalRead = appendLog.read.bind(appendLog);
+    let reads = 0;
+    appendLog.read = ((...args: Parameters<IAppendLogStore['read']>) => {
+      reads += 1;
+      return originalRead(...args);
+    }) as IAppendLogStore['read'];
+
+    const first = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=2`);
+    expect(first.body.data.items.map((message) => message.content[0]?.['text'])).toEqual(['m249', 'm248']);
+    expect(first.body.data.has_more).toBe(true);
+    const appendedAt = Date.now();
+    await seedMainAgentMessages(id, [
+      { role: 'user', content: [{ type: 'text', text: 'appended' }], toolCalls: [] },
+    ]);
+    const appended = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=1`);
+    expect(appended.body.data.items[0]?.content[0]?.['text']).toBe('appended');
+    expect(Date.parse(appended.body.data.items[0]!.created_at)).toBeGreaterThanOrEqual(appendedAt - 100);
+    expect(Date.parse(appended.body.data.items[0]!.created_at)).toBeLessThanOrEqual(Date.now() + 1_000);
+    expect(reads).toBe(0);
+  });
+
+  it('updates an in-flight assistant tail without rereading the full append log', async () => {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const agent = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+    const context = agent.accessor.get(IAgentContextMemoryService);
+    context.append({ role: 'user', content: [{ type: 'text', text: 'prompt' }], toolCalls: [] });
+    context.appendLoopEvent({ type: 'step.begin', uuid: 'step-live', turnId: '0', step: 1 });
+    await agent.accessor.get(IWireService).flush();
+    await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=2`);
+
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const originalRead = appendLog.read.bind(appendLog);
+    let reads = 0;
+    appendLog.read = ((...args: Parameters<IAppendLogStore['read']>) => {
+      reads += 1;
+      return originalRead(...args);
+    }) as IAppendLogStore['read'];
+    context.appendLoopEvent({
+      type: 'content.part',
+      stepUuid: 'step-live',
+      part: { type: 'text', text: 'streamed answer' },
+    });
+    await agent.accessor.get(IWireService).flush();
+
+    const first = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=2`);
+    const second = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=2`);
+    expect(first.body.data.items[0]?.content).toEqual([{ type: 'text', text: 'streamed answer' }]);
+    expect(second.body.data.items[0]?.content).toEqual([{ type: 'text', text: 'streamed answer' }]);
+    expect(reads).toBe(0);
+  });
+
+  it('shares one full history rebuild across concurrent cold misses', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { role: 'user', content: [{ type: 'text', text: 'singleflight' }], toolCalls: [] },
+    ]);
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const originalRead = appendLog.read.bind(appendLog);
+    let reads = 0;
+    appendLog.read = ((...args: Parameters<IAppendLogStore['read']>) => {
+      reads += 1;
+      return originalRead(...args);
+    }) as IAppendLogStore['read'];
+
+    const [left, right] = await Promise.all([
+      getJson<PageWire>(`/api/sessions/${id}/messages`),
+      getJson<PageWire>(`/api/sessions/${id}/messages`),
+    ]);
+    expect(left.body.data.items).toHaveLength(1);
+    expect(right.body.data.items).toHaveLength(1);
+    expect(reads).toBe(1);
   });
 
   it('filters the page by role after pagination', async () => {

@@ -82,6 +82,75 @@ test('auto-compaction triggers when the WAL crosses the threshold', async () => 
   }
 });
 
+test('auto-compaction triggers when WAL churn exceeds the live-data ratio', async () => {
+  const dir = await tmpDir();
+  try {
+    let db = await MiniDb.open({
+      dir,
+      valueCodec: 'string',
+      fsyncPolicy: 'no',
+      compactThresholdBytes: 1 << 30,
+      compactMinWalBytes: 1024,
+      compactWalRatio: 1,
+    });
+    for (let round = 0; round < 20; round++) {
+      await db.set('hot', `${round}:${'x'.repeat(100)}`);
+    }
+    await waitFor(() => db.stats.compactions >= 1, 'ratio auto-compaction to complete');
+    assert.equal(db.get('hot'), `19:${'x'.repeat(100)}`);
+    await db.close();
+
+    db = await MiniDb.open({ dir, valueCodec: 'string', fsyncPolicy: 'no' });
+    assert.equal(db.get('hot'), `19:${'x'.repeat(100)}`);
+    await db.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('WAL ratio trigger observes its minimum byte floor', async () => {
+  const dir = await tmpDir();
+  try {
+    const db = await MiniDb.open({
+      dir,
+      valueCodec: 'string',
+      fsyncPolicy: 'no',
+      compactThresholdBytes: 1 << 30,
+      compactMinWalBytes: 1 << 20,
+      compactWalRatio: 0.01,
+    });
+    for (let round = 0; round < 20; round++) await db.set('hot', String(round));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(db.stats.compactions, 0);
+    await db.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('WAL ratio trigger stays disabled when disk mode lacks a persistent-byte denominator', async () => {
+  const dir = await tmpDir();
+  try {
+    const db = await MiniDb.open({
+      dir,
+      valueCodec: 'string',
+      valueMode: 'disk',
+      fsyncPolicy: 'no',
+      compactThresholdBytes: 1 << 30,
+      compactMinWalBytes: 1024,
+      compactWalRatio: 0.01,
+    });
+    const value = 'x'.repeat(2 * 1024 * 1024);
+    await db.set('large', value);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(db.stats.compactions, 0);
+    assert.equal((await db.getAsync('large')).length, value.length);
+    await db.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
 test('open-time compaction runs in the background — open() returns with the full dataset', async () => {
   const dir = await tmpDir();
   try {

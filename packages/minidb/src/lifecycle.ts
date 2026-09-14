@@ -76,6 +76,8 @@ export interface LifecycleHost<V> {
   codec: ValueCodec<V>;
   valueMode: ValueMode;
   compactThresholdBytes: number;
+  compactWalRatio: number;
+  compactMinWalBytes: number;
   autoCompact: boolean;
   maxMemoryBytes: number | null;
   maxMemoryPolicy: 'reject' | 'evict-lru';
@@ -131,6 +133,8 @@ export async function openMiniDb<V>(db: LifecycleHost<V>, opts: OpenOptions, hoo
     throw new RangeError(`unknown valueMode: ${String(valueMode)}`);
   }
   db.compactThresholdBytes = opts.compactThresholdBytes ?? db.compactThresholdBytes;
+  db.compactWalRatio = opts.compactWalRatio ?? db.compactWalRatio;
+  db.compactMinWalBytes = opts.compactMinWalBytes ?? db.compactMinWalBytes;
   db.autoCompact = opts.autoCompact ?? true;
   db.maxMemoryBytes = opts.maxMemoryBytes ?? null;
   db.maxMemoryPolicy = opts.maxMemoryPolicy ?? 'reject';
@@ -139,6 +143,12 @@ export async function openMiniDb<V>(db: LifecycleHost<V>, opts: OpenOptions, hoo
   db.deferTextBuildsEnabled = opts.deferOpenTextBuilds ?? true;
   db.textBuildMemoryBytes = opts.textBuildMemoryBytes ?? db.textBuildMemoryBytes;
   db.maintenanceIoConcurrency = Math.max(1, opts.maintenanceIoConcurrency ?? db.maintenanceIoConcurrency);
+  if (db.compactWalRatio <= 0 || !Number.isFinite(db.compactWalRatio)) {
+    throw new RangeError('compactWalRatio must be a positive finite number');
+  }
+  if (db.compactMinWalBytes < 0 || !Number.isFinite(db.compactMinWalBytes)) {
+    throw new RangeError('compactMinWalBytes must be a non-negative finite number');
+  }
   if (db.textBuildMemoryBytes <= 0 || !Number.isFinite(db.textBuildMemoryBytes)) {
     throw new RangeError('textBuildMemoryBytes must be a positive finite number');
   }

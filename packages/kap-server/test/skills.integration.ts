@@ -377,6 +377,12 @@ describe('server-v2 /api skills', () => {
       expect(seeded).toBeDefined();
       expect(seeded?.source).toBe('project');
       expect(seeded?.description).toBe('e2e test skill e2e-greeting');
+
+      await seedProjectSkill(workspaceDir, 'e2e-added');
+      await expect.poll(async () => {
+        const refreshed = await getJson<{ skills: SkillWire[] }>(`/api/workspaces/${wid}/skills`);
+        return refreshed.body.data.skills.some((skill) => skill.name === 'e2e-added');
+      }, { timeout: 10_000 }).toBe(true);
     });
 
     it('matches the session listing for the same cwd', async () => {

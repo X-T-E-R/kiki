@@ -26,6 +26,8 @@ export interface ClusterOpenOptions {
   fsyncPolicy?: FsyncPolicy;
   valueMode?: 'memory' | 'disk' | 'auto';
   compactThresholdBytes?: number;
+  compactWalRatio?: number;
+  compactMinWalBytes?: number;
   autoCompact?: boolean;
   activeExpireIntervalMs?: number;
   recovery?: 'resync' | 'strict';

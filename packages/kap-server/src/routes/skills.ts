@@ -1,38 +1,24 @@
 import {
-  builtinProductSkillsEnabled,
-  visibleBuiltinSkills,
   Error2,
   ErrorCodes,
-  EXTRA_SKILL_DIRS_SECTION,
   IAgentSkillService,
   IBootstrapService,
-  IConfigService,
   IFileService,
-  IFlagService,
-  IPluginService,
   ISessionContext,
   ISessionIndex,
   ISessionMediaStore,
   ISessionSkillCatalog,
-  ISkillDiscovery,
   ITelemetryService,
+  IWorkspaceInstanceManager,
   IWorkspaceService,
-  InMemorySkillCatalog,
   isError2,
   isUserActivatableSkillType,
   resumeSessionById,
-  MERGE_ALL_AVAILABLE_SKILLS_SECTION,
-  SKILL_SOURCE_PRIORITY,
-  configuredRoots,
-  projectRoots,
   sessionMediaOriginalsDir,
-  userRoots,
   type ContentPart,
   type ISessionScopeHandle,
   type Scope,
   type SkillDefinition,
-  type ExtraSkillDirsConfig,
-  type MergeAllAvailableSkillsConfig,
 } from '@kiki/agent-core-v2';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -165,7 +151,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         );
         return;
       }
-      const skills = (await listWorkspaceSkillsForRoot(core, ws.root)).map(toProtocolSkill);
+      const skills = (await listWorkspaceSkillsForRoot(core, ws.id, ws.root)).map(toProtocolSkill);
       reply.send(okEnvelope({ skills }, req.id));
     },
   );
@@ -276,59 +262,18 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
 
 async function listWorkspaceSkillsForRoot(
   core: Scope,
+  workspaceId: string,
   workDir: string,
 ): Promise<readonly SkillDefinition[]> {
-  const discovery = core.accessor.get(ISkillDiscovery);
-  const bootstrap = core.accessor.get(IBootstrapService);
-  const plugins = core.accessor.get(IPluginService);
-  const config = core.accessor.get(IConfigService);
-  const flags = core.accessor.get(IFlagService);
-  await config.ready;
-  const extraSkillDirs = config.get<ExtraSkillDirsConfig>(EXTRA_SKILL_DIRS_SECTION) ?? [];
-  const mergeAllAvailableSkills =
-    config.get<MergeAllAvailableSkillsConfig>(MERGE_ALL_AVAILABLE_SKILLS_SECTION) ?? true;
-  const explicitDirs = bootstrap.args.skillDirs ?? [];
-  const useExplicitDirs = explicitDirs.length > 0;
-  const userSkillDir = bootstrap.args.userSkillDir;
-  const rootOptions = { mergeAllAvailableSkills };
-
-  const [userRootList, projectRootList, explicitRootList, extraRootList, pluginRootList] = await Promise.all([
-    useExplicitDirs
-      ? Promise.resolve([])
-      : userSkillDir !== undefined
-        ? configuredRoots([userSkillDir], workDir, bootstrap.osHomeDir, 'user')
-        : userRoots(bootstrap.homeDir, bootstrap.osHomeDir, rootOptions),
-    useExplicitDirs ? Promise.resolve([]) : projectRoots(workDir, rootOptions),
-    useExplicitDirs
-      ? configuredRoots(explicitDirs, workDir, bootstrap.osHomeDir, 'user')
-      : Promise.resolve([]),
-    configuredRoots(extraSkillDirs, workDir, bootstrap.osHomeDir, 'extra'),
-    plugins.pluginSkillRoots(),
-  ]);
-  const [user, project, explicit, extra, plugin] = await Promise.all([
-    discovery.discover(userRootList),
-    discovery.discover(projectRootList),
-    discovery.discover(explicitRootList),
-    discovery.discover(extraRootList),
-    discovery.discover(pluginRootList),
-  ]);
-
-  const catalog = new InMemorySkillCatalog();
-  const ordered = [
-    {
-      skills: visibleBuiltinSkills(builtinProductSkillsEnabled(config), flags),
-      priority: SKILL_SOURCE_PRIORITY.builtin,
-    },
-    { skills: plugin.skills, priority: SKILL_SOURCE_PRIORITY.plugin },
-    { skills: extra.skills, priority: SKILL_SOURCE_PRIORITY.extra },
-    { skills: user.skills, priority: SKILL_SOURCE_PRIORITY.user },
-    { skills: explicit.skills, priority: SKILL_SOURCE_PRIORITY.user },
-    { skills: project.skills, priority: SKILL_SOURCE_PRIORITY.workspace },
-  ].toSorted((a, b) => a.priority - b.priority);
-  for (const { skills } of ordered) {
-    for (const skill of skills) catalog.register(skill, { replace: true });
+  const lease = await core.accessor
+    .get(IWorkspaceInstanceManager)
+    .acquire({ workspaceId, root: workDir });
+  try {
+    await lease.instance.program.ready;
+    return lease.instance.program.skills.catalog.listSkills();
+  } finally {
+    lease.dispose();
   }
-  return catalog.listSkills();
 }
 
 type SkillElement = ReturnType<ISessionSkillCatalog['catalog']['listSkills']>[number];

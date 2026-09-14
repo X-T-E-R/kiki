@@ -90,6 +90,8 @@ export interface FileMetaDoc {
 
 export interface SessionMetaDoc {
   readonly kind: 'sessionMeta';
+  readonly updatedAt?: number;
+  readonly sourceMtimeMs?: number;
 }
 
 export interface StatsDoc {

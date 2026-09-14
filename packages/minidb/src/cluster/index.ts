@@ -99,6 +99,8 @@ export class ClusterDb<V = unknown> {
         fsyncPolicy: topology.meta.fsyncPolicy,
         valueMode: opts.valueMode,
         compactThresholdBytes: opts.compactThresholdBytes,
+        compactWalRatio: opts.compactWalRatio,
+        compactMinWalBytes: opts.compactMinWalBytes,
         autoCompact: opts.autoCompact,
         activeExpireIntervalMs: opts.activeExpireIntervalMs,
         recovery: opts.recovery,

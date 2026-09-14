@@ -73,7 +73,10 @@ function makeSessionIndex(
 }
 
 function staticIndex(summaries: SessionSummary[]): ISessionIndex {
-  return makeSessionIndex(async () => ({ items: summaries, nextCursor: undefined }));
+  return {
+    ...makeSessionIndex(async () => ({ items: summaries, nextCursor: undefined })),
+    count: async () => summaries.length,
+  };
 }
 
 function userLine(text: string, time: number, origin?: unknown): string {
@@ -478,6 +481,26 @@ describe('GlobalSearchService', () => {
     statusEmitter.dispose();
   });
 
+  it('skips unchanged session trees and rescans after the session source changes', async () => {
+    const s1 = summary('s1', 'gated', T1);
+    const sessions = [s1];
+    await writeWire(home!, 's1', 'main', [userLine('苹果 gated', T1)]);
+    const statePath = join(home!, 'sessions', WS, 's1', 'state.json');
+    await writeFile(statePath, '{}', 'utf8');
+    const service = track(makeInlineService(home!, staticIndex(sessions)));
+    await service.reindex();
+    const core = coreOf(service);
+    const syncSession = vi.spyOn(core, 'syncSession');
+
+    await settleSync(service);
+    expect(syncSession).not.toHaveBeenCalled();
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await writeFile(statePath, '{"changed":true}', 'utf8');
+    await settleSync(service);
+    expect(syncSession).toHaveBeenCalledOnce();
+  });
+
   it('indexes user and assistant text and finds Chinese and English terms', async () => {
     const s1 = summary('s1', '搜索重构讨论', T1);
     await writeWire(home!, 's1', 'main', [
@@ -518,6 +541,61 @@ describe('GlobalSearchService', () => {
     expect(titleHit).toBeDefined();
     expect(titleHit?.sessionId).toBe('s1');
     expect(titleHit?.snippet).toContain('季度');
+  });
+
+  it('refreshes a title whose metadata mtime changes without advancing updatedAt', async () => {
+    let current = summary('s1', '旧标题', T1);
+    await writeWire(home!, 's1', 'main', [userLine('正文', T1)]);
+    const statePath = join(home!, 'sessions', WS, 's1', 'state.json');
+    await writeFile(statePath, JSON.stringify({ title: current.title }), 'utf8');
+    const index = {
+      ...makeSessionIndex(async () => ({ items: [current], nextCursor: undefined })),
+      count: async () => 1,
+      get: async (id: string) => id === current.id ? current : undefined,
+    };
+    const service = track(makeInlineService(home!, index));
+    service.fullSessionScanIntervalMs = 60_000;
+    await service.reindex();
+    expect((await service.search({ query: '旧标题' })).items.some((hit) => hit.role === 'title')).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    current = { ...current, title: '新标题' };
+    await writeFile(statePath, JSON.stringify({ title: current.title }), 'utf8');
+    await settleSync(service);
+
+    expect((await service.search({ query: '旧标题' })).items).toEqual([]);
+    expect((await service.search({ query: '新标题' })).items.some((hit) => hit.role === 'title')).toBe(true);
+  });
+
+  it('discovers a wire added to an existing warm-snapshot agent directory', async () => {
+    const sessions = [summary('s1', 'directory sync', T1)];
+    await writeWire(home!, 's1', 'main', [userLine('苹果 main', T1)]);
+    const pendingDir = join(home!, 'sessions', WS, 's1', 'agents', 'agent-added');
+    await mkdir(pendingDir, { recursive: true });
+    await writeFile(join(home!, 'sessions', WS, 's1', 'state.json'), '{}', 'utf8');
+    const service = track(makeInlineService(home!, staticIndex(sessions)));
+    await service.reindex();
+    expect((await service.search({ query: '香蕉' })).items).toEqual([]);
+
+    await writeWire(home!, 's1', 'agent-added', [userLine('香蕉 added', T2)]);
+    sessions[0] = summary('s1', 'directory sync', T2);
+    await settleSync(service);
+
+    expect((await service.search({ query: '香蕉' })).items.map((hit) => hit.agentId)).toEqual(['agent-added']);
+  });
+
+  it('clears the directory snapshot before an explicit reindex', async () => {
+    const s1 = summary('s1', 'directory reindex', T1);
+    await writeWire(home!, 's1', 'main', [userLine('苹果 main', T1)]);
+    const pendingDir = join(home!, 'sessions', WS, 's1', 'agents', 'agent-reindex');
+    await mkdir(pendingDir, { recursive: true });
+    const service = track(makeInlineService(home!, staticIndex([s1])));
+    await service.reindex();
+
+    await writeWire(home!, 's1', 'agent-reindex', [userLine('梨子 rebuilt', T2)]);
+    await service.reindex();
+
+    expect((await service.search({ query: '梨子' })).items.map((hit) => hit.agentId)).toEqual(['agent-reindex']);
   });
 
   it('filters by container (session and agent)', async () => {

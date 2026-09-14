@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { type TodoItem } from '#/session/todo/todoItem';
-import { todoListStaleReminder } from '#/session/todo/todoListReminder';
+import { TodoListReminderTracker, todoListStaleReminder } from '#/session/todo/todoListReminder';
 
 function assistantMessage(): ContextMessage {
   return {
@@ -52,6 +52,10 @@ function priorTodoReminder(): ContextMessage {
 }
 
 describe('todoListStaleReminder', () => {
+  it('does not remind for an empty history', () => {
+    expect(todoListStaleReminder({ history: [], todos: [], active: true })).toBeUndefined();
+  });
+
   it('skips reminder injection when TodoList is not active', async () => {
     const history = Array.from({ length: 10 }, () => assistantMessage());
     const result = todoListStaleReminder({
@@ -108,5 +112,38 @@ describe('todoListStaleReminder', () => {
     const result = todoListStaleReminder({ history, todos, active: true });
 
     expect(result).toBeDefined();
+  });
+
+  it('parses only appended TodoList calls after the initial scan', () => {
+    const tracker = new TodoListReminderTracker();
+    const parse = vi.spyOn(JSON, 'parse');
+    const todos: TodoItem[] = [{ title: 'Read code', status: 'in_progress' }];
+    const history = [todoListWrite(todos), ...Array.from({ length: 9 }, () => assistantMessage())];
+
+    expect(tracker.reminder({ history, todos, active: true })).toBeUndefined();
+    expect(parse).toHaveBeenCalledTimes(1);
+    const appended = [...history, assistantMessage()];
+    expect(tracker.reminder({ history: appended, todos, active: true })).toBeDefined();
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(tracker.reminder({ history: [...appended, todoListQuery()], todos, active: true })).toBeDefined();
+    expect(parse).toHaveBeenCalledTimes(2);
+    parse.mockRestore();
+  });
+
+  it('rebuilds counts when history is rewritten', () => {
+    const tracker = new TodoListReminderTracker();
+    const todos: TodoItem[] = [{ title: 'Read code', status: 'in_progress' }];
+    const stale = [todoListWrite(todos), ...Array.from({ length: 10 }, () => assistantMessage())];
+    expect(tracker.reminder({ history: stale, todos, active: true })).toBeDefined();
+
+    const rewritten = [todoListWrite(todos), assistantMessage()];
+    expect(tracker.reminder({ history: rewritten, todos, active: true })).toBeUndefined();
+    expect(
+      tracker.reminder({
+        history: [...rewritten, ...Array.from({ length: 9 }, () => assistantMessage())],
+        todos,
+        active: true,
+      }),
+    ).toBeDefined();
   });
 });

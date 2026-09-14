@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
@@ -13,6 +13,7 @@ import {
   drainQueryStoreDisposals,
   MINIDB_QUERY_STORE_SUBDIR,
   MiniDbQueryStore,
+  QUERY_STORE_COMPACT_THRESHOLD_BYTES,
 } from '#/persistence/backends/minidb/miniDbQueryStore';
 import { IQueryStore } from '#/persistence/interface/queryStore';
 import { stubBootstrap } from '../../../app/bootstrap/stubs';
@@ -52,6 +53,16 @@ describe('MiniDbQueryStore', { timeout: 30_000 }, () => {
     disposeHost = () => { host.dispose(); };
     return host.app.accessor.get(IQueryStore);
   }
+
+  it('opens shards with the query-store compaction threshold', async () => {
+    const open = vi.spyOn(ClusterDb, 'open');
+    const store = build();
+    await store.put(COLLECTION, 'a', { id: 'a' });
+    expect(open).toHaveBeenCalledWith(
+      expect.objectContaining({ compactThresholdBytes: QUERY_STORE_COMPACT_THRESHOLD_BYTES }),
+    );
+    open.mockRestore();
+  });
 
   it('put/get/delete round-trip', async () => {
     const store = build();

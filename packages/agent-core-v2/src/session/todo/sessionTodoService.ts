@@ -20,7 +20,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ISessionTodoService } from './sessionTodo';
 import { todoKey, ToolsUpdateStore } from './todoOps';
 import { TODO_LIST_TOOL_NAME, type TodoItem } from './todoItem';
-import { TODO_LIST_REMINDER_VARIANT, todoListStaleReminder } from './todoListReminder';
+import { TODO_LIST_REMINDER_VARIANT, TodoListReminderTracker } from './todoListReminder';
 
 const MAIN_AGENT_ID = 'main';
 
@@ -37,6 +37,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
 
   private readonly agentBindings = new Map<string, IDisposable[]>();
   private readonly lastKnownTodos = new Map<string, readonly TodoItem[]>();
+  private readonly reminderTrackers = new Map<string, TodoListReminderTracker>();
 
   constructor(
     @IAgentLifecycleService private readonly agentLifecycle: IAgentLifecycleService,
@@ -103,6 +104,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
 
   private prepareAgent(handle: IAgentScopeHandle): void {
     handle.accessor.get(IAgentStateService).contributeState(todoKey);
+    this.reminderTrackers.set(handle.id, new TodoListReminderTracker());
     const injector = handle.accessor.get(IAgentContextInjectorService);
     this.trackAgentBinding(
       handle.id,
@@ -125,7 +127,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
   private staleReminder(handle: IAgentScopeHandle): string | undefined {
     const memory = handle.accessor.get(IAgentContextMemoryService);
     const toolPolicy = handle.accessor.get(IAgentToolPolicyService);
-    return todoListStaleReminder({
+    return this.reminderTrackers.get(handle.id)?.reminder({
       active: toolPolicy.isToolActive(TODO_LIST_TOOL_NAME, 'builtin'),
       history: memory.get(),
       todos: handle.accessor.get(IAgentStateService).get(todoKey),
@@ -149,6 +151,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     }
     this.agentBindings.delete(agentId);
     this.lastKnownTodos.delete(agentId);
+    this.reminderTrackers.delete(agentId);
   }
 }
 

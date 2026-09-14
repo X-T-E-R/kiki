@@ -124,6 +124,8 @@ export class MiniDb<V = unknown> {
   /* Non-private (package-internal): lifecycle.ts reads/writes this through its LifecycleHost view. */ lock: LockFile | null = null;
 
   compactThresholdBytes = 64 * 1024 * 1024;
+  compactWalRatio = 1;
+  compactMinWalBytes = 4 * 1024 * 1024;
   autoCompact = true;
   compacting = false;
   _compactDone: Promise<void> | null = null;

@@ -142,6 +142,17 @@ describe('FileSkillDiscovery', () => {
     expect(result.skills[0]?.description).toBe('from brand');
   });
 
+  it('keeps the sorted first winner for duplicate names within one root', async () => {
+    await writeSkill('skills/a-first/SKILL.md', 'name: duplicate\ndescription: alphabetical winner');
+    await writeSkill('skills/z-second/SKILL.md', 'name: DUPLICATE\ndescription: later duplicate');
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await discover([skillRoot('skills')]);
+      expect(result.skills).toHaveLength(1);
+      expect(result.skills[0]?.description).toBe('alphabetical winner');
+    }
+  });
+
   it('dedupes same-named skills across roots from the same plugin', async () => {
     await writeSkill('plugin-a-first/dup/SKILL.md', 'name: DUP\ndescription: from first root');
     await writeSkill('plugin-a-second/dup/SKILL.md', 'name: dup\ndescription: from second root');
@@ -248,6 +259,18 @@ describe('FileSkillDiscovery', () => {
     const result = await discover([skillRoot('skills')]);
 
     expect(result.skills.map((s) => s.name)).not.toContain('hidden');
+  });
+
+  it('stops traversal beyond the scan-depth budget', async () => {
+    const within = Array.from({ length: 8 }, (_, index) => `d${index}`).join('/');
+    const beyond = `${within}/d8`;
+    await writeSkill(`skills/${within}/within/SKILL.md`, 'name: within\ndescription: within budget');
+    await writeSkill(`skills/${beyond}/beyond/SKILL.md`, 'name: beyond\ndescription: beyond budget');
+
+    const result = await discover([skillRoot('skills')]);
+
+    expect(result.skills.map((skill) => skill.name)).toContain('within');
+    expect(result.skills.map((skill) => skill.name)).not.toContain('beyond');
   });
 
   it('warns and skips a skill whose SKILL.md has invalid frontmatter', async () => {

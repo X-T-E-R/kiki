@@ -26,6 +26,8 @@ export interface OpenOptions {
   /** Background-sync interval for fsyncPolicy 'everysec' (default 1000 ms). */
   syncIntervalMs?: number;
   compactThresholdBytes?: number;
+  compactWalRatio?: number;
+  compactMinWalBytes?: number;
   autoCompact?: boolean;
   activeExpireIntervalMs?: number;
   recovery?: RecoveryMode;

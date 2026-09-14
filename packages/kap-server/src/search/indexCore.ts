@@ -286,6 +286,7 @@ export class SearchIndexCore {
   private fileMetaMigrated = false;
   /** Token of the published db.lock line (writer only) — see CoreIndexView. */
   private lockToken: string | undefined;
+  private readonly wireFileSnapshots = new Map<string, WireFileSnapshot>();
 
   db: MiniDb<SearchDoc> | null = null;
   openPromise: Promise<void> | null = null;
@@ -577,19 +578,36 @@ export class SearchIndexCore {
     await this.migrateFileMetaKeys(db);
 
     const currentIds = new Set(sessions.map((s) => s.id));
+    let changed = false;
 
     for (const row of db.query({ key: { prefix: SESSION_META_PREFIX }, project: [] })) {
       if (this.disposed) return { noop: true, sessions: 0, documents: 0 };
       const sessionId = row.key.slice(SESSION_META_PREFIX.length);
-      if (!currentIds.has(sessionId)) await this.deleteSessionDocs(db, sessionId);
+      if (!currentIds.has(sessionId)) {
+        await this.deleteSessionDocs(db, sessionId);
+        this.wireFileSnapshots.delete(sessionId);
+        changed = true;
+      }
     }
 
-    let indexed = 0;
     for (const summary of sessions) {
       if (this.disposed) return { noop: true, sessions: 0, documents: 0 };
+      const sessionMeta = db.get(SESSION_META_PREFIX + summary.id);
+      const sourceMtimeMs = await sessionSourceMtime(summary.dir);
+      const wireSnapshot = this.wireFileSnapshots.get(summary.id);
+      if (
+        sourceMtimeMs !== undefined &&
+        wireSnapshot !== undefined &&
+        Date.now() - wireSnapshot.capturedAt < WIRE_FILE_SNAPSHOT_TTL_MS &&
+        sessionMeta?.kind === 'sessionMeta' &&
+        sessionMeta.updatedAt === summary.updatedAt &&
+        sessionMeta.sourceMtimeMs === sourceMtimeMs
+      ) {
+        continue;
+      }
       try {
-        await this.syncSession(db, summary);
-        indexed++;
+        await this.syncSession(db, summary, sourceMtimeMs);
+        changed = true;
       } catch (error) {
         this.log.warn('global search: failed to index session', {
           sessionId: summary.id,
@@ -599,19 +617,27 @@ export class SearchIndexCore {
     }
 
     if (this.disposed) return { noop: true, sessions: 0, documents: 0 };
+    this.fullSyncDone = true;
+    if (!changed) {
+      const existing = db.get(STATS_KEY);
+      return {
+        noop: true,
+        sessions: sessions.length,
+        documents: existing?.kind === 'stats' ? existing.documents : 0,
+      };
+    }
     const metaCount = db.query({ key: { prefix: '\0meta\\' }, project: [] }).length;
     const stats: StatsDoc = {
       kind: 'stats',
-      sessions: indexed,
+      sessions: sessions.length,
       documents: db.size - metaCount,
       lastIndexedAt: Date.now(),
     };
     await db.set(STATS_KEY, stats);
-    this.fullSyncDone = true;
     if (this.syncReplaced) {
       this.generation++;
     }
-    return { noop: false, sessions: indexed, documents: stats.documents };
+    return { noop: false, sessions: sessions.length, documents: stats.documents };
   }
 
   /**
@@ -645,8 +671,12 @@ export class SearchIndexCore {
     await db.del(SESSION_META_PREFIX + sessionId);
   }
 
-  private async syncSession(db: MiniDb<SearchDoc>, summary: SyncSessionInput): Promise<void> {
-    const wireFiles = await collectWireFiles(summary.dir);
+  private async syncSession(
+    db: MiniDb<SearchDoc>,
+    summary: SyncSessionInput,
+    sourceMtimeMs?: number,
+  ): Promise<void> {
+    const wireFiles = await collectWireFiles(summary.id, summary.dir, this.wireFileSnapshots);
     const seenPaths = new Set(wireFiles.map((file) => file.path));
 
     for (const row of db.query({ key: { prefix: fileMetaPrefixFor(summary.id) } })) {
@@ -663,6 +693,12 @@ export class SearchIndexCore {
 
     const title = summary.title ?? '';
     const titleKey = `${summary.id}/$title`;
+    for (const row of db.query({ key: { prefix: `${summary.id}/$` }, project: [] })) {
+      if (row.key !== titleKey) {
+        await db.del(row.key);
+        this.syncReplaced = true;
+      }
+    }
     const existing = db.get(titleKey);
     if (title.length > 0) {
       if (existing?.kind !== 'title' || existing.text !== title) {
@@ -682,10 +718,12 @@ export class SearchIndexCore {
     } else if (existing !== undefined) {
       await db.del(titleKey);
     }
-    if (db.get(SESSION_META_PREFIX + summary.id) === undefined) {
-      const sessionMeta: SessionMetaDoc = { kind: 'sessionMeta' };
-      await db.set(SESSION_META_PREFIX + summary.id, sessionMeta);
-    }
+    const sessionMeta: SessionMetaDoc = {
+      kind: 'sessionMeta',
+      updatedAt: summary.updatedAt,
+      sourceMtimeMs,
+    };
+    await db.set(SESSION_META_PREFIX + summary.id, sessionMeta);
   }
 
   private async deleteFileDocs(db: MiniDb<SearchDoc>, meta: FileMetaDoc): Promise<void> {
@@ -1045,6 +1083,7 @@ export class SearchIndexCore {
     this.openPromise = null;
     this.fullSyncDone = false;
     this.lockToken = undefined;
+    this.wireFileSnapshots.clear();
     await rm(this.indexDir, { recursive: true, force: true });
     await this.ensureOpen();
   }
@@ -1123,13 +1162,45 @@ export class SearchIndexCore {
   }
 }
 
+async function sessionSourceMtime(sessionDir: string): Promise<number | undefined> {
+  for (const path of [join(sessionDir, 'state.json'), join(sessionDir, 'session-meta', 'state.json')]) {
+    try {
+      return (await stat(path)).mtimeMs;
+    } catch {
+    }
+  }
+  return undefined;
+}
+
 interface WireFileRef {
   readonly path: string;
   readonly agentId: string;
   readonly source: 'root' | 'agents';
 }
 
-async function collectWireFiles(sessionDir: string): Promise<WireFileRef[]> {
+interface DirectoryFingerprint {
+  readonly path: string;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  readonly ino: number;
+}
+
+interface WireFileSnapshot {
+  readonly agentsDir: string;
+  readonly capturedAt: number;
+  readonly directories: readonly DirectoryFingerprint[];
+  readonly files: readonly WireFileRef[];
+}
+
+const WIRE_FILE_SNAPSHOT_CAPACITY = 512;
+const WIRE_FILE_SNAPSHOT_TTL_MS = 60_000;
+const WIRE_FILE_STAT_CONCURRENCY = 16;
+
+async function collectWireFiles(
+  sessionId: string,
+  sessionDir: string,
+  snapshots: Map<string, WireFileSnapshot>,
+): Promise<WireFileRef[]> {
   const files: WireFileRef[] = [];
   const root = join(sessionDir, WIRE_FILENAME);
   try {
@@ -1138,15 +1209,115 @@ async function collectWireFiles(sessionDir: string): Promise<WireFileRef[]> {
   }
   const agentsDir = join(sessionDir, 'agents');
   try {
-    const entries = await readdir(agentsDir, { recursive: true, withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile() || entry.name !== WIRE_FILENAME) continue;
-      const path = join(entry.parentPath, entry.name);
-      files.push({ path, agentId: relative(agentsDir, entry.parentPath), source: 'agents' });
+    const cached = snapshots.get(sessionId);
+    if (
+      cached?.agentsDir === agentsDir &&
+      Date.now() - cached.capturedAt < WIRE_FILE_SNAPSHOT_TTL_MS &&
+      await directoryFingerprintIntact(cached.directories) &&
+      await wireFilesIntact(cached.files)
+    ) {
+      files.push(...cached.files);
+      return files;
     }
+    const entries = await readdir(agentsDir, { recursive: true, withFileTypes: true });
+    const agentFiles: WireFileRef[] = [];
+    const directoryPaths = [agentsDir];
+    for (const entry of entries) {
+      const entryPath = join(entry.parentPath, entry.name);
+      if (entry.isDirectory()) directoryPaths.push(entryPath);
+      if (!entry.isFile() || entry.name !== WIRE_FILENAME) continue;
+      agentFiles.push({ path: entryPath, agentId: relative(agentsDir, entry.parentPath), source: 'agents' });
+    }
+    const directories = await readDirectoryFingerprints(directoryPaths);
+    if (directories === undefined) throw new Error(`unable to fingerprint ${agentsDir}`);
+    snapshots.delete(sessionId);
+    snapshots.set(sessionId, {
+      agentsDir,
+      capturedAt: Date.now(),
+      directories,
+      files: agentFiles,
+    });
+    while (snapshots.size > WIRE_FILE_SNAPSHOT_CAPACITY) {
+      const oldest = snapshots.keys().next().value;
+      if (oldest === undefined) break;
+      snapshots.delete(oldest);
+    }
+    files.push(...agentFiles);
   } catch {
+    snapshots.delete(sessionId);
   }
   return files;
+}
+
+async function readDirectoryFingerprints(
+  paths: readonly string[],
+): Promise<DirectoryFingerprint[] | undefined> {
+  const fingerprints = await mapConcurrent(paths, WIRE_FILE_STAT_CONCURRENCY, async (path) => {
+    try {
+      const info = await stat(path);
+      return info.isDirectory()
+        ? { path, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino }
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  return fingerprints.some((fingerprint) => fingerprint === undefined)
+    ? undefined
+    : fingerprints as DirectoryFingerprint[];
+}
+
+async function directoryFingerprintIntact(
+  fingerprints: readonly DirectoryFingerprint[],
+): Promise<boolean> {
+  const current = await readDirectoryFingerprints(fingerprints.map((fingerprint) => fingerprint.path));
+  return current !== undefined && current.every((fingerprint, index) => {
+    const previous = fingerprints[index]!;
+    return fingerprint.mtimeMs === previous.mtimeMs &&
+      fingerprint.ctimeMs === previous.ctimeMs &&
+      fingerprint.ino === previous.ino;
+  });
+}
+
+async function mapConcurrent<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  results.length = values.length;
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      for (;;) {
+        const index = next;
+        next += 1;
+        if (index >= values.length) return;
+        results[index] = await operation(values[index]!);
+      }
+    }),
+  );
+  return results;
+}
+
+async function wireFilesIntact(files: readonly WireFileRef[]): Promise<boolean> {
+  let next = 0;
+  let intact = true;
+  await Promise.all(
+    Array.from({ length: Math.min(WIRE_FILE_STAT_CONCURRENCY, files.length) }, async () => {
+      while (intact) {
+        const index = next;
+        next += 1;
+        if (index >= files.length) return;
+        try {
+          if (!(await stat(files[index]!.path)).isFile()) intact = false;
+        } catch {
+          intact = false;
+        }
+      }
+    }),
+  );
+  return intact;
 }
 
 function docKeyPrefix(sessionId: string, file: WireFileRef): string {

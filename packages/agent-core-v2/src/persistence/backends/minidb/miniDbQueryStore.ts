@@ -36,6 +36,7 @@ const SHARD_COUNT = 16;
 // acquire timeout stays longer than the hold so a peer can wait for handoff.
 const LOCK_HOLD_MS = 5_000;
 const LOCK_ACQUIRE_TIMEOUT_MS = 7_000;
+export const QUERY_STORE_COMPACT_THRESHOLD_BYTES = 4 * 1024 * 1024;
 const DROP_BATCH_SIZE = 500;
 
 function physicalKey(collection: string, key: string): string {
@@ -97,6 +98,7 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
       valueCodec: 'json',
       valueMode: 'memory',
       fsyncPolicy: 'everysec',
+      compactThresholdBytes: QUERY_STORE_COMPACT_THRESHOLD_BYTES,
       lockAcquireTimeoutMs: LOCK_ACQUIRE_TIMEOUT_MS,
       lockHoldMs: LOCK_HOLD_MS,
     });

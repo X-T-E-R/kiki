@@ -18,52 +18,59 @@ interface TodoListReminderTurnCounts {
   readonly turnsSinceLastReminder: number;
 }
 
-export function todoListStaleReminder(input: TodoListReminderInput): string | undefined {
-  if (!input.active) return undefined;
+export class TodoListReminderTracker {
+  private scannedLength = 0;
+  private lastScannedMessage: ContextMessage | undefined;
+  private counts: TodoListReminderTurnCounts = {
+    turnsSinceLastWrite: 0,
+    turnsSinceLastReminder: 0,
+  };
 
-  const counts = getTodoListReminderTurnCounts(input.history);
-  if (
-    counts.turnsSinceLastWrite < TODO_LIST_REMINDER_TURNS_SINCE_WRITE ||
-    counts.turnsSinceLastReminder < TODO_LIST_REMINDER_TURNS_BETWEEN_REMINDERS
-  ) {
-    return undefined;
+  reminder(input: TodoListReminderInput): string | undefined {
+    if (!input.active) return undefined;
+
+    this.scan(input.history);
+    if (
+      this.counts.turnsSinceLastWrite < TODO_LIST_REMINDER_TURNS_SINCE_WRITE ||
+      this.counts.turnsSinceLastReminder < TODO_LIST_REMINDER_TURNS_BETWEEN_REMINDERS
+    ) {
+      return undefined;
+    }
+
+    return renderTodoListReminder(input.todos);
   }
 
-  return renderTodoListReminder(input.todos);
+  private scan(history: readonly ContextMessage[]): void {
+    if (
+      history.length < this.scannedLength ||
+      (this.scannedLength > 0 && history[this.scannedLength - 1] !== this.lastScannedMessage)
+    ) {
+      this.scannedLength = 0;
+      this.lastScannedMessage = undefined;
+      this.counts = { turnsSinceLastWrite: 0, turnsSinceLastReminder: 0 };
+    }
+
+    for (let index = this.scannedLength; index < history.length; index += 1) {
+      const message = history[index];
+      if (message === undefined) continue;
+      if (message.role === 'assistant') {
+        this.counts = {
+          turnsSinceLastWrite: hasTodoListWrite(message)
+            ? 0
+            : this.counts.turnsSinceLastWrite + 1,
+          turnsSinceLastReminder: this.counts.turnsSinceLastReminder + 1,
+        };
+      } else if (isTodoListReminder(message)) {
+        this.counts = { ...this.counts, turnsSinceLastReminder: 0 };
+      }
+    }
+    this.scannedLength = history.length;
+    this.lastScannedMessage = history.at(-1);
+  }
 }
 
-function getTodoListReminderTurnCounts(
-  history: readonly ContextMessage[],
-): TodoListReminderTurnCounts {
-  let foundWrite = false;
-  let foundReminder = false;
-  let turnsSinceLastWrite = 0;
-  let turnsSinceLastReminder = 0;
-
-  for (let i = history.length - 1; i >= 0; i -= 1) {
-    const message = history[i];
-    if (message === undefined) continue;
-
-    if (message.role === 'assistant') {
-      if (!foundWrite && hasTodoListWrite(message)) {
-        foundWrite = true;
-      }
-      if (!foundWrite) turnsSinceLastWrite += 1;
-      if (!foundReminder) turnsSinceLastReminder += 1;
-      continue;
-    }
-
-    if (!foundReminder && isTodoListReminder(message)) {
-      foundReminder = true;
-    }
-
-    if (foundWrite && foundReminder) break;
-  }
-
-  return {
-    turnsSinceLastWrite,
-    turnsSinceLastReminder,
-  };
+export function todoListStaleReminder(input: TodoListReminderInput): string | undefined {
+  return new TodoListReminderTracker().reminder(input);
 }
 
 function hasTodoListWrite(message: ContextMessage): boolean {

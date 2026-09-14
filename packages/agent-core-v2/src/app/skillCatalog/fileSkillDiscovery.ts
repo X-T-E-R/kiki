@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import path from 'pathe';
+import { basename, join } from 'pathe';
 
 import { ILogService, type LogPayload } from '#/_base/log/log';
 
@@ -9,6 +9,7 @@ import type { SkillDefinition, SkillRoot, SkippedSkill } from './types';
 import { normalizeSkillName } from './types';
 
 export const MAX_SKILL_SCAN_DEPTH = 8;
+export const MAX_CONCURRENT_SKILL_IO = 16;
 
 export function isSkillScanExcludedEntry(entryName: string): boolean {
   return entryName === 'node_modules' || entryName.startsWith('.');
@@ -33,6 +34,20 @@ export async function discoverFileSkills(
   const byDiscoveryKey = new Map<string, SkillDefinition>();
   const skipped: SkippedSkill[] = [];
   const scannedDirectories: string[] = [];
+  const runIo = createConcurrencyLimit(MAX_CONCURRENT_SKILL_IO);
+
+  const parse = (input: Omit<Parameters<typeof parseSkill>[0], 'skipped' | 'warn' | 'readFile'>) =>
+    parseSkill({
+      ...input,
+      skipped,
+      warn,
+      readFile: (filePath) => runIo(() => fs.readFile(filePath, 'utf8')),
+    });
+  const register = (skill: SkillDefinition, root: SkillRoot): SkillDefinition => {
+    const key = `${skill.metadata.promptCommand === true ? 'command\0' : ''}${skillDiscoveryKey(root, skill.name)}`;
+    if (!byDiscoveryKey.has(key)) byDiscoveryKey.set(key, skill);
+    return skill;
+  };
 
   async function walkSkillDir(
     dirPath: string,
@@ -44,106 +59,102 @@ export async function discoverFileSkills(
     if (depth > MAX_SKILL_SCAN_DEPTH) return;
 
     if (root.scanMode === 'root-skill-only') {
-      const rootSkillMd = path.join(dirPath, 'SKILL.md');
-      if (await isFile(rootSkillMd)) {
-        await parseAndRegister({
-          byDiscoveryKey,
-          skipped,
-          warn,
+      const rootSkillMd = join(dirPath, 'SKILL.md');
+      if (await runIo(() => isFile(rootSkillMd))) {
+        const skill = await parse({
           skillMdPath: rootSkillMd,
-          skillDirName: path.basename(dirPath),
+          skillDirName: basename(dirPath),
           root,
         });
+        if (skill !== undefined) register(skill, root);
       }
       return;
     }
 
     let entries: readonly string[];
     try {
-      entries = [...(await fs.readdir(dirPath))].toSorted();
+      entries = [...(await runIo(() => fs.readdir(dirPath)))].toSorted();
     } catch {
       return;
     }
     scannedDirectories.push(dirPath);
 
     if (root.scanMode === 'commands') {
-      for (const entry of entries) {
-        if (!entry.endsWith('.md') || isSkillScanExcludedEntry(entry)) continue;
-        const skillMdPath = path.join(dirPath, entry);
-        if (!(await isFile(skillMdPath))) continue;
-        await parseAndRegister({
-          byDiscoveryKey, skipped, warn, skillMdPath,
-          skillDirName: entry.slice(0, -'.md'.length), root,
+      const parsed = await mapConcurrent(entries, MAX_CONCURRENT_SKILL_IO, async (entry) => {
+        if (!entry.endsWith('.md') || isSkillScanExcludedEntry(entry)) return undefined;
+        const skillMdPath = join(dirPath, entry);
+        if (!(await runIo(() => isFile(skillMdPath)))) return undefined;
+        return parse({
+          skillMdPath,
+          skillDirName: entry.slice(0, -'.md'.length),
+          root,
         });
-      }
+      });
+      for (const skill of parsed) if (skill !== undefined) register(skill, root);
       return;
     }
 
-    const directorySkills = new Set<string>();
-    const subdirs: string[] = [];
-    for (const entry of entries) {
-      const entryPath = path.join(dirPath, entry);
-      if (await isFile(path.join(entryPath, 'SKILL.md'))) {
-        directorySkills.add(entry);
-      }
-      if (isSkillScanExcludedEntry(entry)) continue;
-      if (await isDir(entryPath)) subdirs.push(entry);
-    }
+    const inspected = await mapConcurrent(entries, MAX_CONCURRENT_SKILL_IO, async (entry) => {
+      const entryPath = join(dirPath, entry);
+      const excluded = isSkillScanExcludedEntry(entry);
+      const [skill, directory] = await Promise.all([
+        runIo(() => isFile(join(entryPath, 'SKILL.md'))),
+        excluded ? Promise.resolve(false) : runIo(() => isDir(entryPath)),
+      ]);
+      return { entry, skill, directory };
+    });
+    const directorySkills = new Set(inspected.filter((entry) => entry.skill).map((entry) => entry.entry));
+    const subdirs = inspected.filter((entry) => entry.directory).map((entry) => entry.entry);
 
+    const parsedDirectorySkills = await mapConcurrent(
+      [...directorySkills],
+      MAX_CONCURRENT_SKILL_IO,
+      async (entry) => ({
+        entry,
+        skill: await parse({
+          skillMdPath: join(dirPath, entry, 'SKILL.md'),
+          skillDirName: entry,
+          root,
+          subSkillParentName,
+        }),
+      }),
+    );
     const allowedSubSkillBundles = new Map<string, string>();
-    for (const entry of directorySkills) {
-      const skill = await parseAndRegister({
-        byDiscoveryKey,
-        skipped,
-        warn,
-        skillMdPath: path.join(dirPath, entry, 'SKILL.md'),
-        skillDirName: entry,
-        root,
-        subSkillParentName,
-      });
-      if (skill !== undefined && hasSubSkillEnabled(skill)) {
-        allowedSubSkillBundles.set(entry, skill.name);
-      }
+    for (const { entry, skill } of parsedDirectorySkills) {
+      if (skill === undefined) continue;
+      register(skill, root);
+      if (hasSubSkillEnabled(skill)) allowedSubSkillBundles.set(entry, skill.name);
     }
 
     if (isTopLevel) {
       if (root.plugin !== undefined) {
-        const rootSkillMd = path.join(dirPath, 'SKILL.md');
-        if (await isFile(rootSkillMd)) {
-          await parseAndRegister({
-            byDiscoveryKey,
-            skipped,
-            warn,
+        const rootSkillMd = join(dirPath, 'SKILL.md');
+        if (await runIo(() => isFile(rootSkillMd))) {
+          const skill = await parse({
             skillMdPath: rootSkillMd,
-            skillDirName: path.basename(dirPath),
+            skillDirName: basename(dirPath),
             root,
           });
+          if (skill !== undefined) register(skill, root);
         }
       }
 
-      for (const entry of entries) {
-        if (!entry.endsWith('.md')) continue;
-        if (entry === 'SKILL.md') continue;
+      const parsedFlatSkills = await mapConcurrent(entries, MAX_CONCURRENT_SKILL_IO, async (entry) => {
+        if (!entry.endsWith('.md') || entry === 'SKILL.md') return undefined;
         const skillName = entry.slice(0, -'.md'.length);
-        if (directorySkills.has(skillName)) continue;
-        const skillMdPath = path.join(dirPath, entry);
-        if (!(await isFile(skillMdPath))) continue;
-        await parseAndRegister({
-          byDiscoveryKey,
-          skipped,
-          warn,
-          skillMdPath,
-          skillDirName: skillName,
-          root,
-        });
-      }
+        if (directorySkills.has(skillName)) return undefined;
+        const skillMdPath = join(dirPath, entry);
+        if (!(await runIo(() => isFile(skillMdPath)))) return undefined;
+        return parse({ skillMdPath, skillDirName: skillName, root });
+      });
+      for (const skill of parsedFlatSkills) if (skill !== undefined) register(skill, root);
     }
 
     for (const entry of subdirs) {
       if (directorySkills.has(entry) && !allowedSubSkillBundles.has(entry)) continue;
       const allowedSubSkillParentName = allowedSubSkillBundles.get(entry);
       await walkSkillDir(
-        path.join(dirPath, entry),
+        join(dirPath, entry),
         root,
         false,
         depth + 1,
@@ -164,17 +175,17 @@ export async function discoverFileSkills(
   };
 }
 
-async function parseAndRegister(input: {
-  readonly byDiscoveryKey: Map<string, SkillDefinition>;
+async function parseSkill(input: {
   readonly skipped: SkippedSkill[];
   readonly warn?: (message: string, payload?: LogPayload) => void;
   readonly skillMdPath: string;
   readonly skillDirName: string;
   readonly root: SkillRoot;
   readonly subSkillParentName?: string;
+  readonly readFile: (path: string) => Promise<string>;
 }): Promise<SkillDefinition | undefined> {
   try {
-    const text = await fs.readFile(input.skillMdPath, 'utf8');
+    const text = await input.readFile(input.skillMdPath);
     const parsed = parseSkillText({
       skillMdPath: input.skillMdPath,
       skillDirName: input.skillDirName,
@@ -194,13 +205,7 @@ async function parseAndRegister(input: {
             },
           }
         : parsed;
-    const discovered =
-      input.root.plugin === undefined ? skill : { ...skill, plugin: input.root.plugin };
-    const key = `${discovered.metadata.promptCommand === true ? 'command\0' : ''}${skillDiscoveryKey(input.root, discovered.name)}`;
-    if (!input.byDiscoveryKey.has(key)) {
-      input.byDiscoveryKey.set(key, discovered);
-    }
-    return discovered;
+    return input.root.plugin === undefined ? skill : { ...skill, plugin: input.root.plugin };
   } catch (error) {
     if (error instanceof UnsupportedSkillTypeError) {
       input.skipped.push({
@@ -243,6 +248,46 @@ function hasSubSkillEnabled(skill: SkillDefinition): boolean {
     skill.metadata['hasSubSkill'] === true ||
     nestedFlag
   );
+}
+
+function createConcurrencyLimit(limit: number) {
+  let active = 0;
+  const pending: Array<() => void> = [];
+  return async <T>(operation: () => Promise<T>): Promise<T> => {
+    if (active >= limit) {
+      await new Promise<void>((resolve) => {
+        pending.push(resolve);
+      });
+    }
+    active += 1;
+    try {
+      return await operation();
+    } finally {
+      active -= 1;
+      pending.shift()?.();
+    }
+  };
+}
+
+async function mapConcurrent<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  results.length = values.length;
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      for (;;) {
+        const index = next;
+        next += 1;
+        if (index >= values.length) return;
+        results[index] = await operation(values[index]!);
+      }
+    }),
+  );
+  return results;
 }
 
 async function isDir(p: string): Promise<boolean> {

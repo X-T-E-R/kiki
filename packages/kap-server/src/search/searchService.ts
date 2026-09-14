@@ -56,6 +56,9 @@ export type { GlobalSearchErrorReason } from './contract';
 
 const INDEX_DIR_NAME = 'search-index';
 const SESSION_PAGE_SIZE = 500;
+const CHANGED_SESSION_PAGE_SIZE = 100;
+const SESSION_MTIME_CONCURRENCY = 16;
+const FULL_SESSION_SCAN_INTERVAL_MS = 5 * 60_000;
 
 const MAX_QUERY_TERMS = 32;
 const MAX_LITERAL_QUERY_CHARS = 1_024;
@@ -271,6 +274,7 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   /** Minimum interval between search-triggered sync passes (test knob). */
   syncDebounceMs = 2_000;
+  fullSessionScanIntervalMs = FULL_SESSION_SCAN_INTERVAL_MS;
 
   /** Literal-mode candidate cap (test knob, see LITERAL_CANDIDATE_CAP). */
   literalCandidateCap = LITERAL_CANDIDATE_CAP;
@@ -294,7 +298,9 @@ export class GlobalSearchService implements IGlobalSearchService {
   private syncPromise: Promise<void> | null = null;
   private refreshPromise: Promise<void> | null = null;
   private lastSyncStartedAt = 0;
+  private lastFullSessionScanAt = 0;
   private summaries = new Map<string, SessionSummary>();
+  private sessionSourceMtimes = new Map<string, number>();
   private disposed = false;
   /** Set while `reindex()` swaps the db — syncs started meanwhile are no-ops. */
   private reindexing = false;
@@ -447,16 +453,78 @@ export class GlobalSearchService implements IGlobalSearchService {
       return;
     }
     this.clearSessionIndexStatusWaiter();
-    const sessions = await this.listAllSessions();
+    const sessions = await this.listSessionsForSync();
     if (this.disposed) return;
     if (sessions.length === 0 && !(await pathExists(this.indexDir))) {
       this.summaries = new Map();
+      this.sessionSourceMtimes = new Map();
       this.lastSyncStartedAt = Date.now();
       return;
     }
     this.summaries = new Map(sessions.map((s) => [s.id, s]));
     this.lastSyncStartedAt = Date.now();
     await this.backend.sync(sessions.map((s) => this.toSyncInput(s)));
+  }
+
+  private async listSessionsForSync(): Promise<SessionSummary[]> {
+    if (
+      this.summaries.size === 0 ||
+      Date.now() - this.lastFullSessionScanAt >= this.fullSessionScanIntervalMs
+    ) {
+      return this.refreshFullSessionInventory();
+    }
+    const count = await this.sessionIndex.count({});
+    if (count !== this.summaries.size) return this.refreshFullSessionInventory();
+    const currentMtimes = await this.readSessionSourceMtimes([...this.summaries.values()]);
+    if (currentMtimes === undefined) return this.refreshFullSessionInventory();
+    const merged = new Map(this.summaries);
+    for (const [id, mtimeMs] of currentMtimes) {
+      if (this.sessionSourceMtimes.get(id) === mtimeMs) continue;
+      const summary = await this.sessionIndex.get(id);
+      if (summary === undefined) return this.refreshFullSessionInventory();
+      merged.set(id, summary);
+    }
+    const newest = [...this.summaries.values()].reduce((current, summary) =>
+      compareSessionRecency(summary, current) > 0 ? summary : current,
+    );
+    let cursor: string | undefined;
+    let reachedWatermark = false;
+    do {
+      const page = await this.sessionIndex.listRecent({
+        before: cursor,
+        limit: CHANGED_SESSION_PAGE_SIZE,
+      });
+      for (const summary of page.items) {
+        if (compareSessionRecency(summary, newest) <= 0) {
+          reachedWatermark = true;
+          break;
+        }
+        merged.set(summary.id, summary);
+      }
+      cursor = page.nextCursor;
+    } while (!reachedWatermark && cursor !== undefined);
+    if (!reachedWatermark) return this.refreshFullSessionInventory();
+    this.sessionSourceMtimes = currentMtimes;
+    return [...merged.values()];
+  }
+
+  private async refreshFullSessionInventory(): Promise<SessionSummary[]> {
+    const sessions = await this.listAllSessions();
+    const mtimes = await this.readSessionSourceMtimes(sessions);
+    this.sessionSourceMtimes = mtimes ?? new Map();
+    this.lastFullSessionScanAt = Date.now();
+    return sessions;
+  }
+
+  private async readSessionSourceMtimes(
+    sessions: readonly SessionSummary[],
+  ): Promise<Map<string, number> | undefined> {
+    const rows = await mapConcurrent(sessions, SESSION_MTIME_CONCURRENCY, async (summary) => {
+      const mtimeMs = await sessionSourceMtime(this.toSyncInput(summary).dir);
+      return mtimeMs === undefined ? undefined : [summary.id, mtimeMs] as const;
+    });
+    if (rows.some((row) => row === undefined)) return undefined;
+    return new Map(rows as Array<readonly [string, number]>);
   }
 
   private async listAllSessions(): Promise<SessionSummary[]> {
@@ -875,6 +943,42 @@ export class GlobalSearchService implements IGlobalSearchService {
     if (this.disposed) return { state: this.drainSettled ? 'stopped' : 'closing' };
     return this.backend.lifecycleSnapshot();
   }
+}
+
+async function sessionSourceMtime(sessionDir: string): Promise<number | undefined> {
+  for (const path of [join(sessionDir, 'state.json'), join(sessionDir, 'session-meta', 'state.json')]) {
+    try {
+      return (await stat(path)).mtimeMs;
+    } catch {
+    }
+  }
+  return undefined;
+}
+
+async function mapConcurrent<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  results.length = values.length;
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      for (;;) {
+        const index = next;
+        next += 1;
+        if (index >= values.length) return;
+        results[index] = await operation(values[index]!);
+      }
+    }),
+  );
+  return results;
+}
+
+function compareSessionRecency(left: SessionSummary, right: SessionSummary): number {
+  if (left.updatedAt !== right.updatedAt) return left.updatedAt - right.updatedAt;
+  return left.id.localeCompare(right.id);
 }
 
 function matchLiveTerms(

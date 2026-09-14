@@ -69,8 +69,11 @@ export interface CompactionTarget {
   /** Background-sync interval the replacement WALs inherit (see WALOptions). */
   syncIntervalMs?: number;
   store: Store;
+  valueMode: 'memory' | 'disk';
   wal: WAL;
   compactThresholdBytes: number;
+  compactWalRatio: number;
+  compactMinWalBytes: number;
   compacting: boolean;
   _compactDone: Promise<void> | null;
   /** Set only during the short rotation critical section; writers park on it.
@@ -113,7 +116,10 @@ export interface CompactionTarget {
 }
 
 export function shouldCompact(db: CompactionTarget): boolean {
-  return Boolean(db.wal && db.wal.size >= db.compactThresholdBytes);
+  if (!db.wal) return false;
+  if (db.wal.size >= db.compactThresholdBytes) return true;
+  if (db.valueMode !== 'memory' || db.wal.size < db.compactMinWalBytes) return false;
+  return db.wal.size >= Math.max(1, db.store.bytes) * db.compactWalRatio;
 }
 
 const COPY_CHUNK = 1 << 20; // 1 MiB read/write coalescing
