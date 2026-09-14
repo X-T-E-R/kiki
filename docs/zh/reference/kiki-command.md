@@ -59,6 +59,38 @@ kiki doctor
 
 报告会检查 daemon 可达性、token 文件路径与权限、席位列表，以及每个席位的权限模式。
 
+## 检查提示词字段
+
+`kiki prompt-fields` 是用于发现提示词字段、校验字段配置和解释运行时上下文中生效值的只读操作面；它不会修改 `config.toml`、`SYSTEM.md`、Agent profile 或外部覆写文件。
+
+**列出字段**——`list` 输出所有已注册字段及其 owner、consumer 和覆写策略：
+
+```sh
+kiki prompt-fields list
+```
+
+**查看字段**——`show` 输出单个字段的默认模板、空值策略、允许变量和必需占位符：
+
+```sh
+kiki prompt-fields show system.language
+```
+
+**校验配置**——`validate` 校验所选配置中的提示词覆写、引用的外部 TOML 文件、`SYSTEM.md` 和发现到的 Agent profile：
+
+```sh
+kiki prompt-fields validate --config ./candidate.toml --home ~/.kiki
+```
+
+**解释有效值**——`explain` 输出所选上下文中字段的 `effective`、`shadowed` 或 `inactive` 状态、有效值及完整来源链：
+
+```sh
+kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast --executor native --delegation-position sub
+```
+
+使用 `--agent <名称>`、`--model <alias>`、`--executor <id>` 和 `--delegation-position <main|sub|independent>` 选择解释上下文。使用 `--config <路径>` 检查另一份配置文件，使用 `--home <目录>` 选择读取 `SYSTEM.md`、发现 Agent 以及解析相对外部覆写文件时所用的 Kiki home。不带子命令的 `kiki prompt-fields` 等同于 `list`。
+
+已移除的 `prompt.shared` 与 `prompt.tools` 键已迁入 `[prompt.overrides]` 下的字段；请按 [提示词字段优先级](../configuration/overrides.md#提示词字段优先级) 迁移旧条目，不要恢复旧键。
+
 ## 从 `kimi` 迁移
 
 安装后的统一入口为 `kiki`：不带子命令时进入 daemon 支持的 TUI，`kiki -p "提示词"` 继续使用既有非交互 memory 链路。Daemon、席位和 inbound 集成命令也在同一入口提供。不再安装 `kimi` bin，请同步更新命令启动器。

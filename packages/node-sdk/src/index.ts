@@ -7,6 +7,16 @@ export { createKimiHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk
 export { createPrintClient, PRINT_MAX_TURNS_DEFAULT, PRINT_WAIT_CEILING_S_DEFAULT, setClampedTimeout } from '#/print-client';
 export type { PrintClientHost, AgentTaskConfig, PrintBackgroundMode } from '#/print-client';
 export {
+  inspectPromptFields,
+  listPromptFieldDefinitions,
+  type PromptFieldDefinitionInfo,
+  type PromptFieldInspectOptions,
+  type PromptFieldInspection,
+  type PromptFieldSourceInfo,
+  type PromptFieldValidationSummary,
+  type PromptFieldValueInfo,
+} from '#/prompt-fields';
+export {
   createKimiConfigRpc,
   KimiConfigRpcClient,
   type KimiConfigRpc,

@@ -59,6 +59,38 @@ kiki doctor
 
 The report checks daemon reachability, the token-file path and permissions, the seat list, and each seat's permission mode.
 
+## Inspect prompt fields
+
+`kiki prompt-fields` is a read-only surface for discovering prompt fields, validating their configuration, and explaining the value selected for a runtime context; it does not modify `config.toml`, `SYSTEM.md`, agent profiles, or external override files.
+
+**List fields** — `list` prints every registered field with its owner, consumers, and override policy:
+
+```sh
+kiki prompt-fields list
+```
+
+**Show a field** — `show` prints one field's default template, empty-value policy, allowed variables, and required placeholders:
+
+```sh
+kiki prompt-fields show system.language
+```
+
+**Validate configuration** — `validate` checks prompt overrides in the selected config, referenced external TOML files, `SYSTEM.md`, and discovered agent profiles:
+
+```sh
+kiki prompt-fields validate --config ./candidate.toml --home ~/.kiki
+```
+
+**Explain a value** — `explain` prints a field's `effective`, `shadowed`, or `inactive` status, effective value, and complete source chain for the selected context:
+
+```sh
+kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast --executor native --delegation-position sub
+```
+
+Use `--agent <name>`, `--model <alias>`, `--executor <id>`, and `--delegation-position <main|sub|independent>` to select the explanation context. Use `--config <path>` to inspect another config file and `--home <dir>` to select the Kiki home used for `SYSTEM.md`, agent discovery, and relative external override files. Without a subcommand, `kiki prompt-fields` is equivalent to `list`.
+
+The removed `prompt.shared` and `prompt.tools` keys have moved into fields under `[prompt.overrides]`; migrate old entries instead of restoring those keys, following [prompt field precedence](../configuration/overrides.md#prompt-field-precedence).
+
 ## Migration from `kimi`
 
 The installed entry point is now `kiki`: run it without a subcommand for the daemon-backed TUI, or use `kiki -p "prompt"` for the existing non-interactive memory path. Daemon, seat, and inbound integration commands are available from the same entry point. The `kimi` bin is no longer installed; update your command launchers.
