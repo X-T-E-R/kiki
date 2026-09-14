@@ -228,6 +228,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private frozenSkillListing: string | undefined;
   private frozenPluginSections: string | undefined;
+  private systemPromptRefreshTail: Promise<void> = Promise.resolve();
 
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -1091,7 +1092,32 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.publishToolPatternWarnings();
   }
 
-  async refreshSystemPrompt(): Promise<void> {
+  async rebuildPromptContext(): Promise<void> {
+    await this.systemPromptRefreshTail.catch(() => undefined);
+    const current = this.profileState;
+    if (current.profileName === undefined) return;
+    this.activeProfile = undefined;
+    this.frozenSkillListing = undefined;
+    this.frozenPluginSections = undefined;
+    this.promptConfigurationSignature = 'invalidated';
+    await this.bind({
+      profile: current.profileName,
+      route: current.routeId,
+      model: current.modelAlias,
+      thinking: current.thinkingLevel,
+      lease: current.appliedLease,
+      spawnPolicy: current.spawnPolicy,
+      delegationPosition: this.delegationPosition,
+    });
+  }
+
+  refreshSystemPrompt(): Promise<void> {
+    const refresh = this.systemPromptRefreshTail.catch(() => undefined).then(() => this.refreshSystemPromptNow());
+    this.systemPromptRefreshTail = refresh;
+    return refresh;
+  }
+
+  private async refreshSystemPromptNow(): Promise<void> {
     const profile = this.resolveActiveProfile();
     if (profile === undefined) return;
 

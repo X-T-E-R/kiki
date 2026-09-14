@@ -562,6 +562,11 @@ describe('agent domain routing', () => {
     channel.results.set('agentConversationUndoService.undo', 1);
     channel.results.set('agentTaskService.detach', undefined);
     channel.results.set('agentFullCompactionService.isCompacting', false);
+    channel.results.set('agentContextRebuildService.rebuild', {
+      rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'injections'],
+      changed: true,
+      changes: { profile: true, promptFields: false, skills: false, instructions: true, plugins: false, injections: false },
+    });
 
     await agent.activatePluginCommand({ pluginId: 'plugin', commandName: 'command', args: 'arg' });
     await agent.refreshPluginSessionStart();
@@ -570,6 +575,7 @@ describe('agent domain routing', () => {
     await expect(agent.getAgentsMdWarning()).resolves.toBe('warning');
     await agent.appendContext({ role: 'user', content: [], toolCalls: [] });
     await agent.clearContext();
+    await expect(agent.rebuildContext()).resolves.toMatchObject({ changed: true });
     await expect(agent.undo(1)).resolves.toBe(1);
     await agent.enterSwarm('manual');
     await agent.exitSwarm();
@@ -594,6 +600,7 @@ describe('agent domain routing', () => {
       { scope, service: 'agentProfileService', method: 'getAgentsMdWarning', args: [] },
       { scope, service: 'agentContextMemoryService', method: 'append', args: [{ role: 'user', content: [], toolCalls: [] }] },
       { scope, service: 'agentContextMemoryService', method: 'clear', args: [] },
+      { scope, service: 'agentContextRebuildService', method: 'rebuild', args: [] },
       { scope, service: 'agentConversationUndoService', method: 'undo', args: [1] },
       { scope, service: 'agentSwarmService', method: 'enter', args: ['manual'] },
       { scope, service: 'agentSwarmService', method: 'exit', args: [] },

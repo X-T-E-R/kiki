@@ -365,6 +365,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           input.skills,
           input.instructions,
           input.mcp,
+          this.plugins,
           this.models,
           this.modelProviders,
           input.acquireWorkspaceReference,

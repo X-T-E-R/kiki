@@ -262,6 +262,12 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     return { thinkingEffort: config.resolved.thinkingLevel };
   }
 
+  invalidatePromptSnapshots(): number {
+    const invalidated = this.turnConfigs.size;
+    this.turnConfigs.clear();
+    return invalidated;
+  }
+
   async request(
     overrides: AgentLLMRequestOverrides = {},
     onPart: AgentLLMRequestPartHandler = noopOnPart,

@@ -1773,6 +1773,7 @@ function createTimingRequester(): IAgentLLMRequesterService {
   const requester: IAgentLLMRequesterService = {
     _serviceBrand: undefined,
     prepareTurnConfig: () => ({ thinkingEffort: 'off' }),
+    invalidatePromptSnapshots: () => 0,
     async request(_overrides, onPart = () => {}) {
       await onPart({ type: 'text', text: 'answer' });
       return {

@@ -49,6 +49,8 @@ const injectorStub: IAgentContextInjectorService = {
     };
   },
   reconcileWhenIdle: async () => {},
+  reconcileAtSafeBoundary: async () => {},
+  reconcileAllAtSafeBoundary: async () => {},
 };
 
 let disposables: DisposableStore;

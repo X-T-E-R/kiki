@@ -2,7 +2,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { Scope } from '@kiki/agent-core-v2';
+import {
+  IAgentLoopService,
+  ensureMainAgent,
+  resumeSessionById,
+  type Scope,
+} from '@kiki/agent-core-v2';
 import { createKlient } from '@kiki/klient/http';
 import Fastify from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -125,6 +130,37 @@ describe('klient HTTP host', () => {
       const snapshot = await klient.session(created.id).view.snapshot();
       expect(snapshot.session.id).toBe(created.id);
       await expect(klient.rest.sessions.create({ workspace_id: 'wd_missing_000000000000' })).rejects.toMatchObject({ code: 40410 });
+    } finally {
+      await klient.close();
+    }
+  });
+
+  it('rebuilds main-agent context through the klient route, preserves history, and rejects busy sessions', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    try {
+      const created = await klient.global.sessions.create({ workDir: homeDir, title: 'Context rebuild' });
+      const agent = klient.session(created.id).agent('main');
+      await agent.getUsage();
+      await agent.appendContext({ role: 'user', content: [{ type: 'text', text: 'keep me' }], toolCalls: [] });
+      const before = await agent.getContext();
+      await expect(agent.rebuildContext()).resolves.toMatchObject({
+        rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'injections'],
+      });
+      await expect(agent.getContext()).resolves.toEqual(before);
+
+      const session = await resumeSessionById(server.core.accessor, created.id);
+      if (session === undefined) throw new Error('session must be live');
+      const main = await ensureMainAgent(session);
+      const quiescence = main.accessor.get(IAgentLoopService).tryAcquireQuiescence();
+      if (quiescence === undefined) throw new Error('test must acquire quiescence');
+      try {
+        await expect(agent.rebuildContext()).rejects.toMatchObject({
+          code: 40001,
+          message: expect.stringContaining('session is busy'),
+        });
+      } finally {
+        quiescence.dispose();
+      }
     } finally {
       await klient.close();
     }

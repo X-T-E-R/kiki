@@ -57,6 +57,7 @@ describe('task notification dispatch capacity', () => {
     const requester: IAgentLLMRequesterService = {
       _serviceBrand: undefined,
       prepareTurnConfig: () => ({ thinkingEffort: 'off' }),
+      invalidatePromptSnapshots: () => 0,
       async request() {
         calls++;
         if (calls === 1) { entered.resolve(); await release; }
@@ -143,6 +144,7 @@ describe('task notification dispatch capacity', () => {
     const finish = createControlledPromise<AgentLLMRequestFinish>();
     const requester: IAgentLLMRequesterService = {
       _serviceBrand: undefined, prepareTurnConfig: () => ({ thinkingEffort: 'off' }),
+      invalidatePromptSnapshots: () => 0,
       request: async () => { entered.resolve(); return finish; },
       start(overrides, onPart, signal) {
         return { trace: { traceId: undefined }, result: this.request(overrides, onPart, signal) };

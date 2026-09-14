@@ -430,6 +430,23 @@ function captureRequestParams(requester: ModelRequester): ModelRequestParams[] {
   return captured;
 }
 
+describe('AgentLLMRequesterService prompt snapshot invalidation', () => {
+  it('keeps a turn prompt stable until an explicit safe-boundary invalidation', async () => {
+    const captured: ModelRequestInput[] = [];
+    const requester = createRequester({ value: 0 }, null, [], captured);
+    let systemPrompt = 'prompt-old';
+    const { service } = createService(requester, undefined, { systemPrompt: () => systemPrompt });
+    await service.request({ source: { type: 'turn', turnId: 7, step: 1 } });
+    systemPrompt = 'prompt-new';
+    await service.request({ source: { type: 'turn', turnId: 7, step: 2 } });
+    expect(captured.map((input) => input.systemPrompt)).toEqual(['prompt-old', 'prompt-old']);
+
+    expect(service.invalidatePromptSnapshots()).toBe(1);
+    await service.request({ source: { type: 'turn', turnId: 7, step: 3 } });
+    expect(captured.at(-1)?.systemPrompt).toBe('prompt-new');
+  });
+});
+
 describe('AgentLLMRequesterService parameter budgets', () => {
   it('clamps output to the context budget even when operation history has no measured usage', async () => {
     const requester = createRequester({ value: 0 }, null);

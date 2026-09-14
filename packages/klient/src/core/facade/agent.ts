@@ -12,6 +12,7 @@ import type { IAgentLoopService } from '@kiki/agent-core-v2/agent/loop/loop';
 import type { IAgentCommandService } from '@kiki/agent-core-v2/agent/command/agentCommand';
 import type { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import type { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/contextInjector/contextInjector';
+import type { IAgentContextRebuildService } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuild';
 import type { IAgentConversationUndoService } from '@kiki/agent-core-v2/agent/undo/undo';
 import type { IAgentMcpService } from '@kiki/agent-core-v2/agent/mcp/mcp';
 import type { IAgentPluginCommandService } from '@kiki/agent-core-v2/agent/pluginCommand/pluginCommand';
@@ -47,6 +48,7 @@ export type AgentContextData = {
   history: ReturnType<IAgentContextMemoryService['get']>;
   tokenCount: ReturnType<IAgentTokenCountingService['statusSize']>;
 };
+export type ContextRebuildResult = Awaited<ReturnType<IAgentContextRebuildService['rebuild']>>;
 export type AgentCommandInfo = Awaited<ReturnType<IAgentCommandService['list']>>[number];
 export type RuntimeBinding = ReturnType<IAgentRuntimeBindingService['get']>;
 export type PlanData = Awaited<ReturnType<IAgentPlanService['status']>>;
@@ -105,6 +107,7 @@ export interface AgentFacade {
   appendContext(message: ContextMessage): Promise<void>;
   appendImportedContext(message: ContextMessage): Promise<void>;
   clearContext(): Promise<void>;
+  rebuildContext(): Promise<ContextRebuildResult>;
   undo(count: Parameters<IAgentConversationUndoService['undo']>[0]): Promise<number>;
   listCommands(): Promise<readonly AgentCommandInfo[]>;
   runCommand(input: { name: string; args?: string }): Promise<void>;
@@ -208,6 +211,8 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentContextMutationService', 'appendImported', [message]) as Promise<void>,
     clearContext: () =>
       call(scope, 'agentContextMemoryService', 'clear', []) as Promise<void>,
+    rebuildContext: () =>
+      call(scope, 'agentContextRebuildService', 'rebuild', []) as Promise<ContextRebuildResult>,
     undo: (count) =>
       call(scope, 'agentConversationUndoService', 'undo', [count]) as Promise<number>,
     listCommands: () =>

@@ -45,6 +45,8 @@ export interface IAgentContextInjectorService {
   ): IDisposable;
 
   reconcileWhenIdle(name: string): Promise<void>;
+  reconcileAtSafeBoundary(name: string): Promise<void>;
+  reconcileAllAtSafeBoundary(): Promise<void>;
 }
 
 export const IAgentContextInjectorService = createDecorator<IAgentContextInjectorService>(

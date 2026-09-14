@@ -73,6 +73,10 @@ The GUI's main-agent selector uses the effective profiles for the current worksp
 
 In **Settings → Agents**, select a workspace to inspect its default main profile, effective source, and subagent capabilities. File-backed profiles can be edited at their displayed source; editing common fields in a legacy `SYSTEM.md` adds frontmatter while preserving the prompt body. A selected profile that later becomes unavailable stays visible with a diagnostic so you can choose another.
 
+### Rebuilding a session context
+
+After editing prompt sources, open the profile selector in the session composer and choose **Rebuild context**. After confirmation, Kiki reloads the current profile, prompt-field overrides, Agent Skills, `AGENTS.md` instructions, and plugin prompt/session-start injections from disk, reconciles other runtime context injections, then uses the rebuilt snapshot for later requests. Conversation messages are preserved. The action is unavailable while a turn is running; wait for the session to become idle and try again.
+
 Open **Dispatch capabilities** in settings, next to the new-session workspace selector, or in a session's right rail to inspect subagent profiles, routes, executors, and default model and thinking-effort sources. Default configuration validity and permission to launch are shown separately. The draft panel is a planning reference, not a real-time launch check.
 
 The session panel reflects the current agent's tool directory, including [Plan mode's read-only research restriction](../reference/tools.md#plan-mode) and launch refusal reasons. It does not check external provider health. If a selected model, profile, or thinking effort becomes unavailable, choose a valid value before sending; a loading state or catalog error alone does not invalidate a saved choice.

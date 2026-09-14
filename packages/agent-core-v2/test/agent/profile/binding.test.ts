@@ -401,6 +401,54 @@ describe('AgentProfileService.bind', () => {
     return service;
   }
 
+  it('rebuilds the bound prompt from the latest catalog profile and prompt fields', async () => {
+    let current = normalizeAgentProfile({
+      name: 'rebuild-profile',
+      modelAlias: RESUME_OLD_MODEL,
+      description: 'old definition',
+      systemPrompt: () => 'disk-old',
+    });
+    const catalog: ISessionAgentProfileCatalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => name === current.name ? current : undefined,
+      getDefault: () => current,
+      list: () => [current],
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: () => ({ profile: current, baseProfile: current }),
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    };
+    ctx = createTestAgent(
+      nativeResumeOptions(),
+      sessionService(ISessionAgentProfileCatalog, catalog),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const config = ctx.get(IConfigService);
+    const get = config.get.bind(config);
+    let shared = 'FIELD_OLD';
+    vi.spyOn(config, 'get').mockImplementation(((domain: string) =>
+      domain === 'prompt' ? { overrides: { fields: { 'system.shared': shared } } } : get(domain)) as IConfigService['get']);
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: current.name, model: RESUME_OLD_MODEL, thinking: 'low' });
+    expect(profile.getSystemPrompt()).toBe('disk-old\n\nFIELD_OLD');
+
+    current = normalizeAgentProfile({
+      name: 'rebuild-profile',
+      modelAlias: RESUME_OLD_MODEL,
+      description: 'new definition',
+      systemPrompt: () => 'disk-new',
+    });
+    shared = 'FIELD_NEW';
+    await profile.rebuildPromptContext();
+
+    expect(profile.getSystemPrompt()).toBe('disk-new\n\nFIELD_NEW');
+    expect(profile.data().boundProfile?.description).toBe('new definition');
+  });
+
   it('binds an external profile without persisting descriptor environment secrets', async () => {
     const secret = 'sentinel-profile-secret';
     const descriptorConfig = {

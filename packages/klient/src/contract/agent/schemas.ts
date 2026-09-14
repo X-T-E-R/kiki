@@ -143,6 +143,19 @@ export const setModelResultSchema = z.object({
   providerName: z.string().optional(),
 });
 
+export const contextRebuildResultSchema = z.object({
+  rebuilt: z.array(z.enum(['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'injections'])),
+  changed: z.boolean(),
+  changes: z.object({
+    profile: z.boolean(),
+    promptFields: z.boolean(),
+    skills: z.boolean(),
+    instructions: z.boolean(),
+    plugins: z.boolean(),
+    injections: z.boolean(),
+  }),
+});
+
 export const runtimeBindingSchema = z.object({
   workspaceId: z.string(),
   runtimeId: z.string(),

@@ -23,6 +23,7 @@ import type {
 } from '@kiki/agent-core-v2/agent/activityView/activityView';
 import type { AgentContextData } from '@kiki/agent-core-v2/agent/contextMemory/types';
 import type { IAgentCommandService } from '@kiki/agent-core-v2/agent/command/agentCommand';
+import type { IAgentContextRebuildService } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuild';
 import type { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
 import type { TurnEndReason } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
@@ -201,6 +202,7 @@ import {
   cancelPayloadSchema,
   cancelPlanPayloadSchema,
   cancelShellCommandPayloadSchema,
+  contextRebuildResultSchema,
   emptyPayloadSchema,
   getTaskOutputPayloadSchema,
   getTasksPayloadSchema,
@@ -714,6 +716,7 @@ type RuntimeBinding = ReturnType<IAgentRuntimeBindingService['get']>;
 type RunShellCommandPayload = Parameters<IAgentShellCommandService['run']>[0];
 type ShellCommandResult = Awaited<ReturnType<IAgentShellCommandService['run']>>;
 type SetModelResult = Awaited<ReturnType<IAgentProfileService['setModel']>>;
+type ContextRebuildResult = Awaited<ReturnType<IAgentContextRebuildService['rebuild']>>;
 type TokenUsage = NonNullable<UsageStatus['total']>;
 type PromptPart = Extract<ContentPart, { type: 'text' | 'image_url' | 'video_url' }>;
 
@@ -767,6 +770,7 @@ const _cancelShellCommandPayload: AssertWire<
 > = true;
 const _setModelPayload: AssertWire<typeof setModelPayloadSchema, SetModelPayload> = true;
 const _setModelResult: AssertWire<typeof setModelResultSchema, SetModelResult> = true;
+const _contextRebuildResult: AssertWire<typeof contextRebuildResultSchema, ContextRebuildResult> = true;
 const _setPermissionPayload: AssertWire<typeof setPermissionPayloadSchema, SetPermissionPayload> =
   true;
 const _tokenUsage: AssertWire<typeof tokenUsageSchema, TokenUsage> = true;

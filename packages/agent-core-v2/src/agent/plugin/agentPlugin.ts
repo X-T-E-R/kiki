@@ -4,6 +4,7 @@ export interface IAgentPluginService {
   readonly _serviceBrand: undefined;
 
   refreshSessionStart(): Promise<void>;
+  refreshSessionStartAtSafeBoundary(): Promise<void>;
 }
 
 export const IAgentPluginService: ServiceIdentifier<IAgentPluginService> =

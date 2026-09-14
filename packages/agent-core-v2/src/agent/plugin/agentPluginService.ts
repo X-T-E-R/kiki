@@ -125,6 +125,13 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     await this.injector.reconcileWhenIdle(SESSION_START_INJECTION_VARIANT);
   }
 
+  async refreshSessionStartAtSafeBoundary(): Promise<void> {
+    if (this.scopeContext.agentId !== MAIN_AGENT_ID) return;
+    this.refreshPending = true;
+    await this.skillCatalog.ready;
+    await this.injector.reconcileAtSafeBoundary(SESSION_START_INJECTION_VARIANT);
+  }
+
   private async renderSessionStartReminder(): Promise<string | undefined> {
     const sessionStarts = await this.plugins.enabledSessionStarts();
     if (sessionStarts.length === 0) return undefined;

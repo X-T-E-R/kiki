@@ -52,6 +52,7 @@ import { sessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCat
 import { ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionSkillCatalogData } from '#/session/sessionSkillCatalog/skillCatalogData';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
+import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
 import { drainSessionMetadataWrites, toEpochMs } from '#/session/sessionMetadata/sessionMetadataService';
@@ -84,6 +85,7 @@ import { IWorkspaceSkillCatalog } from '#/workspace/workspaceSkillCatalog/worksp
 import { IWorkspaceInstructionsService } from '#/workspace/workspaceInstructions/workspaceInstructions';
 import { IWorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcp';
 import { PLUGIN_SKILL_SOURCE_ID } from '#/app/skillCatalog/skillSource';
+import { IPluginService } from '#/app/plugin/plugin';
 
 import { agentScopeOf, sessionDirOf, sessionScopeOf } from './internal/addressing';
 import { SessionArchived } from './sessionLifecycleEvents';
@@ -215,6 +217,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IWorkspaceSkillCatalog private readonly workspaceSkillCatalog: IWorkspaceSkillCatalog,
     @IWorkspaceInstructionsService private readonly workspaceInstructions: IWorkspaceInstructionsService,
     @IWorkspaceMcpService private readonly workspaceMcp: IWorkspaceMcpService,
+    @IPluginService private readonly plugins: IPluginService,
     @IModelService private readonly models: IModelService,
     @IProviderService private readonly providers: IProviderService,
     private readonly acquireWorkspaceReference: () => IDisposable,
@@ -342,6 +345,34 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             }),
             [ISessionSkillCatalogData, this.workspaceSkillCatalog.sessionData()],
             [ISessionInstructionsProvider, this.workspaceInstructions.sessionProvider()],
+            [ISessionContextSourceReloader, {
+              _serviceBrand: undefined,
+              reload: async () => {
+                const beforeInstructions = JSON.stringify(this.workspaceInstructions.snapshot);
+                const beforePlugins = JSON.stringify({
+                  systemPrompts: await this.plugins.enabledSystemPrompts(),
+                  sessionStarts: await this.plugins.enabledSessionStarts(),
+                });
+                await this.plugins.reloadPlugins();
+                await Promise.all([
+                  this.workspaceAgentProfileLoader.reload(),
+                  this.extraAgentProfileLoader.reload(),
+                  this.explicitAgentProfileLoader.reload(),
+                  this.userAgentProfileLoader.reload(),
+                  this.pluginAgentProfileLoader.reload(),
+                  this.workspaceSkillCatalog.reload(),
+                  this.workspaceInstructions.reload(),
+                ]);
+                const afterPlugins = JSON.stringify({
+                  systemPrompts: await this.plugins.enabledSystemPrompts(),
+                  sessionStarts: await this.plugins.enabledSessionStarts(),
+                });
+                return {
+                  instructionsChanged: beforeInstructions !== JSON.stringify(this.workspaceInstructions.snapshot),
+                  pluginsChanged: beforePlugins !== afterPlugins,
+                };
+              },
+            }],
             [ISessionMcpHandle, this.workspaceMcp.sessionHandle()],
             [ISessionWorkspaceInfo, this.workspaceDirs.sessionInfo()],
             ...sessionEphemeralMcpServersSeed(opts.mcpServers ?? {}),

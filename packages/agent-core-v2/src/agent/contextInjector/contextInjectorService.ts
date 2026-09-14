@@ -68,12 +68,22 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     const quiescence = this.loopService.tryAcquireQuiescence();
     if (quiescence === undefined) return;
     try {
-      for (const entry of this.entries) {
-        if (entry.name !== name) continue;
-        await this.injectEntry(entry, false);
-      }
+      await this.reconcileAtSafeBoundary(name);
     } finally {
       quiescence.dispose();
+    }
+  }
+
+  async reconcileAtSafeBoundary(name: string): Promise<void> {
+    for (const entry of this.entries) {
+      if (entry.name !== name) continue;
+      await this.injectEntry(entry, false);
+    }
+  }
+
+  async reconcileAllAtSafeBoundary(): Promise<void> {
+    for (const entry of this.entries) {
+      await this.injectEntry(entry, false);
     }
   }
 

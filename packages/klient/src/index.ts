@@ -90,6 +90,7 @@ export type {
 export type {
   AgentCommandInfo,
   AgentContextData,
+  ContextRebuildResult,
   AgentFacade,
   AgentTaskInfo,
   McpServerEntry,
