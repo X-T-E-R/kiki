@@ -30,7 +30,10 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IWebSearchTool } from '#/agent/tools/web-search/web-search';
 import { WebSearchTool } from '#/agent/tools/web-search/webSearchTool';
-import { appendSharedPrompt, type PromptConfig } from '@kiki/agent-profiles/promptConfig';
+import {
+  appendSharedPromptField,
+} from '#/app/promptField/builtinPromptFields';
+import { customPromptVariables, type PromptConfig } from '@kiki/agent-profiles/promptConfig';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
@@ -223,6 +226,10 @@ function createService(
   const agentId = options.agentId ?? 'main';
   const agentMeta = options.agentMeta ?? { type: agentId === 'main' ? 'main' : 'sub' };
   const selectedModelAlias = (): string => options.modelAlias?.value ?? 'm';
+  const promptFields = () => ({
+    values: options.promptConfig?.value.overrides?.fields ?? {},
+    fields: [],
+  });
   const profile: Partial<IAgentProfileService> = {
     resolveModelContext: () => ({
       modelAlias: selectedModelAlias(),
@@ -235,7 +242,12 @@ function createService(
       compactionSoftContextSize: undefined,
     }),
     resolveRequestParams: () => options.requestParams ?? { cacheKey: sessionId },
-    getSystemPrompt: () => appendSharedPrompt(options.systemPrompt?.() ?? 'system', options.promptConfig?.value),
+    getSystemPrompt: () => appendSharedPromptField(
+      options.systemPrompt?.() ?? 'system',
+      promptFields(),
+      customPromptVariables(options.promptConfig?.value.variables),
+    ),
+    getPromptFieldSnapshot: () => promptFields(),
     refreshSystemPrompt: options.promptRefresh ?? (async () => undefined),
     preparePromptConfiguration: (() => {
       let signature = '';
@@ -441,7 +453,7 @@ describe('AgentLLMRequesterService native tool and shared prompt preparation', (
     const inputs: ModelRequestInput[] = [];
     let description = 'not prepared';
     const prepare = vi.fn(async () => { description = 'Default: exa.search; available sync: gma.research (typed research answer)'; });
-    const promptConfig = { value: { shared: 'ALL_AGENTS', variables: { search_guidance: 'Prefer native GMA SSE.' }, tools: { WebSearch: '${search_guidance}' } } };
+    const promptConfig = { value: { variables: { search_guidance: 'Prefer native GMA SSE.' }, overrides: { fields: { 'system.shared': 'ALL_AGENTS', 'tool.web-search.description': 'CUSTOM SEARCH', 'tool.web-search.guidance': '${search_guidance}' } } } };
     const { service } = createService(createRequester({ value: 0 }, null, [], inputs), undefined, {
       agentId, nativeWebSearch: true, promptConfig,
       nbSearch: { prepareToolDescriptions: prepare, toolDescription: () => description },
@@ -457,6 +469,7 @@ describe('AgentLLMRequesterService native tool and shared prompt preparation', (
       expect(validate({ query: 'example', lane: 'gma.research' })).toBe(true);
       expect(validate({ action: 'read', job_id: '00000000-0000-4000-8000-000000000001', page_size: 2 })).toBe(true);
       expect(validate({ query: 'example', unknown_field: true })).toBe(false);
+      expect(search?.description).toContain('CUSTOM SEARCH');
       expect(search?.description).toContain('available sync: gma.research');
       expect(search?.description).toContain('Prefer native GMA SSE.');
       expect(search?.description).not.toContain('not prepared');
@@ -466,7 +479,7 @@ describe('AgentLLMRequesterService native tool and shared prompt preparation', (
 
   it('omits disabled-tool guidance and preserves explicit overrides while refreshing configured variables next request', async () => {
     const inputs: ModelRequestInput[] = [];
-    const promptConfig: { value: PromptConfig } = { value: { shared: 'Shared ${value}', variables: { value: 'first', search_guidance: 'SEARCH_ONLY' }, tools: { WebSearch: '${search_guidance}' } } };
+    const promptConfig: { value: PromptConfig } = { value: { variables: { value: 'first', search_guidance: 'SEARCH_ONLY' }, overrides: { fields: { 'system.shared': 'Shared ${value}', 'tool.web-search.guidance': '${search_guidance}' } } } };
     let base = 'first base';
     const refresh = vi.fn(async () => { base = `${promptConfig.value.variables?.['value']} base`; });
     const prepare = vi.fn();
@@ -477,8 +490,9 @@ describe('AgentLLMRequesterService native tool and shared prompt preparation', (
     await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
     promptConfig.value = { ...promptConfig.value, variables: { value: 'second', search_guidance: 'SEARCH_ONLY' } };
     await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+    await service.request({ source: { type: 'turn', turnId: 2, step: 1 } });
     await service.request({ systemPrompt: 'EXPLICIT', tools: [], source: { type: 'operation', requestKind: 'test' } });
-    expect(inputs.map((input) => input.systemPrompt)).toEqual(['first base\n\nShared first', 'second base\n\nShared second', 'EXPLICIT\n\nShared second']);
+    expect(inputs.map((input) => input.systemPrompt)).toEqual(['first base\n\nShared first', 'first base\n\nShared first', 'second base\n\nShared second', 'EXPLICIT\n\nShared second']);
     expect(JSON.stringify(inputs)).not.toContain('SEARCH_ONLY');
     expect(prepare).not.toHaveBeenCalled();
     expect(refresh).toHaveBeenCalledTimes(2);

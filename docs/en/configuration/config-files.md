@@ -116,7 +116,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `permission` | `table` | — | Initial permission rules → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
-| `prompt` | `table` | `{}` | Shared prompt additions, variables, and per-tool guidance → [`prompt`](#prompt) |
+| `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
 
 The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `agents`, `thread_communication`, `tools`, `image`, `services`, `permission`, and `prompt`.
 
@@ -164,6 +164,7 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `aliases` | `array<string>` | No | Extra routing keys for this model. An exact match on any entry resolves to this table key, including names that contain `/`. This is the supported way to keep old names working after you rename a key. The same alias string on two models is an error |
 | `reasoning_key` | `string` | No | `openai` provider only. Override the field name used for reasoning content when the gateway returns it under a non-standard name; by default `reasoning_content`, `reasoning_details`, and `reasoning` are auto-detected |
 | `adaptive_thinking` | `boolean` | No | `anthropic` provider only. Force adaptive thinking on or off, overriding the version inference based on the model name. Omit to infer automatically (Claude ≥ 4.6 uses adaptive) |
+| `prompt_overrides` | `table` | No | Prompt field overrides for this model alias, with optional `files` and `fields`; see [`prompt`](#prompt) |
 
 When an alias contains `.`, use a quoted key:
 
@@ -375,18 +376,20 @@ The limits are global configuration defaults, but counts are isolated to each se
 
 ## `agents`
 
-This strict section is still parsed. Unknown keys are reported as configuration errors. It supplies [delegation-notice files](../customization/agents.md) for sub-agents and independent host invocations.
+This strict section controls the boolean gates for [delegation notices](../customization/agents.md). Unknown keys are configuration errors.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | Accepted for configuration compatibility; currently controls no behavior |
 
-`[agents.delegation]` is a nested table. A string is a path relative to the Kiki home directory; `false` skips that notice. Omit a slot to keep the built-in text.
+`[agents.delegation]` is a nested table. Both slots accept booleans only. `false` skips that notice and always wins over any prompt field override; omitting a slot or setting it to `true` keeps the notice enabled.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `sub` | `string \| false` | built-in sub-agent handoff | Notice injected when this profile runs as a dispatched sub-agent |
-| `independent` | `string \| false` | built-in independent-host notice | Notice injected for an MCP / SDK host invocation with no parent agent |
+| `sub` | `boolean` | `true` | Enables the notice injected when this profile runs as a dispatched subagent |
+| `independent` | `boolean` | `true` | Enables the notice for an MCP / SDK host invocation with no parent agent |
+
+To replace notice text, override `delegation.sub.notice` or `delegation.independent.notice` under [`PromptOverrides`](#prompt). The former string path values are removed and fail strict parsing; move their file contents into an external prompt-override TOML `[fields]` entry.
 
 ## `thread_communication`
 
@@ -571,26 +574,75 @@ MCP server declarations are configured in `~/.kiki/mcp.json` or the project-loca
 
 ## `prompt`
 
-`prompt` adds user-authored text to the system prompt without forking any agent profile.
+`prompt` overrides stable text fields without forking an agent profile. Field values replace the named text unit; they do not append, prepend, or wrap it.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `shared` | `string` | — | Free-form text appended once to the final system prompt for the main agent and each child agent |
-| `variables` | `record<string, string>` | `{}` | Named variables referenced by `${name}` from `shared` or any `tools` entry. Variable names must match `[A-Za-z_][A-Za-z0-9_]*`; built-in names are reserved and cannot be redefined here |
-| `tools` | `record<string, string>` | `{}` | Per-tool guidance appended to each tool's description. Keys must match `[A-Za-z][A-Za-z0-9_-]*` and name an enabled tool exactly; only tools the agent actually has enabled receive the supplement |
+| `variables` | `record<string, string>` | `{}` | Named variables referenced as `${name}` from an override field. Names must match `[A-Za-z_][A-Za-z0-9_]*`; built-in runtime names are reserved and cannot be redefined here |
+| `overrides` | `table` | `{}` | Global [`PromptOverrides`](#prompt-override-format), with optional `files` and `fields` |
 
-`${name}` substitution is a single pass over plain text — no recursion, no script execution. Only variables declared under `[prompt.variables]` are usable; reserved built-in names (`product_name`, `cwd`, `skills`, and others) cannot be used as `${name}` here. Any `${name}` whose name is missing from `variables` is rejected at parse time.
+Useful built-in field ids include `system.language`, `system.reply_style`, `system.coding`, `system.shared`, `tool.web-search.description`, `tool.web-search.guidance`, `delegation.sub.notice`, and `delegation.independent.notice`. System fields replace sections of the built-in prompt. `system.shared` is the only shared outer addition and is appended once when non-empty. A tool `description` replaces its static description while preserving runtime-generated details; its `guidance` is appended under the existing `User-configured guidance:` label when non-empty.
+
+`${name}` substitution is a single, literal pass with no recursion or script execution. A field may use its declared built-in variables and names from `[prompt.variables]`; an unknown name is rejected. Whole-prompt composition variables such as `${base_prompt}` and `${parent_prompt}` are not allowed in fields.
 
 ```toml
-[prompt]
-shared = "When citing web sources, prefer the primary page and link the exact URL you opened."
-
 [prompt.variables]
 search_guidance = "Favor recent results unless the question asks for historical context."
 
-[prompt.tools]
-WebSearch = "Prefer ${search_guidance} when results span multiple years."
+[prompt.overrides]
+files = ["prompt/team.toml"]
+
+[prompt.overrides.fields]
+"system.shared" = "When citing web sources, link the exact URL you opened."
+"tool.web-search.guidance" = "Use ${search_guidance} when results span multiple years."
 ```
+
+### Prompt override format
+
+Every override surface uses the same object:
+
+```text
+files?: string[]
+fields?: record<string, string>
+```
+
+Paths in `files` are relative to the Kiki home directory (`~/.kiki` by default). Absolute paths, `..` traversal, paths that escape through symbolic links, missing files, malformed TOML, duplicate keys, and unknown field ids fail validation. Each external file is strict TOML with `schema_version = 1` and one `[fields]` table; it cannot include other files:
+
+```toml
+schema_version = 1
+
+[fields]
+"system.language" = "Reply in the user's language unless they request another language."
+"tool.web-search.description" = "Search public web sources through Kiki's configured search runtime."
+```
+
+Within one surface, files are applied in listed order and inline `fields` apply last. Across surfaces, precedence from low to high is global `[prompt.overrides]`, model `[models."<alias>".prompt_overrides]`, agent or `SYSTEM.md` frontmatter `prompt_overrides`, then the matching `model_profiles[].prompt_overrides`. A missing key inherits the lower value; an empty string explicitly clears only fields that allow empty values.
+
+```toml
+[models.fast-model.prompt_overrides]
+files = ["prompt/fast-model.toml"]
+
+[models.fast-model.prompt_overrides.fields]
+"system.reply_style" = "Keep answers compact and action-oriented. ${reply_style_guide}"
+```
+
+For agent and `SYSTEM.md` frontmatter, use the equivalent YAML mapping:
+
+```yaml
+prompt_overrides:
+  files:
+    - prompt/reviewer.toml
+  fields:
+    system.coding: Prefer minimal, verified patches.
+```
+
+The active profile, model, field registry, configuration, and loaded override files are frozen for each turn when its first model request is prepared. A valid watched-file update applies on the next turn, never halfway through the current turn. If a refresh fails, Kiki reports `prompt-fields-refresh-failed` and keeps the last valid snapshot rather than partially applying the broken update.
+
+A whole-body `SYSTEM.md` or agent replacement, or a model cognition `replace`, shadows the corresponding `system.*` fields. A cognition anchor is sent byte-for-byte, so system and delegation fields are inactive while the anchor applies; tool fields remain effective. These statuses are diagnostic only and are never inserted into the prompt.
+
+::: warning Removed
+The old `[prompt] shared` and `[prompt.tools]` keys have been removed and now fail strict configuration parsing. Move `shared` to the `"system.shared"` key under `[prompt.overrides.fields]`; move each tool entry to `tool.<kebab-case-name>.guidance` (for example, `WebSearch` becomes `tool.web-search.guidance`).
+:::
 
 In the desktop GUI, open **Settings → Agents → Prompt** to edit this section. The card is collapsed by default — expand it before editing.
 

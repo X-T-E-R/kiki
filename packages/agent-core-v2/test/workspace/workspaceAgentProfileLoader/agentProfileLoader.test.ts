@@ -1551,7 +1551,7 @@ describe('agent profile loaders + session catalog', () => {
         expect(stack.catalog.getDefault().systemPrompt({})).toBe('BUILTIN PROMPT');
         expect(stack.warnings.some((warning) =>
           warning.includes('system_prompt_mode') &&
-          warning.includes('replace, prepend, or append')
+          warning.includes('replace, prepend, append, or inherit')
         )).toBe(true);
       });
     });

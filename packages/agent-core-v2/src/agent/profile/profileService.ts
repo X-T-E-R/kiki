@@ -33,7 +33,7 @@ import {
   requiresStrictThinkingValidation,
   type ThinkingConfig,
 } from '#/kosong/model/thinking';
-import { THINKING_SECTION } from '#/app/kosongConfig/configSection';
+import { MODELS_SECTION, THINKING_SECTION } from '#/app/kosongConfig/configSection';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   type EnvironmentDisclosureSnapshot,
@@ -50,7 +50,6 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { AGENTS_SECTION, type AgentsConfig } from '#/session/agentCollaboration/configSection';
 import {
-  DelegationFileError,
   injectDelegationContext,
   resolveDelegationSnippet,
   type DelegationPosition,
@@ -58,7 +57,13 @@ import {
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
-import { appendSharedPrompt } from '@kiki/agent-profiles/promptConfig';
+import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
+import {
+  IPromptFieldRegistry,
+  type ResolvedPromptFieldOverrides,
+} from '#/app/promptField/promptFieldRegistry';
+import { customPromptVariables } from '@kiki/agent-profiles/promptConfig';
+import { renderPrompt } from '@kiki/agent-profiles/renderPrompt';
 import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
 import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute';
 import { restoreProfileFileSources } from '#/session/dispatch/profileFile';
@@ -219,6 +224,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private activeProfileDefinitionId: string | undefined;
   private readonly emittedDeviationWarnings = new Set<string>();
   private delegationPosition: DelegationPosition = 'main';
+  private promptFieldSnapshot: ResolvedPromptFieldOverrides = { values: {}, fields: [] };
 
   private frozenSkillListing: string | undefined;
   private frozenPluginSections: string | undefined;
@@ -228,6 +234,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentTelemetryContextService private readonly telemetryContext: IAgentTelemetryContextService,
     @IConfigService private readonly config: IConfigService,
+    @IPromptFieldRegistry private readonly promptFields: IPromptFieldRegistry,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
@@ -274,12 +281,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     );
     this._register(
       this.config.onDidSectionChange(({ domain }) => {
+        if (domain === PROMPT_SECTION || domain === MODELS_SECTION || domain === AGENTS_SECTION) {
+          this.promptConfigurationSignature = 'invalidated';
+        }
         if (domain === TOOLS_SECTION) {
           this.publishToolPatternWarnings();
           void this.refreshSystemPrompt();
         }
       }),
     );
+    this._register(this.promptFields.onDidChange(() => {
+      this.promptConfigurationSignature = 'invalidated';
+    }));
     this._register(
       this.skillCatalog.onDidChange((sourceId) => {
         if (sourceId === BUILTIN_SKILL_SOURCE_ID) {
@@ -363,7 +376,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     assertResearchExecutor(executionRestriction, snapshot.executorId);
     this.activeProfile = undefined;
     this.promptConfigurationSignature = undefined;
-    this.preparedPromptVariables = '{}';
     this.activeProfileDefinitionId = snapshot.profileDefinitionId;
     this.activeToolNamesOverlay = undefined;
     const agentsMdPaths =
@@ -615,6 +627,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.activeProfile = profile;
     this.activeProfileDefinitionId = selection.baseProfile.definitionId;
     this.activeToolNamesOverlay = undefined;
+    this.promptFieldSnapshot = assembled.promptFields;
+    this.promptConfigurationSignature = this.promptFieldSignature(profile, alias, assembled.promptFields);
     await this.dispatcher.dispatch(new ProfileBind({
       modelAlias: alias,
       profileName: selection.baseProfile.name,
@@ -754,6 +768,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.activeProfile = profile;
     this.activeProfileDefinitionId = selection.baseProfile.definitionId;
     this.activeToolNamesOverlay = undefined;
+    this.promptFieldSnapshot = assembled.promptFields;
+    this.promptConfigurationSignature = this.promptFieldSignature(profile, alias, assembled.promptFields);
     await this.dispatcher.dispatch(new ProfileBind({
       modelAlias: alias,
       profileName: selection.baseProfile.name,
@@ -1059,6 +1075,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       context,
       this.modelAlias ?? '',
     );
+    this.promptFieldSnapshot = assembled.promptFields;
+    this.promptConfigurationSignature = this.promptFieldSignature(profile, this.modelAlias ?? '', assembled.promptFields);
     this.update({
       profileName: profile.name,
       systemPrompt: assembled.text,
@@ -1086,6 +1104,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         this.modelAlias ?? '',
         this.profileState.boundProfile?.promptBase,
       );
+      this.promptFieldSnapshot = assembled.promptFields;
+      this.promptConfigurationSignature = this.promptFieldSignature(profile, this.modelAlias ?? '', assembled.promptFields);
       this.update({
         profileName: profile.name,
         systemPrompt: assembled.text,
@@ -1131,14 +1151,85 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     );
   }
 
+  private promptFieldSignature(
+    profile: ResolvedAgentProfile,
+    alias: string,
+    snapshot: ResolvedPromptFieldOverrides,
+  ): string {
+    const config = this.config.get<PromptConfig>(PROMPT_SECTION);
+    return JSON.stringify({
+      fields: snapshot.fields,
+      variables: config?.variables ?? {},
+      delegation: this.config.get<AgentsConfig | undefined>(AGENTS_SECTION)?.delegation,
+      profile: profile.definitionId ?? profile.name,
+      model: alias,
+    });
+  }
+
+  private async resolvePromptFieldSnapshot(
+    profile: ResolvedAgentProfile,
+    alias: string,
+  ): Promise<ResolvedPromptFieldOverrides> {
+    const promptConfig = this.config.get<PromptConfig>(PROMPT_SECTION);
+    const model = alias.length === 0 ? undefined : this.models.get(alias);
+    const resolveId = (profile.executor ?? 'native') === 'native'
+      ? (id: string) => this.models.resolveId(id)
+      : (id: string) => id;
+    const modelProfile = resolveModelProfileEntry(profile.modelProfiles, alias, resolveId);
+    const sourcePath = profile.sourcePath?.replaceAll('\\', '/');
+    const resolved = await this.promptFields.resolve({
+      global: { surface: 'global', overrides: promptConfig?.overrides },
+      model: { surface: 'model', overrides: model?.promptOverrides },
+      profile: {
+        surface: sourcePath?.endsWith('/SYSTEM.md') === true ? 'system' : 'profile',
+        overrides: profile.promptOverrideLayers ?? profile.promptOverrides,
+        sourcePath: profile.sourcePath,
+      },
+      profileModel: { surface: 'profile-model', overrides: modelProfile?.promptOverrides },
+      context: {
+        profileName: profile.name,
+        modelAlias: alias,
+        executor: profile.executor ?? 'native',
+        delegationPosition: this.delegationPosition,
+      },
+      customVariables: promptConfig?.variables,
+    });
+    const customBody = profile.fileDefinition !== undefined || sourcePath?.endsWith('/SYSTEM.md') === true;
+    const profileShadowsSystem = customBody
+      && profile.systemPromptMode !== 'prepend'
+      && profile.systemPromptMode !== 'append'
+      && profile.systemPromptMode !== 'inherit';
+    const cognitionShadowsSystem = (profile.executor ?? 'native') === 'native'
+      && model?.cognition?.overlayMode === 'replace'
+      && cognitionPathRefs(model.cognition.overlay).length > 0;
+    const intentOverride = resolved.values['system.intent_tool_use'];
+    const intentShadowsReplyStyle = intentOverride !== undefined && !intentOverride.includes('${reply_style_guide}');
+    if (!profileShadowsSystem && !cognitionShadowsSystem && !intentShadowsReplyStyle) return resolved;
+    const fields = resolved.fields.map((field) =>
+      (field.id.startsWith('system.') && field.id !== 'system.shared' && (profileShadowsSystem || cognitionShadowsSystem))
+        || (field.id === 'system.reply_style' && intentShadowsReplyStyle)
+        ? { ...field, status: 'shadowed' as const }
+        : field,
+    );
+    return {
+      values: Object.fromEntries(fields.filter((field) => field.status === 'effective').map((field) => [field.id, field.value])),
+      fields,
+    };
+  }
+
   private async assembleBoundSystemPrompt(
     profile: ResolvedAgentProfile,
     context: SystemPromptContext,
     alias: string,
     savedBase?: import('./boundProfile').BoundPromptBase,
-  ): Promise<{ readonly text: string; readonly environment: EnvironmentDisclosureSnapshot; readonly promptBase: import('./boundProfile').BoundPromptBase }> {
+  ): Promise<{ readonly text: string; readonly environment: EnvironmentDisclosureSnapshot; readonly promptBase: import('./boundProfile').BoundPromptBase; readonly promptFields: ResolvedPromptFieldOverrides }> {
     const promptVariables = this.config.get<PromptConfig>(PROMPT_SECTION)?.variables;
-    const rendered = profile.renderSystemPrompt({ ...context, promptVariables });
+    const promptFields = await this.resolvePromptFieldSnapshot(profile, alias);
+    const rendered = profile.renderSystemPrompt({
+      ...context,
+      promptVariables,
+      promptFields: promptFields.values,
+    });
     const withModel = applyMatchedModelProfilePrompt(
       rendered.text,
       profile.modelProfiles,
@@ -1147,28 +1238,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         ? (id) => this.models.resolveId(id)
         : (id) => id,
     );
-    let snippet: string | undefined;
-    try {
-      snippet = savedBase !== undefined ? savedBase.delegationSnippet : await resolveDelegationSnippet({
-        position: this.delegationPosition,
-        notice: profile.delegationNotice,
-        config: this.config.get<AgentsConfig | undefined>(AGENTS_SECTION)?.delegation,
-        fs: this.hostFs,
-        homeDir: this.bootstrap.homeDir,
-        pathClass: this.hostEnv.pathClass,
-      });
-    } catch (error) {
-      if (error instanceof DelegationFileError) {
-        throw new ProfileError(
-          error.reason === 'missing' || error.reason === 'empty'
-            ? ProfileErrors.codes.DELEGATION_FILE_MISSING
-            : ProfileErrors.codes.DELEGATION_PATH_INVALID,
-          error.message,
-          { slot: error.slot, path: error.ref, reason: error.reason },
-        );
-      }
-      throw error;
-    }
+    const snippetTemplate = this.delegationPosition === 'main' && savedBase?.delegationSnippet !== undefined
+      ? savedBase.delegationSnippet
+      : resolveDelegationSnippet({
+          position: this.delegationPosition,
+          notice: profile.delegationNotice,
+          config: this.config.get<AgentsConfig | undefined>(AGENTS_SECTION)?.delegation,
+          fields: promptFields.values,
+        });
+    const snippet = snippetTemplate === undefined
+      ? undefined
+      : renderPrompt(snippetTemplate, customPromptVariables(promptVariables));
     const body = (profile.executor ?? 'native') === 'native'
       ? await this.applyCognitionOverlay(withModel, alias)
       : withModel;
@@ -1176,6 +1256,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       text: injectDelegationContext(body, snippet),
       environment: rendered.environment,
       promptBase: { text: rendered.text, environment: rendered.environment, delegationSnippet: snippet, promptVariablesRevision: createHash('sha256').update(JSON.stringify(promptVariables ?? {})).digest('hex') },
+      promptFields,
     };
   }
 
@@ -1356,30 +1437,63 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   getSystemPrompt(): string {
-    return appendSharedPrompt(this.systemPrompt, this.config.get<PromptConfig>(PROMPT_SECTION));
+    const variables = customPromptVariables(this.config.get<PromptConfig>(PROMPT_SECTION)?.variables);
+    return appendSharedPromptField(this.systemPrompt, this.promptFieldSnapshot, variables);
+  }
+
+  getPromptFieldSnapshot(options?: { readonly anchor?: boolean }): ResolvedPromptFieldOverrides {
+    if (options?.anchor !== true) return this.promptFieldSnapshot;
+    const fields = this.promptFieldSnapshot.fields.map((field) =>
+      field.id.startsWith('system.') || field.id.startsWith('delegation.')
+        ? { ...field, status: 'inactive' as const }
+        : field,
+    );
+    return {
+      values: Object.fromEntries(fields.filter((field) => field.status === 'effective').map((field) => [field.id, field.value])),
+      fields,
+    };
   }
 
   private promptConfigurationSignature: string | undefined;
-  private preparedPromptVariables = '{}';
 
   async preparePromptConfiguration(): Promise<boolean> {
-    const config = this.config.get<PromptConfig>(PROMPT_SECTION);
-    const signature = JSON.stringify(config ?? {});
-    if (this.promptConfigurationSignature === signature) return false;
-    const bound = this.profileState.boundProfile;
-    const variables = JSON.stringify(config?.variables ?? {});
-    const savedRevision = bound?.promptBase?.promptVariablesRevision;
-    const needsRefresh = this.promptConfigurationSignature === undefined && savedRevision !== undefined
-      ? savedRevision !== createHash('sha256').update(variables).digest('hex')
-      : variables !== this.preparedPromptVariables;
-    if (needsRefresh) {
-      if (this.profileName !== undefined && this.resolveActiveProfile() === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Prompt variables changed, but the saved profile source is unavailable. Restore its source definition or explicitly rebind the profile.');
-      await this.refreshSystemPrompt();
-      if (bound !== undefined && this.profileState.boundProfile?.promptBase?.promptVariablesRevision !== createHash('sha256').update(variables).digest('hex')) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Prompt variable refresh did not complete. Resolve the system-prompt refresh warning before retrying.');
+    const profile = this.resolveActiveProfile();
+    if (profile === undefined) {
+      if (this.profileName === undefined) return false;
+      void this.dispatcher.dispatch(new WarningIssued({
+        code: 'prompt-fields-refresh-failed',
+        message: 'Prompt field refresh skipped; keeping the last valid snapshot because the saved profile source is unavailable.',
+      }));
+      return false;
     }
-    this.preparedPromptVariables = variables;
-    this.promptConfigurationSignature = signature;
-    return true;
+    try {
+      const candidate = await this.resolvePromptFieldSnapshot(profile, this.modelAlias ?? '');
+      const signature = this.promptFieldSignature(profile, this.modelAlias ?? '', candidate);
+      if (this.promptConfigurationSignature === signature) return false;
+      const promptConfig = this.config.get<PromptConfig>(PROMPT_SECTION);
+      const delegation = this.config.get<AgentsConfig | undefined>(AGENTS_SECTION)?.delegation;
+      if (
+        this.promptConfigurationSignature === undefined
+        && candidate.fields.length === 0
+        && this.promptFieldSnapshot.fields.length === 0
+        && Object.keys(promptConfig?.variables ?? {}).length === 0
+        && delegation === undefined
+      ) {
+        this.promptConfigurationSignature = signature;
+        return false;
+      }
+      const generation = this.profileState.renderGeneration;
+      await this.refreshSystemPrompt();
+      if (this.profileState.renderGeneration === generation) return false;
+      this.promptConfigurationSignature = signature;
+      return true;
+    } catch (error) {
+      void this.dispatcher.dispatch(new WarningIssued({
+        code: 'prompt-fields-refresh-failed',
+        message: `Prompt field refresh skipped; keeping the last valid snapshot: ${error instanceof Error ? error.message : String(error)}`,
+      }));
+      return false;
+    }
   }
 
   getActiveToolNames(): readonly string[] | undefined {

@@ -59,6 +59,13 @@ interface ProfileCandidate {
   readonly priority: number;
 }
 
+export class AgentProfileInheritanceError extends Error {
+  constructor(readonly profileName: string) {
+    super(`Agent profile "${profileName}" uses system_prompt_mode "inherit" but has no lower-priority base profile`);
+    this.name = 'AgentProfileInheritanceError';
+  }
+}
+
 export function projectAgentProfileCatalog(input: {
   readonly entries: readonly AgentProfileRegistration[];
   readonly disabledBuiltinProfiles: ReadonlySet<string>;
@@ -116,8 +123,9 @@ export function projectAgentProfileCatalog(input: {
   for (const candidates of fileCandidates.values()) {
     const suppressed: AgentProfileSuppressedCandidate[] = [];
     let winner = false;
-    for (const candidate of candidates) {
-      if (resolvableProfiles.has(candidate.profile.name) && candidate.profile.override !== true) {
+    for (const [candidateIndex, candidate] of candidates.entries()) {
+      const builtinBase = resolvableProfiles.get(candidate.profile.name);
+      if (builtinBase !== undefined && candidate.profile.override !== true) {
         input.warn(
           `agent file profile "${candidate.profile.name}" ignored: a same-name builtin profile exists; set "override: true" in the frontmatter to replace it`,
         );
@@ -128,23 +136,24 @@ export function projectAgentProfileCatalog(input: {
         });
         continue;
       }
-      if (input.disabledNamedProfiles.has(candidate.profile.name)) {
-        defaultBindingProfile = candidate.profile;
-        publicProfiles.delete(candidate.profile.name);
-        resolvableProfiles.delete(candidate.profile.name);
+      const profile = resolveInheritedCandidate(candidates, candidateIndex, builtinBase);
+      if (input.disabledNamedProfiles.has(profile.name)) {
+        defaultBindingProfile = profile;
+        publicProfiles.delete(profile.name);
+        resolvableProfiles.delete(profile.name);
       } else {
-        resolvableProfiles.set(candidate.profile.name, candidate.profile);
-        if (candidate.profile.private === true) publicProfiles.delete(candidate.profile.name);
-        else publicProfiles.set(candidate.profile.name, candidate.profile);
+        resolvableProfiles.set(profile.name, profile);
+        if (profile.private === true) publicProfiles.delete(profile.name);
+        else publicProfiles.set(profile.name, profile);
       }
-      inspections.set(candidate.profile.name, {
-        name: candidate.profile.name,
-        profile: candidate.profile,
+      inspections.set(profile.name, {
+        name: profile.name,
+        profile,
         sourceId: candidate.sourceId,
         priority: candidate.priority,
         suppressed: [
           ...suppressed,
-          ...candidates.slice(candidates.indexOf(candidate) + 1).map((rest) => ({
+          ...candidates.slice(candidateIndex + 1).map((rest) => ({
             sourceId: rest.sourceId,
             priority: rest.priority,
             reason: 'priority' as const,
@@ -246,5 +255,36 @@ export function projectAgentProfileCatalog(input: {
     publicRoutes,
     routeDiagnostics,
     snapshot,
+  };
+}
+
+function resolveInheritedCandidate(
+  candidates: readonly ProfileCandidate[],
+  index: number,
+  builtinBase: AgentProfile | undefined,
+): AgentProfile {
+  const candidate = candidates[index]?.profile;
+  if (candidate === undefined) throw new AgentProfileInheritanceError('unknown');
+  if (candidate.systemPromptMode !== 'inherit') return candidate;
+  let lowerIndex = index + 1;
+  while (builtinBase !== undefined) {
+    const lowerCandidate = candidates[lowerIndex];
+    if (lowerCandidate === undefined || lowerCandidate.profile.override === true) break;
+    lowerIndex += 1;
+  }
+  const lower = candidates[lowerIndex] === undefined
+    ? builtinBase
+    : resolveInheritedCandidate(candidates, lowerIndex, builtinBase);
+  if (lower === undefined) throw new AgentProfileInheritanceError(candidate.name);
+  const lowerLayers = lower.promptOverrideLayers
+    ?? (lower.promptOverrides === undefined ? [] : [lower.promptOverrides]);
+  const promptOverrideLayers = candidate.promptOverrides === undefined
+    ? lowerLayers
+    : [...lowerLayers, candidate.promptOverrides];
+  return {
+    ...candidate,
+    promptOverrideLayers,
+    systemPrompt: lower.systemPrompt,
+    renderSystemPrompt: lower.renderSystemPrompt,
   };
 }

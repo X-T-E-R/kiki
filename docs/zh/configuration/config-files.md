@@ -116,7 +116,7 @@ timeout = 5
 | `permission` | `table` | — | 初始权限规则 → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
-| `prompt` | `table` | `{}` | 共享提示词补充、变量与工具级补充 → [`prompt`](#prompt) |
+| `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
 
 以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`agents`、`thread_communication`、`image`、`services`、`permission`、`prompt` 等嵌套表逐一展开。
 
@@ -164,6 +164,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `aliases` | `array<string>` | 否 | 该模型的额外路由键。任意一项精确匹配都会解析到这个表键，包含 `/` 的旧名称也可以。这是重命名表键后让旧名称继续可用的正规做法。两个模型声明同一段 alias 字符串会报错 |
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
 | `adaptive_thinking` | `boolean` | 否 | 仅 `anthropic` 供应商。强制开启或关闭 adaptive thinking，覆盖按模型名推断的逻辑。省略时自动推断（Claude ≥ 4.6 使用 adaptive） |
+| `prompt_overrides` | `table` | 否 | 该模型 alias 的提示词字段覆写，可含 `files` 与 `fields`；详见 [`prompt`](#prompt) |
 
 别名中含 `.` 时需要加引号：
 
@@ -371,18 +372,20 @@ thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析�
 
 ## `agents`
 
-这个严格配置节仍会被解析。未知字段会被报告为配置错误。它用于提供[委派说明文件](../customization/agents.md)，给被派发的 subagent 和独立宿主调用注入文本。
+这个严格配置节控制[委派说明](../customization/agents.md)的布尔 gate。未知字段会被报告为配置错误。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | 为配置兼容而保留，目前不控制任何行为 |
 
-`[agents.delegation]` 是嵌套表。字符串是相对于 Kiki 主目录的路径；`false` 跳过该说明。省略某个槽位则沿用内置正文。
+`[agents.delegation]` 是嵌套表，两个槽位都只接受 boolean。`false` 会跳过对应说明，并始终优先于提示词字段覆写；省略槽位或设为 `true` 都表示启用说明。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `sub` | `string \| false` | 内置 subagent 交接说明 | 该 profile 作为被派发的 subagent 运行时注入的说明 |
-| `independent` | `string \| false` | 内置独立宿主说明 | MCP / SDK 这类没有父 Agent 的宿主调用时注入的说明 |
+| `sub` | `boolean` | `true` | 启用该 profile 作为被派发 subagent 运行时注入的说明 |
+| `independent` | `boolean` | `true` | 启用 MCP / SDK 这类没有父 Agent 的宿主调用说明 |
+
+如需替换说明文案，在 [`PromptOverrides`](#prompt) 中覆写 `delegation.sub.notice` 或 `delegation.independent.notice`。旧的字符串路径值已经移除，继续使用会触发严格解析错误；请把原文件正文迁入外部提示词覆写 TOML 的 `[fields]` 条目。
 
 ## `thread_communication`
 
@@ -567,26 +570,75 @@ MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json
 
 ## `prompt`
 
-`prompt` 在不动 Agent profile 的前提下向系统提示词追加用户撰写的文本。
+`prompt` 无需复制 Agent profile，即可覆盖具有稳定语义的文案字段。字段值直接替换对应文案单元，不做追加、前置或包裹。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `shared` | `string` | — | 任意文本，在主 Agent 与每个子 Agent 的最终系统提示词尾部各自追加一次 |
-| `variables` | `record<string, string>` | `{}` | 由 `${name}` 在 `shared` 或 `tools` 条目中引用的命名变量。变量名须匹配 `[A-Za-z_][A-Za-z0-9_]*`；内置名称为保留名，不能在此重定义 |
-| `tools` | `record<string, string>` | `{}` | 追加到工具描述之后的工具级补充。key 须匹配 `[A-Za-z][A-Za-z0-9_-]*` 并精确指向一个已启用的工具；只有该 Agent 实际启用的工具会得到这段补充 |
+| `variables` | `record<string, string>` | `{}` | 覆写字段中以 `${name}` 引用的命名变量。名称必须匹配 `[A-Za-z_][A-Za-z0-9_]*`；内置运行时名称属于保留名，不能在此重定义 |
+| `overrides` | `table` | `{}` | 全局 [`PromptOverrides`](#提示词覆写格式)，可包含 `files` 与 `fields` |
 
-`${name}` 的展开是单遍纯文本替换：不递归、不执行脚本。可用的变量仅限 `[prompt.variables]` 中声明的那些；内置保留名（如 `product_name`、`cwd`、`skills` 等）不能作为 `${name}` 在此引用。任何 `${name}` 在 `variables` 中找不到时，都会在解析时直接报错。
+常用内置字段 ID 包括 `system.language`、`system.reply_style`、`system.coding`、`system.shared`、`tool.web-search.description`、`tool.web-search.guidance`、`delegation.sub.notice` 和 `delegation.independent.notice`。System 字段替换内置提示词的对应段落；`system.shared` 是唯一的共享外层补充，非空时只追加一次。工具 `description` 替换静态说明，但保留运行时生成的动态细节；非空 `guidance` 会在既有的 `User-configured guidance:` 标签下追加。
+
+`${name}` 只做单遍字面替换，不递归，也不执行脚本。字段可以使用自身声明的内置变量及 `[prompt.variables]` 中的名称；未知名称会被拒绝。`${base_prompt}`、`${parent_prompt}` 等整篇组合变量不能用于字段。
 
 ```toml
-[prompt]
-shared = "引用网络来源时，优先给出打开过的那一页原文 URL。"
-
 [prompt.variables]
 search_guidance = "除非问题明确要求历史信息，否则优先用最近的结果。"
 
-[prompt.tools]
-WebSearch = "结果跨多年时遵循 ${search_guidance}。"
+[prompt.overrides]
+files = ["prompt/team.toml"]
+
+[prompt.overrides.fields]
+"system.shared" = "引用网络来源时，请给出实际打开页面的 URL。"
+"tool.web-search.guidance" = "结果跨多年时遵循 ${search_guidance}。"
 ```
+
+### 提示词覆写格式
+
+每个覆写表面都使用相同对象：
+
+```text
+files?: string[]
+fields?: record<string, string>
+```
+
+`files` 中的路径相对于 Kiki 主目录（默认为 `~/.kiki`）。绝对路径、`..` 穿越、经符号链接逃逸、缺失文件、非法 TOML、重复 key 与未知字段 ID 都会让校验失败。每个外部文件都是严格 TOML，只能包含 `schema_version = 1` 和一个 `[fields]` 表，不能继续引用其他文件：
+
+```toml
+schema_version = 1
+
+[fields]
+"system.language" = "除非用户指定其他语言，否则使用用户的语言回复。"
+"tool.web-search.description" = "通过 Kiki 已配置的搜索运行时检索公开网页来源。"
+```
+
+同一表面内按列表顺序应用文件，内联 `fields` 最后应用。不同表面从低到高依次为全局 `[prompt.overrides]`、模型 `[models."<alias>".prompt_overrides]`、Agent 或 `SYSTEM.md` Frontmatter 的 `prompt_overrides`，以及匹配的 `model_profiles[].prompt_overrides`。缺失 key 继承下层值；空字符串仅能明确清空允许为空的字段。
+
+```toml
+[models.fast-model.prompt_overrides]
+files = ["prompt/fast-model.toml"]
+
+[models.fast-model.prompt_overrides.fields]
+"system.reply_style" = "回答保持紧凑，并以行动为导向。${reply_style_guide}"
+```
+
+Agent 与 `SYSTEM.md` Frontmatter 使用等价的 YAML mapping：
+
+```yaml
+prompt_overrides:
+  files:
+    - prompt/reviewer.toml
+  fields:
+    system.coding: 优先做最小且经过验证的修改。
+```
+
+每个 turn 的首个模型请求准备时，会冻结当前 profile、模型、字段注册表、配置和已加载覆写文件。合法的被监听文件更新从下一 turn 生效，绝不会在当前 turn 中途变化。刷新失败时，Kiki 会报告 `prompt-fields-refresh-failed` 并保留上一份有效快照，不会部分应用损坏的更新。
+
+整篇替换的 `SYSTEM.md` 或 Agent 正文，以及模型 cognition 的 `replace` 会遮蔽对应的 `system.*` 字段。Cognition anchor 会逐字发送，因此 anchor 生效时 system 与 delegation 字段处于 inactive 状态；工具字段仍然有效。这些状态只用于诊断，不会插入提示词。
+
+::: warning 移除
+旧的 `[prompt] shared` 和 `[prompt.tools]` 键已经移除，继续使用会触发严格配置解析错误。把 `shared` 迁到 `[prompt.overrides.fields]` 下的 `"system.shared"` 键；每个工具条目迁到 `tool.<kebab-case-name>.guidance`（例如 `WebSearch` 对应 `tool.web-search.guidance`）。
+:::
 
 桌面 GUI 中，请进入「设置 → 智能体 → 提示词」编辑本节；该卡片默认折叠，展开后再编辑。
 

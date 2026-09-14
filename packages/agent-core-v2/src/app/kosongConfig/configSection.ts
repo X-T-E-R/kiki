@@ -1,3 +1,4 @@
+import { PromptOverridesSchema } from '@kiki/agent-profiles/promptOverrides';
 import { z } from 'zod';
 
 import {
@@ -262,6 +263,7 @@ export const ModelRecordSchema = ModelBaseSchema.extend({
   serviceTier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   overrides: ModelOverrideSchema.optional(),
   cognition: CognitionConfigSchema.optional(),
+  promptOverrides: PromptOverridesSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
 }).passthrough();
 

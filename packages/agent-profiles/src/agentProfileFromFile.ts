@@ -44,6 +44,7 @@ export function agentProfileFromFile(
     requestParams: definition.requestParams,
     contextBudget: definition.contextBudget,
     maxCompletionTokens: definition.maxCompletionTokens,
+    promptOverrides: definition.promptOverrides,
     systemPromptMode: definition.systemPromptMode,
     delegationNotice: definition.delegationNotice,
     renderSystemPrompt: (context) =>
@@ -63,6 +64,8 @@ function systemPromptTemplate(definition: AgentFileDefinition): string {
       return `${definition.prompt}\n\n\${base_prompt}`;
     case 'append':
       return `\${base_prompt}\n\n${definition.prompt}`;
+    case 'inherit':
+      return '${base_prompt}';
     case 'replace':
     case undefined:
       return definition.prompt;

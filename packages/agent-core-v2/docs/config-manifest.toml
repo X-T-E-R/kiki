@@ -89,8 +89,8 @@
 enabled = true
 
 # [agents.delegation]
-  # sub: string | false
-  # independent: string | false
+  # sub: boolean
+  # independent: boolean
 
 # ##########################################################################
 # background
@@ -360,6 +360,9 @@ merge_all_available_skills = true
     # overlay_mode: "append" | "prepend" | "wrap" | "persona" | "replace"
     # anchor_steps: integer
     # anchor_scope: "session" | "turn"
+  # prompt_overrides: object
+    # files: string[]
+    # fields: record<string, string>
   # request_identity: object
     # preset: "codex_compatible" | "grok_build_compatible" | "kimi_code" | "none"
     # overrides: object
@@ -448,9 +451,11 @@ enter_approval_timeout_ms = 60000
 # ##########################################################################
 
 [prompt]
-# shared: string
 # variables: record<string, string>
-# tools: record<string, string>
+
+# [prompt.overrides]
+  # files: string[]
+  # fields: record<string, string>
 
 # ##########################################################################
 # providers

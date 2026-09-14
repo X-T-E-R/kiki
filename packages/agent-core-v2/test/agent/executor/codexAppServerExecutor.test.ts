@@ -18,7 +18,7 @@ import { AgentExecutionService } from '#/agent/execution/executionService';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
-import { appendSharedPrompt } from '@kiki/agent-profiles/promptConfig';
+import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { CodexAppServerExecutorSession } from '#/agent/execution/codexAppServerExecutorSession';
@@ -379,7 +379,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
     _serviceBrand: undefined,
     data: () => harness.context.binding,
     preparePromptConfiguration: async () => false,
-    getSystemPrompt: () => appendSharedPrompt(harness.context.binding.systemPrompt, { shared: 'ALL_EXECUTORS_SHARED' }),
+    getSystemPrompt: () => appendSharedPromptField(harness.context.binding.systemPrompt, { values: { 'system.shared': 'ALL_EXECUTORS_SHARED' }, fields: [] }),
   } as unknown as IAgentProfileService);
   ix.set(IAgentRuntimeService, harness.runtime);
   ix.set(IAgentScopeContext, {

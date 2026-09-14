@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { PromptOverrides } from './promptOverrides';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
 
 export type ServiceTier = 'auto' | 'default' | 'flex' | 'priority';
@@ -8,7 +9,7 @@ export type RequestParams = Readonly<Record<string, RequestParamValue>>;
 
 export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
 
-export const AgentSystemPromptModeSchema = z.enum(['replace', 'prepend', 'append']);
+export const AgentSystemPromptModeSchema = z.enum(['replace', 'prepend', 'append', 'inherit']);
 export type AgentSystemPromptMode = z.infer<typeof AgentSystemPromptModeSchema>;
 
 export type AgentModelProfilePromptMode = 'prepend' | 'append' | 'wrap';
@@ -27,6 +28,7 @@ export interface AgentModelProfile extends AgentModelParameters {
   readonly allowedEfforts?: readonly string[];
   readonly promptMode?: AgentModelProfilePromptMode;
   readonly prompt?: string;
+  readonly promptOverrides?: PromptOverrides;
 }
 
 export type AgentRecommendedModel = AgentModelProfile;
@@ -53,6 +55,7 @@ export interface AgentProfileContext {
   readonly productName?: string;
   readonly replyStyleGuide?: string;
   readonly promptVariables?: Readonly<Record<string, string>>;
+  readonly promptFields?: Readonly<Record<string, string>>;
   readonly [key: string]: unknown;
 }
 
@@ -96,6 +99,8 @@ export interface AgentProfile extends AgentModelParameters {
   readonly modelProfiles?: readonly AgentModelProfile[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
+  readonly promptOverrides?: PromptOverrides;
+  readonly promptOverrideLayers?: readonly PromptOverrides[];
   readonly systemPromptMode?: AgentSystemPromptMode;
   readonly systemPrompt: (context: AgentProfileContext) => string;
   readonly renderSystemPrompt: (context: AgentProfileContext) => SystemPromptRenderResult;

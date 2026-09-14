@@ -3,6 +3,7 @@ import { dirname } from 'pathe';
 import { AgentSystemPromptModeSchema } from './agentProfile';
 import type { AgentFileDefinition, AgentFileSource } from './agentFileTypes';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
+import { parsePromptOverrides, type PromptOverrides } from './promptOverrides';
 import { openIfEmpty, parseSpawnConstraints, parseSubagentList, SubagentLeaseParseError } from './subagentLease';
 
 export class AgentFileParseError extends Error {
@@ -55,6 +56,7 @@ const AGENT_FILE_KEYS = new Set([
   'request_params',
   'context_budget',
   'max_completion_tokens',
+  'prompt_overrides',
   'system_prompt_mode',
   'model_preference',
   'whenToUse',
@@ -224,6 +226,9 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     delete withoutServiceTier['service_tier'];
     requestParams = withoutServiceTier;
   }
+  const promptOverrides = Object.hasOwn(frontmatter, 'prompt_overrides')
+    ? parsePromptOverridesField(frontmatter['prompt_overrides'], 'prompt_overrides', options.path)
+    : undefined;
   const systemPromptModeValue = frontmatter['system_prompt_mode'];
   const systemPromptMode =
     systemPromptModeValue === undefined || systemPromptModeValue === null
@@ -231,17 +236,29 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
       : AgentSystemPromptModeSchema.safeParse(systemPromptModeValue);
   if (systemPromptMode !== undefined && !systemPromptMode.success) {
     throw new AgentFileParseError(
-      `Frontmatter field "system_prompt_mode" in ${options.path} must be replace, prepend, or append`,
+      `Frontmatter field "system_prompt_mode" in ${options.path} must be replace, prepend, append, or inherit`,
     );
   }
   const prompt = parsed.body.trim();
-  if (prompt.length === 0) {
+  const resolvedSystemPromptMode = systemPromptMode?.data;
+  if (resolvedSystemPromptMode === 'inherit') {
+    if (prompt.length !== 0) {
+      throw new AgentFileParseError(
+        `Prompt body in ${options.path} must be empty when system_prompt_mode is "inherit"`,
+      );
+    }
+    if (promptOverrides === undefined || ((promptOverrides.files?.length ?? 0) === 0 && Object.keys(promptOverrides.fields ?? {}).length === 0)) {
+      throw new AgentFileParseError(
+        `Frontmatter field "prompt_overrides" in ${options.path} is required when system_prompt_mode is "inherit"`,
+      );
+    }
+  } else if (prompt.length === 0) {
     throw new AgentFileParseError(`Missing prompt body in ${options.path}`);
   }
-  const resolvedSystemPromptMode = systemPromptMode?.data;
   if (
     resolvedSystemPromptMode !== undefined &&
     resolvedSystemPromptMode !== 'replace' &&
+    resolvedSystemPromptMode !== 'inherit' &&
     countParentPromptTokens(prompt) !== 0
   ) {
     throw new AgentFileParseError(
@@ -275,6 +292,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     requestParams,
     contextBudget: parseTokenBudget(frontmatter['context_budget'], 'context_budget', options.path),
     maxCompletionTokens: parseTokenBudget(frontmatter['max_completion_tokens'], 'max_completion_tokens', options.path),
+    promptOverrides,
     systemPromptMode: resolvedSystemPromptMode,
     prompt,
     path: options.path,
@@ -294,6 +312,7 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'request_params',
   'context_budget',
   'max_completion_tokens',
+  'prompt_overrides',
 ]);
 
 function resolveModelProfiles(
@@ -385,9 +404,23 @@ function parseModelProfiles(
       requestParams: parseRequestParams(item['request_params'], filePath),
       contextBudget: parseTokenBudget(item['context_budget'], `${prefix}.context_budget`, filePath),
       maxCompletionTokens: parseTokenBudget(item['max_completion_tokens'], `${prefix}.max_completion_tokens`, filePath),
+      promptOverrides: Object.hasOwn(item, 'prompt_overrides')
+        ? parsePromptOverridesField(item['prompt_overrides'], `${prefix}.prompt_overrides`, filePath)
+        : undefined,
     });
   }
   return out;
+}
+
+function parsePromptOverridesField(value: unknown, field: string, filePath: string): PromptOverrides {
+  try {
+    return parsePromptOverrides(value, `frontmatter field "${field}" in ${filePath}`);
+  } catch (error) {
+    throw new AgentFileParseError(
+      error instanceof Error ? error.message : `Invalid frontmatter field "${field}" in ${filePath}`,
+      error,
+    );
+  }
 }
 
 function parseTokenBudget(value: unknown, field: string, filePath: string): number | undefined {

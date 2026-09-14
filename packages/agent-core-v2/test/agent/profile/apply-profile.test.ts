@@ -26,6 +26,7 @@ import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
 import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute';
 import { freezeBoundProfile } from '#/agent/profile/boundProfile';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import type { PromptConfig } from '#/app/prompt/configSection';
 
@@ -118,7 +119,7 @@ describe('AgentProfileService.applyProfile', () => {
     const { ctx: host, profile: svc } = buildContext();
     const config = host.get(IConfigService);
     const get = config.get.bind(config);
-    let prompt: PromptConfig = { variables: { search_guidance: 'Native GMA ${literal}' }, shared: 'REQUEST_ONLY_SHARED' };
+    let prompt: PromptConfig = { variables: { search_guidance: 'Native GMA ${literal}' }, overrides: { fields: { 'system.shared': 'REQUEST_ONLY_SHARED' } } };
     vi.spyOn(config, 'get').mockImplementation(((domain: string) => domain === 'prompt' ? prompt : get(domain)) as IConfigService['get']);
     const standalone = normalizeAgentProfile({ name, tools: [], renderSystemPrompt: (context) => renderPromptTemplateResult('${search_guidance}|${cwd}', context, { skillActive: false }) });
     await svc.applyProfile(standalone);
@@ -129,11 +130,27 @@ describe('AgentProfileService.applyProfile', () => {
     expect(svc.getSystemPrompt().replaceAll('\\', '/')).toBe(`Updated guidance|${workDir}`);
   });
 
+  it('keeps the last valid external field snapshot when the next turn sees invalid TOML', async () => {
+    const { ctx: host, profile: svc } = buildContext();
+    const promptHome = host.get(IBootstrapService).homeDir;
+    await writeFile(join(promptHome, 'prompt-fields.toml'), 'schema_version = 1\n[fields]\n"system.shared" = "VALID"\n');
+    const config = host.get(IConfigService);
+    const get = config.get.bind(config);
+    const prompt: PromptConfig = { overrides: { files: ['prompt-fields.toml'] } };
+    vi.spyOn(config, 'get').mockImplementation(((domain: string) => domain === 'prompt' ? prompt : get(domain)) as IConfigService['get']);
+    const standalone = normalizeAgentProfile({ name: 'file-fields', tools: [], systemPrompt: () => 'BASE' });
+    await svc.applyProfile(standalone);
+    expect(svc.getSystemPrompt()).toBe('BASE\n\nVALID');
+    await writeFile(join(promptHome, 'prompt-fields.toml'), 'schema_version = 1\n[fields\n');
+    await expect(svc.preparePromptConfiguration()).resolves.toBe(false);
+    expect(svc.getSystemPrompt()).toBe('BASE\n\nVALID');
+  });
+
   it.each(['file', 'route', 'file-sources'] as const)('refreshes a cold %s from its stored definition without changing its lease or duplicating shared text', async (kind) => {
     const { ctx: host, profile: svc } = buildContext();
     const config = host.get(IConfigService);
     const get = config.get.bind(config);
-    let prompt: PromptConfig = { variables: { guidance: 'old' }, shared: 'GLOBAL' };
+    let prompt: PromptConfig = { variables: { guidance: 'old' }, overrides: { fields: { 'system.shared': 'GLOBAL' } } };
     vi.spyOn(config, 'get').mockImplementation(((domain: string) => domain === 'prompt' ? prompt : get(domain)) as IConfigService['get']);
     const definition = parseAgentFileText({ path: join(workDir, 'stored.md'), source: 'explicit', text: '---\nname: frozen-worker\ndescription: Fixture stored profile\ntools: [Read]\n---\nRole ${guidance}', definitionId: 'frozen-source', contributionRoot: workDir });
     const base = agentProfileFromFile(definition, (context) => renderPromptTemplateResult('BASE', context, { skillActive: false }));
@@ -143,7 +160,7 @@ describe('AgentProfileService.applyProfile', () => {
     const frozen = kind === 'file-sources' ? { ...bound, fileSources: { root: definition, scopedBindings: {}, sourceDefinitions: { [definition.definitionId]: definition }, dependencyIndex: {}, diagnostics: [] } } : bound;
     const before = { ...svc.data(), routeId: kind === 'route' ? 'frozen-route' : undefined, boundProfile: frozen };
     svc.applyBindingSnapshot(before);
-    prompt = { variables: { guidance: 'new ${literal}' }, shared: 'GLOBAL_NEW' };
+    prompt = { variables: { guidance: 'new ${literal}' }, overrides: { fields: { 'system.shared': 'GLOBAL_NEW' } } };
     await svc.preparePromptConfiguration();
     expect(svc.getSystemPrompt()).toContain('Role new ${literal}');
     if (kind === 'route') expect(svc.getSystemPrompt()).toContain('Route new ${literal}');
@@ -165,7 +182,7 @@ describe('AgentProfileService.applyProfile', () => {
     const get = config.get.bind(config);
     vi.spyOn(config, 'get').mockImplementation(((domain: string) => domain === 'prompt' ? { variables: { guidance: 'new' } } : get(domain)) as IConfigService['get']);
     svc.applyBindingSnapshot({ ...svc.data(), profileName: 'missing-fixture-role', profileDefinitionId: 'missing-fixture-source' });
-    await expect(svc.preparePromptConfiguration()).rejects.toMatchObject({ code: 'config.invalid', message: expect.stringContaining('saved profile source is unavailable') });
+    await expect(svc.preparePromptConfiguration()).resolves.toBe(false);
   });
 
   it('does not rerender an unconfigured cold file profile merely because the prompt domain exists', async () => {

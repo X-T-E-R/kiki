@@ -6,7 +6,7 @@ import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { Event } from '#/_base/event';
-import { renderPromptTemplateResult } from '@kiki/agent-profiles/profileShared';
+import { renderPromptTemplateResult, renderSystemPromptResult } from '@kiki/agent-profiles/profileShared';
 import { DEFAULT_INDEPENDENT_DELEGATION_NOTICE } from '#/agent/profile/delegationContext';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import {
@@ -64,7 +64,7 @@ describe('delegation context at bind', () => {
     await writeFile(join(homeDir, 'cognition/replace.md'), 'REPLACEMENT BODY');
     await writeFile(join(homeDir, 'cognition/anchor.md'), 'ANCHOR BODY');
     const custom = normalizeAgentProfile({ name: 'replacement-role', delegationNotice: position === 'off' ? 'off' : undefined, systemPrompt: () => 'ORIGINAL BODY' });
-    ctx = createTestAgent(homeDirServices(homeDir), sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), { initialConfig: { prompt: { shared: 'SHARED_FINAL' } } });
+    ctx = createTestAgent(homeDirServices(homeDir), sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), { initialConfig: { prompt: { overrides: { fields: { 'system.shared': 'SHARED_FINAL', 'system.language': '# Language\n\nSHADOWED' } } } } });
     const model = ctx.kimiConfig.models![MOCK_MODEL]!;
     ctx.kimiConfig = { ...ctx.kimiConfig, models: {
       ...ctx.kimiConfig.models,
@@ -73,6 +73,7 @@ describe('delegation context at bind', () => {
     } };
     const profile = ctx.get(IAgentProfileService);
     await profile.bind({ profile: custom.name, model: MOCK_MODEL, delegationPosition: position === 'off' ? 'sub' : position });
+    expect(profile.getPromptFieldSnapshot().fields.find((field) => field.id === 'system.language')?.status).toBe('shadowed');
     const notice = position === 'sub' ? TASK_AGENT_ROLE_PREFIX : position === 'independent' ? DEFAULT_INDEPENDENT_DELEGATION_NOTICE : undefined;
     const requester = ctx.get(IAgentLLMRequesterService);
     const assertOutbound = (body: string) => {
@@ -117,7 +118,7 @@ describe('delegation context at bind', () => {
       renderSystemPrompt: (context) => renderPromptTemplateResult('Role ${guidance}', context, { skillActive: false }),
     });
     ctx = createTestAgent(homeDirServices(homeDir), sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), {
-      initialConfig: { prompt: { variables: { guidance: 'OLD' }, shared: 'SHARED_OLD' } },
+      initialConfig: { prompt: { variables: { guidance: 'OLD' }, overrides: { fields: { 'system.shared': 'SHARED_OLD' } } } },
     });
     const profile = ctx.get(IAgentProfileService);
     await profile.bind({ profile: custom.name, model: MOCK_MODEL, delegationPosition: position === 'off' ? 'sub' : position });
@@ -126,7 +127,7 @@ describe('delegation context at bind', () => {
     if (position !== 'off') expect(snippet).toBeTruthy();
     await ctx.dispose();
     ctx = createTestAgent(homeDirServices(homeDir), sessionService(ISessionAgentProfileCatalog, catalogWith(custom)), {
-      initialConfig: { prompt: { variables: { guidance: 'NEW' }, shared: 'SHARED_NEW' } },
+      initialConfig: { prompt: { variables: { guidance: 'NEW' }, overrides: { fields: { 'system.shared': 'SHARED_NEW' } } } },
     });
     const restored = ctx.get(IAgentProfileService);
     restored.applyBindingSnapshot(before);
@@ -240,6 +241,114 @@ describe('delegation context at bind', () => {
     });
     expect(quietProfile.getSystemPrompt()).toContain('CUSTOM BODY');
     expect(quietProfile.getSystemPrompt()).not.toContain(TASK_AGENT_ROLE_PREFIX);
+  });
+
+  it('consumes the four prompt override scopes in priority order', async () => {
+    const custom = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      promptOverrides: { fields: { 'system.language': '# Language\n\nPROFILE' } },
+      modelProfiles: [{
+        alias: MOCK_MODEL,
+        promptOverrides: { fields: { 'system.language': '# Language\n\nPROFILE_MODEL' } },
+      }],
+      renderSystemPrompt: (context) => renderSystemPromptResult('', context, { skillActive: false }),
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+      { initialConfig: { prompt: { overrides: { fields: { 'system.language': '# Language\n\nGLOBAL' } } } } },
+    );
+    const model = ctx.kimiConfig.models![MOCK_MODEL]!;
+    ctx.kimiConfig = {
+      ...ctx.kimiConfig,
+      models: {
+        ...ctx.kimiConfig.models,
+        [MOCK_MODEL]: {
+          ...model,
+          promptOverrides: { fields: { 'system.language': '# Language\n\nMODEL' } },
+        },
+      },
+    };
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    expect(profile.getSystemPrompt()).toContain('PROFILE_MODEL');
+    expect(profile.getSystemPrompt()).not.toContain('\n\nPROFILE\n');
+    expect(profile.getSystemPrompt()).not.toContain('\n\nMODEL\n');
+    expect(profile.getSystemPrompt()).not.toContain('\n\nGLOBAL\n');
+  });
+
+  it('marks reply style shadowed when an intent override removes its slot', async () => {
+    const custom = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      promptOverrides: { fields: {
+        'system.intent_tool_use': '# Intent, Continuity, and Tool Use\n\nCUSTOM INTENT',
+        'system.reply_style': 'CUSTOM STYLE ${reply_style_guide}',
+      } },
+      renderSystemPrompt: (context) => renderSystemPromptResult('', context, { skillActive: false }),
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const fields = new Map(profile.getPromptFieldSnapshot().fields.map((field) => [field.id, field.status]));
+    expect(fields.get('system.intent_tool_use')).toBe('effective');
+    expect(fields.get('system.reply_style')).toBe('shadowed');
+    expect(profile.getSystemPrompt()).toContain('CUSTOM INTENT');
+    expect(profile.getSystemPrompt()).not.toContain('CUSTOM STYLE');
+  });
+
+  it('uses delegation notice fields while keeping the boolean gate authoritative', async () => {
+    const custom = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      systemPrompt: () => 'CUSTOM BODY',
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+      { initialConfig: { prompt: { overrides: { fields: { 'delegation.sub.notice': 'CUSTOM NOTICE' } } } } },
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({
+      profile: DEFAULT_AGENT_PROFILE_NAME,
+      model: MOCK_MODEL,
+      delegationPosition: 'sub',
+    });
+    expect(profile.getSystemPrompt()).toContain('CUSTOM NOTICE');
+    expect(profile.getSystemPrompt()).not.toContain(TASK_AGENT_ROLE_PREFIX);
+  });
+
+  it('marks whole-prompt and anchor shadowing in the internal field snapshot', async () => {
+    const custom = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      sourcePath: '/home/example/SYSTEM.md',
+      systemPromptMode: 'replace',
+      promptOverrides: { fields: {
+        'system.language': '# Language\n\nCUSTOM',
+        'system.shared': 'SHARED',
+        'delegation.sub.notice': 'NOTICE',
+      } },
+      systemPrompt: () => 'CUSTOM BODY',
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({
+      profile: DEFAULT_AGENT_PROFILE_NAME,
+      model: MOCK_MODEL,
+      delegationPosition: 'sub',
+    });
+    const ordinary = new Map(profile.getPromptFieldSnapshot().fields.map((field) => [field.id, field.status]));
+    expect(ordinary.get('system.language')).toBe('shadowed');
+    expect(ordinary.get('system.shared')).toBe('effective');
+    expect(ordinary.get('delegation.sub.notice')).toBe('effective');
+    const anchored = new Map(profile.getPromptFieldSnapshot({ anchor: true }).fields.map((field) => [field.id, field.status]));
+    expect(anchored.get('system.language')).toBe('inactive');
+    expect(anchored.get('system.shared')).toBe('inactive');
+    expect(anchored.get('delegation.sub.notice')).toBe('inactive');
   });
 
   it('does not inject when agents.delegation.sub is false', async () => {

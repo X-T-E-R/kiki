@@ -135,6 +135,50 @@ describe('projectAgentProfileCatalog', () => {
     expect(result.snapshot.resolvableProfiles?.get('writer')).toBe(hidden);
   });
 
+  it('inherits the lower-priority prompt while preserving the winning profile constraints', () => {
+    const lower = normalizeAgentProfile({
+      name: 'writer',
+      tools: ['Read'],
+      promptOverrides: { fields: { 'system.language': 'lower', 'system.coding': 'lower coding' } },
+      systemPrompt: () => 'LOWER',
+    });
+    const upper = normalizeAgentProfile({
+      name: 'writer',
+      override: true,
+      tools: ['Bash'],
+      systemPromptMode: 'inherit',
+      promptOverrides: { fields: { 'system.language': 'upper' } },
+      systemPrompt: () => 'UNRESOLVED',
+    });
+    const { result } = project([
+      { sourceId: 'user', priority: 10, contribution: { profiles: [lower] } },
+      { sourceId: 'workspace', priority: 30, contribution: { profiles: [upper] } },
+    ]);
+
+    expect(result.profiles.get('writer')).toMatchObject({
+      tools: ['Bash'],
+      systemPromptMode: 'inherit',
+      promptOverrides: { fields: { 'system.language': 'upper' } },
+    });
+    expect(result.profiles.get('writer')?.promptOverrideLayers).toEqual([
+      { fields: { 'system.language': 'lower', 'system.coding': 'lower coding' } },
+      { fields: { 'system.language': 'upper' } },
+    ]);
+    expect(result.profiles.get('writer')?.systemPrompt({})).toBe('LOWER');
+  });
+
+  it('rejects inherit when no lower-priority same-name profile exists', () => {
+    const inherited = normalizeAgentProfile({
+      name: 'writer',
+      systemPromptMode: 'inherit',
+      promptOverrides: { fields: { 'system.language': 'upper' } },
+      systemPrompt: () => 'UNRESOLVED',
+    });
+    expect(() => project([
+      { sourceId: 'workspace', priority: 30, contribution: { profiles: [inherited] } },
+    ])).toThrow(/no lower-priority base profile/);
+  });
+
   it('projects routes and reports a missing route base', () => {
     const base = profile('writer');
     const { result, warnings } = project([

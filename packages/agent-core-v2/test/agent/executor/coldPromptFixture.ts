@@ -18,7 +18,7 @@ export async function coldPromptFixture(position: 'sub' | 'independent', binding
     resolveSelection: () => ({ profile: definition, baseProfile: definition, route: undefined }), inspect: () => undefined, load: async () => {}, reload: async () => {},
   };
   const create = (guidance: string) => createTestAgent(homeDirServices(home), appService(IAgentExecutorRegistry, { ...registry, validateBinding: (_id, _options, selected) => ({ ok: true, binding: selected }) }), sessionService(ISessionAgentProfileCatalog, catalog), {
-    initialConfig: { prompt: { shared: `SHARED_${guidance}`, variables: { guidance } } },
+    initialConfig: { prompt: { overrides: { fields: { 'system.shared': `SHARED_${guidance}` } }, variables: { guidance } } },
   });
   const original = create('OLD');
   let before: ProfileData;
@@ -30,5 +30,5 @@ export async function coldPromptFixture(position: 'sub' | 'independent', binding
   const restored = create('NEW');
   const profile = restored.get(IAgentProfileService);
   profile.applyBindingSnapshot(before);
-  return { profile, before, dispose: async () => { await restored.dispose(); await rm(home, { recursive: true, force: true }); } };
+  return { profile, before, dispose: async () => { await restored.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }); } };
 }

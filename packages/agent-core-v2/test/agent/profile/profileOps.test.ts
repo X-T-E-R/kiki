@@ -15,6 +15,7 @@ import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMd
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IPromptFieldRegistry } from '#/app/promptField/promptFieldRegistry';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IProtocolAdapterRegistry, type Protocol } from '#/kosong/protocol/protocol';
@@ -205,6 +206,14 @@ function buildHost(key: string): {
     new AgentTelemetryContextService(),
   );
   host.stub(IConfigService, createConfigStub());
+  host.stub(IPromptFieldRegistry, {
+    _serviceBrand: undefined,
+    onDidChange: Event.None as Event<{ readonly ref?: string }>,
+    list: () => [],
+    get: () => undefined,
+    validate: () => ({ values: {}, fields: [] }),
+    resolve: async () => ({ values: {}, fields: [] }),
+  });
   host.stub(IModelCatalog, modelCatalog);
   host.stub(IModelService, {
     _serviceBrand: undefined,

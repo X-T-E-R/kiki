@@ -11,7 +11,14 @@ const { client } = vi.hoisted(() => ({
 }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }) }));
 
-let config: { prompt: { shared: string; variables: Record<string, string>; tools: Record<string, string> } };
+type TestConfig = {
+  prompt: {
+    variables: Record<string, string>;
+    overrides: { files: string[]; fields: Record<string, string> };
+  };
+};
+
+let config: TestConfig;
 let root: Root;
 let container: HTMLDivElement;
 let query: QueryClient;
@@ -47,13 +54,18 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   config = {
     prompt: {
-      shared: 'Use ${search_guidance}',
       variables: { search_guidance: 'Prefer documentation' },
-      tools: { WebSearch: '${search_guidance}' },
+      overrides: {
+        files: ['prompt/team.toml'],
+        fields: {
+          'system.shared': 'Use ${search_guidance}',
+          'tool.web-search.guidance': '${search_guidance}',
+        },
+      },
     },
   };
   client.getConfig.mockReset().mockImplementation(async () => structuredClone(config));
-  client.patchConfig.mockReset().mockImplementation(async (patch: { prompt: typeof config.prompt }) => {
+  client.patchConfig.mockReset().mockImplementation(async (patch: { prompt: TestConfig['prompt'] }) => {
     config = { prompt: structuredClone(patch.prompt) };
     return structuredClone(config);
   });
@@ -74,22 +86,26 @@ describe('PromptConfigCard', () => {
     await render();
     const preview = container.querySelector<HTMLDetailsElement>('[data-prompt-preview]')!;
     preview.open = true;
-    expect(preview.textContent).toContain('Use Prefer documentation');
-    expect(preview.textContent).toContain('WebSearch: Prefer documentation');
+    expect(preview.textContent).toContain('system.shared: Use Prefer documentation');
+    expect(preview.textContent).toContain('tool.web-search.guidance: Prefer documentation');
 
     const variableValue = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Variable content"]')!;
     await setValue(variableValue, 'Prefer primary docs');
-    await click('Save shared prompt');
+    await click('Save prompt fields');
 
     expect(client.patchConfig).toHaveBeenCalledWith({
       prompt: {
-        shared: 'Use ${search_guidance}',
         variables: { search_guidance: 'Prefer primary docs' },
-        tools: { WebSearch: '${search_guidance}' },
+        overrides: {
+          files: ['prompt/team.toml'],
+          fields: {
+            'system.shared': 'Use ${search_guidance}',
+            'tool.web-search.guidance': '${search_guidance}',
+          },
+        },
       },
       replace_domains: ['prompt'],
     });
-    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('Use ${search_guidance}');
     expect(config.prompt.variables['search_guidance']).toBe('Prefer primary docs');
   });
 
@@ -109,45 +125,44 @@ describe('PromptConfigCard', () => {
 
   it('keeps a failed-save draft and refetch cannot overwrite it', async () => {
     await render();
-    const shared = container.querySelector<HTMLTextAreaElement>('textarea')!;
-    await setValue(shared, 'Draft survives failure');
+    const field = container.querySelector<HTMLTextAreaElement>('[data-prompt-field-row] textarea')!;
+    await setValue(field, 'Draft survives failure');
     client.patchConfig.mockRejectedValueOnce(new Error('fixture offline'));
-    await click('Save shared prompt');
-    expect(shared.value).toBe('Draft survives failure');
+    await click('Save prompt fields');
+    expect(field.value).toBe('Draft survives failure');
     expect(container.textContent).toContain('fixture offline');
 
-    await act(async () => { query.setQueryData(['config'], { prompt: { shared: 'server refresh', variables: {}, tools: {} } }); });
+    await act(async () => { query.setQueryData(['config'], { prompt: { variables: {}, overrides: { files: [], fields: { 'system.shared': 'server refresh' } } } }); });
     await settle();
-    expect(shared.value).toBe('Draft survives failure');
+    expect(field.value).toBe('Draft survives failure');
   });
 
   it('disables every editor while a save is in flight', async () => {
     await render();
-    const shared = container.querySelector<HTMLTextAreaElement>('[data-prompt-shared]')!;
-    await setValue(shared, 'Saving now');
-    let releaseSave: ((value: typeof config) => void) | undefined;
+    const field = container.querySelector<HTMLTextAreaElement>('[data-prompt-field-row] textarea')!;
+    await setValue(field, 'Saving now');
+    let releaseSave: ((value: TestConfig) => void) | undefined;
     client.patchConfig.mockImplementationOnce(() => new Promise((resolve) => { releaseSave = resolve; }));
-    const saveButton = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save shared prompt')!;
+    const saveButton = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save prompt fields')!;
     await act(async () => { saveButton.click(); });
     await settle();
-    expect(shared.matches(':disabled')).toBe(true);
+    expect(field.matches(':disabled')).toBe(true);
     expect(container.querySelector<HTMLInputElement>('[data-prompt-variable-row] input')?.matches(':disabled')).toBe(true);
     expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Add variable')?.matches(':disabled')).toBe(true);
     expect(saveButton.disabled).toBe(true);
     releaseSave!(structuredClone(config));
     await settle();
-    expect(shared.matches(':disabled')).toBe(false);
+    expect(field.matches(':disabled')).toBe(false);
   });
 
-  it('blocks duplicate names and unknown references before saving', async () => {
-    config.prompt = { shared: 'Use ${missing}', variables: {}, tools: {} };
+  it('blocks duplicate variable names and malformed field ids before saving', async () => {
     await render();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Unknown prompt variable: missing');
-    expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save shared prompt')?.hasAttribute('disabled')).toBe(true);
+    const fieldName = container.querySelector<HTMLInputElement>('[data-prompt-field-row] input')!;
+    await setValue(fieldName, 'WebSearch');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('dot-separated lowercase field id');
+    expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save prompt fields')?.hasAttribute('disabled')).toBe(true);
 
-    const shared = container.querySelector<HTMLTextAreaElement>('textarea')!;
-    await setValue(shared, 'No variables');
-    await click('Add variable');
+    await setValue(fieldName, 'system.shared');
     await click('Add variable');
     const variableNames = container.querySelectorAll<HTMLInputElement>('[data-prompt-variable-row] input');
     await setValue(variableNames[0]!, 'duplicate');

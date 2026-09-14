@@ -781,6 +781,50 @@ body
     const def = parse('---\nname: solo\ndescription: d\nallowed_models: []\n---\n\nbody\n');
     expect(def.allowedModels).toBeUndefined();
   });
+
+  it('parses profile and model-profile prompt overrides', () => {
+    const def = parse(`---
+name: solo
+description: d
+prompt_overrides:
+  files: [profile.toml]
+  fields:
+    system.language: profile
+model_profiles:
+  - alias: fast
+    prompt_overrides:
+      fields:
+        system.language: profile-model
+---
+body
+`);
+    expect(def.promptOverrides).toEqual({
+      files: ['profile.toml'],
+      fields: { 'system.language': 'profile' },
+    });
+    expect(def.modelProfiles?.[0]?.promptOverrides).toEqual({
+      fields: { 'system.language': 'profile-model' },
+    });
+  });
+
+  it('accepts inherit only with an empty body and non-empty prompt overrides', () => {
+    const def = parse(`---
+name: solo
+description: d
+system_prompt_mode: inherit
+prompt_overrides:
+  fields:
+    system.language: inherited
+---
+`);
+    expect(def).toMatchObject({
+      systemPromptMode: 'inherit',
+      prompt: '',
+      promptOverrides: { fields: { 'system.language': 'inherited' } },
+    });
+    expect(() => parse('---\nname: solo\ndescription: d\nsystem_prompt_mode: inherit\n---\n')).toThrow(/prompt_overrides/);
+    expect(() => parse('---\nname: solo\ndescription: d\nsystem_prompt_mode: inherit\nprompt_overrides:\n  fields:\n    system.language: x\n---\nbody')).toThrow(/must be empty/);
+  });
 });
 
 describe('agentProfileFromFile', () => {

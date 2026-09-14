@@ -1435,6 +1435,22 @@ export interface AgentStateSnapshot {
       };
     };
     readonly systemPrompt: string;
+    readonly promptFields: /* ResolvedPromptFieldOverrides — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
+      readonly values: Readonly<Record<string, string>>;
+      readonly fields: readonly /* ResolvedPromptFieldOverride — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
+        readonly id: string;
+        readonly value: string;
+        readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'deferred' | 'effective' | 'shadowed' | 'inactive' | 'unsupported';
+        readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'system' | 'model' | 'global' | 'profile' | 'profile-model';
+          readonly kind: 'file' | 'inline';
+          readonly path?: string;
+          readonly fileIndex?: number;
+          readonly line?: number;
+        }[];
+      }[];
+    };
+    readonly promptPrepared: boolean;
     readonly providerConfig: /* ProviderConfig — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
       modelSource?: 'static' | 'discover' | 'oauth-catalog';
       baseUrl?: string;
@@ -1657,6 +1673,10 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'prepend' | 'append' | 'wrap';
         readonly prompt?: string;
+        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly files?: readonly string[];
+          readonly fields?: Readonly<Record<string, string>>;
+        };
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1687,6 +1707,10 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'prepend' | 'append' | 'wrap';
         readonly prompt?: string;
+        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly files?: readonly string[];
+          readonly fields?: Readonly<Record<string, string>>;
+        };
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1724,6 +1748,10 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'prepend' | 'append' | 'wrap';
         readonly prompt?: string;
+        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly files?: readonly string[];
+          readonly fields?: Readonly<Record<string, string>>;
+        };
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1754,6 +1782,10 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'prepend' | 'append' | 'wrap';
         readonly prompt?: string;
+        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly files?: readonly string[];
+          readonly fields?: Readonly<Record<string, string>>;
+        };
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1834,6 +1866,10 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly promptMode?: 'prepend' | 'append' | 'wrap';
             readonly prompt?: string;
+            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly files?: readonly string[];
+              readonly fields?: Readonly<Record<string, string>>;
+            };
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1864,6 +1900,10 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly promptMode?: 'prepend' | 'append' | 'wrap';
             readonly prompt?: string;
+            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly files?: readonly string[];
+              readonly fields?: Readonly<Record<string, string>>;
+            };
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1890,6 +1930,10 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly promptMode?: 'prepend' | 'append' | 'wrap';
           readonly prompt?: string;
+          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly files?: readonly string[];
+            readonly fields?: Readonly<Record<string, string>>;
+          };
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1897,7 +1941,11 @@ export interface AgentStateSnapshot {
         }[];
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-        readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly files?: readonly string[];
+          readonly fields?: Readonly<Record<string, string>>;
+        };
+        readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
         readonly prompt: string;
         readonly path: string;
         readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
@@ -1958,6 +2006,10 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly promptMode?: 'prepend' | 'append' | 'wrap';
           readonly prompt?: string;
+          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly files?: readonly string[];
+            readonly fields?: Readonly<Record<string, string>>;
+          };
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1988,6 +2040,10 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly promptMode?: 'prepend' | 'append' | 'wrap';
           readonly prompt?: string;
+          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly files?: readonly string[];
+            readonly fields?: Readonly<Record<string, string>>;
+          };
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2014,6 +2070,10 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'prepend' | 'append' | 'wrap';
         readonly prompt?: string;
+        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly files?: readonly string[];
+          readonly fields?: Readonly<Record<string, string>>;
+        };
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2021,7 +2081,15 @@ export interface AgentStateSnapshot {
       }[];
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-      readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+      readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly files?: readonly string[];
+        readonly fields?: Readonly<Record<string, string>>;
+      };
+      readonly promptOverrideLayers?: readonly /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly files?: readonly string[];
+        readonly fields?: Readonly<Record<string, string>>;
+      }[];
+      readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
       readonly systemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
         readonly cwd?: string;
         readonly cwdListing?: string;
@@ -2038,6 +2106,7 @@ export interface AgentStateSnapshot {
         readonly productName?: string;
         readonly replyStyleGuide?: string;
         readonly promptVariables?: Readonly<Record<string, string>>;
+        readonly promptFields?: Readonly<Record<string, string>>;
         [key: string]: unknown;
       }) => string;
       readonly renderSystemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
@@ -2056,6 +2125,7 @@ export interface AgentStateSnapshot {
         readonly productName?: string;
         readonly replyStyleGuide?: string;
         readonly promptVariables?: Readonly<Record<string, string>>;
+        readonly promptFields?: Readonly<Record<string, string>>;
         [key: string]: unknown;
       }) => /* SystemPromptRenderResult — packages/agent-profiles/src/agentProfile.ts */ {
         readonly text: string;
@@ -2121,6 +2191,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2151,6 +2225,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2177,6 +2255,10 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly promptMode?: 'prepend' | 'append' | 'wrap';
             readonly prompt?: string;
+            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly files?: readonly string[];
+              readonly fields?: Readonly<Record<string, string>>;
+            };
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2184,7 +2266,11 @@ export interface AgentStateSnapshot {
           }[];
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-          readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly files?: readonly string[];
+            readonly fields?: Readonly<Record<string, string>>;
+          };
+          readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
           readonly prompt: string;
           readonly path: string;
           readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
@@ -2226,6 +2312,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2256,6 +2346,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2293,6 +2387,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2323,6 +2421,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2393,6 +2495,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2440,6 +2546,10 @@ export interface AgentStateSnapshot {
                 readonly allowedEfforts?: readonly string[];
                 readonly promptMode?: 'prepend' | 'append' | 'wrap';
                 readonly prompt?: string;
+                readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                  readonly files?: readonly string[];
+                  readonly fields?: Readonly<Record<string, string>>;
+                };
                 readonly contextBudget?: number;
                 readonly maxCompletionTokens?: number;
                 readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2470,6 +2580,10 @@ export interface AgentStateSnapshot {
                 readonly allowedEfforts?: readonly string[];
                 readonly promptMode?: 'prepend' | 'append' | 'wrap';
                 readonly prompt?: string;
+                readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                  readonly files?: readonly string[];
+                  readonly fields?: Readonly<Record<string, string>>;
+                };
                 readonly contextBudget?: number;
                 readonly maxCompletionTokens?: number;
                 readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2496,6 +2610,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2503,7 +2621,11 @@ export interface AgentStateSnapshot {
             }[];
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-            readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly files?: readonly string[];
+              readonly fields?: Readonly<Record<string, string>>;
+            };
+            readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
             readonly prompt: string;
             readonly path: string;
             readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
@@ -2558,6 +2680,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2588,6 +2714,10 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'prepend' | 'append' | 'wrap';
               readonly prompt?: string;
+              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly files?: readonly string[];
+                readonly fields?: Readonly<Record<string, string>>;
+              };
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2614,6 +2744,10 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly promptMode?: 'prepend' | 'append' | 'wrap';
             readonly prompt?: string;
+            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly files?: readonly string[];
+              readonly fields?: Readonly<Record<string, string>>;
+            };
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2621,7 +2755,11 @@ export interface AgentStateSnapshot {
           }[];
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-          readonly systemPromptMode?: 'replace' | 'prepend' | 'append';
+          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly files?: readonly string[];
+            readonly fields?: Readonly<Record<string, string>>;
+          };
+          readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
           readonly prompt: string;
           readonly path: string;
           readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';

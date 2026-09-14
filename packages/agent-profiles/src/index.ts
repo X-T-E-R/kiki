@@ -16,9 +16,11 @@ export * from './ports';
 export * from './profileCatalog';
 export * from './profileCatalogProjection';
 export * from './profileShared';
+export * from './promptOverrides';
 export * from './scopedAgentProfile';
 export * from './subagentDispatch';
 export * from './subagentLease';
 export * from './systemFile';
+export * from './systemPromptFields';
 
 export const SCHEMA_VERSION = 1;

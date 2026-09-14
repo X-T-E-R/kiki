@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { appendSharedPrompt, previewPromptConfig, PromptConfigSchema, RESERVED_PROMPT_VARIABLES } from '#/promptConfig';
+import { PromptConfigSchema, RESERVED_PROMPT_VARIABLES } from '#/promptConfig';
+import { renderPrompt } from '#/renderPrompt';
+import SYSTEM_PROMPT_TEMPLATE from '../src/system.md?raw';
 
 import {
   normalizeAgentProfile,
@@ -161,23 +163,20 @@ describe('systemPromptVars', () => {
   });
 });
 
-describe('shared prompt configuration', () => {
-  it('validates explicit references and reserves all fixed variables without interpreting values as templates', () => {
+describe('prompt configuration', () => {
+  it('keeps variables and overrides while rejecting removed shared and tools keys', () => {
     expect(PromptConfigSchema.safeParse({ shared: '${missing}' }).success).toBe(false);
     expect(PromptConfigSchema.safeParse({ tools: { WebSearch: '${missing}' } }).success).toBe(false);
     expect(PromptConfigSchema.safeParse({ variables: { 'bad-name': 'text' } }).success).toBe(false);
     for (const name of Object.keys(systemPromptVars({}, { skillActive: false }))) expect(RESERVED_PROMPT_VARIABLES.has(name)).toBe(true);
     for (const name of RESERVED_PROMPT_VARIABLES) expect(PromptConfigSchema.safeParse({ variables: { [name]: 'override' } }).success, name).toBe(false);
-    const config = PromptConfigSchema.parse({ shared: 'Global ${guidance}', variables: { guidance: 'literal ${shell_code}' }, tools: { WebSearch: '${guidance}' } });
-    expect(previewPromptConfig(config)).toEqual({ shared: 'Global literal ${shell_code}', tools: { WebSearch: 'literal ${shell_code}' } });
-  });
-
-  it('keeps old prompts unchanged when unset and renders the same shared text independently of inheritance', () => {
-    const config = { shared: '${guidance}', variables: { guidance: 'Shared instruction' } };
-    expect(appendSharedPrompt('main', undefined)).toBe('main');
-    expect(appendSharedPrompt('main', {})).toBe('main');
-    expect(appendSharedPrompt('main', config)).toBe('main\n\nShared instruction');
-    expect(appendSharedPrompt('standalone child', config)).toBe('standalone child\n\nShared instruction');
+    expect(PromptConfigSchema.parse({
+      variables: { guidance: 'literal ${shell_code}' },
+      overrides: { fields: { 'system.shared': 'Global ${guidance}' } },
+    })).toEqual({
+      variables: { guidance: 'literal ${shell_code}' },
+      overrides: { fields: { 'system.shared': 'Global ${guidance}' } },
+    });
   });
 });
 
@@ -327,6 +326,37 @@ describe('renderPromptTemplateResult', () => {
 });
 
 describe('renderSystemPromptResult', () => {
+  it('keeps the fieldized default template byte-for-byte identical', () => {
+    const context = {
+      cwd: '/work',
+      cwdListing: 'LISTING',
+      agentsMd: 'AGENTS',
+      skills: 'SKILLS',
+      now: '2026-09-14T00:00:00.000Z',
+      osKind: 'Linux',
+      shellName: 'bash',
+      shellPath: '/bin/bash',
+    };
+    const vars = { ...systemPromptVars(context, { skillActive: true }), role_additional: 'ROLE' };
+    expect(renderSystemPromptResult('ROLE', context, { skillActive: true }).text).toBe(
+      renderPrompt(SYSTEM_PROMPT_TEMPLATE, vars),
+    );
+  });
+
+  it('replaces registered system sections before rendering variables', () => {
+    const prompt = renderSystemPromptResult('', {
+      promptFields: {
+        'system.language': '# Language\n\nCUSTOM LANGUAGE',
+        'system.reply_style': 'CUSTOM STYLE ${reply_style_guide}',
+        'system.coding': '# General Guidelines for Coding\n\nCUSTOM CODING',
+      },
+    }, { skillActive: true }).text;
+    expect(prompt).toContain('CUSTOM LANGUAGE');
+    expect(prompt).toContain(`CUSTOM STYLE ${DEFAULT_REPLY_STYLE_GUIDE}`);
+    expect(prompt).toContain('CUSTOM CODING');
+    expect(prompt).not.toContain("Write in the user's language");
+  });
+
   it('places the role text at the role slot and injects context sections', () => {
     const prompt = renderSystemPromptResult(
       'ROLE_TEXT',

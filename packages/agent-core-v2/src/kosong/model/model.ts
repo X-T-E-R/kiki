@@ -1,3 +1,5 @@
+import type { PromptOverrides } from '@kiki/agent-profiles/promptOverrides';
+
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event, IWaitUntil } from '#/_base/event';
 import type { Protocol } from '#/kosong/protocol/protocol';
@@ -65,6 +67,7 @@ export interface ModelRecord extends ModelParameterDefaults {
 
   overrides?: ModelOverride;
   cognition?: CognitionConfig;
+  promptOverrides?: PromptOverrides;
   requestIdentity?: RequestIdentityPolicy;
   serviceTier?: ServiceTier;
 

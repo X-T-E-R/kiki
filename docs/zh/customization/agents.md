@@ -145,7 +145,9 @@ disallowedTools:
 | `allowed_models` | 否 | 该 role 允许绑定的模型 alias 白名单。写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。字段存在且非空时，绑定结果必须是其中一员。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。这份名单只能**收紧**机器已经允许的集合，不能重新放行 `[subagent].deny_models` 或本文件 `deny_models` 禁止的模型。只写一项就是把该 role 钉死到那个 alias 的做法，不必再为“只改模型”单独建 route sidecar。省略字段或写成空列表表示不再额外限制 |
 | `deny_models` | 否 | 该 role 禁止绑定的模型 alias 名单，写法与 `allowed_models` 相同。自动派发会被拒绝；人类显式选择放行并给一次性提示。机器级 `[subagent].deny_models` 仍拒绝所有路径，包括人类 |
 | `allowed_efforts` | 否 | 该 role 允许的 thinking effort 白名单，写法与 `tools` 相同。角色级与匹配到的 `model_profiles` 条目求交。自动派发（`AgentRun`）超出交集即拒绝；人类显式选择放行并给一次性提示 |
-| `model_profiles` | 否 | 该角色在某个模型上的跑法。只支持 YAML mapping 列表。必填 `alias`；可选 `when`、`thinking_effort`、`allowed_efforts`、`prompt_mode`（`prepend` / `append` / `wrap`）、`prompt`、`service_tier`、`request_params`、`context_budget` 与 `max_completion_tokens`。`when` 只给派发方看，渲进 `AgentRun` 工具说明，不写进子 Agent 自己的提示词。带 `prompt_mode` 的条目在角色正文之后、模型 cognition overlay 之前组合；`wrap` 要求正文恰好一次 `${parent_prompt}`（或其别名 `${base_prompt}`）。本机 `[models]` 表解析不到的 alias 既不出现在工具说明里，也不生效。重复 alias 会全部保留在文件里，overlay 只匹配第一条解析成功的。旧键 `recommended_models` 仍接受为弃用别名并在加载期 warn；两键同时出现时 `model_profiles` 胜 |
+| `model_profiles` | 否 | 该角色在某个模型上的跑法。只支持 YAML mapping 列表。必填 `alias`；可选 `when`、`thinking_effort`、`allowed_efforts`、`prompt_mode`（`prepend` / `append` / `wrap`）、`prompt`、`prompt_overrides`、`service_tier`、`request_params`、`context_budget` 与 `max_completion_tokens`。`when` 只给派发方看，渲进 `AgentRun` 工具说明，不写进子 Agent 自己的提示词。带 `prompt_mode` 的条目在角色正文之后、模型 cognition overlay 之前组合；`wrap` 要求正文恰好一次 `${parent_prompt}`（或其别名 `${base_prompt}`）。本机 `[models]` 表解析不到的 alias 既不出现在工具说明里，也不生效。重复 alias 会全部保留在文件里，overlay 只匹配第一条解析成功的。旧键 `recommended_models` 仍接受为弃用别名并在加载期 warn；两键同时出现时 `model_profiles` 胜 |
+| `prompt_overrides` | 否 | 该 profile 的提示词字段覆写，可含 `files` 与 `fields`。此层覆盖全局与模型值；匹配的 `model_profiles[].prompt_overrides` 条目再覆盖它。详见 [`prompt`](../configuration/config-files.md#prompt) |
+| `system_prompt_mode` | 否 | 提示词正文模式：`replace`（默认）、`prepend`、`append` 或 `inherit`。`inherit` 要求正文为空且 `prompt_overrides` 非空；它保留下层同名 profile 定义，并应用本文件的字段覆写 |
 | `service_tier` | 否 | Profile 默认服务档位：`auto`、`default`、`flex` 或 `priority`。配置了 `[models."<alias>"].service_tier` 时，每个请求优先采用模型的档位。目前只有 `openai_responses` 协议会把它编码进请求体，其他协议静默忽略 |
 | `request_params` | 否 | 附加请求参数，标量 map（值只允许字符串 / 数字 / 布尔值），该子 Agent 的每个请求都会携带。OpenAI 系协议展开进请求体（Kimi 经 `extra_body`），不会覆盖引擎生成的字段；Anthropic 协议静默忽略；与 `service_tier` 等一等字段冲突时一等字段优先。键名原样发送，provider 可能拒绝它不认识的键。`kimi` provider 的 typed 参数（如 `temperature`、`top_p`）写在这里——只有底层模型真正支持时才传 |
 | `context_budget` | 否 | 该 profile 的上下文窗口 token 上限。仅作为上限声明，不得超过所绑定模型的 `max_context_size`。生效值取所有声明层的最小值；只能缩小预算，不能放大到超过模型真实 capacity |
@@ -252,7 +254,7 @@ subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比
 `tools` 与 `disallowedTools` 不仅决定模型能"看到"哪些工具，还会在执行前再次强制检查。`subagents` 同样双重生效：`AgentRun` 工具的类型列表只包含允许委派的 subagent，并会在实际派发前再次强制校验；继续已有 subagent 不受此限制。权限规则仍是独立的控制层，用于决定哪些操作需要审批。
 :::
 
-自定义 Agent 作为被派发的 subagent 运行时，Kiki 会注入一段简短的委派说明：最后一条消息就是交给调用方的完整交付。独立宿主调用（MCP / SDK）用另一段说明：没有父 Agent。main agent 绑定不注入。在正文里写 `${delegation_context}` 可指定位置，否则前置。profile 上设 `delegation_notice: off`，或在 `config.toml` 写 `[agents.delegation] sub = false` / `independent = false`，即可关闭。配置了路径就必须存在且非空，否则 bind 失败。
+自定义 Agent 作为被派发的 subagent 运行时，Kiki 会注入一段简短的委派说明：最后一条消息就是交给调用方的完整交付。独立宿主调用（MCP / SDK）用另一段说明：没有父 Agent。main agent 绑定不注入。在正文里写 `${delegation_context}` 可指定位置，否则前置。profile 上设 `delegation_notice: off`，或在 `config.toml` 写 `[agents.delegation] sub = false` / `independent = false`，即可关闭。如需替换文案，通过 [`PromptOverrides`](../configuration/config-files.md#prompt) 覆写 `delegation.sub.notice` 或 `delegation.independent.notice`。旧的 delegation `.md` 路径值不再接受；布尔 gate 与 `delegation_notice: off` 始终优先于文案覆写。
 
 ### 选择 main agent
 
@@ -284,6 +286,8 @@ kiki -p --agent reviewer "审查这个分支上的改动"
 - **普通 profile。** 文件以 `---` 开头，且围栏解析为 YAML mapping。按名为 `agent` 的普通 Agent 文件加载，`override` 强制为 `true`。未声明的 `tools` / `disallowedTools` / `subagents` 仍沿用内置默认；声明了的字段生效。
 
 优先级上，显式意图仍然胜出：项目作用域中声明了 `override: true` 的同名 Agent 文件、通过 `--agent-file` 传入的文件都排在 SYSTEM.md 之前，用 `--agent` 选择其他 Agent 时 SYSTEM.md 也不会生效；而在用户作用域内部，SYSTEM.md 优先于 `agents/` 目录中扫描到的同名文件。
+
+升级后的 `SYSTEM.md` 可以在 Frontmatter 中声明 `prompt_overrides`。设为 `system_prompt_mode: inherit` 时保持正文为空，Kiki 会保留内置 `agent` 提示词，仅应用这些字段。遗留正文或升级后的替换正文仍具有权威性，会遮蔽内置 `system.*` 段落覆写；`system.shared` 和适用的 delegation notice 仍位于正文外层。完整格式和优先级见 [`prompt`](../configuration/config-files.md#prompt)。
 
 与普通 Agent 文件的正文一样，SYSTEM.md 在每次构建提示词时作为模板渲染——正文中的 `${var}` 占位符会被替换为实时上下文：
 

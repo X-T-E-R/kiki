@@ -89,6 +89,12 @@ Thinking effort 按以下顺序解析：
 
 没有 `model_alias` 的 profile 只跳过顶层 effort 这一层，不会 fail closed；解析会继续使用下一层默认值。普通 resume 省略模型参数时保持当前绑定；alias 解析到同一规范模型时为 no-op。只修改 `effort` 时保留已保存的模型；切换到不同规范模型且省略 `effort` 时，按新模型重新解析 effort。恢复时切换到不同规范模型仍需 `allow_model_change: true`。既有参数校验以及外部 executor 自行完成的校验继续生效。
 
+## 提示词字段优先级
+
+提示词文案字段使用独立的五表面链，不走普通的 CLI / 配置优先级。从低到高依次为全局 `[prompt.overrides]`、模型 `[models."<alias>".prompt_overrides]`、Agent 或 `SYSTEM.md` Frontmatter 的 `prompt_overrides`，以及匹配的 `model_profiles[].prompt_overrides`。`SYSTEM.md` 占用这条链中的 profile 位置，因此共有 4 个优先级层、5 个受支持的配置表面。
+
+每个表面都接受 `files` 与 `fields`。文件从 Kiki 主目录读取，按列表顺序应用，随后由同一表面的内联字段覆盖。高层未声明的字段继承低层值，字段值绝不会拼接。外部文件 schema、常用字段示例、turn 快照，以及从已移除 `prompt.shared` / `prompt.tools` 键迁移的方法见 [`prompt`](./config-files.md#prompt)。
+
 ## 典型场景
 
 **隔离测试环境**——用单独的数据目录，避免污染主配置和会话：

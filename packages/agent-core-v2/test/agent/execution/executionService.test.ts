@@ -28,7 +28,7 @@ import type {
 } from '#/app/agentExecutor/agentExecutor';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { createHooks } from '#/hooks';
-import { appendSharedPrompt } from '@kiki/agent-profiles/promptConfig';
+import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
 
 const IMarker = createDecorator<string>('executionTestMarker');
 
@@ -416,7 +416,7 @@ describe('AgentExecutionService', () => {
     const profileService = {
       _serviceBrand: undefined,
       preparePromptConfiguration: async () => false,
-      getSystemPrompt: () => appendSharedPrompt(binding.systemPrompt, { shared: 'All executors share this instruction.' }),
+      getSystemPrompt: () => appendSharedPromptField(binding.systemPrompt, { values: { 'system.shared': 'All executors share this instruction.' }, fields: [] }),
       data: () => binding,
     } as IAgentProfileService;
     const contexts: AgentExecutorContext[] = [];

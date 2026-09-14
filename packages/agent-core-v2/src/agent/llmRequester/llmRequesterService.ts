@@ -21,7 +21,12 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
 import { INbSearchService } from '#/app/nbSearch/nbSearch';
 import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
-import { appendSharedPrompt, supplementToolDescription } from '@kiki/agent-profiles/promptConfig';
+import {
+  appendSharedPromptField,
+  applyToolPromptFields,
+} from '#/app/promptField/builtinPromptFields';
+import type { ResolvedPromptFieldOverrides } from '#/app/promptField/promptFieldRegistry';
+import { customPromptVariables } from '@kiki/agent-profiles/promptConfig';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
   APIContextOverflowError,
@@ -163,6 +168,8 @@ interface TurnRequestConfig {
   readonly resolved: ProfileModelContext;
   readonly params: ModelRequestParams;
   readonly systemPrompt: string;
+  readonly promptFields: ResolvedPromptFieldOverrides;
+  readonly promptPrepared: boolean;
   readonly providerConfig: ProviderConfig | undefined;
   readonly requestIdentity: ResolvedRequestIdentityPolicy;
 }
@@ -192,7 +199,6 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   declare readonly _serviceBrand: undefined;
 
   private readonly toolCallIdNormalizer = new ToolCallIdNormalizer();
-  private promptVariablesSignature = '{}';
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -672,15 +678,8 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     if (overrides.tools === undefined && this.defaultTools().some((tool) => tool.name === 'WebSearch' || tool.name === 'FetchURL')) {
       await this.nbSearch.prepareToolDescriptions();
     }
+    await this.profile.preparePromptConfiguration();
     const promptConfig = this.config.get<PromptConfig>(PROMPT_SECTION);
-    const promptChanged = await this.profile.preparePromptConfiguration();
-    const variablesSignature = JSON.stringify(promptConfig ?? {});
-    if (promptChanged || variablesSignature !== this.promptVariablesSignature) {
-      this.promptVariablesSignature = variablesSignature;
-      for (const [turnId, config] of this.turnConfigs) {
-        this.turnConfigs.set(turnId, { ...config, systemPrompt: this.profile.getSystemPrompt() });
-      }
-    }
     const turnConfig = this.resolveTurnConfig(overrides.source);
     const resolved = turnConfig?.resolved ?? this.profile.resolveModelContext();
     const baseParams = turnConfig?.params ?? this.profile.resolveRequestParams();
@@ -769,6 +768,10 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       step: overrides.source?.type === 'turn' ? overrides.source.step : undefined,
       hasExplicitSystemPrompt: overrides.systemPrompt !== undefined,
     });
+    const promptFields = anchoredPrompt === undefined
+      ? turnConfig?.promptFields ?? this.profile.getPromptFieldSnapshot()
+      : this.profile.getPromptFieldSnapshot({ anchor: true });
+    const promptVariables = customPromptVariables(promptConfig?.variables);
     return {
       requester,
       model: requester.model,
@@ -785,11 +788,15 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
       systemPrompt: anchoredPrompt ?? (overrides.systemPrompt !== undefined
-        ? appendSharedPrompt(injectDelegationContext(resolvedSystemPrompt, this.profile.data().boundProfile?.promptBase?.delegationSnippet), promptConfig)
+        ? appendSharedPromptField(
+            injectDelegationContext(resolvedSystemPrompt, this.profile.data().boundProfile?.promptBase?.delegationSnippet),
+            promptFields,
+            promptVariables,
+          )
         : resolvedSystemPrompt),
       tools: (overrides.tools ?? this.defaultTools()).map((tool) => ({
         ...tool,
-        description: supplementToolDescription(tool.name, tool.description, promptConfig),
+        description: applyToolPromptFields(tool.name, tool.description, promptFields, promptVariables),
       })),
       messages: [...messages],
       source: overrides.source,
@@ -799,14 +806,23 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
 
   private resolveTurnConfig(source: AgentLLMRequestSource | undefined): TurnRequestConfig | undefined {
     if (source?.turnId === undefined) return undefined;
-    return this.getOrCreateTurnConfig(source.turnId);
+    return this.getOrCreateTurnConfig(source.turnId, true);
   }
 
-  private getOrCreateTurnConfig(turnId: number): TurnRequestConfig {
+  private getOrCreateTurnConfig(turnId: number, preparePrompt = false): TurnRequestConfig {
     for (const id of this.turnConfigs.keys()) {
       if (id < turnId) this.turnConfigs.delete(id);
     }
     let snapshot = this.turnConfigs.get(turnId);
+    if (snapshot !== undefined && preparePrompt && !snapshot.promptPrepared) {
+      snapshot = {
+        ...snapshot,
+        systemPrompt: this.profile.getSystemPrompt(),
+        promptFields: this.profile.getPromptFieldSnapshot(),
+        promptPrepared: true,
+      };
+      this.turnConfigs.set(turnId, snapshot);
+    }
     if (snapshot === undefined) {
       const resolved = this.profile.resolveModelContext();
       const requester = this.modelCatalog.getRequester(resolved.modelAlias);
@@ -816,6 +832,8 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         resolved,
         params: this.profile.resolveRequestParams(),
         systemPrompt: this.profile.getSystemPrompt(),
+        promptFields: this.profile.getPromptFieldSnapshot(),
+        promptPrepared: preparePrompt,
         providerConfig,
         requestIdentity: this.resolveRequestIdentityPolicy(resolved, providerConfig),
       };

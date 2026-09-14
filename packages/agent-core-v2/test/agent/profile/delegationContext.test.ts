@@ -1,18 +1,13 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'pathe';
-
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_INDEPENDENT_DELEGATION_NOTICE,
-  DelegationFileError,
   injectDelegationContext,
   resolveDelegationPosition,
   resolveDelegationSnippet,
 } from '#/agent/profile/delegationContext';
 import { TASK_AGENT_ROLE_PREFIX } from '#/app/agentProfileCatalog/profile-shared';
-import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { AgentsConfigSchema } from '#/session/agentCollaboration/configSection';
 
 describe('resolveDelegationPosition', () => {
   it('classifies main, independent, and sub from agent id and delegator', () => {
@@ -45,95 +40,27 @@ describe('injectDelegationContext', () => {
 });
 
 describe('resolveDelegationSnippet', () => {
-  const pathClass = process.platform === 'win32' ? 'win32' : 'posix';
-  const fs = new HostFileSystem();
-  let homeDir: string;
-
-  beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'kimi-delegation-'));
+  it('accepts boolean gates and rejects the removed file-path form', () => {
+    expect(AgentsConfigSchema.safeParse({ delegation: { sub: false, independent: true } }).success).toBe(true);
+    expect(AgentsConfigSchema.safeParse({ delegation: { sub: 'delegation/sub.md' } }).success).toBe(false);
   });
 
-  afterEach(async () => {
-    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  it('returns no snippet for main, profile off, or a disabled slot', () => {
+    expect(resolveDelegationSnippet({ position: 'main' })).toBeUndefined();
+    expect(resolveDelegationSnippet({ position: 'sub', notice: 'off' })).toBeUndefined();
+    expect(resolveDelegationSnippet({ position: 'sub', config: { sub: false } })).toBeUndefined();
   });
 
-  it('returns no snippet for main, off, or a disabled slot', async () => {
-    await expect(
-      resolveDelegationSnippet({
-        position: 'main',
-        fs,
-        homeDir,
-        pathClass,
-      }),
-    ).resolves.toBeUndefined();
-    await expect(
-      resolveDelegationSnippet({
-        position: 'sub',
-        notice: 'off',
-        fs,
-        homeDir,
-        pathClass,
-      }),
-    ).resolves.toBeUndefined();
-    await expect(
-      resolveDelegationSnippet({
-        position: 'sub',
-        config: { sub: false },
-        fs,
-        homeDir,
-        pathClass,
-      }),
-    ).resolves.toBeUndefined();
-  });
-
-  it('uses the built-in TASK prefix and independent notice when config omits a slot', async () => {
-    await expect(
-      resolveDelegationSnippet({ position: 'sub', fs, homeDir, pathClass }),
-    ).resolves.toBe(TASK_AGENT_ROLE_PREFIX);
-    await expect(
-      resolveDelegationSnippet({ position: 'independent', fs, homeDir, pathClass }),
-    ).resolves.toBe(DEFAULT_INDEPENDENT_DELEGATION_NOTICE);
-  });
-
-  it('loads a declared home-relative file and fails closed when it is missing', async () => {
-    await mkdir(join(homeDir, 'delegation'));
-    await writeFile(join(homeDir, 'delegation/sub.md'), 'CUSTOM SUB\n');
-    await expect(
-      resolveDelegationSnippet({
-        position: 'sub',
-        config: { sub: 'delegation/sub.md' },
-        fs,
-        homeDir,
-        pathClass,
-      }),
-    ).resolves.toBe('CUSTOM SUB');
-    await expect(
-      resolveDelegationSnippet({
-        position: 'independent',
-        config: { independent: 'delegation/missing.md' },
-        fs,
-        homeDir,
-        pathClass,
-      }),
-    ).rejects.toMatchObject({ reason: 'missing', slot: 'independent' });
-    await expect(
-      resolveDelegationSnippet({
-        position: 'sub',
-        config: { sub: '/tmp/outside.md' },
-        fs,
-        homeDir,
-        pathClass,
-      }),
-    ).rejects.toBeInstanceOf(DelegationFileError);
-    await writeFile(join(homeDir, 'delegation/empty.md'), '   \n', 'utf-8');
-    await expect(
-      resolveDelegationSnippet({
-        position: 'sub',
-        config: { sub: 'delegation/empty.md' },
-        fs,
-        homeDir,
-        pathClass,
-      }),
-    ).rejects.toMatchObject({ reason: 'empty', slot: 'sub' });
+  it('uses built-in defaults and field overrides', () => {
+    expect(resolveDelegationSnippet({ position: 'sub' })).toBe(TASK_AGENT_ROLE_PREFIX);
+    expect(resolveDelegationSnippet({ position: 'independent' })).toBe(DEFAULT_INDEPENDENT_DELEGATION_NOTICE);
+    expect(resolveDelegationSnippet({
+      position: 'sub',
+      fields: { 'delegation.sub.notice': 'CUSTOM SUB' },
+    })).toBe('CUSTOM SUB');
+    expect(resolveDelegationSnippet({
+      position: 'independent',
+      fields: { 'delegation.independent.notice': 'CUSTOM INDEPENDENT' },
+    })).toBe('CUSTOM INDEPENDENT');
   });
 });

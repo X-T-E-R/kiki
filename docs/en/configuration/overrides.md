@@ -89,6 +89,12 @@ Thinking effort resolves in this order:
 
 A profile without `model_alias` skips only the top-level effort layer; it does not fail closed, and resolution continues with the next default layer. On a plain resume, omitting model parameters keeps the current binding. An alias resolving to the same canonical model is a no-op. Changing only `effort` keeps the saved model. Changing to a different canonical model without `effort` re-resolves effort for the new model; on resume, that model change still requires `allow_model_change: true`. Existing parameter validation and the external executor's own validation remain in force.
 
+## Prompt field precedence
+
+Prompt text fields use a separate five-surface chain rather than the ordinary CLI/config priority. From low to high, the order is global `[prompt.overrides]`, model `[models."<alias>".prompt_overrides]`, agent or `SYSTEM.md` frontmatter `prompt_overrides`, and the matching `model_profiles[].prompt_overrides`. `SYSTEM.md` uses the profile position in that chain, so there are four precedence levels and five supported configuration surfaces.
+
+Every surface accepts `files` and `fields`. Files are loaded from the Kiki home directory in listed order, then inline fields win within that surface. A field missing at a higher level inherits the lower value; values are never concatenated. See [`prompt`](./config-files.md#prompt) for the external-file schema, available field examples, turn snapshots, and migration from the removed `prompt.shared` / `prompt.tools` keys.
+
 ## Common scenarios
 
 **Isolated test environment** — use a separate data directory to avoid polluting the main config and sessions:

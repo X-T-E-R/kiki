@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { Readable, type Writable } from 'node:stream';
 
 import { createControlledPromise } from '@antfu/utils';
+import type { PromptOverrides } from '@kiki/agent-profiles/promptOverrides';
 import { expect, vi } from 'vitest';
 
 import { toDisposable } from '#/_base/di/lifecycle';
@@ -267,6 +268,7 @@ interface ModelConfigForConfig {
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
   readonly cognition?: CognitionConfig;
+  readonly promptOverrides?: PromptOverrides;
 }
 
 interface ProviderConfigForConfig {

@@ -8,8 +8,8 @@ export const AgentsConfigSchema = z.object({
   enabled: z.boolean().optional(),
   delegation: z
     .object({
-      sub: z.union([z.string().min(1), z.literal(false)]).optional(),
-      independent: z.union([z.string().min(1), z.literal(false)]).optional(),
+      sub: z.boolean().optional(),
+      independent: z.boolean().optional(),
     })
     .strict()
     .optional(),

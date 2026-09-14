@@ -1,5 +1,7 @@
+import SUBAGENT_NOTICE_DEFAULT from './delegation-sub-notice.md?raw';
 import { renderPrompt } from './renderPrompt';
 import { customPromptVariables } from './promptConfig';
+import { applySystemPromptFields } from './systemPromptFields';
 
 import {
   type AgentProfile,
@@ -8,13 +10,7 @@ import {
   type SystemPromptRenderResult,
 } from './agentProfile';
 
-import SYSTEM_PROMPT_TEMPLATE from './system.md?raw';
-
-export const TASK_AGENT_ROLE_PREFIX =
-  'You are now running as a subagent. All the `user` messages are sent by the main agent. ' +
-  'The main agent cannot see your context, it can only see your last message when you finish the task. ' +
-  'You must treat the parent agent as your caller. Do not directly ask the end user questions. ' +
-  'If something is unclear, explain the ambiguity in your final summary to the parent agent.';
+export const TASK_AGENT_ROLE_PREFIX = SUBAGENT_NOTICE_DEFAULT;
 
 export function skillActiveFor(tools: readonly string[]): boolean {
   return tools.includes('Skill');
@@ -137,12 +133,13 @@ export function renderSystemPromptResult(
   context: AgentProfileContext,
   options: { readonly skillActive: boolean },
 ): SystemPromptRenderResult {
+  const template = applySystemPromptFields(context.promptFields);
   return {
-    text: renderPrompt(SYSTEM_PROMPT_TEMPLATE, {
+    text: renderPrompt(template, {
       ...systemPromptVars(context, options),
       role_additional: roleAdditional,
     }),
-    environment: environmentForTemplate(SYSTEM_PROMPT_TEMPLATE, context),
+    environment: environmentForTemplate(template, context),
   };
 }
 

@@ -191,6 +191,7 @@ export interface IAgentProfileService {
   isRunnable(): boolean;
   hasProvider(): boolean;
   getSystemPrompt(): string;
+  getPromptFieldSnapshot(options?: { readonly anchor?: boolean }): import('#/app/promptField/promptFieldRegistry').ResolvedPromptFieldOverrides;
   getActiveToolNames(): readonly string[] | undefined;
   addActiveTool(name: string): void;
   removeActiveTool(name: string): void;

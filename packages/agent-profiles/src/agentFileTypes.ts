@@ -6,6 +6,7 @@ import type {
   ServiceTier,
 } from './agentProfile';
 import type { SkippedAgentFile } from './agentProfileContribution';
+import type { PromptOverrides } from './promptOverrides';
 import type { AgentProfileDiagnostic } from './scopedAgentProfile';
 import type { SpawnConstraints, SubagentLease, SourceSubagentLease } from './subagentLease';
 
@@ -44,6 +45,7 @@ export interface AgentFileDefinition {
   readonly modelProfiles?: readonly AgentModelProfile[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
+  readonly promptOverrides?: PromptOverrides;
   readonly systemPromptMode?: AgentSystemPromptMode;
   readonly prompt: string;
   readonly path: string;

@@ -1422,7 +1422,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'subagents', cardId: 'st-card-subagent-release-idle', titleKey: 'st.experimental.subagentIdle', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['release idle', '空闲实例'] },
   { section: 'automation', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: ['st.tools.allowlist', 'st.tools.followAgent'], synonyms: ['allowlist', '白名单'] },
   { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.mainAgents.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin'], synonyms: ['主 agent'] },
-  { section: 'agents', cardId: 'st-card-prompt-config', titleKey: 'st.prompt.title', keywordKeys: ['st.prompt.hint', 'st.prompt.variables', 'st.prompt.tools'], synonyms: ['shared prompt', '共享提示', 'prompt variables', '提示变量'] },
+  { section: 'agents', cardId: 'st-card-prompt-config', titleKey: 'st.prompt.title', keywordKeys: ['st.prompt.hint', 'st.prompt.variables', 'st.prompt.fields'], synonyms: ['prompt fields', '提示词字段', 'prompt variables', '提示变量'] },
   { section: 'agents', cardId: 'st-card-agent-profile-routes', titleKey: 'st.experimental.agentRoutes', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['profile routes', '配置路由'] },
   { section: 'automation', cardId: 'st-card-tool-experiments', titleKey: 'st.experimental.toolsTitle', keywordKeys: ['st.experimental.taskWait'], synonyms: ['tool-select', 'task_wait', 'TaskWait', '按需加载'] },
   { section: 'automation', cardId: 'st-card-hooks', titleKey: 'st.hooks.title', keywordKeys: ['st.hooks.hint'], synonyms: ['hooks', '钩子'] },

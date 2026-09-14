@@ -239,6 +239,21 @@ describe('loadSystemMdProfile', () => {
     expect(profile?.systemPrompt({})).toBe('no description');
   });
 
+  it('loads upgraded SYSTEM.md in inherit mode without a body', async () => {
+    await writeFile(
+      join(home, SYSTEM_MD_FILENAME),
+      '---\nsystem_prompt_mode: inherit\nprompt_overrides:\n  fields:\n    system.language: concise\n---\n',
+    );
+    const { warn } = collectWarnings();
+
+    const profile = await loadProfile(hostFs, BUILTIN_DEFAULT, warn);
+
+    expect(profile?.systemPromptMode).toBe('inherit');
+    expect(profile?.promptOverrides).toEqual({ fields: { 'system.language': 'concise' } });
+    expect(profile?.fileDefinition).toMatchObject({ prompt: '', systemPromptMode: 'inherit' });
+    expect(profile?.systemPrompt({})).toBe('BUILTIN PROMPT');
+  });
+
   it('treats a SYSTEM.md whose frontmatter is not a mapping as a legacy prompt', async () => {
     await writeFile(join(home, SYSTEM_MD_FILENAME), '---\n- listed\n---\nlegacy body\n');
     const { warnings, warn } = collectWarnings();
