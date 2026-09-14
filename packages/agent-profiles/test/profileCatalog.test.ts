@@ -167,16 +167,23 @@ describe('projectAgentProfileCatalog', () => {
     expect(result.profiles.get('writer')?.systemPrompt({})).toBe('LOWER');
   });
 
-  it('rejects inherit when no lower-priority same-name profile exists', () => {
+  it('warns and skips inherit without a base while preserving other profiles', () => {
+    const builtin = profile('agent');
+    const reviewer = profile('reviewer');
     const inherited = normalizeAgentProfile({
       name: 'writer',
       systemPromptMode: 'inherit',
       promptOverrides: { fields: { 'system.language': 'upper' } },
       systemPrompt: () => 'UNRESOLVED',
     });
-    expect(() => project([
-      { sourceId: 'workspace', priority: 30, contribution: { profiles: [inherited] } },
-    ])).toThrow(/no lower-priority base profile/);
+    const { result, warnings } = project([
+      { sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID, priority: 0, contribution: { profiles: [builtin] } },
+      { sourceId: 'workspace', priority: 30, contribution: { profiles: [inherited, reviewer] } },
+    ]);
+    expect(result.profiles.get('agent')).toBe(builtin);
+    expect(result.profiles.get('reviewer')).toBe(reviewer);
+    expect(result.profiles.has('writer')).toBe(false);
+    expect(warnings).toContainEqual(expect.stringMatching(/writer.*no lower-priority base profile/));
   });
 
   it('projects routes and reports a missing route base', () => {

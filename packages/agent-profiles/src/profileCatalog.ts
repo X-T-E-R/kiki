@@ -136,7 +136,14 @@ export function projectAgentProfileCatalog(input: {
         });
         continue;
       }
-      const profile = resolveInheritedCandidate(candidates, candidateIndex, builtinBase);
+      let profile: AgentProfile;
+      try {
+        profile = resolveInheritedCandidate(candidates, candidateIndex, builtinBase);
+      } catch (error) {
+        if (!(error instanceof AgentProfileInheritanceError)) throw error;
+        input.warn(`agent file profile "${candidate.profile.name}" ignored: ${error.message}`);
+        continue;
+      }
       if (input.disabledNamedProfiles.has(profile.name)) {
         defaultBindingProfile = profile;
         publicProfiles.delete(profile.name);

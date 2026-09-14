@@ -76,9 +76,9 @@ export function applySystemPromptFields(fields: Readonly<Record<string, string>>
   let template = SYSTEM_PROMPT_TEMPLATE;
   for (const field of sectionDefaults) {
     const override = fields?.[field.id];
-    if (override !== undefined) template = template.replace(field.value, override);
+    if (override !== undefined) template = template.replace(field.value, () => override);
   }
   const replyStyle = fields?.[SYSTEM_PROMPT_FIELD_IDS.replyStyle];
-  if (replyStyle !== undefined) template = template.replace('${reply_style_guide}', replyStyle);
+  if (replyStyle !== undefined) template = template.replace('${reply_style_guide}', () => replyStyle);
   return template;
 }

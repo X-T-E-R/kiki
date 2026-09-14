@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PromptConfigSchema, RESERVED_PROMPT_VARIABLES } from '#/promptConfig';
 import { renderPrompt } from '#/renderPrompt';
+import { applySystemPromptFields } from '#/systemPromptFields';
 import SYSTEM_PROMPT_TEMPLATE from '../src/system.md?raw';
 
 import {
@@ -354,6 +355,19 @@ describe('renderSystemPromptResult', () => {
     expect(prompt).toContain('CUSTOM LANGUAGE');
     expect(prompt).toContain(`CUSTOM STYLE ${DEFAULT_REPLY_STYLE_GUIDE}`);
     expect(prompt).toContain('CUSTOM CODING');
+    expect(prompt).not.toContain("Write in the user's language");
+  });
+
+  it.each(['$&', "$'", "$'\n'"])('treats %s literally in section and reply-style replacements', (literal) => {
+    const language = `# Language\n\nLITERAL ${literal}`;
+    const replyStyle = `STYLE ${literal}`;
+    const prompt = applySystemPromptFields({
+      'system.language': language,
+      'system.reply_style': replyStyle,
+    });
+    expect(prompt.split(language)).toHaveLength(2);
+    expect(prompt.split(replyStyle)).toHaveLength(2);
+    expect(prompt.split('# Ultimate Reminders')).toHaveLength(2);
     expect(prompt).not.toContain("Write in the user's language");
   });
 

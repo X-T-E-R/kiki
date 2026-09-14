@@ -6,6 +6,7 @@ import { renderPrompt } from '@kiki/agent-profiles/renderPrompt';
 
 import AGENT_DESCRIPTION_BASE from '../../agent/tools/agent/agent.md?raw';
 import ASK_USER_DESCRIPTION_BASE from '../../agent/tools/ask-user-question/ask-user.md?raw';
+import { MAX_MEDIA_MEGABYTES } from '../../agent/tools/read-media-file/read-media-file';
 import READ_MEDIA_DESCRIPTION_BASE from '../../agent/tools/read-media-file/read-media.md?raw';
 import WEB_SEARCH_DESCRIPTION_BASE from '../../agent/tools/web-search/web-search.md?raw';
 import FETCH_URL_DESCRIPTION_BASE from '../../agent/tools/fetch-url/fetch-url.md?raw';
@@ -59,7 +60,7 @@ const STATIC_TOOL_FIELDS = [
 const TOOL_DESCRIPTION_PREFIXES: Readonly<Record<string, string>> = {
   'agent-run': AGENT_DESCRIPTION_BASE,
   'ask-user-question': ASK_USER_DESCRIPTION_BASE,
-  'read-media-file': READ_MEDIA_DESCRIPTION_BASE,
+  'read-media-file': renderPrompt(READ_MEDIA_DESCRIPTION_BASE, { MAX_MEDIA_MEGABYTES }),
   'web-search': WEB_SEARCH_DESCRIPTION_BASE,
   'fetch-url': FETCH_URL_DESCRIPTION_BASE,
 };

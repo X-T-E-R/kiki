@@ -102,9 +102,17 @@ function makeCatalog(
   workspaceKey: string = WORKSPACE_KEY,
   disabled: readonly string[] = [],
   disabledNamed: readonly string[] = [],
+  initialRecords: readonly AgentProfileContributionRecord[] = [],
 ) {
   const container = new InstantiationService(new ServiceCollection(), true);
   const registry = container.createInstance(AgentProfileRegistryService);
+  const install = (record: AgentProfileContributionRecord): IDisposable => {
+    const child = container.createChild(new ServiceCollection()) as InstantiationService;
+    child.provide(IContributor, new SyncDescriptor(Contributor, [record] as never));
+    child.invokeFunction((accessor) => accessor.get(IContributor));
+    return child;
+  };
+  for (const record of initialRecords) install(record);
   const config = configStub(disabled, disabledNamed);
   const warnings: string[] = [];
   const log = stubLog();
@@ -120,18 +128,12 @@ function makeCatalog(
     sourceId: string,
     profiles: readonly AgentProfile[],
     options?: { readonly priority?: number; readonly workspaceKey?: string },
-  ): IDisposable => {
-    const child = container.createChild(new ServiceCollection()) as InstantiationService;
-    const contributionRecord: AgentProfileContributionRecord = {
-      sourceId,
-      priority: options?.priority,
-      workspaceKey: options?.workspaceKey,
-      contribution: { profiles },
-    };
-    child.provide(IContributor, new SyncDescriptor(Contributor, [contributionRecord] as never));
-    child.invokeFunction((accessor) => accessor.get(IContributor));
-    return child;
-  };
+  ): IDisposable => install({
+    sourceId,
+    priority: options?.priority,
+    workspaceKey: options?.workspaceKey,
+    contribution: { profiles },
+  });
   return { container, registry, catalog, config, warnings, contribute };
 }
 
@@ -233,6 +235,36 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
         },
       ],
     });
+    catalog.dispose();
+    container.dispose();
+  });
+
+  it('keeps the builtin bind candidate when the first projection contains invalid inherit', () => {
+    const builtinProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
+    const inherited = normalizeAgentProfile({
+      name: 'writer',
+      systemPromptMode: 'inherit',
+      promptOverrides: { fields: { 'system.language': 'upper' } },
+      systemPrompt: () => 'UNRESOLVED',
+    });
+    const { container, catalog, warnings } = makeCatalog(WORKSPACE_KEY, [], [], [
+      {
+        sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID,
+        priority: AGENT_PROFILE_SOURCE_PRIORITY.builtin,
+        contribution: { profiles: [builtinProfile] },
+      },
+      {
+        sourceId: 'workspace',
+        priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
+        workspaceKey: WORKSPACE_KEY,
+        contribution: { profiles: [inherited] },
+      },
+    ]);
+
+    expect(catalog.getDefault()).toBe(builtinProfile);
+    expect(catalog.resolveSelection({ profile: DEFAULT_AGENT_PROFILE_NAME }).profile).toBe(builtinProfile);
+    expect(catalog.get('writer')).toBeUndefined();
+    expect(warnings).toContainEqual(expect.stringMatching(/writer.*no lower-priority base profile/));
     catalog.dispose();
     container.dispose();
   });

@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import AGENT_DESCRIPTION_BASE from '../../../src/agent/tools/agent/agent.md?raw';
+import READ_MEDIA_DESCRIPTION_BASE from '../../../src/agent/tools/read-media-file/read-media.md?raw';
+
+import { MAX_MEDIA_MEGABYTES } from '#/agent/tools/read-media-file/read-media-file';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { createDecorator } from '#/_base/di/instantiation';
@@ -146,6 +149,16 @@ describe('PromptFieldRegistryService', () => {
       fields: [],
     });
     expect(rendered).toBe('CUSTOM AGENT\n\nDYNAMIC PROFILE LIST\n\nUser-configured guidance:\nCUSTOM GUIDANCE');
+  });
+
+  it('preserves ReadMediaFile capability lines after replacing its rendered static head', () => {
+    const head = READ_MEDIA_DESCRIPTION_BASE.replace('${MAX_MEDIA_MEGABYTES}', () => String(MAX_MEDIA_MEGABYTES));
+    const capability = '- Video files are not supported by the current model.';
+    const rendered = applyToolPromptFields('ReadMediaFile', `${head}\n${capability}`, {
+      values: { 'tool.read-media-file.description': 'CUSTOM MEDIA' },
+      fields: [],
+    });
+    expect(rendered).toBe(`CUSTOM MEDIA\n${capability}`);
   });
 
   it('aggregates static registrations and rejects duplicate ids', () => {

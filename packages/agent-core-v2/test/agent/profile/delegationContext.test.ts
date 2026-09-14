@@ -28,6 +28,13 @@ describe('injectDelegationContext', () => {
     );
   });
 
+  it.each(['$&', "$'", "$'\n'"])('inserts user notice text containing %s literally', (literal) => {
+    const notice = `NOTICE ${literal}`;
+    expect(injectDelegationContext('HEAD\n${delegation_context}\nTAIL', notice)).toBe(
+      `HEAD\n${notice}\nTAIL`,
+    );
+  });
+
   it('prepends when the template does not have the token', () => {
     expect(injectDelegationContext('BODY', 'NOTICE')).toBe('NOTICE\n\nBODY');
   });

@@ -34,7 +34,7 @@ export function injectDelegationContext(text: string, snippet: string | undefine
     return text.replaceAll(DELEGATION_CONTEXT_TOKEN, '').replace(/\n{3,}/g, '\n\n');
   }
   if (text.includes(DELEGATION_CONTEXT_TOKEN)) {
-    return text.replaceAll(DELEGATION_CONTEXT_TOKEN, snippet);
+    return text.replaceAll(DELEGATION_CONTEXT_TOKEN, () => snippet);
   }
   return `${snippet}\n\n${text}`;
 }
