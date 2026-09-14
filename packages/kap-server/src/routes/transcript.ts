@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { ErrorCode } from '../protocol/error-codes';
 import { defineRoute } from '../middleware/defineRoute';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { readSessionViewTranscriptCatchUp, readSessionViewTranscriptPage } from '../transport/klient/sessionViewReads';
 
@@ -30,6 +31,16 @@ interface TranscriptRouteHost {
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
+}
+
+type ReplyCloseSource = Parameters<typeof withReplyCloseSignal>[0];
+
+interface RouteReply {
+  send(payload: unknown): unknown;
+}
+
+function replySignalSource(reply: RouteReply): ReplyCloseSource {
+  return reply as unknown as ReplyCloseSource;
 }
 
 const sessionIdParamSchema = z.object({
@@ -121,12 +132,15 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
     async (req, reply) => {
       const { session_id } = req.params;
       const query = req.query;
-      const data = await readSessionViewTranscriptPage(transcriptService, session_id, {
-        agentId: query.agent_id,
-        beforeTurn: query.before_turn,
-        afterTurn: query.after_turn,
-        pageSize: query.page_size,
-      });
+      const data = await withReplyCloseSignal(replySignalSource(reply), (signal) =>
+        readSessionViewTranscriptPage(transcriptService, session_id, {
+          agentId: query.agent_id,
+          beforeTurn: query.before_turn,
+          afterTurn: query.after_turn,
+          pageSize: query.page_size,
+          signal,
+        }),
+      );
       if (data === undefined) {
         sendSessionNotFound(reply, req.id, session_id);
         return;
@@ -207,27 +221,36 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         return;
       }
 
-      const roster = await transcriptService.readColdRoster(session_id);
-      if (roster === undefined) {
+      const agents = await withReplyCloseSignal(replySignalSource(reply), async (signal) => {
+        const roster = await transcriptService.readColdRoster(session_id);
+        signal.throwIfAborted();
+        if (roster === undefined) return undefined;
+        const agentIds = agent_id !== undefined ? [agent_id] : roster.map((d) => d.agentId);
+        if (agent_id === undefined && !agentIds.includes(MAIN_AGENT_ID)) {
+          agentIds.unshift(MAIN_AGENT_ID);
+        }
+        const projected: ({
+          agent_id: string;
+        } & ReturnType<typeof projectUserMessages>)[] = [];
+        for (const agentId of agentIds) {
+          const snapshot = await transcriptService.readColdSnapshot(
+            session_id,
+            agentId,
+            undefined,
+            signal,
+          );
+          if (snapshot === undefined) return undefined;
+          const byId = new Map(snapshot.attachments.map((a) => [a.attachmentId, a]));
+          projected.push({
+            agent_id: agentId,
+            ...projectUserMessages(snapshot.items, (id) => byId.get(id)),
+          });
+        }
+        return projected;
+      });
+      if (agents === undefined) {
         sendSessionNotFound(reply, req.id, session_id);
         return;
-      }
-      const agentIds = agent_id !== undefined ? [agent_id] : roster.map((d) => d.agentId);
-      if (agent_id === undefined && !agentIds.includes(MAIN_AGENT_ID)) {
-        agentIds.unshift(MAIN_AGENT_ID);
-      }
-      const agents = [];
-      for (const agentId of agentIds) {
-        const snapshot = await transcriptService.readColdSnapshot(session_id, agentId);
-        if (snapshot === undefined) {
-          sendSessionNotFound(reply, req.id, session_id);
-          return;
-        }
-        const byId = new Map(snapshot.attachments.map((a) => [a.attachmentId, a]));
-        agents.push({
-          agent_id: agentId,
-          ...projectUserMessages(snapshot.items, (id) => byId.get(id)),
-        });
       }
       reply.send(okEnvelope({ agents }, req.id));
     },
@@ -276,7 +299,9 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         return;
       }
 
-      const snapshot = await transcriptService.readColdSnapshot(session_id, agent_id);
+      const snapshot = await withReplyCloseSignal(replySignalSource(reply), (signal) =>
+        transcriptService.readColdSnapshot(session_id, agent_id, undefined, signal),
+      );
       if (snapshot === undefined) {
         sendSessionNotFound(reply, req.id, session_id);
         return;

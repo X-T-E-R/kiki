@@ -7,6 +7,7 @@ import {
 import { RPCError, type KlientFrame } from '@kiki/klient/host';
 import type { FastifyInstance } from 'fastify';
 import { okEnvelope } from '../../protocol/envelope';
+import { withReplyCloseSignal } from '../../procedures/requestSignal';
 import { assembleSnapshot, SnapshotNotFoundError } from '../../routes/snapshot';
 import type { TranscriptService } from '../../services/transcript/transcriptService';
 import type { SessionEventBroadcaster } from '../ws/v1/sessionEventBroadcaster';
@@ -43,7 +44,9 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
     });
     if (!parsed.success) return reply.send({ code: 40001, msg: 'invalid transcript page input', data: null, request_id: req.id });
     const { sessionId } = req.params as { sessionId: string };
-    const data = await readSessionViewTranscriptPage(service, sessionId, parsed.data);
+    const data = await withReplyCloseSignal(reply, (signal) =>
+      readSessionViewTranscriptPage(service, sessionId, { ...parsed.data, signal }),
+    );
     return reply.send(data === undefined
       ? { code: 40401, msg: `session not found: ${sessionId}`, data: null, request_id: req.id }
       : okEnvelope(data, req.id));

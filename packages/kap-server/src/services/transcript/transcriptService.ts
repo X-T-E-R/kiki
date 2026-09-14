@@ -33,9 +33,16 @@ import {
 import {
   bindSessionTranscript,
   descriptorFromMeta,
-  readWireRecordsWithCompleteness,
+  streamWireRecords,
+  WIRE_COLD_READ_MAX_BYTES,
+  WIRE_COLD_READ_MAX_LINE_BYTES,
+  WIRE_COLD_READ_MAX_RECORDS,
+  WIRE_READ_CHUNK_BYTES,
   type TranscriptBinding,
   type TranscriptBindingLogger,
+  type WireRecordsIncompleteReason,
+  type WireRecordsStreamOptions,
+  type WireRecordsStreamResult,
 } from '@kiki/transcript-live';
 
 import {
@@ -62,6 +69,13 @@ export interface TranscriptToolCallCountLimits {
   readonly readChunkBytes?: number;
 }
 
+export interface TranscriptColdReadLimits {
+  readonly maxBytes?: number;
+  readonly maxRecords?: number;
+  readonly maxLineBytes?: number;
+  readonly chunkBytes?: number;
+}
+
 export interface TranscriptServiceDeps {
   readonly homeDir: string;
   readonly core: Scope;
@@ -72,6 +86,11 @@ export interface TranscriptServiceDeps {
     fileSize: number,
     options: BoundedWireScanOptions,
   ) => Promise<number>;
+  readonly coldReadLimits?: TranscriptColdReadLimits;
+  readonly wireRecordReader?: (
+    wirePath: string,
+    options: WireRecordsStreamOptions,
+  ) => Promise<WireRecordsStreamResult>;
 }
 
 interface LiveEntry {
@@ -125,6 +144,13 @@ interface AgentOpsJournal {
   batches: { seq: number; ops: TranscriptOperation[] }[];
 }
 
+interface ColdSnapshotFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<AgentTranscriptSnapshot | undefined>;
+  waiters: number;
+  settled: boolean;
+}
+
 type TranscriptOpsListener = (event: TranscriptChangeEvent, cursor: TranscriptCursor) => void;
 
 export const TRANSCRIPT_OPS_JOURNAL_CAPACITY = 2000;
@@ -148,6 +174,9 @@ export class TranscriptService {
   private readonly persistedToolCallReads = new Map<string, Promise<ToolCallReadResult>>();
   private readonly persistedToolCallPins = new Map<string, number>();
   private readonly toolCallCountReader: NonNullable<TranscriptServiceDeps['toolCallCountReader']>;
+  private readonly coldReadLimits: Required<TranscriptColdReadLimits>;
+  private readonly wireRecordReader: NonNullable<TranscriptServiceDeps['wireRecordReader']>;
+  private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
 
   constructor(private readonly deps: TranscriptServiceDeps) {
     this.toolCallCountReader = deps.toolCallCountReader ?? readWireRecordsBounded;
@@ -158,6 +187,14 @@ export class TranscriptService {
       maxCacheEntries: nonNegativeLimit(limits?.maxCacheEntries, DEFAULT_TOOL_CALL_COUNT_CACHE_ENTRIES),
       maxCacheBytes: nonNegativeLimit(limits?.maxCacheBytes, DEFAULT_TOOL_CALL_COUNT_CACHE_BYTES),
       readChunkBytes: positiveLimit(limits?.readChunkBytes, DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES),
+    };
+    this.wireRecordReader = deps.wireRecordReader ?? streamWireRecords;
+    const coldReadLimits = deps.coldReadLimits;
+    this.coldReadLimits = {
+      maxBytes: nonNegativeLimit(coldReadLimits?.maxBytes, WIRE_COLD_READ_MAX_BYTES),
+      maxRecords: nonNegativeLimit(coldReadLimits?.maxRecords, WIRE_COLD_READ_MAX_RECORDS),
+      maxLineBytes: nonNegativeLimit(coldReadLimits?.maxLineBytes, WIRE_COLD_READ_MAX_LINE_BYTES),
+      chunkBytes: positiveLimit(coldReadLimits?.chunkBytes, WIRE_READ_CHUNK_BYTES),
     };
     followSessionLifecycles(deps.core.accessor, (service) => {
       const d1 = service.onDidCloseSession(({ sessionId }) => this.dropSession(sessionId));
@@ -796,6 +833,17 @@ export class TranscriptService {
     );
   }
 
+  private logColdReadFence(
+    sessionId: string,
+    agentId: string,
+    reason: WireRecordsIncompleteReason | 'unknown',
+  ): void {
+    this.deps.logger?.warn(
+      { sessionId, agentId, reason, ...this.coldReadLimits },
+      'transcript: history snapshot unavailable (wire read fence tripped)',
+    );
+  }
+
   private async historyFailureChanged(
     sessionId: string,
     agentId: string,
@@ -859,14 +907,84 @@ export class TranscriptService {
 
   /**
    * Rebuild one agent's transcript snapshot for a cold session from its
-   * persisted wire records. Returns `undefined` when the session is unknown to
-   * the index; a known session without readable wire records yields an empty
-   * snapshot with an unknown tool-call count.
+   * persisted wire records, streaming the wire under the cold-read fences.
+   * Cold reads of the same session and agent that carry no `preserveOpenTurnIds`
+   * share a single wire scan (that callback decides the projection, so callers
+   * with one keep their own scan), and a shared scan is cancelled as soon as no
+   * caller is left waiting for it.
+   *
+   * A tripped fence (`byte_budget` / `record_budget` / `line_budget`) is a read
+   * failure, not a shorter history: the caller gets the unreadable-history
+   * answer, never a wire prefix presented as a full transcript. A truncated
+   * tail still answers with the readable prefix and an unknown tool-call count,
+   * which is the historical shape. Returns `undefined` when the session is
+   * unknown to the index.
    */
   async readColdSnapshot(
     sessionId: string,
     agentId: string = MAIN_AGENT_ID,
     preserveOpenTurnIds?: () => readonly string[],
+    signal?: AbortSignal,
+  ): Promise<AgentTranscriptSnapshot | undefined> {
+    signal?.throwIfAborted();
+    if (preserveOpenTurnIds !== undefined) {
+      return this.loadColdSnapshot(
+        sessionId,
+        agentId,
+        preserveOpenTurnIds,
+        signal ?? new AbortController().signal,
+      );
+    }
+    const key = `${sessionId}\0${agentId}`;
+    let flight = this.coldSnapshotFlights.get(key);
+    if (flight === undefined || flight.controller.signal.aborted) {
+      const controller = new AbortController();
+      let created!: ColdSnapshotFlight;
+      const promise = Promise.resolve()
+        .then(() => this.loadColdSnapshot(sessionId, agentId, undefined, controller.signal))
+        .finally(() => {
+          created.settled = true;
+          if (this.coldSnapshotFlights.get(key) === created) this.coldSnapshotFlights.delete(key);
+        });
+      created = { controller, promise, waiters: 0, settled: false };
+      flight = created;
+      this.coldSnapshotFlights.set(key, flight);
+    }
+    return this.awaitColdSnapshot(flight, signal);
+  }
+
+  private async awaitColdSnapshot(
+    flight: ColdSnapshotFlight,
+    signal?: AbortSignal,
+  ): Promise<AgentTranscriptSnapshot | undefined> {
+    signal?.throwIfAborted();
+    flight.waiters += 1;
+    let onAbort: (() => void) | undefined;
+    try {
+      if (signal === undefined) return await flight.promise;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => {
+          reject(signal.reason ?? new DOMException('The request was aborted', 'AbortError'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return await Promise.race([flight.promise, aborted]);
+    } finally {
+      if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
+      flight.waiters -= 1;
+      if (flight.waiters === 0 && !flight.settled) {
+        flight.controller.abort(
+          new DOMException('No cold transcript snapshot readers remain', 'AbortError'),
+        );
+      }
+    }
+  }
+
+  private async loadColdSnapshot(
+    sessionId: string,
+    agentId: string,
+    preserveOpenTurnIds: (() => readonly string[]) | undefined,
+    signal: AbortSignal,
   ): Promise<AgentTranscriptSnapshot | undefined> {
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
     if (summary === undefined) return undefined;
@@ -880,33 +998,47 @@ export class TranscriptService {
       agentId,
       WIRE_FILE,
     );
-    let records: Awaited<ReturnType<typeof readWireRecordsWithCompleteness>>;
+    const transcript = new AgentTranscript(agentId);
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter(agentId, {
+      turn: (turnId) => transcript.getTurn(turnId),
+      tool: (toolCallId) => {
+        for (const item of transcript.getItems()) {
+          if (item.kind !== 'turn') continue;
+          for (const step of item.steps) {
+            const frame = step.frames.find(
+              (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+            );
+            if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
+          }
+        }
+        return undefined;
+      },
+      task: (taskId) => transcript.getTask(taskId),
+    });
+    let complete: boolean;
     try {
-      records = await readWireRecordsWithCompleteness(wirePath);
+      const read = await this.wireRecordReader(wirePath, {
+        chunkBytes: this.coldReadLimits.chunkBytes,
+        maxBytes: this.coldReadLimits.maxBytes,
+        maxRecords: this.coldReadLimits.maxRecords,
+        maxLineBytes: this.coldReadLimits.maxLineBytes,
+        signal,
+        onRecord: (record) => reducer.apply(adapter.add(record)),
+      });
+      if (!read.complete && read.incompleteReason !== 'partial_tail') {
+        this.logColdReadFence(sessionId, agentId, read.incompleteReason ?? 'unknown');
+        return unknownSnapshot();
+      }
+      complete = read.complete;
     } catch (error) {
+      if (signal.aborted) {
+        throw signal.reason ?? new DOMException('The cold transcript read was aborted', 'AbortError');
+      }
       this.logTranscriptFailure(sessionId, agentId, error);
       return unknownSnapshot();
     }
     try {
-      const transcript = new AgentTranscript(agentId);
-      const reducer = new TranscriptFactReducer(transcript);
-      const adapter = new TranscriptWireAdapter(agentId, {
-        turn: (turnId) => transcript.getTurn(turnId),
-        tool: (toolCallId) => {
-          for (const item of transcript.getItems()) {
-            if (item.kind !== 'turn') continue;
-            for (const step of item.steps) {
-              const frame = step.frames.find(
-                (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
-              );
-              if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
-            }
-          }
-          return undefined;
-        },
-        task: (taskId) => transcript.getTask(taskId),
-      });
-      for (const record of records.records) reducer.apply(adapter.add(record));
       const preservedTurns: TranscriptTurn[] = [];
       for (const turnId of preserveOpenTurnIds?.() ?? []) {
         const candidate = transcript.getTurn(turnId);
@@ -915,7 +1047,7 @@ export class TranscriptService {
       reducer.apply(adapter.finish());
       for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
       const snapshot = transcript.snapshot();
-      return records.complete
+      return complete
         ? knownSnapshot(snapshot, countToolCallFrames(snapshot.items))
         : { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false };
     } catch (error) {

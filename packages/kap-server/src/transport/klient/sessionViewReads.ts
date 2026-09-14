@@ -11,7 +11,13 @@ import type { TranscriptService } from '../../services/transcript/transcriptServ
 export async function readSessionViewTranscriptPage(
   transcriptService: TranscriptService,
   sessionId: string,
-  input: { readonly agentId: string; readonly beforeTurn?: string; readonly afterTurn?: string; readonly pageSize?: number },
+  input: {
+    readonly agentId: string;
+    readonly beforeTurn?: string;
+    readonly afterTurn?: string;
+    readonly pageSize?: number;
+    readonly signal?: AbortSignal;
+  },
 ): Promise<TranscriptResponse | undefined> {
   const pageQuery = { beforeTurn: input.beforeTurn, afterTurn: input.afterTurn, pageSize: input.pageSize ?? 20 };
   const store = transcriptService.forSessionLive(sessionId);
@@ -35,7 +41,7 @@ export async function readSessionViewTranscriptPage(
       coverage: coverageForItems(page.items, page.hasMore),
     } as unknown as TranscriptResponse;
   }
-  const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId);
+  const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
   if (snapshot === undefined) return undefined;
   const page = paginateTurns(snapshot.items, pageQuery);
   const roster = (await transcriptService.readColdRoster(sessionId)) ?? [];

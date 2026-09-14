@@ -1,5 +1,6 @@
 import { appendFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import * as fsPromises from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,7 +42,7 @@ import {
 } from '@kiki/transcript';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { LiveAdapterBusEvent } from '@kiki/transcript-live';
+import { streamWireRecords, type LiveAdapterBusEvent } from '@kiki/transcript-live';
 
 import {
   TranscriptService,
@@ -50,6 +51,7 @@ import {
   TRANSCRIPT_OPS_JOURNAL_CAPACITY,
 } from '../../src/services/transcript/transcriptService';
 import { readWireRecordsBounded } from '../../src/services/transcript/boundedWireScan';
+import { registerTranscriptRoutes } from '../../src/routes/transcript';
 
 vi.mock('node:fs/promises', { spy: true });
 
@@ -73,6 +75,21 @@ function measuredReader(metrics: { reads: number; bytes: number }): NonNullable<
 
 class TestSessionStateService extends StateRegistry implements ISessionStateService {
   declare readonly _serviceBrand: undefined;
+}
+
+function coldCore(): Scope {
+  return {
+    accessor: {
+      get: (token: unknown) => {
+        if (token === ISessionManager) return { get: () => undefined, list: () => [] };
+        if (token === IWorkspaceInstanceManager) {
+          return { list: () => [], onDidChange: () => ({ dispose: () => undefined }) };
+        }
+        if (token === ISessionIndex) return { get: async () => ({ workspaceId: 'ws' }) };
+        return undefined;
+      },
+    },
+  } as unknown as Scope;
 }
 
 function turnOps(turnId: string, items: ReturnType<AgentTranscript['getItems']>): TranscriptTurn {
@@ -1528,6 +1545,388 @@ describe('TranscriptService live integration', () => {
     } finally {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
+  });
+
+  describe('cold snapshot reads', () => {
+    it('shares one wire scan across concurrent cold reads of the same agent', async () => {
+      const home = await seedWireHomeWithTool();
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const scans: string[] = [];
+      let gated = false;
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+        wireRecordReader: async (wirePath, options) => {
+          scans.push(wirePath);
+          if (!gated) {
+            gated = true;
+            entered();
+            await gate;
+          }
+          return streamWireRecords(wirePath, options);
+        },
+      });
+      try {
+        const first = service.readColdSnapshot('s1', 'main');
+        await started;
+        const second = service.readColdSnapshot('s1', 'main');
+        const third = service.readColdSnapshot('s1', 'main');
+        release();
+        const [firstSnapshot, secondSnapshot, thirdSnapshot] = await Promise.all([
+          first,
+          second,
+          third,
+        ]);
+        expect(scans).toHaveLength(1);
+        expect(secondSnapshot).toEqual(firstSnapshot);
+        expect(thirdSnapshot).toEqual(firstSnapshot);
+        expect(firstSnapshot?.toolCallCount).toBe(1);
+        expect(firstSnapshot?.toolCallCountKnown).toBe(true);
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('cancels the shared scan once the last reader leaves and rescans for the next one', async () => {
+      const home = await seedWireHomeWithTool();
+      let enteredScan!: () => void;
+      let noticedAbort!: () => void;
+      const scanStarted = new Promise<void>((resolve) => {
+        enteredScan = resolve;
+      });
+      const scanAborted = new Promise<void>((resolve) => {
+        noticedAbort = resolve;
+      });
+      const scans: string[] = [];
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+        wireRecordReader: async (wirePath, options) => {
+          scans.push(wirePath);
+          enteredScan();
+          try {
+            return await streamWireRecords(wirePath, { ...options, chunkBytes: 8 });
+          } catch (error) {
+            if (options.signal?.aborted) noticedAbort();
+            throw error;
+          }
+        },
+      });
+      const controller = new AbortController();
+      try {
+        const abandoned = service.readColdSnapshot('s1', 'main', undefined, controller.signal);
+        await scanStarted;
+        controller.abort(new DOMException('client gone', 'AbortError'));
+        await expect(abandoned).rejects.toThrow('client gone');
+        await scanAborted;
+        expect(scans).toHaveLength(1);
+
+        const next = await service.readColdSnapshot('s1', 'main');
+        expect(scans).toHaveLength(2);
+        expect(next?.toolCallCount).toBe(1);
+        expect(next?.toolCallCountKnown).toBe(true);
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it.each([
+      { name: 'record fence', limits: { maxRecords: 3 } },
+      { name: 'byte fence', limits: undefined },
+      { name: 'line fence', limits: { maxLineBytes: 64 } },
+    ])('[STAT-R3] fails a cold read that trips the $name instead of serving a prefix', async ({ limits }) => {
+      const home = await seedWireHomeWithTool();
+      const warnings: { bindings: unknown; message: string }[] = [];
+      try {
+        const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+        const resolved = limits ?? { maxBytes: Math.floor((await fsPromises.stat(wirePath)).size / 2) };
+        const service = new TranscriptService({
+          homeDir: home,
+          core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+          coldReadLimits: resolved,
+          logger: { warn: (bindings, message) => warnings.push({ bindings, message }) },
+        });
+        const snapshot = await service.readColdSnapshot('s1', 'main');
+        expect(snapshot?.items).toEqual([]);
+        expect(snapshot?.tasks).toEqual([]);
+        expect(snapshot?.toolCallCount).toBeUndefined();
+        expect(snapshot?.toolCallCountKnown).toBe(false);
+        expect(warnings).toEqual([
+          {
+            bindings: expect.objectContaining({ sessionId: 's1', agentId: 'main' }),
+            message: 'transcript: history snapshot unavailable (wire read fence tripped)',
+          },
+        ]);
+
+        const store = service.forSessionLive('s1');
+        await service.whenReady('s1');
+        await service.ensureAgentHistory('s1', 'main');
+        const live = store?.getAgent('main')?.snapshot();
+        expect(live?.items).toEqual([]);
+        expect(live?.toolCallCountKnown).toBe(false);
+        expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).has('main')).toBe(false);
+        expect((await service.getAgentToolCallCounts('s1', ['main'])).has('main')).toBe(false);
+        service.dropSession('s1');
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('keeps the readable prefix when the wire itself ends in a partial tail', async () => {
+      const home = await seedWireHomeWithTool();
+      try {
+        const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+        await appendFile(wirePath, '{"type":');
+        const service = new TranscriptService({
+          homeDir: home,
+          core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+        });
+        const snapshot = await service.readColdSnapshot('s1', 'main');
+        expect(snapshot?.items.some((item) => item.kind === 'turn')).toBe(true);
+        expect(snapshot?.toolCallCount).toBeUndefined();
+        expect(snapshot?.toolCallCountKnown).toBe(false);
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('keeps preserve semantics out of the shared flight', async () => {
+      const home = await seedWireHomeWithTool(false);
+      try {
+        let release!: () => void;
+        let entered!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const started = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const readings: string[] = [];
+        let gated = false;
+        const service = new TranscriptService({
+          homeDir: home,
+          core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+          wireRecordReader: async (wirePath, options) => {
+            readings.push(wirePath);
+            if (!gated) {
+              gated = true;
+              entered();
+              await gate;
+            }
+            return streamWireRecords(wirePath, options);
+          },
+        });
+        const preserved = service.readColdSnapshot('s1', 'main', () => ['t0']);
+        await started;
+        const plain = service.readColdSnapshot('s1', 'main');
+        release();
+        const [preservedSnapshot, plainSnapshot] = await Promise.all([preserved, plain]);
+        expect(readings).toHaveLength(2);
+        expect(preservedSnapshot).not.toEqual(plainSnapshot);
+        expect(preservedSnapshot?.items.find((item) => item.kind === 'turn')).toMatchObject({
+          turnId: 't0',
+          state: 'running',
+        });
+        expect(plainSnapshot?.items.find((item) => item.kind === 'turn')).toMatchObject({
+          turnId: 't0',
+          state: 'cancelled',
+        });
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('[STAT-R3] folds CRLF, blank lines, and an unterminated tail like a plain wire', async () => {
+      const records = [
+        {
+          type: 'turn.prompt',
+          turnId: 0,
+          promptId: 'prompt-shape',
+          input: [{ type: 'text', text: 'hi' }],
+          origin: { kind: 'user' },
+          time: 1_000,
+        },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-shape' },
+          time: 2_000,
+        },
+        {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call',
+            turnId: 0,
+            stepUuid: 'step-shape',
+            toolCallId: 'call_shape',
+            name: 'Bash',
+            args: { command: 'ls' },
+          },
+          time: 3_000,
+        },
+      ];
+      const lines = records.map((record) => JSON.stringify(record));
+      const variants = [
+        { name: 'plain', raw: `${lines.join('\n')}\n` },
+        { name: 'crlf', raw: `${lines.join('\r\n')}\r\n\r\n` },
+        { name: 'unterminated', raw: lines.join('\n') },
+      ];
+      const snapshots: (AgentTranscriptSnapshot | undefined)[] = [];
+      for (const variant of variants) {
+        const home = await mkdtemp(join(tmpdir(), `transcript-cold-${variant.name}-`));
+        try {
+          const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+          await mkdir(wireDir, { recursive: true });
+          await writeFile(join(wireDir, 'wire.jsonl'), variant.raw);
+          const service = new TranscriptService({
+            homeDir: home,
+            core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+          });
+          snapshots.push(await service.readColdSnapshot('s1', 'main'));
+        } finally {
+          await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+        }
+      }
+      expect(snapshots[0]?.items.some((item) => item.kind === 'turn')).toBe(true);
+      expect(snapshots[0]?.toolCallCount).toBe(1);
+      expect(snapshots[0]?.toolCallCountKnown).toBe(true);
+      expect(snapshots[1]).toEqual(snapshots[0]);
+      expect(snapshots[2]).toEqual(snapshots[0]);
+    });
+
+    it.each([
+      { name: 'the transcript page', path: '/sessions/:session_id/transcript', query: { agent_id: 'main' } },
+      { name: 'the user-messages list', path: '/sessions/:session_id/transcript/user-messages', query: {} },
+      { name: 'the plan list', path: '/sessions/:session_id/transcript/plan', query: { agent_id: 'main' } },
+    ])('[STAT-R3] cancels the cold wire read when the client disconnects from $name', async ({ path, query }) => {
+      const home = await seedWireHomeWithTool();
+      try {
+        let enteredScan!: () => void;
+        const scanStarted = new Promise<void>((resolve) => {
+          enteredScan = resolve;
+        });
+        let releaseScan!: () => void;
+        const scanGate = new Promise<void>((resolve) => {
+          releaseScan = resolve;
+        });
+        let noticedAbort!: () => void;
+        const abortSeen = new Promise<void>((resolve) => {
+          noticedAbort = resolve;
+        });
+        const service = new TranscriptService({
+          homeDir: home,
+          core: coldCore(),
+          wireRecordReader: async (wirePath, options) => {
+            enteredScan();
+            options.signal?.addEventListener('abort', () => noticedAbort(), { once: true });
+            await scanGate;
+            return streamWireRecords(wirePath, options);
+          },
+        });
+        const handlers = new Map<string, (req: unknown, reply: unknown) => Promise<void> | void>();
+        registerTranscriptRoutes(
+          {
+            get: (routePath: string, _options: unknown, handler: (req: unknown, reply: unknown) => Promise<void> | void) => {
+              handlers.set(routePath, handler);
+            },
+          } as unknown as Parameters<typeof registerTranscriptRoutes>[0],
+          { core: coldCore(), transcriptService: service },
+        );
+        const raw = new EventEmitter() as EventEmitter & { writableFinished: boolean };
+        raw.writableFinished = false;
+        const sent: unknown[] = [];
+        const reply = {
+          send: (payload: unknown) => {
+            sent.push(payload);
+            return payload;
+          },
+          raw,
+        };
+        const pending = Promise.resolve(
+          handlers.get(path)!(
+            { id: 'req-1', params: { session_id: 's1' }, query },
+            reply,
+          ),
+        );
+        await scanStarted;
+        raw.emit('close');
+        await abortSeen;
+        releaseScan();
+        const error = await pending.then(
+          () => undefined,
+          (thrown: unknown) => thrown,
+        );
+        expect((error as Error | undefined)?.name).toBe('AbortError');
+        expect(sent).toEqual([]);
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('does not start a user-messages wire scan after disconnecting during roster lookup', async () => {
+      let enteredRoster!: () => void;
+      const rosterStarted = new Promise<void>((resolve) => {
+        enteredRoster = resolve;
+      });
+      let releaseRoster!: () => void;
+      const rosterGate = new Promise<void>((resolve) => {
+        releaseRoster = resolve;
+      });
+      let wireReads = 0;
+      const service = new TranscriptService({
+        homeDir: '/nonexistent-home',
+        core: coldCore(),
+        wireRecordReader: async (wirePath, options) => {
+          wireReads += 1;
+          return streamWireRecords(wirePath, options);
+        },
+      });
+      vi.spyOn(service, 'readColdRoster').mockImplementation(async () => {
+        enteredRoster();
+        await rosterGate;
+        return [{ agentId: 'main', type: 'main' }];
+      });
+      const handlers = new Map<string, (req: unknown, reply: unknown) => Promise<void> | void>();
+      registerTranscriptRoutes(
+        {
+          get: (routePath: string, _options: unknown, handler: (req: unknown, reply: unknown) => Promise<void> | void) => {
+            handlers.set(routePath, handler);
+          },
+        } as unknown as Parameters<typeof registerTranscriptRoutes>[0],
+        { core: coldCore(), transcriptService: service },
+      );
+      const raw = new EventEmitter() as EventEmitter & { writableFinished: boolean };
+      raw.writableFinished = false;
+      const sent: unknown[] = [];
+      const pending = Promise.resolve(
+        handlers.get('/sessions/:session_id/transcript/user-messages')!(
+          { id: 'req-1', params: { session_id: 's1' }, query: {} },
+          {
+            send: (payload: unknown) => {
+              sent.push(payload);
+              return payload;
+            },
+            raw,
+          },
+        ),
+      );
+      await rosterStarted;
+      raw.emit('close');
+      releaseRoster();
+      const error = await pending.then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+      expect((error as Error | undefined)?.name).toBe('AbortError');
+      expect(wireReads).toBe(0);
+      expect(sent).toEqual([]);
+    });
   });
 
   describe('op journal', () => {
