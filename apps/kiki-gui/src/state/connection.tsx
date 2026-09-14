@@ -23,10 +23,11 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react';
 
-import type { Klient } from '@kiki/klient';
+import type { Klient, TerminalFacade, TerminalConnectionStatus as WsStatus } from '@kiki/klient';
 import type { MetaResponse } from '@kiki/protocol';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 
@@ -34,10 +35,14 @@ import { ConnectScreen } from '../components/ConnectScreen';
 import { useHost } from '../host';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import type { SessionController } from '@kiki/session-core/session';
+import {
+  settingsServerSnapshot,
+  settingsSnapshot,
+  subscribeSettings,
+} from '@kiki/session-core/settings';
 import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { ApiError, KikiClient } from '../lib/client';
-import type { TerminalFacade, TerminalConnectionStatus as WsStatus } from '@kiki/klient';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -162,6 +167,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const vscodeRuntime = isVscodeWebview();
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
+  const localSettings = useSyncExternalStore(
+    subscribeSettings,
+    settingsSnapshot,
+    settingsServerSnapshot,
+  );
+  const requestTimeoutMs = localSettings.requestTimeoutSeconds * 1000;
   const [selection, setSelection] = useState<ConnectionSelection | null>(() =>
     desktopRuntime || vscodeRuntime
       ? null
@@ -320,18 +331,22 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   const endpoint = config?.url.trim().replace(/\/+$/, '') ?? null;
   const token = config?.token.trim() ?? null;
-  const [clients, setClients] = useState<{ endpoint: string; token: string; client: KikiClient } | null>(null);
+  const [clients, setClients] = useState<{
+    endpoint: string;
+    token: string;
+    client: KikiClient;
+  } | null>(null);
   const client = clients?.endpoint === endpoint && clients.token === token ? clients.client : null;
   const klient = client?.klient ?? null;
 
   useEffect(() => {
     if (endpoint === null || token === null) return;
-    const instance = new KikiClient({ baseUrl: endpoint, token });
+    const instance = new KikiClient({ baseUrl: endpoint, token, timeoutMs: requestTimeoutMs });
     setClients({ endpoint, token, client: instance });
     return () => {
       void instance.klient.close();
     };
-  }, [endpoint, token]);
+  }, [endpoint, token, requestTimeoutMs]);
 
   // Validate the config against /meta before entering the app.
   useEffect(() => {

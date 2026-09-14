@@ -80,7 +80,7 @@ import type {
   Workspace,
 } from '@kiki/protocol';
 
-import { RPCError } from '@kiki/klient';
+import { RPCError, type SessionViewFacade } from '@kiki/klient';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 import type { UsageResponseWire } from './usageV2';
@@ -666,17 +666,38 @@ export class KikiClient {
   readonly baseUrl: string;
   readonly klient: ReturnType<typeof createKlient>;
   readonly sessions: ReturnType<typeof createSessionTransport>;
+  private readonly token: string | undefined;
   private serverLeaseId: string | undefined;
 
   constructor(options: KikiClientOptions) {
     this.baseUrl = options.baseUrl;
-    const token = options.token !== undefined && options.token !== '' ? options.token : undefined;
+    this.token = options.token !== undefined && options.token !== '' ? options.token : undefined;
     this.klient = createKlient({
       endpoint: this.baseUrl,
-      token,
+      token: this.token,
       timeoutMs: options.timeoutMs,
     });
     this.sessions = createSessionTransport(this.klient);
+  }
+
+  sessionView(sessionId: string): SessionViewFacade {
+    const view = this.klient.session(sessionId).view;
+    return {
+      snapshot: async () => {
+        const snapshotKlient = createKlient({
+          endpoint: this.baseUrl,
+          token: this.token,
+          timeoutMs: 0,
+        });
+        try {
+          return await this.run(() => snapshotKlient.session(sessionId).view.snapshot());
+        } finally {
+          await snapshotKlient.close();
+        }
+      },
+      transcript: view.transcript,
+      subscribe: (input, onSignal) => view.subscribe(input, onSignal),
+    };
   }
 
   private get rest(): import('@kiki/klient').HttpRestFacade {
@@ -1005,6 +1026,10 @@ export class KikiClient {
   /** Session-scoped skill catalog — feeds the composer's slash menu. */
   listSessionSkills(sessionId: string): Promise<ListSkillsResponse> {
     return this.run(this.rest.sessions.listSkills(sessionId));
+  }
+
+  rebuildContext(sessionId: string): Promise<import('@kiki/klient').ContextRebuildResult> {
+    return this.run(this.klient.session(sessionId).agent('main').rebuildContext());
   }
 
   /** Activate a slash skill and start its turn. */

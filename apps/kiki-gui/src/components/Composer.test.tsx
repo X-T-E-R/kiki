@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '@kiki/session-core/composer';
 import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
+import { clearToasts, getToasts } from '../lib/toasts';
 import { Composer } from './Composer';
 
 const { selectFilesNative, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
@@ -57,6 +58,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetInputHistoryForTests();
+  clearToasts();
   listModels.mockReset().mockResolvedValue({ items: [{ model: 'fixture/kiki-pro', provider: 'fixture' }] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
@@ -375,6 +377,65 @@ describe('Composer agent profile picker', () => {
       grokRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(onChangeAgentProfile).toHaveBeenCalledWith('grok-only');
+  });
+
+  it('shows rebuild context in the profile menu and calls it only after confirmation', async () => {
+    const onRebuildContext = vi.fn(async () => ({ changed: true }));
+    const { container } = await renderComposer({
+      sessionId: 'session-1',
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      onRebuildContext,
+    });
+    await click(await waitForTrigger(container));
+    const rebuildRow = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
+      (row) => row.textContent?.includes('Rebuild context'),
+    );
+    expect(rebuildRow).toBeDefined();
+    await click(rebuildRow!);
+    expect(onRebuildContext).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alertdialog"]')?.textContent).toContain(
+      'Conversation messages and history are kept.',
+    );
+    const confirm = [...container.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(
+      (button) => button.textContent === 'Rebuild context',
+    );
+    await click(confirm!);
+    await settle();
+    expect(onRebuildContext).toHaveBeenCalledOnce();
+    expect(getToasts().some((toast) => toast.tone === 'success' && toast.text.includes('latest sources'))).toBe(true);
+  });
+
+  it('reports rebuild failures and disables the profile menu while busy', async () => {
+    const onRebuildContext = vi.fn(async () => { throw new Error('reload failed'); });
+    const rendered = await renderComposer({
+      sessionId: 'session-1',
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      onRebuildContext,
+    });
+    await click(await waitForTrigger(rendered.container));
+    const rebuildRow = [...rendered.container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
+      (row) => row.textContent?.includes('Rebuild context'),
+    );
+    await click(rebuildRow!);
+    const confirm = [...rendered.container.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(
+      (button) => button.textContent === 'Rebuild context',
+    );
+    await click(confirm!);
+    await settle();
+    expect(getToasts().some((toast) => toast.tone === 'error' && toast.text.includes('reload failed'))).toBe(true);
+
+    await rendered.rerender({
+      busy: true,
+      sessionId: 'session-1',
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      onRebuildContext,
+    });
+    const trigger = rendered.container.querySelector<HTMLButtonElement>('#composer-agent-profile-select')!;
+    expect(trigger.disabled).toBe(true);
+    expect(trigger.title).toContain('Wait for the current turn');
   });
 
   it('hides without a handler but preserves the choice and offers retry when the catalog fails', async () => {

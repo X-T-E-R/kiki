@@ -396,6 +396,18 @@ export const en = {
     'The model and thinking effort on this page switch to the new profile’s defaults. You can still change them before sending.',
   'profile.switchSubagents': 'Subagent dispatch policy switches with the new profile.',
   'profile.switchConfirm': 'Switch profile',
+  'profile.actionsGroup': 'Profile actions',
+  'profile.rebuildMenu': 'Rebuild context',
+  'profile.rebuildMenuDescription': 'Reload the current profile, prompt fields, skills, instructions, and plugin injections.',
+  'profile.rebuildBusy': 'Wait for the current turn to finish before rebuilding context.',
+  'profile.rebuildTitle': 'Rebuild this session’s context?',
+  'profile.rebuildBody': 'Kiki will reload the current agent’s system prompt and injected context from the latest files on disk.',
+  'profile.rebuildKeepsHistory': 'Conversation messages and history are kept.',
+  'profile.rebuildLatestSources': 'The profile, prompt fields, skills, AGENTS.md instructions, plugin injections, and other runtime injections are rebuilt.',
+  'profile.rebuildConfirm': 'Rebuild context',
+  'profile.rebuildDoneChanged': 'Context rebuilt from the latest sources.',
+  'profile.rebuildDoneUnchanged': 'Context rebuilt; the sources were already up to date.',
+  'profile.rebuildFailed': 'Context rebuild failed: {detail}',
   'rename.title': 'Rename session',
   'action.exportDone': 'Archive downloaded for “{title}”.',
   'action.exportDoneSession': 'Session archive downloaded.',
@@ -1347,6 +1359,10 @@ export const en = {
   'st.conn.tokenHint':
     'The token is stored only on this device and rides along with every request to prove your identity.',
   'st.conn.statusTitle': 'Connection status',
+  'st.conn.timeoutTitle': 'HTTP requests',
+  'st.conn.timeoutLabel': 'Request timeout (seconds)',
+  'st.conn.timeoutHint': 'Applies to new GUI HTTP requests immediately. Enter a whole number from {minimum} to {maximum}; opening a large session may continue beyond this limit.',
+  'st.conn.timeoutSaved': 'Request timeout saved. New requests use the updated limit.',
   'st.conn.ownedTitle': 'Owned desktop server',
   'st.conn.ownedBody':
     'Kiki desktop owns the sidecar lifecycle. Restart waits for shutdown, launches a new sidecar, and verifies its authenticated endpoint before returning.',
@@ -2136,6 +2152,7 @@ export const en = {
   'val.advancedEmpty': 'Add at least one advanced config field before saving.',
   'val.timeoutWhole': 'Subagent timeout must be a non-negative whole number of milliseconds.',
   'val.timeoutMax': 'Subagent timeout cannot exceed 24 hours (86,400,000 ms).',
+  'val.requestTimeoutSeconds': 'Request timeout must be a whole number from 5 to 600 seconds.',
   'val.catalogIntervalWhole':
     'Catalog refresh interval must be a non-negative whole number of milliseconds.',
   'val.providerId':

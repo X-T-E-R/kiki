@@ -160,7 +160,7 @@ function useActiveController(
   sessionId: string | undefined,
   focusedAgentId?: string,
 ): SessionController | null {
-  const { client, klient } = useConnection();
+  const { client } = useConnection();
   const registry = useControllerRegistry();
   const [controller, setController] = useState<SessionController | null>(null);
 
@@ -169,7 +169,7 @@ function useActiveController(
       setController(null);
       return;
     }
-    const next = new SessionController(client.sessions, klient.session(sessionId).view, sessionId);
+    const next = new SessionController(client.sessions, client.sessionView(sessionId), sessionId);
     next.setFocusedAgent(focusedAgentId);
     registry.add(next);
     setController(next);
@@ -182,7 +182,7 @@ function useActiveController(
       next.close();
       setController(null);
     };
-  }, [client, klient, sessionId, registry]);
+  }, [client, sessionId, registry]);
 
   return controller;
 }
@@ -1562,6 +1562,12 @@ export function SessionView({
     applyPendingProfile(profileSwitchConfirm);
     setProfileSwitchConfirm(undefined);
   }, [applyPendingProfile, profileSwitchConfirm]);
+  const refetchAgentProfiles = agentProfilesQuery.refetch;
+  const handleContextRebuild = useCallback(async () => {
+    const result = await client.rebuildContext(sessionId);
+    void refetchAgentProfiles();
+    return result;
+  }, [client, refetchAgentProfiles, sessionId]);
 
   // Global y / n shortcut for the focused-or-unambiguous visible approval.
   useEffect(() => {
@@ -2298,6 +2304,7 @@ export function SessionView({
             onCompactContext={handleCompactContext}
             onChangeModel={handleModelChange}
             onChangeAgentProfile={handleAgentProfileChange}
+            onRebuildContext={handleContextRebuild}
             onChangePermissionMode={setPermissionOverride}
             onChangePlanMode={setPlanOverride}
             onChangePlanGate={setPlanGateOverride}
@@ -2356,6 +2363,7 @@ export function SessionView({
     handleModelChange,
     handleEffortChange,
     handleAgentProfileChange,
+    handleContextRebuild,
     t,
   ]);
   useRegisterSeat(seat);

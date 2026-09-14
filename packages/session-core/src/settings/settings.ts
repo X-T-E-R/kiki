@@ -19,6 +19,10 @@ export function isThemePreference(value: unknown): value is ThemePreference {
   return value === 'light' || value === 'dark' || value === 'system';
 }
 
+export const DEFAULT_REQUEST_TIMEOUT_SECONDS = 30;
+export const MIN_REQUEST_TIMEOUT_SECONDS = 5;
+export const MAX_REQUEST_TIMEOUT_SECONDS = 600;
+
 export interface DesktopSettings {
   defaultPermissionMode: 'manual' | 'auto' | 'yolo';
   defaultPlanMode: boolean;
@@ -28,6 +32,7 @@ export interface DesktopSettings {
   defaultEffort: string | undefined;
   closeToTray: boolean;
   theme: ThemePreference;
+  requestTimeoutSeconds: number;
 }
 
 export type UpdateChannel = 'stable' | 'beta';
@@ -222,6 +227,7 @@ const DEFAULTS: DesktopSettings = {
   defaultEffort: undefined,
   closeToTray: true,
   theme: 'system',
+  requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
 };
 
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
@@ -247,8 +253,17 @@ function readObject(key: string): Record<string, unknown> {
   }
 }
 
+export function validateRequestTimeoutSeconds(value: number): ValidationIssue | null {
+  return Number.isInteger(value)
+    && value >= MIN_REQUEST_TIMEOUT_SECONDS
+    && value <= MAX_REQUEST_TIMEOUT_SECONDS
+    ? null
+    : { key: 'val.requestTimeoutSeconds' };
+}
+
 export function readSettings(): DesktopSettings {
   const stored = readObject(STORAGE_KEY) as Partial<DesktopSettings>;
+  const requestTimeoutSeconds = stored.requestTimeoutSeconds;
   return {
     ...DEFAULTS,
     ...stored,
@@ -276,6 +291,11 @@ export function readSettings(): DesktopSettings {
     closeToTray:
       typeof stored.closeToTray === 'boolean' ? stored.closeToTray : DEFAULTS.closeToTray,
     theme: isThemePreference(stored.theme) ? stored.theme : DEFAULTS.theme,
+    requestTimeoutSeconds:
+      requestTimeoutSeconds !== undefined
+      && validateRequestTimeoutSeconds(requestTimeoutSeconds) === null
+        ? requestTimeoutSeconds
+        : DEFAULTS.requestTimeoutSeconds,
   };
 }
 
@@ -1402,6 +1422,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'defaults', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
   { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'] },
+  { section: 'connection', cardId: 'st-card-conn-timeout', titleKey: 'st.conn.timeoutTitle', keywordKeys: ['st.conn.timeoutLabel', 'st.conn.timeoutHint'], synonyms: ['request timeout', '请求超时'] },
   { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
   { section: 'connection', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'], synonyms: ['提供商', '供应商', 'provider', '认证'] },

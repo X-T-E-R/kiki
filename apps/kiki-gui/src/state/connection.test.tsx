@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { writeSettings } from '@kiki/session-core/settings';
 import { browserHost, HostProvider } from '../host';
 import { I18nProvider } from '../i18n';
 import { ConnectionProvider, nextGuiLeaseClientId, useConnection } from './connection';
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   klients: [] as Array<{
     endpoint: string;
     token?: string;
+    timeoutMs?: number;
     closed: boolean;
     close: ReturnType<typeof vi.fn>;
     global: { mcp: { list: ReturnType<typeof vi.fn> } };
@@ -53,10 +55,10 @@ vi.mock('../lib/client', () => ({
     readonly baseUrl: string;
     readonly klient;
 
-    constructor(options: { baseUrl: string; token?: string }) {
+    constructor(options: { baseUrl: string; token?: string; timeoutMs?: number }) {
       this.baseUrl = options.baseUrl;
       const klient = {
-        endpoint: options.baseUrl, token: options.token, closed: false,
+        endpoint: options.baseUrl, token: options.token, timeoutMs: options.timeoutMs, closed: false,
         close: vi.fn(async () => { klient.closed = true; }),
         global: { mcp: { list: vi.fn(async () => {
           if (klient.closed) throw new Error('klient closed');
@@ -146,6 +148,7 @@ beforeEach(() => {
   mocks.terminalSubscriptions.length = 0;
   mocks.stageListener = undefined;
   localStorage.clear();
+  writeSettings({ requestTimeoutSeconds: 30 });
 });
 
 afterEach(async () => {
@@ -217,6 +220,29 @@ describe('ConnectionProvider Klient ownership', () => {
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['providers'] });
     } finally { invalidate.mockRestore(); }
   });
+
+  it('rebuilds the GUI Klient with the saved timeout for subsequent requests', async () => {
+    localStorage.setItem('kiki.connection', JSON.stringify({
+      url: 'http://127.0.0.1:41001',
+      token: 'test-token',
+    }));
+    mocks.meta.mockResolvedValue({ serverVersion: 'test' });
+    const container = await mountProvider(true);
+    expect(mocks.klients.filter((entry) => !entry.closed)).toHaveLength(1);
+    expect(mocks.klients.find((entry) => !entry.closed)).toMatchObject({ timeoutMs: 30_000 });
+
+    await act(async () => {
+      writeSettings({ requestTimeoutSeconds: 120 });
+    });
+    await flush();
+
+    const active = mocks.klients.filter((entry) => !entry.closed);
+    expect(active).toHaveLength(1);
+    expect(active[0]).toMatchObject({ timeoutMs: 120_000 });
+    expect(mocks.klients.filter((entry) => entry.timeoutMs === 30_000).every((entry) => entry.closed)).toBe(true);
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe('http://127.0.0.1:41001');
+  });
+
   it('rebuilds the StrictMode lease and owns normalized pair changes through final unmount', async () => {
     localStorage.setItem('kiki.connection', JSON.stringify({
       url: 'http://127.0.0.1:41001/',

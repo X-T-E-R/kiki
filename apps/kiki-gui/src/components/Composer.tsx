@@ -68,8 +68,10 @@ import {
 } from '../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
+import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 import { ContextMeter } from './ContextMeter';
+import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 
@@ -91,6 +93,7 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 
 const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
+const REBUILD_CONTEXT_OPTION = '__kiki_rebuild_context__';
 let vscodeConversationSequence = 0;
 
 function nextVscodeConversationKey(): string {
@@ -200,6 +203,7 @@ export function Composer({
   onCompactContext,
   onChangeModel,
   onChangeAgentProfile,
+  onRebuildContext,
   onChangePermissionMode,
   onChangePlanMode,
   onChangePlanGate,
@@ -305,6 +309,7 @@ export function Composer({
   onChangeModel: (model: string | undefined) => void;
   /** Profile picked in the select; the parent owns the confirm/pending flow. */
   onChangeAgentProfile?: (name: string) => void;
+  onRebuildContext?: () => Promise<{ readonly changed: boolean }>;
   onChangePermissionMode: (mode: PermissionMode) => void;
   onChangePlanMode: (on: boolean) => void;
   /** Session plan-gate pick; required for the PlanSelect gate row to show. */
@@ -394,6 +399,8 @@ export function Composer({
   const turnInFlightRef = useRef(false);
   const [turnInFlight, setTurnInFlight] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
+  const [contextRebuildConfirm, setContextRebuildConfirm] = useState(false);
+  const [contextRebuildBusy, setContextRebuildBusy] = useState(false);
   // A slash-looking draft that resolved to nothing: send is held until the
   // user confirms plain-text shipping (typo guard) or edits the draft.
   const [slashConfirm, setSlashConfirm] = useState<{
@@ -499,6 +506,20 @@ export function Composer({
     () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? [], t),
     [agentProfilesQuery.data, t],
   );
+  const profileSelectOptions: readonly SearchableSelectOption[] = useMemo(
+    () => onRebuildContext === undefined
+      ? agentProfileOptions
+      : [
+          ...agentProfileOptions,
+          {
+            value: REBUILD_CONTEXT_OPTION,
+            label: t('profile.rebuildMenu'),
+            description: t('profile.rebuildMenuDescription'),
+            group: t('profile.actionsGroup'),
+          },
+        ],
+    [agentProfileOptions, onRebuildContext, t],
+  );
   const validateProfile = agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
   const validatingModel = model ?? defaultModel ?? serverDefaultModel;
   const selectedModel = validatingModel !== undefined
@@ -528,6 +549,7 @@ export function Composer({
     previousSessionIdRef.current = sessionId;
     setMenu(null);
     setSlashConfirm(null);
+    setContextRebuildConfirm(false);
     // Session-scoped recall/undo state would otherwise leak A's entries into
     // B's draft surface (the composer mount survives route changes).
     historyIndexRef.current = null;
@@ -1138,9 +1160,45 @@ export function Composer({
     textareaRef.current?.focus();
   }, [disabled]);
 
+  const confirmContextRebuild = () => {
+    if (onRebuildContext === undefined || contextRebuildBusy) return;
+    setContextRebuildBusy(true);
+    void onRebuildContext()
+      .then((result) => {
+        pushToast({
+          tone: 'success',
+          text: t(result.changed ? 'profile.rebuildDoneChanged' : 'profile.rebuildDoneUnchanged'),
+        });
+      })
+      .catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('profile.rebuildFailed', {
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        });
+      })
+      .finally(() => {
+        setContextRebuildBusy(false);
+        setContextRebuildConfirm(false);
+      });
+  };
+
   return (
     <div className="px-6 pb-5">
       {composerContextMenu}
+      <ConfirmDialog
+        open={contextRebuildConfirm}
+        overlayId="confirm-context-rebuild"
+        title={t('profile.rebuildTitle')}
+        body={t('profile.rebuildBody')}
+        consequences={[t('profile.rebuildKeepsHistory'), t('profile.rebuildLatestSources')]}
+        confirmLabel={t('profile.rebuildConfirm')}
+        tone="default"
+        busy={contextRebuildBusy}
+        onConfirm={confirmContextRebuild}
+        onCancel={() => { if (!contextRebuildBusy) setContextRebuildConfirm(false); }}
+      />
       {/* One width axis with the transcript: the conversation shell declares
           --kiki-chat-content-width; the 760px fallback is defensive. */}
       <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
@@ -1593,13 +1651,22 @@ export function Composer({
                 <div className="min-w-0">
                   <SearchableSelect
                     id="composer-agent-profile-select"
-                    options={agentProfileOptions}
+                    options={profileSelectOptions}
                     value={agentProfile ?? DEFAULT_AGENT_PROFILE}
-                    onChange={onChangeAgentProfile}
+                    onChange={(value) => {
+                      if (value === REBUILD_CONTEXT_OPTION) {
+                        setContextRebuildConfirm(true);
+                        return;
+                      }
+                      onChangeAgentProfile(value);
+                    }}
+                    disabled={busy}
                     title={
-                      agentProfilePending
-                        ? t('composer.agentProfilePendingTitle')
-                        : t('composer.agentProfileTitle')
+                      busy
+                        ? t('profile.rebuildBusy')
+                        : agentProfilePending
+                          ? t('composer.agentProfilePendingTitle')
+                          : t('composer.agentProfileTitle')
                     }
                     ariaLabel={t('composer.agentProfileAria')}
                     emptyText={t('composer.noAgentProfiles')}

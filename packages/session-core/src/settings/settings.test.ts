@@ -59,6 +59,7 @@ import {
   toolPolicyPatch,
   validateDesktopConfigDraft,
   validateProviderDraft,
+  validateRequestTimeoutSeconds,
   validateServerDefaults,
   writeDesktopPrefs,
   writeSettings,
@@ -119,12 +120,18 @@ describe('settings persistence and validation', () => {
   it('defaults absent, partial, and malformed storage to safe local values', () => {
     writeSettings({});
     expect(readSettings().closeToTray).toBe(true);
+    expect(readSettings().requestTimeoutSeconds).toBe(30);
     expect(readDesktopPrefs().closeToTray).toBe(true);
 
-    localStorage.setItem('kiki.settings', JSON.stringify({ sendShortcut: 'invalid', defaultPermissionMode: 'root' }));
+    localStorage.setItem('kiki.settings', JSON.stringify({
+      sendShortcut: 'invalid',
+      defaultPermissionMode: 'root',
+      requestTimeoutSeconds: 601,
+    }));
     localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ notifications: false }));
     expect(readSettings().sendShortcut).toBe('enter');
     expect(readSettings().defaultPermissionMode).toBe('manual');
+    expect(readSettings().requestTimeoutSeconds).toBe(30);
     expect(readDesktopPrefs()).toEqual({
       notifications: false,
       closeToTray: true,
@@ -137,6 +144,16 @@ describe('settings persistence and validation', () => {
 
     localStorage.setItem('kiki.desktopPrefs', '{not-json');
     expect(readDesktopPrefs().closeToTray).toBe(true);
+  });
+
+  it('persists request timeout seconds only within the supported range', () => {
+    expect(validateRequestTimeoutSeconds(5)).toBeNull();
+    expect(validateRequestTimeoutSeconds(600)).toBeNull();
+    expect(validateRequestTimeoutSeconds(4)).toEqual({ key: 'val.requestTimeoutSeconds' });
+    expect(validateRequestTimeoutSeconds(30.5)).toEqual({ key: 'val.requestTimeoutSeconds' });
+
+    writeSettings({ requestTimeoutSeconds: 120 });
+    expect(readSettings().requestTimeoutSeconds).toBe(120);
   });
 
   it('preserves an explicitly persisted quit choice', () => {

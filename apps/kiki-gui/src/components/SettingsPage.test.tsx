@@ -94,7 +94,16 @@ const client = {
 };
 
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client, klient }),
+  useConnection: () => ({
+    client,
+    klient,
+    config: { url: 'http://127.0.0.1:8080', token: '' },
+    meta: { server_version: 'test', backend: 'v2' },
+    wsStatus: 'open',
+    socket: { nudge: vi.fn() },
+    disconnect: vi.fn(),
+    applyConnection: vi.fn(),
+  }),
 }));
 
 vi.mock('../host', () => ({
@@ -242,6 +251,24 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#workspace-skills-select')).not.toBeNull();
     expect(scopeHeader(container).getAttribute('data-settings-scope-header')).toBe('server+workspace');
     expect(scopeHeader(container).textContent).toContain('Workspace · Alpha');
+  });
+
+  it('renders and saves the GUI request timeout in seconds', async () => {
+    localStorage.removeItem('kiki.settings');
+    const container = await renderSettings('/settings/connection');
+    const card = container.querySelector('#st-card-conn-timeout')!;
+    const input = card.querySelector<HTMLInputElement>('#st-conn-request-timeout')!;
+    expect(input.value).toBe('30');
+    expect(card.textContent).toContain('Request timeout (seconds)');
+
+    await setInput(input, '120');
+    await click(card.querySelector('button')!);
+    await flush();
+
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({
+      requestTimeoutSeconds: 120,
+    });
+    expect(card.textContent).toContain('New requests use the updated limit.');
   });
 
   it('mounts the mcp leaf with config, status, and timeouts cards', async () => {

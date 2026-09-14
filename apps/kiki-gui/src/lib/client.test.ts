@@ -117,6 +117,61 @@ describe('KikiClient transport error mapping', () => {
     expect((failure as ApiError).code).toBe(API_CODES.TIMEOUT);
     expect((failure as ApiError).message).toContain('Request timed out after 5ms');
   });
+
+  it('keeps the initial session snapshot loading beyond the generic request deadline', async () => {
+    vi.useFakeTimers();
+    let resolveFetch!: (response: Response) => void;
+    const fetchMock = vi.fn((url: string | URL, init?: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        expect(String(url)).toBe('http://127.0.0.1:8080/api/klient/session-view/s1/snapshot');
+        resolveFetch = resolve;
+        init?.signal?.addEventListener('abort', () => { reject(new Error('aborted')); }, { once: true });
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', timeoutMs: 5 });
+    const pending = client.sessionView('s1').snapshot();
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+
+    resolveFetch(new Response(JSON.stringify({
+      code: 0,
+      msg: 'success',
+      data: {
+        as_of_seq: 0,
+        epoch: 'ep_01ABC',
+        session: {
+          id: 's1',
+          workspace_id: 'wd_example_0123456789ab',
+          title: 'Example',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+          busy: false,
+          metadata: { cwd: '/tmp/example' },
+          agent_config: { model: 'example/model' },
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            total_cost_usd: 0,
+            context_tokens: 0,
+            context_limit: 0,
+            turn_count: 0,
+          },
+          permission_rules: [],
+          message_count: 0,
+          last_seq: 0,
+        },
+        messages: { items: [], has_more: false },
+        in_flight_turn: null,
+        pending_approvals: [],
+        pending_questions: [],
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    await expect(pending).resolves.toMatchObject({ as_of_seq: 0, session: { id: 's1' } });
+  });
 });
 
 describe('KikiClient config responses', () => {
