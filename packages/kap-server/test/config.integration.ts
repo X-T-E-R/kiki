@@ -78,15 +78,21 @@ describe('server-v2 /api/config', () => {
 
   it('round trips prompt variable names, merges references, validates saves and removes replaced entries', async () => {
     await boot();
-    const prompt = { shared: 'Shared ${team_note}', variables: { team_note: 'Team note', search_guidance: 'Use native GMA SSE.' }, tools: { WebSearch: '${search_guidance}' } };
+    const prompt = { overrides: { fields: { 'system.shared': 'Shared ${team_note}', 'tool.web-search.guidance': '${search_guidance}' } }, variables: { team_note: 'Team note', search_guidance: 'Use native GMA SSE.' } };
     expect((await patchConfig({ prompt })).prompt).toEqual(prompt);
     expect((await getConfig()).prompt).toEqual(prompt);
-    expect((await patchConfig({ prompt: { tools: { FetchURL: '${team_note}' } } })).prompt?.tools).toEqual({ WebSearch: '${search_guidance}', FetchURL: '${team_note}' });
+    expect((await patchConfig({ prompt: { overrides: { fields: { 'tool.fetch-url.guidance': '${team_note}' } } } })).prompt?.overrides?.fields).toEqual({ 'system.shared': 'Shared ${team_note}', 'tool.web-search.guidance': '${search_guidance}', 'tool.fetch-url.guidance': '${team_note}' });
     const path = join(home as string, 'config.toml');
     const before = await readFile(path, 'utf8');
     expect(before).toContain('search_guidance');
-    expect(before).toContain('WebSearch');
-    for (const invalid of [{ variables: { cwd: 'override' } }, { shared: '${missing}' }, { variables: { 'bad-name': 'text' } }]) {
+    expect(before).toContain('web-search');
+    for (const invalid of [
+      { variables: { cwd: 'override' } },
+      { overrides: { fields: { 'system.shared': '${missing}' } } },
+      { variables: { 'bad-name': 'text' } },
+      { overrides: { fields: { 'system.unknown': 'text' } } },
+      { overrides: { fields: { 'system.shared': '${missing' } } },
+    ]) {
       const response = await authedFetch(server as RunningServer, base, '/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: invalid }) });
       expect((await response.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
       expect(await readFile(path, 'utf8')).toBe(before);

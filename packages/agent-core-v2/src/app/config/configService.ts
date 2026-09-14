@@ -34,6 +34,10 @@ import {
   ConfigSectionContribution,
   getConfigSectionContributions,
 } from './configSectionContributions';
+import {
+  ConfigWriteValidatorContribution,
+  type ConfigWriteValidator,
+} from './configWriteValidation';
 import { getConfigOverlayContributions } from './configOverlayContributions';
 import { collectKeyDeprecations } from './deprecations';
 import { migrateThinkingEffortMaxToHigh } from './migrations';
@@ -321,6 +325,7 @@ export class ConfigService extends Disposable implements IConfigService {
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @ILogService private readonly log: ILogService,
     @IAtomicTomlDocumentStore private readonly documentStore: IAtomicTomlDocumentStore,
+    @ConfigWriteValidatorContribution private readonly writeValidators: CollectionView<ConfigWriteValidator>,
   ) {
     super();
     this.configKey = this.bootstrap.configKey;
@@ -423,7 +428,7 @@ export class ConfigService extends Disposable implements IConfigService {
     await this.ready;
     if (target === ConfigTarget.Memory) {
       const next = this.registry.merge(domain, this.memory[domain], patch);
-      const validated = this.registry.validate(domain, next);
+      const validated = this.validateWrite(domain, this.registry.validate(domain, next));
       if (validated === undefined) {
         delete this.memory[domain];
       } else {
@@ -441,8 +446,7 @@ export class ConfigService extends Disposable implements IConfigService {
         if (stripped === undefined) {
           delete stagedRaw[domain];
         } else {
-          this.registry.validate(domain, stripped);
-          stagedRaw[domain] = stripped;
+          stagedRaw[domain] = this.validateWrite(domain, this.registry.validate(domain, stripped));
         }
       });
       this.rebuildEffective('set', [domain]);
@@ -460,7 +464,7 @@ export class ConfigService extends Disposable implements IConfigService {
       if (effectiveValue === undefined) {
         delete this.memory[domain];
       } else {
-        this.memory[domain] = this.registry.validate(domain, effectiveValue);
+        this.memory[domain] = this.validateWrite(domain, this.registry.validate(domain, effectiveValue));
       }
       this.commit('set', [domain]);
       return;
@@ -472,7 +476,7 @@ export class ConfigService extends Disposable implements IConfigService {
         if (stripped === undefined) {
           delete stagedRaw[domain];
         } else {
-          stagedRaw[domain] = this.registry.validate(domain, stripped);
+          stagedRaw[domain] = this.validateWrite(domain, this.registry.validate(domain, stripped));
         }
       });
       this.rebuildEffective('set', [domain]);
@@ -495,7 +499,7 @@ export class ConfigService extends Disposable implements IConfigService {
         if (value === undefined || value === null) {
           delete staged[domain];
         } else {
-          staged[domain] = this.registry.validate(domain, value);
+          staged[domain] = this.validateWrite(domain, this.registry.validate(domain, value));
         }
       }
       this.memory = staged;
@@ -512,12 +516,19 @@ export class ConfigService extends Disposable implements IConfigService {
           if (stripped === undefined) {
             delete stagedRaw[domain];
           } else {
-            stagedRaw[domain] = this.registry.validate(domain, stripped);
+            stagedRaw[domain] = this.validateWrite(domain, this.registry.validate(domain, stripped));
           }
         }
       });
       this.rebuildEffective('set', domains);
     });
+  }
+
+  private validateWrite<T>(domain: string, value: T): T {
+    for (const validator of this.writeValidators.items) {
+      if (validator.domain === domain) validator.validate(value);
+    }
+    return value;
   }
 
   private stripEnv(

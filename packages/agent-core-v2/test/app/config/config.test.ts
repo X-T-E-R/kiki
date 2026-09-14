@@ -35,6 +35,7 @@ import {
 } from '#/app/config/config';
 import { ConfigRegistry, ConfigService } from '#/app/config/configService';
 import { ConfigSectionContribution } from '#/app/config/configSectionContributions';
+import { ConfigWriteValidatorContribution } from '#/app/config/configWriteValidation';
 import { CRON_SECTION, DEFAULT_CRON_CONFIG, type CronConfig } from '#/app/cron/configSection';
 import {
   THREAD_COMMUNICATION_SECTION,
@@ -2163,6 +2164,26 @@ describe('config section collection fold (D12)', () => {
     }
   }
 
+  interface IRuntimeWriteValidatorContributor {
+    readonly marker: string;
+  }
+  const IRuntimeWriteValidatorContributor = createDecorator<IRuntimeWriteValidatorContributor>(
+    'test-runtime-write-validator-contributor',
+  );
+
+  class RuntimeWriteValidatorContributor extends Service implements IRuntimeWriteValidatorContributor {
+    readonly marker = 'runtime-write-validator-contributor';
+    constructor(domain: string) {
+      super();
+      this.provide(ConfigWriteValidatorContribution, {
+        domain,
+        validate: (value) => {
+          if ((value as RuntimeFoldDemo).note === 'rejected') throw new Error('write rejected');
+        },
+      });
+    }
+  }
+
   function sectionContribution<T>(
     domain: string,
     schema: ConfigSchema<T>,
@@ -2231,6 +2252,32 @@ describe('config section collection fold (D12)', () => {
     await expect(
       config.set(RUNTIME_SECTION, { enabled: 'nope' }, ConfigTarget.Memory),
     ).rejects.toThrow('enabled');
+
+    disposables.dispose();
+  });
+
+  it('runs contributed semantic validators before every persisted write path', async () => {
+    const { disposables, ix, storage } = setupFold({});
+    const config = ix.get(IConfigService);
+    await config.ready;
+    provideContribution(ix, sectionContribution(RUNTIME_SECTION, RuntimeFoldDemoSchema));
+    ix.provide(
+      IRuntimeWriteValidatorContributor,
+      new SyncDescriptor(RuntimeWriteValidatorContributor, [RUNTIME_SECTION] as never),
+    );
+    ix.invokeFunction((accessor) => accessor.get(IRuntimeWriteValidatorContributor));
+
+    await config.replace(RUNTIME_SECTION, { enabled: true, note: 'accepted' });
+    const before = await storage.read('', 'config.toml');
+    const invalid = { enabled: true, note: 'rejected' };
+    await expect(config.set(RUNTIME_SECTION, { note: 'rejected' })).rejects.toThrow('write rejected');
+    await expect(config.replace(RUNTIME_SECTION, invalid)).rejects.toThrow('write rejected');
+    await expect(config.replaceSections({ [RUNTIME_SECTION]: invalid })).rejects.toThrow('write rejected');
+    expect(await storage.read('', 'config.toml')).toEqual(before);
+    expect(config.inspect<RuntimeFoldDemo>(RUNTIME_SECTION).userValue).toEqual({
+      enabled: true,
+      note: 'accepted',
+    });
 
     disposables.dispose();
   });
