@@ -1139,9 +1139,9 @@ async function scenarioHeroShell() {
   await page.waitForTimeout(600);
   await shot('hero-desktop');
 
-  // Agent picker: a standalone toolbar control again. Every enabled profile
-  // is a conversation candidate — the two mains lead, the enabled non-main
-  // (reviewer) follows — and the labels carry no ` · main` suffix.
+  // Agent picker: a standalone toolbar control again. Only enabled main
+  // profiles are conversation candidates (agent and grok-only; the non-main
+  // reviewer is not offered) — and the labels carry no ` · main` suffix.
   await page.waitForSelector('#composer-agent-profile-select', { timeout: 10_000 });
   const profileTrigger = page.locator('#composer-agent-profile-select');
   const profileTriggerText = await profileTrigger.textContent();
@@ -1154,13 +1154,15 @@ async function scenarioHeroShell() {
     .allTextContents();
   const reviewerIndex = profileOptions.findIndex((text) => text.includes('reviewer'));
   const grokIndex = profileOptions.findIndex((text) => text.includes('grok-only'));
+  const agentIndex = profileOptions.findIndex((text) => text.includes('agent'));
   if (
-    profileOptions.length !== 3
+    profileOptions.length !== 2
+    || agentIndex === -1
     || grokIndex === -1
-    || reviewerIndex === -1
-    || reviewerIndex < grokIndex
+    || reviewerIndex !== -1
+    || agentIndex > grokIndex
   ) {
-    throw new Error(`agent picker must list the mains first, then enabled non-main profiles, got ${JSON.stringify(profileOptions)}`);
+    throw new Error(`agent picker must list only enabled main profiles in catalog order, got ${JSON.stringify(profileOptions)}`);
   }
   // Let the panel's enter animation settle before the shot.
   await page.waitForTimeout(400);
