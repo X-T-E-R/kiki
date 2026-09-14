@@ -55,6 +55,8 @@ export class SessionAgentProfileCatalogService
   private snapshotValue: AgentProfileCatalogSnapshot | undefined;
   private readonly contributions = new Map<string, AgentProfileRegistration>();
   private readonly readyPromise: Promise<void>;
+  private readonly tracksSourceReadiness: boolean;
+  private completeValue = false;
   private readonly onDidChangeEmitter = this._register(new Emitter<string>());
   readonly onDidChange: Event<string> = this.onDidChangeEmitter.event;
 
@@ -66,15 +68,20 @@ export class SessionAgentProfileCatalogService
     @IFlagService private readonly flags: IFlagService,
   ) {
     super();
-    this.reproject();
-    this.readyPromise = this.config.ready.then(() => {
-      this.reproject();
+    this.tracksSourceReadiness = this.registry.hasSourceReadiness(this.seed.workspaceKey);
+    if (!this.tracksSourceReadiness) this.reproject();
+    this.readyPromise = Promise.all([
+      this.config.ready,
+      this.registry.whenSourcesReady(this.seed.workspaceKey),
+    ]).then(() => {
+      this.completeValue = this.reproject();
     });
     this._register(
       this.registry.onDidChange((change) => {
         if (change.workspaceKey !== undefined && change.workspaceKey !== this.seed.workspaceKey) {
           return;
         }
+        if (this.tracksSourceReadiness && !this.completeValue) return;
         if (this.reproject()) this.onDidChangeEmitter.fire(change.sourceId);
       }),
     );
@@ -84,6 +91,7 @@ export class SessionAgentProfileCatalogService
           change.domain !== DISABLED_BUILTIN_PROFILES_SECTION
           && change.domain !== DISABLED_NAMED_PROFILES_SECTION
         ) return;
+        if (this.tracksSourceReadiness && !this.completeValue) return;
         if (this.reproject()) this.onDidChangeEmitter.fire('catalog');
       }),
     );
@@ -91,6 +99,10 @@ export class SessionAgentProfileCatalogService
 
   get ready(): Promise<void> {
     return this.readyPromise;
+  }
+
+  get complete(): boolean {
+    return this.completeValue;
   }
 
   get(name: string): AgentProfile | undefined {
@@ -205,12 +217,16 @@ export class SessionAgentProfileCatalogService
 
   setContribution(id: string, contribution: AgentProfileRegistration['contribution'], priority: number): void {
     this.contributions.set(id, { sourceId: id, priority, contribution });
-    if (this.reproject()) this.onDidChangeEmitter.fire(id);
+    if ((!this.tracksSourceReadiness || this.completeValue) && this.reproject()) {
+      this.onDidChangeEmitter.fire(id);
+    }
   }
 
   removeContribution(id: string): void {
     if (!this.contributions.delete(id)) return;
-    if (this.reproject()) this.onDidChangeEmitter.fire(id);
+    if ((!this.tracksSourceReadiness || this.completeValue) && this.reproject()) {
+      this.onDidChangeEmitter.fire(id);
+    }
   }
 
   async load(): Promise<void> {

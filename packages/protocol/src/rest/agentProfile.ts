@@ -232,6 +232,7 @@ export type ListNamedAgentProfilesQuery = z.infer<
 
 export const listNamedAgentProfilesResponseSchema = z.object({
   items: z.array(namedAgentProfileSchema),
+  complete: z.boolean(),
 });
 export type ListNamedAgentProfilesResponse = z.infer<
   typeof listNamedAgentProfilesResponseSchema

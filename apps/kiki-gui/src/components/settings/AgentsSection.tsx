@@ -579,7 +579,7 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     queryClient.setQueryData<ListNamedAgentProfilesResponse>(
       profilesQueryKey,
       (current) => current === undefined
-        ? { items: [updated] }
+        ? { items: [updated], complete: true }
         : {
             items: current.items.map((profile) =>
               profile.name === updated.name &&
@@ -588,6 +588,7 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
                 ? updated
                 : profile,
             ),
+            complete: current.complete,
           },
     );
     void invalidateAgentProfileCatalogs(queryClient);

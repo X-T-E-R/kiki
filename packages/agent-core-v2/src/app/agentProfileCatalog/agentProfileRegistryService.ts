@@ -38,6 +38,12 @@ export class AgentProfileRegistryService
 
   private folded: ReadonlyMap<string, AgentProfileContributionRecord> = new Map();
   private readonly direct = new Map<string, AgentProfileRegistration>();
+  private readonly sourceReadiness = new Map<string, Set<{
+    readonly sourceId: string;
+    readonly ready: Promise<void>;
+  }>>();
+  private readonly sourceReadinessRevision = new Map<string, number>();
+  private readonly onDidChangeSourceReadiness = this._register(new Emitter<string>());
 
   constructor(
     @AgentProfileContribution
@@ -79,6 +85,62 @@ export class AgentProfileRegistryService
         this.onDidChangeEmitter.fire(decodeKey(key));
       },
     };
+  }
+
+  registerSourceReadiness(
+    sourceId: string,
+    workspaceKey: string | undefined,
+    ready: Promise<void>,
+  ): IDisposable {
+    const key = workspaceKey ?? '';
+    const sources = this.sourceReadiness.get(key) ?? new Set();
+    const source = { sourceId, ready };
+    sources.add(source);
+    this.sourceReadiness.set(key, sources);
+    this.bumpSourceReadiness(key);
+    let active = true;
+    return {
+      dispose: () => {
+        if (!active) return;
+        active = false;
+        sources.delete(source);
+        if (sources.size === 0) this.sourceReadiness.delete(key);
+        this.bumpSourceReadiness(key);
+      },
+    };
+  }
+
+  hasSourceReadiness(workspaceKey: string): boolean {
+    return (this.sourceReadiness.get(workspaceKey)?.size ?? 0) > 0;
+  }
+
+  async whenSourcesReady(workspaceKey: string): Promise<void> {
+    const key = workspaceKey;
+    while (true) {
+      const revision = this.sourceReadinessRevision.get(key) ?? 0;
+      const sources = [...(this.sourceReadiness.get(key) ?? [])];
+      if (sources.length === 0) return;
+      let subscription: IDisposable | undefined;
+      const changed = new Promise<void>((resolve) => {
+        subscription = this.onDidChangeSourceReadiness.event((changedKey) => {
+          if (changedKey === key) resolve();
+        });
+      });
+      try {
+        await Promise.race([
+          Promise.allSettled(sources.map((source) => source.ready)).then(() => {}),
+          changed,
+        ]);
+      } finally {
+        subscription?.dispose();
+      }
+      if ((this.sourceReadinessRevision.get(key) ?? 0) === revision) return;
+    }
+  }
+
+  private bumpSourceReadiness(key: string): void {
+    this.sourceReadinessRevision.set(key, (this.sourceReadinessRevision.get(key) ?? 0) + 1);
+    this.onDidChangeSourceReadiness.fire(key);
   }
 
   private onViewChange(change: CollectionChange<AgentProfileContributionRecord>): void {

@@ -26,7 +26,13 @@ function deferred(): { readonly promise: Promise<void>; resolve(): void; reject(
   return { promise, resolve, reject };
 }
 
-function setup(readiness = new Map<string, Promise<void>>(), order: string[] = []) {
+type ProfileReadiness = Partial<Record<'user' | 'plugin' | 'explicit' | 'extra' | 'workspace', Promise<void>>>;
+
+function setup(
+  readiness = new Map<string, Promise<void>>(),
+  order: string[] = [],
+  profileReadiness = new Map<string, ProfileReadiness>(),
+) {
   const registry = new RuntimeRegistry('workspace', 50);
   const program = new Program(
     'workspace',
@@ -57,6 +63,11 @@ function setup(readiness = new Map<string, Promise<void>>(), order: string[] = [
       ready: readiness.get(id) ?? Promise.resolve(),
       dispose: () => { order.push(`behavior:${id}`); },
     };
+    const profiles = profileReadiness.get(id) ?? {};
+    const profileBehavior = (source: keyof ProfileReadiness) => ({
+      ...behavior,
+      ready: profiles[source] ?? Promise.resolve(),
+    });
     const catalog = {
       listSkills: () => [],
       listInvocableSkills: () => [],
@@ -76,11 +87,11 @@ function setup(readiness = new Map<string, Promise<void>>(), order: string[] = [
       mcp: behavior,
       trust: { ...behavior, isTrusted: () => false },
       skills: { ...behavior, catalog },
-      agentProfiles: behavior,
-      userAgentProfiles: behavior,
-      pluginAgentProfiles: behavior,
-      explicitAgentProfiles: behavior,
-      extraAgentProfiles: behavior,
+      agentProfiles: profileBehavior('workspace'),
+      userAgentProfiles: profileBehavior('user'),
+      pluginAgentProfiles: profileBehavior('plugin'),
+      explicitAgentProfiles: profileBehavior('explicit'),
+      extraAgentProfiles: profileBehavior('extra'),
       disposables: [behavior],
       ready: false,
       failed: false,
@@ -124,6 +135,56 @@ describe('Program', () => {
     await Promise.resolve();
     expect(program.status).toBe('ready');
     expect(program.snapshot().ready).toBe(true);
+    program.dispose();
+    await registry.dispose();
+  });
+
+  it('waits for every profile loader before reporting the program ready', async () => {
+    const user = deferred();
+    const { registry, program } = setup(
+      new Map(),
+      [],
+      new Map([['one', {
+        user: user.promise,
+        plugin: Promise.resolve(),
+        explicit: Promise.resolve(),
+        extra: Promise.resolve(),
+        workspace: Promise.resolve(),
+      }]]),
+    );
+    registry.register(runtime('one'));
+
+    await Promise.resolve();
+    expect(program.status).toBe('preparing');
+    user.resolve();
+    await program.ready;
+
+    expect(program.status).toBe('ready');
+    program.dispose();
+    await registry.dispose();
+  });
+
+  it('treats a rejected profile loader as non-fatal after all sources settle', async () => {
+    const workspace = deferred();
+    const { registry, program } = setup(
+      new Map(),
+      [],
+      new Map([['one', {
+        user: Promise.reject(new Error('user failed')),
+        plugin: Promise.resolve(),
+        explicit: Promise.resolve(),
+        extra: Promise.resolve(),
+        workspace: workspace.promise,
+      }]]),
+    );
+    registry.register(runtime('one'));
+
+    await Promise.resolve();
+    expect(program.status).toBe('preparing');
+    workspace.resolve();
+    await program.ready;
+
+    expect(program.status).toBe('ready');
     program.dispose();
     await registry.dispose();
   });

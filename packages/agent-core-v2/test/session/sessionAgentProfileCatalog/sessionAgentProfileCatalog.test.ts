@@ -31,6 +31,14 @@ import { stubLog } from '../../_base/log/stubs';
 
 const WORKSPACE_KEY = 'wd_a';
 
+function deferred(): { readonly promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((onResolve) => {
+    resolve = onResolve;
+  });
+  return { promise, resolve };
+}
+
 interface IContributor {
   readonly record: AgentProfileContributionRecord;
 }
@@ -138,6 +146,84 @@ function makeCatalog(
 }
 
 describe('SessionAgentProfileCatalogService (registry projection)', () => {
+  it('waits for all five loader sources before completing the cold catalog projection', async () => {
+    const container = new InstantiationService(new ServiceCollection(), true);
+    const registry = container.createInstance(AgentProfileRegistryService);
+    const user = deferred();
+    const readiness = [
+      registry.registerSourceReadiness('user', WORKSPACE_KEY, user.promise),
+      registry.registerSourceReadiness('plugin', WORKSPACE_KEY, Promise.resolve()),
+      registry.registerSourceReadiness('explicit', WORKSPACE_KEY, Promise.resolve()),
+      registry.registerSourceReadiness('extra', WORKSPACE_KEY, Promise.resolve()),
+      registry.registerSourceReadiness('workspace', WORKSPACE_KEY, Promise.resolve()),
+    ];
+    const config = configStub();
+    const catalog = new SessionAgentProfileCatalogService(
+      registry,
+      { _serviceBrand: undefined, workspaceKey: WORKSPACE_KEY },
+      config.service,
+      stubLog(),
+      { enabled: () => false } as unknown as IFlagService,
+    );
+    const userProfile = profile('user-profile');
+    const registration = registry.register({
+      sourceId: 'user',
+      priority: AGENT_PROFILE_SOURCE_PRIORITY.user,
+      workspaceKey: WORKSPACE_KEY,
+      contribution: { profiles: [userProfile] },
+    });
+
+    await Promise.resolve();
+    expect(catalog.complete).toBe(false);
+    expect(catalog.get('user-profile')).toBeUndefined();
+    user.resolve();
+    await catalog.ready;
+
+    expect(catalog.complete).toBe(true);
+    expect(catalog.get('user-profile')).toBe(userProfile);
+    registration.dispose();
+    for (const handle of readiness) handle.dispose();
+    catalog.dispose();
+    container.dispose();
+  });
+
+  it('completes after one loader fails and keeps profiles from the other sources', async () => {
+    const container = new InstantiationService(new ServiceCollection(), true);
+    const registry = container.createInstance(AgentProfileRegistryService);
+    const workspace = deferred();
+    const readiness = [
+      registry.registerSourceReadiness('user', WORKSPACE_KEY, Promise.reject(new Error('user failed'))),
+      registry.registerSourceReadiness('plugin', WORKSPACE_KEY, Promise.resolve()),
+      registry.registerSourceReadiness('explicit', WORKSPACE_KEY, Promise.resolve()),
+      registry.registerSourceReadiness('extra', WORKSPACE_KEY, Promise.resolve()),
+      registry.registerSourceReadiness('workspace', WORKSPACE_KEY, workspace.promise),
+    ];
+    const config = configStub();
+    const catalog = new SessionAgentProfileCatalogService(
+      registry,
+      { _serviceBrand: undefined, workspaceKey: WORKSPACE_KEY },
+      config.service,
+      stubLog(),
+      { enabled: () => false } as unknown as IFlagService,
+    );
+    const workspaceProfile = profile('workspace-profile');
+    const registration = registry.register({
+      sourceId: 'workspace',
+      priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
+      workspaceKey: WORKSPACE_KEY,
+      contribution: { profiles: [workspaceProfile] },
+    });
+
+    workspace.resolve();
+    await expect(catalog.ready).resolves.toBeUndefined();
+    expect(catalog.complete).toBe(true);
+    expect(catalog.get('workspace-profile')).toBe(workspaceProfile);
+    registration.dispose();
+    for (const handle of readiness) handle.dispose();
+    catalog.dispose();
+    container.dispose();
+  });
+
   it('projects global entries and own-workspace entries, filtering other workspace keys', () => {
     const { container, catalog, contribute } = makeCatalog();
     const globalProfile = profile('global-p');

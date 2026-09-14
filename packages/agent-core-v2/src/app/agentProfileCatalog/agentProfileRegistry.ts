@@ -22,6 +22,9 @@ export interface IAgentProfileRegistry {
 
   entries(): readonly AgentProfileRegistration[];
   register(registration: AgentProfileRegistration): IDisposable;
+  registerSourceReadiness(sourceId: string, workspaceKey: string | undefined, ready: Promise<void>): IDisposable;
+  hasSourceReadiness(workspaceKey: string): boolean;
+  whenSourcesReady(workspaceKey: string): Promise<void>;
 }
 
 export const IAgentProfileRegistry: ServiceIdentifier<IAgentProfileRegistry> =

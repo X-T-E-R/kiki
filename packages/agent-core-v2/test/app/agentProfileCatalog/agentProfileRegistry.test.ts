@@ -180,4 +180,22 @@ describe('AgentProfileRegistryService (collection fold)', () => {
     subscription.dispose();
     container.dispose();
   });
+
+  it('switches readiness waits to the replacement generation when a source retires', async () => {
+    const { container, registry } = makeFold();
+    const stale = registry.registerSourceReadiness('user', 'wd_a', new Promise(() => {}));
+    const ready = registry.whenSourcesReady('wd_a');
+    let settled = false;
+    void ready.then(() => { settled = true; });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    const replacement = registry.registerSourceReadiness('user', 'wd_a', Promise.resolve());
+    stale.dispose();
+    await ready;
+
+    expect(settled).toBe(true);
+    replacement.dispose();
+    container.dispose();
+  });
 });

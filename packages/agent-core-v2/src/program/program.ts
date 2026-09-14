@@ -380,26 +380,27 @@ export class Program {
 
   private observeReadiness(generation: ProgramGeneration): void {
     void Promise.all([
-      readiness(generation.dirs),
-      readiness(generation.instructions),
-      readiness(generation.mcpConfig),
-      readiness(generation.mcp),
-      readiness(generation.skills),
-      readiness(generation.agentProfiles),
-    ]).then(
-      () => {
-        if (this.generation !== generation) return;
-        generation.ready = true;
-        this.resolveProgramReady();
-        this.refresh();
-      },
-      () => {
-        if (this.generation !== generation) return;
-        generation.failed = true;
-        this.resolveProgramReady();
-        this.refresh();
-      },
-    );
+      Promise.allSettled([
+        readiness(generation.dirs),
+        readiness(generation.instructions),
+        readiness(generation.mcpConfig),
+        readiness(generation.mcp),
+        readiness(generation.skills),
+      ]),
+      Promise.allSettled([
+        readiness(generation.userAgentProfiles),
+        readiness(generation.pluginAgentProfiles),
+        readiness(generation.explicitAgentProfiles),
+        readiness(generation.extraAgentProfiles),
+        readiness(generation.agentProfiles),
+      ]),
+    ]).then(([required]) => {
+      if (this.generation !== generation) return;
+      if (required.some((result) => result.status === 'rejected')) generation.failed = true;
+      else generation.ready = true;
+      this.resolveProgramReady();
+      this.refresh();
+    });
   }
 
   private retireGeneration(generation: ProgramGeneration): void {

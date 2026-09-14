@@ -31,22 +31,38 @@ export function agentProfileCatalogQueryKey(
   return ['agentProfiles', catalog.mode];
 }
 
-export function loadAgentProfileCatalog(
+const INCOMPLETE_CATALOG_RETRY_DELAY_MS = 250;
+
+function isComplete(response: ListNamedAgentProfilesResponse): boolean {
+  return (response as { readonly complete?: boolean }).complete !== false;
+}
+
+export async function loadAgentProfileCatalog(
   client: Pick<KikiClient, 'listNamedAgentProfiles'>,
   catalog: AgentProfileCatalogMode,
 ): Promise<ListNamedAgentProfilesResponse> {
-  if (catalog.mode === 'workspace') {
-    return client.listNamedAgentProfiles(
-      catalog.effective
-        ? { workspace_id: catalog.workspaceId, effective: true }
-        : catalog.workspaceId,
-    );
-  }
-  if (catalog.mode === 'cwd') {
-    return client.listNamedAgentProfiles(
-      catalog.effective ? { cwd: catalog.cwd, effective: true } : { cwd: catalog.cwd },
-    );
-  }
-  if (catalog.mode === 'global') return client.listNamedAgentProfiles();
-  return Promise.resolve({ items: [] });
+  if (catalog.mode === 'disabled') return { items: [], complete: true };
+  const load = (): Promise<ListNamedAgentProfilesResponse> => {
+    if (catalog.mode === 'workspace') {
+      return client.listNamedAgentProfiles(
+        catalog.effective
+          ? { workspace_id: catalog.workspaceId, effective: true }
+          : catalog.workspaceId,
+      );
+    }
+    if (catalog.mode === 'cwd') {
+      return client.listNamedAgentProfiles(
+        catalog.effective ? { cwd: catalog.cwd, effective: true } : { cwd: catalog.cwd },
+      );
+    }
+    return client.listNamedAgentProfiles();
+  };
+  const initial = await load();
+  if (isComplete(initial)) return initial;
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, INCOMPLETE_CATALOG_RETRY_DELAY_MS);
+  });
+  const retried = await load();
+  if (isComplete(retried)) return retried;
+  throw new Error('Agent profile catalog is still loading');
 }

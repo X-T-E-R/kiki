@@ -770,6 +770,7 @@ describe('GET /api/agents', () => {
     };
 
     const scopedA = await listScoped(workspaceAId);
+    expect(scopedA.complete).toBe(true);
     expect(scopedA.items.find((profile) =>
       profile.name === 'workspace-choice' && profile.source === 'workspace'
     )).toMatchObject({

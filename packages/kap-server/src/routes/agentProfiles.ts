@@ -125,7 +125,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           await sessionAgentProfileCatalogs(core),
           executors,
         );
-        reply.send(okEnvelope({ items }, req.id));
+        reply.send(okEnvelope({ items, complete: true }, req.id));
         return;
       }
 
@@ -161,7 +161,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
             }).toSorted(compareNamedAgentProfiles)
           : projectNamedAgentProfiles(entries, disabledBuiltins, disabledNamed,
               req.query.expand === true, catalogs, executors);
-        reply.send(okEnvelope({ items }, req.id));
+        reply.send(okEnvelope({ items, complete: catalog.complete }, req.id));
       } finally {
         workspaceCatalog.dispose();
       }

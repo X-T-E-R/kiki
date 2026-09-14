@@ -4,6 +4,7 @@ import {
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
   listNamedAgentProfilesQuerySchema,
+  listNamedAgentProfilesResponseSchema,
   namedAgentProfileSchema,
   patchConfigRequestSchema,
 } from '../index';
@@ -65,6 +66,12 @@ describe('named agent profile REST protocol', () => {
       subagents: ['explore', { name: 'reviewer', model_alias: 'fast' }],
       disabled: true,
     });
+  });
+
+  it('requires catalog responses to declare whether their projection is complete', () => {
+    expect(listNamedAgentProfilesResponseSchema.parse({ items: [], complete: false }))
+      .toEqual({ items: [], complete: false });
+    expect(listNamedAgentProfilesResponseSchema.safeParse({ items: [] }).success).toBe(false);
   });
 
   it('validates exclusive workspace and live capability addresses', () => {

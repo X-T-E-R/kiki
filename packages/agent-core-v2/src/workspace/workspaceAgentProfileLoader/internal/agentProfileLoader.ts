@@ -13,6 +13,7 @@ export abstract class AgentProfileLoaderBase extends Service {
   private tail: Promise<void> = Promise.resolve();
   private lastGoodContribution: AgentProfileContribution | undefined;
   private readonly contributionHandle = this._register(new MutableDisposable<IDisposable>());
+  private readonly readinessHandle = this._register(new MutableDisposable<IDisposable>());
 
   constructor(
     protected readonly log: ILogService,
@@ -27,6 +28,11 @@ export abstract class AgentProfileLoaderBase extends Service {
 
   protected start(): void {
     this.readyPromise = this.enqueue();
+    this.readinessHandle.value = this.registry?.registerSourceReadiness(
+      this.sourceId,
+      this.workspaceKey,
+      this.readyPromise,
+    );
     void this.readyPromise.catch(() => undefined);
   }
 
