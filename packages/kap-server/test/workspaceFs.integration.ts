@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createKlient } from '@kiki/klient/http';
@@ -110,7 +110,8 @@ describe('server-v2 /api fs folder picker', () => {
   });
 
   it('lists only directories and filters files', async () => {
-    const root = home as string;
+    const root = join(home as string, 'browse');
+    await mkdir(root);
     await mkdir(join(root, 'alpha'));
     await mkdir(join(root, 'beta'));
     await writeFile(join(root, 'README.md'), 'hi');
@@ -129,7 +130,8 @@ describe('server-v2 /api fs folder picker', () => {
   });
 
   it('sorts dot-directories after regular ones', async () => {
-    const root = home as string;
+    const root = join(home as string, 'sorted-browse');
+    await mkdir(root);
     await mkdir(join(root, '.zeta'));
     await mkdir(join(root, 'alpha'));
 
@@ -141,9 +143,12 @@ describe('server-v2 /api fs folder picker', () => {
   });
 
   it('returns parent=null for the filesystem root', async () => {
-    const { body } = await getJson<BrowseWire>('/api/fs:browse?path=%2F');
+    const root = parse(await realpath(homedir())).root;
+    const { body } = await getJson<BrowseWire>(
+      `/api/fs:browse?path=${encodeURIComponent(root)}`,
+    );
     expect(body.code).toBe(0);
-    expect(body.data.path).toBe('/');
+    expect(body.data.path).toBe(await realpath(root));
     expect(body.data.parent).toBeNull();
   });
 

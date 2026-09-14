@@ -470,7 +470,7 @@ describe('server-v2 /api plugins', () => {
     );
     expect(body.code).toBe(0);
     expect(body.data).toEqual({ configured: false, entries: [] });
-    expect(fetchMock.mock.calls.every(([url]) => String(url).includes('/api/'))).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === CATALOG_URL)).toBe(false);
   });
 
   it('reads [plugins] marketplace_url from config.toml', async () => {

@@ -162,6 +162,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     const withoutTarget = Object.fromEntries(
       Object.entries(records).filter(([, record]) => record.provider !== targetId),
     );
+    await config.replace(MODELS_SECTION, withoutTarget);
     const nextModels = { ...withoutTarget };
     for (const model of models) {
       const id = `${targetId}/${model.id}`;

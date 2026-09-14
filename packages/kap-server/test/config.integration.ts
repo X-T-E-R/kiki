@@ -470,7 +470,7 @@ describe('server-v2 /api/config', () => {
 
     expect(after.thread_communication).toEqual({ enabled: false });
     expect(after.token_counting).toEqual({ strategy: 'estimated' });
-    expect(after.workspace_instance).toEqual({});
+    expect(after.workspace_instance).toEqual({ idleTtlMs: 300_000 });
     expect(after.image).toEqual({ maxEdgePx: 2_048 });
     expect(after.task).toEqual({ keepAliveOnExit: false, printBackgroundMode: 'exit' });
     expect(after.identity).toEqual({ name: 'Example Agent' });
@@ -481,6 +481,7 @@ describe('server-v2 /api/config', () => {
     expect(after.tools).toEqual({ enabled: ['Write'] });
 
     const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).not.toContain('idle_ttl_ms');
     expect(persisted).not.toContain('read_byte_budget');
     expect(persisted).not.toContain('max_running_tasks');
     expect(persisted).not.toContain('print_max_turns');

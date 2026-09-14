@@ -68,6 +68,7 @@ describe('local/local on-disk layout (byte compatibility)', () => {
     const sessionId = created.data.id;
     const workspaceId = created.data.workspace_id;
     const sessionDir = join(home!, 'sessions', workspaceId, sessionId);
+    const persistedSessionDir = sessionDir.replaceAll('\\', '/');
 
     const workspacesFile = JSON.parse(await readFile(join(home!, 'workspaces.json'), 'utf8')) as {
       version: number;
@@ -86,7 +87,7 @@ describe('local/local on-disk layout (byte compatibility)', () => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line) as { sessionId: string; sessionDir: string; workDir: string });
-    expect(indexLines).toEqual([{ sessionId, sessionDir, workDir }]);
+    expect(indexLines).toEqual([{ sessionId, sessionDir: persistedSessionDir, workDir }]);
 
     const metaRaw = JSON.parse(await readFile(join(sessionDir, 'state.json'), 'utf8')) as {
       id: string;
@@ -103,7 +104,7 @@ describe('local/local on-disk layout (byte compatibility)', () => {
     const metaWithAgent = JSON.parse(await readFile(join(sessionDir, 'state.json'), 'utf8')) as {
       agents: Record<string, { homedir: string }>;
     };
-    expect(metaWithAgent.agents['main']?.homedir).toBe(join(sessionDir, 'agents', 'main'));
+    expect(metaWithAgent.agents['main']?.homedir).toBe(`${persistedSessionDir}/agents/main`);
 
     const snapshot = await fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
       headers: authHeaders(server!),

@@ -605,6 +605,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const handleLine = (raw: string): void => {
       let line = raw;
       if (line.endsWith('\r')) line = line.slice(0, -1);
+      if (this.path.separator === '\\') line = line.replaceAll('\\', '/');
       if (line.startsWith('./')) line = line.slice(2);
       if (line.length === 0) return;
       const file = evaluateSuggestCandidate(line, 'file', query);

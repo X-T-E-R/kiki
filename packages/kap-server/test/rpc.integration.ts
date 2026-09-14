@@ -670,6 +670,13 @@ describe('server-v2 /api/debug RPC', () => {
       expect(info.body.code).toBe(0);
       expect(info.body.data.id).toBe('rpc-plugin');
 
+      const enabled = await call<null>(
+        'POST',
+        rpc('core', IPluginService, 'setPluginEnabled'),
+        { id: 'rpc-plugin', enabled: true },
+      );
+      expect(enabled.body.code).toBe(0);
+
       const commands = await call<readonly { pluginId: string; name: string }[]>(
         'GET',
         rpc('core', IPluginService, 'listPluginCommands'),

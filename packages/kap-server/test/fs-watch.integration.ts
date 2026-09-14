@@ -460,7 +460,10 @@ describe('WS fs watch (kap-server)', () => {
       Object.assign(
         new FakeRuntime(
           { workspaceId, runtimeId: 'watch-test', generation },
-          { capabilities: ['watch'] },
+          {
+            capabilities: ['watch'],
+            pathClass: process.platform === 'win32' ? 'win32' : 'posix',
+          },
         ),
         { watch: service },
       );

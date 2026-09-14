@@ -227,7 +227,7 @@ describe('server-v2 boot', () => {
     expect(oauthBody.data).toBeNull();
   });
 
-  it('warms session index, workspace catalog, then global search after listen', async () => {
+  it('warms session index, workspace catalog, then global search before resolving startup', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-background-warmup-'));
     const workspaceSync = deferred<readonly []>();
     const prepareGate = deferred<SessionIndexStatus>();
@@ -243,37 +243,35 @@ describe('server-v2 boot', () => {
     const setLiveTranscriptSource = vi.fn(() => {
       order.push('search');
     });
+    const starting = startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [
+        [IWorkspaceService, stubWorkspaceService(workspaceList)],
+        [ISessionIndex, stubSessionIndex(prepare)],
+        [IGlobalSearchService, stubGlobalSearchService(setLiveTranscriptSource)],
+      ],
+    });
 
     try {
-      server = await withTimeout(
-        startServer({
-          hostIdentity: TEST_HOST_IDENTITY,
-          host: '127.0.0.1',
-          port: 0,
-          homeDir: home,
-          logLevel: 'silent',
-          seeds: [
-            [IWorkspaceService, stubWorkspaceService(workspaceList)],
-            [ISessionIndex, stubSessionIndex(prepare)],
-            [IGlobalSearchService, stubGlobalSearchService(setLiveTranscriptSource)],
-          ],
-        }),
-        2_000,
-      );
-
-      const base = `http://127.0.0.1:${server.port}`;
-      expect(prepare).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
       expect(workspaceList).not.toHaveBeenCalled();
       expect(setLiveTranscriptSource).not.toHaveBeenCalled();
-      expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
 
       prepareGate.resolve({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
       await vi.waitFor(() => expect(workspaceList).toHaveBeenCalledOnce());
       expect(setLiveTranscriptSource).not.toHaveBeenCalled();
 
       workspaceSync.resolve([]);
-      await vi.waitFor(() => expect(setLiveTranscriptSource).toHaveBeenCalledOnce());
+      server = await withTimeout(starting, 10_000);
+      expect(setLiveTranscriptSource).toHaveBeenCalledOnce();
       expect(order).toEqual(['index', 'workspace', 'search']);
+
+      const base = `http://127.0.0.1:${server.port}`;
+      expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
     } finally {
       prepareGate.resolve({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
       workspaceSync.resolve([]);
@@ -400,7 +398,7 @@ describe('server-v2 boot', () => {
     });
   });
 
-  it('keeps the listener available when background session-index prepare fails', async () => {
+  it('completes startup and keeps the listener available when session-index prepare fails', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-background-prepare-failure-'));
     const prepareFailure = deferred<SessionIndexStatus>();
     const prepare = vi.fn(() => prepareFailure.promise);
@@ -413,29 +411,26 @@ describe('server-v2 boot', () => {
         prepareSettled = true;
       },
     );
+    const starting = startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [
+        [IWorkspaceService, stubWorkspaceService(async () => [])],
+        [ISessionIndex, stubSessionIndex(prepare)],
+      ],
+    });
 
     try {
-      server = await withTimeout(
-        startServer({
-          hostIdentity: TEST_HOST_IDENTITY,
-          host: '127.0.0.1',
-          port: 0,
-          homeDir: home,
-          logLevel: 'silent',
-          seeds: [
-            [IWorkspaceService, stubWorkspaceService(async () => [])],
-            [ISessionIndex, stubSessionIndex(prepare)],
-          ],
-        }),
-        2_000,
-      );
-
-      const base = `http://127.0.0.1:${server.port}`;
       await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
-      expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
-
       prepareFailure.reject(new Error('injected prepare failure'));
       await vi.waitFor(() => expect(prepareSettled).toBe(true));
+      server = await withTimeout(starting, 10_000);
+
+      const base = `http://127.0.0.1:${server.port}`;
+      expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
       expect((await fetch(`${base}/api/healthz`)).status).toBe(200);
     } finally {
       prepareFailure.resolve({

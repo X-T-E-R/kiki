@@ -168,6 +168,7 @@ describe('server-v2 /api fs routes', () => {
             { workspaceId: context.id, runtimeId: 'remote-test', generation: 'remote-generation' },
             {
               capabilities: ['fs'],
+              pathClass: process.platform === 'win32' ? 'win32' : 'posix',
               mapWorkspaceRoots: () => ({ workDir: remote, additionalDirs: [] }),
             },
           ),
@@ -198,19 +199,22 @@ describe('server-v2 /api fs routes', () => {
     expect(body.code).toBe(ErrorCode.FS_IS_DIRECTORY);
   });
 
-  it('fs:read maps a permission-denied host error to FS_PERMISSION_DENIED', async () => {
-    if (process.getuid?.() === 0) return;
-    const file = join(work!, 'locked.txt');
-    await writeFile(file, 'secret');
-    await chmod(file, 0o000);
-    try {
-      const id = await createSession();
-      const body = await postFs<null>(id, 'read', { path: 'locked.txt' });
-      expect(body.code).toBe(ErrorCode.FS_PERMISSION_DENIED);
-    } finally {
-      await chmod(file, 0o644);
-    }
-  });
+  it.skipIf(process.platform === 'win32')(
+    'fs:read maps a permission-denied host error to FS_PERMISSION_DENIED',
+    async () => {
+      if (process.getuid?.() === 0) return;
+      const file = join(work!, 'locked.txt');
+      await writeFile(file, 'secret');
+      await chmod(file, 0o000);
+      try {
+        const id = await createSession();
+        const body = await postFs<null>(id, 'read', { path: 'locked.txt' });
+        expect(body.code).toBe(ErrorCode.FS_PERMISSION_DENIED);
+      } finally {
+        await chmod(file, 0o644);
+      }
+    },
+  );
 
   it('fs:list returns items', async () => {
     await writeFile(join(work!, 'a.txt'), '');
@@ -328,48 +332,54 @@ describe('server-v2 /api fs routes', () => {
     expect(body.code).toBe(ErrorCode.FS_PATH_ESCAPES_SESSION);
   });
 
-  it('rejects reads and downloads that escape the workspace through a symlink', async () => {
-    const outside = await mkdtemp(join(tmpdir(), 'kimi-server-v2-fs-outside-'));
-    try {
-      await writeFile(join(outside, 'secret.txt'), 'top-secret');
-      await symlink(outside, join(work!, 'docs'), 'dir');
-      const id = await createSession();
+  it.skipIf(process.platform === 'win32')(
+    'rejects reads and downloads that escape the workspace through a symlink',
+    async () => {
+      const outside = await mkdtemp(join(tmpdir(), 'kimi-server-v2-fs-outside-'));
+      try {
+        await writeFile(join(outside, 'secret.txt'), 'top-secret');
+        await symlink(outside, join(work!, 'docs'), 'dir');
+        const id = await createSession();
 
-      const body = await postFs<null>(id, 'read', { path: 'docs/secret.txt' });
-      expect(body.code).toBe(ErrorCode.FS_PATH_ESCAPES_SESSION);
+        const body = await postFs<null>(id, 'read', { path: 'docs/secret.txt' });
+        expect(body.code).toBe(ErrorCode.FS_PATH_ESCAPES_SESSION);
 
-      const res = await fetch(`${base}/api/sessions/${id}/fs/docs/secret.txt:download?runtime_id=local`, {
-        headers: authHeaders(server as RunningServer),
-      } as never);
-      const downloadBody = (await res.json()) as Envelope<null>;
-      expect(downloadBody.code).toBe(ErrorCode.FS_PATH_ESCAPES_SESSION);
-    } finally {
-      await rm(outside, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    }
-  });
+        const res = await fetch(`${base}/api/sessions/${id}/fs/docs/secret.txt:download?runtime_id=local`, {
+          headers: authHeaders(server as RunningServer),
+        } as never);
+        const downloadBody = (await res.json()) as Envelope<null>;
+        expect(downloadBody.code).toBe(ErrorCode.FS_PATH_ESCAPES_SESSION);
+      } finally {
+        await rm(outside, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    },
+  );
 
-  it('serves fs actions when the session cwd itself goes through a symlink', async () => {
-    const link = join(tmpdir(), `kimi-server-v2-fs-cwd-link-${process.pid}`);
-    await symlink(work!, link, 'dir');
-    try {
-      const res = await fetch(`${base}/api/sessions`, {
-        method: 'POST',
-        headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
-        body: JSON.stringify({ metadata: { cwd: link } }),
-      } as never);
-      const body = (await res.json()) as Envelope<{ id: string }>;
-      expect(body.code).toBe(0);
+  it.skipIf(process.platform === 'win32')(
+    'serves fs actions when the session cwd itself goes through a symlink',
+    async () => {
+      const link = join(tmpdir(), `kimi-server-v2-fs-cwd-link-${process.pid}`);
+      await symlink(work!, link, 'dir');
+      try {
+        const res = await fetch(`${base}/api/sessions`, {
+          method: 'POST',
+          headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+          body: JSON.stringify({ metadata: { cwd: link } }),
+        } as never);
+        const body = (await res.json()) as Envelope<{ id: string }>;
+        expect(body.code).toBe(0);
 
-      await writeFile(join(work!, 'via-link.txt'), 'through-link');
-      const read = await postFs<{ content: string }>(body.data.id, 'read', {
-        path: 'via-link.txt',
-      });
-      expect(read.code).toBe(0);
-      expect(read.data.content).toBe('through-link');
-    } finally {
-      await rm(link, { force: true });
-    }
-  });
+        await writeFile(join(work!, 'via-link.txt'), 'through-link');
+        const read = await postFs<{ content: string }>(body.data.id, 'read', {
+          path: 'via-link.txt',
+        });
+        expect(read.code).toBe(0);
+        expect(read.data.content).toBe('through-link');
+      } finally {
+        await rm(link, { force: true });
+      }
+    },
+  );
 
   it('GET fs/{path}:download streams the file and honors If-None-Match', async () => {
     await writeFile(join(work!, 'a.txt'), 'download-me');
