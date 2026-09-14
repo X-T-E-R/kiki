@@ -446,7 +446,8 @@ export class ConfigService extends Disposable implements IConfigService {
         if (stripped === undefined) {
           delete stagedRaw[domain];
         } else {
-          stagedRaw[domain] = this.validateWrite(domain, this.registry.validate(domain, stripped));
+          this.validateWrite(domain, this.registry.validate(domain, stripped));
+          stagedRaw[domain] = stripped;
         }
       });
       this.rebuildEffective('set', [domain]);
@@ -476,7 +477,8 @@ export class ConfigService extends Disposable implements IConfigService {
         if (stripped === undefined) {
           delete stagedRaw[domain];
         } else {
-          stagedRaw[domain] = this.validateWrite(domain, this.registry.validate(domain, stripped));
+          this.validateWrite(domain, this.registry.validate(domain, stripped));
+          stagedRaw[domain] = stripped;
         }
       });
       this.rebuildEffective('set', [domain]);
@@ -516,7 +518,8 @@ export class ConfigService extends Disposable implements IConfigService {
           if (stripped === undefined) {
             delete stagedRaw[domain];
           } else {
-            stagedRaw[domain] = this.validateWrite(domain, this.registry.validate(domain, stripped));
+            this.validateWrite(domain, this.registry.validate(domain, stripped));
+          stagedRaw[domain] = stripped;
           }
         }
       });
