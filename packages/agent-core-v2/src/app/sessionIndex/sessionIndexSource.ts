@@ -1,32 +1,7 @@
-/**
- * `sessionIndex` domain (L2) — authoritative session-metadata scanning.
- *
- * Reads the persisted session set through the `storage` access-pattern
- * stores, rooted at the `sessionsDir` path layout fact from `bootstrap`. The
- * directory tree `<sessionsDir>/<workspaceId>/<sessionId>/` is the
- * authoritative index: workspace and session ids are enumerated via
- * `IFileSystemStorageService.list`, and each session's metadata document is
- * read via `IAtomicDocumentStore` to build its summary.
- *
- * The session metadata document lives at `<sessionDir>/state.json`, a layout
- * shared by v1 and v2; the `version` field distinguishes them (`2` = v2,
- * epoch-ms timestamps; absent = v1, ISO-string timestamps). The reader also
- * falls back to the legacy `<sessionDir>/session-meta/state.json` path for v2
- * sessions written before the layouts were unified. Both timestamp
- * representations are normalized to epoch ms.
- *
- * These helpers serve the index's authoritative fallback (legacy path), the
- * projector's full scans, and reconciliation — pure functions over injected
- * stores, owning no state themselves.
- */
-
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { SESSION_INDEX_KEY, SESSION_INDEX_SCOPE } from '#/app/workspace/workspaceAlias';
-import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-
-import { readSessionUsageFromWires } from './sessionUsageSummary';
 
 import {
   CHILD_SESSION_KIND,
@@ -34,6 +9,7 @@ import {
   type SessionSummary,
   type SessionUsageSummary,
 } from './sessionIndex';
+import type { SessionSourceFingerprint } from './sessionIndexModel';
 
 const META_SCOPE = 'session-meta';
 const META_KEY = 'state.json';
@@ -178,33 +154,38 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
   );
 }
 
-export async function listWorkspaceIds(
+export function listWorkspaceIds(
   storage: IFileSystemStorageService,
   sessionsScope: string,
 ): Promise<readonly string[]> {
-  try {
-    return await storage.list(sessionsScope);
-  } catch {
-    return [];
-  }
+  return storage.list(sessionsScope);
 }
 
-export async function listSessionIds(
+export function listSessionIds(
   storage: IFileSystemStorageService,
   sessionsScope: string,
   workspaceId: string,
 ): Promise<readonly string[]> {
-  try {
-    return await storage.list(`${sessionsScope}/${workspaceId}`);
-  } catch {
-    return [];
-  }
+  return storage.list(`${sessionsScope}/${workspaceId}`);
 }
 
-interface SessionMetadataEntry {
-  readonly base: string;
-  readonly scope: string;
-  readonly meta: Record<string, unknown>;
+export type SessionSummaryReadResult =
+  | { readonly kind: 'found'; readonly summary: SessionSummary }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'error'; readonly error: unknown };
+
+export async function readSessionSummaryResult(
+  docs: IAtomicDocumentStore,
+  sessionsScope: string,
+  workspaceId: string,
+  sessionId: string,
+): Promise<SessionSummaryReadResult> {
+  const metadata = await readSessionMetadataResult(docs, sessionsScope, workspaceId, sessionId);
+  if (metadata.kind !== 'found') return metadata;
+  return {
+    kind: 'found',
+    summary: summaryFromMetadata(metadata.meta, workspaceId, sessionId),
+  };
 }
 
 export async function readSessionSummary(
@@ -213,37 +194,9 @@ export async function readSessionSummary(
   workspaceId: string,
   sessionId: string,
 ): Promise<SessionSummary | undefined> {
-  const entry = await readSessionMetadata(docs, sessionsScope, workspaceId, sessionId);
-  return entry === undefined ? undefined : summaryFromMetadata(entry.meta, workspaceId, sessionId);
-}
-
-export async function reconcileSessionSummary(
-  docs: IAtomicDocumentStore,
-  log: IAppendLogStore,
-  sessionsScope: string,
-  workspaceId: string,
-  sessionId: string,
-): Promise<SessionSummary | undefined> {
-  const entry = await readSessionMetadata(docs, sessionsScope, workspaceId, sessionId);
-  if (entry === undefined) return undefined;
-  const summary = summaryFromMetadata(entry.meta, workspaceId, sessionId);
-  if (summary.usage?.wireComplete === true) return summary;
-  const recoverableAgentIds = recoverableAgents(entry.meta);
-  if (recoverableAgentIds.length === 0) return summary;
-  const replay = await readSessionUsageFromWires(
-    log,
-    recoverableAgentIds.map((agentId) => `${entry.base}/agents/${agentId}`),
-  );
-  if (!replay.complete || replay.usage === undefined) return summary;
-  const baselineUsage = JSON.stringify(summary.usage);
-  const repaired = await docs.update<Record<string, unknown>>(entry.scope, META_KEY, (current) => {
-    if (current === undefined) return undefined;
-    const currentUsage = parseSessionUsageSummary(current['usage']);
-    if (currentUsage?.wireComplete === true) return current;
-    if (JSON.stringify(currentUsage) !== baselineUsage) return current;
-    return { ...current, usage: replay.usage };
-  });
-  return repaired === undefined ? undefined : summaryFromMetadata(repaired, workspaceId, sessionId);
+  const result = await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId);
+  if (result.kind === 'error') throw result.error;
+  return result.kind === 'found' ? result.summary : undefined;
 }
 
 function summaryFromMetadata(
@@ -272,38 +225,30 @@ function summaryFromMetadata(
   });
 }
 
-function recoverableAgents(meta: Record<string, unknown>): string[] {
-  const rawAgents = meta['agents'];
-  const agentIds =
-    rawAgents !== null && typeof rawAgents === 'object' && !Array.isArray(rawAgents)
-      ? Object.keys(rawAgents)
-      : [];
-  const hasConversation = typeof meta['lastPrompt'] === 'string' && meta['lastPrompt'].length > 0;
-  return agentIds.length === 0 && !hasConversation ? [] : [...new Set(['main', ...agentIds])];
-}
+type SessionMetadataReadResult =
+  | { readonly kind: 'found'; readonly meta: Record<string, unknown> }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'error'; readonly error: unknown };
 
-async function readSessionMetadata(
+async function readSessionMetadataResult(
   docs: IAtomicDocumentStore,
   sessionsScope: string,
   workspaceId: string,
   sessionId: string,
-): Promise<SessionMetadataEntry | undefined> {
+): Promise<SessionMetadataReadResult> {
   const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
-  const current = await readMeta(docs, base);
-  if (current !== undefined) return { base, scope: base, meta: current };
-  const scope = `${base}/${META_SCOPE}`;
-  const legacy = await readMeta(docs, scope);
-  return legacy === undefined ? undefined : { base, scope, meta: legacy };
-}
-
-async function readMeta(
-  docs: IAtomicDocumentStore,
-  scope: string,
-): Promise<Record<string, unknown> | undefined> {
+  let current: Record<string, unknown> | undefined;
   try {
-    return await docs.get<Record<string, unknown>>(scope, META_KEY);
-  } catch {
-    return undefined;
+    current = await docs.get<Record<string, unknown>>(base, META_KEY);
+  } catch (error) {
+    return { kind: 'error', error };
+  }
+  if (current !== undefined) return { kind: 'found', meta: current };
+  try {
+    const legacy = await docs.get<Record<string, unknown>>(`${base}/${META_SCOPE}`, META_KEY);
+    return legacy === undefined ? { kind: 'missing' } : { kind: 'found', meta: legacy };
+  } catch (error) {
+    return { kind: 'error', error };
   }
 }
 
@@ -327,16 +272,41 @@ export async function mapBounded<T, R>(
   return out;
 }
 
+export async function sessionStateFingerprint(
+  storage: IFileSystemStorageService,
+  sessionsScope: string,
+  workspaceId: string,
+  sessionId: string,
+): Promise<SessionSourceFingerprint> {
+  const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
+  const nestedScope = `${base}/${META_SCOPE}`;
+  const [directMtimeMs, directSize, nestedMtimeMs, nestedSize] = await Promise.all([
+    storage.mtime(base, META_KEY),
+    storage.size(base, META_KEY),
+    storage.mtime(nestedScope, META_KEY),
+    storage.size(nestedScope, META_KEY),
+  ]);
+  return {
+    directMtimeMs: directMtimeMs ?? 0,
+    directSize: directSize ?? 0,
+    nestedMtimeMs: nestedMtimeMs ?? 0,
+    nestedSize: nestedSize ?? 0,
+  };
+}
+
 export async function sessionStateMaxMtime(
   storage: IFileSystemStorageService,
   sessionsScope: string,
   workspaceId: string,
   sessionId: string,
 ): Promise<number> {
-  const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
-  const direct = await storage.mtime(base, META_KEY);
-  const nested = await storage.mtime(`${base}/${META_SCOPE}`, META_KEY);
-  return Math.max(direct ?? 0, nested ?? 0);
+  const fingerprint = await sessionStateFingerprint(
+    storage,
+    sessionsScope,
+    workspaceId,
+    sessionId,
+  );
+  return Math.max(fingerprint.directMtimeMs, fingerprint.nestedMtimeMs);
 }
 
 export async function scanSessionsMaxMtime(

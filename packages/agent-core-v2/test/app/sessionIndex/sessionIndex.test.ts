@@ -24,12 +24,14 @@ import {
   type SessionSummary,
 } from '#/app/sessionIndex/sessionIndex';
 import {
+  LEGACY_SESSION_INDEX_MANIFEST,
   SESSION_INDEX_MANIFEST,
+  legacySessionCollection,
+  legacySessionCountersCollection,
   recencyColumn,
   sessionCollection,
 } from '#/app/sessionIndex/sessionIndexModel';
 import { FileSessionIndex } from '#/app/sessionIndex/sessionIndexService';
-import { addSessionUsage } from '#/app/sessionIndex/sessionUsageSummary';
 import {
   drainSessionIndexMirror,
   SessionIndexMirror,
@@ -779,7 +781,7 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     ]);
   });
 
-  it('projects metadata without wires and durably repairs incomplete usage once', async () => {
+  it('projects and reconciles metadata without reading incomplete usage wires', async () => {
     await seedSession('usage-repair', {
       title: 'usage',
       createdAt: 1,
@@ -810,158 +812,24 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     expect((await store.get('usage-repair'))?.usage?.wireComplete).toBeUndefined();
 
     await store.reconcileNow();
-    expect(appendLog.readCalls).toBe(2);
+    expect(appendLog.readCalls).toBe(0);
     expect((await store.get('usage-repair'))?.usage).toEqual({
-      total: { inputOther: 7, output: 7, inputCacheRead: 7, inputCacheCreation: 7 },
-      byModel: {
-        'example-model': { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
-        'worker-model': { inputOther: 4, output: 5, inputCacheRead: 6, inputCacheCreation: 7 },
-      },
-      wireComplete: true,
+      total: { inputOther: 1, output: 1, inputCacheRead: 1, inputCacheCreation: 1 },
     });
-    const persisted = JSON.parse(
-      await fsp.readFile(
-        join(sessionsDir, workspaceId, 'usage-repair', 'session-meta', 'state.json'),
-        'utf8',
-      ),
-    ) as { usage?: { wireComplete?: boolean } };
-    expect(persisted.usage?.wireComplete).toBe(true);
 
-    appendLog.readCalls = 0;
-    await store.reconcileNow();
-    expect(appendLog.readCalls).toBe(0);
-  });
-
-  it('merges repaired usage onto metadata changed during replay', async () => {
-    const initialMeta = {
-      title: 'old title',
+    await seedSession('usage-repair', {
+      title: 'updated',
       createdAt: 1,
-      updatedAt: 2,
-      archived: false,
-      custom: { marker: 'old' },
-      agents: { main: { type: 'main' } },
-    };
-    await seedSession('usage-race', initialMeta);
-    const usage = { inputOther: 5, output: 3, inputCacheRead: 2, inputCacheCreation: 1 };
-    const wireDir = join(sessionsDir, workspaceId, 'usage-race', 'agents', 'main');
-    await fsp.mkdir(wireDir, { recursive: true });
-    await fsp.writeFile(
-      join(wireDir, 'wire.jsonl'),
-      `${JSON.stringify({ type: 'usage.record', model: 'example-model', usage })}\n`,
-    );
-
-    class GatedAppendLogStore extends CountingAppendLogStore {
-      private openGate: (() => void) | undefined;
-      private notifyReplay: (() => void) | undefined;
-      private gateNextRead = true;
-      readonly replayEntered = new Promise<void>((resolve) => {
-        this.notifyReplay = resolve;
-      });
-      private readonly replayGate = new Promise<void>((resolve) => {
-        this.openGate = resolve;
-      });
-
-      openReplay(): void {
-        this.openGate?.();
-      }
-
-      override async *read<R>(scope: string, key: string): AsyncIterable<R> {
-        if (this.gateNextRead) {
-          this.gateNextRead = false;
-          this.notifyReplay?.();
-          await this.replayGate;
-        }
-        yield* super.read<R>(scope, key);
-      }
-    }
-
-    const fileStorage = new FileStorageService(homeDir);
-    const documents = new JsonAtomicDocumentStore(fileStorage);
-    const appendLog = new GatedAppendLogStore(fileStorage);
-    const store = build(fileStorage, true, appendLog, documents);
-    await store.prepare();
-
-    const reconciling = store.reconcileNow();
-    await appendLog.replayEntered;
-    const concurrentMeta = {
-      ...initialMeta,
-      title: 'new title',
-      updatedAt: 9,
-      archived: true,
-      archivedAt: 8,
-      custom: { marker: 'new' },
-      agents: { main: { type: 'main', displayName: 'renamed' } },
-    };
-    const metaScope = `sessions/${workspaceId}/usage-race/session-meta`;
-    await documents.set(metaScope, 'state.json', concurrentMeta);
-    appendLog.openReplay();
-    await reconciling;
-
-    expect(await documents.get(metaScope, 'state.json')).toMatchObject({
-      ...concurrentMeta,
+      updatedAt: 3,
       usage: {
-        total: usage,
-        byModel: { 'example-model': usage },
-        wireComplete: true,
+        total: { inputOther: 2, output: 2, inputCacheRead: 2, inputCacheCreation: 2 },
       },
     });
-    appendLog.readCalls = 0;
     await store.reconcileNow();
     expect(appendLog.readCalls).toBe(0);
-  });
-
-  it('recovers historical wires after the first live usage reaches old metadata', async () => {
-    await seedSession('usage-history', {
-      title: 'history',
-      createdAt: 1,
-      updatedAt: 2,
-      agents: { main: { type: 'main' } },
-    });
-    const oldUsage = { inputOther: 5, output: 3, inputCacheRead: 2, inputCacheCreation: 1 };
-    const liveUsage = { inputOther: 7, output: 4, inputCacheRead: 3, inputCacheCreation: 2 };
-    const wireDir = join(sessionsDir, workspaceId, 'usage-history', 'agents', 'main');
-    await fsp.mkdir(wireDir, { recursive: true });
-    const wirePath = join(wireDir, 'wire.jsonl');
-    await fsp.writeFile(
-      wirePath,
-      `${JSON.stringify({ type: 'usage.record', model: 'example-model', usage: oldUsage })}\n`,
-    );
-
-    const fileStorage = new FileStorageService(homeDir);
-    const documents = new JsonAtomicDocumentStore(fileStorage);
-    const appendLog = new CountingAppendLogStore(fileStorage);
-    const store = build(fileStorage, true, appendLog, documents);
-    await store.prepare();
-    await fsp.appendFile(
-      wirePath,
-      `${JSON.stringify({ type: 'usage.record', model: 'example-model', usage: liveUsage })}\n`,
-    );
-    const metaScope = `sessions/${workspaceId}/usage-history/session-meta`;
-    const liveSnapshot = await documents.update<Record<string, unknown>>(
-      metaScope,
-      'state.json',
-      (current) =>
-        current === undefined
-          ? undefined
-          : { ...current, usage: addSessionUsage(undefined, 'example-model', liveUsage) },
-    );
-    expect(liveSnapshot?.['usage']).toMatchObject({
-      total: liveUsage,
-      wireComplete: undefined,
-    });
-
-    await store.reconcileNow();
-    expect((await store.get('usage-history'))?.usage).toEqual({
-      total: { inputOther: 12, output: 7, inputCacheRead: 5, inputCacheCreation: 3 },
-      byModel: {
-        'example-model': {
-          inputOther: 12,
-          output: 7,
-          inputCacheRead: 5,
-          inputCacheCreation: 3,
-        },
-      },
-      wireComplete: true,
+    expect(await store.get('usage-repair')).toMatchObject({
+      title: 'updated',
+      usage: { total: { inputOther: 2, output: 2, inputCacheRead: 2, inputCacheCreation: 2 } },
     });
   });
 
@@ -1121,6 +989,22 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
 
     mirror.record(summary('a', { title: 'queued', updatedAt: 3 }));
     expect(await store.get('a')).toMatchObject({ title: 'queued', updatedAt: 3 });
+  });
+
+  it('does not return cached or queued sessions from the wrong workspace', async () => {
+    const otherId = encodeWorkDirKey('/home/user/other');
+    await seedSession('a', { title: 'published', createdAt: 1, updatedAt: 2 });
+    const store = build();
+    await store.prepare();
+
+    expect(await store.get('a', otherId)).toBeUndefined();
+
+    await seedSession('a', { title: 'moved', createdAt: 1, updatedAt: 3 }, otherId);
+    await fsp.rm(join(sessionsDir, workspaceId, 'a'), { recursive: true, force: true });
+    mirror.record(summary('a', { workspaceId: otherId, title: 'moved', updatedAt: 3 }));
+
+    expect(await store.get('a', workspaceId)).toBeUndefined();
+    expect(await store.get('a', otherId)).toMatchObject({ workspaceId: otherId, title: 'moved' });
   });
 
   it('serves flag-off reads only from authoritative metadata', async () => {
@@ -1803,28 +1687,47 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     expect(await queryStore.get<SessionSummary>('session:g1', 'legacy')).toEqual(legacySummary);
   });
 
-  it('reprojects an intermediate v2 checkpoint into the isolated collection namespace', async () => {
+  it('publishes v4 before cleaning a real v3 collection layout', async () => {
+    class UpgradeTrackingQueryStore extends MiniDbQueryStore {
+      legacyPresentAtPublish = false;
+      override async setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> {
+        if (source === SESSION_INDEX_MANIFEST) {
+          this.legacyPresentAtPublish =
+            (await this.get<SessionSummary>(legacySessionCollection(1), 'legacy')) !== undefined;
+        }
+        await super.setCheckpoint(source, checkpoint);
+      }
+    }
+    overrideScopedService(
+      LifecycleScope.App,
+      IQueryStore,
+      UpgradeTrackingQueryStore,
+      ScopeActivation.OnDemand,
+      'storage',
+    );
     await seedSession('fresh', { createdAt: 1, updatedAt: 3 });
     const store = build();
-    const intermediateSummary = summary('intermediate', { createdAt: 1, updatedAt: 2 });
-    await queryStore.put('session:g1', 'intermediate', intermediateSummary, {
-      columns: { 'g1:updatedAt': intermediateSummary.updatedAt },
+    const legacySummary = summary('legacy', { createdAt: 1, updatedAt: 2 });
+    await queryStore.put(legacySessionCollection(1), 'legacy', legacySummary);
+    await queryStore.put(legacySessionCountersCollection(1), workspaceId, {
+      active: 1,
+      archived: 0,
     });
-    await queryStore.setCheckpoint('sessionIndex:v2', { seq: 1 });
+    await queryStore.setCheckpoint(LEGACY_SESSION_INDEX_MANIFEST, { seq: 1 });
 
-    await expect(store.prepare()).resolves.toEqual({
+    await expect(store.prepare()).resolves.toMatchObject({
       source: 'read-model',
       state: 'ready',
       generation: 1,
-      degradedCount: 0,
     });
-    expect(await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST)).toEqual({ seq: 1 });
+
+    const tracking = queryStore as UpgradeTrackingQueryStore;
+    expect(tracking.legacyPresentAtPublish).toBe(true);
     expect(await queryStore.get<SessionSummary>(sessionCollection(1), 'fresh')).toMatchObject({
       id: 'fresh',
     });
-    expect(await queryStore.get<SessionSummary>('session:g1', 'intermediate')).toEqual(
-      intermediateSummary,
-    );
+    expect(await queryStore.get<SessionSummary>(legacySessionCollection(1), 'legacy')).toBeUndefined();
+    expect(await queryStore.get(legacySessionCountersCollection(1), workspaceId)).toBeUndefined();
   });
 
   it('a crashed initial projection reports building and recovers on retry', async () => {
@@ -1848,7 +1751,7 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
       ScopeActivation.OnDemand,
       'storage',
     );
-    const fileStorage = new FileStorageService(homeDir);
+    const fileStorage = new CountingStorage(homeDir);
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
@@ -1869,6 +1772,9 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     expect(status.state).toBe('degraded');
     expect(status.degradedCount).toBe(1);
     expect(status.reason).toBe('projection failed');
+    fileStorage.listCalls = 0;
+    expect(await store.get('b', workspaceId)).toMatchObject({ id: 'b', title: 'b' });
+    expect(fileStorage.listCalls).toBe(0);
     await expect(store.listRecent({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(
       SessionIndexBuildingError,
     );
@@ -1995,6 +1901,123 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(2);
   });
 
+  it('updates both workspace counters across a two-phase session move', async () => {
+    const otherId = encodeWorkDirKey('/home/user/other');
+    await seedSession('moved', { title: 'old', createdAt: 1, updatedAt: 2 });
+    const store = build();
+    await store.prepare();
+
+    await seedSession('moved', { title: 'new', createdAt: 1, updatedAt: 3 }, otherId);
+    await store.reconcileNow();
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+    expect(await store.count({ workspaceIds: [otherId] })).toBe(1);
+
+    await fsp.rm(join(sessionsDir, workspaceId, 'moved'), { recursive: true, force: true });
+    await store.reconcileNow();
+
+    expect(await store.get('moved')).toMatchObject({ workspaceId: otherId, title: 'new' });
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(0);
+    expect(await store.count({ workspaceIds: [otherId] })).toBe(1);
+  });
+
+  it('removes a session whose metadata file is deleted while its directory remains', async () => {
+    await seedSession('gone', { title: 'gone', createdAt: 1, updatedAt: 2 });
+    const store = build();
+    await store.prepare();
+
+    await fsp.rm(join(sessionsDir, workspaceId, 'gone', 'session-meta', 'state.json'));
+    await store.reconcileNow();
+
+    expect(await store.get('gone')).toBeUndefined();
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(0);
+  });
+
+  it('retries metadata read failures without freezing their fingerprint', async () => {
+    class FlakyDocs extends JsonAtomicDocumentStore {
+      failScope: string | undefined;
+      override async get<T>(scope: string, key: string): Promise<T | undefined> {
+        if (scope === this.failScope && key === 'state.json') {
+          this.failScope = undefined;
+          throw new Error('injected metadata read failure');
+        }
+        return super.get<T>(scope, key);
+      }
+    }
+    await seedSession('retry', { title: 'before', createdAt: 1, updatedAt: 2 });
+    const fileStorage = new FileStorageService(homeDir);
+    const docs = new FlakyDocs(fileStorage);
+    const store = build(fileStorage, true, new AppendLogStore(fileStorage), docs);
+    await store.prepare();
+    await seedSession('retry', { title: 'after', createdAt: 1, updatedAt: 3 });
+    docs.failScope = `sessions/${workspaceId}/retry`;
+
+    await store.reconcileNow();
+    expect(await store.get('retry')).toMatchObject({ title: 'before' });
+
+    await store.reconcileNow();
+    expect(await store.get('retry')).toMatchObject({ title: 'after' });
+  });
+
+  it('aborts reconciliation on enumeration failure without removing published sessions', async () => {
+    class FlakyStorage extends FileStorageService {
+      failNextWorkspaceList = false;
+      override async list(scope: string, prefix?: string): Promise<readonly string[]> {
+        if (this.failNextWorkspaceList && scope === `sessions/${workspaceId}`) {
+          this.failNextWorkspaceList = false;
+          throw new Error('injected enumeration failure');
+        }
+        return super.list(scope, prefix);
+      }
+    }
+    await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
+    await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 3 });
+    const fileStorage = new FlakyStorage(homeDir);
+    const store = build(fileStorage);
+    await store.prepare();
+    fileStorage.failNextWorkspaceList = true;
+
+    await expect(store.reconcileNow()).rejects.toThrow('injected enumeration failure');
+
+    expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((item) => item.id)).toEqual([
+      'b',
+      'a',
+    ]);
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(2);
+  });
+
+  it('reconciles an unchanged tree without reading metadata or enumerating index keys', async () => {
+    class CountingDocs extends JsonAtomicDocumentStore {
+      gets = 0;
+      override async get<T>(scope: string, key: string): Promise<T | undefined> {
+        this.gets += 1;
+        return super.get<T>(scope, key);
+      }
+    }
+    overrideScopedService(
+      LifecycleScope.App,
+      IQueryStore,
+      CountingQueryStore,
+      ScopeActivation.OnDemand,
+      'storage',
+    );
+    await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 3 });
+    await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 2 });
+    const fileStorage = new FileStorageService(homeDir);
+    const docs = new CountingDocs(fileStorage);
+    const store = build(fileStorage, true, new AppendLogStore(fileStorage), docs);
+    await store.prepare();
+    const countingStore = queryStore as CountingQueryStore;
+    countingStore.resetCounts();
+    docs.gets = 0;
+
+    await store.reconcileNow();
+
+    const counts = countingStore.snapshotCounts();
+    expect(docs.gets).toBe(0);
+    expect(Object.keys(counts).some((key) => key.startsWith('listKeys:'))).toBe(false);
+    expect(counts[`getMany:${sessionCollection(1)}`]).toBeUndefined();
+  });
+
   it('returns building before a gated first projection without request-path source reads', async () => {
     await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 3 });
     await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 2 });
@@ -2053,14 +2076,19 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     ]);
   });
 
-  it('keeps bounded point reads available while list and count report building', async () => {
+  it('keeps workspace-bounded point reads available while list and count report building', async () => {
     await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
     await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 3 });
 
     class GatedQueryStore extends MiniDbQueryStore {
       private gate: Promise<void> | undefined;
       private openGate: (() => void) | undefined;
+      private notifyEntered: (() => void) | undefined;
+      entered: Promise<void> = Promise.resolve();
       hold(): void {
+        this.entered = new Promise((resolve) => {
+          this.notifyEntered = resolve;
+        });
         this.gate = new Promise((resolve) => {
           this.openGate = resolve;
         });
@@ -2070,6 +2098,7 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
         this.gate = undefined;
       }
       override async batch(ops: readonly WriteOp[]): Promise<void> {
+        this.notifyEntered?.();
         await this.gate;
         return super.batch(ops);
       }
@@ -2081,7 +2110,7 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
       ScopeActivation.OnDemand,
       'storage',
     );
-    const fileStorage = new FileStorageService(homeDir);
+    const fileStorage = new CountingStorage(homeDir);
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
@@ -2107,7 +2136,10 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     await expect(store.count({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(
       SessionIndexBuildingError,
     );
-    expect((await store.get('b'))?.title).toBe('b');
+    await (queryStore as GatedQueryStore).entered;
+    fileStorage.listCalls = 0;
+    expect((await store.get('b', workspaceId))?.title).toBe('b');
+    expect(fileStorage.listCalls).toBe(0);
     expect(store.status().state).toBe('preparing');
 
     (queryStore as GatedQueryStore).release();

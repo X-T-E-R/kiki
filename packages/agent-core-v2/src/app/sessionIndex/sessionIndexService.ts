@@ -6,7 +6,6 @@ import { ILogService } from '#/_base/log/log';
 import { IntervalTimer } from '#/_base/utils/timer';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
-import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
   IQueryStore,
@@ -104,7 +103,6 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
-    @IAppendLogStore private readonly appendLog: IAppendLogStore,
     @IQueryStore private readonly queryStore: IQueryStore,
     @IFlagService private readonly flags: IFlagService,
     @ISessionIndexMirror private readonly mirror: ISessionIndexMirror,
@@ -114,7 +112,6 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.projector = new SessionIndexProjector({
       storage,
       docs,
-      appendLog,
       queryStore,
       log,
       sessionsScope: bootstrap.scope('sessions'),
@@ -358,10 +355,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     });
   }
 
-  async get(id: string): Promise<SessionSummary | undefined> {
+  async get(id: string, workspaceId?: string): Promise<SessionSummary | undefined> {
     return this.withPointReadModel(
-      (generation) => this.getFromReadModel(generation, id),
-      () => this.getLegacy(id),
+      (generation) => this.getFromReadModel(generation, id, undefined, workspaceId),
+      () => this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]),
     );
   }
 
@@ -413,7 +410,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       if (manifest === undefined) {
         this.markDegraded('published generation lost');
         this.kickPrepare();
-        return legacy();
+        return await legacy();
       }
       this.generation = manifest.seq;
       return await op(manifest.seq);
@@ -483,12 +480,19 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     generation: number,
     id: string,
     pending: readonly SessionSummary[] = this.mirror.pending(),
+    workspaceId?: string,
   ): Promise<SessionSummary | undefined> {
     const queued = pending.find((summary) => summary.id === id);
-    if (queued !== undefined) return queued;
-    const cached: unknown = await this.queryStore.get(sessionCollection(generation), id);
-    if (isSessionSummaryShape(cached)) return stripRecencyField(generation, cached);
-    const summary = await this.getLegacy(id);
+    if (queued !== undefined) {
+      if (workspaceId === undefined || queued.workspaceId === workspaceId) return queued;
+    } else {
+      const cached: unknown = await this.queryStore.get(sessionCollection(generation), id);
+      if (isSessionSummaryShape(cached)) {
+        const summary = stripRecencyField(generation, cached);
+        if (workspaceId === undefined || summary.workspaceId === workspaceId) return summary;
+      }
+    }
+    const summary = await this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]);
     if (summary !== undefined) this.mirror.record(summary);
     return summary;
   }
@@ -499,7 +503,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   ): Promise<Page<SessionSummary>> {
     const pending = this.mirror.pending();
     if (query.sessionId !== undefined) {
-      const summary = await this.getFromReadModel(generation, query.sessionId, pending);
+      const workspaceId = query.workspaceIds?.length === 1 ? query.workspaceIds[0] : undefined;
+      const summary = await this.getFromReadModel(generation, query.sessionId, pending, workspaceId);
       const items =
         summary !== undefined && (!summary.archived || query.includeArchived === true)
           ? [summary]
@@ -748,7 +753,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   private async listLegacy(query: SessionListQuery): Promise<Page<SessionSummary>> {
     if (query.sessionId !== undefined) {
-      const summary = await this.getLegacy(query.sessionId);
+      const summary = await this.getLegacy(query.sessionId, query.workspaceIds);
       const items =
         summary !== undefined && (!summary.archived || query.includeArchived === true)
           ? [summary]
@@ -781,29 +786,41 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     };
   }
 
-  private getLegacy(id: string): Promise<SessionSummary | undefined> {
+  private getLegacy(
+    id: string,
+    knownWorkspaceIds?: readonly string[],
+  ): Promise<SessionSummary | undefined> {
     return this.readAuthoritativeWithRetry(async () => {
-      const pendingBefore = this.mirror.pending().find((summary) => summary.id === id);
+      const pendingBefore = this.mirror.pending().find(
+        (summary) =>
+          summary.id === id &&
+          (knownWorkspaceIds === undefined || knownWorkspaceIds.includes(summary.workspaceId)),
+      );
       let authoritative: SessionSummary | undefined;
-      const workspaceIds = await this.listStorage(this.sessionsScope);
-      if (workspaceIds !== undefined) {
-        for (const workspaceId of workspaceIds) {
+      const workspaceIds =
+        knownWorkspaceIds ?? (await this.listStorage(this.sessionsScope)) ?? [];
+      for (const workspaceId of workspaceIds) {
+        if (knownWorkspaceIds === undefined) {
           const sessionIds = await this.listStorage(`${this.sessionsScope}/${workspaceId}`);
           if (sessionIds === undefined || !sessionIds.includes(id)) continue;
-          const summary = await readSessionSummary(
-            this.docs,
-            this.sessionsScope,
-            workspaceId,
-            id,
-          );
-          if (summary !== undefined) {
-            authoritative = summary;
-            break;
-          }
+        }
+        const summary = await readSessionSummary(
+          this.docs,
+          this.sessionsScope,
+          workspaceId,
+          id,
+        );
+        if (summary !== undefined) {
+          authoritative = summary;
+          break;
         }
       }
       if (!this.readModelEnabled()) return authoritative;
-      const pendingAfter = this.mirror.pending().find((summary) => summary.id === id);
+      const pendingAfter = this.mirror.pending().find(
+        (summary) =>
+          summary.id === id &&
+          (knownWorkspaceIds === undefined || knownWorkspaceIds.includes(summary.workspaceId)),
+      );
       return pendingAfter ?? pendingBefore ?? authoritative;
     });
   }

@@ -1594,7 +1594,7 @@ function readSnapshotStatus(
 ): NonNullable<ReturnType<typeof readLegacyStatus>> | undefined {
   if (agent === undefined) return undefined;
   try {
-    return readLegacyStatus(agent);
+    return readLegacyStatus(agent, { contextBreakdown: true });
   } catch {
     return undefined;
   }

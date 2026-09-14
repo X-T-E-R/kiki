@@ -81,7 +81,7 @@ export interface ISessionIndex {
   prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus>;
   readonly onDidChangeStatus: Event<SessionIndexStatus>;
   status(): SessionIndexStatus;
-  get(id: string): Promise<SessionSummary | undefined>;
+  get(id: string, workspaceId?: string): Promise<SessionSummary | undefined>;
   /** Recency-ordered keyset page over the persisted session set. */
   listRecent(query: SessionListQuery): Promise<Page<SessionSummary>>;
   /** Materialized count over the given workspace-id set. */

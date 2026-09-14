@@ -1,5 +1,4 @@
 import {
-  IAppendLogStore,
   IFileSystemStorageService,
   IRetainedUsageService,
   ISessionIndex,
@@ -22,7 +21,10 @@ import { UsageAggregationService } from '../src/usage/usageAggregationService';
 interface Fixture {
   readonly service: UsageAggregationService;
   readonly reads: Map<string, number>;
+  readonly readBytes: Map<string, number>;
   readonly retainedQueries: readonly RetainedUsageListQuery[];
+  setWire(scope: string, records: readonly WireRecord[]): void;
+  restart(): UsageAggregationService;
 }
 
 function summary(id: string, workspaceId: string): SessionSummary {
@@ -96,7 +98,19 @@ function fixture(
   },
 ): Fixture {
   const reads = new Map<string, number>();
+  const readBytes = new Map<string, number>();
   const retainedQueries: RetainedUsageListQuery[] = [];
+  const wires = new Map<string, Buffer>();
+  const wireMtimes = new Map<string, number>();
+  const persisted = new Map<string, Uint8Array>();
+  const setWire = (wireScope: string, wireRecords: readonly WireRecord[]): void => {
+    wires.set(
+      wireScope,
+      Buffer.from(wireRecords.map((record) => JSON.stringify(record)).join('\n') + (wireRecords.length > 0 ? '\n' : '')),
+    );
+    wireMtimes.set(wireScope, (wireMtimes.get(wireScope) ?? 0) + 1);
+  };
+  for (const [wireScope, wireRecords] of Object.entries(records)) setWire(wireScope, wireRecords);
   const index: ISessionIndex = {
     _serviceBrand: undefined,
     prepare: async () => ({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }),
@@ -116,16 +130,24 @@ function fixture(
   const storage = {
     _serviceBrand: undefined,
     list: async () => ['main'],
-  } as unknown as IFileSystemStorageService;
-  const appendLog = {
-    _serviceBrand: undefined,
-    read: <R>(scope: string): AsyncIterable<R> => {
-      reads.set(scope, (reads.get(scope) ?? 0) + 1);
+    size: async (wireScope: string) => wires.get(wireScope)?.length,
+    mtime: async (wireScope: string) => wireMtimes.get(wireScope),
+    read: async (storageScope: string, key: string) => persisted.get(`${storageScope}/${key}`),
+    write: async (storageScope: string, key: string, data: Uint8Array) => {
+      persisted.set(`${storageScope}/${key}`, Uint8Array.from(data));
+    },
+    readStream: (wireScope: string, _key: string, range?: { start: number; end: number }) => {
+      reads.set(wireScope, (reads.get(wireScope) ?? 0) + 1);
       return (async function* () {
-        for (const record of records[scope] ?? []) yield record as R;
+        const bytes = wires.get(wireScope) ?? Buffer.alloc(0);
+        const start = range?.start ?? 0;
+        const end = Math.min(range?.end ?? bytes.length - 1, bytes.length - 1);
+        const slice = end < start ? Buffer.alloc(0) : bytes.subarray(start, end + 1);
+        readBytes.set(wireScope, (readBytes.get(wireScope) ?? 0) + slice.length);
+        if (slice.length > 0) yield slice;
       })();
     },
-  } as unknown as IAppendLogStore;
+  } as unknown as IFileSystemStorageService;
   const retainedUsage: IRetainedUsageService = {
     _serviceBrand: undefined,
     retainDeletedSession: async () => { throw new Error('retain is not used'); },
@@ -146,7 +168,6 @@ function fixture(
       get: (identifier: unknown) => {
         if (identifier === ISessionIndex) return index;
         if (identifier === IFileSystemStorageService) return storage;
-        if (identifier === IAppendLogStore) return appendLog;
         if (identifier === IRetainedUsageService) return retainedUsage;
         if (identifier === IModelPricingService) return pricing;
         throw new Error('unexpected service');
@@ -156,7 +177,10 @@ function fixture(
   return {
     service: new UsageAggregationService(core, now, limits),
     reads,
+    readBytes,
     retainedQueries,
+    setWire,
+    restart: () => new UsageAggregationService(core, now, limits),
   };
 }
 
@@ -219,7 +243,7 @@ describe('UsageAggregationService accounting evidence', () => {
 });
 
 describe('UsageAggregationService cache budgets', () => {
-  it('charges warmed cache entries against each request record budget', async () => {
+  it('serves warmed cache entries without spending the wire-read budget', async () => {
     const sessionA = summary('session-a', 'workspace-a');
     const sessionB = summary('session-b', 'workspace-b');
     const { service, reads } = fixture(
@@ -237,15 +261,16 @@ describe('UsageAggregationService cache budgets', () => {
     expect(service.cacheStatus()).toEqual({ entries: 2, records: 4 });
 
     const all = await query(service);
-    expect(all.summary.session_count).toBe(1);
+    expect(all.summary.session_count).toBe(2);
     expect(all.reliability).toMatchObject({
-      scanned_sessions: 1,
-      incomplete_reason: 'record_budget',
+      complete: true,
+      scanned_sessions: 2,
+      incomplete_reason: null,
     });
-    expect([...reads.values()].reduce((total, count) => total + count, 0)).toBe(2);
+    expect([...reads.values()].reduce((total, count) => total + count, 0)).toBe(4);
   });
 
-  it('does not cache partial reads and preserves their reliability on repeated queries', async () => {
+  it('continues a budget-limited scan from its persisted offset', async () => {
     const session = summary('session-a', 'workspace-a');
     const wireScope = scope('workspace-a', 'session-a');
     const { service, reads } = fixture(
@@ -264,12 +289,13 @@ describe('UsageAggregationService cache budgets', () => {
       incomplete_reason: 'record_budget',
     });
     expect(second.reliability).toMatchObject({
-      complete: false,
-      incomplete_sessions: 1,
-      incomplete_reason: 'record_budget',
+      complete: true,
+      incomplete_sessions: 0,
+      incomplete_reason: null,
     });
-    expect(service.cacheStatus()).toEqual({ entries: 0, records: 0 });
-    expect(reads.get(wireScope)).toBe(2);
+    expect(second.summary.tokens.output).toBe(2);
+    expect(service.cacheStatus()).toEqual({ entries: 1, records: 2 });
+    expect(reads.get(wireScope)).toBeGreaterThanOrEqual(2);
   });
 
   it('checks the deadline again while aggregating cached or replayed records', async () => {
@@ -329,6 +355,85 @@ describe('UsageAggregationService cache budgets', () => {
     await query(service, { 'workspace.id': 'workspace-a' });
     await query(service, { 'workspace.id': 'workspace-b' });
     expect(service.cacheStatus()).toEqual({ entries: 1, records: 1 });
+  });
+
+  it('reads only an appended wire tail after the cache expires', async () => {
+    let time = 0;
+    const wireScope = scope('workspace-a', 'session-a');
+    const firstRecord = { ...usageRecord(10, 1), padding: 'x'.repeat(16_384) };
+    const appendedRecord = usageRecord(11, 2);
+    const fullWireBytes = Buffer.byteLength(
+      `${JSON.stringify(firstRecord)}\n${JSON.stringify(appendedRecord)}\n`,
+    );
+    const { service, readBytes, setWire } = fixture(
+      [summary('session-a', 'workspace-a')],
+      { [wireScope]: [firstRecord] },
+      () => time,
+      { cacheTtlMs: 10, deadlineMs: 10_000 },
+    );
+    await query(service);
+    const firstBytes = readBytes.get(wireScope) ?? 0;
+
+    setWire(wireScope, [firstRecord, appendedRecord]);
+    time = 11;
+    const second = await query(service);
+
+    expect(second.summary.tokens.output).toBe(2);
+    const incrementalBytes = (readBytes.get(wireScope) ?? 0) - firstBytes;
+    expect(incrementalBytes).toBeGreaterThan(0);
+    expect(incrementalBytes).toBeLessThan(fullWireBytes);
+  });
+
+  it('restores a persisted summary after the service restarts', async () => {
+    const wireScope = scope('workspace-a', 'session-a');
+    const instance = fixture(
+      [summary('session-a', 'workspace-a')],
+      { [wireScope]: [usageRecord(10, 1), usageRecord(11, 2)] },
+      () => 0,
+      { deadlineMs: 10_000 },
+    );
+    await query(instance.service);
+    const bytesAfterInitialScan = instance.readBytes.get(wireScope) ?? 0;
+
+    const restored = await query(instance.restart());
+
+    expect(restored.summary.tokens.output).toBe(2);
+    expect((instance.readBytes.get(wireScope) ?? 0) - bytesAfterInitialScan).toBeLessThanOrEqual(4_096);
+  });
+
+  it('resets a checkpoint when a wire is rewritten at the same size', async () => {
+    let time = 0;
+    const wireScope = scope('workspace-a', 'session-a');
+    const { service, setWire } = fixture(
+      [summary('session-a', 'workspace-a')],
+      { [wireScope]: [usageRecord(10, 1)] },
+      () => time,
+      { cacheTtlMs: 10, deadlineMs: 10_000 },
+    );
+    expect((await query(service)).reliability.coverage.earliest_at).toBe(10);
+
+    setWire(wireScope, [usageRecord(20, 1)]);
+    time = 11;
+    const rewritten = await query(service);
+
+    expect(rewritten.summary.tokens.output).toBe(1);
+    expect(rewritten.reliability.coverage).toEqual({ earliest_at: 20, latest_at: 20 });
+  });
+
+  it('single-flights concurrent cold reads of one session', async () => {
+    const wireScope = scope('workspace-a', 'session-a');
+    const { service, reads } = fixture(
+      [summary('session-a', 'workspace-a')],
+      { [wireScope]: [usageRecord(10, 1)] },
+      () => 0,
+      { deadlineMs: 10_000 },
+    );
+
+    const [first, second] = await Promise.all([query(service), query(service)]);
+
+    expect(first.summary.tokens.output).toBe(1);
+    expect(second.summary.tokens.output).toBe(1);
+    expect(reads.get(wireScope)).toBe(2);
   });
 });
 

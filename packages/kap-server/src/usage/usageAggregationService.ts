@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 
 import {
   AGENT_WIRE_RECORD_KEY,
-  IAppendLogStore,
   IFileSystemStorageService,
   IRetainedUsageService,
   ISessionIndex,
@@ -23,11 +22,14 @@ const DEFAULT_PAGE_SIZE = 50;
 const INDEX_PAGE_SIZE = 100;
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const PERSISTENCE_SCOPE = 'cache/usage-aggregation-v1';
+const PERSISTENCE_VERSION = 1;
+const BOUNDARY_BYTES = 4 * 1024;
 const DEFAULT_LIMITS: UsageAggregationLimits = {
   sessionScanLimit: 500,
   wireRecordBudget: 200_000,
   deadlineMs: 1_500,
-  cacheTtlMs: 30_000,
+  cacheTtlMs: 90_000,
   cacheMaxEntries: 256,
   cacheMaxRecords: 50_000,
   cacheMaxEntryRecords: 10_000,
@@ -48,6 +50,7 @@ export interface UsageAggregationLimits {
 }
 
 interface NormalizedUsageRecord {
+  readonly sourceAgentId?: string;
   readonly time: number;
   readonly model: string;
   readonly usage: TokenUsage;
@@ -70,7 +73,27 @@ interface SessionRecords {
 interface SessionCacheEntry {
   readonly expiresAt: number;
   readonly records: readonly NormalizedUsageRecord[];
+}
+
+interface WireCheckpoint {
+  readonly offset: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly boundaryHash: string;
+  readonly valid: boolean;
+}
+
+interface PersistentSessionRecords {
+  readonly version: number;
+  readonly sessionKey: string;
+  readonly records: readonly NormalizedUsageRecord[];
+  readonly agents: Readonly<Record<string, WireCheckpoint>>;
+}
+
+interface SessionLoadResult {
+  readonly session: SessionRecords;
   readonly scannedRecordCount: number;
+  readonly incompleteReason: UsageResponse['reliability']['incomplete_reason'];
 }
 
 interface ScanBudget {
@@ -146,8 +169,10 @@ interface SessionAccumulator extends AggregateAccumulator {
 
 export class UsagePageTokenMismatchError extends Error {}
 
+/** Incremental usage projection for wire files produced through the managed append/rewrite stores. External in-place rewrites that preserve the checkpoint boundary are outside this cache's consistency contract. */
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
+  private readonly sessionFlights = new Map<string, Promise<SessionLoadResult>>();
   private readonly limits: UsageAggregationLimits;
   private cachedRecordCount = 0;
 
@@ -232,61 +257,166 @@ export class UsageAggregationService {
   ): Promise<SessionRecords | undefined> {
     const cacheKey = sessionKey(summary);
     const cached = this.cache.get(cacheKey);
-    const now = this.now();
     if (cached !== undefined) {
-      if (cached.scannedRecordCount > budget.remainingRecords) {
-        budget.incompleteReason = 'record_budget';
-        return undefined;
-      }
-      budget.remainingRecords -= cached.scannedRecordCount;
       this.cache.delete(cacheKey);
       this.cache.set(cacheKey, cached);
       return { summary, records: cached.records, complete: true, deleted: false };
     }
+    let flight = this.sessionFlights.get(cacheKey);
+    if (flight === undefined) {
+      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt);
+      this.sessionFlights.set(cacheKey, flight);
+      const clearFlight = (): void => {
+        if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
+      };
+      void flight.then(clearFlight, clearFlight);
+    }
+    const result = await flight;
+    if (result.scannedRecordCount > budget.remainingRecords) {
+      budget.incompleteReason = 'record_budget';
+      return undefined;
+    }
+    budget.remainingRecords -= result.scannedRecordCount;
+    if (result.incompleteReason !== null) budget.incompleteReason = result.incompleteReason;
+    if (result.session.complete) this.cacheSession(cacheKey, result.session.records);
+    return result.session;
+  }
+
+  private async loadSessionIncremental(
+    summary: SessionSummary,
+    recordLimit: number,
+    deadlineAt: number,
+  ): Promise<SessionLoadResult> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
-    const appendLog = this.core.accessor.get(IAppendLogStore);
+    const cacheKey = sessionKey(summary);
+    const persisted = await this.readPersistentSession(storage, cacheKey);
     const workspaceScope = workspacePersistenceScope('sessions', summary.workspaceId);
     const sessionScope = sessionScopeOf(workspaceScope, summary.id);
     const agentIds = await storage.list(`${sessionScope}/agents`);
-    const records: NormalizedUsageRecord[] = [];
+    const agentSet = new Set(agentIds);
+    let records = [...persisted.records].filter(
+      (record) => record.sourceAgentId === undefined || agentSet.has(record.sourceAgentId),
+    );
+    const agents: Record<string, WireCheckpoint> = {};
     let scannedRecordCount = 0;
+    let incompleteReason: UsageResponse['reliability']['incomplete_reason'] = null;
     let complete = agentIds.length > 0;
+
     for (const agentId of agentIds) {
-      let truncated = false;
-      try {
-        for await (const raw of appendLog.read<WireRecord>(
-          agentScopeOf(sessionScope, agentId),
-          AGENT_WIRE_RECORD_KEY,
-          { onTruncate: () => { truncated = true; } },
-        )) {
-          if (this.now() >= budget.deadlineAt) {
-            budget.incompleteReason = 'deadline';
-            complete = false;
-            break;
-          }
-          if (budget.remainingRecords === 0) {
-            budget.incompleteReason = 'record_budget';
-            complete = false;
-            break;
-          }
-          budget.remainingRecords -= 1;
-          scannedRecordCount += 1;
-          if (raw.type !== 'usage.record') continue;
-          const record = normalizeRecord(raw);
-          if (record === undefined) {
-            complete = false;
-          } else {
-            records.push(record);
-          }
-        }
-      } catch {
+      if (this.now() >= deadlineAt) {
+        incompleteReason = 'deadline';
         complete = false;
+        break;
       }
-      if (truncated) complete = false;
-      if (budget.incompleteReason === 'deadline' || budget.incompleteReason === 'record_budget') break;
+      if (scannedRecordCount >= recordLimit) {
+        incompleteReason = 'record_budget';
+        complete = false;
+        break;
+      }
+      const wireScope = agentScopeOf(sessionScope, agentId);
+      const [sizeValue, mtimeValue] = await Promise.all([
+        storage.size(wireScope, AGENT_WIRE_RECORD_KEY),
+        storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY),
+      ]);
+      const size = sizeValue ?? 0;
+      const mtimeMs = mtimeValue ?? 0;
+      let checkpoint = persisted.agents[agentId];
+      let reset = checkpoint !== undefined && size < checkpoint.offset;
+      if (
+        checkpoint !== undefined &&
+        !reset &&
+        (size !== checkpoint.size || mtimeMs !== checkpoint.mtimeMs)
+      ) {
+        const boundaryHash = await this.boundaryHash(storage, wireScope, checkpoint.offset);
+        reset = boundaryHash !== checkpoint.boundaryHash ||
+          (size === checkpoint.offset && mtimeMs !== checkpoint.mtimeMs);
+      }
+      if (reset) {
+        records = records.filter((record) => record.sourceAgentId !== agentId);
+        checkpoint = undefined;
+      }
+      const offset = checkpoint?.offset ?? 0;
+      const tail = await readWireTail(
+        storage,
+        wireScope,
+        offset,
+        size,
+        recordLimit - scannedRecordCount,
+        deadlineAt,
+        this.now,
+      );
+      scannedRecordCount += tail.scannedRecordCount;
+      records.push(...tail.records.map((record) => ({ ...record, sourceAgentId: agentId })));
+      const nextOffset = tail.offset;
+      agents[agentId] = {
+        offset: nextOffset,
+        size,
+        mtimeMs,
+        boundaryHash: await this.boundaryHash(storage, wireScope, nextOffset),
+        valid: (checkpoint?.valid ?? true) && tail.valid,
+      };
+      if (!tail.complete) complete = false;
+      if (!agents[agentId].valid) complete = false;
+      if (tail.incompleteReason !== null) {
+        incompleteReason = tail.incompleteReason;
+        break;
+      }
     }
-    if (complete) this.cacheSession(cacheKey, now, records, scannedRecordCount);
-    return { summary, records, complete, deleted: false };
+
+    for (const agentId of agentIds) {
+      if (agents[agentId] === undefined && persisted.agents[agentId] !== undefined) {
+        agents[agentId] = persisted.agents[agentId];
+      }
+    }
+    const next: PersistentSessionRecords = {
+      version: PERSISTENCE_VERSION,
+      sessionKey: cacheKey,
+      records,
+      agents,
+    };
+    try {
+      await storage.write(
+        PERSISTENCE_SCOPE,
+        persistenceKey(cacheKey),
+        Buffer.from(JSON.stringify(next)),
+        { atomic: true },
+      );
+    } catch {
+      complete = false;
+    }
+    return {
+      session: { summary, records, complete, deleted: false },
+      scannedRecordCount,
+      incompleteReason,
+    };
+  }
+
+  private async readPersistentSession(
+    storage: IFileSystemStorageService,
+    cacheKey: string,
+  ): Promise<PersistentSessionRecords> {
+    try {
+      const bytes = await storage.read(PERSISTENCE_SCOPE, persistenceKey(cacheKey));
+      if (bytes === undefined) return emptyPersistentSession(cacheKey);
+      const parsed = parsePersistentSession(
+        JSON.parse(Buffer.from(bytes).toString('utf8')),
+        cacheKey,
+      );
+      return parsed ?? emptyPersistentSession(cacheKey);
+    } catch {
+      return emptyPersistentSession(cacheKey);
+    }
+  }
+
+  private async boundaryHash(
+    storage: IFileSystemStorageService,
+    scope: string,
+    offset: number,
+  ): Promise<string> {
+    if (offset === 0) return '';
+    const start = Math.max(0, offset - BOUNDARY_BYTES);
+    const bytes = await readRange(storage, scope, start, offset - 1);
+    return createHash('sha256').update(bytes).digest('base64url');
   }
 
   private async readRetainedSessions(
@@ -335,9 +465,7 @@ export class UsageAggregationService {
 
   private cacheSession(
     key: string,
-    now: number,
     records: readonly NormalizedUsageRecord[],
-    scannedRecordCount: number,
   ): void {
     if (records.length > this.limits.cacheMaxEntryRecords) return;
     const existing = this.cache.get(key);
@@ -346,14 +474,13 @@ export class UsageAggregationService {
       this.cache.size >= this.limits.cacheMaxEntries ||
       this.cachedRecordCount + records.length > this.limits.cacheMaxRecords
     ) {
-      const oldest = this.cache.entries().next().value as [string, SessionCacheEntry] | undefined;
+      const oldest = this.cache.entries().next().value;
       if (oldest === undefined) return;
       this.deleteCacheEntry(oldest[0], oldest[1]);
     }
     this.cache.set(key, {
-      expiresAt: now + this.limits.cacheTtlMs,
+      expiresAt: this.now() + this.limits.cacheTtlMs,
       records,
-      scannedRecordCount,
     });
     this.cachedRecordCount += records.length;
   }
@@ -563,6 +690,166 @@ export class UsageAggregationService {
       },
     };
   }
+}
+
+interface WireTailResult {
+  readonly records: readonly NormalizedUsageRecord[];
+  readonly offset: number;
+  readonly scannedRecordCount: number;
+  readonly valid: boolean;
+  readonly complete: boolean;
+  readonly incompleteReason: UsageResponse['reliability']['incomplete_reason'];
+}
+
+async function readWireTail(
+  storage: IFileSystemStorageService,
+  scope: string,
+  startOffset: number,
+  size: number,
+  recordLimit: number,
+  deadlineAt: number,
+  now: () => number,
+): Promise<WireTailResult> {
+  if (startOffset >= size) {
+    return {
+      records: [],
+      offset: startOffset,
+      scannedRecordCount: 0,
+      valid: true,
+      complete: true,
+      incompleteReason: null,
+    };
+  }
+  let pending = Buffer.alloc(0);
+  let offset = startOffset;
+  let scannedRecordCount = 0;
+  let valid = true;
+  let incompleteReason: UsageResponse['reliability']['incomplete_reason'] = null;
+  const records: NormalizedUsageRecord[] = [];
+  try {
+    for await (const chunkValue of storage.readStream(
+      scope,
+      AGENT_WIRE_RECORD_KEY,
+      { start: startOffset, end: size - 1 },
+    )) {
+      const chunk = Buffer.from(chunkValue);
+      pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+      for (;;) {
+        const newline = pending.indexOf(0x0a);
+        if (newline < 0) break;
+        if (now() >= deadlineAt) {
+          incompleteReason = 'deadline';
+          break;
+        }
+        if (scannedRecordCount >= recordLimit) {
+          incompleteReason = 'record_budget';
+          break;
+        }
+        const line = pending.subarray(0, newline);
+        pending = pending.subarray(newline + 1);
+        offset += newline + 1;
+        scannedRecordCount += 1;
+        if (line.length === 0) continue;
+        let raw: WireRecord;
+        try {
+          raw = JSON.parse(line.toString('utf8')) as WireRecord;
+        } catch {
+          valid = false;
+          continue;
+        }
+        if (raw.type !== 'usage.record') continue;
+        const record = normalizeRecord(raw);
+        if (record === undefined) valid = false;
+        else records.push(record);
+      }
+      if (incompleteReason !== null) break;
+    }
+  } catch {
+    valid = false;
+  }
+  return {
+    records,
+    offset,
+    scannedRecordCount,
+    valid,
+    complete: incompleteReason === null && offset === size,
+    incompleteReason,
+  };
+}
+
+async function readRange(
+  storage: IFileSystemStorageService,
+  scope: string,
+  start: number,
+  end: number,
+): Promise<Buffer> {
+  if (end < start) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  for await (const chunk of storage.readStream(
+    scope,
+    AGENT_WIRE_RECORD_KEY,
+    { start, end },
+  )) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+function emptyPersistentSession(cacheKey: string): PersistentSessionRecords {
+  return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records: [], agents: {} };
+}
+
+function parsePersistentSession(
+  value: unknown,
+  cacheKey: string,
+): PersistentSessionRecords | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (
+    raw['version'] !== PERSISTENCE_VERSION ||
+    raw['sessionKey'] !== cacheKey ||
+    !Array.isArray(raw['records']) ||
+    !raw['records'].every(isNormalizedUsageRecord) ||
+    raw['agents'] === null ||
+    typeof raw['agents'] !== 'object' ||
+    Array.isArray(raw['agents'])
+  ) {
+    return undefined;
+  }
+  const agents = raw['agents'] as Record<string, unknown>;
+  if (!Object.values(agents).every(isWireCheckpoint)) return undefined;
+  return value as PersistentSessionRecords;
+}
+
+function isNormalizedUsageRecord(value: unknown): value is NormalizedUsageRecord {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const usage = record['usage'];
+  if (usage === null || typeof usage !== 'object' || Array.isArray(usage)) return false;
+  const tokens = usage as Record<string, unknown>;
+  return typeof record['time'] === 'number' &&
+    Number.isFinite(record['time']) &&
+    typeof record['model'] === 'string' &&
+    nonnegativeFinite(tokens['inputOther']) !== undefined &&
+    nonnegativeFinite(tokens['output']) !== undefined &&
+    nonnegativeFinite(tokens['inputCacheRead']) !== undefined &&
+    nonnegativeFinite(tokens['inputCacheCreation']) !== undefined &&
+    (record['sourceAgentId'] === undefined || typeof record['sourceAgentId'] === 'string');
+}
+
+function isWireCheckpoint(value: unknown): value is WireCheckpoint {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const checkpoint = value as Record<string, unknown>;
+  return nonnegativeInteger(checkpoint['offset']) !== undefined &&
+    nonnegativeInteger(checkpoint['size']) !== undefined &&
+    typeof checkpoint['mtimeMs'] === 'number' &&
+    Number.isFinite(checkpoint['mtimeMs']) &&
+    typeof checkpoint['boundaryHash'] === 'string' &&
+    typeof checkpoint['valid'] === 'boolean';
+}
+
+function persistenceKey(cacheKey: string): string {
+  return `${createHash('sha256').update(cacheKey).digest('hex')}.json`;
 }
 
 function normalizeQuery(raw: UsageQuery, now: number): NormalizedQuery {

@@ -1025,7 +1025,10 @@ export function registerSessionsRoutes(
           ?.accessor.get(IAgentLifecycleService)
           .list()
           .find((agent) => agent.id === MAIN_AGENT_ID);
-        const breakdown = main === undefined ? undefined : readLegacyStatus(main)?.contextBreakdown;
+        const breakdown =
+          main === undefined
+            ? undefined
+            : readLegacyStatus(main, { contextBreakdown: true })?.contextBreakdown;
         reply.send(
           okEnvelope(
             {

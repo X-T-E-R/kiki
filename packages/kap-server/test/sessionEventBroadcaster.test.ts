@@ -594,14 +594,15 @@ describe('SessionEventBroadcaster', () => {
     ]);
   });
 
-  it('adds a normalized system/tools/messages estimate to status wire events', async () => {
+  it('does not estimate the context breakdown in status wire events', async () => {
     const lc = new FakeLifecycle();
     const main = lc.addAgent('main');
+    const estimateMessages = vi.fn(() => 500);
     main.set(IAgentTokenCountingService, {
       statusSize: () => 1_000,
       estimateText: () => 200,
       estimateTools: () => 300,
-      estimateMessages: () => 500,
+      estimateMessages,
     });
     main.set(IAgentProfileService, {
       getModel: () => 'example-model',
@@ -625,16 +626,19 @@ describe('SessionEventBroadcaster', () => {
     await bc.getCursor('s1');
 
     const status = envelopes.find((envelope) => envelope.type === 'agent.status.updated')?.payload;
-    expect(status).toMatchObject({
-      contextTokens: 1_000,
-      contextBreakdown: {
-        systemTokens: 200,
-        toolsTokens: 300,
-        messagesTokens: 500,
-        estimated: true,
-      },
-    });
+    expect(status).toMatchObject({ contextTokens: 1_000 });
+    expect((status as { contextBreakdown?: unknown } | undefined)?.contextBreakdown).toBeUndefined();
+    expect(estimateMessages).not.toHaveBeenCalled();
     expect(() => agentStatusUpdatedEventSchema.parse(status)).not.toThrow();
+
+    const snapshot = await bc.getSnapshotState('s1');
+    expect(snapshot.status?.contextBreakdown).toEqual({
+      systemTokens: 200,
+      toolsTokens: 300,
+      messagesTokens: 500,
+      estimated: true,
+    });
+    expect(estimateMessages).toHaveBeenCalledOnce();
   });
 
   it('omits the context breakdown when the context is empty', async () => {

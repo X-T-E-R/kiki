@@ -25,12 +25,7 @@ export interface LegacyStatusSnapshot {
 }
 
 export interface ReadLegacyStatusOptions {
-  /**
-   * Whether to compute `contextBreakdown`. The breakdown re-estimates the
-   * system prompt, every tool schema, and the whole conversation history, so
-   * callers that only need usage / context size should pass `false`.
-   * Defaults to `true`.
-   */
+  /** Whether to compute the optional context breakdown. */
   readonly contextBreakdown?: boolean;
 }
 
@@ -64,7 +59,7 @@ export function readLegacyStatus(
     contextTokens,
     maxContextTokens: maxContextTokens > 0 ? maxContextTokens : undefined,
     contextBreakdown:
-      options?.contextBreakdown === false ? undefined : readContextBreakdown(agent, contextTokens),
+      options?.contextBreakdown === true ? readContextBreakdown(agent, contextTokens) : undefined,
     model,
   };
 }
