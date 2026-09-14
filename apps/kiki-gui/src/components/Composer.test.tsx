@@ -326,7 +326,7 @@ describe('Composer send latch', () => {
 });
 
 describe('Composer agent profile picker', () => {
-  it('renders the bound profile without a main suffix and lists every enabled profile, mains first', async () => {
+  it('renders the bound profile without a main suffix and lists only enabled main profiles', async () => {
     const { container } = await renderComposer({
       agentProfile: 'agent',
       onChangeAgentProfile: () => {},
@@ -341,11 +341,11 @@ describe('Composer agent profile picker', () => {
     const options = [...container.querySelectorAll('[role="option"]')].map(
       (row) => row.textContent ?? '',
     );
-    // Mains lead, then the enabled non-main profiles; only disabled drops out.
+    // Only enabled main profiles are offered; non-main and disabled drop out.
     expect(options.some((text) => text.includes('grok-only'))).toBe(true);
-    expect(options.some((text) => text.includes('reviewer'))).toBe(true);
+    expect(options.some((text) => text.includes('reviewer'))).toBe(false);
     expect(options.some((text) => text.includes('legacy'))).toBe(false);
-    expect(options.findIndex((text) => text.includes('reviewer'))).toBeGreaterThan(
+    expect(options.findIndex((text) => text.includes('agent'))).toBeLessThan(
       options.findIndex((text) => text.includes('grok-only')),
     );
     expect(options.some((text) => text.includes('main'))).toBe(false);
@@ -390,7 +390,7 @@ describe('Composer agent profile picker', () => {
     expect(second.container.querySelector('[role="alert"] button')?.textContent).toBe('Retry');
   });
 
-  it('excludes disabled profiles while enabled non-mains stay pickable, preserving an invalid choice with a diagnostic', async () => {
+  it('offers only enabled main profiles, preserving an invalid choice with a diagnostic', async () => {
     listNamedAgentProfiles.mockResolvedValue({
       items: [
         { name: 'agent', source: 'builtin', main: true, disabled: true, routes: [] },
@@ -408,12 +408,11 @@ describe('Composer agent profile picker', () => {
     const options = [...container.querySelectorAll('[role="option"]')].map(
       (row) => row.textContent ?? '',
     );
-    expect(options).toHaveLength(1);
-    expect(options[0]).toContain('reviewer');
+    expect(options).toHaveLength(0);
     expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('unavailable');
   });
 
-  it('loads workspace profiles including enabled non-main profiles', async () => {
+  it('loads workspace main profiles and excludes non-main profiles', async () => {
     listNamedAgentProfiles.mockImplementation(async (workspaceId?: string) => ({
       items: workspaceId === 'wd_alpha'
         ? [
@@ -435,7 +434,7 @@ describe('Composer agent profile picker', () => {
       (row) => row.textContent ?? '',
     );
     expect(options.some((text) => text.includes('alpha-main'))).toBe(true);
-    expect(options.some((text) => text.includes('alpha-helper'))).toBe(true);
+    expect(options.some((text) => text.includes('alpha-helper'))).toBe(false);
   });
 
   it('does not reuse a stale profile catalog when the workspace changes', async () => {

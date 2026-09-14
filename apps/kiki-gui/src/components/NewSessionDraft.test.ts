@@ -910,7 +910,7 @@ describe('buildAgentProfileOptions', () => {
     ...overrides,
   });
 
-  it('lists every enabled profile — mains first, then the rest in catalog order', () => {
+  it('lists only enabled main profiles in catalog order', () => {
     const options = buildAgentProfileOptions(
       [
         profile({ name: 'agent', main: true, description: 'General-purpose.' }),
@@ -921,13 +921,13 @@ describe('buildAgentProfileOptions', () => {
       ],
       t,
     );
-    // Enabled non-main profiles are pickable; only disabled ones drop out.
-    expect(options.map((option) => option.value)).toEqual(['agent', 'grok-only', 'reviewer']);
+    // Only enabled main profiles are pickable; non-main and disabled ones drop out.
+    expect(options.map((option) => option.value)).toEqual(['agent', 'grok-only']);
     expect(options[0]?.label).toBe('agent');
     expect(options[0]?.description).toBe('General-purpose.');
     expect(options[0]?.group).toBe('composer.profileGroupMain');
     expect(options[1]?.group).toBe('composer.profileGroupMain');
-    expect(options[2]?.group).toBe('composer.profileGroupOther');
+    expect(options).toHaveLength(2);
   });
 
   it('carries the bound model, effort, and source as row facts', () => {
@@ -936,6 +936,7 @@ describe('buildAgentProfileOptions', () => {
         profile({
           name: 'researcher',
           source: 'user',
+          main: true,
           pinned_model_alias: 'k3-256k',
           thinking_effort: 'high',
           when_to_use: 'Use for deep research tasks.',

@@ -116,18 +116,19 @@ const isPrivateProfile = (item: NamedAgentProfile): boolean =>
   (item as NamedAgentProfile & { readonly private?: boolean }).private === true;
 
 /**
- * Profile picker options: every enabled, non-private profile is a
- * conversation candidate. Main profiles lead the list (they exist to
- * headline sessions), the rest follow in catalog order under their own
- * group; disabled and private profiles are not offered. A previously
- * selected one remains visible on the trigger with a diagnostic until the
- * user reselects.
+ * Profile picker options: only enabled, non-private main profiles
+ * (`main: true`) are conversation candidates. Sub-agent-only profiles are
+ * never offered here — dispatch them with AgentRun instead. A previously
+ * selected profile that has become unavailable remains visible on the
+ * trigger with a diagnostic until the user reselects.
  */
 export function buildAgentProfileOptions(
   items: readonly NamedAgentProfile[],
   t: (key: I18nKey, params?: I18nParams) => string,
 ): SearchableSelectOption[] {
-  const pickable = items.filter((item) => !item.disabled && !isPrivateProfile(item));
+  const pickable = items.filter(
+    (item) => item.main === true && !item.disabled && !isPrivateProfile(item),
+  );
   const toOption = (item: NamedAgentProfile, group: string): SearchableSelectOption => ({
     value: item.name,
     label: item.name,
@@ -142,14 +143,7 @@ export function buildAgentProfileOptions(
         : []),
     ],
   });
-  return [
-    ...pickable
-      .filter((item) => item.main === true)
-      .map((item) => toOption(item, t('composer.profileGroupMain'))),
-    ...pickable
-      .filter((item) => item.main !== true)
-      .map((item) => toOption(item, t('composer.profileGroupOther'))),
-  ];
+  return pickable.map((item) => toOption(item, t('composer.profileGroupMain')));
 }
 
 type ComposerMenu =
