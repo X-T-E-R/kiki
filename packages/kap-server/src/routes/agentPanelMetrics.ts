@@ -6,6 +6,7 @@ import {
   IAgentTokenCountingService,
   IAppendLogStore,
   IFileSystemStorageService,
+  ILogService,
   agentScopeOf,
   sessionScopeOf,
   workspacePersistenceScope,
@@ -40,9 +41,37 @@ interface PersistedMetricsCacheEntry {
   readonly metrics: Readonly<Record<string, AgentPanelMetrics>>;
 }
 
+interface PersistedMetricsFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<Readonly<Record<string, AgentPanelMetrics>>>;
+  waiters: number;
+  sharedWaiters: number;
+  settled: boolean;
+}
+
+interface PersistedMetricsState {
+  readonly cache: Map<string, PersistedMetricsCacheEntry>;
+  readonly flights: Map<string, PersistedMetricsFlight>;
+}
+
+export interface PersistedAgentPanelMetricsLimits {
+  readonly maxRecords: number;
+  readonly maxBytes: number;
+  readonly wallTimeMs: number;
+}
+
+export interface PersistedAgentPanelMetricsOptions {
+  readonly signal?: AbortSignal;
+  readonly agentIds?: readonly string[];
+  readonly limits?: Partial<PersistedAgentPanelMetricsLimits>;
+}
+
 const PERSISTED_METRICS_CACHE_TTL_MS = 30_000;
+const PERSISTED_METRICS_SCAN_MAX_RECORDS = 100_000;
+const PERSISTED_METRICS_SCAN_MAX_BYTES = 128 * 1024 * 1024;
+const PERSISTED_METRICS_SCAN_WALL_TIME_MS = 5_000;
 const PERSISTED_METRICS_CACHE_MAX_ENTRIES = 256;
-const persistedMetricsCache = new WeakMap<Scope, Map<string, PersistedMetricsCacheEntry>>();
+const persistedMetricsStates = new WeakMap<Scope, PersistedMetricsState>();
 
 export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelPricingService): AgentPanelMetrics {
   const usage = agent.accessor.get(IAgentUsageService).status();
@@ -78,72 +107,237 @@ export async function readPersistedAgentPanelMetrics(
   sessionId: string,
   pricing: IModelPricingService,
   cacheRevision = '',
+  options: PersistedAgentPanelMetricsOptions = {},
 ): Promise<Readonly<Record<string, AgentPanelMetrics>>> {
-  const cacheKey = `${workspaceId}\0${sessionId}`;
-  const now = Date.now();
-  const cache = persistedMetricsCache.get(core) ?? new Map<string, PersistedMetricsCacheEntry>();
-  persistedMetricsCache.set(core, cache);
-  const cached = cache.get(cacheKey);
-  if (cached !== undefined && cached.revision === cacheRevision && cached.expiresAt > now) return cached.metrics;
-  const storage = core.accessor.get(IFileSystemStorageService);
-  const appendLog = core.accessor.get(IAppendLogStore);
-  const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
-  const result = new Map<string, AgentPanelMetrics>();
-  const agentIds = await storage.list(`${sessionScope}/agents`);
-  for (const agentId of agentIds) {
-    const state: PersistedUsage = {
-      usage: { ...EMPTY_USAGE }, byModel: {}, records: 0, knownUsageRecords: 0,
-      partial: false, cost: 0, knownCostRecords: 0, costPartial: false, complete: true,
-    };
-    try {
-      for await (const raw of appendLog.read<WireRecord>(agentScopeOf(sessionScope, agentId), AGENT_WIRE_RECORD_KEY)) {
-        if (raw.type !== 'usage.record') continue;
-        const record = persistedUsageRecord(raw);
-        if (record === undefined) {
-          state.partial = true;
-          state.complete = false;
-          state.costPartial = true;
-          continue;
+  options.signal?.throwIfAborted();
+  const selection = options.agentIds === undefined ? '*' : [...new Set(options.agentIds)].toSorted().join('\0');
+  const cacheKey = `${workspaceId}\0${sessionId}\0${selection}`;
+  const flightKey = `${cacheKey}\0${cacheRevision}`;
+  const state = persistedMetricsState(core);
+  const log = core.accessor.get(ILogService);
+  const cached = state.cache.get(cacheKey);
+  if (cached !== undefined && cached.revision === cacheRevision && cached.expiresAt > Date.now()) {
+    log.info('agent panel persisted metrics cache hit', {
+      workspace_id: workspaceId, session_id: sessionId, cache_state: 'hit', targeted: selection !== '*',
+    });
+    return cached.metrics;
+  }
+  let flight = state.flights.get(flightKey);
+  if (flight !== undefined) {
+    flight.sharedWaiters += 1;
+    log.info('agent panel persisted metrics scan shared', {
+      workspace_id: workspaceId, session_id: sessionId, cache_state: 'shared', targeted: selection !== '*',
+    });
+    return waitForPersistedMetricsFlight(flight, options.signal);
+  }
+  log.info('agent panel persisted metrics cache miss', {
+    workspace_id: workspaceId, session_id: sessionId, cache_state: 'miss', targeted: selection !== '*',
+  });
+  const controller = new AbortController();
+  let created!: PersistedMetricsFlight;
+  const promise = Promise.resolve().then(() => scanPersistedAgentPanelMetrics(
+    core, workspaceId, sessionId, pricing, options.agentIds, options.limits, controller.signal,
+    () => created.sharedWaiters,
+  )).then((metrics) => {
+    if (!state.cache.has(cacheKey) && state.cache.size >= PERSISTED_METRICS_CACHE_MAX_ENTRIES) {
+      const oldest = state.cache.keys().next().value;
+      if (oldest !== undefined) state.cache.delete(oldest);
+    }
+    state.cache.set(cacheKey, {
+      expiresAt: Date.now() + PERSISTED_METRICS_CACHE_TTL_MS,
+      revision: cacheRevision,
+      metrics,
+    });
+    return metrics;
+  }).finally(() => {
+    created.settled = true;
+    if (state.flights.get(flightKey) === created) state.flights.delete(flightKey);
+  });
+  created = { controller, promise, waiters: 0, sharedWaiters: 0, settled: false };
+  flight = created;
+  state.flights.set(flightKey, flight);
+  return waitForPersistedMetricsFlight(flight, options.signal);
+}
+
+function persistedMetricsState(core: Scope): PersistedMetricsState {
+  let state = persistedMetricsStates.get(core);
+  if (state === undefined) {
+    state = { cache: new Map(), flights: new Map() };
+    persistedMetricsStates.set(core, state);
+  }
+  return state;
+}
+
+async function waitForPersistedMetricsFlight(
+  flight: PersistedMetricsFlight,
+  signal?: AbortSignal,
+): Promise<Readonly<Record<string, AgentPanelMetrics>>> {
+  signal?.throwIfAborted();
+  flight.waiters += 1;
+  let onAbort: (() => void) | undefined;
+  try {
+    if (signal === undefined) return await flight.promise;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => {
+        reject(signal.reason ?? new DOMException('The request was aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    return await Promise.race([flight.promise, aborted]);
+  } finally {
+    if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
+    flight.waiters -= 1;
+    if (flight.waiters === 0 && !flight.settled) {
+      flight.controller.abort(new DOMException('No agent panel metrics waiters remain', 'AbortError'));
+    }
+  }
+}
+
+async function scanPersistedAgentPanelMetrics(
+  core: Scope,
+  workspaceId: string,
+  sessionId: string,
+  pricing: IModelPricingService,
+  requestedAgentIds: readonly string[] | undefined,
+  requestedLimits: Partial<PersistedAgentPanelMetricsLimits> | undefined,
+  signal: AbortSignal,
+  sharedWaiters: () => number,
+): Promise<Readonly<Record<string, AgentPanelMetrics>>> {
+  const limits: PersistedAgentPanelMetricsLimits = {
+    maxRecords: requestedLimits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
+    maxBytes: requestedLimits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
+    wallTimeMs: requestedLimits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS,
+  };
+  const startedAt = Date.now();
+  const deadline = new AbortController();
+  const combinedSignal = AbortSignal.any([signal, deadline.signal]);
+  const timer = setTimeout(() => { deadline.abort(); }, limits.wallTimeMs);
+  const log = core.accessor.get(ILogService);
+  let files = 0;
+  let records = 0;
+  let bytes = 0;
+  let fileErrors = 0;
+  let partialReason: 'record_budget' | 'byte_budget' | 'wall_time_budget' | undefined;
+  try {
+    const storage = core.accessor.get(IFileSystemStorageService);
+    const appendLog = core.accessor.get(IAppendLogStore);
+    const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
+    const agentIds = requestedAgentIds === undefined
+      ? await storage.list(`${sessionScope}/agents`)
+      : [...new Set(requestedAgentIds)];
+    if (signal.aborted) throw signal.reason ?? new DOMException('The request was aborted', 'AbortError');
+    const result = new Map<string, AgentPanelMetrics>();
+    if (deadline.signal.aborted) partialReason = 'wall_time_budget';
+    for (const agentId of partialReason === undefined ? agentIds : []) {
+      const usageState = emptyPersistedUsage();
+      files += 1;
+      try {
+        for await (const raw of appendLog.read<WireRecord>(
+          agentScopeOf(sessionScope, agentId), AGENT_WIRE_RECORD_KEY, { signal: combinedSignal },
+        )) {
+          if (records >= limits.maxRecords) {
+            markPersistedUsagePartial(usageState);
+            partialReason = 'record_budget';
+            break;
+          }
+          const recordBytes = Buffer.byteLength(JSON.stringify(raw), 'utf8') + 1;
+          if (bytes + recordBytes > limits.maxBytes) {
+            markPersistedUsagePartial(usageState);
+            partialReason = 'byte_budget';
+            break;
+          }
+          records += 1;
+          bytes += recordBytes;
+          if (raw.type === 'usage.record') applyPersistedUsageRecord(usageState, raw, pricing);
         }
-        state.records += 1;
-        const reported = record.usage.inputOther + record.usage.output +
-          record.usage.inputCacheRead + record.usage.inputCacheCreation;
-        const known = record.usageKnown !== false && !(record.usageKnown === undefined && reported === 0);
-        if (!known) {
-          state.partial = true;
-          state.costPartial = true;
-          continue;
-        }
-        state.knownUsageRecords += 1;
-        addUsage(state.usage, record.usage);
-        const byModel = state.byModel[record.model] ?? { ...EMPTY_USAGE };
-        addUsage(byModel, record.usage);
-        state.byModel[record.model] = byModel;
-        const cost = pricing.calculate(record.model, record.usage);
-        if (cost === undefined) state.costPartial = true;
-        else {
-          state.knownCostRecords += 1;
-          state.cost += cost;
+      } catch {
+        if (signal.aborted) throw signal.reason ?? new DOMException('The request was aborted', 'AbortError');
+        if (deadline.signal.aborted) {
+          markPersistedUsagePartial(usageState);
+          partialReason = 'wall_time_budget';
+        } else {
+          fileErrors += 1;
+          markPersistedUsagePartial(usageState);
         }
       }
-    } catch {
-      state.partial = true;
-      state.complete = false;
-      state.costPartial = true;
+      result.set(agentId, toPersistedMetrics(usageState));
+      if (partialReason !== undefined) break;
     }
-    result.set(agentId, toPersistedMetrics(state));
+    if (partialReason !== undefined) {
+      for (const agentId of agentIds) {
+        if (!result.has(agentId)) result.set(agentId, toPersistedMetrics(emptyPersistedUsage(true)));
+      }
+    }
+    const metrics = Object.freeze(Object.fromEntries(result));
+    const payload = {
+      workspace_id: workspaceId, session_id: sessionId, cache_state: 'miss',
+      targeted: requestedAgentIds !== undefined,
+      files_count: files, records_count: records, bytes_count: bytes,
+      duration_ms: Date.now() - startedAt,
+      shared_waiters_count: sharedWaiters(), file_errors_count: fileErrors,
+      cancellation_reason: partialReason,
+    };
+    if (partialReason === undefined) log.info('agent panel persisted metrics scan completed', payload);
+    else log.warn('agent panel persisted metrics scan budget reached', payload);
+    return metrics;
+  } catch (error) {
+    log.warn('agent panel persisted metrics scan cancelled', {
+      workspace_id: workspaceId, session_id: sessionId, cache_state: 'miss',
+      targeted: requestedAgentIds !== undefined,
+      files_count: files, records_count: records, bytes_count: bytes,
+      duration_ms: Date.now() - startedAt,
+      shared_waiters_count: sharedWaiters(), file_errors_count: fileErrors,
+      cancellation_reason: signal.aborted ? 'no_waiters' : deadline.signal.aborted ? 'wall_time_budget' : 'error',
+    });
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  const metrics = Object.freeze(Object.fromEntries(result));
-  if (!cache.has(cacheKey) && cache.size >= PERSISTED_METRICS_CACHE_MAX_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
+}
+
+function emptyPersistedUsage(partial = false): PersistedUsage {
+  return {
+    usage: { ...EMPTY_USAGE }, byModel: {}, records: 0, knownUsageRecords: 0,
+    partial, cost: 0, knownCostRecords: 0, costPartial: partial, complete: !partial,
+  };
+}
+
+function markPersistedUsagePartial(state: PersistedUsage): void {
+  state.partial = true;
+  state.complete = false;
+  state.costPartial = true;
+}
+
+function applyPersistedUsageRecord(
+  state: PersistedUsage,
+  raw: WireRecord,
+  pricing: IModelPricingService,
+): void {
+  const record = persistedUsageRecord(raw);
+  if (record === undefined) {
+    markPersistedUsagePartial(state);
+    return;
   }
-  cache.set(cacheKey, {
-    expiresAt: now + PERSISTED_METRICS_CACHE_TTL_MS,
-    revision: cacheRevision,
-    metrics,
-  });
-  return metrics;
+  state.records += 1;
+  const reported = record.usage.inputOther + record.usage.output +
+    record.usage.inputCacheRead + record.usage.inputCacheCreation;
+  const known = record.usageKnown !== false && !(record.usageKnown === undefined && reported === 0);
+  if (!known) {
+    state.partial = true;
+    state.costPartial = true;
+    return;
+  }
+  state.knownUsageRecords += 1;
+  addUsage(state.usage, record.usage);
+  const byModel = state.byModel[record.model] ?? { ...EMPTY_USAGE };
+  addUsage(byModel, record.usage);
+  state.byModel[record.model] = byModel;
+  const cost = pricing.calculate(record.model, record.usage);
+  if (cost === undefined) state.costPartial = true;
+  else {
+    state.knownCostRecords += 1;
+    state.cost += cost;
+  }
 }
 
 function toPersistedMetrics(state: PersistedUsage): AgentPanelMetrics {

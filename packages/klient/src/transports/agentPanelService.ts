@@ -4,6 +4,6 @@ import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse } from '@kiki/pr
 /** Host projection of the whitelisted agent panel; not an engine service locator. */
 export interface IAgentPanelService {
   readonly _serviceBrand: undefined;
-  read(query: AgentCapabilitiesQuery): Promise<AgentCapabilitiesResponse>;
+  read(query: AgentCapabilitiesQuery, signal?: AbortSignal): Promise<AgentCapabilitiesResponse>;
 }
 export const IAgentPanelService = createDecorator<IAgentPanelService>('agentPanelService');

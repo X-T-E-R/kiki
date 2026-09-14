@@ -64,6 +64,7 @@ export async function acquireWorkspaceProfileCatalog(
 export async function agentCapabilities(
   core: Scope,
   query: AgentCapabilitiesQuery,
+  signal?: AbortSignal,
 ): Promise<AgentCapabilitiesResponse | 'workspace-not-found' | 'profile-not-found'> {
   if ('session_id' in query) {
     const session = core.accessor.get(ISessionManager).get(query.session_id)
@@ -83,6 +84,7 @@ export async function agentCapabilities(
       query.session_id,
       pricing,
       cacheRevision,
+      { signal, agentIds: query.agent_id === 'main' ? undefined : [query.agent_id] },
     );
     if (agent === undefined) return {
       context: 'live', owner: { agent_id: query.agent_id }, available: false,

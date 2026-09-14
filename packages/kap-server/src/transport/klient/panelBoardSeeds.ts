@@ -9,8 +9,8 @@ import '../../services/taskBoardTools';
 export function panelBoardSeeds(getCore: () => Scope): ScopeSeed {
   const panel: IAgentPanelService = {
     _serviceBrand: undefined,
-    async read(query) {
-      const result = await agentCapabilities(getCore(), query);
+    async read(query, signal) {
+      const result = await agentCapabilities(getCore(), query, signal);
       if (result === 'workspace-not-found') throw new RPCError(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist');
       if (result === 'profile-not-found') throw new RPCError(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Main profile is unavailable');
       return result;

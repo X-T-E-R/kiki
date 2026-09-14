@@ -47,6 +47,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
 
 interface AgentProfilesRouteHost {
@@ -80,14 +81,19 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     description: 'Inspect live caller dispatch targets or a workspace draft preview without launching agents',
     tags: ['agents'],
   }, async (req, reply) => {
-    const result = await agentCapabilities(core, req.query);
-    if (result === 'workspace-not-found') {
-      reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
-    } else if (result === 'profile-not-found') {
-      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Main profile is unavailable', req.id));
-    } else {
-      reply.send(okEnvelope(result, req.id));
-    }
+    await withReplyCloseSignal(
+      reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+      async (signal) => {
+        const result = await agentCapabilities(core, req.query, signal);
+        if (result === 'workspace-not-found') {
+          reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
+        } else if (result === 'profile-not-found') {
+          reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Main profile is unavailable', req.id));
+        } else {
+          reply.send(okEnvelope(result, req.id));
+        }
+      },
+    );
   });
   app.get(capabilitiesRoute.path, capabilitiesRoute.options,
     capabilitiesRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);

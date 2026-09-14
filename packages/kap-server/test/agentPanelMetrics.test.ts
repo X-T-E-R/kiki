@@ -5,6 +5,7 @@ import {
   IAgentUsageService,
   IAppendLogStore,
   IFileSystemStorageService,
+  ILogService,
   type IAgentScopeHandle,
   type Scope,
   type TokenUsage,
@@ -82,38 +83,63 @@ function record(
   } as WireRecord;
 }
 
-function persistedFixture(initial: readonly WireRecord[], throwAfter?: number) {
+function persistedFixture(
+  initial: readonly WireRecord[],
+  throwAfter?: number,
+  config: {
+    readonly agentIds?: readonly string[];
+    readonly beforeRead?: (scope: string, signal: AbortSignal | undefined) => Promise<void>;
+  } = {},
+) {
   let records = [...initial];
   let reads = 0;
+  let lists = 0;
+  const scopes: string[] = [];
   const storage = {
-    list: async () => ['main'],
+    list: async () => {
+      lists += 1;
+      return config.agentIds ?? ['main'];
+    },
   } as unknown as IFileSystemStorageService;
   const appendLog = {
-    read: <R>(_scope: string): AsyncIterable<R> => {
+    read: <R>(scope: string, _key: string, options?: { signal?: AbortSignal }): AsyncIterable<R> => {
       reads += 1;
+      scopes.push(scope);
       return (async function* () {
+        await config.beforeRead?.(scope, options?.signal);
         for (const [index, item] of records.entries()) {
+          options?.signal?.throwIfAborted();
           yield item as R;
           if (throwAfter !== undefined && index >= throwAfter) throw new Error('fixture append-log failure');
         }
       })();
     },
   } as unknown as IAppendLogStore;
+  const log = {
+    _serviceBrand: undefined,
+    level: 'info',
+    error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(),
+    child: vi.fn(), setLevel: vi.fn(), flush: vi.fn(),
+  };
   const core = {
     accessor: {
       get: (identifier: unknown) => {
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IAppendLogStore) return appendLog;
+        if (identifier === ILogService) return log;
         throw new Error(`unexpected service ${String(identifier)}`);
       },
     },
   } as unknown as Scope;
   return {
     core,
+    log,
     setRecords(next: readonly WireRecord[]) {
       records = [...next];
     },
     reads: () => reads,
+    lists: () => lists,
+    scopes: () => scopes,
   };
 }
 
@@ -122,8 +148,17 @@ async function persisted(
   pricingService: IModelPricingService,
   revision = '',
   key = 'default',
+  options?: Parameters<typeof readPersistedAgentPanelMetrics>[5],
 ): Promise<Readonly<Record<string, ReturnType<typeof readAgentPanelMetrics>>>> {
-  return readPersistedAgentPanelMetrics(core, `workspace-${key}`, `session-${key}`, pricingService, revision);
+  return readPersistedAgentPanelMetrics(
+    core, `workspace-${key}`, `session-${key}`, pricingService, revision, options,
+  );
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 describe('agent panel metrics cost provenance', () => {
@@ -331,6 +366,169 @@ describe('persisted agent panel metrics cache scope', () => {
     fixture.setRecords([record('model', usage(3, 0), true)]);
     expect((await persisted(fixture.core, modelPricing, 'recorded-complete'))['main']?.totalTokens).toBe(3);
     expect(fixture.reads()).toBe(3);
+  });
+
+  it('folds concurrent cache misses into one persisted scan', async () => {
+    const entered = deferred();
+    const release = deferred();
+    const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
+      beforeRead: async () => { entered.resolve(); await release.promise; },
+    });
+    const modelPricing = pricing({ model: 1 });
+    const calls = Array.from({ length: 24 }, () => persisted(fixture.core, modelPricing, 'stable', 'singleflight'));
+    await entered.promise;
+    expect(fixture.reads()).toBe(1);
+    release.resolve();
+    const results = await Promise.all(calls);
+    expect(results.every((metrics) => metrics['main']?.totalTokens === 1)).toBe(true);
+    expect(fixture.reads()).toBe(1);
+    expect(fixture.log.info).toHaveBeenCalledWith(
+      'agent panel persisted metrics scan shared',
+      expect.objectContaining({ cache_state: 'shared' }),
+    );
+  });
+
+  it('starts cache ttl when a scan completes', async () => {
+    vi.useFakeTimers({ now: 0 });
+    try {
+      const entered = deferred();
+      const release = deferred();
+      const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
+        beforeRead: async () => { entered.resolve(); await release.promise; },
+      });
+      const modelPricing = pricing({ model: 1 });
+      const first = persisted(fixture.core, modelPricing, 'stable', 'completion-ttl', {
+        limits: { wallTimeMs: 10_000 },
+      });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(5_000);
+      release.resolve();
+      await first;
+      fixture.setRecords([record('model', usage(2, 0), true)]);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect((await persisted(fixture.core, modelPricing, 'stable', 'completion-ttl'))['main']?.totalTokens).toBe(1);
+      await vi.advanceTimersByTimeAsync(2);
+      expect((await persisted(fixture.core, modelPricing, 'stable', 'completion-ttl'))['main']?.totalTokens).toBe(2);
+      expect(fixture.reads()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks usage and cost partial when the record budget is reached', async () => {
+    const fixture = persistedFixture([
+      record('model', usage(1, 0), true),
+      record('model', usage(2, 0), true),
+      record('model', usage(4, 0), true),
+    ]);
+    const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'stable', 'record-budget', {
+      limits: { maxRecords: 2 },
+    }))['main'];
+    expect(metrics).toMatchObject({ totalTokens: 3, usagePartial: true, costPartial: true });
+    expect(fixture.log.warn).toHaveBeenCalledWith(
+      'agent panel persisted metrics scan budget reached',
+      expect.objectContaining({ records_count: 2, cancellation_reason: 'record_budget' }),
+    );
+  });
+
+  it('marks usage and cost partial when the byte budget is reached', async () => {
+    const fixture = persistedFixture([record('model', usage(1, 0), true)]);
+    const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'stable', 'byte-budget', {
+      limits: { maxBytes: 1 },
+    }))['main'];
+    expect(metrics).toMatchObject({ totalTokens: null, usagePartial: true, costPartial: true });
+    expect(fixture.log.warn).toHaveBeenCalledWith(
+      'agent panel persisted metrics scan budget reached',
+      expect.objectContaining({ cancellation_reason: 'byte_budget' }),
+    );
+  });
+
+  it('marks usage and cost partial when the wall-time budget is reached', async () => {
+    vi.useFakeTimers({ now: 0 });
+    try {
+      const entered = deferred();
+      const fixture = persistedFixture([], undefined, {
+        beforeRead: async (_scope, signal) => {
+          entered.resolve();
+          await new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => { reject(signal.reason); }, { once: true });
+          });
+        },
+      });
+      const call = persisted(fixture.core, pricing({ model: 1 }), 'stable', 'wall-budget', {
+        limits: { wallTimeMs: 10 },
+      });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(11);
+      const metrics = (await call)['main'];
+      expect(metrics).toMatchObject({ totalTokens: null, usagePartial: true, costPartial: true });
+      expect(fixture.log.warn).toHaveBeenCalledWith(
+        'agent panel persisted metrics scan budget reached',
+        expect.objectContaining({ cancellation_reason: 'wall_time_budget' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a shared scan alive while another waiter remains', async () => {
+    const entered = deferred();
+    const release = deferred();
+    let scanSignal: AbortSignal | undefined;
+    const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
+      beforeRead: async (_scope, signal) => {
+        scanSignal = signal;
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    const controller = new AbortController();
+    const first = persisted(fixture.core, pricing({ model: 1 }), 'stable', 'shared-abort', {
+      signal: controller.signal,
+    });
+    const second = persisted(fixture.core, pricing({ model: 1 }), 'stable', 'shared-abort');
+    await entered.promise;
+    controller.abort(new DOMException('one caller left', 'AbortError'));
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    expect(scanSignal?.aborted).toBe(false);
+    release.resolve();
+    expect((await second)['main']?.totalTokens).toBe(1);
+  });
+
+  it('cancels the underlying scan when its last waiter aborts', async () => {
+    const entered = deferred();
+    let scanSignal: AbortSignal | undefined;
+    const fixture = persistedFixture([], undefined, {
+      beforeRead: async (_scope, signal) => {
+        scanSignal = signal;
+        entered.resolve();
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => { reject(signal.reason); }, { once: true });
+        });
+      },
+    });
+    const controller = new AbortController();
+    const call = persisted(fixture.core, pricing({ model: 1 }), 'stable', 'abort', {
+      signal: controller.signal,
+    });
+    await entered.promise;
+    controller.abort(new DOMException('caller left', 'AbortError'));
+    await expect(call).rejects.toMatchObject({ name: 'AbortError' });
+    expect(scanSignal?.aborted).toBe(true);
+  });
+
+  it('scans only the selected child without listing the session roster', async () => {
+    const fixture = persistedFixture([record('model', usage(3, 0), true)], undefined, {
+      agentIds: ['main', 'child-1', 'child-2'],
+    });
+    const metrics = await persisted(fixture.core, pricing({ model: 1 }), 'stable', 'targeted', {
+      agentIds: ['child-1'],
+    });
+    expect(Object.keys(metrics)).toEqual(['child-1']);
+    expect(metrics['child-1']?.totalTokens).toBe(3);
+    expect(fixture.lists()).toBe(0);
+    expect(fixture.reads()).toBe(1);
+    expect(fixture.scopes()[0]).toContain('child-1');
   });
 
   it('evicts the oldest session entry after reaching the per-core capacity', async () => {
