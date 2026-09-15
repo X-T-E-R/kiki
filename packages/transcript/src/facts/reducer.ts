@@ -1,5 +1,4 @@
-import type { AgentTranscript } from '../store/agentTranscript';
-import type { TranscriptOperation } from '../ops/operation';
+import type { AppliedOps, TranscriptOperation } from '../ops/operation';
 
 export interface TranscriptFact {
   readonly factId: string;
@@ -7,17 +6,21 @@ export interface TranscriptFact {
   readonly operations: readonly TranscriptOperation[];
 }
 
+export interface TranscriptFactTarget {
+  apply(operations: readonly TranscriptOperation[]): AppliedOps;
+}
+
 export interface TranscriptFactResult {
   readonly acceptedFacts: readonly TranscriptFact[];
   readonly acceptedOperations: readonly TranscriptOperation[];
   readonly changedIds: ReadonlySet<string>;
-  readonly gap?: ReturnType<AgentTranscript['apply']>['gap'];
+  readonly gap?: AppliedOps['gap'];
 }
 
 export class TranscriptFactReducer {
   readonly #acceptedDurableFacts = new Set<string>();
 
-  constructor(readonly transcript: AgentTranscript) {}
+  constructor(readonly transcript: TranscriptFactTarget) {}
 
   apply(facts: readonly TranscriptFact[]): TranscriptFactResult {
     const acceptedFacts: TranscriptFact[] = [];

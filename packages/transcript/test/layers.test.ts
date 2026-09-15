@@ -4,9 +4,14 @@ import { filterOpsForGrade, isAppendOnly, redactSnapshotForGrade } from '#/granu
 import { detachGrades, gradeFor, needsResetOnTransition } from '#/granularity/grade';
 import { paginateTurns } from '#/pagination/paginate';
 import { ViewRegistry } from '#/view/registry';
-import { TranscriptFactReducer } from '#/facts/reducer';
+import {
+  TranscriptFactReducer,
+  type TranscriptFact,
+  type TranscriptFactResult,
+} from '#/facts/reducer';
 import { TranscriptWireAdapter, type TranscriptWireRecord } from '#/facts/wireAdapter';
 import { AgentTranscript } from '#/store/agentTranscript';
+import { AgentTranscriptDraft } from '#/store/agentTranscriptDraft';
 import {
   agentTranscriptSnapshotSchema,
   transcriptGradeSpecSchema,
@@ -2205,5 +2210,781 @@ describe('TranscriptWireAdapter', () => {
       },
     ]);
     expect(countResult.changedIds).toEqual(new Set(['toolCallCount']));
+  });
+});
+
+type DifferentialCommand =
+  | { readonly kind: 'record'; readonly record: TranscriptWireRecord }
+  | { readonly kind: 'fact'; readonly fact: TranscriptFact }
+  | { readonly kind: 'finish' };
+
+type DifferentialStore = AgentTranscript | AgentTranscriptDraft;
+
+function normalizeFactResult(result: TranscriptFactResult): unknown {
+  return {
+    acceptedFacts: result.acceptedFacts,
+    acceptedOperations: result.acceptedOperations,
+    changedIds: [...result.changedIds],
+    gap: result.gap,
+  };
+}
+
+function differentialReplay(
+  mode: 'immutable' | 'draft',
+  commands: readonly DifferentialCommand[],
+): { readonly snapshot: AgentTranscriptSnapshot; readonly trace: readonly unknown[] } {
+  const transcript: DifferentialStore = mode === 'immutable'
+    ? new AgentTranscript('main')
+    : new AgentTranscriptDraft('main');
+  const reducer = new TranscriptFactReducer(transcript);
+  const adapter = new TranscriptWireAdapter('main', {
+    turn: (turnId) => transcript.getTurn(turnId),
+    tool: (toolCallId) => transcript.getToolCall(toolCallId),
+    task: (taskId) => transcript.getTask(taskId),
+  });
+  const trace: unknown[] = [];
+  for (const command of commands) {
+    const facts = command.kind === 'record'
+      ? adapter.add(command.record)
+      : command.kind === 'finish'
+        ? adapter.finish()
+        : [command.fact];
+    trace.push({ facts, result: normalizeFactResult(reducer.apply(facts)) });
+  }
+  return { snapshot: transcript.snapshot(), trace };
+}
+
+function expectDifferential(commands: readonly DifferentialCommand[]) {
+  const immutable = differentialReplay('immutable', commands);
+  const draft = differentialReplay('draft', commands);
+  expect(draft).toEqual(immutable);
+  return draft;
+}
+
+describe('AgentTranscriptDraft differential replay', () => {
+  it('matches ordinal holes, out-of-order turns, and stable marker/taskref anchors', () => {
+    const result = expectDifferential([
+      {
+        kind: 'record',
+        record: {
+          type: 'turn.prompt',
+          turnId: 4,
+          promptId: 'p4',
+          input: [{ type: 'text', text: 'four' }],
+          origin: { kind: 'user' },
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'turn.prompt',
+          turnId: 2,
+          promptId: 'p2',
+          input: [{ type: 'text', text: 'two' }],
+          origin: { kind: 'user' },
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'marker-insert',
+          durability: 'transient',
+          operations: [
+            {
+              op: 'marker.upsert',
+              item: { kind: 'marker', markerId: 'm3', marker: 'goal', payload: { revision: 1 } },
+              beforeTurn: 3,
+            },
+          ],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'taskref-insert',
+          durability: 'transient',
+          operations: [
+            {
+              op: 'taskref.upsert',
+              item: { kind: 'taskref', refId: 'r4', taskId: 'task-4' },
+              beforeTurn: 4,
+            },
+          ],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'marker-update',
+          durability: 'transient',
+          operations: [
+            {
+              op: 'marker.upsert',
+              item: { kind: 'marker', markerId: 'm3', marker: 'goal', payload: { revision: 2 } },
+              beforeTurn: 0,
+            },
+          ],
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_message',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'hidden' }],
+            origin: { kind: 'system_trigger', name: 'subagent' },
+          },
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_message',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'visible' }],
+            origin: { kind: 'user' },
+          },
+        },
+      },
+      { kind: 'finish' },
+    ]);
+
+    expect(result.snapshot.items.map(idLabel)).toEqual(['t2', 'm3', 'r4', 't4', 't6']);
+    expect(result.snapshot.items[1]).toMatchObject({ payload: { revision: 2 } });
+  });
+
+  it('isolates turn.ended cleanup from running steps and tools in other turns', () => {
+    const result = expectDifferential([
+      {
+        kind: 'record',
+        record: {
+          type: 'turn.prompt',
+          turnId: 0,
+          promptId: 'p0',
+          input: [{ type: 'text', text: 'zero' }],
+          origin: { kind: 'user' },
+          time: 1,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 0, step: 1, uuid: 's0' },
+          time: 2,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call',
+            turnId: 0,
+            stepUuid: 's0',
+            toolCallId: 'call-0',
+            name: 'Read',
+          },
+          time: 3,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'turn.prompt',
+          turnId: 1,
+          promptId: 'p1',
+          input: [{ type: 'text', text: 'one' }],
+          origin: { kind: 'user' },
+          time: 4,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 1, step: 1, uuid: 's1' },
+          time: 5,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call',
+            turnId: 1,
+            stepUuid: 's1',
+            toolCallId: 'call-1',
+            name: 'Bash',
+          },
+          time: 6,
+        },
+      },
+      {
+        kind: 'record',
+        record: { type: 'turn.ended', turnId: 0, reason: 'completed', time: 7 },
+      },
+    ]);
+
+    const turn0 = result.snapshot.items.find((item) => item.kind === 'turn' && item.turnId === 't0');
+    const turn1 = result.snapshot.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
+    expect(turn0).toMatchObject({
+      state: 'completed',
+      steps: [{ stepId: 's0', state: 'interrupted', frames: [{ toolCallId: 'call-0', state: 'interrupted' }] }],
+    });
+    expect(turn1).toMatchObject({
+      state: 'running',
+      steps: [{ stepId: 's1', state: 'running', frames: [{ toolCallId: 'call-1', state: 'running' }] }],
+    });
+    const terminal = result.trace.at(-1) as {
+      result: { acceptedOperations: TranscriptOperation[] };
+    };
+    expect(terminal.result.acceptedOperations.map((operation) => {
+      if (operation.op === 'frame.upsert') return operation.frame.frameId;
+      if (operation.op === 'step.upsert') return operation.step.stepId;
+      if (operation.op === 'turn.upsert') return operation.turn.turnId;
+      return operation.op;
+    })).toEqual(['s0.call-0', 's0', 't0', 'meta.merge']);
+  });
+
+  it('matches durable deduplication, undo suffixes, and clear index cleanup', () => {
+    const prompt0: TranscriptWireRecord = {
+      type: 'turn.prompt',
+      id: 'durable-prompt-0',
+      turnId: 0,
+      promptId: 'p0',
+      input: [{ type: 'text', text: 'zero' }],
+      origin: { kind: 'user' },
+    };
+    const result = expectDifferential([
+      { kind: 'record', record: prompt0 },
+      { kind: 'record', record: prompt0 },
+      {
+        kind: 'record',
+        record: {
+          type: 'turn.prompt',
+          turnId: 1,
+          promptId: 'p1',
+          input: [{ type: 'text', text: 'one' }],
+          origin: { kind: 'user' },
+        },
+      },
+      { kind: 'record', record: { type: 'context.undo', count: 1 } },
+      {
+        kind: 'record',
+        record: {
+          type: 'turn.prompt',
+          turnId: 2,
+          promptId: 'p2',
+          input: [{ type: 'text', text: 'two' }],
+          origin: { kind: 'user' },
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 2, step: 1, uuid: 'removed-step' },
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call',
+            turnId: 2,
+            stepUuid: 'removed-step',
+            toolCallId: 'removed-tool',
+            name: 'Read',
+          },
+        },
+      },
+      { kind: 'record', record: { type: 'context.clear' } },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'content.part',
+            stepUuid: 'removed-step',
+            part: { type: 'text', text: 'stale' },
+          },
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: { type: 'tool.result', toolCallId: 'removed-tool', result: { output: 'stale' } },
+        },
+      },
+      { kind: 'finish' },
+    ]);
+
+    expect(result.snapshot.items).toEqual([]);
+    const removals = result.trace.flatMap((entry) => {
+      const normalized = entry as { result: { acceptedOperations: TranscriptOperation[] } };
+      return normalized.result.acceptedOperations.filter((operation) => operation.op === 'items.remove');
+    });
+    expect(removals).toEqual([
+      { op: 'items.remove', ids: ['t1'] },
+      { op: 'items.remove', ids: ['t0', 't2'] },
+    ]);
+    expect(
+      result.trace.filter((entry) => {
+        const normalized = entry as { result: { acceptedFacts: TranscriptFact[] } };
+        return normalized.result.acceptedFacts.some((fact) => fact.factId === 'durable-prompt-0');
+      }),
+    ).toHaveLength(1);
+  });
+
+  it('removes interactions anchored to tools owned by removed turns', () => {
+    const result = expectDifferential([
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'seed-anchored-interaction',
+          durability: 'transient',
+          operations: [
+            {
+              op: 'turn.upsert',
+              turn: {
+                kind: 'turn',
+                turnId: 't0',
+                ordinal: 0,
+                state: 'completed',
+                origin: { kind: 'user' },
+              },
+            },
+            {
+              op: 'step.upsert',
+              turnId: 't0',
+              step: {
+                kind: 'step',
+                stepId: 's0',
+                turnId: 't0',
+                ordinal: 1,
+                state: 'completed',
+              },
+            },
+            {
+              op: 'frame.upsert',
+              turnId: 't0',
+              stepId: 's0',
+              frame: {
+                kind: 'tool',
+                frameId: 's0.call-0',
+                toolCallId: 'call-0',
+                name: 'Read',
+                state: 'done',
+              },
+            },
+            {
+              op: 'interaction.upsert',
+              interaction: {
+                interactionId: 'anchored',
+                interactionKind: 'approval',
+                toolCallId: 'call-0',
+                state: 'pending',
+              },
+            },
+            {
+              op: 'interaction.upsert',
+              interaction: {
+                interactionId: 'unanchored',
+                interactionKind: 'question',
+                state: 'pending',
+              },
+            },
+          ],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'remove-anchored-turn',
+          durability: 'transient',
+          operations: [{ op: 'items.remove', ids: ['t0'] }],
+        },
+      },
+    ]);
+
+    expect(result.snapshot.items).toEqual([]);
+    expect(result.snapshot.interactions).toEqual([
+      {
+        interactionId: 'unanchored',
+        interactionKind: 'question',
+        state: 'pending',
+      },
+    ]);
+    expect(result.snapshot.toolCallCount).toBe(0);
+    const removal = result.trace.at(-1) as {
+      result: { acceptedOperations: TranscriptOperation[]; changedIds: string[] };
+    };
+    expect(removal.result.acceptedOperations).toEqual([{ op: 'items.remove', ids: ['t0'] }]);
+    expect(removal.result.changedIds).toEqual(['t0']);
+  });
+
+  it('loads reset snapshots into draft indexes before applying later facts', () => {
+    const resetSnapshot: AgentTranscriptSnapshot = {
+      items: [
+        { kind: 'marker', markerId: 'head', marker: 'goal' },
+        {
+          kind: 'turn',
+          turnId: 't3',
+          ordinal: 3,
+          state: 'running',
+          origin: { kind: 'user' },
+          steps: [
+            {
+              kind: 'step',
+              stepId: 's3',
+              turnId: 't3',
+              ordinal: 1,
+              state: 'running',
+              frames: [
+                {
+                  kind: 'tool',
+                  frameId: 's3.call-3',
+                  toolCallId: 'call-3',
+                  name: 'Read',
+                  state: 'running',
+                },
+              ],
+            },
+          ],
+        },
+        { kind: 'taskref', refId: 'tail', taskId: 'task-3' },
+      ],
+      tasks: [
+        {
+          taskId: 'task-3',
+          kind: 'shell',
+          state: 'running',
+          detached: false,
+          outputTail: 'ready',
+        },
+      ],
+      interactions: [
+        {
+          interactionId: 'reset-interaction',
+          interactionKind: 'approval',
+          toolCallId: 'call-3',
+          state: 'pending',
+        },
+      ],
+      attachments: [
+        {
+          attachmentId: 'reset-attachment',
+          mediaType: 'image/png',
+          source: { kind: 'file', fileId: 'file-3' },
+        },
+      ],
+      todos: [{ todoId: 'reset-todo', items: [{ title: 'continue', status: 'pending' }] }],
+      prompts: [
+        {
+          promptId: 'reset-prompt',
+          status: 'queued',
+          createdAt: '2026-09-15T00:00:00.000Z',
+        },
+      ],
+      toolCallCount: 1,
+      toolCallCountKnown: true,
+      meta: { activity: 'turn' },
+      hasMoreOlder: false,
+    };
+    const result = expectDifferential([
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'reset-draft',
+          durability: 'transient',
+          operations: [{ op: 'reset', agentId: 'main', snapshot: resetSnapshot }],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'after-reset',
+          durability: 'transient',
+          operations: [
+            {
+              op: 'task.upsert',
+              task: {
+                taskId: 'task-3',
+                kind: 'shell',
+                state: 'running',
+                detached: false,
+                outputTail: 'ready',
+              },
+            },
+            {
+              op: 'turn.upsert',
+              turn: {
+                kind: 'turn',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'completed',
+                origin: { kind: 'user' },
+              },
+            },
+            {
+              op: 'marker.upsert',
+              item: { kind: 'marker', markerId: 'before-t3', marker: 'goal' },
+              beforeTurn: 3,
+            },
+            {
+              op: 'frame.upsert',
+              turnId: 't3',
+              stepId: 's3',
+              frame: {
+                kind: 'tool',
+                frameId: 's3.call-3',
+                toolCallId: 'call-3',
+                name: 'Read',
+                state: 'done',
+                output: 'loaded',
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(result.snapshot.items.map(idLabel)).toEqual(['head', 't1', 'before-t3', 't3', 'tail']);
+    expect(result.snapshot.tasks).toEqual(resetSnapshot.tasks);
+    expect(result.snapshot.interactions).toEqual(resetSnapshot.interactions);
+    expect(result.snapshot.attachments).toEqual(resetSnapshot.attachments);
+    expect(result.snapshot.todos).toEqual(resetSnapshot.todos);
+    expect(result.snapshot.prompts).toEqual(resetSnapshot.prompts);
+    const turn3 = result.snapshot.items.find((item) => item.kind === 'turn' && item.turnId === 't3');
+    expect(turn3?.kind === 'turn' && turn3.steps[0]?.frames[0]).toMatchObject({
+      toolCallId: 'call-3',
+      state: 'done',
+      output: 'loaded',
+    });
+    const afterReset = result.trace.at(-1) as {
+      result: { acceptedOperations: TranscriptOperation[] };
+    };
+    expect(afterReset.result.acceptedOperations.map((operation) => operation.op)).toEqual([
+      'turn.upsert',
+      'marker.upsert',
+      'frame.upsert',
+    ]);
+  });
+
+  it('matches projected tool metadata, active-set termination, and open-tail finish', () => {
+    const result = expectDifferential([
+      {
+        kind: 'record',
+        record: {
+          type: 'turn.prompt',
+          turnId: 0,
+          promptId: 'p0',
+          input: [{ type: 'text', text: 'run' }],
+          origin: { kind: 'user' },
+          time: 1,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 0, step: 1, uuid: 's1' },
+          time: 2,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call',
+            turnId: 0,
+            stepUuid: 's1',
+            toolCallId: 'call-1',
+            name: 'Agent',
+            args: {},
+          },
+          time: 3,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 0, step: 2, uuid: 's2' },
+          time: 4,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call',
+            turnId: 0,
+            stepUuid: 's2',
+            toolCallId: 'call-2',
+            name: 'Bash',
+            args: {},
+          },
+          time: 5,
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'project-agent-ref',
+          durability: 'transient',
+          operations: [
+            {
+              op: 'frame.upsert',
+              turnId: 't0',
+              stepId: 's1',
+              frame: {
+                kind: 'tool',
+                frameId: 's1.call-1',
+                toolCallId: 'call-1',
+                name: 'Agent',
+                state: 'running',
+                agentRefs: [{ agentId: 'child-1', role: 'child' }],
+              },
+            },
+          ],
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.result',
+            toolCallId: 'call-1',
+            result: { output: 'done', isError: false },
+          },
+          time: 6,
+        },
+      },
+      {
+        kind: 'record',
+        record: {
+          type: 'interaction.request',
+          id: 'question-1',
+          kind: 'question',
+          request: { question: 'continue?' },
+          time: 7,
+        },
+      },
+      { kind: 'finish' },
+    ]);
+
+    const turn = result.snapshot.items.find((item) => item.kind === 'turn');
+    expect(turn).toMatchObject({ state: 'cancelled' });
+    if (turn?.kind !== 'turn') throw new Error('turn not found');
+    expect(turn.steps.map((step) => step.state)).toEqual(['interrupted', 'interrupted']);
+    expect(turn.steps[0]?.frames[0]).toMatchObject({
+      state: 'done',
+      output: 'done',
+      agentRefs: [{ agentId: 'child-1', role: 'child' }],
+    });
+    expect(turn.steps[1]?.frames[0]).toMatchObject({ state: 'interrupted' });
+    expect(result.snapshot.interactions).toMatchObject([{ interactionId: 'question-1', state: 'cancelled' }]);
+  });
+
+  it('matches append coalescing, duplicate and partial overlap, gaps, and fact boundaries', () => {
+    const frameTarget = { type: 'frame' as const, turnId: 't1', stepId: 't1.1', frameId: 'f1' };
+    const result = expectDifferential([
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'seed',
+          durability: 'transient',
+          operations: [
+            {
+              op: 'frame.upsert',
+              turnId: 't1',
+              stepId: 't1.1',
+              frame: { kind: 'text', frameId: 'f1', role: 'assistant', text: '' },
+            },
+          ],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'append-run',
+          durability: 'transient',
+          operations: [
+            { op: 'append', target: frameTarget, offset: 0, text: 'hello' },
+            { op: 'append', target: frameTarget, offset: 5, text: ' world' },
+          ],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'append-run',
+          durability: 'transient',
+          operations: [
+            { op: 'append', target: frameTarget, offset: 0, text: 'hello' },
+            { op: 'append', target: frameTarget, offset: 5, text: ' world' },
+          ],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'append-overlap',
+          durability: 'transient',
+          operations: [{ op: 'append', target: frameTarget, offset: 6, text: 'world!' }],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'durable-boundary',
+          durability: 'durable',
+          operations: [{ op: 'append', target: frameTarget, offset: 40, text: 'gap' }],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'durable-boundary',
+          durability: 'durable',
+          operations: [{ op: 'meta.merge', meta: { activity: 'turn' } }],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'transient-boundary',
+          durability: 'transient',
+          operations: [{ op: 'append', target: frameTarget, offset: 50, text: 'gap' }],
+        },
+      },
+      {
+        kind: 'fact',
+        fact: {
+          factId: 'transient-boundary',
+          durability: 'transient',
+          operations: [{ op: 'meta.merge', meta: { activity: 'turn' } }],
+        },
+      },
+    ]);
+
+    const turn = result.snapshot.items[0];
+    expect(turn?.kind === 'turn' && turn.steps[0]?.frames[0]).toMatchObject({ text: 'hello world!' });
+    expect(result.snapshot.meta.activity).toBe('turn');
+    const gaps = result.trace.flatMap((entry) => {
+      const normalized = entry as { result: { gap?: unknown } };
+      return normalized.result.gap === undefined ? [] : [normalized.result.gap];
+    });
+    expect(gaps).toHaveLength(2);
   });
 });

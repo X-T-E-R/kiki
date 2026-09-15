@@ -15,6 +15,7 @@ import {
 } from '@kiki/agent-core-v2';
 import {
   AgentTranscript,
+  AgentTranscriptDraft,
   TranscriptFactReducer,
   TranscriptStore,
   TranscriptWireAdapter,
@@ -998,22 +999,11 @@ export class TranscriptService {
       agentId,
       WIRE_FILE,
     );
-    const transcript = new AgentTranscript(agentId);
+    const transcript = new AgentTranscriptDraft(agentId);
     const reducer = new TranscriptFactReducer(transcript);
     const adapter = new TranscriptWireAdapter(agentId, {
       turn: (turnId) => transcript.getTurn(turnId),
-      tool: (toolCallId) => {
-        for (const item of transcript.getItems()) {
-          if (item.kind !== 'turn') continue;
-          for (const step of item.steps) {
-            const frame = step.frames.find(
-              (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
-            );
-            if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
-          }
-        }
-        return undefined;
-      },
+      tool: (toolCallId) => transcript.getToolCall(toolCallId),
       task: (taskId) => transcript.getTask(taskId),
     });
     let complete: boolean;

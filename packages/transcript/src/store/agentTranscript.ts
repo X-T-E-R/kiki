@@ -1,5 +1,6 @@
 import type { AgentId, AttachmentId, InteractionId, PromptId, TaskId, TodoId, TurnId } from '../model/ids';
 import type { TranscriptAttachment } from '../model/attachment';
+import type { ToolCallFrame } from '../model/frame';
 import type { TranscriptInteraction } from '../model/interaction';
 import type { TranscriptItem } from '../model/item';
 import type { TranscriptMeta } from '../model/meta';
@@ -27,6 +28,12 @@ export interface Disposable {
   dispose(): void;
 }
 
+export interface TranscriptToolCallLookup {
+  readonly turnId: TurnId;
+  readonly stepId: string;
+  readonly frame: ToolCallFrame;
+}
+
 const mapValuesCache = new WeakMap<object, readonly unknown[]>();
 
 function stableMapValues<K, V>(map: ReadonlyMap<K, V>): readonly V[] {
@@ -41,6 +48,8 @@ export class AgentTranscript {
   #state: AgentState = EMPTY_AGENT_STATE;
   readonly #listeners = new Set<TranscriptListener>();
   readonly #appendDirty = new Set<string>();
+  readonly #toolCalls = new Map<string, TranscriptToolCallLookup>();
+  readonly #toolCallIdByFrame = new Map<string, string>();
 
   constructor(readonly agentId: AgentId) {}
 
@@ -89,6 +98,7 @@ export class AgentTranscript {
         continue;
       }
       state = result.state;
+      this.syncToolCallIndex(op, state);
       accepted.push(...run.originals);
       if (op.op === 'append' && key !== undefined) this.#appendDirty.add(key);
       else if (key !== undefined) this.#appendDirty.delete(key);
@@ -122,6 +132,10 @@ export class AgentTranscript {
       if (item?.kind === 'turn' && item.turnId === turnId) return item;
     }
     return undefined;
+  }
+
+  getToolCall(toolCallId: string): TranscriptToolCallLookup | undefined {
+    return this.#toolCalls.get(toolCallId);
   }
 
   getTasks(): ReadonlyMap<TaskId, TranscriptTask> {
@@ -213,6 +227,53 @@ export class AgentTranscript {
       hasMoreOlder,
     };
   }
+
+  private syncToolCallIndex(op: TranscriptOperation, state: AgentState): void {
+    if (op.op === 'reset') {
+      this.rebuildToolCallIndex(state.items);
+      return;
+    }
+    if (op.op === 'items.remove') {
+      const removed = new Set(op.ids);
+      for (const [toolCallId, hit] of this.#toolCalls) {
+        if (!removed.has(hit.turnId)) continue;
+        this.#toolCalls.delete(toolCallId);
+        this.#toolCallIdByFrame.delete(toolFrameKey(hit.turnId, hit.stepId, hit.frame.frameId));
+      }
+      return;
+    }
+    if (op.op !== 'frame.upsert') return;
+    const key = toolFrameKey(op.turnId, op.stepId, op.frame.frameId);
+    const previousToolCallId = this.#toolCallIdByFrame.get(key);
+    if (previousToolCallId !== undefined) this.#toolCalls.delete(previousToolCallId);
+    this.#toolCallIdByFrame.delete(key);
+    if (op.frame.kind !== 'tool') return;
+    this.#toolCalls.set(op.frame.toolCallId, {
+      turnId: op.turnId,
+      stepId: op.stepId,
+      frame: op.frame,
+    });
+    this.#toolCallIdByFrame.set(key, op.frame.toolCallId);
+  }
+
+  private rebuildToolCallIndex(items: readonly TranscriptItem[]): void {
+    this.#toolCalls.clear();
+    this.#toolCallIdByFrame.clear();
+    for (const item of items) {
+      if (item.kind !== 'turn') continue;
+      for (const step of item.steps) {
+        for (const frame of step.frames) {
+          if (frame.kind !== 'tool') continue;
+          this.#toolCalls.set(frame.toolCallId, { turnId: item.turnId, stepId: step.stepId, frame });
+          this.#toolCallIdByFrame.set(toolFrameKey(item.turnId, step.stepId, frame.frameId), frame.toolCallId);
+        }
+      }
+    }
+  }
+}
+
+function toolFrameKey(turnId: string, stepId: string, frameId: string): string {
+  return `${turnId}\u0000${stepId}\u0000${frameId}`;
 }
 
 interface CoalescedRun {
