@@ -559,8 +559,8 @@ describe('AgentSkillService busy delivery (harness)', () => {
   it('steers the activation into the running turn and launches a new one when idle', async () => {
     const catalog = new InMemorySkillCatalog();
     catalog.register(
-      stubSkill('tower', {
-        content: 'Tower mission: $ARGUMENTS',
+      stubSkill('workflow', {
+        content: 'Workflow: $ARGUMENTS',
         metadata: {},
       }),
     );
@@ -594,7 +594,7 @@ describe('AgentSkillService busy delivery (harness)', () => {
       expect(generateCalls).toBe(1);
     });
 
-    const busyActivation = ctx.get(IAgentSkillService).activate({ name: 'tower', args: 'mission-1' });
+    const busyActivation = ctx.get(IAgentSkillService).activate({ name: 'workflow', args: 'mission-1' });
     const busyResult = await busyActivation;
     expect(busyResult.turn_id).toBe(0);
     expect(generateCalls).toBe(1);
@@ -603,7 +603,7 @@ describe('AgentSkillService busy delivery (harness)', () => {
     await promptPromise;
     await ctx.untilTurnEnd();
 
-    const idleResult = await ctx.get(IAgentSkillService).activate({ name: 'tower', args: 'mission-2' });
+    const idleResult = await ctx.get(IAgentSkillService).activate({ name: 'workflow', args: 'mission-2' });
     expect(idleResult.turn_id).toBe(1);
     await ctx.untilTurnEnd();
     expect(generateCalls).toBe(3);

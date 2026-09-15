@@ -841,20 +841,20 @@ describe('SessionExternalDelegationService', () => {
     });
   });
 
-  it('includes a direct lifecycle child explicitly recorded by the Tower path', async () => {
+  it('includes a direct lifecycle child explicitly recorded by another dispatch path', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const approvals = ix.get(ISessionApprovalService);
     const dispatch = await service.dispatch({
       authority,
       target: 'named',
-      taskName: 'tower_root',
+      taskName: 'delegation_root',
       profileName: 'coder',
       message: 'inspect',
     });
-    ix.get(ISessionDispatchService).recordDelegatedRun('external-child', 'tower-child');
+    ix.get(ISessionDispatchService).recordDelegatedRun('external-child', 'direct-child');
     const approval = approvals.request({
-      id: 'approval-tower-child',
-      agentId: 'tower-child',
+      id: 'approval-direct-child',
+      agentId: 'direct-child',
       turnId: 1,
       toolName: 'bash',
       action: 'run',
@@ -862,11 +862,11 @@ describe('SessionExternalDelegationService', () => {
     });
 
     expect(await service.interactions({ authority })).toMatchObject({
-      items: [{ interactionId: 'approval-tower-child', taskName: 'tower_root' }],
+      items: [{ interactionId: 'approval-direct-child', taskName: 'delegation_root' }],
     });
     await service.respond({
       authority,
-      interactionId: 'approval-tower-child',
+      interactionId: 'approval-direct-child',
       kind: 'approval',
       response: { decision: 'approved' },
     });

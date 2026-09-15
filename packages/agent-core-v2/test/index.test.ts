@@ -34,7 +34,7 @@ import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { todoKey, ToolsUpdateStore } from '#/session/todo/todoOps';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import type { Event2Class } from '#/app/event/event2';
+import { event2FromRecord, type Event2Class } from '#/app/event/event2';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 import { registerTestAgentWire, registerTestEventDispatcher, restoreTestEventDispatcher } from './wire/stubs';
 import { BUILTIN_REPLAYABLE_STATE_KEYS } from './state/builtinReplayableKeys';
@@ -153,6 +153,14 @@ describe('v1 wire vocabulary', () => {
           V2_RECORD_TYPES.has(type),
         `event "${type}" persists an unregistered record type`,
       ).toBe(true);
+    }
+  });
+
+  it('keeps retired Tower mode records decodable', () => {
+    for (const type of ['tower_mode.enter', 'tower_mode.exit']) {
+      const cls = EVENT2_REGISTRY.get(type);
+      expect(cls).toBeDefined();
+      expect(event2FromRecord(cls!, { type, time: 123 })).toMatchObject({ type, time: 123 });
     }
   });
 

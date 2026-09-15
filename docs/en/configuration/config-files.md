@@ -286,8 +286,8 @@ Treat that wording as a starting point rather than a setting. Which phrasing act
 ## Subagent model binding
 
 A subagent's model comes from exactly two places: the `model_alias` passed
-with the dispatch (`AgentRun` / `TowerSpawn`), or the pin on
-the profile, route, or caller lease that the dispatch selects. Nothing else
+with the `AgentRun` dispatch, or the pin on the profile, route, or caller lease
+that the dispatch selects. Nothing else
 supplies one — a subagent never runs on its caller's model, and there is no
 configured default to fall back on. A dispatch that names no model and
 selects no pinned profile fails with `model.not_configured` and the child is

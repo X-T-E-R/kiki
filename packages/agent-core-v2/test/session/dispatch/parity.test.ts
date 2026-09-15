@@ -56,7 +56,6 @@ import type {
   SpawnConstraints,
   SubagentLease,
 } from '#/app/agentProfileCatalog/subagentLease';
-import { TOWER_WORKER_PROFILE } from '#/features/tower/tower';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
@@ -1736,39 +1735,6 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(next.isError).not.toBe(true);
     expect(internal.lifecycleCreate).toHaveBeenCalledTimes(2);
     await complete(internal, 2);
-  });
-
-  it('keeps a cold fixed-mode worker on its persisted permission mode', async () => {
-    const workerProfile = normalizeAgentProfile({
-      ...parityProfile,
-      name: TOWER_WORKER_PROFILE,
-      definitionId: 'profile-tower-worker',
-    });
-    const internal = createLane(disposables, 'internal', { profile: workerProfile });
-    await internal.runInternal({
-      prompt: 'worker first run',
-      description: 'Persist worker',
-      profile: TOWER_WORKER_PROFILE,
-      name: 'fixed_worker',
-      model_alias: 'parity-model',
-      background: true,
-    });
-    await complete(internal, 0);
-    internal.setPermissionMode('agent_child_1', 'auto');
-    internal.setPermissionMode('main', 'yolo');
-    internal.dropHandle('agent_child_1');
-
-    await internal.runInternal({
-      prompt: 'worker resumed run',
-      description: 'Resume worker',
-      resume: 'fixed_worker',
-      background: true,
-    });
-
-    expect(internal.permissionMode('agent_child_1')).toBe('auto');
-    expect(internal.lifecycleCreate).toHaveBeenCalledTimes(2);
-    expect(internal.probe.agentIds).toEqual(['agent_child_1']);
-    await complete(internal, 1);
   });
 
   it('reapplies the external seat ceiling when a named child is rebuilt cold', async () => {

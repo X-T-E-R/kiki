@@ -44,17 +44,6 @@ const STATIC_TOOL_FIELDS = [
   ['Bash', 'agent/tools/os/bash/bash.md'],
   ['EnterPlanMode', 'features/plan/tools/enter-plan-mode/enter-plan-mode.md'],
   ['ExitPlanMode', 'features/plan/tools/exit-plan-mode/exit-plan-mode.md'],
-  ['TowerInit', 'features/tower/tools/init/init.md'],
-  ['TowerFinding', 'features/tower/tools/finding/finding.md'],
-  ['TowerInbox', 'features/tower/tools/inbox/inbox.md'],
-  ['TowerMerge', 'features/tower/tools/merge/merge.md'],
-  ['TowerMission', 'features/tower/tools/mission/mission.md'],
-  ['TowerPlan', 'features/tower/tools/plan/plan.md'],
-  ['TowerReview', 'features/tower/tools/review/review.md'],
-  ['TowerSend', 'features/tower/tools/send/send.md'],
-  ['TowerSpawn', 'features/tower/tools/spawn/spawn.md'],
-  ['TowerStatus', 'features/tower/tools/status/status.md'],
-  ['TowerTeardown', 'features/tower/tools/teardown/teardown.md'],
 ] as const;
 
 const TOOL_DESCRIPTION_PREFIXES: Readonly<Record<string, string>> = {

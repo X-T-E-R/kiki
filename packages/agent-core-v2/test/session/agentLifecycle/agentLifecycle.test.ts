@@ -18,7 +18,6 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import '#/agent/profile/profileService';
 import { ProfileBind } from '#/agent/profile/profileOps';
-import { TOWER_WORKER_PROFILE } from '#/features/tower/tower';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { McpConnectionManager } from '#/mcpCore/connection-manager';
@@ -36,6 +35,7 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import { IPromptFieldRegistry } from '#/app/promptField/promptFieldRegistry';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
@@ -450,6 +450,14 @@ describe('AgentLifecycleService', () => {
     ix.stub(IBuiltinAgentProfileLoader, {
       _serviceBrand: undefined,
     } as IBuiltinAgentProfileLoader);
+    ix.stub(IPromptFieldRegistry, {
+      _serviceBrand: undefined,
+      onDidChange: Event.None as IPromptFieldRegistry['onDidChange'],
+      list: () => [],
+      get: () => undefined,
+      validate: () => ({ values: {}, fields: [] }),
+      resolve: async () => ({ values: {}, fields: [] }),
+    });
     ix.stub(IAgentIdentity, { _serviceBrand: undefined } as IAgentIdentity);
     ix.stub(IAgentAgentsMdReminderService, {
       _serviceBrand: undefined,
@@ -1044,25 +1052,6 @@ describe('AgentLifecycleService', () => {
     svc.broadcastPermissionMode('auto');
 
     expect(main.accessor.get(IAgentStateService).get(permissionModeKey)).toBe('auto');
-  });
-
-  it('broadcastPermissionMode leaves tower-worker agents pinned to their spawned mode', async () => {
-    const svc = ix.get(IAgentLifecycleService);
-    const main = await svc.create({ agentId: 'main' });
-    const worker = await svc.create({ agentId: 'worker-1' });
-    void worker.accessor.get(IEventDispatcher).dispatch(
-      new ProfileBind({
-        profileName: TOWER_WORKER_PROFILE,
-        thinkingEffort: 'off',
-        systemPrompt: '',
-        disallowedTools: [],
-      }),
-    );
-
-    svc.broadcastPermissionMode('yolo');
-
-    expect(main.accessor.get(IAgentStateService).get(permissionModeKey)).toBe('yolo');
-    expect(worker.accessor.get(IAgentStateService).get(permissionModeKey)).toBe('manual');
   });
 
   it('wires MCP OAuth credentials through the session atomic document store', async () => {

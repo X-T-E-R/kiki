@@ -536,10 +536,10 @@ describe('EditorKeyboardController Ctrl-S steering', () => {
         queued: [
           { text: 'queued text', agentId: 'main' },
           {
-            text: '/tower status',
+            text: '/workflow status',
             agentId: 'main',
             mode: 'skill',
-            skillName: 'tower',
+            skillName: 'workflow',
             skillArgs: 'status',
           },
           { text: '!ls', agentId: 'main', mode: 'bash' },
@@ -551,7 +551,7 @@ describe('EditorKeyboardController Ctrl-S steering', () => {
     expect(steerMessage).toHaveBeenCalledWith(host.session, [
       { text: 'queued text', parts: undefined, imageAttachmentIds: undefined },
     ]);
-    expect(steerSkillActivation).toHaveBeenCalledWith(host.session, 'tower', 'status');
+    expect(steerSkillActivation).toHaveBeenCalledWith(host.session, 'workflow', 'status');
     expect(host.state.queuedMessages).toEqual([{ text: '!ls', agentId: 'main', mode: 'bash' }]);
     expect(updateQueueDisplay).toHaveBeenCalled();
   });

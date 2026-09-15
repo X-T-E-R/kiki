@@ -705,7 +705,7 @@ describe('AgentRun tool description', () => {
     const description = agentDescription();
 
     expect(description).toContain('Tools: Bash, Read, ReadMediaFile, Glob, Grep, WebSearch, FetchURL');
-    expect(description).not.toContain('Tools: AgentRun, Bash, TowerFinding, TowerInbox, TowerMission');
+    expect(description).not.toContain('Tools: AgentRun, Bash');
   });
 
   it.each(['AgentList', 'AgentSend'])('registers %s on the main profile', (toolName) => {

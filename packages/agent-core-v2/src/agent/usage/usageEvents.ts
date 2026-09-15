@@ -6,7 +6,6 @@ import type { UsageStatus } from './usage';
 export interface AgentStatusUpdatedPayload {
   usage?: UsageStatus;
   swarmMode?: boolean;
-  towerMode?: boolean;
   planMode?: boolean;
   model?: string;
   thinkingEffort?: string;

@@ -285,7 +285,7 @@ Router: classify this task (build or fix) now, then adopt the matching style —
 
 ## 子 Agent 的模型绑定
 
-子 Agent 的模型只有两个来源：派发时传入的 `model_alias`（`AgentRun` / `TowerSpawn`），或所选 profile、route、caller lease 上的 pin。
+子 Agent 的模型只有两个来源：通过 `AgentRun` 派发时传入的 `model_alias`，或所选 profile、route、caller lease 上的 pin。
 没有第三个来源——子 Agent 不会跑在调用方的模型上，也没有可回退的配置默认值。
 既没有传 `model_alias`、所选 profile 又没有 pin 的派发会以 `model.not_configured`
 失败，子 Agent 不会被创建。

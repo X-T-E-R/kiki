@@ -11,7 +11,7 @@ function profile(name: string) {
 }
 
 describe('builtin agent profiles', () => {
-  it('wires thread communication and TaskWait into the default profile without Tower tools', () => {
+  it('wires thread communication and TaskWait into the default profile', () => {
     const agent = profile('agent');
     expect(agent.tools).toEqual(
       expect.arrayContaining([
@@ -22,7 +22,6 @@ describe('builtin agent profiles', () => {
         'TaskWait',
       ]),
     );
-    expect(agent.tools?.some((tool) => tool.startsWith('Tower'))).toBe(false);
     expect(agent.main).toBe(true);
     expect(agent.subagents).toBeUndefined();
   });

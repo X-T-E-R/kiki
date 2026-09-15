@@ -18,8 +18,6 @@ import { IEventBus } from '#/app/event/eventBus';
 import { DEFAULT_PERMISSION_MODE_SECTION } from '#/agent/permissionMode/configSection';
 import { permissionModeConfiguredKey } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
-import { profileKey } from '#/agent/profile/profileOps';
-import { hasPinnedPermissionMode } from '#/features/tower/tower';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -497,8 +495,6 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   broadcastPermissionMode(mode: PermissionMode): void {
     for (const handle of this.handles.values()) {
-      const profileName = handle.accessor.get(IAgentStateService).get(profileKey).profileName;
-      if (hasPinnedPermissionMode(profileName)) continue;
       handle.accessor.get(IAgentPermissionModeService).setMode(mode);
     }
   }

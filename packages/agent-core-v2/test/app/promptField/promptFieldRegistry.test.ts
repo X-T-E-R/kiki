@@ -136,7 +136,6 @@ describe('PromptFieldRegistryService', () => {
     expect(ids).toContain('system.ultimate_reminders');
     expect(ids).toContain('delegation.sub.notice');
     expect(ids).toContain('tool.agent-run.description');
-    expect(ids).toContain('tool.tower-status.guidance');
   });
 
   it('replaces only the static AgentRun description and preserves its dynamic projection', () => {

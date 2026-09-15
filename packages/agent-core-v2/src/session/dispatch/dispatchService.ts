@@ -15,7 +15,6 @@ import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMo
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IConfigService } from '#/app/config/config';
-import { hasPinnedPermissionMode } from '#/features/tower/tower';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { fillLeasePins, spawnConstraintOrigin } from '#/app/agentProfileCatalog/applySubagentLease';
 import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
@@ -333,11 +332,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         delegator: childDelegator,
       }));
     const data = child.accessor.get(IAgentProfileService).data();
-    if (
-      live === undefined &&
-      childDelegator.kind === 'agent' &&
-      !hasPinnedPermissionMode(data.profileName)
-    ) {
+    if (live === undefined && childDelegator.kind === 'agent') {
       const delegator = this.requireHandle(childDelegator.agentId, 'Delegator agent');
       child
         .accessor.get(IAgentPermissionModeService)
