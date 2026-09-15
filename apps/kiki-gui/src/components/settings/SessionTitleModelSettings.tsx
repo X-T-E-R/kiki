@@ -7,14 +7,13 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON } from '../ui';
-import { SectionCard } from './SectionCard';
 
 /**
  * The model that writes session titles. Empty (the default) keeps title
  * generation on the managed `chat_title` tool; a pinned alias runs the same
  * prompt budgets through that model instead.
  */
-export function SessionTitleModelCard() {
+export function SessionTitleModelFields() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -31,11 +30,7 @@ export function SessionTitleModelCard() {
   }, [configQuery.data, dirty]);
 
   if (draft === null) {
-    return (
-      <SectionCard id="st-card-session-title-model" title={t('st.sessionTitleModel.title')}>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
-      </SectionCard>
-    );
+    return configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>;
   }
 
   const save = async () => {
@@ -55,33 +50,37 @@ export function SessionTitleModelCard() {
   };
 
   return (
-    <SectionCard id="st-card-session-title-model" title={t('st.sessionTitleModel.title')}>
-      <div className="space-y-3">
-        <Hint>{t('st.sessionTitleModel.hint')}</Hint>
-        <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
-          <label className="block text-[12px] font-medium text-ink" htmlFor="session-title-model">
-            {t('st.sessionTitleModel.model')}
-            <input
-              id="session-title-model"
-              className={`${INPUT} mt-1`}
-              value={draft}
-              placeholder={t('st.sessionTitleModel.placeholder')}
-              onChange={(event) => {
-                setDraft(event.target.value);
-                setDirty(true);
-              }}
-            />
-          </label>
-        </fieldset>
-        <div className="flex flex-wrap items-center gap-3 border-t border-hairline pt-3">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-            {saving ? t('common.saving') : t('common.save')}
-          </button>
-          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
-        </div>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
+    <div className="space-y-3 border-t border-hairline pt-3">
+      <Hint>{t('st.sessionTitleModel.hint')}</Hint>
+      <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
+        <label className="block text-[12px] font-medium text-ink" htmlFor="session-title-model">
+          {t('st.sessionTitleModel.model')}
+          <input
+            id="session-title-model"
+            className={`${INPUT} mt-1`}
+            value={draft}
+            placeholder={t('st.sessionTitleModel.placeholder')}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setDirty(true);
+            }}
+          />
+        </label>
+      </fieldset>
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
+          {saving ? t('common.saving') : t('common.save')}
+        </button>
+        {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
       </div>
-    </SectionCard>
+      {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+      <FeedbackLine feedback={feedback} />
+    </div>
   );
 }
+
+/**
+ * The model that writes session titles. Empty (the default) keeps title
+ * generation on the managed `chat_title` tool; a pinned alias runs the same
+ * prompt budgets through that model instead.
+ */

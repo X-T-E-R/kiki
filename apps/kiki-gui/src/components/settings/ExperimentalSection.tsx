@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -36,6 +36,8 @@ export interface ExperimentalSectionProps {
   /** Render the advanced feature card closed until the user asks for details. */
   collapsible?: boolean;
   summaryKey?: I18nKey;
+  /** Extra controls rendered inside the same card after the flag rows. */
+  children?: ReactNode;
 }
 
 export function ExperimentalSection({
@@ -46,6 +48,7 @@ export function ExperimentalSection({
   cardId,
   collapsible = false,
   summaryKey = 'st.advanced.performanceSummary',
+  children,
 }: ExperimentalSectionProps) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -153,6 +156,7 @@ export function ExperimentalSection({
           <div className="mt-3">{body}</div>
         </details>
       ) : body}
+      {children}
     </SectionCard>
   );
 }
