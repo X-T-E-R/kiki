@@ -387,9 +387,10 @@ function catalogForProfile(
     : [catalogs.get(registration.workspaceKey)].values();
   for (const candidate of candidates) {
     if (candidate === undefined) continue;
-    const publicProfile = candidate.snapshot?.publicProfiles.get(profile.name)
+    const resolvedProfile =
+      (candidate.snapshot?.resolvableProfiles ?? candidate.snapshot?.publicProfiles)?.get(profile.name)
       ?? candidate.catalog.get(profile.name);
-    if (sameProfileDefinition(publicProfile, profile)) return candidate;
+    if (sameProfileDefinition(resolvedProfile, profile)) return candidate;
   }
   return undefined;
 }
@@ -493,7 +494,8 @@ function scopedBindingFor(
   alias: string,
 ): ScopedAgentProfileBinding | undefined {
   if (projection !== undefined) {
-    const parent = projection.snapshot?.publicProfiles.get(profile.name)
+    const parent = (projection.snapshot?.resolvableProfiles ?? projection.snapshot?.publicProfiles)
+      ?.get(profile.name)
       ?? projection.catalog.get(profile.name);
     const parentDefinitionId = parent?.definitionId;
     const binding = parentDefinitionId === undefined

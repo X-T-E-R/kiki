@@ -4,12 +4,17 @@ import { join } from 'node:path';
 
 import {
   AgentProfileSourceDiagnosticCodes,
-  IAgentProfileRegistry,
   IAgentLifecycleService,
-  ISubagentTool,
+  IAgentProfileRegistry,
+  IConfigService,
+  ISessionAgentProfileCatalog,
+  ISessionContext,
   ISessionManager,
+  ISubagentTool,
   IWorkspaceInstanceManager,
   normalizeAgentProfile,
+  type AgentProfileCatalogSnapshot,
+  type AgentProfileRegistration,
 } from '@kiki/agent-core-v2';
 import { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
@@ -18,6 +23,7 @@ import { IAgentProfileService, IAgentExecutorRegistry, IAgentUsageService, ISess
 import { ErrorCode, listNamedAgentProfilesResponseSchema, agentCapabilitiesResponseSchema } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type RunningServer, startServer } from '../src/start';
+import { registerAgentProfilesRoute } from '../src/routes/agentProfiles';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { panelSkills } from '../src/routes/agentPanelCapabilities';
@@ -994,6 +1000,76 @@ describe('GET /api/agents', () => {
     expect(projectedLeases).not.toContain('sourceDefinitionId');
   });
 
+  it('keeps private profiles out of every listing while still resolving them by name and lease', async () => {
+    await writeFile(join(home!, 'config.toml'), [
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
+      'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"',
+      'max_context_size = 1000', '[experimental]', '"agent-profile-routes" = true',
+    ].join('\n'));
+    const agentsDir = join(home as string, 'agents');
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(
+      join(agentsDir, 'm3-worker.md'),
+      '---\nname: m3-worker\ndescription: Private worker\nprivate: true\n---\n\nPrivate worker prompt.\n',
+      'utf-8',
+    );
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const registry = server.core.accessor.get(IAgentProfileRegistry);
+    const helper = normalizeAgentProfile({
+      name: 'helper', definitionId: 'definition:helper', private: true, modelAlias: 'stub',
+      systemPrompt: () => 'PRIVATE_HELPER_PROMPT',
+    });
+    const lead = normalizeAgentProfile({
+      name: 'agent', definitionId: 'definition:private-main', main: true, private: true, override: true,
+      tools: ['AgentRun'], subagents: ['helper'],
+      subagentLeases: { helper: { name: 'helper', source: './_private/helper.md', modelAlias: 'stub' } },
+      systemPrompt: () => 'PRIVATE_MAIN_PROMPT',
+    });
+    const registration = registry.register({ sourceId: 'example', priority: 50, contribution: {
+      profiles: [lead, helper],
+      scopedBindings: new Map([[lead.definitionId!, new Map([
+        ['helper', { parentDefinitionId: lead.definitionId!, alias: 'helper', source: './_private/helper.md', lease: { name: 'helper', source: './_private/helper.md', modelAlias: 'stub' }, status: 'ready' as const, profile: helper, sourceDefinitionId: helper.definitionId }],
+      ])]]),
+    } });
+    try {
+      const create = await authedFetch(server, base, '/api/sessions', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'agent', model: 'stub' } }),
+      });
+      expect(((await create.json()) as Envelope<{ id: string }>).code).toBe(0);
+      const query = `cwd=${encodeURIComponent(home as string)}`;
+
+      const plain = listNamedAgentProfilesResponseSchema.parse(
+        ((await (await authedFetch(server, base, '/api/agents')).json()) as Envelope<unknown>).data,
+      );
+      expect(plain.items.some((profile) => profile.source === 'example')).toBe(false);
+      expect(plain.items.some((profile) => profile.name === 'm3-worker' || profile.name === 'helper')).toBe(false);
+      expect(plain.items.some((profile) => profile.name === 'explore' && profile.source === 'builtin')).toBe(true);
+
+      const expanded = listNamedAgentProfilesResponseSchema.parse(
+        ((await (await authedFetch(server, base, `/api/agents?${query}&expand=true`)).json()) as Envelope<unknown>).data,
+      );
+      expect(expanded.items.some((profile) => profile.source === 'example')).toBe(false);
+      expect(expanded.items.some((profile) => profile.name === 'helper')).toBe(false);
+
+      const effective = listNamedAgentProfilesResponseSchema.parse(
+        ((await (await authedFetch(server, base, `/api/agents?${query}&effective=true`)).json()) as Envelope<unknown>).data,
+      );
+      const effectiveLead = effective.items.find((profile) => profile.name === 'agent' && profile.source === 'example');
+      expect(effectiveLead?.subagents).toEqual([
+        expect.objectContaining({ name: 'helper', source: './_private/helper.md', scope: 'private', status: 'ready' }),
+      ]);
+
+      const capabilities = await authedFetch(server, base, `/api/agents/capabilities?${query}&profile=agent`);
+      const caps = (await capabilities.json()) as Envelope<{ targets: Array<{ profile: string }> }>;
+      expect(caps.code).toBe(0);
+      expect(caps.data.targets.map((target) => target.profile)).toContain('helper');
+    } finally {
+      registration.dispose();
+    }
+  });
+
   it('projects the override flag so clients can show which same-name profile wins', async () => {
     const agentsDir = join(home as string, 'agents');
     await mkdir(agentsDir, { recursive: true });
@@ -1166,5 +1242,79 @@ describe('GET /api/agents', () => {
     const data = agentCapabilitiesResponseSchema.parse((await restored.json() as Envelope<unknown>).data);
     expect(data.metrics?.['main']).toMatchObject({ totalTokens: 15, inputTokens: 10, outputTokens: 5, usagePartial: true, costPartial: true, usageSource: 'persisted' });
     expect(data.metrics?.['agent-7']).toMatchObject({ totalTokens: 35, inputTokens: 25, outputTokens: 10, usagePartial: false, usageSource: 'persisted' });
+  });
+});
+
+describe('GET /agents named resolution', () => {
+  it('resolves a profile hidden from the catalog public view through its resolvable view', async () => {
+    const helper = normalizeAgentProfile({
+      name: 'hidden-helper', definitionId: 'definition:hidden-helper', systemPrompt: () => '',
+    });
+    const lead = normalizeAgentProfile({
+      name: 'hidden-lead', definitionId: 'definition:hidden-lead',
+      subagents: ['hidden-helper'],
+      subagentLeases: { 'hidden-helper': { name: 'hidden-helper', source: './_private/helper.md' } },
+      systemPrompt: () => '',
+    });
+    const exposed = normalizeAgentProfile({ name: 'exposed', definitionId: 'definition:exposed', systemPrompt: () => '' });
+    const snapshot = {
+      publicProfiles: new Map([[exposed.name, exposed]]),
+      resolvableProfiles: new Map([
+        [exposed.name, exposed], [lead.name, lead], [helper.name, helper],
+      ]),
+      routes: new Map(),
+      scopedBindings: new Map([[lead.definitionId!, new Map([
+        ['hidden-helper', { parentDefinitionId: lead.definitionId!, alias: 'hidden-helper', source: './_private/helper.md', lease: { name: 'hidden-helper', source: './_private/helper.md' }, status: 'ready' as const, profile: helper, sourceDefinitionId: helper.definitionId }],
+      ])]]),
+      sourceDefinitions: new Map([[helper.definitionId!, helper]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    } as unknown as AgentProfileCatalogSnapshot;
+    const catalog = {
+      ready: Promise.resolve(),
+      get: (name: string) => snapshot.publicProfiles.get(name),
+      snapshot: () => snapshot,
+    } as unknown as ISessionAgentProfileCatalog;
+    const session = {
+      accessor: {
+        get: (token: unknown) => token === ISessionContext ? { workspaceId: 'wd_named' } : catalog,
+      },
+    };
+    const registration: AgentProfileRegistration = {
+      sourceId: 'user', priority: 50, contribution: { profiles: [lead, exposed] },
+    };
+    const handlers = new Map<string, (req: unknown, reply: { send(payload: unknown): unknown }) => unknown>();
+    const app = {
+      get: (path: string, _options: unknown, handler: never) => { handlers.set(path, handler); },
+      patch: () => {},
+    };
+    const core = {
+      accessor: {
+        get: (token: unknown) => {
+          if (token === IAgentProfileRegistry) return { entries: () => [registration] };
+          if (token === IAgentExecutorRegistry) return { get: () => undefined };
+          if (token === IConfigService) return { ready: Promise.resolve(), get: () => undefined };
+          if (token === ISessionManager) return { list: () => [session] };
+          throw new Error('unexpected token');
+        },
+      },
+    };
+
+    registerAgentProfilesRoute(
+      app as unknown as Parameters<typeof registerAgentProfilesRoute>[0],
+      core as unknown as Parameters<typeof registerAgentProfilesRoute>[1],
+    );
+    let sent: unknown;
+    await handlers.get('/agents')!(
+      { id: 'req', query: {} },
+      { send: (payload) => { sent = payload; } },
+    );
+
+    const body = sent as { code: number; data: { items: Array<{ name: string; subagents?: unknown }> } };
+    expect(body.code).toBe(0);
+    expect(body.data.items.map((item) => item.name).toSorted()).toEqual(['exposed', 'hidden-lead']);
+    expect(body.data.items.find((item) => item.name === 'hidden-lead')?.subagents).toEqual([
+      expect.objectContaining({ name: 'hidden-helper', scope: 'private', status: 'ready' }),
+    ]);
   });
 });

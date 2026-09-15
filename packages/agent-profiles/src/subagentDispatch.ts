@@ -147,7 +147,7 @@ export function listAvailableSubagentTargets(
     );
   const routes = input.routes.filter((route) => {
     if (!subagentDispatchAllowed(catalog, caller, route.profile)) return false;
-    const base = input.snapshot?.publicProfiles.get(route.profile) ?? catalog.get(route.profile);
+    const base = (input.snapshot?.resolvableProfiles ?? input.snapshot?.publicProfiles)?.get(route.profile) ?? catalog.get(route.profile);
     if (base === undefined) return false;
     const resolver = modelAliasResolverForExecutor(base.executor, models);
     const effective = appliedDispatchProfile(
