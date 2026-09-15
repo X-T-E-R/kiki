@@ -25,6 +25,7 @@ import {
 import { readManifest, sweepGenerationTemps } from './generation-files.js';
 import { MaintenanceScheduler } from './maintenance.js';
 import { LockFile, LockError } from './lockfile.js';
+import { wipeStoreDir } from './wipe.js';
 import type { LifecycleTracker } from './lifecycle-status.js';
 import { ValueReader } from './value-reader.js';
 import { Store } from './store.js';
@@ -561,7 +562,11 @@ export async function openOrRebuildMiniDb<T>(
         /* fall through to a full rebuild */
       }
     }
-    await fs.rm(opts.dir, { recursive: true, force: true });
+    // Wipe under the store's own lock: a bare rm would delete the directory
+    // of a peer that grabbed the write lock between this open's failure and
+    // the removal.
+    const outcome = await wipeStoreDir({ dir: opts.dir });
+    if (outcome === 'locked') throw err;
     return open(opts);
   }
 }

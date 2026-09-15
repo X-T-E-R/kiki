@@ -160,6 +160,7 @@ export * from '#/session/historyMutation/historyMutation';
 export * from '#/session/historyMutation/historyMutationService';
 export * from '#/session/sessionTitle/agentTitlePromptSource';
 import '#/session/sessionTitle/agentTitlePromptSourceService';
+export * from '#/session/sessionTitle/configSection';
 export * from '#/session/sessionTitle/sessionTitle';
 export * from '#/session/sessionTitle/sessionTitleService';
 import '#/session/sessionTitle/flag';
@@ -592,7 +593,6 @@ export {
   type ImageCompressionTelemetry,
 } from '#/agent/media/image-compress';
 export {
-  MODEL_ACCEPTED_IMAGE_MIMES,
   buildImageConversionGuidance,
   buildUnsupportedImageNotice,
   decodeBase64Prefix,
@@ -602,6 +602,10 @@ export {
   resolveEffectiveImageMime,
   unsupportedImageMimeFromUrl,
 } from '#/agent/media/image-format-policy';
+export {
+  providerImagePolicy,
+  type ProviderImagePolicy,
+} from '#/kosong/provider/providerImagePolicy';
 export {
   persistOriginalImage,
   sessionMediaOriginalsDir,

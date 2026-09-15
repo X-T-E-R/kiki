@@ -4,10 +4,14 @@ import { Jimp } from 'jimp';
 import { mkdtemp, readFile, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import type { ITelemetryService, TelemetryProperties } from '#/app/telemetry/telemetry';
 import { convertMCPContentBlock, mcpResultToExecutableOutput } from '#/agent/mcp/output';
+import type {
+  ISessionMediaStore,
+  SessionMediaMaterializeInput,
+} from '#/agent/media/sessionMediaStore';
 import { createMcpTool } from '#/agent/mcp/tools/mcp';
 import { StdioMcpClient } from '#/mcpCore/client-stdio';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
@@ -856,4 +860,304 @@ describe('mcpResultToExecutableOutput over a real stdio server', () => {
     expect(text).toContain('done');
     expect(text).toContain('"_meta":{"example.com/trace":"abc123"}');
   }, 15000);
+});
+
+interface RecordedAttachment {
+  readonly fileId: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly bytes: Buffer;
+  readonly signal: AbortSignal | undefined;
+}
+
+const SESSION_MEDIA_DIR = '/tmp/kimi-code-session/media';
+
+function recordingAttachmentStore(records: RecordedAttachment[]): ISessionMediaStore {
+  return {
+    _serviceBrand: undefined,
+    pathFor: () => undefined,
+    resolveDisplayPath: async () => undefined,
+    read: async () => undefined,
+    open: async () => undefined,
+    materialize: async (input: SessionMediaMaterializeInput): Promise<string | undefined> => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of input.stream() as AsyncIterable<Uint8Array>) {
+        chunks.push(Buffer.from(chunk));
+      }
+      records.push({
+        fileId: input.fileId,
+        name: input.name,
+        mimeType: input.mimeType,
+        bytes: Buffer.concat(chunks),
+        signal: input.signal,
+      });
+      return `${SESSION_MEDIA_DIR}/${input.fileId}`;
+    },
+  };
+}
+
+function result(content: MCPContentBlock[], isError = false): MCPToolResult {
+  return { content, isError };
+}
+
+const AVIF_BYTES = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+
+const HEIC_BYTES = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]);
+
+function joinedText(output: string | readonly ContentPart[]): string {
+  if (typeof output === 'string') return output;
+  return output.map((part) => (part.type === 'text' ? part.text : '')).join('');
+}
+
+describe('mcpResultToExecutableOutput — omitted attachment preservation', () => {
+  test('stores a refused inline image in session media and points at the readable original', async () => {
+    const records: RecordedAttachment[] = [];
+    const out = await mcpResultToExecutableOutput(
+      result([{ type: 'image', data: AVIF_BYTES.toString('base64'), mimeType: 'image/avif' }]),
+      'mcp__s__shot',
+      { attachmentStore: recordingAttachmentStore(records), providerType: 'anthropic' },
+    );
+
+    expect(joinedText(out.output)).toContain('image/avif');
+    expect(records).toHaveLength(1);
+    const saved = records[0]!;
+    expect(saved.mimeType).toBe('image/avif');
+    expect(saved.bytes.equals(AVIF_BYTES)).toBe(true);
+    expect(saved.fileId.startsWith('f_mcp_')).toBe(true);
+    expect(saved.name).toBe('attachment.avif');
+    expect(out.note).toContain(`Original attachment saved at: "${SESSION_MEDIA_DIR}/${saved.fileId}"`);
+    expect(out.note).toContain(`kimi-file://${saved.fileId}`);
+    expect(out.truncated).toBe(true);
+  });
+
+  test('keeps a Kimi-accepted HEIC inline and stores nothing', async () => {
+    const records: RecordedAttachment[] = [];
+    const out = await mcpResultToExecutableOutput(
+      result([{ type: 'image', data: HEIC_BYTES.toString('base64'), mimeType: 'image/heic' }]),
+      'mcp__s__shot',
+      { attachmentStore: recordingAttachmentStore(records), providerType: 'kimi' },
+    );
+
+    expect(records).toEqual([]);
+    expect(out.note).toBeUndefined();
+    expect(out.truncated).toBeUndefined();
+    const parts = out.output as ContentPart[];
+    expect(parts.some((part) => part.type === 'image_url')).toBe(true);
+  });
+
+  test('stores the same HEIC when the bound provider is not Kimi', async () => {
+    const records: RecordedAttachment[] = [];
+    const out = await mcpResultToExecutableOutput(
+      result([{ type: 'image', data: HEIC_BYTES.toString('base64'), mimeType: 'image/heic' }]),
+      'mcp__s__shot',
+      { attachmentStore: recordingAttachmentStore(records), providerType: 'openai' },
+    );
+
+    expect(records).toHaveLength(1);
+    expect(records[0]!.bytes.equals(HEIC_BYTES)).toBe(true);
+    const parts = typeof out.output === 'string' ? [] : (out.output as ContentPart[]);
+    expect(parts.some((part) => part.type === 'image_url')).toBe(false);
+    expect(out.note).toContain('Original attachment saved at');
+  });
+
+  test('stores an over-cap binary part instead of dropping its bytes', async () => {
+    const records: RecordedAttachment[] = [];
+    const oversized = 'y'.repeat(14 * 1024 * 1024);
+    const out = await mcpResultToExecutableOutput(
+      result([{ type: 'image', data: oversized, mimeType: 'image/png' }]),
+      'mcp__s__big',
+      { attachmentStore: recordingAttachmentStore(records) },
+    );
+
+    expect(out.truncated).toBe(true);
+    expect(joinedText(out.output)).toContain('image_url dropped');
+    expect(records).toHaveLength(1);
+    expect(records[0]!.mimeType).toBe('image/png');
+    expect(records[0]!.bytes.length).toBe(Buffer.from(oversized, 'base64').length);
+    expect(out.note).toContain('Original attachment saved at');
+  });
+
+  test('stores a dropped resource blob and keeps its declared mime type', async () => {
+    const records: RecordedAttachment[] = [];
+    const payload = Buffer.from('hello attachment');
+    const out = await mcpResultToExecutableOutput(
+      result([
+        {
+          type: 'resource',
+          resource: {
+            uri: 'file:///tmp/report.bin',
+            mimeType: 'application/octet-stream',
+            blob: payload.toString('base64'),
+          },
+        },
+      ]),
+      'mcp__s__blob',
+      { attachmentStore: recordingAttachmentStore(records) },
+    );
+
+    expect(joinedText(out.output)).toContain('MCP content dropped');
+    expect(records).toHaveLength(1);
+    expect(records[0]!.bytes.equals(payload)).toBe(true);
+    expect(records[0]!.mimeType).toBe('application/octet-stream');
+    expect(out.note).toContain('Original attachment saved at');
+  });
+
+  test('names the stored extension from the media type', async () => {
+    const records: RecordedAttachment[] = [];
+    await mcpResultToExecutableOutput(
+      result([
+        {
+          type: 'audio',
+          data: 'y'.repeat(14 * 1024 * 1024),
+          mimeType: 'audio/mpeg',
+        },
+      ]),
+      'mcp__s__audio',
+      { attachmentStore: recordingAttachmentStore(records) },
+    );
+
+    expect(records).toHaveLength(1);
+    expect(records[0]!.name).toBe('attachment.mp3');
+  });
+
+  test('folds an oversized notice list into a stored text attachment', async () => {
+    const records: RecordedAttachment[] = [];
+    const content: MCPContentBlock[] = [];
+    for (let index = 0; index < 40; index += 1) {
+      content.push({
+        type: 'image',
+        data: Buffer.concat([AVIF_BYTES, Buffer.from([index])]).toString('base64'),
+        mimeType: 'image/avif',
+      });
+    }
+    const out = await mcpResultToExecutableOutput(result(content), 'mcp__s__many', {
+      attachmentStore: recordingAttachmentStore(records),
+      providerType: 'anthropic',
+    });
+
+    const details = records.find((record) => record.mimeType === 'text/plain');
+    expect(details).toBeDefined();
+    expect(details!.name).toBe('attachment.txt');
+    expect(details!.bytes.toString('utf8')).toContain('Original attachment saved at');
+    expect(out.note).toContain('MCP attachment details saved at');
+    expect(out.note!.length).toBeLessThan(4096);
+    expect(records.filter((record) => record.mimeType === 'image/avif')).toHaveLength(40);
+  });
+
+  test('degrades to an unreadable notice when no attachment store is wired', async () => {
+    const out = await mcpResultToExecutableOutput(
+      result([{ type: 'image', data: AVIF_BYTES.toString('base64'), mimeType: 'image/avif' }]),
+      'mcp__s__t',
+      { providerType: 'anthropic' },
+    );
+
+    expect(out.truncated).toBe(true);
+    expect(out.note).toContain('could not be saved');
+    expect(out.note).toContain('Do not repeat the MCP call automatically');
+  });
+
+  test('reports a storage rejection without losing the drop notice', async () => {
+    const store: ISessionMediaStore = {
+      _serviceBrand: undefined,
+      pathFor: () => undefined,
+      resolveDisplayPath: async () => undefined,
+      read: async () => undefined,
+      open: async () => undefined,
+      materialize: async () => undefined,
+    };
+    const out = await mcpResultToExecutableOutput(
+      result([{ type: 'image', data: AVIF_BYTES.toString('base64'), mimeType: 'image/avif' }]),
+      'mcp__s__t',
+      { attachmentStore: store, providerType: 'anthropic' },
+    );
+
+    expect(out.note).toContain('could not be saved');
+    expect(joinedText(out.output)).toContain('image/avif');
+  });
+
+  test('rejects an invalid base64 payload instead of storing garbage', async () => {
+    const records: RecordedAttachment[] = [];
+    const out = await mcpResultToExecutableOutput(
+      result([{ type: 'image', data: 'not base64 !!!', mimeType: 'image/avif' }]),
+      'mcp__s__t',
+      { attachmentStore: recordingAttachmentStore(records), providerType: 'anthropic' },
+    );
+
+    expect(records).toEqual([]);
+    expect(out.note).toContain('Invalid base64 attachment');
+  });
+
+  test('forward the abort signal to the attachment store', async () => {
+    const records: RecordedAttachment[] = [];
+    const controller = new AbortController();
+    await mcpResultToExecutableOutput(
+      result([{ type: 'image', data: AVIF_BYTES.toString('base64'), mimeType: 'image/avif' }]),
+      'mcp__s__t',
+      {
+        attachmentStore: recordingAttachmentStore(records),
+        providerType: 'anthropic',
+        signal: controller.signal,
+      },
+    );
+
+    expect(records).toHaveLength(1);
+    expect(records[0]!.signal).toBe(controller.signal);
+  });
+
+  test('aborts before storing anything when the signal is already aborted', async () => {
+    const records: RecordedAttachment[] = [];
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      mcpResultToExecutableOutput(
+        result([{ type: 'image', data: AVIF_BYTES.toString('base64'), mimeType: 'image/avif' }]),
+        'mcp__s__t',
+        {
+          attachmentStore: recordingAttachmentStore(records),
+          providerType: 'anthropic',
+          signal: controller.signal,
+        },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(records).toEqual([]);
+  });
+
+  test('propagates an abort raised while the attachment is being stored', async () => {
+    const controller = new AbortController();
+    const recorded: RecordedAttachment[] = [];
+    const store = recordingAttachmentStore(recorded);
+    const materialize = vi.fn(async (input: SessionMediaMaterializeInput) => {
+      controller.abort();
+      return store.materialize(input);
+    });
+
+    await expect(
+      mcpResultToExecutableOutput(
+        result([{ type: 'image', data: AVIF_BYTES.toString('base64'), mimeType: 'image/avif' }]),
+        'mcp__s__t',
+        {
+          attachmentStore: { ...store, materialize },
+          providerType: 'anthropic',
+          signal: controller.signal,
+        },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(materialize).toHaveBeenCalledTimes(1);
+  });
+
+  test('passes an accepted image through without touching the store', async () => {
+    const records: RecordedAttachment[] = [];
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+    const out = await mcpResultToExecutableOutput(
+      result([{ type: 'text', text: 'caption' }, { type: 'image', data: png.toString('base64'), mimeType: 'image/png' }]),
+      'mcp__s__t',
+      { attachmentStore: recordingAttachmentStore(records), providerType: 'anthropic' },
+    );
+
+    expect(records).toEqual([]);
+    expect(out.note).toBeUndefined();
+    expect(out.truncated).toBeUndefined();
+    expect((out.output as ContentPart[]).some((part) => part.type === 'image_url')).toBe(true);
+  });
 });

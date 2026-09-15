@@ -29,6 +29,8 @@ import { KIKI_PLUGIN_MARKETPLACE_URL_ENV } from '#/constant/app';
 export {
   computeUpdateStatus,
   PLUGIN_MARKETPLACE_TIERS,
+  withBuiltInEntries,
+  withLatestVersions,
   type PluginMarketplace,
   type PluginMarketplaceEntry,
   type PluginMarketplaceTier,
@@ -52,6 +54,12 @@ export interface LoadPluginMarketplaceOptions {
    * Undefined means no injection.
    */
   readonly builtInEntries?: readonly PluginMarketplaceEntry[];
+  /**
+   * Skip the per-entry "latest GitHub release" lookups so the catalog can be
+   * rendered as soon as it is parsed; the caller resolves versions in a second
+   * phase with {@link withLatestVersions} and re-renders.
+   */
+  readonly skipLatestVersions?: boolean;
 }
 
 export function pluginMarketplaceConfigSource(config: Pick<KimiConfig, 'raw'>): string | undefined {
@@ -121,7 +129,9 @@ export async function loadPluginMarketplace(
   }
   const parsed = parsePluginMarketplace(read.raw, read.location);
   const marketplace =
-    configuredSource === undefined ? parsed : await withLatestVersions(parsed, fetchImpl);
+    configuredSource === undefined || options.skipLatestVersions === true
+      ? parsed
+      : await withLatestVersions(parsed, fetchImpl);
   return addBuiltInEntries(marketplace, options.builtInEntries);
 }
 

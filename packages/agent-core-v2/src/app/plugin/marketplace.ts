@@ -7,6 +7,13 @@ import { gt, valid } from 'semver';
 
 export const KIKI_PLUGIN_MARKETPLACE_URL_ENV = 'KIKI_PLUGIN_MARKETPLACE_URL';
 
+/**
+ * Hard bound on one marketplace `releases/latest` lookup. Without it a stalled
+ * connection to github.com hangs the caller for undici's default header
+ * timeout (300s), which is long enough to freeze a first paint.
+ */
+export const PLUGIN_RELEASE_LOOKUP_TIMEOUT_MS = 5_000;
+
 export interface ResolvePluginMarketplaceSourceOptions {
   readonly optionUrl?: string;
   readonly envUrl?: string;
@@ -160,11 +167,12 @@ export function withBuiltInEntries(
 export async function withLatestVersions(
   marketplace: PluginMarketplace,
   fetchImpl: typeof fetch,
+  timeoutMs: number = PLUGIN_RELEASE_LOOKUP_TIMEOUT_MS,
 ): Promise<PluginMarketplace> {
   const plugins = await Promise.all(
     marketplace.plugins.map(async (entry) => {
       if (entry.version !== undefined) return entry;
-      const latest = await resolveLatestGithubRelease(entry.source, fetchImpl);
+      const latest = await resolveLatestGithubRelease(entry.source, fetchImpl, timeoutMs);
       return latest === undefined ? entry : { ...entry, version: latest };
     }),
   );
@@ -289,11 +297,12 @@ function deriveVersionFromGithubSource(source: string): string | undefined {
 async function resolveLatestGithubRelease(
   source: string,
   fetchImpl: typeof fetch,
+  timeoutMs: number,
 ): Promise<string | undefined> {
   const repo = parseGithubRepo(source);
   if (repo === undefined) return undefined;
   try {
-    const tag = await fetchLatestReleaseTag(repo.owner, repo.repo, fetchImpl);
+    const tag = await fetchLatestReleaseTag(repo.owner, repo.repo, fetchImpl, timeoutMs);
     if (tag === undefined) return undefined;
     const candidate = tag.replace(/^v/i, '');
     return valid(candidate) !== null ? candidate : undefined;
@@ -320,9 +329,13 @@ async function fetchLatestReleaseTag(
   owner: string,
   repo: string,
   fetchImpl: typeof fetch,
+  timeoutMs: number,
 ): Promise<string | undefined> {
   const url = `https://github.com/${owner}/${repo}/releases/latest`;
-  const resp = await fetchImpl(url, { redirect: 'manual' });
+  const resp = await fetchImpl(url, {
+    redirect: 'manual',
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (resp.status === 404) return undefined;
   if (resp.status !== 301 && resp.status !== 302) {
     throw new Error(

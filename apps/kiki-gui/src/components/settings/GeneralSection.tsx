@@ -24,6 +24,7 @@ import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } fro
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { ExperimentalSection } from './ExperimentalSection';
+import { SessionTitleModelCard } from './SessionTitleModelSettings';
 import { mergeConfigEcho } from './configEcho';
 import { useSavedTick } from './useSavedTick';
 
@@ -377,6 +378,8 @@ export function GeneralSection() {
         cardId="st-card-session-title"
         titleKey="st.experimental.sessionTitle"
       />
+
+      <SessionTitleModelCard />
 
       <SectionCard id="st-card-desktop" title={t('st.desktop.title')} badge="desktop" aside={isDesktop ? undefined : t('st.desktop.browserHint')}>
         {isDesktop ? (

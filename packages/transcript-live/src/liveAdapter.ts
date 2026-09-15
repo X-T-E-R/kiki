@@ -368,7 +368,11 @@ export class AgentTranscriptLiveAdapter {
     origin: unknown;
     prompt?: string;
     promptId?: string;
-    promptAttachments?: readonly { kind: 'image' | 'video' | 'audio'; fileId: string }[];
+    promptAttachments?: readonly {
+      kind: 'image' | 'video' | 'audio';
+      fileId: string;
+      name?: string;
+    }[];
   }): TranscriptOperation[] {
     const n = event.turnId;
     const turnId = `t${n}`;
@@ -387,6 +391,7 @@ export class AgentTranscriptLiveAdapter {
       const attachment: TranscriptAttachment = {
         attachmentId: `${turnId}.att${attachmentIds.length + 1}`,
         mediaType: `${input.kind}/*`,
+        name: input.name,
         source: { kind: 'session_media', fileId: input.fileId },
         owner: { kind: 'turn', turnId },
       };

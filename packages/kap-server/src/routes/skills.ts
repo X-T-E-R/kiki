@@ -1,6 +1,7 @@
 import {
   Error2,
   ErrorCodes,
+  IAgentProfileService,
   IAgentSkillService,
   IBootstrapService,
   IFileService,
@@ -26,9 +27,9 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import {
   assertPromptFileRefs,
-  assertPromptSessionMediaRefs,
   contentToCoreParts,
   resolvePromptMediaFiles,
+  resolvePromptSessionMediaRefs,
   type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
@@ -221,18 +222,21 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
             );
           }
           await assertPromptFileRefs(attachments, core.accessor.get(IFileService));
-          await assertPromptSessionMediaRefs(
+          const submittedAttachments = await resolvePromptSessionMediaRefs(
             attachments,
             resolved.handle.accessor.get(ISessionMediaStore),
           );
           const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
           const sessionDir = resolved.handle.accessor.get(ISessionContext).sessionDir;
           preparedMedia = await resolvePromptMediaFiles(
-            attachments,
+            submittedAttachments,
             core.accessor.get(IFileService),
             core.accessor.get(IBootstrapService).cacheDir,
             {
               telemetry,
+              providerType: resolved.handle.accessor
+                .get(IAgentProfileService)
+                .getModelProviderType(),
               resolveOriginalsDir: async () => sessionMediaOriginalsDir(sessionDir),
               resolveAttachmentsDir: async () => join(sessionDir, 'attachments'),
             },

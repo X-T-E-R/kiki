@@ -9,12 +9,15 @@ import {
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
+import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { ILogService } from '#/_base/log/log';
 import { IOAuthService } from '#/app/auth/auth';
 import { IEventService } from '#/app/event/event';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import type { ModelRequester } from '#/kosong/model/modelRequester';
 import { IProviderService } from '#/kosong/provider/provider';
 import { isOAuthCatalogVendor } from '#/kosong/provider/providerDefinition';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -22,6 +25,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { SessionMetaUpdated } from '#/session/sessionMetadata/sessionMetaEvents';
 
 import { IAgentTitlePromptSource } from './agentTitlePromptSource';
+import { resolveSessionTitleModelAlias } from './configSection';
 import { AUTO_SESSION_TITLE_FLAG_ID } from './flag';
 import { ISessionTitleService, type SessionTitleSource } from './sessionTitle';
 
@@ -36,6 +40,10 @@ const MAX_TITLE_USER_SEGMENT = 300;
 const MAX_TITLE_FIRST_TURN_ASSISTANT = 600;
 
 const MAX_TITLE_DIGEST_ASSISTANT = 400;
+
+const TITLE_SYSTEM_PROMPT =
+  'You name conversations. Answer with the title only: one line, at most 8 words, ' +
+  'no quotes, no trailing punctuation, in the language of the conversation.';
 
 export class SessionTitleService implements ISessionTitleService {
   declare readonly _serviceBrand: undefined;
@@ -52,6 +60,8 @@ export class SessionTitleService implements ISessionTitleService {
     @IHostRequestHeaders private readonly hostHeaders: IHostRequestHeaders,
     @IFlagService private readonly flags: IFlagService,
     @ILogService private readonly log: ILogService,
+    @IConfigService private readonly config: IConfigService,
+    @IModelCatalog private readonly modelCatalog: IModelCatalog,
   ) {}
 
   async generateTitle(opts?: {
@@ -93,6 +103,65 @@ export class SessionTitleService implements ISessionTitleService {
   ): Promise<string | undefined> {
     const current = await this.metadata.read();
     if (!force && current.titleKind === 'custom') return undefined;
+    const alias = resolveSessionTitleModelAlias(this.config);
+    const title =
+      alias === undefined
+        ? await this.requestManagedTitle(chatContent)
+        : await this.requestModelTitle(chatContent, alias);
+    if (title === undefined) return undefined;
+    const applied = await this.metadata.setGeneratedTitleIfUncustomized(title, { force });
+    if (!applied) return undefined;
+    this.eventService.publish(
+      new SessionMetaUpdated({
+        payload: {
+          agentId: 'main',
+          sessionId: this.ctx.sessionId,
+          title,
+          patch: { title, isCustomTitle: false },
+        },
+      }),
+    );
+    return title;
+  }
+
+  private async requestModelTitle(
+    chatContent: string,
+    alias: string,
+  ): Promise<string | undefined> {
+    let requester: ModelRequester;
+    try {
+      requester = this.modelCatalog.getRequester(alias);
+    } catch (error) {
+      this.log.debug(`session title model unavailable: ${errorMessage(error)}`);
+      return undefined;
+    }
+    const collected: string[] = [];
+    try {
+      for await (const event of requester.request(
+        {
+          systemPrompt: TITLE_SYSTEM_PROMPT,
+          tools: [],
+          messages: [
+            { role: 'user', content: [{ type: 'text', text: chatContent }], toolCalls: [] },
+          ],
+        },
+        undefined,
+        { maxCompletionTokens: MAX_GENERATED_TITLE_LENGTH },
+      )) {
+        if (event.type !== 'finish') continue;
+        for (const part of event.message.content) {
+          if (part.type === 'text') collected.push(part.text);
+        }
+      }
+    } catch (error) {
+      this.log.debug(`session title generation failed: ${errorMessage(error)}`);
+      return undefined;
+    }
+    const title = normalizeGeneratedTitle(collected.join(''));
+    return title.length > 0 ? title : undefined;
+  }
+
+  private async requestManagedTitle(chatContent: string): Promise<string | undefined> {
     const provider = this.providers.get(KIMI_CODE_PROVIDER_NAME);
     if (
       provider === undefined ||
@@ -141,21 +210,20 @@ export class SessionTitleService implements ISessionTitleService {
       this.log.debug(`chat_title request failed: ${result.message}`);
       return undefined;
     }
-    const title = result.title.slice(0, MAX_GENERATED_TITLE_LENGTH);
-    const applied = await this.metadata.setGeneratedTitleIfUncustomized(title, { force });
-    if (!applied) return undefined;
-    this.eventService.publish(
-      new SessionMetaUpdated({
-        payload: {
-          agentId: 'main',
-          sessionId: this.ctx.sessionId,
-          title,
-          patch: { title, isCustomTitle: false },
-        },
-      }),
-    );
-    return title;
+    return result.title.slice(0, MAX_GENERATED_TITLE_LENGTH);
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeGeneratedTitle(raw: string): string {
+  const collapsed = raw.replaceAll(/\s+/g, ' ').trim();
+  const unquoted = /^(["'“”‘’])([\s\S]*)\1$/.test(collapsed)
+    ? collapsed.slice(1, -1).trim()
+    : collapsed;
+  return unquoted.slice(0, MAX_GENERATED_TITLE_LENGTH);
 }
 
 function titleInputFromPrompts(prompts: readonly string[]): string | undefined {

@@ -855,6 +855,7 @@ describe('AgentMediaToolsRegistrar', () => {
   interface ProfileState {
     alias: string;
     capabilities: ModelCapability;
+    providerType?: string;
   }
 
   function createRegistrarHarness() {
@@ -867,9 +868,16 @@ describe('AgentMediaToolsRegistrar', () => {
     const profile = {
       getModelCapabilities: () => state.capabilities,
       getModel: () => state.alias,
+      getModelProviderType: () => state.providerType,
     } as unknown as IAgentProfileService;
     const brokenAliases = new Set<string>();
     const modelCatalog = {
+      get: (id: string) => {
+        if (brokenAliases.has(id)) {
+          throw new Error(`Model "${id}" is not configured in config.toml.`);
+        }
+        return { id, name: id, providerName: 'test', protocol: 'openai' };
+      },
       getRequester: (id: string) => {
         if (brokenAliases.has(id)) {
           throw new Error(`Model "${id}" is not configured in config.toml.`);

@@ -1663,6 +1663,12 @@ export const en = {
   'st.experimental.flagId': 'Flag ID: {id}',
   'st.experimental.empty': 'This server did not report any experimental flags.',
   'st.experimental.saved': 'Experimental overrides saved; effective state refreshed.',
+  'st.sessionTitleModel.title': 'Title model',
+  'st.sessionTitleModel.hint':
+    'Titles come from the managed chat_title tool by default (included in the subscription). Pin a model alias here to write titles with that model instead; the same prompt budgets apply, and clearing the field restores the managed tool.',
+  'st.sessionTitleModel.model': 'Model alias',
+  'st.sessionTitleModel.placeholder': 'e.g. kimi-for-coding',
+  'st.sessionTitleModel.saved': 'Title model saved.',
   'st.advanced.title': 'Advanced engine domains',
   'st.advanced.hint':
     'Raw JSON for the permission, loop_control, and background config domains. Most people never need to touch this; Hooks live under Tools & automations. Unknown fields are rejected before sending, and the server validates each domain on save.',

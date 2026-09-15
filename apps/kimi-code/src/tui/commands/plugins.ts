@@ -40,6 +40,9 @@ import {
   isDefaultPluginMarketplaceSource,
   loadPluginMarketplace,
   pluginMarketplaceConfigSource,
+  withBuiltInEntries,
+  withLatestVersions,
+  type PluginMarketplace,
   type PluginMarketplaceEntry,
 } from '#/utils/plugin-marketplace';
 import { openUrl } from '#/utils/open-url';
@@ -364,19 +367,47 @@ async function loadMarketplaceCatalog(
   configSource: string | undefined,
   capabilities: readonly CapabilityStatus[],
 ): Promise<void> {
+  const builtInEntries =
+    host.engineV2 && isDefaultMarketplaceCatalog(source, configSource)
+      ? capabilities.map(capabilityMarketplaceEntry)
+      : undefined;
+  let catalog: PluginMarketplace;
   try {
-    const marketplace = await loadPluginMarketplace({
+    // Phase 1: paint the catalog as soon as it is parsed — the per-entry
+    // releases/latest lookups must not gate the first frame. The raw parsed
+    // catalog is kept for phase 2: injecting built-in rows first would hide
+    // the matching catalog entries' GitHub sources behind `capability:<id>`
+    // rows, so their versions could never resolve.
+    catalog = await loadPluginMarketplace({
       workDir: host.state.appState.workDir,
       source,
       configSource,
-      builtInEntries:
-        host.engineV2 && isDefaultMarketplaceCatalog(source, configSource)
-          ? capabilities.map(capabilityMarketplaceEntry)
-          : undefined,
+      skipLatestVersions: true,
     });
-    panel.setMarketplace(marketplace.plugins, marketplace.source);
   } catch (error) {
+    // Any phase-1 failure — an unreachable OR a malformed catalog — is
+    // surfaced: the panel keeps the built-in capability rows installable in
+    // the Official tab while the error is shown, and a broken catalog must
+    // not be masked as a successfully loaded, built-ins-only marketplace.
     panel.setMarketplaceError(formatErrorMessage(error));
+    host.state.ui.requestRender();
+    return;
+  }
+  const painted =
+    builtInEntries === undefined ? catalog : withBuiltInEntries(catalog, builtInEntries);
+  panel.setMarketplace(painted.plugins, painted.source);
+  host.state.ui.requestRender();
+  try {
+    // Phase 2: resolve the versions in the background (each lookup is bounded
+    // by the engine), re-apply the built-in injection so resolved versions
+    // reach the capability rows, and refresh so update badges appear.
+    const resolved = await withLatestVersions(catalog, fetch);
+    const enriched =
+      builtInEntries === undefined ? resolved : withBuiltInEntries(resolved, builtInEntries);
+    panel.setMarketplace(enriched.plugins, enriched.source);
+  } catch {
+    // A version-lookup failure degrades to badge-less rows; the painted list
+    // stays untouched.
   }
   host.state.ui.requestRender();
 }
@@ -805,7 +836,7 @@ async function installPluginFromSource(
 const PLUGIN_RELOAD_HINT = 'Run /new or /reload to apply plugin changes.';
 
 const WEBBRIDGE_POST_INSTALL_MARKDOWN = [
-  '*Two steps left to use Kimi WebBridge:*',
+  '*Two steps left to use Kimi Browser Extension:*',
   '1. Install the browser extension',
   '',
   '   - [Chrome Web Store](https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc)',

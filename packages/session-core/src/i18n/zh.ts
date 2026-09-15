@@ -1634,6 +1634,12 @@ export const zh: Record<I18nKey, string> = {
   'st.experimental.flagId': 'Flag ID：{id}',
   'st.experimental.empty': '当前服务器未报告任何实验特性。',
   'st.experimental.saved': '实验特性覆盖已保存，实际状态已刷新。',
+  'st.sessionTitleModel.title': '标题模型',
+  'st.sessionTitleModel.hint':
+    '默认通过托管的 chat_title 工具生成标题（包含在订阅额度内）。在此固定一个模型别名，即改由该模型生成标题；提示词预算不变，清空该字段即恢复托管工具。',
+  'st.sessionTitleModel.model': '模型别名',
+  'st.sessionTitleModel.placeholder': '例如 kimi-for-coding',
+  'st.sessionTitleModel.saved': '标题模型已保存。',
   'st.advanced.title': '高级引擎域',
   'st.advanced.hint':
     '直接编辑 permission、loop_control 和 background 三个配置域的原始 JSON，一般用不到；Hooks 请在「工具与自动操作」中编辑。未知字段会在发送前被拒绝，保存时由服务器逐个域校验。',

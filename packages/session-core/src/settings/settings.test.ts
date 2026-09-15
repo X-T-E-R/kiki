@@ -32,6 +32,7 @@ import {
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   resourceLimitPatch,
+  sessionTitleModelPatch,
   remoteModelsHeaders,
   remoteModelsUrl,
   replaceProvider,
@@ -1045,6 +1046,24 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
       plugins: { marketplace_url: undefined },
       replace_domains: ['plugins'],
     });
+  });
+
+  it('scopes the session-title model patch to the session_title replace-domain', () => {
+    expect(sessionTitleModelPatch(' kimi-for-coding ')).toEqual({
+      session_title: { model: 'kimi-for-coding' },
+      replace_domains: ['session_title'],
+    });
+    expect(sessionTitleModelPatch('   ')).toEqual({
+      session_title: { model: undefined },
+      replace_domains: ['session_title'],
+    });
+  });
+
+  it('projects the pinned title model out of the config echo', () => {
+    expect(runtimeConfigDraftFromConfig({ session_title: { model: 'kimi-for-coding' } }).sessionTitleModel).toBe(
+      'kimi-for-coding',
+    );
+    expect(runtimeConfigDraftFromConfig({}).sessionTitleModel).toBe('');
   });
 
   it('scopes the tool policy patch to the tools replace-domain', () => {

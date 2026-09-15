@@ -692,6 +692,19 @@ export function marketplaceUrlPatch(url: string): KikiConfigPatch {
   };
 }
 
+/**
+ * Narrow session-title patch for the pinned title model. An empty draft
+ * clears the alias, which puts title generation back on the managed
+ * `chat_title` tool.
+ */
+export function sessionTitleModelPatch(model: string): KikiConfigPatch {
+  const trimmed = model.trim();
+  return {
+    session_title: { model: trimmed.length === 0 ? undefined : trimmed },
+    replace_domains: ['session_title'],
+  };
+}
+
 export type TokenCountingStrategy = 'measured+estimated' | 'measured' | 'estimated';
 export type PrintBackgroundMode = 'exit' | 'drain' | 'steer';
 
@@ -724,6 +737,7 @@ export interface RuntimeConfigDraft {
   identitySlug: string;
   extraAgentDirs: string[];
   disabledBuiltinProfiles: string[];
+  sessionTitleModel: string;
 }
 
 function optionalNumberDraft(value: number | null | undefined): string {
@@ -769,6 +783,7 @@ export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft
     identitySlug: config.identity?.slug ?? '',
     extraAgentDirs: normalizeConfigStringList(config.extra_agent_dirs),
     disabledBuiltinProfiles: normalizeConfigStringList(config.disabled_builtin_profiles),
+    sessionTitleModel: config.session_title?.model ?? '',
   };
 }
 
@@ -1416,6 +1431,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'general', cardId: 'st-card-compatibility-home', titleKey: 'st.compat.title', keywordKeys: ['st.compat.home', 'st.compat.credentialPath', 'st.compat.configImportTitle', 'st.compat.migrateUserSkills'] },
   { section: 'general', cardId: 'st-card-session-title', titleKey: 'st.experimental.sessionTitle', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['session title', '会话标题'] },
+  { section: 'general', cardId: 'st-card-session-title-model', titleKey: 'st.sessionTitleModel.title', keywordKeys: ['st.sessionTitleModel.hint', 'st.sessionTitleModel.model'], synonyms: ['title model', '标题模型'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'], synonyms: ['模型目录', 'model catalog', '模型列表'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.sidecar.catalogInterval', 'st.sidecar.refreshOnStart'], synonyms: ['模型目录刷新', 'catalog refresh'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },

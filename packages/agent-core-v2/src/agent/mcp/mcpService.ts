@@ -5,12 +5,15 @@ import { defineState } from '#/state/state';
 import type { Tool as KosongTool } from '#/kosong/contract/tool';
 
 import { type IDisposable } from "#/_base/di/lifecycle";
+import { IInstantiationService } from '#/_base/di/instantiation';
 import { Service } from "#/_base/di/service";
 import { ErrorCodes, Error2, makeErrorPayload } from "#/errors";
 import { abortable } from '#/_base/utils/abort';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { sessionMediaOriginalsDir } from '#/agent/media/image-originals';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -59,6 +62,8 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
     super();
     this.states.contributeState(mcpDiscoveryKey);
@@ -292,6 +297,9 @@ export class AgentMcpService extends Service implements IAgentMcpService {
           createMcpTool(qualified, tool, client, {
             originalsDir: sessionMediaOriginalsDir(this.sessionContext.sessionDir),
             telemetry: this.telemetry,
+            attachmentStore: () =>
+              this.instantiation.invokeFunction((accessor) => accessor.get(ISessionMediaStore)),
+            providerType: () => this.profile.getModelProviderType(),
             reconnect: (signal) => this.reconnectForToolCall(serverName, client, signal),
             isRemoved: () =>
               this.mcpHandle.connectionManager.get(serverName)?.status === 'removed',

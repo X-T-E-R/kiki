@@ -41,6 +41,10 @@ export const modelCatalogConfigResponseSchema = z.object({
   refreshOnStart: z.boolean().optional(),
 });
 
+export const sessionTitleConfigResponseSchema = z.object({
+  model: z.string().optional(),
+});
+
 export const planConfigResponseSchema = z.object({
   gate: z.enum(['free', 'gated']),
   enterApprovalTimeoutMs: z.number().int().min(5000),
@@ -79,6 +83,7 @@ export const configResponseSchema = z.object({
   agents: agentsConfigResponseSchema.optional(),
   builtin_product_skills: z.boolean().optional(),
   model_catalog: modelCatalogConfigResponseSchema.optional(),
+  session_title: sessionTitleConfigResponseSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   disabled_builtin_profiles: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
@@ -122,6 +127,9 @@ export const patchConfigRequestSchema = z.object({
   model_catalog: z.object({
     refresh_interval_ms: z.number().optional(),
     refresh_on_start: z.boolean().optional(),
+  }).optional(),
+  session_title: z.object({
+    model: z.string().optional(),
   }).optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   disabled_builtin_profiles: z.array(z.string()).optional(),

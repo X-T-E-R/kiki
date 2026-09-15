@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { OAuthConnectionError, OAuthUnauthorizedError } from '@kiki/oauth';
+import type { ContentPart } from '#/kosong/contract/message';
 
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { type IAgentScopeHandle } from '#/_base/di/scope';
@@ -8,10 +9,13 @@ import { LifecycleScope } from '#/app/scopes';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { Emitter } from '#/_base/event';
 import { IOAuthService } from '#/app/auth/auth';
+import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { IEventService } from '#/app/event/event';
 import type { Event2 } from '#/app/event/event2';
 import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import type { ModelRequestEvent, ModelRequester } from '#/kosong/model/modelRequester';
 import {
   IProviderService,
   type OAuthRef,
@@ -28,6 +32,7 @@ import {
   type TitleTurnExcerpt,
 } from '#/session/sessionTitle/agentTitlePromptSource';
 import { ISessionTitleService } from '#/session/sessionTitle/sessionTitle';
+import { SESSION_TITLE_SECTION } from '#/session/sessionTitle/configSection';
 import { SessionTitleService } from '#/session/sessionTitle/sessionTitleService';
 import {
   ISessionMetadata,
@@ -153,6 +158,10 @@ describe('SessionTitleService', () => {
   let digestExcerpt: TitleDigestExcerpt;
   let tokenCalls: boolean[];
   let flagEnabled: boolean;
+  let titleModelAlias: string | undefined;
+  let modelRequesters: Map<string, ModelRequester>;
+  let requesterLookups: string[];
+  let titleRequests: Array<{ readonly systemPrompt: string; readonly text: string }>;
 
   beforeEach(() => {
     tokenError = undefined;
@@ -164,6 +173,10 @@ describe('SessionTitleService', () => {
     digestExcerpt = {};
     tokenCalls = [];
     flagEnabled = true;
+    titleModelAlias = undefined;
+    modelRequesters = new Map();
+    requesterLookups = [];
+    titleRequests = [];
     providers = { 'managed:kimi-code': MANAGED_PROVIDER };
     metadata = new FakeSessionMetadata();
     events = new FakeEventService();
@@ -228,6 +241,20 @@ describe('SessionTitleService', () => {
           thirdPartyHeaders: {},
         });
         reg.definePartialInstance(IFlagService, { enabled: () => flagEnabled });
+        reg.definePartialInstance(IConfigService, {
+          get: ((key: string) =>
+            key === SESSION_TITLE_SECTION && titleModelAlias !== undefined
+              ? { model: titleModelAlias }
+              : undefined) as unknown as IConfigService['get'],
+        });
+        reg.definePartialInstance(IModelCatalog, {
+          getRequester: (alias: string) => {
+            requesterLookups.push(alias);
+            const requester = modelRequesters.get(alias);
+            if (requester === undefined) throw new Error(`Unknown model: ${alias}`);
+            return requester;
+          },
+        } as unknown as IModelCatalog);
         reg.define(ISessionTitleService, SessionTitleService);
       },
     });
@@ -240,6 +267,41 @@ describe('SessionTitleService', () => {
     vi.unstubAllEnvs();
   });
 
+  function stubTitleRequester(answer: string): ModelRequester {
+    return {
+      model: { id: 'title-model' } as ModelRequester['model'],
+      request: (input: { readonly messages: readonly { readonly content: readonly ContentPart[] }[] }) => {
+        titleRequests.push({
+          systemPrompt: '',
+          text: input.messages
+            .flatMap((message) => message.content)
+            .map((part) => (part.type === 'text' ? part.text : ''))
+            .join(''),
+        });
+        return (async function* generate() {
+          yield {
+            type: 'finish',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: answer }],
+              toolCalls: [],
+            },
+          } as ModelRequestEvent;
+        })();
+      },
+    } as unknown as ModelRequester;
+  }
+
+  function stubFailingTitleRequester(): ModelRequester {
+    return {
+      model: { id: 'title-model' } as ModelRequester['model'],
+      request: () =>
+        (async function* generate(): AsyncGenerator<ModelRequestEvent> {
+          throw new Error('provider exploded');
+        })(),
+    } as unknown as ModelRequester;
+  }
+
   it('is unavailable while the experimental auto_session_title flag is off', async () => {
     flagEnabled = false;
     titlePrompts = ['hello'];
@@ -249,6 +311,63 @@ describe('SessionTitleService', () => {
       ix.get(ISessionTitleService).generateTitle({ force: true, source: 'digest' }),
     ).resolves.toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('generates through the pinned model instead of the managed chat_title tool', async () => {
+    titleModelAlias = 'title-model';
+    titlePrompts = ['先帮我搭一个 Vite 项目', '加上路由'];
+    modelRequesters.set('title-model', stubTitleRequester('  "Vite 路由配置"\n'));
+
+    const title = await ix.get(ISessionTitleService).generateTitle();
+
+    expect(title).toBe('Vite 路由配置');
+    expect(metadata.meta.titleKind).toBe('generated');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(requesterLookups).toEqual(['title-model']);
+    expect(titleRequests).toHaveLength(1);
+    expect(titleRequests[0]!.text).toBe('user: 先帮我搭一个 Vite 项目\nuser: 加上路由');
+  });
+
+  it('clamps a chatty model answer to the shared title budget', async () => {
+    titleModelAlias = 'title-model';
+    titlePrompts = ['hello'];
+    modelRequesters.set('title-model', stubTitleRequester(`标题\n${'很'.repeat(500)}`));
+
+    const title = await ix.get(ISessionTitleService).generateTitle();
+
+    expect(title).toHaveLength(200);
+    expect(title).not.toContain('\n');
+    expect(title!.startsWith('标题 很')).toBe(true);
+  });
+
+  it('degrades without touching the managed endpoint when the pinned model is unknown', async () => {
+    titleModelAlias = 'missing-model';
+    titlePrompts = ['hello'];
+
+    await expect(ix.get(ISessionTitleService).generateTitle()).resolves.toBeUndefined();
+
+    expect(requesterLookups).toEqual(['missing-model']);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(metadata.meta.title).toBeUndefined();
+  });
+
+  it('degrades when the pinned model request fails', async () => {
+    titleModelAlias = 'title-model';
+    titlePrompts = ['hello'];
+    modelRequesters.set('title-model', stubFailingTitleRequester());
+
+    await expect(ix.get(ISessionTitleService).generateTitle()).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps calling the managed chat_title tool when no title model is pinned', async () => {
+    titlePrompts = ['hello'];
+
+    const title = await ix.get(ISessionTitleService).generateTitle();
+
+    expect(title).toBe('生成的标题');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(requesterLookups).toEqual([]);
   });
 
   it('replaces the easy title with the generated one', async () => {

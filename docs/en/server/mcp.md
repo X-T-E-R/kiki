@@ -2,6 +2,8 @@
 
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) is an open protocol that lets models safely call tools exposed by external processes or services — for example, reading GitHub issues, querying databases, or operating the local file system. Kiki acts as an MCP client to connect these external tools and exposes them to the Agent alongside built-in tools (`Read`, `Bash`, `Grep`, etc.) with no behavioral difference.
 
+MCP tool results can carry embedded media. When the current model cannot take an embedded image — because of its format or because the part is over the per-part size cap — the result keeps a text notice *and* saves the original into the session's media storage, so nothing is lost. The notice carries the saved file's absolute path and a `kimi-file://` reference; pass the path to `Read` or `ReadMediaFile` to inspect the original. A resource blob in a format Kiki does not deliver is preserved the same way. When the accumulated list of saved attachments would crowd the tool output, it is written to a text file and the output keeps a short pointer to it.
+
 ## Connection Methods
 
 Kiki supports three MCP server connection methods:
@@ -25,7 +27,7 @@ Run `/mcp-config` in the TUI to interactively add, edit, or delete servers witho
 
 Deleting a server from the configuration does not interrupt open sessions: the server stays listed in `/mcp` as `removed`, its tools remain visible there, and calls to them fail with a removal notice, while new sessions do not register the tools at all. Conversely, a server added mid-session — by editing `mcp.json` or installing a plugin — is not registered in already-open sessions; it only joins sessions created later.
 
-When Kiki finds project-level MCP servers in an untrusted folder, it shows each server's transport and launch target in the workspace trust prompt. The prompt defaults to `Don't trust`; move to `Trust this folder` and confirm only after reviewing the listed command and arguments or remote URL. Trusting the folder enables the project-level MCP servers for that workspace.
+When Kiki finds project-level MCP servers in an untrusted folder, it shows each server's transport and launch target in the workspace trust prompt. The prompt defaults to `Trust this folder`; review the listed command and arguments or remote URL before confirming. Trusting the folder enables the project-level MCP servers for that workspace.
 
 Structure of `mcp.json`:
 

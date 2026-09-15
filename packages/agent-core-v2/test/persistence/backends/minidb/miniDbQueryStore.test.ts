@@ -8,6 +8,7 @@ import { ScopeActivation, _clearScopedRegistryForTests, registerScopedService } 
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { LockFile } from '@kiki/minidb';
 import { ClusterDb } from '@kiki/minidb/cluster';
 import {
   drainQueryStoreDisposals,
@@ -217,6 +218,43 @@ describe('MiniDbQueryStore', { timeout: 30_000 }, () => {
     await second.put(COLLECTION, 'b', { id: 'b', v: 2 });
     const page = await second.query<{ id: string; v: number }>(COLLECTION).where({ v: 2 }).execute();
     expect(page.items).toEqual([{ id: 'b', v: 2 }]);
+  });
+
+  it('refuses to wipe the store while another holder owns a shard lock', async () => {
+    const first = build();
+    await first.put(COLLECTION, 'a', { id: 'a', v: 1 });
+    await first.ensureIndex(COLLECTION, { kind: 'value', name: 'byV', field: 'v' });
+    await first.close();
+    disposeHost?.();
+    disposeHost = undefined;
+
+    const storeDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);
+    await fsp.writeFile(join(storeDir, 'cluster.indexes.json'), '{ definitely not valid json');
+
+    const foreign = new LockFile(join(storeDir, 'shard-15', 'db.lock'));
+    expect(await foreign.acquire()).toBe(true);
+    try {
+      const second = build();
+      await expect(
+        second.ensureIndex(COLLECTION, { kind: 'value', name: 'byV', field: 'v' }),
+      ).rejects.toThrow();
+      expect((await fsp.stat(join(storeDir, 'cluster.meta.json'))).isFile()).toBe(true);
+      expect(await fsp.readFile(join(storeDir, 'cluster.indexes.json'), 'utf8')).toBe(
+        '{ definitely not valid json',
+      );
+    } finally {
+      await foreign.release();
+    }
+
+    const recovered = build();
+    await recovered.ensureIndex(COLLECTION, { kind: 'value', name: 'byV', field: 'v' });
+    expect(await recovered.get(COLLECTION, 'a')).toBeUndefined();
+    await recovered.put(COLLECTION, 'c', { id: 'c', v: 3 });
+    const page = await recovered
+      .query<{ id: string; v: number }>(COLLECTION)
+      .where({ v: 3 })
+      .execute();
+    expect(page.items).toEqual([{ id: 'c', v: 3 }]);
   });
 
   it('opens a 16-shard cluster under the cache dir', async () => {

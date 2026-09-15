@@ -18,7 +18,7 @@ import { MiniDb } from '@kiki/minidb';
 import { TranscriptStore, type TranscriptOperation } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { SyncSessionInput } from '../../src/search/indexCore';
+import { SearchIndexCore, type SyncSessionInput } from '../../src/search/indexCore';
 import {
   GlobalSearchError,
   GlobalSearchService,
@@ -190,7 +190,12 @@ type TestableCore = {
   computeFingerprint(): Promise<string>;
   openSearchDb(): Promise<unknown>;
   deleteSessionDocs(db: TestDb, sessionId: string): Promise<void>;
-  syncSession(db: TestDb, summary: SyncSessionInput): Promise<void>;
+  syncSession(
+    db: TestDb,
+    summary: SyncSessionInput,
+    sourceMtimeMs: number | undefined,
+    budget: { bytesLeft: number; deadline: number },
+  ): Promise<void>;
 };
 
 function coreOf(service: GlobalSearchService): TestableCore {
@@ -1503,7 +1508,10 @@ describe('GlobalSearchService', () => {
         if (criteria.key.prefix.startsWith('\0meta\\file\\')) metaRowsScanned += rows.length;
         return rows;
       };
-      await coreOf(service).syncSession(db, syncInput(home!, s1));
+      await coreOf(service).syncSession(db, syncInput(home!, s1), undefined, {
+        bytesLeft: 64 << 20,
+        deadline: Date.now() + 30_000,
+      });
       expect(metaRowsScanned).toBeLessThanOrEqual(5);
     });
 
@@ -1786,6 +1794,151 @@ describe('GlobalSearchService', () => {
       const page = await service.search({ query: '苹果' });
       expect(page.items.length).toBe(1);
       expect(page.indexState.state).toBe('ready');
+    });
+
+    describe('sync round budgets and failure accounting', () => {
+      function coreHome(): string {
+        return join(home!, 'search-index');
+      }
+
+      function messageCount(core: SearchIndexCore, sessionId: string): number {
+        const rows = core.db?.query({ key: { prefix: `${sessionId}/` }, project: ['kind'] });
+        return (rows ?? []).filter((row) => row.value.kind === 'message').length;
+      }
+
+      interface SessionSyncStub {
+        syncSession: (
+          db: unknown,
+          summary: { id: string },
+          ...rest: unknown[]
+        ) => Promise<unknown>;
+      }
+
+      function failSession(core: SearchIndexCore, sessionId: string, message: string): () => void {
+        const target = core as unknown as SessionSyncStub;
+        const original = target.syncSession.bind(core);
+        target.syncSession = (db, summary, ...rest) =>
+          Promise.resolve(
+            summary.id === sessionId
+              ? { truncated: false, failed: true, error: message, unavailable: false }
+              : original(db, summary, ...rest),
+          );
+        return () => {
+          target.syncSession = original;
+        };
+      }
+
+      it('stops a sync round at its byte budget and reports the truncation', async () => {
+        const s1 = summary('s1', 'budget', T1);
+        const wire = await writeWire(home!, 's1', 'main', [
+          userLine('苹果 head', T1),
+          userLine(`苹果 giant ${'x'.repeat(1_700_000)}`, T2),
+          userLine(`苹果 tail ${'y'.repeat(400_000)}`, T3),
+        ]);
+        const core = new SearchIndexCore({
+          indexDir: coreHome(),
+          log: noopLog,
+          bootSalt: 'budget-test',
+        });
+        core.syncRoundBytes = 1 << 20;
+        const input = [syncInput(home!, s1)];
+        try {
+          const first = await core.sync(input);
+          expect(first.truncated).toBe(true);
+          expect(first.failures).toBe(0);
+          expect(core.fullSyncDone).toBe(false);
+          expect(messageCount(core, 's1')).toBe(2);
+
+          const second = await core.sync(input);
+          expect(second.truncated).toBe(false);
+          expect(second.failures).toBe(0);
+          expect(core.fullSyncDone).toBe(true);
+          expect(messageCount(core, 's1')).toBe(3);
+
+          expect(await readFile(wire, 'utf8')).toContain('苹果 tail');
+        } finally {
+          core.beginClose();
+          await core.close();
+        }
+      });
+
+      it('cools down a session whose wire transcript keeps failing', async () => {
+        const s1 = summary('s1', 'healthy', T1);
+        await writeWire(home!, 's1', 'main', [userLine('苹果 healthy', T1)]);
+        const s2 = summary('s2', 'broken', T1);
+        await writeWire(home!, 's2', 'main', [userLine('苹果 broken', T1)]);
+        const core = new SearchIndexCore({
+          indexDir: coreHome(),
+          log: noopLog,
+          bootSalt: 'cooldown-test',
+        });
+        const input = [syncInput(home!, s1), syncInput(home!, s2)];
+        try {
+          const restore = failSession(core, 's2', 'injected unreadable transcript');
+          try {
+            for (let round = 0; round < 4; round++) {
+              const outcome = await core.sync(input);
+              expect(outcome.failures).toBe(1);
+              expect(outcome.truncated).toBe(false);
+              expect(core.fullSyncDone).toBe(false);
+              expect(messageCount(core, 's1')).toBe(1);
+            }
+
+            const cooled = await core.sync(input);
+            expect(cooled.failures).toBe(0);
+            expect(core.fullSyncDone).toBe(true);
+            expect(messageCount(core, 's1')).toBe(1);
+            expect(messageCount(core, 's2')).toBe(0);
+          } finally {
+            restore();
+          }
+        } finally {
+          core.beginClose();
+          await core.close();
+        }
+      });
+
+      it('escalates sustained store failures into a wipe-and-rebuild', async () => {
+        const s1 = summary('s1', 'escalate', T1);
+        await writeWire(home!, 's1', 'main', [userLine('苹果 escalate', T1)]);
+        const core = new SearchIndexCore({
+          indexDir: coreHome(),
+          log: noopLog,
+          bootSalt: 'escalate-test',
+        });
+        const input = [syncInput(home!, s1)];
+        try {
+          await core.sync(input);
+          let faulty = true;
+          const target = core as unknown as SessionSyncStub;
+          const original = target.syncSession.bind(core);
+          target.syncSession = (db, summary, ...rest) => {
+            if (faulty) return Promise.reject(new Error('injected io'));
+            return original(db, summary, ...rest);
+          };
+          try {
+            for (let round = 0; round < 4; round++) {
+              await expect(core.sync(input)).rejects.toThrow('injected io');
+            }
+
+            const rebuilt = await core.sync(input);
+            expect(rebuilt.truncated).toBe(true);
+            expect(rebuilt.failures).toBe(0);
+
+            faulty = false;
+            const converged = await core.sync(input);
+            expect(converged.truncated).toBe(false);
+            expect(converged.failures).toBe(0);
+            expect(core.fullSyncDone).toBe(true);
+            expect(messageCount(core, 's1')).toBe(1);
+          } finally {
+            target.syncSession = original;
+          }
+        } finally {
+          core.beginClose();
+          await core.close();
+        }
+      });
     });
 
     it('re-serves from the swapped handle when a background refresh lands mid-search', async () => {

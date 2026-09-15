@@ -182,6 +182,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     private readonly videoUploader?: VideoUploader,
     telemetry?: ITelemetryService,
     inlineVideoSupported?: boolean,
+    private readonly providerType?: string,
   ) {
     this.description = buildDescription(capabilities);
     this.compressTelemetry =
@@ -286,7 +287,10 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             'Tell the user to use a model with image input capability.',
         };
       }
-      if (fileType.kind === 'image' && !isModelAcceptedImageMime(fileType.mimeType)) {
+      if (
+        fileType.kind === 'image' &&
+        !isModelAcceptedImageMime(fileType.mimeType, this.providerType)
+      ) {
         return {
           isError: true,
           output: buildImageConversionGuidance(args.path, fileType.mimeType, env.osKind),

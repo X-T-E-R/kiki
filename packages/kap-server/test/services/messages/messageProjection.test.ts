@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { ContextMessage } from '@kiki/agent-core-v2';
 
-import { toProtocolMessage } from '../../../src/services/messages/messageProjection';
+import {
+  projectPromptContentParts,
+  toProtocolMessage,
+} from '../../../src/services/messages/messageProjection';
 
 const SESSION_ID = 'session_1';
 const CREATED_AT = 1_700_000_000_000;
@@ -47,6 +50,26 @@ describe('toProtocolMessage', () => {
     expect(toProtocolMessage(SESSION_ID, 0, msg, CREATED_AT).content).toEqual([
       { type: 'text', text: 'what is this?' },
       { type: 'image', source: { kind: 'session_media', file_id: 'file_9' } },
+    ]);
+  });
+
+  it('carries media names through the live and prompt projections', () => {
+    const msg: ContextMessage = {
+      role: 'user',
+      content: [
+        { type: 'image_url', imageUrl: { url: 'kimi-file://file_9', id: 'file_9', name: 'photo.png' } },
+        { type: 'video_url', videoUrl: { url: 'https://example.com/clip.mp4', name: 'clip.mp4' } },
+      ],
+      toolCalls: [],
+    };
+
+    expect(toProtocolMessage(SESSION_ID, 0, msg, CREATED_AT).content).toEqual([
+      { type: 'image', source: { kind: 'session_media', file_id: 'file_9' }, name: 'photo.png' },
+      { type: 'video', source: { kind: 'url', url: 'https://example.com/clip.mp4' }, name: 'clip.mp4' },
+    ]);
+    expect(projectPromptContentParts(msg.content)).toEqual([
+      { type: 'image', source: { kind: 'session_media', file_id: 'file_9' }, name: 'photo.png' },
+      { type: 'video', source: { kind: 'url', url: 'https://example.com/clip.mp4' }, name: 'clip.mp4' },
     ]);
   });
 

@@ -1440,6 +1440,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     };
   }
 
+  getModelProviderType(alias?: string): string | undefined {
+    const effective = alias ?? this.modelAlias ?? this.config.get<string>('defaultModel');
+    return this.resolveModelForThinking(effective)?.providerType;
+  }
+
   getMaxOutputSize(): number | undefined {
     if (this.isExternalExecutor) return undefined;
     const model = this.tryResolveRawModel();

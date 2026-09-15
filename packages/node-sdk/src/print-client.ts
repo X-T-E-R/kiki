@@ -2,13 +2,16 @@ import {
   bootstrap,
   IBootstrapService,
   IConfigService,
+  IEventDispatcher,
   ISessionIndex,
+  ISessionManager,
   applyPrintModeConfigDefaults,
   logSeed,
   resolveLoggingConfig,
   type BootstrapInput,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
 import { createKlient } from '@kiki/klient/memory';
 import type { Klient } from '@kiki/klient';
@@ -22,7 +25,39 @@ export type { AgentTaskConfig, PrintBackgroundMode } from '@kiki/agent-core-v2';
 export interface PrintClientHost {
   readonly klient: Klient;
   readonly osHomeDir: string;
+  /**
+   * Awaits every live agent's wire persist queue (and the append-log store
+   * behind it). A headless run dispatches its tail records — `step.end`,
+   * `turn.ended`, `prompt.completed` — fire-and-forget, so a process that
+   * exits right after the turn would otherwise cut those records off.
+   */
+  flushWires(): Promise<void>;
   dispose(): Promise<void>;
+}
+
+/**
+ * Flush every live agent's event dispatcher. Each agent settles independently
+ * and a failure is swallowed: the caller is exiting, and one broken journal
+ * must not keep the others' records from reaching disk.
+ */
+export async function flushPrintWires(app: Scope): Promise<void> {
+  const flushes: Promise<void>[] = [];
+  for (const session of app.accessor.get(ISessionManager).list()) {
+    let handles;
+    try {
+      handles = session.accessor.get(IAgentLifecycleService).list();
+    } catch {
+      continue;
+    }
+    for (const handle of handles) {
+      try {
+        flushes.push(handle.accessor.get(IEventDispatcher).flush());
+      } catch {
+        continue;
+      }
+    }
+  }
+  await Promise.allSettled(flushes);
 }
 
 export async function createPrintClient(input: BootstrapInput & { homeDir: string }): Promise<PrintClientHost> {
@@ -42,6 +77,7 @@ export async function createPrintClient(input: BootstrapInput & { homeDir: strin
     return {
       klient,
       osHomeDir: app.accessor.get(IBootstrapService).osHomeDir,
+      flushWires: () => flushPrintWires(app),
       dispose: () => disposing ??= klient.close().finally(() => app.dispose()),
     };
   } catch (error) {

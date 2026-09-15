@@ -214,7 +214,7 @@ describe('AgentTranscriptLiveAdapter', () => {
         turnId: 0,
         origin: { kind: 'user' },
         prompt: 'what is this?',
-        promptAttachments: [{ kind: 'image', fileId: 'file_1' }],
+        promptAttachments: [{ kind: 'image', fileId: 'file_1', name: 'photo.png' }],
       }),
     );
     feed(ev({ type: 'turn.ended', turnId: 0, reason: 'completed' }));
@@ -225,6 +225,7 @@ describe('AgentTranscriptLiveAdapter', () => {
         attachment: {
           attachmentId: 't0.att1',
           mediaType: 'image/*',
+          name: 'photo.png',
           source: { kind: 'session_media', fileId: 'file_1' },
           owner: { kind: 'turn', turnId: 't0' },
         },
@@ -237,6 +238,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.getAttachment('t0.att1')).toEqual({
       attachmentId: 't0.att1',
       mediaType: 'image/*',
+      name: 'photo.png',
       source: { kind: 'session_media', fileId: 'file_1' },
       owner: { kind: 'turn', turnId: 't0' },
     });

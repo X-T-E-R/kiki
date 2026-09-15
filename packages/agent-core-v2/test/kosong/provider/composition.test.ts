@@ -1831,3 +1831,47 @@ describe('429 wire behavior over real HTTP (no hidden SDK retry)', () => {
     },
   );
 });
+
+describe('provider-aware accepted image mimes', () => {
+  const HEIC_BYTES = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]);
+  const historyWith = (url: string): Message[] => [
+    {
+      role: 'user',
+      content: [{ type: 'image_url', imageUrl: { url } }],
+      toolCalls: [],
+    },
+  ];
+
+  it('lowers a HEIC image for a Kimi model over the Anthropic protocol', async () => {
+    const url = `data:image/heic;base64,${HEIC_BYTES.toString('base64')}`;
+    const provider = registry.createChatProvider({
+      protocol: 'anthropic',
+      providerType: 'kimi',
+      modelName: 'kimi-k2',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+    });
+    const request = await captureRejectedFetch(() => provider.generate('sys', [], historyWith(url)));
+    const body = await request.clone().json() as { messages: Array<{ content: Array<Record<string, unknown>> }> };
+
+    expect(body.messages[0]!.content[0]).toMatchObject({
+      type: 'image',
+      source: { type: 'base64', data: HEIC_BYTES.toString('base64'), media_type: 'image/heic' },
+    });
+  });
+
+  it('still rejects that image for a vendor that only takes the baseline formats', async () => {
+    const url = `data:image/heic;base64,${HEIC_BYTES.toString('base64')}`;
+    const provider = registry.createChatProvider({
+      protocol: 'anthropic',
+      providerType: 'header-vendor',
+      modelName: 'plain-model',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+    });
+
+    await expect(
+      provider.generate('sys', [], historyWith(url)),
+    ).rejects.toThrow(/Unsupported media type for base64 image: image\/heic/);
+  });
+});

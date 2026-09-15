@@ -16,6 +16,7 @@ import {
   IBootstrapService,
   IConfigService,
   IEventBus,
+  IEventDispatcher,
   ISessionCronService,
   ISessionIndex,
   ISessionManager,
@@ -138,10 +139,15 @@ function makeFakeHarness() {
       }),
     }],
     [IAgentGoalService, { createGoal: vi.fn(), getGoal: vi.fn(() => ({ goal: null })) }],
+    [IEventDispatcher, { flush: vi.fn(async () => {}) }],
   ]);
   const agent = fakeScope('main', agentServices);
   const sessionServices = new Map<unknown, unknown>([
-    [IAgentLifecycleService, { countPendingBackgroundTasks: vi.fn(() => 0), drainBackgroundTasks: vi.fn(async () => {}) }],
+    [IAgentLifecycleService, {
+      countPendingBackgroundTasks: vi.fn(() => 0),
+      drainBackgroundTasks: vi.fn(async () => {}),
+      list: vi.fn(() => [agent]),
+    }],
     [ISessionCronService, { getNextFireTime: vi.fn(() => null) }],
     [ISessionMetadata, { read: vi.fn(async () => ({ id: 'ses_v2', createdAt: 1, updatedAt: 1, archived: false })) }],
   ]);
@@ -289,6 +295,31 @@ describe('runV2Print', () => {
     expect(stderr.write).toHaveBeenNthCalledWith(1, 'kimi version 1.2.3-test\n');
     expect(stdout.text()).toContain('hello world');
     expect(app.dispose).toHaveBeenCalled();
+  });
+
+  it('flushes every session agent wire journal before closing the session', async () => {
+    const order: string[] = [];
+    const { app, agent, appServices, agentServices } = makeFakeHarness();
+    mocks.bootstrap.mockReturnValue({ app });
+    mocks.ensureMainAgent.mockResolvedValue(agent);
+
+    const dispatcher = agentServices.get(IEventDispatcher) as { flush: ReturnType<typeof vi.fn> };
+    dispatcher.flush.mockImplementation(async () => {
+      order.push('flush');
+    });
+    const sessions = appServices.get(ISessionManager) as { close: ReturnType<typeof vi.fn> };
+    sessions.close.mockImplementation(async () => {
+      order.push('close');
+    });
+    (app.dispose as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      order.push('dispose');
+    });
+
+    await runV2Print(opts() as never, '1.2.3-test', { stdout: writer(), stderr: writer() });
+
+    expect(dispatcher.flush).toHaveBeenCalledOnce();
+    expect(sessions.close).toHaveBeenCalledOnce();
+    expect(order).toEqual(['flush', 'close', 'dispose']);
   });
 
   it('passes explicit skill dirs from --skillsDir into bootstrap args', async () => {

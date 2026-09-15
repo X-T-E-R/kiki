@@ -26,16 +26,16 @@ function mapContentPart(part: ContextMessage['content'][number]): MessageContent
     case 'image_url': {
       const ref = parseDaemonFileUrl(part.imageUrl.url);
       return ref !== undefined
-        ? { type: 'image', source: { kind: 'session_media', file_id: ref.fileId } }
-        : { type: 'image', source: { kind: 'url', url: part.imageUrl.url, id: part.imageUrl.id } };
+        ? { type: 'image', source: { kind: 'session_media', file_id: ref.fileId }, name: part.imageUrl.name }
+        : { type: 'image', source: { kind: 'url', url: part.imageUrl.url, id: part.imageUrl.id }, name: part.imageUrl.name };
     }
     case 'audio_url':
       return { type: 'text', text: `[audio:${part.audioUrl.url}]` };
     case 'video_url': {
       const ref = parseDaemonFileUrl(part.videoUrl.url);
       return ref !== undefined
-        ? { type: 'video', source: { kind: 'session_media', file_id: ref.fileId } }
-        : { type: 'video', source: { kind: 'url', url: part.videoUrl.url, id: part.videoUrl.id } };
+        ? { type: 'video', source: { kind: 'session_media', file_id: ref.fileId }, name: part.videoUrl.name }
+        : { type: 'video', source: { kind: 'url', url: part.videoUrl.url, id: part.videoUrl.id }, name: part.videoUrl.name };
     }
   }
 }

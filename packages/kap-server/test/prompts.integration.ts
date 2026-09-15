@@ -904,6 +904,7 @@ describe('server-v2 /api prompts', () => {
     expect(content[1]).toEqual({
       type: 'video',
       source: { kind: 'session_media', file_id: uploaded.data.id },
+      name: 'clip.mp4',
     });
 
     await expectSessionMedia(server!, id, `${uploaded.data.id}.mp4`, videoBytes);
@@ -1018,7 +1019,7 @@ describe('server-v2 /api prompts', () => {
 
     const content = submitted.body.data.content as Array<Record<string, unknown>>;
     expect(content).toEqual([
-      { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },
+      { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'small.png' },
     ]);
 
     const mediaPath = await expectSessionMedia(server!, id, `${uploaded.id}.png`, smallPng);
@@ -1125,7 +1126,7 @@ describe('server-v2 /api prompts', () => {
     expect(replayed.body.code).toBe(0);
     expect(replayed.body.data.content).toEqual([
       { type: 'text', text: 'replay the stored image' },
-      { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },
+      { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'small.png' },
     ]);
 
     const session = getLiveSessionById(server!.core.accessor, id);
@@ -1147,6 +1148,7 @@ describe('server-v2 /api prompts', () => {
         imageUrl: {
           url: `kimi-file://${uploaded.id}`,
           id: uploaded.id,
+          name: 'small.png',
         },
       });
     });
@@ -1178,7 +1180,7 @@ describe('server-v2 /api prompts', () => {
         expect(message).toBeDefined();
         expect(message!.content).toContainEqual({
           type: 'image_url',
-          imageUrl: { url: `kimi-file://${uploaded.id}` },
+          imageUrl: { url: `kimi-file://${uploaded.id}`, name: 'small.png' },
         });
       });
 
@@ -1285,6 +1287,15 @@ describe('server-v2 /api prompts', () => {
     return buf;
   }
 
+  function heicBytes(): Buffer {
+    const buf = Buffer.alloc(24);
+    buf.writeUInt32BE(24, 0);
+    buf.write('ftyp', 4, 'latin1');
+    buf.write('heic', 8, 'latin1');
+    buf.write('heic', 16, 'latin1');
+    return buf;
+  }
+
   it('replaces an inline base64 image in an unsupported format with a text notice', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
@@ -1308,6 +1319,59 @@ describe('server-v2 /api prompts', () => {
     const notice = content[0];
     if (notice?.type !== 'text') throw new Error('expected a text notice');
     expect(notice.text).toContain('image/avif');
+  });
+
+  it('accepts a HEIC image against the configured default model before any model binds', async () => {
+    await writeConfigToml(home as string, PROMPT_TOML.replace('default_model = "stub"', 'default_model = "stub-kimi"') + [
+      '', '[providers.kimi-stub]', 'type = "kimi"', 'base_url = "http://127.0.0.1:9999"', 'api_key = "stub"',
+      '', '[models.stub-kimi]', 'provider = "kimi-stub"', 'model = "kimi-k2"', 'max_context_size = 1000',
+      'capabilities = ["thinking", "image_in"]', '',
+    ].join('\n'));
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [
+        {
+          type: 'image',
+          source: {
+            kind: 'base64',
+            media_type: 'image/heic',
+            data: heicBytes().toString('base64'),
+          },
+        },
+      ],
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+
+    const content = submitted.body.data.content as PromptContentPart[];
+    expect(content).toHaveLength(1);
+    expect(content[0]?.type).toBe('image');
+  });
+
+  it('still replaces that HEIC image with a notice when the default model is not a Kimi one', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [
+        {
+          type: 'image',
+          source: {
+            kind: 'base64',
+            media_type: 'image/heic',
+            data: heicBytes().toString('base64'),
+          },
+        },
+      ],
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+
+    const content = submitted.body.data.content as PromptContentPart[];
+    expect(content).toHaveLength(1);
+    const notice = content[0];
+    if (notice?.type !== 'text') throw new Error('expected a text notice');
+    expect(notice.text).toContain('image/heic');
   });
 
   it('replaces an uploaded image file in an unsupported format with a text notice', async () => {

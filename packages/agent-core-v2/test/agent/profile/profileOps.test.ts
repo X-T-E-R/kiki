@@ -638,6 +638,36 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     });
   });
 
+  it('resolves the provider type of the bound model, an explicit alias, or the default model', () => {
+    modelCatalog = createModelCatalogStub({
+      'kimi-code': createTestModel({ providerType: 'kimi' }),
+      'claude-code': createTestModel({ id: 'claude-code', protocol: 'anthropic' }),
+    });
+    configValues['defaultModel'] = 'kimi-code';
+    const host = buildHost('profile-provider-type-default-fallback');
+    host.svc.configure({ emitStatusUpdated: () => undefined });
+
+    expect(host.svc.getModelProviderType()).toBe('kimi');
+
+    host.svc.update({ modelAlias: 'claude-code' });
+    expect(host.svc.getModelProviderType()).toBeUndefined();
+    expect(host.svc.getModelProviderType('kimi-code')).toBe('kimi');
+  });
+
+  it('answers no provider type when the default model resolves nowhere', () => {
+    modelCatalog = createModelCatalogStub({
+      'claude-code': createTestModel({ id: 'claude-code', protocol: 'anthropic' }),
+    });
+    configValues['defaultModel'] = 'claude-code';
+    const host = buildHost('profile-provider-type-default-outside');
+    host.svc.configure({ emitStatusUpdated: () => undefined });
+
+    expect(host.svc.getModelProviderType()).toBeUndefined();
+
+    configValues['defaultModel'] = 'missing-model';
+    expect(host.svc.getModelProviderType()).toBeUndefined();
+  });
+
   it('applies thinking.keep model override when thinking is enabled', () => {
     modelCatalog = createModelCatalogStub({
       'kimi-code': createTestModel({ providerType: 'kimi' }),
@@ -647,7 +677,6 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     configValues['modelOverrides'] = { temperature: 0.3, thinkingKeep: 'all' };
 
     host.svc.update({ modelAlias: 'kimi-code', thinkingLevel: 'high' });
-
     expect(host.svc.resolveRequestParams()).toEqual({
       cacheKey: 'session-test',
       sampling: { temperature: 0.3 },

@@ -11,6 +11,8 @@ import {
   computeUpdateStatus,
   loadPluginMarketplace,
   pluginMarketplaceConfigSource,
+  withBuiltInEntries,
+  withLatestVersions,
 } from '#/utils/plugin-marketplace';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../..');
@@ -511,6 +513,100 @@ describe('loadPluginMarketplace', () => {
       const marketplace = await loadPluginMarketplace({ workDir: dir, source: file, fetchImpl });
       expect(marketplace.plugins[0]?.version).toBe('9.9.9');
       expect(fetchImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('two-phase catalog rendering', () => {
+    const REMOTE_CATALOG = JSON.stringify({
+      plugins: [
+        { id: 'bare', displayName: 'Bare', source: 'https://github.com/owner/repo' },
+        { id: 'plain', displayName: 'Plain', source: './plain' },
+      ],
+    });
+
+    function redirectFetch(location: string): typeof fetch {
+      return vi.fn(async () => ({
+        status: 302,
+        headers: new Headers({ location }),
+      })) as unknown as typeof fetch;
+    }
+
+    it('skipLatestVersions renders the parsed catalog without any network version lookup', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+      const file = join(dir, 'marketplace.json');
+      await writeFile(file, REMOTE_CATALOG, 'utf8');
+      const fetchImpl = vi.fn(async () => {
+        throw new Error('the version phase must not run during the first paint');
+      }) as unknown as typeof fetch;
+
+      const marketplace = await loadPluginMarketplace({
+        workDir: dir,
+        source: file,
+        fetchImpl,
+        skipLatestVersions: true,
+      });
+
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(marketplace.plugins.map((entry) => entry.id)).toEqual(['bare', 'plain']);
+      expect(marketplace.plugins[0]?.version).toBeUndefined();
+    });
+
+    it('resolving the versions afterwards yields the same rows the single-phase load produced', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+      const file = join(dir, 'marketplace.json');
+      await writeFile(file, REMOTE_CATALOG, 'utf8');
+      const fetchImpl = redirectFetch('https://github.com/owner/repo/releases/tag/v6.0.3');
+
+      const catalog = await loadPluginMarketplace({
+        workDir: dir,
+        source: file,
+        fetchImpl,
+        skipLatestVersions: true,
+      });
+      const resolved = await withLatestVersions(catalog, fetchImpl);
+
+      expect(resolved.plugins[0]?.version).toBe('6.0.3');
+      expect(resolved.plugins[1]?.version).toBeUndefined();
+    });
+
+    it('re-applying the built-in injection carries resolved versions onto capability rows', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kimi-plugin-marketplace-'));
+      const file = join(dir, 'marketplace.json');
+      await writeFile(
+        file,
+        JSON.stringify({
+          plugins: [
+            { id: 'kimi-webbridge', displayName: 'Web', source: 'https://github.com/owner/wb' },
+            { id: 'plain', displayName: 'Plain', source: './plain' },
+          ],
+        }),
+        'utf8',
+      );
+      const fetchImpl = redirectFetch('https://github.com/owner/wb/releases/tag/v6.0.3');
+      const builtInEntries = [
+        {
+          id: 'kimi-webbridge',
+          displayName: 'Built-in',
+          source: 'capability:kimi-webbridge',
+          tier: 'official' as const,
+          builtIn: true,
+        },
+      ];
+
+      const catalog = await loadPluginMarketplace({
+        workDir: dir,
+        source: file,
+        fetchImpl,
+        skipLatestVersions: true,
+      });
+      const resolved = await withLatestVersions(catalog, fetchImpl);
+      const enriched = withBuiltInEntries(resolved, builtInEntries);
+
+      expect(enriched.plugins).toMatchObject([
+        { id: 'plain', displayName: 'Plain' },
+        { ...builtInEntries[0], version: '6.0.3' },
+      ]);
+      expect(enriched.plugins).toHaveLength(2);
     });
   });
 

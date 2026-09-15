@@ -57,9 +57,9 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import {
   assertPromptFileRefs,
-  assertPromptSessionMediaRefs,
   contentToCoreParts,
   resolvePromptMediaFiles,
+  resolvePromptSessionMediaRefs,
   type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
@@ -241,7 +241,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             req.body.skills,
           );
         }
-        await assertPromptSessionMediaRefs(
+        const submittedContent = await resolvePromptSessionMediaRefs(
           req.body.content,
           session.accessor.get(ISessionMediaStore),
         );
@@ -251,11 +251,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
 
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
         preparedMedia = await resolvePromptMediaFiles(
-          req.body.content,
+          submittedContent,
           core.accessor.get(IFileService),
           core.accessor.get(IBootstrapService).cacheDir,
           {
             telemetry,
+            providerType: resolved.profile.getModelProviderType(req.body.model),
             resolveOriginalsDir: async () => {
               const session = await resumeSessionById(core.accessor, session_id);
               if (session === undefined) return undefined;
@@ -448,17 +449,18 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           }
           await assertPromptFileRefs(replacement.data.content, core.accessor.get(IFileService));
           const session = await resolveSession(core, session_id);
-          await assertPromptSessionMediaRefs(
+          const replacementContent = await resolvePromptSessionMediaRefs(
             replacement.data.content,
             session.accessor.get(ISessionMediaStore),
           );
           const resolved = await resolvePromptFromSession(session);
           preparedMedia = await resolvePromptMediaFiles(
-            replacement.data.content,
+            replacementContent,
             core.accessor.get(IFileService),
             core.accessor.get(IBootstrapService).cacheDir,
             {
               telemetry: core.accessor.get(ITelemetryService).withContext({ sessionId: session_id }),
+              providerType: resolved.profile.getModelProviderType(),
               resolveOriginalsDir: async () => {
                 const current = await resumeSessionById(core.accessor, session_id);
                 if (current === undefined) return undefined;

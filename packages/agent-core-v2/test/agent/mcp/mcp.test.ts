@@ -30,6 +30,8 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import type { SessionMediaMaterializeInput } from '#/agent/media/sessionMediaStore';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 
@@ -204,6 +206,8 @@ describe('AgentMcpService', () => {
   let wire: IWireService;
   let dispatcher: IEventDispatcher;
   let wireRecordListeners: Set<(record: WireRecord) => void>;
+  let profileProviderType: string | undefined;
+  let attachmentStore: { materialize: (input: SessionMediaMaterializeInput) => Promise<string | undefined> };
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -211,6 +215,8 @@ describe('AgentMcpService', () => {
     events = [];
     telemetryEvents = [];
     wireRecordListeners = new Set();
+    profileProviderType = undefined;
+    attachmentStore = { materialize: async () => undefined };
     ix.stub(IEventBus, {
       publish: (event) => {
         events.push(event);
@@ -247,6 +253,12 @@ describe('AgentMcpService', () => {
       isBaselineServer,
     } satisfies ISessionMcpHandle);
     ix.stub(ISessionContext, { sessionDir: '/tmp/kimi-code-mcp-test' });
+    ix.stub(IAgentProfileService, {
+      getModelProviderType: () => profileProviderType,
+    } satisfies Partial<IAgentProfileService>);
+    ix.stub(ISessionMediaStore, {
+      materialize: (input: SessionMediaMaterializeInput) => attachmentStore.materialize(input),
+    } satisfies Partial<ISessionMediaStore>);
     ix.set(IAgentMcpService, new SyncDescriptor(AgentMcpService));
     return ix.get(IAgentMcpService);
   }
@@ -1092,6 +1104,64 @@ describe('AgentMcpService', () => {
       },
       { type: 'text', text: '</mcp_tool_result>' },
     ]);
+  });
+
+  it('stores an MCP image the model refuses and points the model at the session copy', async () => {
+    const records: Array<{ fileId: string; mimeType: string; bytes: Buffer }> = [];
+    attachmentStore = {
+      materialize: async (input) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of input.stream() as AsyncIterable<Uint8Array>) {
+          chunks.push(Buffer.from(chunk));
+        }
+        records.push({
+          fileId: input.fileId,
+          mimeType: input.mimeType,
+          bytes: Buffer.concat(chunks),
+        });
+        return `/tmp/kimi-code-mcp-test/media/${input.fileId}`;
+      },
+    };
+    profileProviderType = 'anthropic';
+    const avif = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+    const manager = new FakeMcpManager();
+    const client: MCPClient = {
+      async listTools() {
+        return [
+          {
+            name: 'snap',
+            description: 'Returns an image the provider rejects',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ];
+      },
+      async callTool() {
+        return {
+          content: [{ type: 'image', data: avif.toString('base64'), mimeType: 'image/avif' }],
+          isError: false,
+        };
+      },
+      async ping() {},
+    };
+    manager.setResolved('s', client, await discoverTools(client));
+    createService(manager);
+    manager.connect('s');
+
+    const snap = ix.get(IAgentToolRegistryService).resolve('mcp__s__snap');
+    const result = await executeTool(snap!, {
+      turnId: 1,
+      toolCallId: 'tc-avif',
+      args: {},
+      signal: new AbortController().signal,
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0]!.bytes.equals(avif)).toBe(true);
+    expect(records[0]!.mimeType).toBe('image/avif');
+    expect(result.note).toContain(`/tmp/kimi-code-mcp-test/media/${records[0]!.fileId}`);
+    expect(result.truncated).toBe(true);
+    const parts = typeof result.output === 'string' ? [] : (result.output as ContentPart[]);
+    expect(parts.some((part) => part.type === 'image_url')).toBe(false);
   });
 
   it('reports MCP image compression telemetry through the wrapped tool path', async () => {

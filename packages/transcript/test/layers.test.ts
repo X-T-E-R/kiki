@@ -809,6 +809,30 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('carries the original media filename through the cold wire projection', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [
+          { type: 'text', text: 'look' },
+          { type: 'image_url', imageUrl: { id: 'file-1', name: 'photo.png' } },
+          { type: 'video_url', videoUrl: { id: 'file-2', name: 'clip.mp4' } },
+          { type: 'image_url', imageUrl: { id: 'file-3' } },
+        ],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 },
+    ]);
+
+    expect(transcript.getTurn('t0')?.attachmentIds).toEqual(['t0.att1', 't0.att2', 't0.att3']);
+    expect(transcript.getAttachment('t0.att1')?.name).toBe('photo.png');
+    expect(transcript.getAttachment('t0.att2')?.name).toBe('clip.mp4');
+    expect(transcript.getAttachment('t0.att3')?.name).toBeUndefined();
+  });
+
   it('maps undo and clear records to structural removals', () => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);

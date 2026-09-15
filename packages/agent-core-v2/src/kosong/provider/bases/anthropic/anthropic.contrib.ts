@@ -1,5 +1,6 @@
 import { registerProtocolBase } from '#/kosong/protocol/protocolBase';
 import { traitDefaultHeaders } from '#/kosong/protocol/protocolTrait';
+import { providerImagePolicy } from '../../providerImagePolicy';
 
 import { AnthropicChatProvider, getAnthropicModelCapability } from './anthropic';
 import { composeAnthropicHooks } from './anthropicHooks';
@@ -27,6 +28,7 @@ registerProtocolBase({
             ? undefined
             : { ...config.providerOptions.metadata },
         hooks: composeAnthropicHooks(traits),
+        acceptedImageMimes: providerImagePolicy(config.providerType).acceptedMimes,
       }),
     });
   },

@@ -757,6 +757,42 @@ describe('gateImageFormatParts', () => {
     expect(notice.length).toBeLessThan(250);
     expect(notice).not.toContain(url);
   });
+
+  it('accepts HEIC, HEIF, and BMP data URLs for a Kimi provider', () => {
+    const base64 = Buffer.from([1, 2, 3]).toString('base64');
+    for (const mime of ['image/heic', 'image/heif', 'image/bmp']) {
+      const part = { type: 'image_url' as const, imageUrl: { url: `data:${mime};base64,${base64}` } };
+      expect(gateImageFormatParts([part], 'kimi')).toEqual([part]);
+      const baseline = gateImageFormatParts([part]);
+      expect(baseline[0]).toMatchObject({ type: 'text' });
+      expect((baseline[0] as { text: string }).text).toContain(mime);
+    }
+  });
+
+  it('keeps a Kimi-accepted extension URL while still gating it for other providers', () => {
+    const part = { type: 'image_url' as const, imageUrl: { url: 'https://example.com/photo.heic' } };
+    expect(gateImageFormatParts([part], 'kimi')).toEqual([part]);
+    const baseline = gateImageFormatParts([part], 'anthropic');
+    expect(baseline[0]).toMatchObject({ type: 'text' });
+    expect((baseline[0] as { text: string }).text).toContain('image/heic');
+  });
+
+  it('names the provider accepted formats in the notice', () => {
+    const mime = 'image/avif';
+    const base64 = Buffer.from([1, 2, 3]).toString('base64');
+    const url = `data:${mime};base64,${base64}`;
+    const baseline = gateImageFormatParts([{ type: 'image_url', imageUrl: { url } }]);
+    expect((baseline[0] as { text: string }).text).toContain(
+      'accepts only PNG, JPEG, GIF, and WebP',
+    );
+    const kimi = gateImageFormatParts(
+      [{ type: 'image_url', imageUrl: { url: `data:image/tiff;base64,${base64}` } }],
+      'kimi',
+    );
+    expect((kimi[0] as { text: string }).text).toContain(
+      'accepts only PNG, JPEG, GIF, WebP, BMP, HEIC, and HEIF',
+    );
+  });
 });
 
 describe('normalizeImageMime', () => {

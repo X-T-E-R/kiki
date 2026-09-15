@@ -4,6 +4,7 @@ import {
   Error2,
   IBootstrapService,
   IFileService,
+  IAgentProfileService,
   ISessionContext,
   ITelemetryService,
   ensureMainAgent,
@@ -214,6 +215,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
             core.accessor.get(IBootstrapService).cacheDir,
             {
               telemetry: core.accessor.get(ITelemetryService).withContext({ sessionId: session_id }),
+              providerType: agent.accessor.get(IAgentProfileService).getModelProviderType(),
               resolveOriginalsDir: async () =>
                 sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir),
               resolveAttachmentsDir: async () =>

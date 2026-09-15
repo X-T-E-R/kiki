@@ -1,9 +1,7 @@
-import { promises as fsp } from 'node:fs';
-
 import { join } from 'pathe';
 
-import { type QueryOptions } from '@kiki/minidb';
-import { ClusterDb } from '@kiki/minidb/cluster';
+import { classifyStorageError, type QueryOptions } from '@kiki/minidb';
+import { ClusterDb, wipeCluster } from '@kiki/minidb/cluster';
 
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -45,10 +43,6 @@ function physicalKey(collection: string, key: string): string {
 
 function indexName(collection: string, name: string): string {
   return `${collection}:${name}`;
-}
-
-function isRebuildable(error: unknown): boolean {
-  return error instanceof SyntaxError || (error as { name?: string }).name === 'CorruptFrameError';
 }
 
 const pendingDisposals = new Set<Promise<void>>();
@@ -105,7 +99,8 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
   }
 
   private rebuild(cause: unknown): Promise<void> {
-    this.rebuildPromise ??= (async () => {
+    if (this.rebuildPromise !== undefined) return this.rebuildPromise;
+    const attempt = (async () => {
       this.log.warn('minidb query-store rebuilt after corruption', {
         dir: this.dir,
         error: String(cause),
@@ -117,16 +112,25 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
         const db = await previous.catch(() => undefined);
         await db?.close().catch(() => {});
       }
-      await fsp.rm(this.dir, { recursive: true, force: true });
+      const outcome = await wipeCluster({ dir: this.dir });
+      if (outcome === 'locked') {
+        throw new Error(
+          `minidb query-store is held by another process; refusing to wipe ${this.dir}`,
+        );
+      }
     })();
-    return this.rebuildPromise;
+    this.rebuildPromise = attempt;
+    void attempt.catch(() => {
+      if (this.rebuildPromise === attempt) this.rebuildPromise = undefined;
+    });
+    return attempt;
   }
 
   private async withDb<T>(op: (db: ClusterDb) => Promise<T>): Promise<T> {
     try {
       return await op(await this.openDb());
     } catch (error) {
-      if (!isRebuildable(error)) throw error;
+      if (classifyStorageError(error) !== 'rebuild') throw error;
       await this.rebuild(error);
       return op(await this.openDb());
     }

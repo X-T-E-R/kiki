@@ -61,6 +61,7 @@ export interface CompressImageOptions {
   readonly byteBudget?: number;
   readonly maxDecodeBytes?: number;
   readonly telemetry?: ImageCompressionTelemetry;
+  readonly providerType?: string;
 }
 
 export interface ImageCompressionTelemetryClient {
@@ -280,7 +281,10 @@ export interface CompressedContentParts {
   readonly captions: readonly string[];
 }
 
-export function gateImageFormatParts(parts: readonly ContentPart[]): ContentPart[] {
+export function gateImageFormatParts(
+  parts: readonly ContentPart[],
+  providerType?: string,
+): ContentPart[] {
   const out: ContentPart[] = [];
   for (const part of parts) {
     if (part.type === 'image_url') {
@@ -290,11 +294,11 @@ export function gateImageFormatParts(parts: readonly ContentPart[]): ContentPart
           out.push({ type: 'text', text: buildMalformedImageNotice(part.imageUrl.url) });
           continue;
         }
-        const extMime = unsupportedImageMimeFromUrl(part.imageUrl.url);
+        const extMime = unsupportedImageMimeFromUrl(part.imageUrl.url, providerType);
         if (extMime !== null) {
           out.push({
             type: 'text',
-            text: buildUnsupportedImageNotice(extMime, part.imageUrl.url),
+            text: buildUnsupportedImageNotice(extMime, part.imageUrl.url, providerType),
           });
           continue;
         }
@@ -305,8 +309,11 @@ export function gateImageFormatParts(parts: readonly ContentPart[]): ContentPart
         parsed.mimeType,
         decodeBase64Prefix(parsed.base64),
       );
-      if (!isModelAcceptedImageMime(effectiveMime)) {
-        out.push({ type: 'text', text: buildUnsupportedImageNotice(effectiveMime) });
+      if (!isModelAcceptedImageMime(effectiveMime, providerType)) {
+        out.push({
+          type: 'text',
+          text: buildUnsupportedImageNotice(effectiveMime, undefined, providerType),
+        });
         continue;
       }
       const canonicalUrl = `data:${normalizeImageMime(effectiveMime)};base64,${parsed.base64}`;
@@ -327,7 +334,7 @@ export async function compressImageContentParts(
   const { annotate, ...compressOptions } = options;
   const out: ContentPart[] = [];
   const captions: string[] = [];
-  for (const part of gateImageFormatParts(parts)) {
+  for (const part of gateImageFormatParts(parts, options.providerType)) {
     if (part.type === 'image_url') {
       const parsed = parseImageDataUrl(part.imageUrl.url);
       if (parsed !== null) {

@@ -458,6 +458,18 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 `max_edge_px` 可被环境变量 `KIMI_IMAGE_MAX_EDGE_PX` 覆盖，`read_byte_budget` 可被 `KIMI_IMAGE_READ_BYTE_BUDGET` 覆盖，优先级均高于配置文件。
 
+哪些图片格式能送达模型，取决于该请求最终解析到的 provider。所有 provider 都接受 PNG、JPEG、GIF 和 WebP；Kimi provider 额外接受 BMP、HEIC 和 HEIF，因此 iPhone 照片无需先转换。其他图片会被替换为一行文本提示，说明当前 provider 接受的格式。
+
+## `session_title`
+
+`session_title` 选择由谁来写会话标题。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `model` | `string` | 未设置 | 用于生成会话标题的模型别名。未设置（或留空）时仍由托管 `chat_title` 工具生成，其用量包含在订阅内；设置别名后改用该模型，并沿用相同的标题提示词预算 |
+
+自动生成标题默认开启。可在 GUI 中关闭，也可设置 `[experimental]` 下的 `auto_session_title = false`，或使用 `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE=0`。
+
 <!--
 ## `experimental`
 

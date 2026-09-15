@@ -512,13 +512,17 @@ describe('AgentMediaResolverService image strategy', () => {
       files: new Map([[FILE_ID, { name: 'pic.bmp', bytes: BMP_BYTES }]]),
       fileId: FILE_ID,
       imageIn: true,
+      providerType: 'openai',
     },
-  ])('degrades when $name', async ({ files, fileId, imageIn }) => {
+  ])('degrades when $name', async ({ files, fileId, imageIn, providerType }) => {
     const canonical =
       fileId === FILE_ID ? await plantCanonical(FILE_ID, '.png', PNG_BYTES) : undefined;
     const message = imageMessage(buildKimiFileUrl(fileId));
 
-    const out = await resolver(files, sessionDir).resolve([message], requester({ imageIn }));
+    const out = await resolver(files, sessionDir).resolve(
+      [message],
+      requester({ imageIn, providerType }),
+    );
 
     expect(out[0]!.content).toEqual([
       {
@@ -527,6 +531,34 @@ describe('AgentMediaResolverService image strategy', () => {
           canonical === undefined ? IMAGE_UNAVAILABLE_TEXT : `<image path="${canonical}"></image>`,
       },
     ]);
+  });
+
+  it('inlines a BMP for a provider that accepts it and re-judges the memo per provider', async () => {
+    const matchingMemo = new Map([[FILE_ID, { name: 'pic.bmp', bytes: BMP_BYTES }]]);
+    const counting = countingFileService(matchingMemo);
+    const res = new AgentMediaResolverService(
+      counting.service,
+      blobStore(),
+      telemetry,
+      new AgentStateService(),
+      stubMediaStore(),
+    );
+    const message = imageMessage(buildKimiFileUrl(FILE_ID));
+
+    const kimi = await res.resolve([message], requester({ providerType: 'kimi' }));
+    const other = await res.resolve(
+      [message],
+      requester({ providerType: 'openai', protocol: 'openai' }),
+    );
+    const again = await res.resolve([message], requester({ providerType: 'kimi' }));
+
+    expect(firstPart(kimi)).toEqual({
+      type: 'image_url',
+      imageUrl: { url: `data:image/bmp;base64,${BMP_BYTES.toString('base64')}` },
+    });
+    expect(other[0]!.content).toEqual([{ type: 'text', text: IMAGE_UNAVAILABLE_TEXT }]);
+    expect(firstPart(again)).toEqual(firstPart(kimi));
+    expect(counting.gets).toBe(2);
   });
 
   it.each([

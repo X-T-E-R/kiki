@@ -462,6 +462,18 @@ Like the `tools` / `disallowedTools` fields of an agent file, this section shape
 
 `max_edge_px` can be overridden by the `KIMI_IMAGE_MAX_EDGE_PX` environment variable and `read_byte_budget` by `KIMI_IMAGE_READ_BYTE_BUDGET`; both take higher priority than `config.toml`.
 
+Which image formats reach the model depends on the provider the request resolves to. Every provider accepts PNG, JPEG, GIF, and WebP; the Kimi provider additionally accepts BMP, HEIC, and HEIF, so an iPhone photo needs no conversion first. Any other image is replaced by a text notice that names the formats the current provider accepts.
+
+## `session_title`
+
+`session_title` chooses how AI session titles are written.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `model` | `string` | unset | Model alias used to write session titles. Unset (or empty) keeps title generation on the managed `chat_title` tool, whose usage is included in the subscription; setting an alias runs the same title-prompt budgets through that model instead |
+
+Automatic title generation is on by default. Turn it off in the GUI, with `auto_session_title = false` under `[experimental]`, or with `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE=0`.
+
 <!--
 ## `experimental`
 

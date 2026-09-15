@@ -7,9 +7,9 @@ export const sessionTitleFlag: FlagDefinitionInput = {
   id: AUTO_SESSION_TITLE_FLAG_ID,
   title: 'AI session titles',
   description:
-    'Generate concise session titles from the conversation through the managed chat_title tool: clients auto-generate once the first turn completes and offer on-demand regeneration in the rename field.',
+    'Generate concise session titles from the conversation: through the managed chat_title tool by default, or through the model pinned in [session_title] model. Clients auto-generate once the first turn completes and offer on-demand regeneration in the rename field.',
   env: AUTO_SESSION_TITLE_FLAG_ENV,
-  default: false,
+  default: true,
   surface: 'core',
 };
 

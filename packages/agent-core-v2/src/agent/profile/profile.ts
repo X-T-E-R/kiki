@@ -188,6 +188,12 @@ export interface IAgentProfileService {
   resolveModelContext(): ProfileModelContext;
   resolveRequestParams(): ModelRequestParams;
   getModelCapabilities(): ModelCapability;
+  /**
+   * The provider type (`providers.<name>.type`, e.g. `kimi`) of the alias in
+   * effect: an explicit `alias`, else the bound model, else the configured
+   * default model. `undefined` when none of them resolves.
+   */
+  getModelProviderType(alias?: string): string | undefined;
   getMaxOutputSize(): number | undefined;
   hasModel(): boolean;
   isRunnable(): boolean;

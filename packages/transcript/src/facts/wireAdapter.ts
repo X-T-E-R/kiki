@@ -30,6 +30,7 @@ export function taskNotificationFrameId(sourceId: string): string {
 interface PendingSteerMedia {
   readonly kind: 'image' | 'video' | 'audio';
   readonly source?: AttachmentSource;
+  readonly name?: string;
 }
 
 interface PendingSteer {
@@ -661,6 +662,7 @@ export class TranscriptWireAdapter {
         attachment: {
           attachmentId,
           mediaType: `${media.kind}/*`,
+          name: media.name,
           source: media.source,
           owner: { kind: 'turn', turnId },
         },
@@ -743,6 +745,7 @@ export class TranscriptWireAdapter {
           attachment: {
             attachmentId,
             mediaType: `${media.kind}/*`,
+            name: media.name,
             source: media.source,
             owner: { kind: 'frame', turnId, stepId, frameId: steer.promptId },
           },
@@ -850,6 +853,7 @@ export class TranscriptWireAdapter {
           attachment: {
             attachmentId,
             mediaType: `${media.kind}/*`,
+            name: media.name,
             source: media.source,
             owner: { kind: 'turn', turnId },
           },
@@ -1673,7 +1677,11 @@ function usageOf(value: unknown):
 }
 
 function mediaOf(value: Readonly<Record<string, unknown>> | undefined):
-  | { readonly kind: 'image' | 'video' | 'audio'; readonly source?: AttachmentSource }
+  | {
+      readonly kind: 'image' | 'video' | 'audio';
+      readonly source?: AttachmentSource;
+      readonly name?: string;
+    }
   | undefined {
   const type = stringOf(value?.['type']);
   if (
@@ -1694,10 +1702,11 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined):
         : 'audio';
   const key = type === 'image_url' ? 'imageUrl' : type === 'video_url' ? 'videoUrl' : 'audioUrl';
   const ref = type.endsWith('_url') ? objectOf(value?.[key]) : objectOf(value?.['source']);
+  const name = stringOf(ref?.['name']) ?? stringOf(value?.['name']);
   const fileId = stringOf(ref?.['id']) ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']);
-  if (fileId !== undefined) return { kind, source: { kind: 'session_media', fileId } };
+  if (fileId !== undefined) return { kind, source: { kind: 'session_media', fileId }, name };
   const url = stringOf(ref?.['url']);
-  if (url === undefined) return { kind, source: undefined };
+  if (url === undefined) return { kind, source: undefined, name };
   const daemonRef = /^kimi-file:\/\/([^?]+)/.exec(url)?.[1];
   return {
     kind,
@@ -1705,6 +1714,7 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined):
       daemonRef === undefined
         ? { kind: 'url', url }
         : { kind: 'session_media', fileId: daemonRef },
+    name,
   };
 }
 

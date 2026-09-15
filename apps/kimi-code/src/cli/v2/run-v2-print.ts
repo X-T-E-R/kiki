@@ -17,7 +17,7 @@ import { createKimiDefaultHeaders } from '@kiki/oauth';
 
 import { resolve } from 'pathe';
 
-import { PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';
+import { CLI_SHUTDOWN_TIMEOUT_MS, PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';
 
 import {
   formatGoalSummaryText,
@@ -105,6 +105,11 @@ export async function runV2Print(
         try {
           await restorePermission();
         } finally {
+          // A turn's tail records reach the journal only through the wire
+          // service's async persist queue; closing the session and disposing
+          // the app must not cut that queue off. Bounded and best-effort: a
+          // persist failure must never mask the run's outcome.
+          await raceWithTimeout(host.flushWires(), CLI_SHUTDOWN_TIMEOUT_MS).catch(() => {});
           try {
             await activeSession?.close();
           } finally {

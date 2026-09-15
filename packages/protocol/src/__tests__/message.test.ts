@@ -53,8 +53,21 @@ describe('messageContentSchema variants', () => {
     const parsed = imageContentSchema.parse({
       type: 'image',
       source: { kind: 'url', url: 'https://example.com/a.png' },
+      name: 'a.png',
     });
     expect(parsed.source.kind).toBe('url');
+    expect(parsed.name).toBe('a.png');
+  });
+
+  it('accepts image and video content without a name', () => {
+    expect(imageContentSchema.parse({
+      type: 'image',
+      source: { kind: 'file', file_id: 'file_01' },
+    }).name).toBeUndefined();
+    expect(videoContentSchema.parse({
+      type: 'video',
+      source: { kind: 'file', file_id: 'file_02' },
+    }).name).toBeUndefined();
   });
 
   it('parses image base64 source', () => {

@@ -143,6 +143,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     materialize: vi.fn(async (): Promise<string | undefined> => undefined),
   };
   let profileState = boundProfileData('initial');
+  let providerTypeOverride: string | undefined;
   const profile = {
     data: vi.fn(() => profileState),
     bind: vi.fn(async (input: BindAgentInput) => {
@@ -162,6 +163,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     isRunnable: vi.fn(() =>
       profileState.profileName !== undefined && profileState.modelAlias !== undefined,
     ),
+    getModelProviderType: vi.fn((): string | undefined => providerTypeOverride),
   };
   const toolPolicy = {
     setSessionDisabledTools: vi.fn(async (_disabledTools: readonly string[]) => {}),
@@ -235,6 +237,9 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     dispatcher: ix.get(IEventDispatcher),
     states: ix.get(IAgentStateService),
     intake,
+    setProviderType: (value: string | undefined) => {
+      providerTypeOverride = value;
+    },
   };
 }
 
@@ -840,6 +845,26 @@ describe('AgentPromptService', () => {
       result: { type: 'failed', steps: 0, error: { code: ErrorCodes.TURN_AGENT_BUSY } },
     });
     expect(prompt.list()).toEqual({ active: undefined, pending: [] });
+  });
+
+  it('lets a Kimi-bound prompt keep a HEIC image the baseline gate would drop', async () => {
+    const { prompt, context, loop, setProviderType } = harness();
+    setProviderType('kimi');
+    const heicUrl = `data:image/heic;base64,${Buffer.from([1, 2, 3]).toString('base64')}`;
+    const handle = await prompt.enqueue({
+      id: 'prompt-heic',
+      message: {
+        role: 'user',
+        content: [{ type: 'image_url', imageUrl: { url: heicUrl } }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+    });
+    await handle.launched;
+    loop.drainNextBatch(context);
+
+    const parts = context.get()[0]!.content;
+    expect(parts).toEqual([{ type: 'image_url', imageUrl: { url: heicUrl } }]);
   });
 
   it('replaces an unsupported prompt image with a text notice at the history funnel', async () => {

@@ -2,6 +2,8 @@
 
 [Model Context Protocol（MCP）](https://modelcontextprotocol.io/) 是一个开放协议，让模型可以安全地调用外部进程或服务暴露的工具——例如读取 GitHub issues、查询数据库、操作本地文件系统。Kiki 作为 MCP client 接入这些外部工具，并把它们与内置工具（`Read`、`Bash`、`Grep` 等）一起暴露给 Agent 使用，行为上没有差异。
 
+MCP 工具结果可以携带内嵌媒体。当当前模型无法接收某张内嵌图片——格式不被接受，或该 part 超过单 part 体积上限——结果会同时保留文本提示，并把原件存入会话媒体存储，不会丢失字节。提示中带有已保存文件的绝对路径和 `kimi-file://` 引用；把该路径传给 `Read` 或 `ReadMediaFile` 即可查看原件。Kiki 不直接交付的 resource blob 也会以同样方式保留。当累积的附件清单会挤占工具输出时，清单会写入一个文本文件，输出中只保留指向它的简短指针。
+
 ## 接入方式
 
 Kiki 支持三种 MCP server 接入方式：
@@ -25,7 +27,7 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 
 从配置中删除某个 server 不会打断进行中的会话：该 server 在 `/mcp` 中仍显示为 `removed`，其工具在这些会话中保持可见，但调用会失败并返回移除提示；新会话则完全不会注册这些工具。反过来，会话进行中新增的 server——无论是编辑 `mcp.json` 还是安装 plugin——都不会注册到已打开的会话中，只会加入之后创建的会话。
 
-当 Kiki 在不受信任的文件夹中发现项目级 MCP server 时，工作区信任提示会显示每个 server 的传输方式和启动目标。提示默认选中 `Don't trust`；请先移动到 `Trust this folder`，核对列出的命令与参数或远程 URL 后，再确认信任。信任文件夹后，该工作区的项目级 MCP server 才会启用。
+当 Kiki 在不受信任的文件夹中发现项目级 MCP server 时，工作区信任提示会显示每个 server 的传输方式和启动目标。提示默认选中 `Trust this folder`；请在确认前核对列出的命令与参数或远程 URL。信任文件夹后，该工作区的项目级 MCP server 才会启用。
 
 `mcp.json` 的结构：
 

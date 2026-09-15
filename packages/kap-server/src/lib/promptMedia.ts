@@ -52,32 +52,46 @@ export async function assertPromptFileRefs(content: WireContent, store: IFileSer
 /**
  * Fail fast on stale `session_media` references: a file id with no canonical
  * copy in this session must reject the request before anything is resolved
- * or mutated.
+ * or mutated. A resolvable reference also backfills the caller's original
+ * filename when the request omitted it, so re-sent stored media keeps its
+ * name instead of degrading to a synthesized one.
  */
-export async function assertPromptSessionMediaRefs(
+export async function resolvePromptSessionMediaRefs(
   content: WireContent,
   store: ISessionMediaStore,
-): Promise<void> {
+): Promise<WireContent> {
+  const resolved: WireContent = [];
+  let changed = false;
   for (const part of content) {
     if (
       (part.type !== 'image' && part.type !== 'video') ||
       part.source.kind !== 'session_media'
-    ) continue;
+    ) {
+      resolved.push(part);
+      continue;
+    }
     const file = await store.open(part.source.file_id);
     if (file === undefined) throw fileNotFoundError(part.source.file_id);
+    if (part.name === undefined) {
+      resolved.push({ ...part, name: file.name });
+      changed = true;
+    } else {
+      resolved.push(part);
+    }
   }
+  return changed ? resolved : content;
 }
 
 export function contentToCoreParts(content: WireContent): ContentPart[] {
   const parts: ContentPart[] = [];
   for (const part of content) {
     if (part.type === 'text') parts.push({ type: 'text', text: part.text });
-    else if (part.type === 'image' && part.source.kind === 'url') parts.push({ type: 'image_url', imageUrl: { url: part.source.url, id: part.source.id } });
-    else if (part.type === 'image' && part.source.kind === 'base64') parts.push({ type: 'image_url', imageUrl: { url: `data:${part.source.media_type};base64,${part.source.data}` } });
-    else if (part.type === 'image' && part.source.kind === 'session_media') parts.push({ type: 'image_url', imageUrl: { url: buildDaemonFileUrl(part.source.file_id), id: part.source.file_id } });
-    else if (part.type === 'video' && part.source.kind === 'url') parts.push({ type: 'video_url', videoUrl: { url: part.source.url, id: part.source.id } });
-    else if (part.type === 'video' && part.source.kind === 'base64') parts.push({ type: 'video_url', videoUrl: { url: `data:${part.source.media_type};base64,${part.source.data}` } });
-    else if (part.type === 'video' && part.source.kind === 'session_media') parts.push({ type: 'video_url', videoUrl: { url: buildDaemonFileUrl(part.source.file_id), id: part.source.file_id } });
+    else if (part.type === 'image' && part.source.kind === 'url') parts.push({ type: 'image_url', imageUrl: { url: part.source.url, id: part.source.id, name: part.name } });
+    else if (part.type === 'image' && part.source.kind === 'base64') parts.push({ type: 'image_url', imageUrl: { url: `data:${part.source.media_type};base64,${part.source.data}`, name: part.name } });
+    else if (part.type === 'image' && part.source.kind === 'session_media') parts.push({ type: 'image_url', imageUrl: { url: buildDaemonFileUrl(part.source.file_id), id: part.source.file_id, name: part.name } });
+    else if (part.type === 'video' && part.source.kind === 'url') parts.push({ type: 'video_url', videoUrl: { url: part.source.url, id: part.source.id, name: part.name } });
+    else if (part.type === 'video' && part.source.kind === 'base64') parts.push({ type: 'video_url', videoUrl: { url: `data:${part.source.media_type};base64,${part.source.data}`, name: part.name } });
+    else if (part.type === 'video' && part.source.kind === 'session_media') parts.push({ type: 'video_url', videoUrl: { url: buildDaemonFileUrl(part.source.file_id), id: part.source.file_id, name: part.name } });
   }
   return parts;
 }
@@ -99,6 +113,11 @@ export interface ResolvePromptMediaOptions {
   readonly resolveAttachmentsDir?: () => Promise<string | undefined>;
   /** Report an `image_compress` event per compressed prompt image. */
   readonly telemetry?: ITelemetryService;
+  /**
+   * Provider type of the model this request resolves to (`providers.<n>.type`,
+   * e.g. `kimi`). Unset falls back to the baseline accepted-format set.
+   */
+  readonly providerType?: string;
 }
 
 export interface PromptMediaPreparation {
@@ -163,18 +182,18 @@ export async function resolvePromptMediaFiles(
           part.source.media_type,
           decodeBase64Prefix(part.source.data),
         );
-        if (!isModelAcceptedImageMime(effectiveMime)) {
+        if (!isModelAcceptedImageMime(effectiveMime, options.providerType)) {
           const bytes = Buffer.from(part.source.data, 'base64');
-          const name = `image.${imageExtensionForMime(effectiveMime)}`;
+          const name = part.name ?? `image.${imageExtensionForMime(effectiveMime)}`;
           const persisted = await persistAttachmentBytes(
             bytes,
-            `${createHash('sha256').update(bytes).digest('hex').slice(0, 32)}-${name}`,
+            `${createHash('sha256').update(bytes).digest('hex').slice(0, 32)}-${sanitizeAttachmentName(name)}`,
             await resolveAttachmentsDir(),
           );
           content.push({
             type: 'text',
             text: persisted === null
-              ? buildUnsupportedImageNotice(effectiveMime)
+              ? buildUnsupportedImageNotice(effectiveMime, name, options.providerType)
               : buildAttachedFileNotice(name, effectiveMime, bytes.length, persisted),
           });
           changed = true;
@@ -212,6 +231,7 @@ export async function resolvePromptMediaFiles(
           content.push({
             type: 'image',
             source: { kind: 'base64', media_type: compressed.mimeType, data: compressed.base64 },
+            name: part.name,
           });
           changed = true;
         } else {
@@ -221,9 +241,12 @@ export async function resolvePromptMediaFiles(
       }
 
       if (part.type === 'image' && part.source.kind === 'url') {
-        const extMime = unsupportedImageMimeFromUrl(part.source.url);
+        const extMime = unsupportedImageMimeFromUrl(part.source.url, options.providerType);
         if (extMime !== null) {
-          content.push({ type: 'text', text: buildUnsupportedImageNotice(extMime, part.source.url) });
+          content.push({
+            type: 'text',
+            text: buildUnsupportedImageNotice(extMime, part.source.url, options.providerType),
+          });
           changed = true;
           continue;
         }
@@ -253,17 +276,18 @@ export async function resolvePromptMediaFiles(
         const data = await readFileOrStream(file);
         let mediaType = file.meta.media_type;
         mediaType = resolveEffectiveImageMime(mediaType, data);
-        if (!isModelAcceptedImageMime(mediaType)) {
+        if (!isModelAcceptedImageMime(mediaType, options.providerType)) {
+          const name = part.name ?? file.meta.name;
           const persisted = await persistAttachmentBytes(
             data,
-            `${file.meta.id}-${sanitizeAttachmentName(file.meta.name)}`,
+            `${file.meta.id}-${sanitizeAttachmentName(name)}`,
             await resolveAttachmentsDir(),
           );
           content.push({
             type: 'text',
             text: persisted === null
-              ? buildUnsupportedImageNotice(mediaType, file.meta.name)
-              : buildAttachedFileNotice(file.meta.name, mediaType, file.meta.size, persisted),
+              ? buildUnsupportedImageNotice(mediaType, name, options.providerType)
+              : buildAttachedFileNotice(name, mediaType, file.meta.size, persisted),
           });
           changed = true;
           continue;
@@ -307,6 +331,7 @@ export async function resolvePromptMediaFiles(
         content.push({
           type: 'image',
           source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id) },
+          name: part.name ?? file.meta.name,
         });
         changed = true;
         continue;
@@ -315,6 +340,7 @@ export async function resolvePromptMediaFiles(
       content.push({
         type: 'video',
         source: { kind: 'url', url: buildDaemonFileUrl(file.meta.id) },
+        name: part.name ?? file.meta.name,
       });
       changed = true;
     }

@@ -4,7 +4,13 @@ export type { KimiHarnessRuntimeOptions } from '#/kimi-harness';
 export { Session } from '#/session';
 export { KimiAuthFacade } from '#/auth';
 export { createKimiHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';
-export { createPrintClient, PRINT_MAX_TURNS_DEFAULT, PRINT_WAIT_CEILING_S_DEFAULT, setClampedTimeout } from '#/print-client';
+export {
+  createPrintClient,
+  flushPrintWires,
+  PRINT_MAX_TURNS_DEFAULT,
+  PRINT_WAIT_CEILING_S_DEFAULT,
+  setClampedTimeout,
+} from '#/print-client';
 export type { PrintClientHost, AgentTaskConfig, PrintBackgroundMode } from '#/print-client';
 export {
   inspectPromptFields,

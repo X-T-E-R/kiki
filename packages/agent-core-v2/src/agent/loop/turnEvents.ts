@@ -23,7 +23,11 @@ export interface TurnStartedPayload {
   readonly origin: PromptOrigin;
   readonly prompt?: string;
   readonly promptId?: string;
-  readonly promptAttachments?: readonly { kind: 'image' | 'video' | 'audio'; fileId: string }[];
+  readonly promptAttachments?: readonly {
+    kind: 'image' | 'video' | 'audio';
+    fileId: string;
+    name?: string;
+  }[];
 }
 
 export class TurnStarted extends Event2<TurnStartedPayload> {
@@ -51,7 +55,7 @@ export function turnPromptText(
 export function turnPromptAttachments(
   input: readonly ContentPart[],
 ): TurnStartedPayload['promptAttachments'] {
-  const attachments: { kind: 'image' | 'video' | 'audio'; fileId: string }[] = [];
+  const attachments: NonNullable<TurnStartedPayload['promptAttachments']>[number][] = [];
   const promptMediaFileId = (url: string, id: string | undefined): string | undefined => {
     const fileId = parseDaemonFileUrl(url)?.fileId;
     if (id === undefined) return fileId;
@@ -60,10 +64,14 @@ export function turnPromptAttachments(
   for (const part of input) {
     if (part.type === 'image_url') {
       const fileId = promptMediaFileId(part.imageUrl.url, part.imageUrl.id);
-      if (fileId !== undefined) attachments.push({ kind: 'image', fileId });
+      if (fileId !== undefined) {
+        attachments.push({ kind: 'image', fileId, name: part.imageUrl.name });
+      }
     } else if (part.type === 'video_url') {
       const fileId = promptMediaFileId(part.videoUrl.url, part.videoUrl.id);
-      if (fileId !== undefined) attachments.push({ kind: 'video', fileId });
+      if (fileId !== undefined) {
+        attachments.push({ kind: 'video', fileId, name: part.videoUrl.name });
+      }
     } else if (part.type === 'audio_url') {
       const fileId = promptMediaFileId(part.audioUrl.url, part.audioUrl.id);
       if (fileId !== undefined) attachments.push({ kind: 'audio', fileId });

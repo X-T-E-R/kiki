@@ -294,6 +294,10 @@ export class AgentPromptService implements IAgentPromptService {
     this.states.set(promptLaunchingKey, value);
   }
 
+  private providerType(): string | undefined {
+    return this.profile.getModelProviderType();
+  }
+
   [promptAdmission](promptId?: string): PromptReservation {
     if (promptId !== undefined && promptId.length === 0) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_id must not be empty');
@@ -569,7 +573,7 @@ export class AgentPromptService implements IAgentPromptService {
         removed.push({ item, index });
         this.pending.splice(index, 1);
       }
-      const request = new SteerStepRequest(rerouted, captions, this.reminders, (materialized) => {
+      const request = new SteerStepRequest(rerouted, captions, this.reminders, this.providerType(), (materialized) => {
         void this.dispatcher.dispatch(
           new TurnSteer({
             turnId: targetTurnId,
@@ -636,7 +640,7 @@ export class AgentPromptService implements IAgentPromptService {
   async inject(message: ContextMessage): Promise<Turn | undefined> {
     const { message: rerouted, captions } = this.extractCompressionCaptions(message);
     await this.materializeDaemonRefs(rerouted);
-    const request = new SteerStepRequest(rerouted, captions, this.reminders, (materialized) => {
+    const request = new SteerStepRequest(rerouted, captions, this.reminders, this.providerType(), (materialized) => {
       void this.dispatcher.dispatch(
         new TurnSteer({
           turnId: this.loop.status().activeTurnId ?? this.active?.turn.id ?? 0,
@@ -698,7 +702,7 @@ export class AgentPromptService implements IAgentPromptService {
         preparePromptRuntimeControls(accessor, item.execution, item.goalId));
       await applyControls();
       const receipt = this.loop.enqueue(
-        new PromptStepRequest(message, captions, this.reminders, item.alreadyMaterialized),
+        new PromptStepRequest(message, captions, this.reminders, this.providerType(), item.alreadyMaterialized),
         { at: 'head' },
       );
       admission.dispose();
