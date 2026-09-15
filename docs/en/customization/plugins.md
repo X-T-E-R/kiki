@@ -378,7 +378,7 @@ Plugin agents rank below every other file source: on a name collision, user-leve
 
 ## MCP Servers in Plugins
 
-When a plugin needs real tool capabilities, it can declare `mcpServers` in its manifest, reusing the [MCP](./mcp.md) schema.
+When a plugin needs real tool capabilities, it can declare `mcpServers` in its manifest, reusing the [MCP](../server/mcp.md) schema.
 
 Stdio server (local command):
 

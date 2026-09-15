@@ -231,4 +231,4 @@ To prevent all users from firing at the same time on the hour, the scheduler app
 
 - [Agent & Sub-Agents](../customization/agents.md) — Scheduling mechanics and context isolation for the `AgentRun` tool
 - [Hooks](../customization/hooks.md) — Trigger local scripts before and after tool calls
-- [Slash Commands](./slash-commands.md) — Quick reference for TUI built-in control commands
+- [Slash Commands](../cli/slash-commands.md) — Quick reference for TUI built-in control commands

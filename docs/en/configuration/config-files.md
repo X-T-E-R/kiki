@@ -409,7 +409,7 @@ Per-workspace overrides are persisted separately and managed through the local R
 | `startup_timeout_ms` | `integer` | `30000` (30 seconds) | Global default connection (startup + tool discovery) timeout in milliseconds for all MCP servers. Accepts `1`–`2147483647`. A per-server `startupTimeoutMs` in `mcp.json` always wins over this section and the environment variable; when neither is set, the default applies |
 | `tool_timeout_ms` | `integer` | `60000` (60 seconds) | Global default single tool-call timeout in milliseconds for all MCP servers. Accepts `1`–`2147483647`. A per-server `toolTimeoutMs` in `mcp.json` always wins over this section and the environment variable; when neither is set, the client built-in default applies |
 
-`startup_timeout_ms` and `tool_timeout_ms` can be overridden by the `KIKI_MCP_STARTUP_TIMEOUT_MS` and `KIKI_MCP_TOOL_TIMEOUT_MS` environment variables respectively, which take higher priority than `config.toml`. See [MCP](../customization/mcp.md) for the full MCP server configuration.
+`startup_timeout_ms` and `tool_timeout_ms` can be overridden by the `KIKI_MCP_STARTUP_TIMEOUT_MS` and `KIKI_MCP_TOOL_TIMEOUT_MS` environment variables respectively, which take higher priority than `config.toml`. See [MCP](../server/mcp.md) for the full MCP server configuration.
 
 ## `identity`
 
@@ -570,7 +570,7 @@ dangerous_bash = "default"
 ```
 
 ::: tip
-MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`. The interactive configuration entry point is `/mcp-config`; see [Model Context Protocol](../customization/mcp.md).
+MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`. The interactive configuration entry point is `/mcp-config`; see [Model Context Protocol](../server/mcp.md).
 :::
 
 ## `prompt`
@@ -688,7 +688,7 @@ Changes apply on the next start, or immediately with `/reload-tui` (which reload
 
 In addition to the user-level files under `~/.kiki`, Kiki reads a project-local configuration file at `<project-root>/.kiki/local.toml`. It holds settings that are specific to one project checkout and typically should not be shared with teammates. The legacy `.kimi-code/local.toml` path is not loaded automatically; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`.
 
-The file is created automatically when you add an extra workspace directory with [`/add-dir`](../reference/slash-commands.md) and choose to remember it for the project. You rarely need to edit it by hand.
+The file is created automatically when you add an extra workspace directory with [`/add-dir`](../cli/slash-commands.md) and choose to remember it for the project. You rarely need to edit it by hand.
 
 ### `[workspace]`
 

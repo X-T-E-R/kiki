@@ -44,7 +44,7 @@ Thread 引用标识主机、工作区和会话。`ThreadList` 返回后续调用
 
 如需保留真实的 peer 归属，必须由来源 thread 的主 Agent 调用 `ThreadSend`。REST 或 Klient 的 `global.threads` facade 只接受目标 thread，提交的消息会记为 user 来源，外部客户端不能自行声明来源 thread。
 
-在 `config.toml` 中设置 `[thread_communication] enabled = true` 可全局启用。发送消息可能会恢复冷会话并消耗模型额度。集成方还可以为单个工作区持久设置启用或禁用覆盖值；全局开关关闭时，工作区覆盖值不能重新启用该功能。接口说明见 [Kiki 运行时边界](../guides/kiki-runtime.md#集成-peer-thread-通信)。
+在 `config.toml` 中设置 `[thread_communication] enabled = true` 可全局启用。发送消息可能会恢复冷会话并消耗模型额度。集成方还可以为单个工作区持久设置启用或禁用覆盖值；全局开关关闭时，工作区覆盖值不能重新启用该功能。接口说明见 [Kiki 运行时边界](../server/architecture.md#集成-peer-thread-通信)。
 
 ## 上下文隔离与资源开销
 

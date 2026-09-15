@@ -112,7 +112,7 @@ Switches that control the behavior of subsystems such as background tasks and th
 
 | Variable | Purpose | Valid values |
 | --- | --- | --- |
-| `KIKI_PASSWORD` | Set a parallel auth credential for the `kiki web` local server, valid alongside the bearer token; recommended when binding the server beyond loopback — see [Local server and API](../guides/server.md#authentication) | Any non-empty string; when unset, only the token is valid |
+| `KIKI_PASSWORD` | Set a parallel auth credential for the `kiki web` local server, valid alongside the bearer token; recommended when binding the server beyond loopback — see [Local server and API](../server/local-server.md#authentication) | Any non-empty string; when unset, only the token is valid |
 | `KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT` | Whether to keep background tasks when the session closes; takes higher priority than `config.toml`. The default is to stop them on exit | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIKI_BACKGROUND_MAX_RUNNING_TASKS` | Cap on concurrently running background tasks; takes higher priority than `[background] max_running_tasks` in `config.toml` (unset means no cap) | Positive integer; invalid values are ignored |
 | `KIMI_IMAGE_MAX_EDGE_PX` | Longest-edge ceiling (px) for image compression; takes higher priority than `[image] max_edge_px` in `config.toml` (default `2000`) | Positive integer; invalid values are ignored |

@@ -58,7 +58,7 @@ Each top-level file under the data root serves a specific purpose; most are mana
 - **`config.toml`**: the main runtime configuration file, storing user-level settings such as providers, models, and loop control. See [Configuration files](./config-files.md).
 - **`tui.toml`**: terminal UI client preferences such as theme, editor, notifications, and status line.
 - **`AGENTS.md`**: global Kiki-specific agent instructions. This file moves with `KIKI_HOME`; generic cross-tool instructions can still live under `~/.agents/AGENTS.md`.
-- **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kiki/mcp.json` on startup. See [MCP](../customization/mcp.md).
+- **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kiki/mcp.json` on startup. See [MCP](../server/mcp.md).
 - **`skills/`**: Kiki-specific user-level Skills. This directory moves with `KIKI_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
 - **`plugins/installed.json`**: records installed plugins, each plugin's enabled state, and MCP server capability state changes made via `/plugins` or `/plugins mcp disable|enable`. Files installed from local paths or zip URLs are copied to `plugins/managed/<id>/`. See [Plugins](../customization/plugins.md).
 - **`credentials/`**: OAuth credential directory, with permissions `0o700` (directory) / `0o600` (files), readable and writable only by the current user. Managed provider credentials are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. Credentials are written using an atomic flow (tmp → fsync → rename) to prevent corruption.
@@ -87,7 +87,7 @@ The first time the `Grep` tool needs ripgrep, the CLI can automatically download
 - **`logs/kimi-code.log`** (global): records startup, login, export, and other cross-session events.
 - **`<sessionDir>/logs/kimi-code.log`** (session-level): records diagnostic events within a single session.
 
-When reporting a bug, prefer exporting the relevant session with `kiki export` (see [kiki command](../reference/kimi-command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
+When reporting a bug, prefer exporting the relevant session with `kiki export` (see [kiki command](../cli/command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
 
 ## Input history
 

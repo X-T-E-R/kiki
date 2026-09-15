@@ -1,0 +1,156 @@
+# 本地服务与 API
+
+Kiki 同时提供共享 daemon 和兼容性的本地服务。使用 `kiki serve` 启动、复用或停止交互式 TUI 与外部调用方使用的 daemon；需要前台进程同时挂载浏览器里的 Kiki GUI、REST API（`/api`）和 WebSocket 事件流（`/api/ws`）时，使用 `kiki web`。Kiki GUI 用于在浏览器里直接使用 Kiki；REST 与 WebSocket API 面向脚本和第三方工具，可以用代码创建会话、提交提示词、实时跟进执行过程——它们与 TUI、Kiki GUI 读写同一份会话数据。
+
+> 开始前请确认 Kiki 已安装并处于可用状态——完成 `/login` 登录（TUI 内或 `kiki login`），或已在 `config.toml` 配置供应商。服务与 CLI 共享同一份登录态与配置，无需为服务单独准备凭证。
+
+::: warning 注意
+本页介绍的 REST 与 WebSocket API 为实验性特性：不保证接口稳定性，端点、字段与事件类型可能随版本随时更改。集成时请以当前版本服务的 `/openapi.json` 与 `/asyncapi.json` 为准。
+:::
+
+## 启动或复用共享 daemon
+
+交互式 TUI 和外部调用方共用的 daemon 用 `kiki serve` 控制：
+
+```sh
+kiki serve
+kiki serve --ensure --workspace . --json
+kiki serve --stop
+```
+
+不带模式时，`serve` 在前台运行 daemon；`--ensure` 连接已有健康实例，或启动一个新实例并返回连接信息；`--stop` 停止所选 home 下当前可达的实例。`--idle-exit` 默认是 `30m`；活跃客户端 lease 和运行中的派遣会让 daemon 保持运行。工作区信任后，TUI 会自动执行同样的连接或启动逻辑。
+
+## 运行兼容性的前台服务
+
+需要在前台同时提供浏览器 UI 与 REST/WebSocket API 时使用 `kiki web`：
+
+```sh
+kiki web                 # 前台运行服务并打开浏览器
+kiki web --no-open       # 只运行服务，不打开浏览器
+kiki web --port 58628    # 指定绑定端口
+```
+
+服务默认绑定 `127.0.0.1:58627`（仅本机访问）；端口被占用时自动 +1 重试，同一台机器因此可以并存多个实例，每个实例登记在 `~/.kiki/server/instances/` 下。启动横幅会打印访问地址和明文 token：
+
+```text
+Local:   http://127.0.0.1:58627/#token=...
+Token:   ...
+Stop:    Ctrl+C
+```
+
+服务在前台运行，按 `Ctrl-C` 干净退出。`--host`、`--log-level` 等完整选项见 [kiki 命令参考](../cli/command.md#kiki-web)。
+
+## 鉴权
+
+所有 `/api/*` 接口都要求 bearer token（持有者令牌：任何携带该字符串的请求都被视为已授权）。token 在首次启动服务时生成，持久化在 `~/.kiki/server.token`（文件权限 0600），跨重启复用。
+
+按客户端类型选择携带方式：
+
+- **REST**：请求头 `Authorization: Bearer <token>`。
+- **Kiki GUI**：启动横幅里的地址自带 `#token=` 片段，浏览器打开后自动完成登录；该片段不会发送到服务端。
+- **WebSocket**：能自定义请求头的客户端用 `Authorization: Bearer`；浏览器等不能自定义头的客户端改用子协议（WebSocket 握手时声明的协议名）`kimi-code.bearer.<token>`。
+
+token 泄露时运行 `kiki web rotate-token` 轮换：新 token 立即写入 `server.token`，旧 token 即刻失效，正在运行的实例无需重启。
+
+桌面 GUI 使用的就是这个 home token。启动时它会先在实例注册表里找活着的服务实例并直接连接，找不到时才启动自己的 sidecar。因此 GUI 启动的服务其他本机客户端也能用 home token 连上；别处启动的服务也会连同全部会话出现在 GUI 里。
+
+如果把服务绑定到非本机地址（`--host`），建议额外设置 `KIKI_PASSWORD` 环境变量作为并列凭证；此时服务端会对鉴权失败自动限流。
+
+::: danger 警告
+`--dangerous-bypass-auth` 会彻底关闭鉴权，任何能访问该端口的人都能控制你的会话、文件系统和 shell。仅在可信网络或自有鉴权代理之后使用，详见 [kiki 命令参考](../cli/command.md#kiki-web)。
+:::
+
+## 更换 Codex MCP binding 的模型
+
+Codex/Kiki 外部委派安装器会创建带签名的 runtime 目录。手动修改其中的模型设置后，HMAC（用于检测篡改的签名）将不再匹配。请使用已安装的 `kiki-mcp.ps1` launcher 检查并重签 runtime 与 workspace binding，无需删除已委派的会话。
+
+```powershell
+$runtime = '<runtime-dir>'
+$launcher = Join-Path $runtime 'kiki-mcp.ps1'
+
+# 显示 runtime 默认值，以及每个 workspace 的 key、模型、effort 和签名状态。
+& $launcher -RuntimeDir $runtime -ListBindings
+
+# 更改一个现有 workspace binding，并更新新 workspace 使用的默认值。
+& $launcher -RuntimeDir $runtime -ResignBinding '<workspace-key>' `
+  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
+
+# 同时把新模型参数应用到所有现有 binding。
+& $launcher -RuntimeDir $runtime -ResignAllBindings `
+  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
+```
+
+即使 `runtime.json` 的签名已经过期，`-ListBindings` 仍可运行，因此可以直接诊断手动修改模型造成的问题。重签会校验固定的安装字段与产物哈希，使用当前 Windows 用户受 DPAPI 保护的签名密钥，并在改写 binding 前停止受影响且已登记的 workspace KAP。下次启动 MCP 时，KAP 会把新签名的模型与 thinking effort 应用到持久化的委派会话。指定单个 binding 时，其他现有 workspace 会继续使用各自当前已签名的模型；`-ResignAllBindings` 则会更新全部 binding。
+
+Codex MCP 工具调用携带 MCP `progressToken` 时，委派 dispatch 与 continuation 调用会保持打开，并通过 `notifications/progress` 推送轮次开始、已完成工具调用计数和终止状态；未携带 token 的客户端继续使用现有的 `kiki_status` / `kiki_events` 轮询行为。
+
+## 用 API 驱动一个会话
+
+下面用 curl 走一遍最小流程：确认服务状态 → 创建会话 → 订阅事件 → 提交提示词 → 回读历史。示例假设服务跑在默认地址，token 已存入 shell 变量 `TOKEN`。
+
+1. 确认服务状态：
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:58627/api/meta
+```
+
+所有 JSON 响应都包在统一信封里——`{ "code": 0, "msg": "success", "data": ..., "request_id": "..." }`，业务结果以 `code` 为准（`0` 表示成功），HTTP 状态码只表达传输层结果。
+
+2. 创建会话，`metadata.cwd` 指定工作目录：
+
+```sh
+curl -s -X POST http://127.0.0.1:58627/api/sessions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata": {"cwd": "/path/to/project"}}'
+```
+
+返回的 `data.id`（形如 `session_...`）就是后续所有请求要用的会话 id。
+
+3. 连接 WebSocket 并订阅会话事件。任何 WebSocket 客户端都可以；下面是一个零依赖的 Node.js 脚本（Node.js 22+ 内置 `WebSocket` 客户端）：
+
+```js
+// subscribe.mjs —— 用法：TOKEN=... node subscribe.mjs session_...
+const ws = new WebSocket('ws://127.0.0.1:58627/api/ws', [
+  `kimi-code.bearer.${process.env.TOKEN}`,
+]);
+ws.onmessage = (e) => console.log(e.data);
+ws.onopen = () =>
+  ws.send(
+    JSON.stringify({
+      type: 'subscribe',
+      id: '1',
+      payload: { session_ids: [process.argv[2]] },
+    }),
+  );
+```
+
+4. 提交提示词：
+
+```sh
+curl -s -X POST http://127.0.0.1:58627/api/sessions/<session_id>/prompts \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content": [{"type": "text", "text": "用一句话介绍这个仓库"}]}'
+```
+
+订阅端会依次看到 `turn.started`（轮次开始）→ `assistant.delta`（流式文本增量）→ 发生工具调用时的 `tool.call.started` / `tool.result` → `turn.ended`（轮次结束）。
+
+5. 随时可以用 REST 回读历史消息：
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:58627/api/sessions/<session_id>/messages?page_size=20"
+```
+
+## 在线规范文档
+
+服务运行时会自描述两份规范文档，同样需要 bearer token：
+
+- `GET /openapi.json` — REST API 的 OpenAPI 文档，含每个端点的请求 / 响应 schema，可直接导入 Swagger UI、Postman 等工具。
+- `GET /asyncapi.json` — WebSocket 协议的 AsyncAPI 文档，覆盖控制帧与事件类型。
+
+## 下一步
+
+- [服务 API](./rest-api.md) — REST 端点全集、错误码、WebSocket 事件与转录协议
+- [kiki 命令](../cli/command.md#kiki-web) — `kiki web` 的全部命令行选项

@@ -38,7 +38,7 @@ Two paths when adding:
 Kimi Code OAuth managed accounts logged in via `/login` do not appear in `/provider`. Use `/login` and `/logout` to manage them.
 :::
 
-The same operations are also available in non-interactive environments via the shell command: [`kiki provider`](../reference/kimi-command.md#kiki-provider).
+The same operations are also available in non-interactive environments via the shell command: [`kiki provider`](../cli/command.md#kiki-provider).
 
 ## `kimi`
 

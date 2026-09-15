@@ -6,7 +6,7 @@ hero:
   actions:
     - theme: brand
       text: 开始使用
-      link: guides/getting-started
+      link: ./getting-started/installation
     - theme: alt
       text: GitHub
       link: https://github.com/X-T-E-R/kiki

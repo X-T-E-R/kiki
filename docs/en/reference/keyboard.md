@@ -29,7 +29,7 @@ Pressing `Ctrl-C` **during streaming** cancels immediately — no second confirm
 
 Press `Shift-Tab` to enable or disable Plan mode. When enabled, the Agent prioritizes read-only tools for research and planning and can write to the current plan file; `Bash` is subject to the current permission mode and regular rules, without any additional separate approval triggered by Plan mode. Simply toggling does not create an empty plan file. Press `Shift-Tab` again to exit Plan mode.
 
-Type `!` in an empty input box to enter shell mode and run terminal commands directly; while a command is running, press `Ctrl+B` to move it to a background task. See [Interaction and input](../guides/interaction.md#shell-mode).
+Type `!` in an empty input box to enter shell mode and run terminal commands directly; while a command is running, press `Ctrl+B` to move it to a background task. See [Interaction and input](../cli/interaction.md#shell-mode).
 
 ## Input & Editing
 
@@ -73,7 +73,7 @@ When collapsed tool call results exist in the history, press `Ctrl-O` to toggle 
 
 ## Approval Panel
 
-When the Agent initiates a tool call that requires confirmation, the TUI displays an approval panel. For the full approval workflow, see [Interaction & Input](../guides/interaction.md#approval-flow). The available keys inside the panel are:
+When the Agent initiates a tool call that requires confirmation, the TUI displays an approval panel. For the full approval workflow, see [Interaction & Input](../cli/interaction.md#approval-flow). The available keys inside the panel are:
 
 | Shortcut | Function |
 | --- | --- |
@@ -98,5 +98,5 @@ After opening the help panel with `/help`, use the following keys to navigate an
 
 ## Next steps
 
-- [Slash Commands](./slash-commands.md) — Quick reference for built-in TUI control commands
-- [`kiki` Command](./kimi-command.md) — Complete reference for startup flags and subcommands
+- [Slash Commands](../cli/slash-commands.md) — Quick reference for built-in TUI control commands
+- [`kiki` Command](../cli/command.md) — Complete reference for startup flags and subcommands

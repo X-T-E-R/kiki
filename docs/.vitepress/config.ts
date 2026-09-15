@@ -19,8 +19,8 @@ const mermaidOptimizeDeps = [
 
 const config = withMermaid(defineConfig({
   base,
-  title: 'Kiki CLI Docs',
-  description: 'Kiki CLI Documentation',
+  title: 'Kiki Docs',
+  description: 'Kiki Product Documentation',
 
   head: [
     ['link', { rel: 'icon', type: 'image/x-icon', href: `${base}favicon.ico` }],
@@ -34,44 +34,77 @@ const config = withMermaid(defineConfig({
       label: '简体中文',
       lang: 'zh-CN',
       link: '/zh/',
-      title: 'Kiki CLI 文档',
-      description: 'Kiki CLI 用户文档',
+      title: 'Kiki 产品文档',
+      description: 'Kiki 用户文档',
       themeConfig: {
         nav: [
-          { text: '指南', link: '/zh/guides/getting-started', activeMatch: '/zh/guides/' },
-          { text: '定制化', link: '/zh/customization/mcp', activeMatch: '/zh/customization/' },
+          { text: '快速上手', link: '/zh/getting-started/installation', activeMatch: '/zh/getting-started/' },
+          { text: '桌面应用', link: '/zh/desktop/interface', activeMatch: '/zh/desktop/' },
+          { text: 'CLI 与 TUI', link: '/zh/cli/interaction', activeMatch: '/zh/cli/' },
+          { text: '服务器与集成', link: '/zh/server/local-server', activeMatch: '/zh/server/' },
+          { text: '定制', link: '/zh/customization/agents', activeMatch: '/zh/customization/' },
           { text: '配置', link: '/zh/configuration/config-files', activeMatch: '/zh/configuration/' },
-          { text: '参考手册', link: '/zh/reference/kimi-command', activeMatch: '/zh/reference/' },
+          { text: '参考手册', link: '/zh/reference/tools', activeMatch: '/zh/reference/' },
           { text: '发布说明', link: '/zh/release-notes/changelog', activeMatch: '/zh/release-notes/' },
         ],
         sidebar: {
-          '/zh/guides/': [
+          '/zh/getting-started/': [
             {
-              text: '指南',
+              text: '快速上手',
               items: [
-                { text: '开始使用', link: '/zh/guides/getting-started' },
-                { text: 'Kiki 运行时边界', link: '/zh/guides/kiki-runtime' },
-                { text: 'Kiki Windows 桌面版', link: '/zh/guides/kiki-desktop' },
-                { text: '模型词汇收敛路线', link: '/zh/guides/model-vocabulary-convergence' },
-                { text: '跨 host 会话边界', link: '/zh/guides/cross-host-session-boundaries' },
-                { text: '从 kimi-cli 迁移', link: '/zh/guides/migration' },
-                { text: '常见使用案例', link: '/zh/guides/use-cases' },
-                { text: '交互与输入', link: '/zh/guides/interaction' },
-                { text: '会话与上下文', link: '/zh/guides/sessions' },
-                { text: '使用目标模式', link: '/zh/guides/goals' },
-                { text: '在 IDE 中使用', link: '/zh/guides/ides' },
-                { text: '本地服务与 API', link: '/zh/guides/server' },
+                { text: '安装', link: '/zh/getting-started/installation' },
+                { text: '首次启动', link: '/zh/getting-started/first-launch' },
+                { text: 'Kiki 桌面版', link: '/zh/getting-started/desktop-app' },
+                { text: '常见使用案例', link: '/zh/getting-started/use-cases' },
+                { text: '从 kimi-cli 迁移', link: '/zh/configuration/migration' },
+              ],
+            },
+          ],
+          '/zh/desktop/': [
+            {
+              text: '桌面应用',
+              items: [
+                { text: '界面导览', link: '/zh/desktop/interface' },
+                { text: '工作区与会话管理', link: '/zh/desktop/sessions' },
+                { text: '设置页导览', link: '/zh/desktop/settings' },
+              ],
+            },
+          ],
+          '/zh/cli/': [
+            {
+              text: 'CLI 与 TUI',
+              items: [
+                { text: '交互与输入', link: '/zh/cli/interaction' },
+                { text: '使用目标模式', link: '/zh/cli/goals' },
+                { text: '斜杠命令', link: '/zh/cli/slash-commands' },
+                { text: '命令参考', link: '/zh/cli/command' },
+              ],
+            },
+          ],
+          '/zh/server/': [
+            {
+              text: '服务器与集成',
+              items: [
+                { text: '本地服务与 API', link: '/zh/server/local-server' },
+                { text: 'Kiki 运行时边界', link: '/zh/server/architecture' },
+                { text: 'daemon、席位与迁移', link: '/zh/server/daemon' },
+                { text: '服务 API', link: '/zh/server/rest-api' },
+                { text: '在 IDE 中使用', link: '/zh/server/ide' },
+                { text: 'kiki acp 子命令', link: '/zh/server/acp' },
+                { text: 'Model Context Protocol', link: '/zh/server/mcp' },
+                { text: 'Node.js SDK', link: '/zh/server/sdk' },
+                { text: '跨 host 会话边界', link: '/zh/server/cross-host-session-boundaries' },
               ],
             },
           ],
           '/zh/customization/': [
             {
-              text: '定制化',
+              text: '定制',
               items: [
-                { text: 'Model Context Protocol', link: '/zh/customization/mcp' },
+                { text: 'Agent 与 subagent', link: '/zh/customization/agents' },
+                { text: '提示词字段与覆写', link: '/zh/customization/prompt-fields' },
                 { text: 'Agent Skills', link: '/zh/customization/skills' },
                 { text: 'Plugins', link: '/zh/customization/plugins' },
-                { text: 'Agent 与 subagent', link: '/zh/customization/agents' },
                 { text: 'Hooks', link: '/zh/customization/hooks' },
                 { text: '自定义主题', link: '/zh/customization/themes' },
               ],
@@ -86,6 +119,7 @@ const config = withMermaid(defineConfig({
                 { text: '配置覆盖', link: '/zh/configuration/overrides' },
                 { text: '环境变量', link: '/zh/configuration/env-vars' },
                 { text: '数据路径', link: '/zh/configuration/data-locations' },
+                { text: '模型词汇收敛路线', link: '/zh/configuration/model-vocabulary' },
               ],
             },
           ],
@@ -93,12 +127,7 @@ const config = withMermaid(defineConfig({
             {
               text: '参考手册',
               items: [
-                { text: 'CLI 命令与参数', link: '/zh/reference/kimi-command' },
-                { text: 'daemon、席位与迁移', link: '/zh/reference/kiki-command' },
-                { text: 'kiki acp 子命令', link: '/zh/reference/kimi-acp' },
-                { text: '服务 API', link: '/zh/reference/server-api' },
                 { text: '内置工具', link: '/zh/reference/tools' },
-                { text: '斜杠命令', link: '/zh/reference/slash-commands' },
                 { text: '键盘快捷键', link: '/zh/reference/keyboard' },
               ],
             },
@@ -118,33 +147,66 @@ const config = withMermaid(defineConfig({
       label: 'English',
       lang: 'en-US',
       link: '/en/',
-      title: 'Kiki CLI Docs',
-      description: 'Kiki CLI User Documentation',
+      title: 'Kiki Docs',
+      description: 'Kiki Product Documentation',
       themeConfig: {
         nav: [
-          { text: 'Guides', link: '/en/guides/getting-started', activeMatch: '/en/guides/' },
-          { text: 'Customization', link: '/en/customization/mcp', activeMatch: '/en/customization/' },
+          { text: 'Getting started', link: '/en/getting-started/installation', activeMatch: '/en/getting-started/' },
+          { text: 'Desktop app', link: '/en/desktop/interface', activeMatch: '/en/desktop/' },
+          { text: 'CLI & TUI', link: '/en/cli/interaction', activeMatch: '/en/cli/' },
+          { text: 'Server & integration', link: '/en/server/local-server', activeMatch: '/en/server/' },
+          { text: 'Customization', link: '/en/customization/agents', activeMatch: '/en/customization/' },
           { text: 'Configuration', link: '/en/configuration/config-files', activeMatch: '/en/configuration/' },
-          { text: 'Reference', link: '/en/reference/kimi-command', activeMatch: '/en/reference/' },
+          { text: 'Reference', link: '/en/reference/tools', activeMatch: '/en/reference/' },
           { text: 'Release Notes', link: '/en/release-notes/changelog', activeMatch: '/en/release-notes/' },
         ],
         sidebar: {
-          '/en/guides/': [
+          '/en/getting-started/': [
             {
-              text: 'Guides',
+              text: 'Getting started',
               items: [
-                { text: 'Getting Started', link: '/en/guides/getting-started' },
-                { text: 'Kiki runtime boundary', link: '/en/guides/kiki-runtime' },
-                { text: 'Kiki desktop for Windows', link: '/en/guides/kiki-desktop' },
-                { text: 'Model vocabulary convergence', link: '/en/guides/model-vocabulary-convergence' },
-                { text: 'Cross-host session boundaries', link: '/en/guides/cross-host-session-boundaries' },
-                { text: 'Migrating from kimi-cli', link: '/en/guides/migration' },
-                { text: 'Common Use Cases', link: '/en/guides/use-cases' },
-                { text: 'Interaction and Input', link: '/en/guides/interaction' },
-                { text: 'Sessions and Context', link: '/en/guides/sessions' },
-                { text: 'Using Goals', link: '/en/guides/goals' },
-                { text: 'Using in IDEs', link: '/en/guides/ides' },
-                { text: 'Local Server and API', link: '/en/guides/server' },
+                { text: 'Installation', link: '/en/getting-started/installation' },
+                { text: 'First launch', link: '/en/getting-started/first-launch' },
+                { text: 'Kiki desktop', link: '/en/getting-started/desktop-app' },
+                { text: 'Common use cases', link: '/en/getting-started/use-cases' },
+                { text: 'Migrating from kimi-cli', link: '/en/configuration/migration' },
+              ],
+            },
+          ],
+          '/en/desktop/': [
+            {
+              text: 'Desktop app',
+              items: [
+                { text: 'Interface overview', link: '/en/desktop/interface' },
+                { text: 'Workspaces and sessions', link: '/en/desktop/sessions' },
+                { text: 'Settings pages', link: '/en/desktop/settings' },
+              ],
+            },
+          ],
+          '/en/cli/': [
+            {
+              text: 'CLI & TUI',
+              items: [
+                { text: 'Interaction and input', link: '/en/cli/interaction' },
+                { text: 'Using goals', link: '/en/cli/goals' },
+                { text: 'Slash commands', link: '/en/cli/slash-commands' },
+                { text: 'Command reference', link: '/en/cli/command' },
+              ],
+            },
+          ],
+          '/en/server/': [
+            {
+              text: 'Server & integration',
+              items: [
+                { text: 'Local server and API', link: '/en/server/local-server' },
+                { text: 'Kiki runtime boundary', link: '/en/server/architecture' },
+                { text: 'Daemon, seats, and migration', link: '/en/server/daemon' },
+                { text: 'Server API', link: '/en/server/rest-api' },
+                { text: 'Using in IDEs', link: '/en/server/ide' },
+                { text: 'kiki acp subcommand', link: '/en/server/acp' },
+                { text: 'Model Context Protocol', link: '/en/server/mcp' },
+                { text: 'Node.js SDK', link: '/en/server/sdk' },
+                { text: 'Cross-host session boundaries', link: '/en/server/cross-host-session-boundaries' },
               ],
             },
           ],
@@ -152,10 +214,10 @@ const config = withMermaid(defineConfig({
             {
               text: 'Customization',
               items: [
-                { text: 'Model Context Protocol', link: '/en/customization/mcp' },
+                { text: 'Agents and Subagents', link: '/en/customization/agents' },
+                { text: 'Prompt field overrides', link: '/en/customization/prompt-fields' },
                 { text: 'Agent Skills', link: '/en/customization/skills' },
                 { text: 'Plugins', link: '/en/customization/plugins' },
-                { text: 'Agents and Subagents', link: '/en/customization/agents' },
                 { text: 'Hooks', link: '/en/customization/hooks' },
                 { text: 'Custom Themes', link: '/en/customization/themes' },
               ],
@@ -170,6 +232,7 @@ const config = withMermaid(defineConfig({
                 { text: 'Config Overrides', link: '/en/configuration/overrides' },
                 { text: 'Environment Variables', link: '/en/configuration/env-vars' },
                 { text: 'Data Locations', link: '/en/configuration/data-locations' },
+                { text: 'Model vocabulary convergence', link: '/en/configuration/model-vocabulary' },
               ],
             },
           ],
@@ -177,12 +240,7 @@ const config = withMermaid(defineConfig({
             {
               text: 'Reference',
               items: [
-                { text: 'CLI commands and options', link: '/en/reference/kimi-command' },
-                { text: 'Daemon, seats, and migration', link: '/en/reference/kiki-command' },
-                { text: 'kiki acp subcommand', link: '/en/reference/kimi-acp' },
-                { text: 'Server API', link: '/en/reference/server-api' },
                 { text: 'Built-in Tools', link: '/en/reference/tools' },
-                { text: 'Slash Commands', link: '/en/reference/slash-commands' },
                 { text: 'Keyboard Shortcuts', link: '/en/reference/keyboard' },
               ],
             },

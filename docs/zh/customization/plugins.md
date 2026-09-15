@@ -378,7 +378,7 @@ Plugin Agent 的优先级低于其他文件来源：同名时用户级、额外�
 
 ## Plugin 中的 MCP servers
 
-当 plugin 需要真实工具能力时，可以在 manifest 中声明 `mcpServers`，复用 [MCP](./mcp.md) 的 schema。
+当 plugin 需要真实工具能力时，可以在 manifest 中声明 `mcpServers`，复用 [MCP](../server/mcp.md) 的 schema。
 
 Stdio server（本地命令）：
 

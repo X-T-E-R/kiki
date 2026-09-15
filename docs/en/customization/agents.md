@@ -44,7 +44,7 @@ A thread reference identifies a host, workspace, and session. `ThreadList` retur
 
 True peer attribution requires the source thread's main Agent to call `ThreadSend`. REST and the `global.threads` Klient facade accept only target-addressed input and record it as user-origin, so an external client cannot claim a source thread.
 
-Set `[thread_communication] enabled = true` in `config.toml` to opt in globally. Sending a message can resume a cold target session and consume model quota. Integrators can also persist an enable or disable override for an individual workspace; a workspace override cannot turn the feature on while the global switch is off. See the [Kiki runtime boundary](../guides/kiki-runtime.md#integrate-peer-thread-communication) for those interfaces.
+Set `[thread_communication] enabled = true` in `config.toml` to opt in globally. Sending a message can resume a cold target session and consume model quota. Integrators can also persist an enable or disable override for an individual workspace; a workspace override cannot turn the feature on while the global switch is off. See the [Kiki runtime boundary](../server/architecture.md#integrate-peer-thread-communication) for those interfaces.
 
 ## Context Isolation and Resource Cost
 

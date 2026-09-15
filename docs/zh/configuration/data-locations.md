@@ -58,7 +58,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 - **`config.toml`**：主运行时配置，存放供应商、模型、循环控制等用户级设置。详见[配置文件](./config-files.md)。
 - **`tui.toml`**：终端界面客户端偏好，例如主题、编辑器、通知和状态栏。
 - **`AGENTS.md`**：全局 Kiki 专属 Agent 指令。该文件会随 `KIKI_HOME` 移动；跨工具通用指令仍可放在 `~/.agents/AGENTS.md`。
-- **`mcp.json`**：用户级 MCP server 声明，启动时与项目内的 `.kiki/mcp.json` 合并加载。详见 [MCP](../customization/mcp.md)。
+- **`mcp.json`**：用户级 MCP server 声明，启动时与项目内的 `.kiki/mcp.json` 合并加载。详见 [MCP](../server/mcp.md)。
 - **`skills/`**：Kiki 专属用户级 Skills。该目录会随 `KIKI_HOME` 移动；跨工具通用 Skills 仍可放在 `~/.agents/skills/`。详见 [Agent Skills](../customization/skills.md)。
 - **`plugins/installed.json`**：记录已安装的 plugin、每个 plugin 的启用状态，以及通过 `/plugins` 或 `/plugins mcp disable|enable` 修改的 MCP server 能力状态。本地路径和 zip URL 安装的文件会复制到 `plugins/managed/<id>/`。详见 [Plugins](../customization/plugins.md)。
 - **`credentials/`**：OAuth 凭据目录，权限 `0o700`（目录）/ `0o600`（文件），仅当前用户可读写。托管供应商凭据存为 `credentials/<name>.json`，MCP server 凭据存在 `credentials/mcp/` 子目录下。凭据写入使用原子流程（tmp → fsync → rename）防止写损。
@@ -87,7 +87,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 - **`logs/kimi-code.log`**（全局）：记录启动、登录、导出等跨会话事件。
 - **`<sessionDir>/logs/kimi-code.log`**（会话级）：记录单个会话内的诊断事件。
 
-报 bug 时，优先用 `kiki export` 导出相关会话（详见 [kiki 命令](../reference/kimi-command.md)）；会话日志默认包含在导出包里。不想分享全局日志时加 `--no-include-global-log`。
+报 bug 时，优先用 `kiki export` 导出相关会话（详见 [kiki 命令](../cli/command.md)）；会话日志默认包含在导出包里。不想分享全局日志时加 `--no-include-global-log`。
 
 ## 输入历史
 
