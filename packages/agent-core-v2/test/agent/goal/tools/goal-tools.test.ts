@@ -153,6 +153,22 @@ describe('goal tools', () => {
     });
   });
 
+  it('SetGoalBudget accepts a time budget beyond the former 24-hour cap', async () => {
+    await goals.createGoal({ objective: 'work' });
+
+    const execution = setGoalBudgetTool.resolveExecution({ value: 720, unit: 'hours' });
+    if (execution.isError === true) throw new Error('execution should not be an error');
+
+    const result = await execution.execute({ turnId: 0, toolCallId: 'call_long_budget', signal });
+
+    expect(result.stopTurn).toBeFalsy();
+    expect(result.output).toBe('Goal budget set: 720 hours.');
+    expect(goals.getGoal().goal).toMatchObject({
+      status: 'active',
+      budget: { wallClockBudgetMs: 2_592_000_000, overBudget: false },
+    });
+  });
+
   it('SetGoalBudget does not apply a delayed execution to a replacement goal', async () => {
     await goals.createGoal({ objective: 'old task' });
     const execution = setGoalBudgetTool.resolveExecution({ value: 5, unit: 'turns' });

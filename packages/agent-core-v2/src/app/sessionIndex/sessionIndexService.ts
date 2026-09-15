@@ -200,7 +200,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
     try {
       return (
-        (await scanSessionsMaxMtime(this.storage, this.bootstrap.scope('sessions'))) <= published
+        (await scanSessionsMaxMtime(this.storage, this.bootstrap.scope('sessions'), this.log)) <=
+        published
       );
     } catch (error) {
       this.log.warn('session index freshness check failed; re-projecting', {

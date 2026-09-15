@@ -2,7 +2,19 @@
  * Managed-platform usage fetch / parse.
  *
  * Only `managed:kimi-code` is supported today. The platform exposes a
- * `/usages` endpoint that returns a payload of the shape:
+ * `/usages` endpoint. Current deployments answer with the quota model:
+ *
+ *   {
+ *     "usages": {
+ *       "limit_5h":          { "used_ratio": 0.3,  "reset_time": "..." },
+ *       "limit_7d":          { "used_ratio": 0.2,  "reset_time": "..." },
+ *       "limit_month_total": { "used_ratio": 0.4,  "reset_time": "..." },
+ *       "limit_month_code":  { "used_ratio": 0.25, "reset_time": "..." }
+ *     },
+ *     "boosterWallet": { ... }
+ *   }
+ *
+ * Older deployments answered with absolute counts instead:
  *
  *   {
  *     "usage":  { "used": "40", "limit": "1000", "resetTime": "2026-08-03T05:20:51Z" },
@@ -16,9 +28,15 @@
  *     "boosterWallet": { ... }
  *   }
  *
- * Numbers arrive as decimal strings; `timeUnit` is a proto-style enum. The
- * parser normalizes the payload into a structured, camelCase domain model;
- * presentation (labels, reset hints) is left to the consumer.
+ * Both models normalize into the same `ParsedManagedUsage` (summary + limits
+ * + extraUsage), the shape the REST and client contracts carry, so no
+ * consumer needs a second code path. A quota entry is a used/total ratio
+ * rather than a count, so it is projected onto the percentage scale
+ * `used = ratio * 100, limit = 100`: the ratio is what every consumer renders
+ * (progress bar, "N% used"), and the absolute counts the old payload carried
+ * are no longer served. Numbers arrive as decimal strings; `timeUnit` is a
+ * proto-style enum. Presentation (labels, reset hints) is left to the
+ * consumer.
  */
 
 import { readApiErrorMessage } from './api-error';
@@ -158,6 +176,11 @@ export function parseManagedUsagePayload(payload: unknown): ParsedManagedUsage {
     return { summary: null, limits: [], extraUsage: null };
   }
   const rec = payload as Record<string, unknown>;
+  const extraUsage = parseBoosterWallet(rec['boosterWallet']);
+  const quota = parseQuotaRows(rec['usages']);
+  if (quota !== null) {
+    return { summary: quota.summary, limits: quota.limits, extraUsage };
+  }
   let summary = toUsageRow(rec['usage']);
   // The summary is the plan's weekly limit; the backend omits the window,
   // so synthesize it here instead of making every client special-case it.
@@ -167,8 +190,75 @@ export function parseManagedUsagePayload(payload: unknown): ParsedManagedUsage {
   return {
     summary,
     limits: parseLimitRows(rec),
-    extraUsage: parseBoosterWallet(rec['boosterWallet']),
+    extraUsage,
   };
+}
+
+/** Percentage scale a quota ratio is projected onto; the ratio itself is what
+ *  consumers render, and this keeps `used`/`limit` integral on the wire. */
+const QUOTA_PERCENT = 100;
+
+interface QuotaRowDefinition {
+  readonly key: string;
+  readonly name?: string;
+  readonly window?: UsageWindow;
+}
+
+/** The plan's weekly quota is the summary row, mirroring the legacy payload
+ *  where `usage` was the weekly plan limit and `limits` held the rest. */
+const QUOTA_SUMMARY_ROW: QuotaRowDefinition = {
+  key: 'limit_7d',
+  window: { duration: 1, unit: 'week' },
+};
+
+const QUOTA_LIMIT_ROWS: readonly QuotaRowDefinition[] = [
+  { key: 'limit_5h', window: { duration: 5, unit: 'hour' } },
+  { key: 'limit_month_total', name: 'Monthly limit' },
+  { key: 'limit_month_code', name: 'Monthly code usage' },
+];
+
+interface ParsedQuotaRows {
+  readonly summary: UsageRow | null;
+  readonly limits: UsageRow[];
+}
+
+function parseQuotaRows(rawUsages: unknown): ParsedQuotaRows | null {
+  if (!isRecord(rawUsages)) return null;
+  const summary = quotaRow(QUOTA_SUMMARY_ROW, rawUsages[QUOTA_SUMMARY_ROW.key]);
+  const limits: UsageRow[] = [];
+  for (const definition of QUOTA_LIMIT_ROWS) {
+    const row = quotaRow(definition, rawUsages[definition.key]);
+    if (row !== null) limits.push(row);
+  }
+  if (summary === null && limits.length === 0) return null;
+  return { summary, limits };
+}
+
+function quotaRow(definition: QuotaRowDefinition, raw: unknown): UsageRow | null {
+  if (!isRecord(raw)) return null;
+  const ratio = ratioFrom(raw['used_ratio']);
+  if (ratio === null) return null;
+  return {
+    name: definition.name,
+    window: definition.window,
+    used: Math.round(ratio * QUOTA_PERCENT),
+    limit: QUOTA_PERCENT,
+    resetAt: quotaResetAt(raw),
+  };
+}
+
+function quotaResetAt(raw: Record<string, unknown>): string | undefined {
+  const value = raw['reset_time'];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function ratioFrom(raw: unknown): number | null {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
+  if (typeof raw === 'string') {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function parseLimitRows(rec: Record<string, unknown>): UsageRow[] {

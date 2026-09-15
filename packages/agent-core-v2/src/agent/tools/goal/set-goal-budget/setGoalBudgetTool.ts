@@ -14,7 +14,6 @@ import {
 } from './set-goal-budget';
 
 const MIN_REASONABLE_TIME_BUDGET_MS = 1_000;
-const MAX_REASONABLE_TIME_BUDGET_MS = 24 * 60 * 60 * 1000;
 
 export class SetGoalBudgetTool implements ISetGoalBudgetTool {
   declare readonly _serviceBrand: undefined;
@@ -116,10 +115,7 @@ function budgetLimitsFromInput(input: SetGoalBudgetToolInput): GoalBudgetLimits 
     case 'minutes':
     case 'hours': {
       const wallClockBudgetMs = Math.round(toMilliseconds(input.value, input.unit));
-      if (
-        wallClockBudgetMs < MIN_REASONABLE_TIME_BUDGET_MS ||
-        wallClockBudgetMs > MAX_REASONABLE_TIME_BUDGET_MS
-      ) {
+      if (wallClockBudgetMs < MIN_REASONABLE_TIME_BUDGET_MS || !Number.isFinite(wallClockBudgetMs)) {
         return null;
       }
       return { wallClockBudgetMs };

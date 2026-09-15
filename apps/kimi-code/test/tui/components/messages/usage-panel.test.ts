@@ -1,4 +1,5 @@
 import { visibleWidth } from '@kiki/pi-tui';
+import { parseManagedUsagePayload } from '@kiki/oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildUsageReportLines, UsagePanelComponent } from '#/tui/components/messages/usage-panel';
@@ -52,6 +53,50 @@ describe('UsagePanelComponent', () => {
       expect(lines.join('\n')).toContain('daily');
       expect(lines.join('\n')).toContain('20% used');
       expect(lines.join('\n')).toContain('resets in 1h');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renders the plan usage rows the platform quota payload parses into', () => {
+    // The platform moved /usages to the quota model: every window arrives as a
+    // used/total ratio, and the panel must show the plan rows again instead of
+    // "No usage data available.".
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-11T12:00:00Z'));
+    try {
+      const parsed = parseManagedUsagePayload({
+        goods_version: 2,
+        usages: {
+          limit_5h: { used_ratio: 0.3, reset_time: '2026-09-11T18:00:00Z' },
+          limit_7d: { used_ratio: 0.2, reset_time: '2026-09-17T00:00:00Z' },
+          limit_month_total: { used_ratio: 0.4, reset_time: '2026-10-01T00:00:00Z' },
+          limit_month_code: { used_ratio: 0.25, reset_time: '2026-10-01T00:00:00Z' },
+        },
+      });
+      const lines = buildUsageReportLines({
+        sessionUsage: { byModel: {} },
+        contextUsage: 0,
+        contextTokens: 0,
+        maxContextTokens: 0,
+        managedUsage: {
+          summary: parsed.summary,
+          limits: parsed.limits,
+          extraUsage: parsed.extraUsage,
+        },
+      }).map(strip);
+      const output = lines.join('\n');
+
+      expect(output).toContain('Plan usage');
+      expect(output).not.toContain('No usage data available.');
+      expect(output).toContain('Weekly limit');
+      expect(output).toContain('20% used');
+      expect(output).toContain('5h limit');
+      expect(output).toContain('30% used');
+      expect(output).toContain('Monthly limit');
+      expect(output).toContain('40% used');
+      expect(output).toContain('Monthly code usage');
+      expect(output).toContain('25% used');
     } finally {
       vi.useRealTimers();
     }

@@ -239,6 +239,7 @@ function createService(
       thinkingLevel,
       reservedContextSize: undefined,
       compactionTriggerRatio: undefined,
+      compactionMaxAttempts: undefined,
       compactionSoftContextSize: undefined,
     }),
     resolveRequestParams: () => options.requestParams ?? { cacheKey: sessionId },

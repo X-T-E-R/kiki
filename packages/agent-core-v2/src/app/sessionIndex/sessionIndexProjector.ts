@@ -190,11 +190,13 @@ export class SessionIndexProjector {
     const counters = sessionCountersCollection(generation);
     const sources = sessionSourcesCollection(generation);
     const workspaces = sessionWorkspaceSourcesCollection(generation);
-    const currentWorkspaceIds = [...await listWorkspaceIds(storage, sessionsScope)].toSorted();
+    const currentWorkspaceIds = [...await listWorkspaceIds(storage, sessionsScope, log)].toSorted();
     const currentWorkspaceSessions = new Map<string, readonly string[]>();
     const currentSessionOwners = new Map<string, number>();
     for (const workspaceId of currentWorkspaceIds) {
-      const sessionIds = [...await listSessionIds(storage, sessionsScope, workspaceId)].toSorted();
+      const sessionIds = [
+        ...await listSessionIds(storage, sessionsScope, workspaceId, log),
+      ].toSorted();
       currentWorkspaceSessions.set(workspaceId, sessionIds);
       for (const sessionId of sessionIds) {
         currentSessionOwners.set(sessionId, (currentSessionOwners.get(sessionId) ?? 0) + 1);
@@ -216,7 +218,7 @@ export class SessionIndexProjector {
       const previousFingerprints = await queryStore.getMany<SessionSourceFingerprint>(sources, sessionIds);
       const fingerprintEntries = await mapBounded(sessionIds, SCAN_CONCURRENCY, async (sessionId) => ({
         sessionId,
-        fingerprint: await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId),
+        fingerprint: await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log),
       }));
       const changedCandidates: string[] = [];
       for (const { sessionId, fingerprint } of fingerprintEntries) {
@@ -374,16 +376,24 @@ export class SessionIndexProjector {
   }
 
   private async scanAuthoritative(): Promise<AuthoritativeScan> {
-    const { storage, docs, sessionsScope } = this.deps;
+    const { storage, docs, sessionsScope, log } = this.deps;
     const summaries: SessionSummary[] = [];
     const counts = new Map<string, SessionWorkspaceCounts>();
     const fingerprints = new Map<string, SessionSourceFingerprint>();
     const workspaceSources = new Map<string, SessionWorkspaceSource>();
     let sourceMaxMtimeMs = (await storage.mtime(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY)) ?? 0;
-    for (const workspaceId of await listWorkspaceIds(storage, sessionsScope)) {
-      const sessionIds = [...await listSessionIds(storage, sessionsScope, workspaceId)].toSorted();
+    for (const workspaceId of await listWorkspaceIds(storage, sessionsScope, log)) {
+      const sessionIds = [
+        ...await listSessionIds(storage, sessionsScope, workspaceId, log),
+      ].toSorted();
       const found = await mapBounded(sessionIds, SCAN_CONCURRENCY, async (sessionId) => {
-        const fingerprint = await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId);
+        const fingerprint = await sessionStateFingerprint(
+          storage,
+          sessionsScope,
+          workspaceId,
+          sessionId,
+          log,
+        );
         const summary = await readSessionSummary(docs, sessionsScope, workspaceId, sessionId);
         return { sessionId, fingerprint, summary };
       });

@@ -32,6 +32,7 @@ import {
   sessionCollection,
 } from '#/app/sessionIndex/sessionIndexModel';
 import { FileSessionIndex } from '#/app/sessionIndex/sessionIndexService';
+import { scanSessionsMaxMtime } from '#/app/sessionIndex/sessionIndexSource';
 import {
   drainSessionIndexMirror,
   SessionIndexMirror,
@@ -507,6 +508,25 @@ describe('FileSessionIndex (legacy)', () => {
     expect(await store.count({ workspaceIds: [otherId] })).toBe(1);
   });
 
+  it('scans session mtimes past stray non-directory entries', async () => {
+    await seedSession('a', { createdAt: 1, updatedAt: 2 });
+    await fsp.mkdir(join(sessionsDir, workspaceId, 'no-state'), { recursive: true });
+    await fsp.writeFile(join(sessionsDir, 'workspace.json'), '{}');
+    await fsp.writeFile(join(sessionsDir, workspaceId, 'stray.json'), 'junk');
+
+    const warnings: string[] = [];
+    const log: ILogService = {
+      ...stubLog(),
+      warn: (message) => {
+        warnings.push(message);
+      },
+    };
+    const max = await scanSessionsMaxMtime(new FileStorageService(homeDir), 'sessions', log);
+
+    expect(max).toBeGreaterThan(0);
+    expect(warnings).toContain('session index skips a non-directory entry');
+  });
+
   it('pages with the before/after keyset cursors', async () => {
     for (let i = 0; i < 5; i++) {
       await seedSession(`s${i}`, { createdAt: i, updatedAt: i });
@@ -763,6 +783,22 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     expect(await store.get('active')).toMatchObject({ id: 'active', title: 'hello' });
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
     expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(2);
+  });
+
+  it('prepare skips stray files and state-less directories instead of failing the projection', async () => {
+    await seedSession('active', { title: 'hello', createdAt: 1, updatedAt: 2 });
+    await fsp.writeFile(join(sessionsDir, 'workspace.json'), '{}');
+    await fsp.writeFile(join(sessionsDir, workspaceId, 'workspace.json'), '{}');
+    await fsp.writeFile(join(sessionsDir, workspaceId, '.DS_Store'), 'junk');
+    await fsp.mkdir(join(sessionsDir, workspaceId, 'no-state'), { recursive: true });
+
+    const store = build();
+    const status = await store.prepare();
+    expect(status).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
+
+    const page = await store.listRecent({ workspaceIds: [workspaceId] });
+    expect(page.items.map((s) => s.id)).toEqual(['active']);
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
   });
 
   it('emits status changes once across prepare and repeated ready calls', async () => {

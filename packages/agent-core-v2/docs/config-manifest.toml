@@ -266,6 +266,7 @@ extra_skill_dirs = []
 # max_ralph_iterations: integer
 # reserved_context_size: integer
 # compaction_trigger_ratio: number
+# compaction_max_attempts: integer
 compaction_soft_context_size = 0
 
 # ##########################################################################

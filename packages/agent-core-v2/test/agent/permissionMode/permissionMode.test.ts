@@ -9,11 +9,15 @@ import {
 } from '#/agent/contextInjector/contextInjector';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { PermissionModeInjection } from '#/agent/permissionMode/injection/permissionModeInjection';
-import { AgentPermissionModeService } from '#/agent/permissionMode/permissionModeService';
+import {
+  AgentPermissionModeService,
+  PERMISSION_MODE_REMINDER_ENV,
+} from '#/agent/permissionMode/permissionModeService';
 import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -21,6 +25,7 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
+import { stubBootstrap } from '../../app/bootstrap/stubs';
 import {
   registerTestAgentWire,
   registerTestEventDispatcher,
@@ -37,6 +42,15 @@ let registeredInjection:
       readonly provider: ContextInjectionProvider;
     }
   | undefined;
+
+function readInjection():
+  | {
+      readonly name: string;
+      readonly provider: ContextInjectionProvider;
+    }
+  | undefined {
+  return registeredInjection;
+}
 
 const injectorStub: IAgentContextInjectorService = {
   _serviceBrand: undefined,
@@ -59,15 +73,35 @@ let log: IAppendLogStore;
 let dispatcher: IEventDispatcher;
 let svc: IAgentPermissionModeService;
 let reminderLive = false;
+let bootstrapEnv: NodeJS.ProcessEnv;
+
+function buildWithEnv(
+  scopeKey: string,
+  env: NodeJS.ProcessEnv,
+): { readonly ix: TestInstantiationService; readonly service: IAgentPermissionModeService } {
+  const ix2 = disposables.add(new TestInstantiationService());
+  ix2.stub(IFileSystemStorageService, new InMemoryStorageService());
+  ix2.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+  ix2.stub(IAgentContextInjectorService, injectorStub);
+  ix2.stub(IBootstrapService, stubBootstrap('/tmp/kimi-home', env));
+  ix2.set(IAgentStateService, new AgentStateService());
+  ix2.set(IAgentPermissionModeService, new SyncDescriptor(AgentPermissionModeService));
+  const log2 = ix2.get(IAppendLogStore);
+  registerTestAgentWire(ix2, testWireScope(SCOPE, scopeKey), { log: log2 });
+  registerTestEventDispatcher(ix2);
+  return { ix: ix2, service: ix2.get(IAgentPermissionModeService) };
+}
 
 beforeEach(() => {
   registeredInjection = undefined;
   reminderLive = false;
+  bootstrapEnv = {};
   disposables = new DisposableStore();
   ix = disposables.add(new TestInstantiationService());
   ix.stub(IFileSystemStorageService, new InMemoryStorageService());
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   ix.stub(IAgentContextInjectorService, injectorStub);
+  ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-home', bootstrapEnv));
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IAgentPermissionModeService, new SyncDescriptor(AgentPermissionModeService));
   log = ix.get(IAppendLogStore);
@@ -247,5 +281,24 @@ describe('AgentPermissionModeService (wire-backed)', () => {
     }
     expect(written[0]).toMatchObject({ type: 'metadata' });
     expect(written.slice(1)).toEqual([{ type: 'permission.set_mode', mode: 'auto' }]);
+  });
+
+  it('skips the auto-mode reminder injection when the reminder env is disabled', () => {
+    registeredInjection = undefined;
+    const { service } = buildWithEnv('permission-mode-reminder-off', {
+      [PERMISSION_MODE_REMINDER_ENV]: '0',
+    });
+
+    expect(registeredInjection).toBeUndefined();
+    service.setMode('auto');
+    expect(service.mode).toBe('auto');
+    expect(registeredInjection).toBeUndefined();
+  });
+
+  it('keeps the auto-mode reminder injection when the reminder env enables it explicitly', () => {
+    registeredInjection = undefined;
+    buildWithEnv('permission-mode-reminder-on', { [PERMISSION_MODE_REMINDER_ENV]: '1' });
+
+    expect(readInjection()?.name).toBe('permission_mode');
   });
 });

@@ -292,6 +292,7 @@ function runtimeCompactionStrategy(
     thinkingLevel: 'off',
     reservedContextSize: options.reservedContextSize,
     compactionTriggerRatio: options.compactionTriggerRatio,
+    compactionMaxAttempts: undefined,
     compactionSoftContextSize: options.compactionSoftContextSize,
   };
   return new RuntimeCompactionStrategy(() => context, estimateMessage);

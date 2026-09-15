@@ -1,4 +1,5 @@
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { MAX_TIMER_DELAY_MS } from '#/_base/utils/timer';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
@@ -15,7 +16,7 @@ export class GoalDeadlineSchedulerService implements IGoalDeadlineScheduler {
     let timeout: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
       timeout = undefined;
       callback();
-    }, Math.max(0, delayMs));
+    }, Math.min(MAX_TIMER_DELAY_MS, Math.max(0, delayMs)));
     timeout.unref?.();
     return toDisposable(() => {
       if (timeout !== undefined) clearTimeout(timeout);

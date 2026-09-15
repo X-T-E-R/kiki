@@ -916,6 +916,10 @@ describe('loopControl config section', () => {
     });
     expect(() => registry.validate(LOOP_CONTROL_SECTION, { maxStepsPerTurn: -1 })).toThrow();
     expect(() => registry.validate(LOOP_CONTROL_SECTION, { maxAttemptsPerStep: 1.5 })).toThrow();
+    expect(registry.validate(LOOP_CONTROL_SECTION, { compactionMaxAttempts: 8 })).toEqual({
+      compactionMaxAttempts: 8,
+    });
+    expect(() => registry.validate(LOOP_CONTROL_SECTION, { compactionMaxAttempts: 0 })).toThrow();
     expect(() =>
       registry.validate(LOOP_CONTROL_SECTION, { compactionSoftContextSize: -1 }),
     ).toThrow();
@@ -1371,6 +1375,177 @@ describe('config deprecations', () => {
     expect(emissions[1]).toEqual([]);
     expect(config.diagnostics()).toEqual([]);
     expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({ maxAttemptsPerStep: 3 });
+
+    disposables.dispose();
+  });
+});
+
+describe('malformed models config entries', () => {
+  async function createConfig(toml: string) {
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    await storage.write('', 'config.toml', new TextEncoder().encode(toml));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', {}));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+    return { config, disposables, storage };
+  }
+
+  it('warns at load time when a dotted alias parses as a nested table', async () => {
+    const { config, disposables } = await createConfig(
+      '[models.kimi-k2.7-code]\nmodel = "kimi-k2.7-code"\nmax_context_size = 262144\n',
+    );
+
+    expect(config.diagnostics()).toContainEqual({
+      domain: 'models',
+      severity: 'warning',
+      message:
+        "[models] entry 'kimi-k2' is missing the 'model' field and cannot be used as a model; " +
+        'if the alias contains dots, quote the table name (e.g. [models."kimi-k2.7-code"]).',
+    });
+
+    disposables.dispose();
+  });
+
+  it('stays silent for quoted dotted aliases and entries with a wire-facing name', async () => {
+    const { config, disposables } = await createConfig(
+      '[models."kimi-k2.7-code"]\nmodel = "kimi-k2.7-code"\n\n[models.renamed]\nname = "wire-name"\n',
+    );
+
+    expect(config.diagnostics()).toEqual([]);
+
+    disposables.dispose();
+  });
+
+  it('warns without the dotted-alias hint when the entry has no nested table', async () => {
+    const { config, disposables } = await createConfig(
+      '[models.partial]\nmax_context_size = 262144\n',
+    );
+
+    expect(config.diagnostics()).toContainEqual({
+      domain: 'models',
+      severity: 'warning',
+      message:
+        "[models] entry 'partial' is missing the 'model' field and cannot be used as a model.",
+    });
+
+    disposables.dispose();
+  });
+
+  it('does not mistake schema object fields for a dotted alias', async () => {
+    const { config, disposables } = await createConfig(
+      '[models.partial]\nrequest_identity = { policy = "default" }\n',
+    );
+
+    expect(config.diagnostics()).toContainEqual({
+      domain: 'models',
+      severity: 'warning',
+      message:
+        "[models] entry 'partial' is missing the 'model' field and cannot be used as a model.",
+    });
+
+    disposables.dispose();
+  });
+
+  it('clears the warning on reload once the entry is fixed', async () => {
+    const { config, disposables, storage } = await createConfig(
+      '[models.kimi-k2.7-code]\nmodel = "kimi-k2.7-code"\n',
+    );
+    expect(config.diagnostics()).toHaveLength(1);
+
+    await storage.write(
+      '',
+      'config.toml',
+      new TextEncoder().encode('[models."kimi-k2.7-code"]\nmodel = "kimi-k2.7-code"\n'),
+    );
+    await config.reload();
+
+    expect(config.diagnostics()).toEqual([]);
+
+    disposables.dispose();
+  });
+});
+
+describe('removed config sections and keys', () => {
+  async function createConfig(toml: string) {
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    await storage.write('', 'config.toml', new TextEncoder().encode(toml));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', {}));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+    return { config, disposables };
+  }
+
+  const bindingReplacement =
+    'Subagent model and effort bindings come from the agent profile (or its route or the caller ' +
+    'lease), or from an explicit model_alias and effort at dispatch. Run /update-config to fix it.';
+
+  it('warns about the removed secondary_model section instead of silently ignoring it', async () => {
+    const { config, disposables } = await createConfig(
+      '[secondary_model]\ndefault_model = "k3-max"\n',
+    );
+
+    expect(config.diagnostics()).toContainEqual({
+      domain: 'secondaryModel',
+      severity: 'warning',
+      message: `[secondary_model] was removed and is no longer read. ${bindingReplacement}`,
+    });
+
+    disposables.dispose();
+  });
+
+  it('warns about removed subagent keys that the schema would silently drop', async () => {
+    const { config, disposables } = await createConfig(
+      '[subagent]\ndefault_model = "k3-max"\ndefault_effort = "high"\n',
+    );
+
+    expect(config.diagnostics()).toContainEqual({
+      domain: 'subagent',
+      severity: 'warning',
+      message: `[subagent] 'default_model' was removed and is no longer read. ${bindingReplacement}`,
+    });
+    expect(config.diagnostics()).toContainEqual({
+      domain: 'subagent',
+      severity: 'warning',
+      message: `[subagent] 'default_effort' was removed and is no longer read. ${bindingReplacement}`,
+    });
+
+    disposables.dispose();
+  });
+
+  it('warns about removed agents keys', async () => {
+    const { config, disposables } = await createConfig(
+      '[agents]\ndefault_subagent_model = "k3-max"\n',
+    );
+
+    expect(config.diagnostics()).toContainEqual({
+      domain: 'agents',
+      severity: 'warning',
+      message: `[agents] 'default_subagent_model' was removed and is no longer read. ${bindingReplacement}`,
+    });
+
+    disposables.dispose();
+  });
+
+  it('stays silent when no removed key is present', async () => {
+    const { config, disposables } = await createConfig(
+      '[subagent]\ntimeout_ms = 60000\n',
+    );
+
+    expect(config.diagnostics()).toEqual([]);
 
     disposables.dispose();
   });

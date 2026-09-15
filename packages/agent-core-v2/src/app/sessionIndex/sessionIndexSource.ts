@@ -1,7 +1,12 @@
+import { ILogService } from '#/_base/log/log';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { SESSION_INDEX_KEY, SESSION_INDEX_SCOPE } from '#/app/workspace/workspaceAlias';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import {
+  IFileSystemStorageService,
+  StorageError,
+  StorageErrors,
+} from '#/persistence/interface/storage';
 
 import {
   CHILD_SESSION_KIND,
@@ -157,16 +162,59 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
 export function listWorkspaceIds(
   storage: IFileSystemStorageService,
   sessionsScope: string,
+  log?: ILogService,
 ): Promise<readonly string[]> {
-  return storage.list(sessionsScope);
+  return listChildEntries(storage, sessionsScope, log);
 }
 
 export function listSessionIds(
   storage: IFileSystemStorageService,
   sessionsScope: string,
   workspaceId: string,
+  log?: ILogService,
 ): Promise<readonly string[]> {
-  return storage.list(`${sessionsScope}/${workspaceId}`);
+  return listChildEntries(storage, `${sessionsScope}/${workspaceId}`, log);
+}
+
+function isNonDirectoryEntry(error: unknown): boolean {
+  return (
+    error instanceof StorageError &&
+    error.code === StorageErrors.codes.STORAGE_IO_FAILED &&
+    error.details?.['errno'] === 'ENOTDIR'
+  );
+}
+
+function warnSkippedEntry(error: unknown, log: ILogService | undefined): void {
+  if (log === undefined) return;
+  const details = error instanceof StorageError ? error.details : undefined;
+  log.warn('session index skips a non-directory entry', { path: details?.['path'] });
+}
+
+async function listChildEntries(
+  storage: IFileSystemStorageService,
+  scope: string,
+  log: ILogService | undefined,
+): Promise<readonly string[]> {
+  try {
+    return await storage.list(scope);
+  } catch (error) {
+    if (!isNonDirectoryEntry(error)) throw error;
+    warnSkippedEntry(error, log);
+    return [];
+  }
+}
+
+async function tolerantStat<T>(
+  read: () => Promise<T | undefined>,
+  log: ILogService | undefined,
+): Promise<T | undefined> {
+  try {
+    return await read();
+  } catch (error) {
+    if (!isNonDirectoryEntry(error)) throw error;
+    warnSkippedEntry(error, log);
+    return undefined;
+  }
 }
 
 export type SessionSummaryReadResult =
@@ -277,14 +325,15 @@ export async function sessionStateFingerprint(
   sessionsScope: string,
   workspaceId: string,
   sessionId: string,
+  log?: ILogService,
 ): Promise<SessionSourceFingerprint> {
   const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
   const nestedScope = `${base}/${META_SCOPE}`;
   const [directMtimeMs, directSize, nestedMtimeMs, nestedSize] = await Promise.all([
-    storage.mtime(base, META_KEY),
-    storage.size(base, META_KEY),
-    storage.mtime(nestedScope, META_KEY),
-    storage.size(nestedScope, META_KEY),
+    tolerantStat(() => storage.mtime(base, META_KEY), log),
+    tolerantStat(() => storage.size(base, META_KEY), log),
+    tolerantStat(() => storage.mtime(nestedScope, META_KEY), log),
+    tolerantStat(() => storage.size(nestedScope, META_KEY), log),
   ]);
   return {
     directMtimeMs: directMtimeMs ?? 0,
@@ -299,12 +348,14 @@ export async function sessionStateMaxMtime(
   sessionsScope: string,
   workspaceId: string,
   sessionId: string,
+  log?: ILogService,
 ): Promise<number> {
   const fingerprint = await sessionStateFingerprint(
     storage,
     sessionsScope,
     workspaceId,
     sessionId,
+    log,
   );
   return Math.max(fingerprint.directMtimeMs, fingerprint.nestedMtimeMs);
 }
@@ -312,13 +363,14 @@ export async function sessionStateMaxMtime(
 export async function scanSessionsMaxMtime(
   storage: IFileSystemStorageService,
   sessionsScope: string,
+  log?: ILogService,
 ): Promise<number> {
   let max = (await storage.mtime(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY)) ?? 0;
 
-  for (const workspaceId of await listWorkspaceIds(storage, sessionsScope)) {
-    const sessionIds = await listSessionIds(storage, sessionsScope, workspaceId);
+  for (const workspaceId of await listWorkspaceIds(storage, sessionsScope, log)) {
+    const sessionIds = await listSessionIds(storage, sessionsScope, workspaceId, log);
     const mtimes = await mapBounded(sessionIds, MTIME_SCAN_CONCURRENCY, (sessionId) =>
-      sessionStateMaxMtime(storage, sessionsScope, workspaceId, sessionId),
+      sessionStateMaxMtime(storage, sessionsScope, workspaceId, sessionId, log),
     );
     for (const mtime of mtimes) {
       if (mtime > max) max = mtime;

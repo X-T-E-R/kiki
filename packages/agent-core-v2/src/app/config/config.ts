@@ -94,6 +94,8 @@ export type ConfigFromToml = (rawSnake: unknown) => unknown;
 
 export type ConfigToToml = (value: unknown, rawSnake: unknown) => unknown;
 
+export type ConfigCollectDiagnostics = (rawSection: unknown) => readonly ConfigDiagnostic[];
+
 export interface ConfigSection<T = unknown> {
   readonly domain: string;
   readonly schema?: ConfigSchema<T>;
@@ -105,6 +107,7 @@ export interface ConfigSection<T = unknown> {
   readonly fromToml?: ConfigFromToml;
   readonly toToml?: ConfigToToml;
   readonly deprecations?: readonly ConfigKeyDeprecation[];
+  readonly collectDiagnostics?: ConfigCollectDiagnostics;
 }
 
 export interface RegisterSectionOptions<T> {
@@ -116,6 +119,7 @@ export interface RegisterSectionOptions<T> {
   readonly fromToml?: ConfigFromToml;
   readonly toToml?: ConfigToToml;
   readonly deprecations?: readonly ConfigKeyDeprecation[];
+  readonly collectDiagnostics?: ConfigCollectDiagnostics;
 }
 
 export interface ConfigEffectiveOverlay {

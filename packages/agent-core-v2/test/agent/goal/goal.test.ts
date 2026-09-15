@@ -11,6 +11,8 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { USER_PROMPT_ORIGIN } from '#/agent/contextMemory/types';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IGoalDeadlineScheduler } from '#/agent/goal/goalDeadlineScheduler';
+import { GoalDeadlineSchedulerService } from '#/agent/goal/goalDeadlineSchedulerService';
+import { MAX_TIMER_DELAY_MS } from '#/_base/utils/timer';
 import { type AgentGoalService } from '#/agent/goal/goalService';
 import { GoalUpdated } from '#/agent/goal/goalOps';
 import { IAgentTaskService } from '#/agent/task/task';
@@ -98,12 +100,14 @@ class ManualGoalDeadlineScheduler implements IGoalDeadlineScheduler {
 
   private currentTime = 0;
   private readonly deadlines = new Set<ManualDeadline>();
+  private readonly delays: number[] = [];
 
   now(): number {
     return this.currentTime;
   }
 
   schedule(delayMs: number, callback: () => void): IDisposable {
+    this.delays.push(delayMs);
     const deadline: ManualDeadline = {
       dueAt: this.currentTime + Math.max(0, delayMs),
       callback,
@@ -116,6 +120,10 @@ class ManualGoalDeadlineScheduler implements IGoalDeadlineScheduler {
         this.deadlines.delete(deadline);
       },
     };
+  }
+
+  lastDelayMs(): number | undefined {
+    return this.delays.at(-1);
   }
 
   advanceBy(deltaMs: number): void {
@@ -1980,6 +1988,54 @@ describe('AgentGoalService hard wall-clock deadline', () => {
     } finally {
       await ctx.dispose();
     }
+  });
+
+  it('caps a budget beyond the host timer ceiling at the largest schedulable delay', async () => {
+    const clock = new ManualGoalDeadlineScheduler();
+    const llm = blockingGenerate();
+    const ctx = createTestAgent(appService(IGoalDeadlineScheduler, clock), {
+      generate: llm.generate,
+    });
+    try {
+      ctx.configure();
+      await ctx.rpc.createGoal({ objective: 'finish the long migration' });
+      await ctx
+        .get(IAgentGoalService)
+        .setBudgetLimits({ budgetLimits: { wallClockBudgetMs: 30 * 24 * 60 * 60 * 1000 } }, 'user');
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start work' }] });
+      await llm.started;
+
+      expect(clock.lastDelayMs()).toBe(MAX_TIMER_DELAY_MS);
+      clock.advanceBy(1);
+      expect((await ctx.rpc.getGoal({})).goal).toMatchObject({
+        status: 'active',
+        budget: { wallClockBudgetReached: false },
+      });
+    } finally {
+      await ctx.dispose();
+    }
+  });
+});
+
+describe('GoalDeadlineSchedulerService', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps a delay beyond the host timer ceiling from firing immediately', () => {
+    vi.useFakeTimers();
+    const scheduler = new GoalDeadlineSchedulerService();
+    let fired = 0;
+    const scheduled = scheduler.schedule(30 * 24 * 60 * 60 * 1000, () => {
+      fired += 1;
+    });
+
+    vi.advanceTimersByTime(60_000);
+    expect(fired).toBe(0);
+
+    vi.advanceTimersByTime(MAX_TIMER_DELAY_MS);
+    expect(fired).toBe(1);
+    scheduled.dispose();
   });
 });
 

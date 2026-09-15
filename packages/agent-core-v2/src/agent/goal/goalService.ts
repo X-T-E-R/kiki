@@ -54,6 +54,7 @@ import { defineState } from '#/state/state';
 import { IAgentGoalService, type GoalReasonInput, type ResumeGoalInput } from './goal';
 import { TASK_WAIT_FLAG_ID } from '#/agent/tools/task/task-wait/flag';
 import { IGoalDeadlineScheduler } from './goalDeadlineScheduler';
+import { MAX_TIMER_DELAY_MS } from '#/_base/utils/timer';
 import {
   GoalClear,
   GoalCreate,
@@ -1177,7 +1178,10 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     ) {
       return;
     }
-    const remainingMs = Math.max(0, budgetMs - this.liveWallClockMs(state));
+    const remainingMs = Math.min(
+      MAX_TIMER_DELAY_MS,
+      Math.max(0, budgetMs - this.liveWallClockMs(state)),
+    );
     this.wallClockDeadline.value = this.deadlineScheduler.schedule(remainingMs, () => {
       this.handleWallClockDeadline();
     });

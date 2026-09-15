@@ -226,6 +226,123 @@ describe('parseManagedUsagePayload', () => {
   });
 });
 
+describe('parseManagedUsagePayload (quota model)', () => {
+  /** The platform's `/usages` answer after it moved to the quota model. */
+  const quotaPayload = {
+    goods_version: 2,
+    usages: {
+      limit_5h: { used_ratio: 0.3, reset_time: '2026-09-11T18:00:00Z' },
+      limit_7d: { used_ratio: 0.2, reset_time: '2026-09-17T00:00:00Z' },
+      limit_month_total: { used_ratio: 0.4, reset_time: '2026-10-01T00:00:00Z' },
+      limit_month_code: { used_ratio: 0.25, reset_time: '2026-10-01T00:00:00Z' },
+    },
+  };
+
+  it('projects every quota window onto the summary and limit rows', () => {
+    expect(parseManagedUsagePayload(quotaPayload)).toEqual({
+      summary: {
+        window: { duration: 1, unit: 'week' },
+        used: 20,
+        limit: 100,
+        resetAt: '2026-09-17T00:00:00Z',
+      },
+      limits: [
+        {
+          window: { duration: 5, unit: 'hour' },
+          used: 30,
+          limit: 100,
+          resetAt: '2026-09-11T18:00:00Z',
+        },
+        { name: 'Monthly limit', used: 40, limit: 100, resetAt: '2026-10-01T00:00:00Z' },
+        { name: 'Monthly code usage', used: 25, limit: 100, resetAt: '2026-10-01T00:00:00Z' },
+      ],
+      extraUsage: null,
+    });
+  });
+
+  it('renders the weekly row as the plan summary and the 5h row as a limit', () => {
+    const parsed = parseManagedUsagePayload(quotaPayload);
+
+    expect(parsed.summary !== null && parsed.summary.window).toEqual({ duration: 1, unit: 'week' });
+    expect(parsed.limits[0]?.window).toEqual({ duration: 5, unit: 'hour' });
+  });
+
+  it('skips entries that are not records or lack a usable ratio', () => {
+    const parsed = parseManagedUsagePayload({
+      usages: {
+        limit_5h: 'half',
+        limit_7d: { reset_time: '2026-09-17T00:00:00Z' },
+        limit_month_total: { used_ratio: Number.NaN },
+        limit_month_code: { used_ratio: '0.25' },
+      },
+    });
+
+    expect(parsed.summary).toBeNull();
+    expect(parsed.limits).toEqual([{ name: 'Monthly code usage', used: 25, limit: 100 }]);
+  });
+
+  it('keeps reset_time only when it is a non-empty string', () => {
+    const parsed = parseManagedUsagePayload({
+      usages: {
+        limit_5h: { used_ratio: 0.3, reset_time: '' },
+        limit_7d: { used_ratio: 0.2, reset_time: 42 },
+      },
+    });
+
+    expect(parsed.summary?.resetAt).toBeUndefined();
+    expect(parsed.limits[0]?.resetAt).toBeUndefined();
+  });
+
+  it('rounds a fractional ratio and keeps an over-quota ratio above 100 percent', () => {
+    const parsed = parseManagedUsagePayload({
+      usages: {
+        limit_5h: { used_ratio: 0.1234 },
+        limit_7d: { used_ratio: 1.5 },
+      },
+    });
+
+    expect(parsed.summary).toMatchObject({ used: 150, limit: 100 });
+    expect(parsed.limits[0]).toMatchObject({ used: 12, limit: 100 });
+  });
+
+  it('carries the booster wallet through next to the quota rows', () => {
+    const parsed = parseManagedUsagePayload({
+      ...quotaPayload,
+      boosterWallet: {
+        balance: { type: 'BOOSTER', amount: '20000000000', amountLeft: '10000000000' },
+        monthlyChargeLimitEnabled: true,
+        monthlyChargeLimit: { currency: 'CNY', priceInCents: '20000' },
+        monthlyUsed: { currency: 'CNY', priceInCents: '5000' },
+      },
+    });
+
+    expect(parsed.extraUsage).toMatchObject({ balanceCents: 10000, totalCents: 20000 });
+  });
+
+  it('reports no rows when the quota object carries no usable window', () => {
+    const parsed = parseManagedUsagePayload({ usages: {} });
+
+    expect(parsed).toEqual({ summary: null, limits: [], extraUsage: null });
+  });
+
+  it('still parses the absolute-count payload older deployments serve', () => {
+    const parsed = parseManagedUsagePayload({
+      usage: { used: '40', limit: '1000', resetTime: '2030-01-01T00:00:00.000Z' },
+      limits: [
+        { detail: { used: 1, limit: 100 }, window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' } },
+      ],
+    });
+
+    expect(parsed.summary).toEqual({
+      used: 40,
+      limit: 1000,
+      resetAt: '2030-01-01T00:00:00.000Z',
+      window: { duration: 1, unit: 'week' },
+    });
+    expect(parsed.limits.map((row) => row.window)).toEqual([{ duration: 5, unit: 'hour' }]);
+  });
+});
+
 describe('fetchManagedUsage', () => {
   it('sends only Authorization and Accept headers', async () => {
     const fetchMock = vi.fn(

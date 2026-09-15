@@ -20,6 +20,7 @@ import {
   type IConfigService,
 } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
+import { collectRemovedKeyDiagnostics } from '#/app/config/deprecations';
 import type { IModelService } from '#/kosong/model/model';
 
 import {
@@ -74,6 +75,8 @@ export const subagentEnvBindings: EnvBindings<SubagentConfig> = envBindings(
 
 export const stripSubagentEnv = stripEnvBoundFields(subagentEnvBindings);
 
+const REMOVED_SUBAGENT_KEYS = ['default_model', 'default_effort'] as const;
+
 registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
   defaultValue: {
     timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
@@ -82,6 +85,8 @@ registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
   },
   env: subagentEnvBindings,
   stripEnv: stripSubagentEnv,
+  collectDiagnostics: (rawSection) =>
+    collectRemovedKeyDiagnostics(SUBAGENT_SECTION, rawSection, REMOVED_SUBAGENT_KEYS),
 });
 
 export function resolveSubagentTimeoutMs(config: IConfigService): number {
