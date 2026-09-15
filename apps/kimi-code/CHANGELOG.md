@@ -1,5 +1,441 @@
 # @moonshot-ai/kimi-code
 
+## 0.1.0
+
+### Major Changes
+
+- [`f920af2`](https://github.com/X-T-E-R/kiki/commit/f920af2e1940bf658a259cb0960ec9930ac6b3cd) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Subagents no longer inherit the caller's model. A subagent's model now comes from exactly two places: a `model_alias` pinned on its agent profile (or the profile's route, or the caller's tower lease), or an explicit `model_alias` passed with the dispatch. When neither is present, `AgentRun` and tower spawn fail with `model.not_configured` instead of silently running the subagent on the caller's model. The built-in profiles (`coder`, `explore`, `tower-worker`) ship without a pin, so dispatching them requires `model_alias` until you pin one.
+
+  What is gone:
+
+  - The `[secondary_model]` config section (`default_model`, `models`, `force`, `enforce_pool`), `[subagent] default_model` / `default_effort`, and `[agents] default_subagent_model` / `default_subagent_reasoning_effort`.
+  - The `/secondary-model` TUI command, the GUI subagent model-pool editor, and the REST `secondary_model` config domain.
+  - The `model_preference` frontmatter key on agent files and route sidecars, and the symbolic `model` parameter on `AgentRun` (`model_alias` is the only spelling).
+  - The `secondary-model` experimental flag.
+
+  Existing transcripts are unaffected: children recorded under the old inherit label resume on their recorded model alias.
+
+- [`c06de63`](https://github.com/X-T-E-R/kiki/commit/c06de63baf65d6b5233a90a9ce5e28aed7abefa7) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Remove the v1 agent engine. `agent-core-v2` is now the only engine, and there is no way to select another one.
+
+  What is gone:
+
+  - The `@moonshot-ai/agent-core`, `@moonshot-ai/acp-adapter`, and `@moonshot-ai/migration-legacy` packages.
+  - `KIMI_CODE_LEGACY_FLAG`, which selected the v1 engine for `kimi`, `kimi -p`, `kimi doctor`, `kimi acp`, `kimi export`, and `kimi provider`, and the VS Code `kimi.useAgentCoreV1` setting.
+  - `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` and the five-tool Codex-style adapter (`spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`), which only ever existed on v1. Use `AgentRun`, `AgentList`, and `AgentSend`.
+  - The `kimi migrate` command, its TUI screen, and the VS Code `Kimi Code: Migrate Legacy Data` command. Kiki can no longer import a kimi-cli-era `~/.kimi` home. Sessions imported before this release keep working and keep their `[imported]` badge.
+  - The `Agent` alias for the `AgentRun` tool.
+
+  SDK consumers: `createKimiHarnessV2` is now `createKimiHarness`, and `SDKRpcClientV2` is now `SDKRpcClient` — the v1-shaped client of those names is gone, not renamed. The SDK's protocol, config, error, and logging types are now owned by the SDK package instead of re-exported from the v1 engine; agent config carries `modelAlias` and `thinkingLevel` where it used to carry `provider` and `thinkingEffort`, and no longer carries `cwd`. Session resume replays `wire.jsonl` directly rather than through a v1 `Agent`.
+
+### Minor Changes
+
+- [`e923d30`](https://github.com/X-T-E-R/kiki/commit/e923d304363bd6028955685202a77c082f8b1256) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add an experimental Codex-style named-agent collaboration adapter. Enable `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` to use it.
+
+- [`6bd87ce`](https://github.com/X-T-E-R/kiki/commit/6bd87ced6e66d9d5df5ee8f106f55e993c9b3187) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add thirteen Kiki delegation commands for dispatching, monitoring, and responding to agent work.
+
+- [`8fd3f25`](https://github.com/X-T-E-R/kiki/commit/8fd3f25bb539623f7fe003c1c76aa5638b1f6a3f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Route agent runs, cancellation, shutdown, and safe-boundary delivery through an executor-neutral agent execution service.
+
+- [`f606968`](https://github.com/X-T-E-R/kiki/commit/f606968537d8105a26268210a49fb1a36c5ed056) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add trusted external executor selection and durable executor bindings to named agent profiles.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add file-based agent profiles and explicit effort or confirmed model changes when resuming agents.
+
+- [`0241822`](https://github.com/X-T-E-R/kiki/commit/02418229b5d340b3d9dc0df4693541cb5f728f1d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Redesign the composer agent-profile and model pickers with wider, searchable, group-headed rows, list every enabled non-private agent profile, and resolve an ambiguous model alias to the first matching catalog entry instead of an error.
+
+- [`eb92b6b`](https://github.com/X-T-E-R/kiki/commit/eb92b6b191a4e6de41dbab9d4092169264bfe963) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add configurable approval gates for plan mode with automatic rejection when entry approval times out.
+
+- [`639c140`](https://github.com/X-T-E-R/kiki/commit/639c140122ada6b1cdf451f8ee148b9a316c29aa) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - **Breaking (v2 tool surface):** converge the agent tools onto `AgentRun` / `AgentSwarm` / `AgentList` / `AgentSend` and the `Task*` family.
+
+  - `Agent` is now `AgentRun`. Its parameters are unified with the rest of the family: `subagent_type` → `profile`, `thinking_effort` → `effort`, `run_in_background` → `background`. `resume` and `description` keep their names and meanings.
+  - `WaitFor` is now `TaskWait`, down to its identifiers: the experiment flag id is `task_wait` and its environment variable is `KIMI_CODE_EXPERIMENTAL_TASK_WAIT`. The old spellings are gone rather than aliased, so an existing `KIMI_CODE_EXPERIMENTAL_WAIT_FOR` setting no longer has any effect.
+  - `AgentSwarm` keeps its name; `subagent_type` → `profile` and `thinking_effort` → `effort`. It still takes `description` for the swarm as a whole.
+  - The six-tool named-agent collaboration adapter (`spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`, `send_message`) and its `agent-collaboration` experiment flag are removed from v2. `AgentRun(name=..., background=true)`, `AgentRun(resume=...)`, `AgentList`, `AgentSend`, `TaskWait`, and `TaskStop` cover the same ground without a second parallel entry point. The durable mailbox and the name registry behind them are unchanged.
+  - `AgentList` and `AgentSend` are auto-approved. Neither grants authority the caller lacks: `AgentRun` is already auto-approved and can drive any direct child, and `AgentList` only reads the caller's own children.
+
+  The TUI emits the new names only, and still recognizes `Agent` when replaying a session recorded before the rename. `WaitFor` is not recognized any more.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add user-defined Markdown prompt commands to the GUI and terminal slash menus.
+
+- [`4d2705d`](https://github.com/X-T-E-R/kiki/commit/4d2705d336680ed8f619cafd260d7bc3deb1245a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add a persistent requirements board with bundled storage and main-agent board tools.
+
+- [`b2e994e`](https://github.com/X-T-E-R/kiki/commit/b2e994ec1bbe59fd9f224fc091852ffca15afbbe) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Enable the external delegation surface (KAP v2 + kiki-mcp) by default.
+
+- [`981b87f`](https://github.com/X-T-E-R/kiki/commit/981b87f954e0cc76ec308fbef88ae5245d7c05dc) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add experimental external delegation over MCP: an authenticated external principal can own durable session work through a narrow MCP stdio server. Enable `KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP=1` to use it; the server-side catalog is injected via the `KIKI_MCP_CONFIG_PATH`, `KIKI_MCP_AGENT_PROFILE_HOME`, and `KIKI_MCP_CONFIG_READ_ONLY` variables.
+
+- [`3afad60`](https://github.com/X-T-E-R/kiki/commit/3afad607ce1e9691505965c592bff08e93d0b71f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add trusted ACP executor descriptors and preflight diagnostics for seven external coding harnesses.
+
+- [`cd8dae3`](https://github.com/X-T-E-R/kiki/commit/cd8dae3697675e87b982b753aa18136927e544e9) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show permission requests from external agent harnesses as the harness-provided option list and return the chosen option to the harness.
+
+- [`9242cd1`](https://github.com/X-T-E-R/kiki/commit/9242cd1841ff80d8cdeac42ab11a384ca0b3e83e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show subagent targets and their default models, thinking efforts, and launch restrictions in the GUI.
+
+- [`2812e87`](https://github.com/X-T-E-R/kiki/commit/2812e8783966ede7b0be8da8da2438c2ec42a523) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add a request timeout setting (Settings → Connection, 5–600 s, default 30 s); the initial load of a large conversation no longer fails with a timeout and instead waits with its loading state.
+
+- [`638410d`](https://github.com/X-T-E-R/kiki/commit/638410dc362a7b6c75383f30ac6856aa640aa53e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Hide agent profiles marked `private: true` from profile pickers, agent listings, and the agents API while keeping them spawnable by exact name, and keep the last good catalog when a profile reload fails.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Use `kiki` for CLI and native executables, `KIKI_*` product settings and `.kiki` home/project paths, with explicit non-overwriting migration of legacy configuration, credentials and authored assets.
+
+- [`733848e`](https://github.com/X-T-E-R/kiki/commit/733848e80ec943a1756ef69cf6f6fd09a3022f2c) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Bundle Kiki product documentation locally; breaking: use `/check-kiki-docs` instead of `/check-kimi-code-docs`.
+
+- [`4dba05b`](https://github.com/X-T-E-R/kiki/commit/4dba05b59c9bc731c1bdcd5de8b2ee96e85a9a6d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add built-in local peer-thread communication and durable messaging for named agents. Ask the main agent to coordinate local sessions; enable `agent-collaboration` for `send_message` between named agents.
+
+- [`9d83039`](https://github.com/X-T-E-R/kiki/commit/9d830392a3e6fd8bea95f23b88e7c38bfe9c6646) Thanks [@liruifengv](https://github.com/liruifengv)! - Support two OAuth login methods — kimi.ai and kimi.com.
+
+- [`51ea03e`](https://github.com/X-T-E-R/kiki/commit/51ea03efd6c353faded28e95d6447d8aed3fe588) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Estimate session spend from LiteLLM's per-token model prices, expose per-model and unknown-price cost details, refresh the catalog safely at runtime, and embed the vendored snapshot in native executables.
+
+- [`3f3d56e`](https://github.com/X-T-E-R/kiki/commit/3f3d56ea2dc69f859bf5e1b32e542643e2628b10) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Prompt fields: system prompt sections, tool descriptions and guidance, and delegation notices are now registry-backed fields that can be overridden per key from config.toml, agent profile frontmatter, or external TOML files, with global, per-model, per-profile, and per-profile-per-model scopes. The legacy `[prompt] shared` and `[prompt] tools` keys and the delegation notice file-path settings were removed; move them to `[prompt.overrides].fields` as `system.shared`, `tool.<name>.guidance`, and `delegation.sub.notice` / `delegation.independent.notice`.
+
+- [`ac39fce`](https://github.com/X-T-E-R/kiki/commit/ac39fce099cf70646e52115402e168d0605afeb0) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add the `kiki prompt-fields` command to list registered prompt fields, show a field's default and allowed variables, validate prompt override configuration, and explain a field's effective value with its full source chain.
+
+- [`ff33eb3`](https://github.com/X-T-E-R/kiki/commit/ff33eb339b2db9276f4a461528f35762f1b19975) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add a Rebuild context action in the session profile picker: after a confirmation, the session's main agent reloads its system prompt, prompt-field overrides, skills, workspace instructions, plugin injections, and context injectors from the latest on-disk state without clearing conversation history.
+
+- [`8952811`](https://github.com/X-T-E-R/kiki/commit/8952811ef8afe0dc843894f3a2ae5b35387d0e21) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - **Breaking (agent tool names):** the peer-thread tools and the progressive tool-selection tool now follow the repository's PascalCase tool naming.
+
+  - `list_threads` is now `ThreadList`, `read_thread` is `ThreadRead`, `send_message_to_thread` is `ThreadSend`, and `wait_threads` is `ThreadWait`.
+  - `select_tools` is now `SelectTools`. Its experiment flag environment variable is now `KIKI_EXPERIMENTAL_TOOL_SELECT` (was `KIMI_CODE_EXPERIMENTAL_TOOL_SELECT`); the flag id stays `tool-select`.
+  - Migration: rename the old spellings in every custom agent profile. A `tools`, `disallowedTools`, or tool-policy entry that still names one now fails the profile bind with `profile.tool_pattern_inactive`, and the error reports the pattern that matches no registered tool. The same old spelling under the global `[tools]` config (`enabled` / `disabled`) is reported as a `tool-pattern-no-match` warning and selects nothing.
+  - The old names are gone rather than aliased, so only the new spellings activate the tools. Sessions recorded before the rename still render: a stored tool-call name is display data and is not matched against the tool registry on resume.
+
+- [`750b0c1`](https://github.com/X-T-E-R/kiki/commit/750b0c1e50314494545fc166b1a6e098988a5e64) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Replace the `WebSearch` and `FetchURL` backends with the configurable nb-search runtime.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Remove the AgentSwarm tool while preserving saved swarm history.
+
+- [`88a28cb`](https://github.com/X-T-E-R/kiki/commit/88a28cb079cac9c5f7ba5535cdfa78197546e19f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Remove the Tower feature set: tower mode, its eleven Tower tools, the tower-worker profile, and the /tower skill are gone; historical tower events in existing session logs remain readable.
+
+- [`1eeec2f`](https://github.com/X-T-E-R/kiki/commit/1eeec2fe8624b0304c9a2509a30c446664e36426) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Retire upstream cloud features and remove the duplicate Kosong package.
+
+- [`d0fbe61`](https://github.com/X-T-E-R/kiki/commit/d0fbe610617e25d5fc82d8d91327b0c3b7ee5201) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add selectable external harness binary sources and native Codex app-server delegation.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add reusable shared prompt text, variables, and tool guidance through the `[prompt]` configuration section.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Allow the Skill tool to load an explicit Markdown file with the path parameter.
+
+- [`23ba4dc`](https://github.com/X-T-E-R/kiki/commit/23ba4dcecb4f8f60efcf678072b4ed535bcfc444) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Make per-agent `model_alias` and `thinking_effort` bindings stable without the secondary-model experiment; a missing profile-pinned alias now warns and falls back to the caller's model. Pin them in an agent file's frontmatter to use them.
+
+- Merge upstream 0.36.1: adopt the App-scope `ISessionManager` facade and the declarative subagent model pool, re-expressing kiki's inherited-vs-explicit subagent binding as a persisted `inherit | fixed` mode (inherited bindings follow mid-session `/model` switches; explicit and pool-pinned bindings stay frozen). Thread wire error codes move to 40421/40927–40932 to clear upstream's newly occupied ranges; GUI and server ship together from this repo.
+
+- [`8440801`](https://github.com/X-T-E-R/kiki/commit/8440801de47ddae29224430048e1228b80cde370) Thanks [@chengluyu](https://github.com/chengluyu)! - Add the WaitFor tool: the agent can now wait for a background task (sub-agent, background bash, or background question) inside the current turn — with an optional task ID and a required timeout of up to 600 seconds — instead of ending the turn and being re-invoked.
+
+- [`624c05b`](https://github.com/X-T-E-R/kiki/commit/624c05b4cb79f64a9ad058ef2438c1a834d6cabf) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add an experimental daemon-backed TUI, disabled by default and enabled with `KIMI_CODE_EXPERIMENTAL_TUI_DAEMON=1`.
+
+### Patch Changes
+
+- [`157db3d`](https://github.com/X-T-E-R/kiki/commit/157db3d9ad2ce5f471b770c2b02c9b046c31267c) Thanks [@tpoisonooo](https://github.com/tpoisonooo)! - Silence the MaxListenersExceededWarning that could appear during long agent turns with many parallel tool calls.
+
+- [`bfa8f14`](https://github.com/X-T-E-R/kiki/commit/bfa8f14f506b92465d0f09374097ebba214a21b0) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix ACP session deletion and cleanup when engine state is already gone.
+
+- [`cfad68c`](https://github.com/X-T-E-R/kiki/commit/cfad68c03d516b274423a4ebacb64c0beefff121) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Refuse ACP startup unless the session index is ready.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep active subagents visible after their background tasks finish or time out.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep each agent's todo list, reminders, and compaction summaries separate.
+
+- [`4d2705d`](https://github.com/X-T-E-R/kiki/commit/4d2705d336680ed8f619cafd260d7bc3deb1245a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show agent-local todos, effective capabilities, and separately reported agent and session-tree usage in the agent panel.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show and preserve named agent model budgets and request parameters in the settings profile view.
+
+- [`17e3771`](https://github.com/X-T-E-R/kiki/commit/17e37710c20e421fd4b7b2be2ef13324d2899d05) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add the `request_params` agent frontmatter field for passing extra scalar parameters with every request on OpenAI-family providers.
+
+- [`23ba4dc`](https://github.com/X-T-E-R/kiki/commit/23ba4dcecb4f8f60efcf678072b4ed535bcfc444) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add the `service_tier` agent frontmatter field, sent on every request when the model uses an OpenAI Responses provider. Set `service_tier: priority` in an agent file to use it.
+
+- [`877bb68`](https://github.com/X-T-E-R/kiki/commit/877bb682e917660206d41e454cddd7d97dee6d40) Thanks [@sailist](https://github.com/sailist)! - Fix sessions failing to archive when their workspace folder no longer exists.
+
+- [`a385cb9`](https://github.com/X-T-E-R/kiki/commit/a385cb97479c5a0e023260ec65ab0c7ae42d7328) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Honor configured and sensitive-path permission rules before auto-mode approval.
+
+- [`61ccd7f`](https://github.com/X-T-E-R/kiki/commit/61ccd7fe7a6869006c449787621c30b03ce5fdb0) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep background questions open after the asking turn and deliver short answers directly in completion notifications.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Deliver background task results directly in completion notifications with bounded output and safer recovery guidance.
+
+- [`91d3585`](https://github.com/X-T-E-R/kiki/commit/91d358574c3883fc3becee01a7aea67b9a058881) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Update background subagent guidance to favor automatic completion notifications.
+
+- [`c38af76`](https://github.com/X-T-E-R/kiki/commit/c38af76bf83c7a48bb9228a1aa04608c93c5b7fb) Thanks [@sailist](https://github.com/sailist)! - Fix messages sent from one web client not appearing on other clients connected to the same session.
+
+- [`c06d1a8`](https://github.com/X-T-E-R/kiki/commit/c06d1a8332164dfcb884c900b381788085e2ca2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add experimental named routes for custom agent profiles. Enable `agent-profile-routes` to let Agent and AgentSwarm select route sidecars.
+
+- [`fac1926`](https://github.com/X-T-E-R/kiki/commit/fac1926d326860fc4abf07f1cf8d8593eec93f22) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix `kiki serve` so it hosts the packaged Kiki GUI.
+
+- [`21cf1e6`](https://github.com/X-T-E-R/kiki/commit/21cf1e6f3152e8e3b898d39b060a9b013432c246) Thanks [@sailist](https://github.com/sailist)! - Preserve the active session and its selected model when logging out of a provider.
+
+- [`509733b`](https://github.com/X-T-E-R/kiki/commit/509733b9eced2c74dd0a570038cda2c73f9613d3) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Canonicalize every v2 subagent model binding through the shared model resolver before agent creation and persistence, including tool, swarm, collaboration, agent-profile route, and config-driven bindings.
+
+- [`deddb1f`](https://github.com/X-T-E-R/kiki/commit/deddb1fedfdbfefa43e4bb91571b2d75e7055799) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Cognition anchor windows keep their recorded system prompt verbatim again; delegation-context injection applies only to the explicit system-prompt path.
+
+- [`4d2705d`](https://github.com/X-T-E-R/kiki/commit/4d2705d336680ed8f619cafd260d7bc3deb1245a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix missing subagent Todo lists in task-board cards after restarting the server.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix non-interactive prompt startup while the session index is initializing.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix reading a subagent's current plan after restarting the server.
+
+- [`993c765`](https://github.com/X-T-E-R/kiki/commit/993c76561b1d453f066dac4fc529aec5b27c7962) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Restore subagent model inheritance on resume/retry: a subagent spawned with an inherited binding now follows a mid-session `/model` switch on the parent, while an explicitly bound subagent stays on its spawn-time model. Named collaboration agents also keep their delegation and fork provenance when re-materialized after a server restart.
+
+- [`7a4dadb`](https://github.com/X-T-E-R/kiki/commit/7a4dadb026182b96fd8df22b64317d3376d54f41) Thanks [@7Sageer](https://github.com/7Sageer)! - Fix config.toml entries being lost when the file had a syntax error or was edited outside the app.
+
+- [`2b00eb4`](https://github.com/X-T-E-R/kiki/commit/2b00eb47b905daa1b45295158063ff2819973c04) Thanks [@7Sageer](https://github.com/7Sageer)! - Preserve comments, key order, and formatting in config.toml when configuration values are updated.
+
+- [`38fcd16`](https://github.com/X-T-E-R/kiki/commit/38fcd163f1543890a323787c02761d7120190ec2) Thanks [@liukx0205](https://github.com/liukx0205)! - Fix models and providers transiently disappearing when config.toml is saved non-atomically by an external editor while the daemon reloads it.
+
+- [`eca22fd`](https://github.com/X-T-E-R/kiki/commit/eca22fd5700687c4350bb0149962d37bcb143153) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Let new subagents select configured model aliases and thinking effort through the declarative subagent model pool. Configure `[secondary_model]` with `default_model`, named `[secondary_model.models]` entries, or `force` to pin subagent defaults; an inherited spawn follows the caller's mid-session `/model` switch while an explicit or pool-pinned binding stays frozen.
+
+- [`fd73aa5`](https://github.com/X-T-E-R/kiki/commit/fd73aa515c8545f8aa70bb5088d026434ce8111d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - **Breaking:** Named-agent collaboration now uses the shared durable MiniDb mailbox backend in `agent-collaboration-mailbox-v2`. Existing `agent-collaboration-mailbox-v1` messages and receipts are no longer read; the old directory is left unchanged on disk and may be deleted manually.
+
+- [`a65f756`](https://github.com/X-T-E-R/kiki/commit/a65f7565bcba090d7cff07cb45921a70b5797823) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Ask before running dangerous Bash commands in auto and manual modes by default, with `permission.dangerous_bash` (`on | off | default`) as the override and yolo staying hands-off unless set to `on`.
+
+- [`672fd0b`](https://github.com/X-T-E-R/kiki/commit/672fd0b4a582b0ae9201784a59686e0fb659dcde) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Stop listing the same managed model more than once in the model catalog.
+
+- [`4d2705d`](https://github.com/X-T-E-R/kiki/commit/4d2705d336680ed8f619cafd260d7bc3deb1245a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Enable BoardRead and BoardWrite for newly bound default main agents; existing persisted sessions must reapply their profile or start a new session to receive them.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep customized default main agents available and expose their source, editing controls, and workspace-specific subagent capabilities in settings.
+
+- [`c5713a4`](https://github.com/X-T-E-R/kiki/commit/c5713a46550dd1418f24cdeff47d676074ec6138) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix slow file reads while delegated tasks report progress in long sessions.
+
+- [`bfe87bf`](https://github.com/X-T-E-R/kiki/commit/bfe87bfd91243521bdae5b67c94e0a37844a3cd7) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Prevent the desktop app from automatically attaching to a different Kiki build.
+
+- [`154e43a`](https://github.com/X-T-E-R/kiki/commit/154e43ab15d0c863c38dd6f5257cbf3b8d1b6a24) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Prevent long desktop sessions from entering repeated garbage collection or out-of-memory failures under high memory usage.
+
+- [`23ba4dc`](https://github.com/X-T-E-R/kiki/commit/23ba4dcecb4f8f60efcf678072b4ed535bcfc444) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add the `disabled_builtin_profiles` config key to hide selected built-in subagents from dispatch.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add configurable per-caller and per-session subagent execution limits.
+
+- [`baac1f2`](https://github.com/X-T-E-R/kiki/commit/baac1f2516e146937747e612b7fb6f72d8c96db0) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Update the bundled product docs to the current commands, tool names, and server API surface.
+
+- [`23ba4dc`](https://github.com/X-T-E-R/kiki/commit/23ba4dcecb4f8f60efcf678072b4ed535bcfc444) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Validate custom agent files with `kimi doctor`, reporting unknown model aliases, dangling `subagents` entries, and malformed frontmatter. Run `kimi doctor` to check them.
+
+- [`821577a`](https://github.com/X-T-E-R/kiki/commit/821577aafe99df1b9757f450989c9f897fc92642) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - `kiki doctor` reports an ambiguous model alias as a warning naming the resolved candidate instead of failing with an error.
+
+- [`c38af76`](https://github.com/X-T-E-R/kiki/commit/c38af76bf83c7a48bb9228a1aa04608c93c5b7fb) Thanks [@sailist](https://github.com/sailist)! - Remove the `--allow-remote-terminals` flag from `kimi web`; PTY terminal routes now stay available on loopback binds only.
+
+- [`6f9d9e4`](https://github.com/X-T-E-R/kiki/commit/6f9d9e4eb7510d9ae29c21995fb4672b23e42da6) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Require externally delegated named agents to use a profile or dispatch model pin instead of inheriting the main agent model.
+
+- [`757c9b8`](https://github.com/X-T-E-R/kiki/commit/757c9b8c5ae17f87f66ba24e70ced824bc974d89) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Block tool execution when pre-tool hooks fail or return invalid protocol output.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix opening and previewing file references with line numbers and Windows drive paths.
+
+- [`68b87d6`](https://github.com/X-T-E-R/kiki/commit/68b87d6034682c9d437d47234b8e708573cc1900) Thanks [@sailist](https://github.com/sailist)! - Edit and Write now require reading an existing file before modifying it, and reject the write when the file changed on disk since it was last read.
+
+- [`69d49e0`](https://github.com/X-T-E-R/kiki/commit/69d49e00ec092e2ae2b3da5c469c76c85cfa1c22) Thanks [@kimi-agent-bot](https://github.com/kimi-agent-bot)! - Stop retrying requests blocked by the provider content filter; the filter notice now shows immediately.
+
+- [`a8e3f67`](https://github.com/X-T-E-R/kiki/commit/a8e3f672ead912fcee57c10f6308ca68d5f3f956) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Restore local command fallback, stdio MCP servers, and session reloads in ACP sessions.
+
+- [`5af2f1a`](https://github.com/X-T-E-R/kiki/commit/5af2f1a9a5efe084ea4831d96974d8b9160aad09) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix duplicate conversation content, reconnect flicker, and missing transcript actions in the desktop interface.
+
+- [`6447730`](https://github.com/X-T-E-R/kiki/commit/64477303bf1ca269b0c85b2992a197c62672a22f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix Bash heredocs with unbalanced body characters being treated as invalid commands.
+
+- [`7644771`](https://github.com/X-T-E-R/kiki/commit/76447711811cf753ed869bc6149ee1d232d157d6) Thanks [@liruifengv](https://github.com/liruifengv)! - Fix sign-in briefly showing a device-code-expired error after a successful authorization.
+
+- [`15c21d2`](https://github.com/X-T-E-R/kiki/commit/15c21d22079a7c2bbc91f50fbfdec13bc991b4d8) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show stable subagent names and keep plan mode limited to the main agent.
+
+- [`6595a69`](https://github.com/X-T-E-R/kiki/commit/6595a6989a68163e10a85c8edf1726b30d6d2c2b) Thanks [@RealKai42](https://github.com/RealKai42)! - Fix 422 errors from some OpenAI-compatible providers when a conversation includes tool calls.
+
+- [`d86c557`](https://github.com/X-T-E-R/kiki/commit/d86c55711f5c4c7dafa3d105211546b93b6c189c) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix duplicate user messages in transcript clients.
+
+- [`5d28288`](https://github.com/X-T-E-R/kiki/commit/5d28288dc65d4ae41c8f258ea584abf67064d33d) Thanks [@sailist](https://github.com/sailist)! - Honor explicit `[experimental]` config entries over the `KIMI_CODE_EXPERIMENTAL_FLAG` master switch, so a flag set to `false` in `config.toml` stays off; per-feature `KIMI_CODE_EXPERIMENTAL_<NAME>` variables still override both.
+
+- [`96282c6`](https://github.com/X-T-E-R/kiki/commit/96282c6f02dd222bcc9d15cc10ed5c8cbf6c9f56) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep the desktop backend running when Windows filesystem watching hits a permission error.
+
+- [`1ae1fdf`](https://github.com/X-T-E-R/kiki/commit/1ae1fdfc7b90f3e9be2edd31498ce1f48ecf4ab0) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Use the daemon-backed terminal UI by default with a legacy rollback, lease-scoped sources, and settled media uploads; daemon export includes only loaded user and assistant text, experiments are read-only, and unsupported daemon commands remain available through the legacy TUI.
+
+- [`4b884c7`](https://github.com/X-T-E-R/kiki/commit/4b884c72ba7ef7ebac8a094a8e115dabbc2ff3aa) Thanks [@kimi-agent-bot](https://github.com/kimi-agent-bot)! - Parse `git status --porcelain` with `-z` so non-ASCII paths are no longer mangled into bogus quoted directory segments.
+
+- [`9242cd1`](https://github.com/X-T-E-R/kiki/commit/9242cd1841ff80d8cdeac42ab11a384ca0b3e83e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix overlapping conversation rows when long messages change height.
+
+- [`9242cd1`](https://github.com/X-T-E-R/kiki/commit/9242cd1841ff80d8cdeac42ab11a384ca0b3e83e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve model, thinking-effort, and new-session workspace selections across GUI reloads.
+
+- [`9242cd1`](https://github.com/X-T-E-R/kiki/commit/9242cd1841ff80d8cdeac42ab11a384ca0b3e83e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Move resolved interactions into collapsible activity history in the GUI.
+
+- [`fdf3fb7`](https://github.com/X-T-E-R/kiki/commit/fdf3fb7c2c10909cc350d76ec7507ddcdee80a15) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Restore historical subagent tool counts and navigation for resumed and messaged agents.
+
+- [`6e3b41c`](https://github.com/X-T-E-R/kiki/commit/6e3b41c4a0b74bbf8dbec6f9a2e3b75c8ed8f997) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Reduce background rescanning across the server: message history paginates from a projection checkpoint with real wire timestamps, workspace skill lists reuse the watched catalog, search indexing only revisits changed sessions, the embedded store compacts its WAL by size ratio as well as absolute size, and the todo reminder tracks a per-agent cursor instead of rescanning the whole history every step.
+
+- [`530b3b2`](https://github.com/X-T-E-R/kiki/commit/530b3b2f91370f965e342f8e72d1c7cae7840a95) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix server shutdown stalling after file downloads while allowing active responses to finish.
+
+- [`530b3b2`](https://github.com/X-T-E-R/kiki/commit/530b3b2f91370f965e342f8e72d1c7cae7840a95) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix file download errors being displayed as file contents and interrupted responses being misreported as invalid JSON.
+
+- [`530b3b2`](https://github.com/X-T-E-R/kiki/commit/530b3b2f91370f965e342f8e72d1c7cae7840a95) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Reject oversized requests before sending them with a clear size-limit error.
+
+- [`8a4b9d8`](https://github.com/X-T-E-R/kiki/commit/8a4b9d82ff71fabb8bff871aaa3f2801c9edee26) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix stale model alias fields surviving a catalog refresh and workspace file suggestions returning nothing on Windows path-form queries.
+
+- [`c38efdc`](https://github.com/X-T-E-R/kiki/commit/c38efdca3cd2c3f22f8db66167e9dd7035f12f5c) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Make local peer-thread communication opt-in by default. Set `[thread_communication] enabled = true` to enable the thread tools and local thread APIs.
+
+- [`c627516`](https://github.com/X-T-E-R/kiki/commit/c62751657e6ce579591e725a764c529b1c5e1b50) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Remove undone turns from live transcripts immediately.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Reduce memory retained by completed tasks in long sessions.
+
+- [`bf334ef`](https://github.com/X-T-E-R/kiki/commit/bf334ef1cf23c96cb4e7014ad9b7f828f64d459b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Restore the session profile pickers to offering only enabled main profiles; sub-agent-only profiles are dispatched with AgentRun instead of being selectable as the session's main agent.
+
+- [`14a9742`](https://github.com/X-T-E-R/kiki/commit/14a974220b2b4ca123777c7499851a5085a94c59) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Return from MCP delegation waits at progress boundaries within 45 seconds instead of holding until completion; a `timed_out` result now carries a snapshot and a next_step telling the client to call wait again.
+
+- [`571bcc2`](https://github.com/X-T-E-R/kiki/commit/571bcc2f751f02a37b0475b074a1e859c7fc4368) Thanks [@7Sageer](https://github.com/7Sageer)! - Fix the missing OAuth authenticate tool for remote MCP servers that require login.
+
+- [`c8161b6`](https://github.com/X-T-E-R/kiki/commit/c8161b601d8169e0a2f749b77c340ff488aab016) Thanks [@xpzouying](https://github.com/xpzouying)! - Send MCP structuredContent to the model only when the tool result has no usable content, avoiding duplicate tool output.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix route effort defaults, external no-op resumes, and delegation notices in replacement model prompts.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep thinking defaults tied to the selected model and support profile-specific request parameters and token budgets.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add model-level service tiers that override profile and request settings.
+
+- [`cb822aa`](https://github.com/X-T-E-R/kiki/commit/cb822aab389de19b90a790d78b331661a70fbf77) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Run asynchronous search and fetch jobs in self-contained native installations and report worker startup failures.
+
+- [`cb822aa`](https://github.com/X-T-E-R/kiki/commit/cb822aab389de19b90a790d78b331661a70fbf77) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Expose nb-search search and fetch options, asynchronous jobs, and configured capabilities through WebSearch and FetchURL.
+
+- [`cb822aa`](https://github.com/X-T-E-R/kiki/commit/cb822aab389de19b90a790d78b331661a70fbf77) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add a search setting to control reuse of the server's local nb-search configuration and credentials.
+
+- [`363389f`](https://github.com/X-T-E-R/kiki/commit/363389fd9f410c2b7b67a8eb0f30b98e420a22a5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Stop the agent panel from re-scanning every wire file on each concurrent request: panel metrics now share one in-flight scan per session, honor byte/record/time budgets with partial markers, cache for a full 30 s after the scan completes, cancel when the last waiter disconnects, and read only the requested child agent instead of the whole session roster.
+
+- [`ff952da`](https://github.com/X-T-E-R/kiki/commit/ff952dae3d00735295f4861d3edc318d21f39533) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Performance and lifecycle hardening from the 2026-08-16 freeze audit: chunk and memoize GUI transcript rendering so streaming deltas stop re-rendering settled rows; cache rendered markdown blocks in pi-tui; track and drain background-task lifecycle flights; add graceful shutdown with in-flight draining to the thread communication service; cover with perf-exp5 broadcaster-leak and perf-exp6 render measurements.
+
+- [`4d2705d`](https://github.com/X-T-E-R/kiki/commit/4d2705d336680ed8f619cafd260d7bc3deb1245a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Block requirement changes while plan mode is active.
+
+- [`a6a8443`](https://github.com/X-T-E-R/kiki/commit/a6a84439645d7a035a895bb59e9fe41c636d0395) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Prevent plan mode from dispatching or messaging subagents.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Allow new native research subagents with restricted read-only tools during Plan mode.
+
+- [`ecea7ef`](https://github.com/X-T-E-R/kiki/commit/ecea7ef43099a827f6e7fbf27ddd00f1a05d88ed) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Load the plugin marketplace only from an explicitly configured catalog source.
+
+- [`3722343`](https://github.com/X-T-E-R/kiki/commit/3722343324be01b1154b89928b08bf7492a6f18d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Install plugins disabled until they are explicitly enabled.
+
+- [`9772706`](https://github.com/X-T-E-R/kiki/commit/9772706d46f523208850c863a827e5ad2697c239) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve external harness model aliases and xhigh thinking effort across agent delegation.
+
+- [`53493db`](https://github.com/X-T-E-R/kiki/commit/53493db959c32c0f4e8a91e01fd8cbb39f6fc93a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Private profiles now resolve by exact name in snapshot projections and scoped lease bindings, not just in live catalogs.
+
+- [`980ded4`](https://github.com/X-T-E-R/kiki/commit/980ded44a56b22f5a88ea800ca0c0550b885e73c) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Profile pickers no longer show a builtin-only list for up to a minute on a cold directory: the server now waits for every profile source before answering, and the GUI briefly retries instead of caching a partial catalog.
+
+- [`557930e`](https://github.com/X-T-E-R/kiki/commit/557930ecfd8568f8998aef6a33d569756ea2d910) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Reject agent profiles whose tools or disallowedTools list a name that matches no registered tool.
+
+- [`7bec302`](https://github.com/X-T-E-R/kiki/commit/7bec302c7defb2f61e61668baeb4b2c1b1cbb450) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Reject prompt field overrides that reference unknown variables or field ids at config write time instead of persisting them, matching the validation the removed prompt keys had.
+
+- [`bc92ea9`](https://github.com/X-T-E-R/kiki/commit/bc92ea9de359b6ec814a5caa6d0eb27a8b39a56e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix prompts remaining queued forever after reopening a session.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Apply queued prompt mode and goal changes when the prompt starts.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep the session's bound model selected when reopening a conversation after a server restart.
+
+- [`e317440`](https://github.com/X-T-E-R/kiki/commit/e317440a59e1de17d2a7a42a0ae374f67194192d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Replace a queued prompt in place instead of aborting it and submitting a new one.
+
+- [`13332ff`](https://github.com/X-T-E-R/kiki/commit/13332fff69cde5ea8fc61fa6e4d5671dc75950d8) Thanks [@7Sageer](https://github.com/7Sageer)! - Respect workspace trust and configuration readiness when managing MCP servers.
+
+- [`530b3b2`](https://github.com/X-T-E-R/kiki/commit/530b3b2f91370f965e342f8e72d1c7cae7840a95) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix repeated reconnects when opening large session histories and stale content after session recovery.
+
+- [`4a0b86e`](https://github.com/X-T-E-R/kiki/commit/4a0b86e5c8f6e317533f4fbc6599e82e11b6186f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix session usage totals and restored subagent names and tool counts after reconnecting.
+
+- [`fdf3fb7`](https://github.com/X-T-E-R/kiki/commit/fdf3fb7c2c10909cc350d76ec7507ddcdee80a15) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix missing assistant and tool history when opening a subagent conversation.
+
+- [`3b34704`](https://github.com/X-T-E-R/kiki/commit/3b3470418b4e4b1350fb773cfa16227ac23c358d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Resuming a subagent after reopening a session now preserves its profile, context, and current permission mode.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix failed subagent creation leaving orphaned agents and blocking retries with the same name.
+
+- [`9242cd1`](https://github.com/X-T-E-R/kiki/commit/9242cd1841ff80d8cdeac42ab11a384ca0b3e83e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add explicit tool allowlist controls and a validated Hooks rule form while preserving unsaved settings drafts.
+
+- [`cb822aa`](https://github.com/X-T-E-R/kiki/commit/cb822aab389de19b90a790d78b331661a70fbf77) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Bind local-file fetches to the approved file object and require fresh approval after atomic replacement.
+
+- [`5005364`](https://github.com/X-T-E-R/kiki/commit/5005364ba30b9b201947f7d5555670f8dbd267e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Filter subagent model choices by the selected role, caller constraints, and route.
+
+- [`6ac72b7`](https://github.com/X-T-E-R/kiki/commit/6ac72b77b2a921e971c726ebeba9ca5812910aaa) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Make `kimi web` refuse non-loopback binds by default unless `--insecure-no-tls` is passed.
+
+- [`3c5814e`](https://github.com/X-T-E-R/kiki/commit/3c5814e7aed2ccde57120008aafb5856264f6358) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Harden the external-delegation and server integration path: add an application-level WebSocket heartbeat (server*hello advertises `heartbeat_ms` and pings clients), classify external delegation failures into a stable taxonomy instead of blanket redaction, surface MCP tool input validation as `invalid_input` with a `task_name` rule hint, fail open on misconfigured external-delegation authorities instead of refusing to boot, make the meta `thread_communication` capability optional for older servers, restore the 30s IPC default call timeout while widening `threads.wait`, and report specific `KIKI_MCP*\*` configuration errors.
+
+- [`e581bd7`](https://github.com/X-T-E-R/kiki/commit/e581bd70c899e25efbbfc5b975ed50f51a2a741c) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Restart the desktop backend cleanly when its memory nears the limit instead of freezing, and stop re-measuring every live conversation on each session list refresh.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix errors and incomplete cleanup when closing sessions.
+
+- [`d18464b`](https://github.com/X-T-E-R/kiki/commit/d18464bc5e251e52646d5653f31afe7122e90916) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Session index maintenance no longer re-reads session wire files every minute: reconciliation is incremental over file fingerprints, and point reads during index rebuilds stay scoped to the known workspace instead of scanning every session.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix unexpected errors when closing sessions.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Use the shared daemon for every interactive terminal session.
+
+- [`feadc14`](https://github.com/X-T-E-R/kiki/commit/feadc144c75d10dec46f03761c9e00927bbafb02) Thanks [@Grapedge](https://github.com/Grapedge)! - Collapse long `!` shell command output instead of flooding the transcript. Press ctrl+o to expand or collapse it together with tool output.
+
+- [`6710e77`](https://github.com/X-T-E-R/kiki/commit/6710e7734a54a4d8a292a4816db49ba43969bde0) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add an optional absolute context limit for automatic compaction.
+
+- [`f6b5250`](https://github.com/X-T-E-R/kiki/commit/f6b52503f406a721d077e8a9bd3c360dba79df7b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep question and option identifiers stable in live and rebuilt transcripts.
+
+- [`041261b`](https://github.com/X-T-E-R/kiki/commit/041261bb32e661fd58718d0b6b6c84d3a5f5de8b) Thanks [@kimi-agent-bot](https://github.com/kimi-agent-bot)! - Fix the context usage bar in /usage and the footer showing a stale percentage after the context size or model changes.
+
+- [`1c0b15b`](https://github.com/X-T-E-R/kiki/commit/1c0b15b3b72ad4bb03d7b49f28a259886138917d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve skill provenance on steered user messages without exposing private paths.
+
+- [`892f220`](https://github.com/X-T-E-R/kiki/commit/892f2204c9ed70227778185bdf0d5224ff80c72a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix skill instructions showing up as ordinary user messages in rebuilt transcripts.
+
+- [`dc1165d`](https://github.com/X-T-E-R/kiki/commit/dc1165d4a6f911c85ed38fc2250b18fbc510e558) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show steered user messages in the live transcript.
+
+- [`6f3725e`](https://github.com/X-T-E-R/kiki/commit/6f3725ec25120a1913b9b28c464a1bea2b126778) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Cold transcript reads now stream wire files in bounded chunks instead of holding the whole file, its lines, and the parsed records in memory at once, and concurrent cold opens of the same agent share one scan that is cancelled when the last reader disconnects.
+
+- [`4d7cf06`](https://github.com/X-T-E-R/kiki/commit/4d7cf06e6549545a796c2ee94f4349be6ae05d24) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Release finished subagents from memory after a short idle period; they stay listed and are restored from their saved history when resumed or messaged. Set KIMI_CODE_EXPERIMENTAL_SUBAGENT_RELEASE_IDLE=false to keep the previous behavior.
+
+- [`be8e017`](https://github.com/X-T-E-R/kiki/commit/be8e017597b83142282d7e6640076368bf244eae) Thanks [@wbxl2000](https://github.com/wbxl2000)! - Emit subagent.spawned after the run's task registration so the signal carries the task id clients bind cancel/status actions to.
+
+- [`600734c`](https://github.com/X-T-E-R/kiki/commit/600734c38fa4a419c11c587a94f516b570f41e77) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show the orchestrator prompt on subagent turns.
+
+- [`1115a98`](https://github.com/X-T-E-R/kiki/commit/1115a983f452815853a7d957a63e777366cf1edc) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Include a truncated provider response-body fragment in 400 Bad Request error messages so abort reasons show the real rejection.
+
+- [`35befdc`](https://github.com/X-T-E-R/kiki/commit/35befdcef2be344d931ea20063cb64113350dc4b) Thanks [@gaoyuan1223m](https://github.com/gaoyuan1223m)! - multi-select question jumps to next after only one answer selected
+
+- [`53493db`](https://github.com/X-T-E-R/kiki/commit/53493db959c32c0f4e8a91e01fd8cbb39f6fc93a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - The built-in system prompt gains Reply Quality, Judgment And Workflow, and Delegation Brief Hygiene sections, tighter coding and research guidelines, and worktree-sharing and security-basics rules; the new sections are overridable prompt fields like the existing ones.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Limit combined output previews in batched background task notifications.
+
+- [`e350954`](https://github.com/X-T-E-R/kiki/commit/e350954e0d410d5a9b0d7bf1284ef296a992999d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Report whether each task is running in the background.
+
+- [`f13f379`](https://github.com/X-T-E-R/kiki/commit/f13f3790448f64448c76a415500041443ae754e6) Thanks [@7Sageer](https://github.com/7Sageer)! - Stop recommending specific other tools in Read tool descriptions and error messages, which could point models to tools that are not available.
+
+- [`b1750e5`](https://github.com/X-T-E-R/kiki/commit/b1750e53910d6beb45ba0a42dbe01ca17b7287f5) Thanks [@wbxl2000](https://github.com/wbxl2000)! - Fix idle sessions briefly showing a "Working" state when opened in desktop and web clients.
+
+- [`8bd3686`](https://github.com/X-T-E-R/kiki/commit/8bd3686757a450e06036b82062e71e4c9fd3821a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix model requests failing when task board tools are available.
+
+- [`9aa6153`](https://github.com/X-T-E-R/kiki/commit/9aa6153219a91243b0fb14c0fe6ab45d2dd4064f) Thanks [@7Sageer](https://github.com/7Sageer)! - Save oversized tool output within safety limits for later inspection, report omitted MCP content, and retain partial assistant responses when streams fail.
+
+- [`3594da0`](https://github.com/X-T-E-R/kiki/commit/3594da0b481bcb29764d6302ba78ebbd64dcdb83) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Opening long conversations is dramatically faster: transcript rebuild now uses indexed lookups and a mutable replay draft instead of scanning and copying the whole timeline for every event, cutting the cost from quadratic to near-linear (45k turns: ~149 s → under 1 s in benchmarks).
+
+- [`38a5a93`](https://github.com/X-T-E-R/kiki/commit/38a5a934aed8069fe11ad0b74e70b5bd0f4c0499) Thanks [@wbxl2000](https://github.com/wbxl2000)! - Project prompt attachments into the live transcript (turn.started now carries session-media references) and clear the transcript goal when the goal is cleared.
+
+- [`d5b4149`](https://github.com/X-T-E-R/kiki/commit/d5b41491da3c15b5b79f41cb6850f53ea449c899) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fold background task notifications into the current turn after reopening a session.
+
+- [`0145811`](https://github.com/X-T-E-R/kiki/commit/0145811cb1a76bc9166016540e0c7d39859969a7) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Recover tool calls whose arguments were cut off mid-stream, and report the truncation instead of a missing-field error.
+
+- [`cd3de85`](https://github.com/X-T-E-R/kiki/commit/cd3de8564ec096e58340b54c85e94830fdd05207) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show peer-thread source labels in TUI transcripts so delegated messages are distinguishable from local user input.
+
+- [`772a151`](https://github.com/X-T-E-R/kiki/commit/772a1511dd12d29bef3afe3a0a6e390503e4d580) Thanks [@sailist](https://github.com/sailist)! - Fix attached images disappearing from the user message while the agent is working.
+
+- [`66dc173`](https://github.com/X-T-E-R/kiki/commit/66dc17390f01e6ec9d4fc01a95bdc56bab84bc3a) Thanks [@kimi-agent-bot](https://github.com/kimi-agent-bot)! - Fix the "manually stopped" state lingering after undoing the interrupted turn.
+
+- [`530b3b2`](https://github.com/X-T-E-R/kiki/commit/530b3b2f91370f965e342f8e72d1c7cae7840a95) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve cancellable MCP authorization waits when using the shared client transport.
+
+- [`4d2705d`](https://github.com/X-T-E-R/kiki/commit/4d2705d336680ed8f619cafd260d7bc3deb1245a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Allow the requirements board to be edited without requiring workspace trust.
+
+- [`9242cd1`](https://github.com/X-T-E-R/kiki/commit/9242cd1841ff80d8cdeac42ab11a384ca0b3e83e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Distinguish unavailable token accounting from reported zero usage in the usage dashboard.
+
+- [`9242cd1`](https://github.com/X-T-E-R/kiki/commit/9242cd1841ff80d8cdeac42ab11a384ca0b3e83e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Default the usage dashboard to today in the local timezone.
+
+- [`d18464b`](https://github.com/X-T-E-R/kiki/commit/d18464bc5e251e52646d5653f31afe7122e90916) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - The usage view now aggregates from a persistent per-session wire-offset checkpoint instead of rescanning every wire file on each poll, and status broadcasts no longer recompute a full-history token breakdown on every step.
+
+- [`19b783a`](https://github.com/X-T-E-R/kiki/commit/19b783a24bf1afc6f2e0e1117319dd2d2fd8a6cc) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Include retained usage from deleted sessions in usage reports.
+
+- [`5423272`](https://github.com/X-T-E-R/kiki/commit/542327243b161f3ecdaaff6c407c17a53bd34ac3) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Usage page: the detail tab is now part of the shareable URL, session deep links page through results until the target is found, the 5h rhythm tab shows per-window session/turn drilldowns, and custom date ranges reject invalid start/end pairs before querying.
+
+- [`01eeacb`](https://github.com/X-T-E-R/kiki/commit/01eeacb59bed879b4e843c92545ab69d6d09205b) Thanks [@chengluyu](https://github.com/chengluyu)! - Show a live status line with elapsed time and remaining task count while the WaitFor tool is waiting.
+
+- [`01eeacb`](https://github.com/X-T-E-R/kiki/commit/01eeacb59bed879b4e843c92545ab69d6d09205b) Thanks [@chengluyu](https://github.com/chengluyu)! - Improve the WaitFor tool's transcript display: the header shows the waited task and its outcome, and the body summarizes the finished task, other tasks that completed during the wait, and tasks still running, instead of dumping raw fields.
+
+- [`ab94baa`](https://github.com/X-T-E-R/kiki/commit/ab94baa6af562c767b3cdc643a4a5c45d33c2ae6) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add the `kiki` command for daemon, seat, MCP, installation, and diagnostic workflows.
+
+- [`bf30d28`](https://github.com/X-T-E-R/kiki/commit/bf30d28ee66bcda8a1d77df5d116a97669de44ae) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Use the shared Kiki GUI in the VS Code extension and retire settings that only applied to the old webview.
+
+- [`3354f2b`](https://github.com/X-T-E-R/kiki/commit/3354f2bb594a3bcaef0dee788b0079cce68b051a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Serve the Kiki GUI from `kimi web` and remove `kimi vis`.
+
+- [`23ba4dc`](https://github.com/X-T-E-R/kiki/commit/23ba4dcecb4f8f60efcf678072b4ed535bcfc444) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Reload custom agent files automatically when they change in user, project, or `extra_agent_dirs` directories; running sessions can dispatch new or updated agents without `/reload`.
+
+- [`7609276`](https://github.com/X-T-E-R/kiki/commit/760927641e129668561862036af08fa67f1ecce0) Thanks [@wszqkzqk](https://github.com/wszqkzqk)! - Fix file tools and shell working directories failing to resolve Git Bash paths such as /c/Users or /tmp on Windows.
+
+- [`ffe860d`](https://github.com/X-T-E-R/kiki/commit/ffe860de5682227c31ca0ebfadc941b6ded5e2cf) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Prevent concurrent OAuth token refreshes across Windows processes.
+
+- [`1ae4a03`](https://github.com/X-T-E-R/kiki/commit/1ae4a0314aeba9457458b86c5084f558224fbcff) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep Tower worktree reports, workspace file-watch roots, and terminal image fallbacks on slash-normalized paths on Windows.
+
+- [`50e918b`](https://github.com/X-T-E-R/kiki/commit/50e918b3f0d89d9ef715c6fa16f9ab7ef4f659ee) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix diffs for untracked files on Windows.
+
+- [`06cba01`](https://github.com/X-T-E-R/kiki/commit/06cba01fe4bb55dad948e09b94c976b1a54c4202) Thanks [@sailist](https://github.com/sailist)! - Fix sessions failing to resume when their session journal was truncated or corrupted, for example after a full disk.
+
+- [`cf18ab3`](https://github.com/X-T-E-R/kiki/commit/cf18ab3a70fbf1257e2dd400d56a26ba7a51318b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix workspace main agent profiles missing from the GUI profile picker.
+
+- [`8f244a9`](https://github.com/X-T-E-R/kiki/commit/8f244a9ff485470ccb5e051a41c2f4a4814e1a2a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix Bash rejecting explicit working directories outside the workspace in local YOLO mode.
+
 ## 0.37.2
 
 ### Patch Changes

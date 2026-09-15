@@ -1,6 +1,6 @@
 {
   "name": "@kiki/gui",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0",
   "private": true,
   "description": "Kiki browser and desktop GUI",
   "homepage": "https://github.com/X-T-E-R/kiki/releases",
