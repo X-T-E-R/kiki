@@ -1,85 +1,89 @@
 /**
  * Home-only styles. Scoped CSS in components handles most rules;
  * shared utilities and layout container live here.
+ * Aligned with Kiki paper/ink/accent identity.
  */
 
-.KimiHome {
+.KikiHome {
   --section-px: clamp(20px, 5vw, 64px);
-  --section-py: clamp(28px, 4vw, 56px);
+  --section-py: clamp(32px, 4.5vw, 64px);
   position: relative;
   padding: 0 var(--section-px);
 }
 
-.KimiHome__section {
+.KikiHome__section {
   max-width: 1152px;
   margin: 0 auto;
   padding: var(--section-py) 0;
   position: relative;
 }
 
-.KimiHome__sectionTitle {
-  font-size: clamp(28px, 4vw, 40px);
-  font-weight: 700;
+.KikiHome__sectionTitle {
+  font-family: var(--kiki-font-display);
+  font-size: clamp(28px, 4vw, 42px);
+  font-weight: 600;
   letter-spacing: -0.03em;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   color: var(--vp-c-text-1);
 }
 
-.KimiHome__sectionLede {
+.KikiHome__sectionLede {
   font-size: 17px;
   color: var(--vp-c-text-2);
   margin: 0 0 40px;
-  max-width: 640px;
+  max-width: 680px;
   line-height: 1.6;
 }
 
-.KimiBtn {
+.KikiBtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   height: 48px;
-  padding: 0 22px;
-  border-radius: var(--kimi-radius-button);
+  padding: 0 24px;
+  border-radius: var(--kiki-radius-button);
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.005em;
   text-decoration: none;
-  transition: transform var(--kimi-transition), box-shadow var(--kimi-transition),
-              border-color var(--kimi-transition), background var(--kimi-transition);
+  transition: transform var(--kiki-transition), box-shadow var(--kiki-transition),
+              border-color var(--kiki-transition), background var(--kiki-transition);
   white-space: nowrap;
   cursor: pointer;
   border: 1px solid transparent;
 }
-.KimiBtn--primary {
-  color: #ffffff;
-  background: var(--kimi-brand-gradient);
+.KikiBtn--primary {
+  color: #fffdf8;
+  background: var(--kiki-brand-gradient);
   box-shadow: var(--vp-shadow-3);
   border: 0;
 }
-.KimiBtn--primary:hover {
+.KikiBtn--primary:hover {
   transform: translateY(-2px);
   box-shadow: var(--vp-shadow-4);
-  color: #ffffff;
+  color: #fffdf8;
 }
-.KimiBtn--ghost {
+.KikiBtn--ghost {
   color: var(--vp-c-text-1);
-  background: transparent;
-  border-color: var(--vp-c-divider);
+  background: var(--kiki-color-panel);
+  border-color: var(--kiki-color-hairline-strong);
 }
-.KimiBtn--ghost:hover {
-  border-color: var(--vp-c-brand-1);
+.KikiBtn--ghost:hover {
+  border-color: var(--kiki-color-accent);
+  background: var(--kiki-color-bubble-user);
   transform: translateY(-2px);
   color: var(--vp-c-text-1);
 }
-.KimiBtn--link {
+.KikiBtn--link {
   color: var(--vp-c-brand-1);
   height: auto;
   padding: 0;
   background: transparent;
   border: none;
+  font-weight: 600;
 }
-.KimiBtn--link:hover {
+.KikiBtn--link:hover {
   color: var(--vp-c-brand-2);
   transform: translateX(2px);
 }

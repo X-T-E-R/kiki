@@ -1,120 +1,201 @@
 /**
- * Design tokens for the Kimi Code docs theme.
+ * Design tokens for the Kiki product docs theme.
+ * Derived directly from apps/kiki-gui/src/index.css design tokens.
+ * Warm paper ground, ink typography, vibrant orange accent, warm paneling.
  * Light + dark live side by side; VitePress toggles the .dark class on <html>.
  */
 
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
 :root {
-  /* Brand palette — cool blue family from design board */
-  --kimi-brand-1: #0a7aff;          /* primary */
-  --kimi-brand-2: #5baeff;           /* mid */
-  --kimi-brand-3: #81c4ff;           /* soft sky */
-  --kimi-brand-deep: #043153;        /* deep navy (anchor for dark surfaces) */
-  --kimi-brand-whisper: #eff8ff;     /* near-white blue (light tints) */
-  --kimi-brand-gradient: linear-gradient(135deg, #0a7aff 0%, #5baeff 60%, #81c4ff 100%);
-  --kimi-brand-gradient-soft: linear-gradient(135deg, rgba(10, 122, 255, 0.14) 0%, rgba(91, 174, 255, 0.12) 60%, rgba(129, 196, 255, 0.10) 100%);
-  --kimi-brand-soft: rgba(10, 122, 255, 0.10);
-  --kimi-brand-soft-strong: rgba(10, 122, 255, 0.16);
+  /* Direct palette mapping from apps/kiki-gui/src/index.css */
+  --kiki-color-paper: #f7f3ec;
+  --kiki-color-panel: #fffdf8;
+  --kiki-color-hairline: #e7dfd0;
+  --kiki-color-hairline-strong: #d9cfba;
+  --kiki-color-ink: #1c1917;
+  --kiki-color-ink-soft: #6b6257;
+  --kiki-color-ink-faint: #6b6257;
+  --kiki-color-accent: #e8590c;
+  --kiki-color-accent-deep: #d9480f;
+  --kiki-color-accent-soft: #fdeee2;
+  --kiki-color-amber-ink: #b45309;
+  --kiki-color-amber-card: #fdf3e3;
+  --kiki-color-amber-rule: #e8b04b;
+  --kiki-color-success: #2f9e44;
+  --kiki-color-danger: #c92a2a;
+  --kiki-color-bubble-user: #f3ede1;
+  --kiki-color-scrollbar: #d9cfba;
+  --kiki-color-scrollbar-hover: #c9bda3;
+  --kiki-color-shell: #1c1917;
+
+  /* Gradients & tints */
+  --kiki-brand-gradient: linear-gradient(135deg, #ff7a29 0%, #e8590c 55%, #d9480f 100%);
+  --kiki-brand-gradient-soft: linear-gradient(135deg, rgba(232, 89, 12, 0.12) 0%, rgba(255, 122, 41, 0.08) 60%, rgba(217, 72, 15, 0.05) 100%);
+  --kiki-brand-soft: var(--kiki-color-accent-soft);
+  --kiki-brand-soft-strong: rgba(232, 89, 12, 0.18);
 
   /* Shape */
-  --kimi-radius-card: 16px;
-  --kimi-radius-button: 10px;
-  --kimi-radius-chip: 999px;
-  --kimi-radius-code: 12px;
-  --kimi-transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --kiki-radius-card: 16px;
+  --kiki-radius-button: 10px;
+  --kiki-radius-chip: 999px;
+  --kiki-radius-code: 12px;
+  --kiki-transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
 
   /* Typography */
   --vp-font-family-base:
-    'Inter', -apple-system, BlinkMacSystemFont,
-    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
-    'Helvetica Neue', 'Segoe UI', Arial, sans-serif;
+    'Space Grotesk', ui-sans-serif, system-ui, 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
   --vp-font-family-mono:
-    ui-monospace, SFMono-Regular, 'SF Mono',
-    Menlo, Consolas, 'Liberation Mono', 'Courier New', monospace;
+    'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas,
+    'PingFang SC', 'Noto Sans SC', monospace;
+  --kiki-font-display:
+    'Fraunces Variable', 'Fraunces', Georgia, 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
 
-  /* Surfaces (light) — clean white + subtle blue-tinted off-white */
-  --vp-c-bg: #ffffff;
-  --vp-c-bg-alt: #f6f9fd;
-  --vp-c-bg-elv: #ffffff;
-  --vp-c-bg-soft: #eff5fc;
+  /* Surfaces (light) — warm paper background, warm paneling */
+  --vp-c-bg: var(--kiki-color-paper);
+  --vp-c-bg-alt: var(--kiki-color-panel);
+  --vp-c-bg-elv: var(--kiki-color-panel);
+  --vp-c-bg-soft: var(--kiki-color-bubble-user);
 
   /* Text (light) */
-  --vp-c-text-1: #0b1a30;
-  --vp-c-text-2: #475569;
-  --vp-c-text-3: #94a3b8;
+  --vp-c-text-1: var(--kiki-color-ink);
+  --vp-c-text-2: var(--kiki-color-ink-soft);
+  --vp-c-text-3: #8a7f6d;
 
-  /* Borders (light) — picked up from palette E1E3E6 */
-  --vp-c-divider: #e1e3e6;
-  --vp-c-gutter: #e1e3e6;
-  --vp-c-border: #e1e3e6;
+  /* Borders (light) */
+  --vp-c-divider: var(--kiki-color-hairline);
+  --vp-c-gutter: var(--kiki-color-hairline);
+  --vp-c-border: var(--kiki-color-hairline);
 
   /* Brand applied to VitePress vars (light) */
-  --vp-c-brand-1: var(--kimi-brand-1);
-  --vp-c-brand-2: var(--kimi-brand-2);
-  --vp-c-brand-3: #006ae3;          /* hover, slightly deeper than primary */
-  --vp-c-brand-soft: var(--kimi-brand-soft);
+  --vp-c-brand-1: var(--kiki-color-accent);
+  --vp-c-brand-2: #ff7a29;
+  --vp-c-brand-3: var(--kiki-color-accent-deep);
+  --vp-c-brand-soft: var(--kiki-brand-soft);
 
-  /* Shadows (light) — no negative spread, avoids "kink" at rounded corners */
-  --vp-shadow-1: 0 1px 2px rgba(11, 26, 48, 0.04);
-  --vp-shadow-2: 0 6px 20px rgba(10, 122, 255, 0.15);
-  --vp-shadow-3: 0 10px 28px rgba(10, 122, 255, 0.22);
-  --vp-shadow-4: 0 18px 44px rgba(10, 122, 255, 0.30);
+  /* Shadows (light) — warm ink tinted, no harsh black */
+  --vp-shadow-1: 0 1px 3px rgba(28, 25, 23, 0.05);
+  --vp-shadow-2: 0 6px 20px rgba(28, 25, 23, 0.08);
+  --vp-shadow-3: 0 10px 28px rgba(232, 89, 12, 0.16);
+  --vp-shadow-4: 0 18px 40px rgba(232, 89, 12, 0.24);
 
   /* Buttons (light) */
-  --vp-button-brand-bg: var(--kimi-brand-1);
-  --vp-button-brand-hover-bg: var(--vp-c-brand-3);
-  --vp-button-brand-active-bg: var(--vp-c-brand-3);
+  --vp-button-brand-bg: var(--kiki-color-accent);
+  --vp-button-brand-hover-bg: var(--kiki-color-accent-deep);
+  --vp-button-brand-active-bg: var(--kiki-color-accent-deep);
   --vp-button-brand-border: transparent;
   --vp-button-brand-hover-border: transparent;
-  --vp-button-brand-text: #ffffff;
-  --vp-button-brand-hover-text: #ffffff;
-  --vp-button-brand-active-text: #ffffff;
+  --vp-button-brand-text: #fffdf8;
+  --vp-button-brand-hover-text: #fffdf8;
+  --vp-button-brand-active-text: #fffdf8;
+
+  --vp-button-alt-bg: var(--kiki-color-panel);
+  --vp-button-alt-hover-bg: var(--kiki-color-bubble-user);
+  --vp-button-alt-border: var(--kiki-color-hairline-strong);
+  --vp-button-alt-hover-border: var(--kiki-color-accent);
+  --vp-button-alt-text: var(--kiki-color-ink);
 
   /* Custom blocks tinting (light) */
   --vp-custom-block-tip-border: transparent;
   --vp-custom-block-tip-text: var(--vp-c-text-1);
-  --vp-custom-block-tip-bg: rgba(10, 122, 255, 0.07);
-  --vp-custom-block-tip-code-bg: rgba(10, 122, 255, 0.10);
+  --vp-custom-block-tip-bg: var(--kiki-color-accent-soft);
+  --vp-custom-block-tip-code-bg: rgba(232, 89, 12, 0.12);
+
+  --vp-custom-block-warning-bg: var(--kiki-color-amber-card);
+  --vp-custom-block-warning-text: var(--vp-c-text-1);
+  --vp-custom-block-warning-border: var(--kiki-color-amber-rule);
+
+  --vp-custom-block-danger-bg: #fdeee9;
+  --vp-custom-block-danger-text: var(--vp-c-text-1);
+  --vp-custom-block-danger-border: var(--kiki-color-danger);
+
+  --vp-custom-block-info-bg: var(--kiki-color-bubble-user);
+  --vp-custom-block-info-text: var(--vp-c-text-1);
+  --vp-custom-block-info-border: var(--kiki-color-hairline-strong);
 }
 
 .dark {
-  /* Surfaces (dark) — neutral dark with subtle navy undertone */
-  --vp-c-bg: #0a1422;
-  --vp-c-bg-alt: #0f1b2e;
-  --vp-c-bg-elv: #0f1b2e;
-  --vp-c-bg-soft: #15263f;
+  /* Direct palette mapping from apps/kiki-gui/src/index.css:82+ */
+  --kiki-color-paper: #16130f;
+  --kiki-color-panel: #1e1a15;
+  --kiki-color-hairline: #302a22;
+  --kiki-color-hairline-strong: #453d31;
+  --kiki-color-ink: #f2ece2;
+  --kiki-color-ink-soft: #a89c8c;
+  --kiki-color-ink-faint: #8b7f6f;
+  --kiki-color-accent: #ff8340;
+  --kiki-color-accent-deep: #ff9a63;
+  --kiki-color-accent-soft: #3a2415;
+  --kiki-color-amber-ink: #e0a63c;
+  --kiki-color-amber-card: #2c2114;
+  --kiki-color-amber-rule: #7a5a20;
+  --kiki-color-success: #5cc46b;
+  --kiki-color-danger: #ff6b6b;
+  --kiki-color-bubble-user: #262019;
+  --kiki-color-scrollbar: #453d31;
+  --kiki-color-scrollbar-hover: #5a5142;
+  --kiki-color-shell: #0e0c09;
 
-  /* Text (dark) — avoid pure white */
-  --vp-c-text-1: #e2e8f0;
-  --vp-c-text-2: #94a3b8;
-  --vp-c-text-3: #64748b;
+  /* Gradients & tints (dark) */
+  --kiki-brand-gradient: linear-gradient(135deg, #ff9a63 0%, #ff8340 55%, #e8590c 100%);
+  --kiki-brand-gradient-soft: linear-gradient(135deg, rgba(255, 131, 64, 0.16) 0%, rgba(255, 154, 99, 0.10) 60%, rgba(232, 89, 12, 0.06) 100%);
+  --kiki-brand-soft: var(--kiki-color-accent-soft);
+  --kiki-brand-soft-strong: rgba(255, 131, 64, 0.22);
 
-  /* Borders (dark) — navy-leaning to stay in family */
-  --vp-c-divider: #1b2e47;
-  --vp-c-gutter: #1b2e47;
-  --vp-c-border: #1b2e47;
+  /* Surfaces (dark) */
+  --vp-c-bg: var(--kiki-color-paper);
+  --vp-c-bg-alt: var(--kiki-color-panel);
+  --vp-c-bg-elv: var(--kiki-color-panel);
+  --vp-c-bg-soft: var(--kiki-color-bubble-user);
 
-  /* Brand applied (dark) — keep the pure blue family, brightened */
-  --vp-c-brand-1: #3d95ff;
-  --vp-c-brand-2: #81c4ff;
-  --vp-c-brand-3: #5baeff;
-  --vp-c-brand-soft: rgba(61, 149, 255, 0.16);
+  /* Text (dark) */
+  --vp-c-text-1: var(--kiki-color-ink);
+  --vp-c-text-2: var(--kiki-color-ink-soft);
+  --vp-c-text-3: var(--kiki-color-ink-faint);
 
-  /* Softs (dark) */
-  --kimi-brand-soft: rgba(61, 149, 255, 0.16);
-  --kimi-brand-soft-strong: rgba(61, 149, 255, 0.22);
+  /* Borders (dark) */
+  --vp-c-divider: var(--kiki-color-hairline);
+  --vp-c-gutter: var(--kiki-color-hairline);
+  --vp-c-border: var(--kiki-color-hairline);
 
-  /* Shadows (dark) — brand-tinted glow, no negative spread */
-  --vp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --vp-shadow-2: 0 6px 24px rgba(61, 149, 255, 0.22);
-  --vp-shadow-3: 0 10px 32px rgba(61, 149, 255, 0.32);
-  --vp-shadow-4: 0 18px 48px rgba(61, 149, 255, 0.42);
+  /* Brand applied (dark) */
+  --vp-c-brand-1: var(--kiki-color-accent);
+  --vp-c-brand-2: #ffa06a;
+  --vp-c-brand-3: var(--kiki-color-accent-deep);
+  --vp-c-brand-soft: var(--kiki-brand-soft);
+
+  /* Shadows (dark) */
+  --vp-shadow-1: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --vp-shadow-2: 0 6px 24px rgba(0, 0, 0, 0.6);
+  --vp-shadow-3: 0 10px 32px rgba(255, 131, 64, 0.22);
+  --vp-shadow-4: 0 18px 48px rgba(255, 131, 64, 0.32);
 
   /* Buttons (dark) */
-  --vp-button-brand-bg: var(--kimi-brand-1);
-  --vp-button-brand-hover-bg: #1f8cff;
-  --vp-button-brand-active-bg: #1f8cff;
+  --vp-button-brand-bg: var(--kiki-color-accent);
+  --vp-button-brand-hover-bg: var(--kiki-color-accent-deep);
+  --vp-button-brand-active-bg: var(--kiki-color-accent-deep);
+  --vp-button-brand-text: #16130f;
+
+  --vp-button-alt-bg: var(--kiki-color-panel);
+  --vp-button-alt-hover-bg: var(--kiki-color-bubble-user);
+  --vp-button-alt-border: var(--kiki-color-hairline-strong);
+  --vp-button-alt-hover-border: var(--kiki-color-accent);
+  --vp-button-alt-text: var(--kiki-color-ink);
 
   /* Custom blocks tinting (dark) */
-  --vp-custom-block-tip-bg: rgba(61, 149, 255, 0.12);
-  --vp-custom-block-tip-code-bg: rgba(61, 149, 255, 0.16);
+  --vp-custom-block-tip-bg: var(--kiki-color-accent-soft);
+  --vp-custom-block-tip-code-bg: rgba(255, 131, 64, 0.16);
+
+  --vp-custom-block-warning-bg: var(--kiki-color-amber-card);
+  --vp-custom-block-warning-text: var(--vp-c-text-1);
+  --vp-custom-block-warning-border: var(--kiki-color-amber-rule);
+
+  --vp-custom-block-danger-bg: #2d1614;
+  --vp-custom-block-danger-text: var(--vp-c-text-1);
+  --vp-custom-block-danger-border: var(--kiki-color-danger);
+
+  --vp-custom-block-info-bg: var(--kiki-color-bubble-user);
+  --vp-custom-block-info-text: var(--vp-c-text-1);
+  --vp-custom-block-info-border: var(--kiki-color-hairline-strong);
 }

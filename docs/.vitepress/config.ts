@@ -24,7 +24,8 @@ const config = withMermaid(defineConfig({
 
   head: [
     ['link', { rel: 'icon', type: 'image/x-icon', href: `${base}favicon.ico` }],
-    ['meta', { name: 'theme-color', content: '#0a7aff' }],
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}kiki-logo.svg` }],
+    ['meta', { name: 'theme-color', content: '#e8590c' }],
   ],
 
   srcExclude: ['AGENTS.md', 'superpowers/**'],
@@ -259,6 +260,7 @@ const config = withMermaid(defineConfig({
   },
 
   themeConfig: {
+    logo: '/kiki-logo.svg',
     outline: [2, 3],
     search: { provider: 'local' },
     socialLinks: [
