@@ -1023,6 +1023,55 @@ describe('AgentLLMRequesterService strict resend', () => {
   });
 });
 
+describe('AgentLLMRequesterService attempt retry notification', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('notifies before resending with a repaired projection', async () => {
+    const calls = { value: 0 };
+    const { service } = createService(createRequester(calls), undefined);
+    const onAttemptRetry = vi.fn();
+
+    const result = await service.request({ onAttemptRetry });
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(calls.value).toBe(2);
+    expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifies before each indefinite-retry backoff', async () => {
+    vi.useFakeTimers();
+    const calls = { value: 0 };
+    const requester = createRequester(calls, new APIConnectionError('socket hang up'), [
+      new APIConnectionError('socket hang up again'),
+    ]);
+    const { service } = createService(requester, undefined, {
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' },
+    });
+    const onAttemptRetry = vi.fn();
+
+    const promise = service.request({ onAttemptRetry });
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(calls.value).toBe(3);
+    expect(onAttemptRetry).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not notify when the error is final', async () => {
+    const calls = { value: 0 };
+    const { service } = createService(
+      createRequester(calls, new APIStatusError(400, 'max_tokens must be positive')),
+      undefined,
+    );
+    const onAttemptRetry = vi.fn();
+
+    await expect(service.request({ onAttemptRetry })).rejects.toMatchObject({ statusCode: 400 });
+    expect(onAttemptRetry).not.toHaveBeenCalled();
+  });
+});
+
 describe('AgentLLMRequesterService infinite retry', () => {
   afterEach(() => {
     vi.useRealTimers();

@@ -1,10 +1,12 @@
 import { Markdown, visibleWidth } from '@kiki/pi-tui';
+import chalk from 'chalk';
 import * as cliHighlight from 'cli-highlight';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { createMarkdownTheme } from '#/tui/theme/pi-tui-theme';
+import { currentTheme } from '#/tui/theme/theme';
 import { setMarkdownRenderLatex } from '#/tui/utils/markdown-options';
 
 import { captureProcessWrite } from '../../../helpers/process';
@@ -127,6 +129,20 @@ describe('AssistantMessageComponent', () => {
 
     finalTheme.highlightCode?.(code, 'typescript');
     expect(highlightSpy).toHaveBeenCalled();
+  });
+
+  it('highlights diff fences with the palette diff colors', () => {
+    const previousLevel = chalk.level;
+    chalk.level = 3;
+    try {
+      const theme = createMarkdownTheme();
+      expect(theme.highlightCode?.('- removed\n+ added', 'diff')).toEqual([
+        chalk.hex(currentTheme.color('diffRemoved'))('- removed'),
+        chalk.hex(currentTheme.color('diffAdded'))('+ added'),
+      ]);
+    } finally {
+      chalk.level = previousLevel;
+    }
   });
 
   it('marks the rendered zone with OSC 133 markers, once across cache hits', () => {

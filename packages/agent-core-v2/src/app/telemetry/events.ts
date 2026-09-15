@@ -236,7 +236,7 @@ export interface BackgroundTaskCompletedEvent {
 }
 
 export interface TaskWaitCompletedEvent {
-  outcome: 'completed' | 'timed_out' | 'task_not_found' | 'aborted';
+  outcome: 'completed' | 'timed_out' | 'task_not_found' | 'aborted' | 'interrupted';
   timeout_ms: number;
   waited_ms: number;
   has_task_id: boolean;

@@ -249,6 +249,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private outputCacheTrimPending = false;
   private readonly buildingNotificationKeys = new Set<string>();
   private readonly pendingNotificationRequests = new Map<string, TaskNotificationStepRequest>();
+  private exitSuppressionArmed = false;
   private readonly persistence: AgentTaskPersistence;
   private notificationRestoreQueue: Promise<void> = Promise.resolve();
 
@@ -723,6 +724,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     await this.persistence.writeTask(updated).catch(() => {});
   }
 
+  async suppressAllTerminalNotifications(): Promise<void> {
+    this.exitSuppressionArmed = true;
+    for (const request of Array.from(this.pendingNotificationRequests.values())) {
+      request.abort();
+    }
+  }
+
   markTasksDeliveredViaWait(tasks: readonly AgentTaskWaitDelivery[]): void {
     if (tasks.length === 0) return;
     const keys: string[] = [];
@@ -903,17 +911,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   async stopAllOnExit(reason: string): Promise<readonly AgentTaskInfo[]> {
+    await this.suppressAllTerminalNotifications();
     if (this.keepAliveOnExit()) return [];
-    const active = this.list(true);
-    await Promise.all(
-      active
-        .filter((task) => task.detached === true)
-        .map((task) => this.suppressTerminalNotification(task.taskId)),
-    );
     return this.stopAll(reason);
   }
 
   override dispose(): void {
+    this.exitSuppressionArmed = true;
     if (!this.keepAliveOnExit()) {
       for (const entry of this.tasks.values()) {
         if (TERMINAL_STATUSES.has(entry.status)) continue;
@@ -944,6 +948,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private keepAliveOnExit(): boolean {
     return resolveAgentTaskConfig(this.config)?.keepAliveOnExit === true;
+  }
+
+  private marksTerminalNotificationSuppressed(entry: ManagedTask): boolean {
+    return this.exitSuppressionArmed && !this.keepAliveOnExit() && this.isDetached(entry);
   }
 
   async wait(
@@ -1249,11 +1257,21 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.timeoutHandle = undefined;
     }
     const foregroundRelease = entry.foregroundRelease;
+    if (this.marksTerminalNotificationSuppressed(entry)) {
+      entry.terminalNotificationSuppressed = true;
+    }
     if (entry.outputPersistStarted) {
       await this.persistLive(entry);
     } else {
       entry.pendingOutput = [];
       entry.pendingOutputBytes = 0;
+    }
+    if (
+      this.marksTerminalNotificationSuppressed(entry) &&
+      entry.terminalNotificationSuppressed !== true
+    ) {
+      entry.terminalNotificationSuppressed = true;
+      await this.persistLive(entry);
     }
     this.fireTerminalEffects(entry);
     foregroundRelease?.resolve('terminal');
@@ -1312,6 +1330,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async notifyAgentTask(info: AgentTaskInfo): Promise<void> {
     const context = await this.buildAgentTaskNotificationContext(info);
     if (context === undefined) return;
+    if (this.isTerminalNotificationSuppressed(info.taskId)) return;
     const key = notificationKey(context.origin);
     if (this.deliveredNotificationKeys.has(key)) return;
     const request = new TaskNotificationStepRequest(
@@ -1433,6 +1452,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private fireNotificationHook(notification: AgentTaskNotification): void {
+    if (this.exitSuppressionArmed) return;
     void this.dispatcher.dispatch(
       new TaskNotified({
         notificationType: notification.type,
@@ -1447,6 +1467,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private isTerminalNotificationSuppressed(taskId: string): boolean {
     return (
+      this.exitSuppressionArmed ||
       this.tasks.get(taskId)?.terminalNotificationSuppressed === true ||
       this.ghosts.get(taskId)?.terminalNotificationSuppressed === true
     );

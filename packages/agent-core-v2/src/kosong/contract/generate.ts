@@ -3,9 +3,11 @@ import {
   isContentPart,
   isToolCall,
   isToolCallPart,
+  isVacuousContentPart,
   mergeInPlace,
   type Message,
   type StreamedMessagePart,
+  type ThinkPart,
   type ToolCall,
 } from './message';
 import type { ChatProvider, FinishReason, GenerateOptions, StreamedMessage } from './provider';
@@ -38,8 +40,20 @@ export async function generate(
 ): Promise<GenerateResult> {
   const message: Message = { role: 'assistant', content: [], toolCalls: [] };
   let pendingPart: StreamedMessagePart | null = null;
+  let deferredThink: ThinkPart | null = null;
 
   const toolCallIndexMap = new Map<number | string, number>();
+
+  const flushPending = (): void => {
+    if (pendingPart !== null) {
+      flushPart(message, pendingPart, toolCallIndexMap);
+      pendingPart = null;
+    }
+    if (deferredThink !== null) {
+      message.content.push(deferredThink);
+      deferredThink = null;
+    }
+  };
 
   if (options?.signal?.aborted) {
     throw createAbortError();
@@ -96,10 +110,15 @@ export async function generate(
         }
       }
 
+      if (part.type === 'text') {
+        deferredThink = null;
+      }
       if (pendingPart === null) {
         pendingPart = part;
+      } else if (pendingPart.type === 'text' && part.type === 'think' && isVacuousContentPart(part)) {
+        deferredThink = structuredClone(part);
       } else if (!mergeInPlace(pendingPart, part)) {
-        flushPart(message, pendingPart, toolCallIndexMap);
+        flushPending();
         pendingPart = part;
       }
     } finally {
@@ -116,9 +135,7 @@ export async function generate(
     firstPartAt === undefined ? undefined : { serverDecodeMs, clientConsumeMs },
   );
 
-  if (pendingPart !== null) {
-    flushPart(message, pendingPart, toolCallIndexMap);
-  }
+  flushPending();
   if (message.content.length === 0 && message.toolCalls.length === 0) {
     throw new APIEmptyResponseError(
       'The API returned an empty response (no content, no tool calls).' +

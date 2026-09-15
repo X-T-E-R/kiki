@@ -133,6 +133,48 @@ export interface SearchCoreLog {
   warn(message: string, meta?: Record<string, unknown>): void;
 }
 
+async function sessionDirectoryIdentity(sessionDir: string): Promise<string | undefined> {
+  try {
+    const info = await stat(sessionDir, { bigint: true });
+    if (!info.isDirectory() || info.ino <= 0n || info.birthtimeNs <= 0n) return undefined;
+    return `${info.dev}:${info.ino}:${info.birthtimeNs}`;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+    throw error;
+  }
+}
+
+async function sessionDirectoryTitle(
+  sessionDir: string,
+  log: SearchCoreLog,
+): Promise<string> {
+  for (const scope of ['', 'session-meta']) {
+    try {
+      const meta: unknown = JSON.parse(
+        await readFile(join(sessionDir, scope, 'state.json'), 'utf8'),
+      );
+      if (
+        typeof meta === 'object' &&
+        meta !== null &&
+        'title' in meta &&
+        typeof meta.title === 'string'
+      ) {
+        return meta.title;
+      }
+      return '';
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        log.warn('global search: cannot read session title', {
+          dir: sessionDir,
+          error: errorMessage(error),
+        });
+      }
+    }
+  }
+  return '';
+}
+
 export interface SearchCoreOptions {
   /** Absolute path of the search-index database directory. */
   readonly indexDir: string;
@@ -165,6 +207,11 @@ export interface SyncSessionInput {
   /** Absolute session directory (the parent of wire.jsonl / agents/). */
   readonly dir: string;
 }
+
+type SourcedSessionInput = SyncSessionInput & {
+  readonly title: string;
+  readonly sessionIdentity: string;
+};
 
 /** The core's view of the served index, embedded in every search response. */
 export interface CoreIndexView {
@@ -579,6 +626,7 @@ export class SearchIndexCore {
 
     const currentIds = new Set(sessions.map((s) => s.id));
     let changed = false;
+    let skipped = 0;
 
     for (const row of db.query({ key: { prefix: SESSION_META_PREFIX }, project: [] })) {
       if (this.disposed) return { noop: true, sessions: 0, documents: 0 };
@@ -606,7 +654,7 @@ export class SearchIndexCore {
         continue;
       }
       try {
-        await this.syncSession(db, summary, sourceMtimeMs);
+        if (!(await this.syncSession(db, summary, sourceMtimeMs))) skipped += 1;
         changed = true;
       } catch (error) {
         this.log.warn('global search: failed to index session', {
@@ -629,6 +677,8 @@ export class SearchIndexCore {
     const metaCount = db.query({ key: { prefix: '\0meta\\' }, project: [] }).length;
     const stats: StatsDoc = {
       kind: 'stats',
+      degraded:
+        skipped > 0 ? `Skipped ${String(skipped)} session(s) during indexing` : undefined,
       sessions: sessions.length,
       documents: db.size - metaCount,
       lastIndexedAt: Date.now(),
@@ -671,11 +721,42 @@ export class SearchIndexCore {
     await db.del(SESSION_META_PREFIX + sessionId);
   }
 
+  /**
+   * Index one session. Returns false when the session directory is gone (or
+   * is no longer a directory), in which case its rows are dropped instead of
+   * being re-indexed from a stale inventory snapshot.
+   */
   private async syncSession(
     db: MiniDb<SearchDoc>,
     summary: SyncSessionInput,
     sourceMtimeMs?: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    let identity: string | undefined;
+    try {
+      identity = await sessionDirectoryIdentity(summary.dir);
+    } catch (error) {
+      this.log.warn('global search: failed to index session', {
+        sessionId: summary.id,
+        error: errorMessage(error),
+      });
+      return false;
+    }
+    if (identity === undefined) {
+      await this.deleteSessionDocs(db, summary.id);
+      return false;
+    }
+    const title = await sessionDirectoryTitle(summary.dir, this.log);
+    const metaKey = SESSION_META_PREFIX + summary.id;
+    const previous = db.get(metaKey);
+    if (
+      previous?.kind !== 'sessionMeta' ||
+      previous.identity !== identity ||
+      previous.dir !== summary.dir
+    ) {
+      await this.deleteSessionDocs(db, summary.id);
+      if (previous !== undefined) this.syncReplaced = true;
+    }
+
     const wireFiles = await collectWireFiles(summary.id, summary.dir, this.wireFileSnapshots);
     const seenPaths = new Set(wireFiles.map((file) => file.path));
 
@@ -687,11 +768,11 @@ export class SearchIndexCore {
       await db.del(row.key);
     }
 
+    const sourced = { ...summary, title, sessionIdentity: identity };
     for (const file of wireFiles) {
-      await this.syncWireFile(db, summary, file);
+      await this.syncWireFile(db, sourced, file);
     }
 
-    const title = summary.title ?? '';
     const titleKey = `${summary.id}/$title`;
     for (const row of db.query({ key: { prefix: `${summary.id}/$` }, project: [] })) {
       if (row.key !== titleKey) {
@@ -704,6 +785,7 @@ export class SearchIndexCore {
       if (existing?.kind !== 'title' || existing.text !== title) {
         const doc: TitleDoc = {
           kind: 'title',
+          sessionIdentity: identity,
           sessionId: summary.id,
           workspaceId: summary.workspaceId,
           sessionTitle: title,
@@ -720,10 +802,14 @@ export class SearchIndexCore {
     }
     const sessionMeta: SessionMetaDoc = {
       kind: 'sessionMeta',
+      dir: summary.dir,
+      identity,
+      title,
       updatedAt: summary.updatedAt,
       sourceMtimeMs,
     };
     await db.set(SESSION_META_PREFIX + summary.id, sessionMeta);
+    return true;
   }
 
   private async deleteFileDocs(db: MiniDb<SearchDoc>, meta: FileMetaDoc): Promise<void> {
@@ -735,7 +821,7 @@ export class SearchIndexCore {
 
   private async syncWireFile(
     db: MiniDb<SearchDoc>,
-    summary: SyncSessionInput,
+    summary: SourcedSessionInput,
     file: WireFileRef,
   ): Promise<void> {
     let st: { size: number; mtimeMs: number; ino: number };
@@ -871,7 +957,7 @@ export class SearchIndexCore {
    */
   private collectWireLine(
     ops: BatchInputOp<SearchDoc>[],
-    summary: SyncSessionInput,
+    summary: SourcedSessionInput,
     file: WireFileRef,
     line: string,
     lineOffset: number,
@@ -895,9 +981,10 @@ export class SearchIndexCore {
       const stepOrdinal = e.stepUuid !== undefined ? stepState.byUuid[e.stepUuid] : undefined;
       const doc: MessageDoc = {
         kind: 'message',
+        sessionIdentity: summary.sessionIdentity,
         sessionId: summary.id,
         workspaceId: summary.workspaceId,
-        sessionTitle: summary.title ?? '',
+        sessionTitle: summary.title,
         agentId: file.agentId,
         role: e.role,
         text: e.text.length > MAX_DOC_TEXT_CHARS ? e.text.slice(0, MAX_DOC_TEXT_CHARS) : e.text,
@@ -1050,15 +1137,102 @@ export class SearchIndexCore {
     const boundary = page.kind === 'keyset' ? page.boundary : undefined;
     const matched = matchDocs(q, candidates, boundary, budget);
     incomplete ??= matched.incomplete;
-    const { pageRows, hasMore } = paginateRows(q, page, matched.rows);
+    const visible = await this.verifyAgainstSources(serveDb, matched.rows, budget, {
+      markStale: () => {
+        freshnessStale = true;
+      },
+      markIncomplete: () => {
+        incomplete ??= 'deadline';
+      },
+    });
+    const { pageRows, hasMore } = paginateRows(q, page, visible);
     return {
       kind: 'page',
       rows: pageRows,
       hasMore,
       incomplete,
       generation,
-      index: this.readIndexView(serveDb, freshnessStale),
+      index: this.readIndexView(serveDb, freshnessStale || this.db !== serveDb),
     };
+  }
+
+  /**
+   * Drop every hit whose session source no longer matches the facts recorded
+   * at index time: the session's meta row must exist and agree with the doc's
+   * `sessionIdentity`, and the session directory must still resolve to that
+   * identity. Surviving rows carry the source-side title (never the live
+   * summary map, which outlives a deleted session).
+   */
+  private async verifyAgainstSources(
+    serveDb: MiniDb<SearchDoc>,
+    rows: readonly MatchedRow[],
+    budget: MatchBudget,
+    marks: { markStale: () => void; markIncomplete: () => void },
+  ): Promise<MatchedRow[]> {
+    const sources = new Map<string, SessionMetaDoc | undefined>();
+    for (const row of rows) {
+      const id = row.value.sessionId;
+      if (sources.has(id)) continue;
+      if (Date.now() > budget.deadlineAt) {
+        marks.markIncomplete();
+        break;
+      }
+      const meta = serveDb.get(SESSION_META_PREFIX + id);
+      sources.set(id, meta?.kind === 'sessionMeta' ? meta : undefined);
+    }
+
+    const identities = new Map<string, string | undefined>();
+    const visible: MatchedRow[] = [];
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<null>((resolve) => {
+      deadlineTimer = setTimeout(() => {
+        resolve(null);
+      }, Math.max(0, budget.deadlineAt - Date.now()));
+      deadlineTimer.unref?.();
+    });
+    try {
+      for (const row of rows) {
+        if (Date.now() > budget.deadlineAt) {
+          marks.markIncomplete();
+          break;
+        }
+        const meta = sources.get(row.value.sessionId);
+        if (
+          meta?.dir === undefined ||
+          row.value.sessionIdentity === undefined ||
+          meta.identity !== row.value.sessionIdentity
+        ) {
+          marks.markStale();
+          continue;
+        }
+        if (!identities.has(meta.dir)) {
+          let identity: string | undefined | null;
+          const pending = sessionDirectoryIdentity(meta.dir);
+          pending.catch(() => undefined);
+          try {
+            identity = await Promise.race([pending, deadline]);
+          } catch (error) {
+            throw new GlobalSearchError(
+              'index_unavailable',
+              `cannot verify search source: ${errorMessage(error)}`,
+            );
+          }
+          if (identity === null || Date.now() > budget.deadlineAt) {
+            marks.markIncomplete();
+            break;
+          }
+          identities.set(meta.dir, identity);
+        }
+        if (identities.get(meta.dir) === row.value.sessionIdentity) {
+          visible.push({ ...row, value: { ...row.value, sessionTitle: meta.title ?? '' } });
+        } else {
+          marks.markStale();
+        }
+      }
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    }
+    return visible;
   }
 
   /**
@@ -1124,7 +1298,7 @@ export class SearchIndexCore {
       generation: this.generation,
       readOnly: this.db?.readOnly === true,
       lockToken: this.lockToken,
-      degraded: this.lastRefreshError?.message,
+      degraded: this.lastRefreshError?.message ?? statsDegraded(stats),
       lifecycle: this.lifecycleState(),
     };
   }
@@ -1140,7 +1314,7 @@ export class SearchIndexCore {
       documents: stats?.kind === 'stats' ? stats.documents : 0,
       readOnly: handle?.readOnly === true,
       freshnessStale: true,
-      degraded: this.lastRefreshError?.message,
+      degraded: this.lastRefreshError?.message ?? statsDegraded(stats),
       lockToken: this.lockToken,
     };
   }
@@ -1156,10 +1330,14 @@ export class SearchIndexCore {
       documents,
       readOnly: db.readOnly,
       freshnessStale,
-      degraded: this.lastRefreshError?.message,
+      degraded: this.lastRefreshError?.message ?? statsDegraded(stats),
       lockToken: this.lockToken,
     };
   }
+}
+
+function statsDegraded(stats: SearchDoc | undefined): string | undefined {
+  return stats?.kind === 'stats' ? stats.degraded : undefined;
 }
 
 async function sessionSourceMtime(sessionDir: string): Promise<number | undefined> {

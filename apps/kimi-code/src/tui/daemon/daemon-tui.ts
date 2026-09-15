@@ -137,6 +137,7 @@ export class DaemonTUI {
   private mainControllerDispose: (() => void) | undefined;
   private focusedControllerDispose: (() => void) | undefined;
   private activeInteractionId: string | undefined;
+  private activeSessionPicker: SessionPickerComponent | undefined;
   private readonly skillCommands = new Map<string, DaemonSkillCommand>();
   private readonly agentProfileCommands = new Map<string, string>();
   private readonly imageAttachments = new ImageAttachmentStore();
@@ -2106,6 +2107,7 @@ export class DaemonTUI {
       onSearchDrain: () => {
         void loadMore(true);
       },
+      onDeleteRequest: (row) => this.deleteSessionFromPicker(row),
     });
     let loading = false;
     const loadMore = async (drain: boolean): Promise<void> => {
@@ -2129,6 +2131,44 @@ export class DaemonTUI {
       }
     };
     this.mountEditorReplacement(picker);
+    this.activeSessionPicker = picker;
+  }
+
+  private async deleteSessionFromPicker(row: SessionRow): Promise<void> {
+    if (row.id === this.controller?.sessionId) {
+      await this.deleteCurrentSessionFromPicker(row);
+      return;
+    }
+    try {
+      await this.client.klient.session(row.id).delete();
+    } catch (error) {
+      this.showStatus(`Failed to delete session ${row.id}: ${formatErrorMessage(error)}`, 'error');
+      return;
+    }
+    if (this.activeSessionPicker !== undefined) {
+      await this.showSessionPicker(this.state.sessionsScope);
+    }
+    this.showStatus('Session deleted.');
+  }
+
+  private async deleteCurrentSessionFromPicker(row: SessionRow): Promise<void> {
+    this.mainControllerDispose?.();
+    this.mainControllerDispose = undefined;
+    this.focusedControllerDispose?.();
+    this.focusedControllerDispose = undefined;
+    this.controller?.close();
+    this.controller = undefined;
+    try {
+      await this.client.klient.session(row.id).delete();
+    } catch (error) {
+      this.showStatus(`Failed to delete session ${row.id}: ${formatErrorMessage(error)}`, 'error');
+      await this.createSession();
+      this.restoreEditor();
+      return;
+    }
+    this.restoreEditor();
+    await this.createSession();
+    this.showStatus('Session deleted.');
   }
 
   private syncInteractionBlocks(blocks: readonly Block[]): void {
@@ -2225,6 +2265,7 @@ export class DaemonTUI {
   }
 
   private mountEditorReplacement(component: Parameters<TUIState['editorContainer']['addChild']>[0]): void {
+    this.activeSessionPicker = undefined;
     this.state.editorContainer.clear();
     this.state.editorContainer.addChild(component);
     this.state.ui.setFocus(component);
@@ -2232,6 +2273,7 @@ export class DaemonTUI {
   }
 
   private restoreEditor(): void {
+    this.activeSessionPicker = undefined;
     this.state.editorContainer.clear();
     this.state.editorContainer.addChild(this.state.editor);
     this.state.ui.setFocus(this.state.editor);

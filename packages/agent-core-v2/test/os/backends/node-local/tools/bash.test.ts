@@ -607,6 +607,9 @@ function createFakeTaskService(
     async suppressTerminalNotification(): Promise<void> {
     },
 
+    async suppressAllTerminalNotifications(): Promise<void> {
+    },
+
     markTasksDeliveredViaWait(): void {
     },
 

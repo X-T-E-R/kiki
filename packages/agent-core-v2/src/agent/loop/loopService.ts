@@ -368,7 +368,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       result,
       cancel: (reason) => this.cancel(id, reason),
     };
-    const job = { request, seed, controller, ready, result, queue, steps, turn };
+    const job = { request, seed, controller, ready, result, queue, steps, turn, steerController: new AbortController() };
     this.assignStep(job, request);
     this.moveStandaloneStepsTo(job);
     return job;
@@ -388,6 +388,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   }
 
   private assignStep(job: TurnJob, request: StepRequest, options?: StepEnqueueOptions): Step {
+    if (request.kind === 'steer') job.steerController.abort(abortError('Steered by new input'));
     const step = this.enqueueStep(job, request, options);
     const assignment = this.pendingAssignments.get(request);
     assignment?.resolve({ turn: job.turn, step });
@@ -652,6 +653,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             runtime.job !== undefined && begun.step.number === 1,
             begun.step.uuid,
             options.onStarted,
+            runtime.job?.steerController.signal,
           );
           const completed = this.completeLoopStep(runtime, result);
           if (completed !== undefined) return completed;
@@ -695,6 +697,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       throw createMaxStepsExceededError(maxSteps);
     }
     const batch = runtime.queue.takeNextBatch()!;
+    if (runtime.job !== undefined) runtime.job.steerController = new AbortController();
     const mutableStep = runtime.job?.steps.get(batch.driver.id);
     if (mutableStep !== undefined) {
       mutableStep.state = 'running';
@@ -846,6 +849,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     firstStepOfTurn: boolean,
     stepUuid: string,
     onStarted: ((step: number) => void) | undefined,
+    steerSignal: AbortSignal | undefined,
   ): Promise<StepExecutionResult> {
     this.activeRequestTrace = undefined;
     await this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal });
@@ -859,7 +863,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         markStepStarted,
       );
       const request = this.llmRequester.start(
-        { source: { type: 'turn', turnId, step: currentStep } },
+        {
+          source: { type: 'turn', turnId, step: currentStep },
+          onAttemptRetry: () => {
+            streamParts.discardAttemptParts();
+          },
+        },
         streamParts.handle,
         signal,
       );
@@ -880,6 +889,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         stepUuid,
         response,
         request.trace,
+        steerSignal,
       );
       this.finishStep(turnId, signal, currentStep, stepUuid, response, finishReason, markStepStarted);
       stepEndAppended = true;
@@ -974,6 +984,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     stepUuid: string,
     response: AgentLLMRequestFinish,
     trace: LLMRequestTrace,
+    steerSignal: AbortSignal | undefined,
   ): Promise<FinishReason> {
     let finishReason = response.providerFinishReason ?? 'completed';
     if (response.message.toolCalls.length === 0) {
@@ -1041,6 +1052,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       }
       for await (const toolResult of this.toolExecutor.execute(batch.calls, {
         signal,
+        steerSignal,
         turnId,
         trace,
         onToolCall: ({ toolCallId, name, args }) => {
@@ -1218,6 +1230,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           }
           case 'think': {
             onResponseEvent();
+            if (isVacuousContentPart(part) && partialContent.at(-1)?.part.type === 'text') return;
             const partId = accumulate(part);
             void this.dispatcher.dispatch(
               new ThinkingDelta({ turnId, step, stepId, partId, delta: part.think }),
@@ -1276,6 +1289,11 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           return { id: entry!.id, part };
         });
       },
+      discardAttemptParts: () => {
+        partialContent.length = 0;
+        callsByIndex.clear();
+        forceContentPartBoundary = false;
+      },
       drainInterruptedContent: () =>
         partialContent.splice(0).filter((entry) => !isVacuousContentPart(entry.part)),
     };
@@ -1318,6 +1336,7 @@ interface TurnJob {
   readonly queue: StepRequestQueue;
   readonly steps: Map<string, MutableStep>;
   readonly turn: MutableTurn;
+  steerController: AbortController;
 }
 
 interface HeldAdmission {
@@ -1347,6 +1366,7 @@ type BeginStepResult = { readonly step: StepRuntime } | { readonly result: LoopR
 
 interface StreamPartCollector {
   readonly handle: (part: StreamedMessagePart) => void;
+  discardAttemptParts(): void;
   resolveContent(content: readonly ContentPart[]): Array<{ id: string; part: ContentPart }>;
   drainInterruptedContent(): Array<{ id: string; part: ContentPart }>;
 }

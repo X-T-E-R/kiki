@@ -26,6 +26,7 @@ import { getDataDir } from '#/utils/paths';
 import { createKimiCodeHostIdentity, getVersion } from '../../version';
 import {
   accessUrlLines,
+  browserOpenOrigin,
   buildOpenableUrl,
   isLoopbackHost,
   splitTokenFragment,
@@ -192,7 +193,8 @@ export async function handleWebCommand(
           : formatReadyLine(origin, token, parsed.dangerousBypassAuth),
       );
       if (opts.open === true) {
-        deps.openUrl(token !== undefined ? buildWebUrl(origin, token) : origin);
+        const openOrigin = browserOpenOrigin(origin);
+        deps.openUrl(token !== undefined ? buildWebUrl(openOrigin, token) : openOrigin);
       }
     },
   });
@@ -461,7 +463,7 @@ export function formatReadyBanner(
     return frag === '' ? url(base) : url(base) + dim(frag);
   };
 
-  const port = Number(new URL(origin).port);
+  const port = Number(origin.slice(origin.lastIndexOf(':') + 1));
   // Borderless header: the Kimi sprite (the little mascot with eyes) sits next
   // to the title, keeping the brand without the enclosing box.
   const logo = ['▐█▛█▛█▌', '▐█████▌'] as const;

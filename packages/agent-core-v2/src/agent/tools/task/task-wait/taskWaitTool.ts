@@ -15,7 +15,7 @@ import { formatPlainObject } from '#/agent/task/tools/format';
 import { formatTaskList } from '#/agent/tools/task/task-list/taskListTool';
 import { IFlagService } from '#/app/flag/flag';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import { abortError, linkAbortSignal } from '#/_base/utils/abort';
+import { abortError, isAbortError, linkAbortSignal } from '#/_base/utils/abort';
 import { TASK_WAIT_FLAG_ID } from './flag';
 import { ITaskWaitTool, TaskWaitInputSchema, type TaskWaitInput } from './task-wait';
 import TASK_WAIT_DESCRIPTION from './task-wait.md?raw';
@@ -24,7 +24,7 @@ const OUTPUT_PREVIEW_BYTES = 32 * 1024;
 
 const PROGRESS_INTERVAL_MS = 1_000;
 
-type TaskWaitOutcome = 'completed' | 'timed_out' | 'task_not_found' | 'aborted';
+type TaskWaitOutcome = 'completed' | 'timed_out' | 'task_not_found' | 'aborted' | 'interrupted';
 
 function terminalReason(info: AgentTaskInfo): 'timed_out' | 'stopped' | 'failed' | undefined {
   if (info.status === 'timed_out') return 'timed_out';
@@ -151,13 +151,23 @@ export class TaskWaitTool implements ITaskWaitTool {
     }
 
     let waited: AgentTaskInfo | undefined;
+    const signal =
+      ctx.steerSignal === undefined ? ctx.signal : AbortSignal.any([ctx.signal, ctx.steerSignal]);
     const progress = startWaitProgress(args, this.tasks, ctx.onUpdate, startedAt);
     try {
       waited =
         args.task_id === undefined
-          ? await this.waitAny(runningAtStart, timeoutMs, ctx.signal)
-          : await this.tasks.wait(args.task_id, timeoutMs, ctx.signal);
+          ? await this.waitAny(runningAtStart, timeoutMs, signal)
+          : await this.tasks.wait(args.task_id, timeoutMs, signal);
     } catch (error) {
+      if (
+        !ctx.signal.aborted &&
+        ctx.steerSignal?.aborted === true &&
+        (error === ctx.steerSignal.reason || isAbortError(error))
+      ) {
+        this.track(args, startedAt, timeoutMs, 'interrupted', 0);
+        return { output: this.formatInterrupted(args, startedAt, timeoutMs), isError: false };
+      }
       this.track(args, startedAt, timeoutMs, 'aborted', 0);
       throw error;
     } finally {
@@ -231,6 +241,24 @@ export class TaskWaitTool implements ITaskWaitTool {
         timeoutMs,
       }),
       'The wait timed out, not the task. The task is still running.',
+    ];
+    const running = this.tasks.list(true);
+    if (running.length > 0) {
+      lines.push('', '[still_running]', formatTaskList(running, true));
+    }
+    return lines.join('\n');
+  }
+
+  private formatInterrupted(args: TaskWaitInput, startedAt: number, timeoutMs: number): string {
+    const lines = [
+      formatPlainObject({
+        waitStatus: 'interrupted',
+        reason: 'steer',
+        taskId: args.task_id,
+        waitedMs: Date.now() - startedAt,
+        timeoutMs,
+      }),
+      'New input ended this wait early. Read the new input before deciding what to do next. Background tasks have not been stopped; completion still arrives via automatic notification.',
     ];
     const running = this.tasks.list(true);
     if (running.length > 0) {

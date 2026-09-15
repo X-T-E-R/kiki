@@ -2,6 +2,13 @@ export const MAX_DOC_TEXT_CHARS = 20_000;
 
 export interface MessageDoc {
   readonly kind: 'message';
+  /**
+   * Directory identity (`dev:ino:birthtimeNs`) of the session that produced
+   * this document, recorded at index time. A query drops the hit when the
+   * indexed identity no longer matches the live session directory, so a doc
+   * whose session was deleted or replaced never surfaces.
+   */
+  readonly sessionIdentity?: string;
   readonly sessionId: string;
   readonly workspaceId: string;
   readonly sessionTitle: string;
@@ -20,6 +27,8 @@ export interface MessageDoc {
 
 export interface TitleDoc {
   readonly kind: 'title';
+  /** See `MessageDoc.sessionIdentity`. */
+  readonly sessionIdentity?: string;
   readonly sessionId: string;
   readonly workspaceId: string;
   readonly sessionTitle: string;
@@ -92,10 +101,22 @@ export interface SessionMetaDoc {
   readonly kind: 'sessionMeta';
   readonly updatedAt?: number;
   readonly sourceMtimeMs?: number;
+  /** Session title read from the session's own `state.json` at index time. */
+  readonly title?: string;
+  /** Absolute session directory the documents were indexed from. */
+  readonly dir?: string;
+  /**
+   * Identity of `dir` at index time (`dev:ino:birthtimeNs`). A row whose
+   * `sessionIdentity` differs from this — or whose `dir` no longer resolves —
+   * is dropped from the query results and marks the served view stale.
+   */
+  readonly identity?: string;
 }
 
 export interface StatsDoc {
   readonly kind: 'stats';
+  /** Non-fatal indexing degradation (e.g. sessions skipped), surfaced on `index_state.degraded`. */
+  readonly degraded?: string;
   readonly sessions: number;
   readonly documents: number;
   readonly lastIndexedAt: number;

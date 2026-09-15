@@ -32,6 +32,7 @@ import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import type { SubagentTaskInfo } from '#/agent/tools/agent/subagent-task';
 import { ITaskWaitTool } from '#/agent/tools/task/task-wait/task-wait';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { executeTool } from '../../../tools/fixtures/execute-tool';
 import { recordingTelemetry, type TelemetryRecord } from '../../../app/telemetry/stubs';
 import { stubFlag } from '../../../app/flag/stubs';
@@ -193,6 +194,11 @@ class FakeTaskService implements IAgentTaskService {
       ...entry.info,
       terminalNotificationSuppressed: true,
     } as AgentTaskInfo;
+  }
+
+  async suppressAllTerminalNotifications(): Promise<void> {
+    const active = this.list(true).filter((info) => info.detached === true);
+    await Promise.all(active.map((info) => this.suppressTerminalNotification(info.taskId)));
   }
 
   markTasksDeliveredViaWait(tasks: readonly AgentTaskWaitDelivery[]): void {
@@ -1191,6 +1197,160 @@ describe('TaskWait tool (harness)', () => {
     }
     throw new Error(`Timed out waiting for task to terminate: ${taskId}`);
   }
+
+  it.each(['specific', 'any'] as const)(
+    'returns interrupted instead of a timeout when a steer arrives during a %s wait',
+    async (target) => {
+      const records: TelemetryRecord[] = [];
+      const ctx = createTestAgent(telemetryServices(recordingTelemetry(records)));
+      const slow = controllableProcess();
+      try {
+        const tasks = ctx.get(IAgentTaskService);
+        const tool = ctx.get(IAgentToolRegistryService).resolve('TaskWait');
+        expect(tool).toBeDefined();
+        const taskId = tasks.registerTask(new ProcessTask(slow.proc, 'sleep 60', 'background work'));
+
+        const steered = new AbortController();
+        const pending = executeTool(tool!, {
+          ...context('wait_steered', {
+            timeout: 600,
+            task_id: target === 'specific' ? taskId : undefined,
+          }),
+          steerSignal: steered.signal,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        steered.abort(abortError('Steered by new input'));
+
+        const result = await pending;
+        expect(result.isError).toBeFalsy();
+        const output = outputString(result);
+        expect(output).toContain('wait_status: interrupted');
+        expect(output).not.toContain('wait_status: aborted');
+        expect(output).toContain('reason: steer');
+        expect(output).toContain('[still_running]');
+        expect(tasks.getTask(taskId)?.status).toBe('running');
+        expect(slow.proc.kill).not.toHaveBeenCalled();
+        expect(
+          records.findLast((record) => record.event === 'task_wait_completed')?.properties,
+        ).toMatchObject({ outcome: 'interrupted' });
+      } finally {
+        slow.resolveWait(0);
+        await ctx.dispose();
+      }
+    },
+  );
+
+  it('interrupts a multi-task waitAny fan-out when the production steer reason aborts it', async () => {
+    const ctx = createTestAgent();
+    const first = controllableProcess();
+    const second = controllableProcess();
+    try {
+      const tasks = ctx.get(IAgentTaskService);
+      const tool = ctx.get(IAgentToolRegistryService).resolve('TaskWait');
+      const firstId = tasks.registerTask(new ProcessTask(first.proc, 'sleep 60', 'first task'));
+      const secondId = tasks.registerTask(new ProcessTask(second.proc, 'sleep 60', 'second task'));
+
+      const steered = new AbortController();
+      const pending = executeTool(tool!, {
+        ...context('wait_fan_out', { timeout: 600 }),
+        steerSignal: steered.signal,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      steered.abort(abortError('Steered by new input'));
+
+      const result = await pending;
+      expect(result.isError).toBeFalsy();
+      const output = outputString(result);
+      expect(output).toContain('wait_status: interrupted');
+      expect(output).not.toContain('wait_status: aborted');
+      expect(tasks.getTask(firstId)?.status).toBe('running');
+      expect(tasks.getTask(secondId)?.status).toBe('running');
+      expect(first.proc.kill).not.toHaveBeenCalled();
+      expect(second.proc.kill).not.toHaveBeenCalled();
+    } finally {
+      first.resolveWait(0);
+      second.resolveWait(0);
+      await ctx.dispose();
+    }
+  });
+
+  it('keeps aborting the wait when the execution signal and the steer signal abort together', async () => {
+    const ctx = createTestAgent();
+    const slow = controllableProcess();
+    try {
+      const tasks = ctx.get(IAgentTaskService);
+      const tool = ctx.get(IAgentToolRegistryService).resolve('TaskWait');
+      const taskId = tasks.registerTask(new ProcessTask(slow.proc, 'sleep 60', 'background work'));
+
+      const cancelled = new AbortController();
+      const steered = new AbortController();
+      const pending = executeTool(tool!, {
+        ...context('wait_cancelled', { timeout: 600, task_id: taskId }, cancelled.signal),
+        steerSignal: steered.signal,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      cancelled.abort(new Error('Aborted by the user'));
+      steered.abort(new Error('Steered by new input'));
+
+      await expect(pending).rejects.toThrow('Aborted by the user');
+      expect(tasks.getTask(taskId)?.status).toBe('running');
+    } finally {
+      slow.resolveWait(0);
+      await ctx.dispose();
+    }
+  });
+
+  it('ends an in-flight wait with interrupted when a prompt steers into the active turn', async () => {
+    const ctx = createTestAgent();
+    const slow = controllableProcess();
+    try {
+      const tasks = ctx.get(IAgentTaskService);
+      const taskId = tasks.registerTask(new ProcessTask(slow.proc, 'sleep 60', 'background work'));
+      ctx.get(IAgentProfileService).update({ activeToolNames: ['TaskWait'] });
+      ctx.mockNextResponse({
+        type: 'function',
+        id: 'wait-for-task',
+        name: 'TaskWait',
+        arguments: JSON.stringify({ timeout: 600, task_id: taskId }),
+      });
+      ctx.mockNextResponse({ type: 'text', text: 'Handling the new request first.' });
+
+      const waiting = ctx.once('tool.progress');
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Wait for the background work.' }] });
+      await waiting;
+      await ctx.rpc.steer({ input: [{ type: 'text', text: 'Handle this new request first.' }] });
+
+      await vi.waitFor(
+        () => {
+          expect(ctx.llmCalls).toHaveLength(2);
+        },
+        { timeout: 5_000 },
+      );
+
+      const toolMessages = ctx.llmCalls[1]!.history.filter((message) => message.role === 'tool');
+      expect(toolMessages).toMatchObject([
+        {
+          toolCallId: 'wait-for-task',
+          content: [{ type: 'text', text: expect.stringContaining('wait_status: interrupted') }],
+        },
+      ]);
+      expect(ctx.llmCalls[1]!.history.at(-1)).toMatchObject({
+        role: 'user',
+        content: [{ type: 'text', text: 'Handle this new request first.' }],
+      });
+      expect(ctx.allEvents).not.toContainEqual(
+        expect.objectContaining({
+          event: 'tool.result',
+          args: expect.objectContaining({ toolCallId: 'wait-for-task', isError: true }),
+        }),
+      );
+      expect(tasks.getTask(taskId)?.status).toBe('running');
+      expect(slow.proc.kill).not.toHaveBeenCalled();
+    } finally {
+      slow.resolveWait(0);
+      await ctx.dispose();
+    }
+  });
 
   it('waits for a real registered task end-to-end and suppresses its notification', async () => {
     const records: TelemetryRecord[] = [];

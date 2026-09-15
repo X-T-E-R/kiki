@@ -111,6 +111,24 @@ export function mergeInPlace(target: StreamedMessagePart, source: StreamedMessag
   return false;
 }
 
+export function isVacuousContentPart(part: ContentPart): boolean {
+  switch (part.type) {
+    case 'text':
+      return part.text.trim().length === 0;
+    case 'think':
+      return part.encrypted === undefined && part.think.trim().length === 0;
+    case 'image_url':
+    case 'audio_url':
+    case 'video_url':
+      return false;
+    default: {
+      const exhaustive: never = part;
+      void exhaustive;
+      return false;
+    }
+  }
+}
+
 export function extractText(message: Message, sep: string = ''): string {
   return message.content
     .filter((part): part is TextPart => part.type === 'text')

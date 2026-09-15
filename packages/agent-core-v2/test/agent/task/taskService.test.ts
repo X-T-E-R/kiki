@@ -774,30 +774,30 @@ describe('AgentTaskService', () => {
 
   it('stopAllOnExit suppresses and persists terminal state for detached tasks', async () => {
     const writes = stubTaskWrites();
+    const { records } = capturingWire();
     const svc = ix.get(IAgentTaskService);
     const first = svc.registerTask(fakeProcessTask());
     const second = svc.registerTask(fakeProcessTask());
 
+    await svc.suppressAllTerminalNotifications();
+    const third = svc.registerTask(fakeProcessTask());
+
     const stopped = await svc.stopAllOnExit('Session closed');
 
-    expect(stopped.map((info) => info.taskId).toSorted()).toEqual([first, second].toSorted());
-    for (const taskId of [first, second]) {
+    expect(stopped.map((info) => info.taskId).toSorted()).toEqual(
+      [first, second, third].toSorted(),
+    );
+    for (const taskId of [first, second, third]) {
       const info = svc.getTask(taskId);
       expect(info?.status).toBe('killed');
       expect(info?.stopReason).toBe('Session closed');
       expect(info?.terminalNotificationSuppressed).toBe(true);
-      const persisted = writes.filter((write) => write.taskId === taskId);
-      expect(
-        persisted.some(
-          (write) =>
-            write.status === 'running' && write.terminalNotificationSuppressed === true,
-        ),
-      ).toBe(true);
-      expect(persisted.at(-1)).toMatchObject({
+      expect(writes.filter((write) => write.taskId === taskId).at(-1)).toMatchObject({
         status: 'killed',
         terminalNotificationSuppressed: true,
       });
     }
+    expect(records.filter((record) => record['type'] === 'task.terminated')).toHaveLength(3);
   });
 
   it('stopAllOnExit does not persist a foreground-only task', async () => {
@@ -826,6 +826,67 @@ describe('AgentTaskService', () => {
     expect(svc.getTask(taskId)?.status).toBe('running');
 
     await svc.stop(taskId);
+  });
+
+  it('silences a settlement that lands after suppression armed while still recording the terminal state', async () => {
+    const { records } = capturingWire();
+    const svc = ix.get(IAgentTaskService);
+    const loop = stubLoop();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => {
+        await gate;
+        await sink.settle({ status: 'completed' });
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(svc.getTask(taskId)?.status).toBe('running');
+
+    await svc.suppressAllTerminalNotifications();
+    release();
+    await vi.waitFor(() => {
+      expect(svc.getTask(taskId)?.status).toBe('completed');
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(records.filter((record) => record['type'] === 'task.terminated')).toHaveLength(1);
+    expect(loop.hasPendingRequests()).toBe(false);
+  });
+
+  it('suppresses in-flight terminal notifications on exit even when tasks stay alive', async () => {
+    stubTaskConfig({ keepAliveOnExit: true });
+    const svc = ix.get(IAgentTaskService);
+    const loop = stubLoop();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => {
+        await gate;
+        await sink.settle({ status: 'completed' });
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const stopped = await svc.stopAllOnExit('Session closed');
+
+    expect(stopped).toEqual([]);
+    expect(svc.getTask(taskId)?.status).toBe('running');
+
+    release();
+    await vi.waitFor(() => {
+      expect(svc.getTask(taskId)?.status).toBe('completed');
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(svc.getTask(taskId)?.terminalNotificationSuppressed).toBeUndefined();
+    expect(loop.hasPendingRequests()).toBe(false);
   });
 
   it('dispose aborts live tasks as a last resort', async () => {

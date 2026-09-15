@@ -97,6 +97,69 @@ describe('generate() stream normalization', () => {
     expect(result.id).toBe('gen-1');
   });
 
+  it('keeps a text run merged across a vacuous reasoning part', async () => {
+    const stream = new FakeStreamedMessage([
+      { type: 'text', text: 'Hello, ' },
+      { type: 'think', think: '' },
+      { type: 'text', text: 'world' },
+    ]);
+    const { provider } = createFakeProvider(stream);
+
+    const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY);
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'Hello, world' }]);
+  });
+
+  it('keeps a non-empty reasoning part between text runs', async () => {
+    const stream = new FakeStreamedMessage([
+      { type: 'text', text: 'Hello, ' },
+      { type: 'think', think: 'why' },
+      { type: 'text', text: 'world' },
+    ]);
+    const { provider } = createFakeProvider(stream);
+
+    const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY);
+
+    expect(result.message.content).toEqual([
+      { type: 'text', text: 'Hello, ' },
+      { type: 'think', think: 'why' },
+      { type: 'text', text: 'world' },
+    ]);
+  });
+
+  it('keeps a trailing vacuous reasoning part in its position', async () => {
+    const stream = new FakeStreamedMessage([
+      { type: 'text', text: 'Hello' },
+      { type: 'think', think: '   ' },
+    ]);
+    const { provider } = createFakeProvider(stream);
+
+    const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY);
+
+    expect(result.message.content).toEqual([
+      { type: 'text', text: 'Hello' },
+      { type: 'think', think: '   ' },
+    ]);
+  });
+
+  it('keeps a vacuous reasoning part before a tool call', async () => {
+    const call: ToolCall = { type: 'function', id: 'call-a', name: 'toolA', arguments: '{}' };
+    const stream = new FakeStreamedMessage([
+      { type: 'text', text: 'ok' },
+      { type: 'think', think: '' },
+      call,
+    ]);
+    const { provider } = createFakeProvider(stream);
+
+    const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY);
+
+    expect(result.message.content).toEqual([
+      { type: 'text', text: 'ok' },
+      { type: 'think', think: '' },
+    ]);
+    expect(result.message.toolCalls).toHaveLength(1);
+  });
+
   it('assembles tool calls from streamed argument deltas by stream index', async () => {
     const callA: ToolCall = {
       type: 'function',

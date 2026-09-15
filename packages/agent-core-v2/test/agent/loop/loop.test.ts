@@ -139,6 +139,31 @@ describe('Agent loop', () => {
   `);
   });
 
+  it('merges text deltas across a vacuous reasoning part instead of splitting the text', async () => {
+    const assistantDeltas: AssistantDelta[] = [];
+    const thinkingDeltas: ThinkingDelta[] = [];
+    const bus = ctx.get(IEventBus);
+    const subscriptions = [
+      bus.subscribe(AssistantDelta, (event) => assistantDeltas.push(event)),
+      bus.subscribe(ThinkingDelta, (event) => thinkingDeltas.push(event)),
+    ];
+    try {
+      ctx.mockNextResponse(
+        { type: 'text', text: 'Hello, ' },
+        { type: 'think', think: '' },
+        { type: 'text', text: 'world' },
+      );
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
+      await ctx.untilTurnEnd();
+    } finally {
+      for (const subscription of subscriptions) subscription.dispose();
+    }
+
+    expect(assistantDeltas.map((event) => event.delta)).toEqual(['Hello, ', 'world']);
+    expect(new Set(assistantDeltas.map((event) => event.partId)).size).toBe(1);
+    expect(thinkingDeltas).toHaveLength(0);
+  });
+
   it('persists a turn.ended wire record with the end reason and duration', async () => {
     profile.update({ activeToolNames: [] });
 
@@ -1623,6 +1648,32 @@ describe('interruption reminder', () => {
   });
 });
 
+describe('llm requester attempt retry', () => {
+  it('discards the interrupted attempt fragments instead of merging them into the retried attempt', async () => {
+    const ctx = createTestAgent(agentService(IAgentLLMRequesterService, createRetryingRequester()));
+    try {
+      const assistantDeltas: AssistantDelta[] = [];
+      const subscription = ctx
+        .get(IEventBus)
+        .subscribe(AssistantDelta, (event) => assistantDeltas.push(event));
+      try {
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'hello' }] });
+        await ctx.untilTurnEnd();
+      } finally {
+        subscription.dispose();
+      }
+
+      expect(assistantDeltas.map((event) => event.delta)).toEqual(['Hello', 'World']);
+      expect(new Set(assistantDeltas.map((event) => event.partId)).size).toBe(2);
+      const contentParts = wireLoopEvents(ctx, 'content.part');
+      expect(contentParts).toHaveLength(1);
+      expect(contentParts[0]?.['uuid']).toBe(assistantDeltas[1]?.partId);
+    } finally {
+      await ctx.dispose();
+    }
+  });
+});
+
 describe('step timing split propagation', () => {
   it('carries the split from the llmRequester timing event to the turn.step.completed protocol event', async () => {
     const ctx = createTestAgent(agentService(IAgentLLMRequesterService, createTimingRequester()));
@@ -1785,6 +1836,32 @@ function createTimingRequester(): IAgentLLMRequesterService {
         usage: emptyUsage(),
         model: 'mock-model',
         timing,
+      };
+    },
+    start(overrides, onPart, signal) {
+      return { trace: { traceId: undefined }, result: this.request(overrides, onPart, signal) };
+    },
+  };
+  return requester;
+}
+
+function createRetryingRequester(): IAgentLLMRequesterService {
+  const requester: IAgentLLMRequesterService = {
+    _serviceBrand: undefined,
+    prepareTurnConfig: () => ({ thinkingEffort: 'off' }),
+    invalidatePromptSnapshots: () => 0,
+    async request(overrides = {}, onPart = () => {}) {
+      await onPart({ type: 'text', text: 'Hello' });
+      overrides.onAttemptRetry?.();
+      await onPart({ type: 'text', text: 'World' });
+      return {
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'World' }],
+          toolCalls: [],
+        },
+        usage: emptyUsage(),
+        model: 'mock-model',
       };
     },
     start(overrides, onPart, signal) {

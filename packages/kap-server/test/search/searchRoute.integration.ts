@@ -70,6 +70,11 @@ describe('server-v2 /api/search', () => {
     const sessionDir = join(home, 'sessions', WS, 's1', 'agents', 'main');
     await mkdir(sessionDir, { recursive: true });
     await writeFile(
+      join(home, 'sessions', WS, 's1', 'state.json'),
+      JSON.stringify({ title: '苹果询价' }),
+      'utf8',
+    );
+    await writeFile(
       join(sessionDir, 'wire.jsonl'),
       [
         JSON.stringify({

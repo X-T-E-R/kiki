@@ -91,6 +91,18 @@ export interface IAgentTaskService {
   ): Promise<AgentTaskOutputSnapshot>;
   readOutput(taskId: string, tail?: number): Promise<string>;
   suppressTerminalNotification(taskId: string): Promise<void>;
+  /**
+   * Silence every terminal notification in this agent scope from now on — the
+   * teardown path calls it before stopping tasks, so a task that settles after
+   * the agent is gone (or while it is being torn down) never notifies the
+   * model or fires the notification hook.
+   *
+   * One-shot and irreversible: it arms a scope-wide latch plus aborts the
+   * notifications already queued on the loop, and nothing re-arms the scope.
+   * Only call it when the scope is going away; calling it on a live agent
+   * permanently mutes every background-task notification for that scope.
+   */
+  suppressAllTerminalNotifications(): Promise<void>;
   markTasksDeliveredViaWait(tasks: readonly AgentTaskWaitDelivery[]): void;
   detach(taskId: string): AgentTaskInfo | undefined;
   stop(taskId: string, reason?: string): Promise<AgentTaskInfo | undefined>;

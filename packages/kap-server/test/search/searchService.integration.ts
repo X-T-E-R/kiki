@@ -132,6 +132,12 @@ async function writeWire(
   return file;
 }
 
+async function writeTitle(home: string, sessionId: string, title: string): Promise<void> {
+  const dir = join(home, 'sessions', WS, sessionId);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'state.json'), JSON.stringify({ title }), 'utf8');
+}
+
 const noopLog = {
   error: () => {},
   warn: () => {},
@@ -508,6 +514,7 @@ describe('GlobalSearchService', () => {
       assistantLine('Here is the apple picking guide.', T2),
       userLine('忽略我', T3, { kind: 'injection', variant: 'reminder' }),
     ]);
+    await writeTitle(home!, 's1', '搜索重构讨论');
     const service = track(makeService(home!, staticIndex([s1])));
     await service.reindex();
 
@@ -533,6 +540,7 @@ describe('GlobalSearchService', () => {
   it('hits session titles as title docs', async () => {
     const s1 = summary('s1', '季度总结报告', T1);
     await writeWire(home!, 's1', 'main', [userLine('随便说点什么', T1)]);
+    await writeTitle(home!, 's1', '季度总结报告');
     const service = track(makeService(home!, staticIndex([s1])));
     await service.reindex();
 
@@ -708,6 +716,7 @@ describe('GlobalSearchService', () => {
 
   it('reports indexState building before the first full sync and ready after', async () => {
     const s1 = summary('s1', 'state', T1);
+    await writeTitle(home!, s1.id, s1.title!);
     await writeWire(home!, 's1', 'main', [userLine('苹果 state', T1)]);
 
     let release!: () => void;
@@ -751,6 +760,77 @@ describe('GlobalSearchService', () => {
     const page = await service.search({ query: '苹果' });
     expect(page.items).toEqual([]);
   });
+
+  it.each([makeService, makeInlineService])(
+    'drops hits of a session whose directory is deleted, before a writer sync (%#)',
+    async (make) => {
+      const removed = summary('removed', 'needle title', T3);
+      await writeTitle(home!, removed.id, removed.title!);
+      const retained = summary('retained', 'retained', T1);
+      await writeWire(home!, removed.id, 'main', [userLine('needle deleted', T3)]);
+      await writeWire(home!, retained.id, 'main', [
+        userLine('needle first', T1),
+        userLine('needle second', T2),
+      ]);
+      const writer = track(make(home!, staticIndex([removed, retained])));
+      await writer.reindex();
+      const reader = track(make(home!, staticIndex([removed, retained])));
+      await settleSync(reader);
+      expect((await reader.search({ query: 'needle', mode: 'literal' })).items).toHaveLength(4);
+
+      await rm(join(home!, 'sessions', WS, removed.id), { recursive: true });
+
+      for (const mode of ['terms', 'literal'] as const) {
+        const first = await reader.search({
+          query: 'needle',
+          mode,
+          sort: 'time_desc',
+          pageSize: 1,
+        });
+        expect(first.items).toHaveLength(1);
+        expect(first.items[0]?.sessionId).toBe(retained.id);
+        expect(first.hasMore).toBe(true);
+        const second = await reader.search({
+          query: 'needle',
+          mode,
+          sort: 'time_desc',
+          pageSize: 1,
+          pageToken: first.pageToken,
+        });
+        expect(second.items).toHaveLength(1);
+        expect(second.items[0]?.sessionId).toBe(retained.id);
+        expect(second.items[0]?.time).not.toBe(first.items[0]?.time);
+        expect(second.hasMore).toBe(false);
+      }
+    },
+  );
+
+  it.each([makeService, makeInlineService])(
+    'does not serve an old incarnation after the same directory is recreated (%#)',
+    async (make) => {
+      const s1 = summary('s1', 'original title', T1);
+      await writeTitle(home!, s1.id, s1.title!);
+      await writeWire(home!, s1.id, 'main', [userLine('original secret', T1)]);
+      const writer = track(make(home!, staticIndex([s1])));
+      await writer.reindex();
+      const reader = track(make(home!, staticIndex([s1])));
+      await settleSync(reader);
+      expect((await reader.search({ query: 'original' })).items.length).toBeGreaterThan(0);
+
+      await rm(join(home!, 'sessions', WS, s1.id), { recursive: true });
+      await writeWire(home!, s1.id, 'main', [userLine('replacement message', T2)]);
+      await writeTitle(home!, s1.id, 'replacement title');
+
+      expect((await reader.search({ query: 'original' })).items).toEqual([]);
+      await settleSync(writer);
+      await refreshNow(reader);
+      const replacement = await reader.search({ query: 'replacement', role: 'user' });
+      expect(replacement.items).toHaveLength(1);
+      expect(replacement.items[0]?.sessionTitle).toBe('replacement title');
+      expect(replacement.items[0]?.snippet).toContain('replacement message');
+      expect((await reader.search({ query: 'original' })).items).toEqual([]);
+    },
+  );
 
   it('rescans a wire file that shrank between syncs', async () => {
     const s1 = summary('s1', 'shrink', T1);
@@ -840,6 +920,7 @@ describe('GlobalSearchService', () => {
   it('runs a second instance read-only and catches up from the WAL', async () => {
     const s1 = summary('s1', 'shared', T1);
     const file = await writeWire(home!, 's1', 'main', [userLine('苹果 base', T1)]);
+    await writeTitle(home!, s1.id, s1.title!);
     const index = staticIndex([s1]);
 
     const writer = track(makeInlineService(home!, index));
@@ -2329,6 +2410,7 @@ describe('GlobalSearchService', () => {
         stepBeginLine('u1', 1, T1 + 100),
         assistantStepLine('苹果要挑红富士。', 'u1', T2),
       ]);
+      await writeTitle(home!, 's1', '无关标题');
       const stores = new Map([['s1', makeLiveStore('s1')]]);
       const service = track(makeService(home!, gettableIndex([s1])));
       await service.reindex();

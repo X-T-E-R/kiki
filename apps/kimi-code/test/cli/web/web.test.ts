@@ -241,6 +241,15 @@ describe('`kimi web` ready banner', () => {
 });
 
 describe('ready banner reflects the bind class', () => {
+  it('parses the port of a wildcard IPv6 bind origin instead of crashing', async () => {
+    const { formatReadyBanner } = await import('#/cli/sub/web/run');
+    const banner = stripAnsi(
+      formatReadyBanner('http://:::58627', '::', { token: 'tok-xyz' }),
+    );
+    expect(banner).toContain('http://localhost:58627/#token=tok-xyz');
+    expect(banner).toContain('Token:');
+  });
+
   it('lists Local + Network addresses for a 0.0.0.0 bind (Vite-style)', async () => {
     const { handleWebCommand } = await import('#/cli/sub/web/run');
     const { runner } = makeRunner('http://0.0.0.0:58627');
@@ -351,6 +360,46 @@ describe('`kimi web` opens the browser', () => {
     );
 
     expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627');
+  });
+
+  it('opens localhost rather than the wildcard bind address', async () => {
+    const { handleWebCommand } = await import('#/cli/sub/web/run');
+    const { runner } = makeRunner('http://0.0.0.0:58627');
+    const { stdout, stderr } = makeIo();
+    const openUrl = vi.fn();
+
+    await handleWebCommand(
+      { host: '0.0.0.0', open: true },
+      {
+        startServerForeground: runner,
+        resolveToken: () => 'tok-xyz',
+        openUrl,
+        stdout,
+        stderr,
+      },
+    );
+
+    expect(openUrl).toHaveBeenCalledWith('http://localhost:58627/#token=tok-xyz');
+  });
+
+  it('opens localhost for a wildcard IPv6 bind', async () => {
+    const { handleWebCommand } = await import('#/cli/sub/web/run');
+    const { runner } = makeRunner('http://:::58627');
+    const { stdout, stderr } = makeIo();
+    const openUrl = vi.fn();
+
+    await handleWebCommand(
+      { host: '::', open: true },
+      {
+        startServerForeground: runner,
+        resolveToken: () => undefined,
+        openUrl,
+        stdout,
+        stderr,
+      },
+    );
+
+    expect(openUrl).toHaveBeenCalledWith('http://localhost:58627');
   });
 
   it('does not open the browser when open is false', async () => {
@@ -750,6 +799,21 @@ describe('accessUrlLines', () => {
     const { splitTokenFragment } = await import('#/cli/sub/web/access-urls');
     expect(splitTokenFragment('http://h:1/#token=abc')).toEqual(['http://h:1/', '#token=abc']);
     expect(splitTokenFragment('http://h:1/')).toEqual(['http://h:1/', '']);
+  });
+});
+
+describe('browserOpenOrigin', () => {
+  it('rewrites wildcard bind hosts to localhost on the same port', async () => {
+    const { browserOpenOrigin } = await import('#/cli/sub/web/access-urls');
+    expect(browserOpenOrigin('http://0.0.0.0:58627')).toBe('http://localhost:58627');
+    expect(browserOpenOrigin('http://:::58627')).toBe('http://localhost:58627');
+  });
+
+  it('keeps navigable origins unchanged', async () => {
+    const { browserOpenOrigin } = await import('#/cli/sub/web/access-urls');
+    expect(browserOpenOrigin('http://127.0.0.1:58627')).toBe('http://127.0.0.1:58627');
+    expect(browserOpenOrigin('http://192.168.1.5:58627')).toBe('http://192.168.1.5:58627');
+    expect(browserOpenOrigin('http://[::1]:58627')).toBe('http://[::1]:58627');
   });
 });
 
