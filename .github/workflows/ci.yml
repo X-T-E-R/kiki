@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - kiki
 
 permissions:
   contents: read
