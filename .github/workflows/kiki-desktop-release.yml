@@ -243,7 +243,7 @@ jobs:
             echo "Expected one release candidate, found ${#installers[@]}." >&2
             exit 1
           fi
-          installer="${installers[0]}"
+          installer="$(realpath "${installers[0]}")"
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             echo 'TAURI_SIGNING_PRIVATE_KEY secret is required to publish the updater signature.' >&2
             exit 1
