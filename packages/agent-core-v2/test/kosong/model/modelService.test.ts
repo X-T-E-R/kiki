@@ -146,6 +146,41 @@ describe('ModelService', () => {
     }
   });
 
+  it('warns only once while memoizing repeated resolutions of the same ambiguous id', () => {
+    const service = createService({
+      'alpha/deepseek-v4-flash': { model: 'deepseek-v4-flash' },
+      'beta/other': { model: 'deepseek-v4-flash' },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        expect(service.resolveId('deepseek-v4-flash')).toBe('alpha/deepseek-v4-flash');
+      }
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('re-resolves after the catalog changes and warns again on the new ambiguity', async () => {
+    const service = createService({
+      'alpha/deepseek-v4-flash': { model: 'deepseek-v4-flash' },
+      'beta/other': { model: 'deepseek-v4-flash' },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(service.resolveId('deepseek-v4-flash')).toBe('alpha/deepseek-v4-flash');
+      await service.replaceAll({
+        'gamma/deepseek-v4-flash': { model: 'deepseek-v4-flash' },
+        'delta/other': { model: 'deepseek-v4-flash' },
+      });
+      expect(service.resolveId('deepseek-v4-flash')).toBe('gamma/deepseek-v4-flash');
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('does not suffix-match unknown or qualified ids', () => {
     const service = createService({
       'axon-message/deepseek-v4-flash': { model: 'deepseek-v4-flash' },

@@ -11,6 +11,8 @@ export interface ResolvedModelAlias {
   readonly alias: ModelAlias;
 }
 
+const warnedAmbiguousAliasKeys = new Set<string>();
+
 export function resolveModelAlias(
   models: Readonly<Record<string, ModelAlias>> | undefined,
   id: string,
@@ -28,9 +30,13 @@ export function resolveModelAlias(
   const [candidateId, alias] = candidates[0]!;
   if (candidates.length > 1) {
     const candidateIds = candidates.map(([candidate]) => candidate);
-    console.warn(
-      `[model] ambiguous model id "${id}" resolves to "${candidateId}" (first configured of ${candidateIds.map((candidate) => `"${candidate}"`).join(', ')}); use a full model id to pin another`,
-    );
+    const warnKey = `${id}::${candidateIds.join(',')}`;
+    if (!warnedAmbiguousAliasKeys.has(warnKey)) {
+      warnedAmbiguousAliasKeys.add(warnKey);
+      console.warn(
+        `[model] ambiguous model id "${id}" resolves to "${candidateId}" (first configured of ${candidateIds.map((candidate) => `"${candidate}"`).join(', ')}); use a full model id to pin another`,
+      );
+    }
   }
   return { id: candidateId, alias };
 }

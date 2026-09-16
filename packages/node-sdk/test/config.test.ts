@@ -132,6 +132,22 @@ describe('resolveModelAlias', () => {
       warn.mockRestore();
     }
   });
+
+  it('warns only once for repeated resolutions of the same ambiguous id', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const models = {
+        'beta/dedup-model': { provider: 'beta', model: 'dedup-model', maxContextSize: 128_000 },
+        'alpha/dedup-model': { provider: 'alpha', model: 'dedup-model', maxContextSize: 128_000 },
+      };
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        expect(resolveModelAlias(models, 'dedup-model')?.id).toBe('beta/dedup-model');
+      }
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe('SDK config TOML', () => {

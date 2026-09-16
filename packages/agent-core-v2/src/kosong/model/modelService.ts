@@ -25,6 +25,7 @@ export class ModelService extends Disposable implements IModelService {
   private models: Readonly<Record<string, ModelRecord>> = {};
   private defaultModel: string | undefined;
   private hydrated = false;
+  private readonly resolutionCache = new Map<string, string | undefined>();
   private resolveReady!: () => void;
   readonly ready: Promise<void> = new Promise<void>((resolve) => {
     this.resolveReady = resolve;
@@ -42,11 +43,14 @@ export class ModelService extends Disposable implements IModelService {
     this._onDidChangeDefaultModel.event;
 
   resolveId(id: string): string | undefined {
-    return resolveModelId(this.models, id, ({ candidates, resolved }) => {
+    if (this.resolutionCache.has(id)) return this.resolutionCache.get(id);
+    const resolved = resolveModelId(this.models, id, ({ candidates, resolved: winner }) => {
       console.warn(
-        `[model] ambiguous model id "${id}" resolves to "${resolved}" (first configured of ${candidates.map((candidate) => `"${candidate}"`).join(', ')}); use a full model id to pin another`,
+        `[model] ambiguous model id "${id}" resolves to "${winner}" (first configured of ${candidates.map((candidate) => `"${candidate}"`).join(', ')}); use a full model id to pin another`,
       );
     });
+    this.resolutionCache.set(id, resolved);
+    return resolved;
   }
 
   get(id: string): ModelRecord | undefined {
@@ -97,6 +101,7 @@ export class ModelService extends Disposable implements IModelService {
     const diff = diffRecords(this.models, next);
     if (isEmptyDiff(diff)) return;
     this.models = { ...next };
+    this.resolutionCache.clear();
     await this._onDidChangeModels.fireAsync(diff, NO_ABORT);
   }
 
