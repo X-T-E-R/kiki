@@ -112,6 +112,9 @@ export interface AgentTaskItem {
   readonly completed_at?: string;
   readonly summary?: string;
   readonly output_preview?: string;
+  readonly error?: string;
+  readonly stateReason?: string;
+  readonly state_reason?: string;
   readonly parentAgentId?: string;
   readonly parent_agent_id?: string;
   readonly parentToolCallId?: string;
@@ -741,6 +744,7 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
   draft.startedAt ??= startedAt;
   draft.endedAt ??= endedAt;
   draft.summary = draft.summary ?? firstPresent(task.summary, task.output_preview);
+  draft.error = draft.error ?? firstPresent(task.error, task.stateReason, task.state_reason);
   if (status !== undefined && status !== 'unknown') {
     draft.taskId = cleanId(task.id) ?? draft.taskId;
   }

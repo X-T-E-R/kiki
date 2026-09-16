@@ -49,6 +49,7 @@ import {
 } from '@kiki/session-core/session';
 import { formatTokensPerSecond } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { copyTextToClipboard } from '../lib/clipboard';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import {
   groupHistoryRuns,
@@ -689,7 +690,10 @@ function SubagentCardBody({
         ) : null}
       </div>
       {description !== undefined || error !== undefined ? (
-        <p className={`mt-1 truncate pl-5 text-[11.5px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}>
+        <p
+          title={error}
+          className={`mt-1 truncate pl-5 text-[11.5px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
+        >
           {error ?? description}
         </p>
       ) : null}
@@ -768,7 +772,10 @@ function SubagentCompactCard({
             {t(`subagent.status.${status}` as I18nKey)}
           </span>
           {line !== undefined ? (
-            <span className={`min-w-0 flex-1 truncate text-[11px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}>
+            <span
+              title={error}
+              className={`min-w-0 flex-1 truncate text-[11px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
+            >
               {line}
             </span>
           ) : (
@@ -969,6 +976,7 @@ const SubagentEventRow = memo(function SubagentEventRow({
 }) {
   const { t, time } = useI18n();
   const busy = block.status === 'running' || block.status === 'suspended';
+  const isFailed = block.event === 'failed' || block.status === 'failed';
   return (
     <div className="ml-6">
       <button
@@ -977,17 +985,27 @@ const SubagentEventRow = memo(function SubagentEventRow({
         data-subagent-event={block.subagentId}
         data-agent-event={block.event}
         data-agent-open={block.subagentId}
-        title={t('subagent.openAgent', { name: block.name })}
-        className="anim-enter group flex w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-panel"
+        title={block.error ?? t('subagent.openAgent', { name: block.name })}
+        className={`anim-enter group flex w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors ${
+          isFailed ? 'hover:bg-danger/10' : 'hover:bg-panel'
+        }`}
       >
         <span
           aria-hidden
           className={`h-1.5 w-1.5 shrink-0 rounded-full ${subagentStatusTone(block.status)} ${busy ? 'status-dot-busy' : ''}`}
         />
-        <span className="shrink-0 text-[11.5px] font-medium text-ink-soft">{block.name}</span>
-        <span className="shrink-0 text-[10.5px] text-ink-faint">
+        <span className={`shrink-0 text-[11.5px] font-medium ${isFailed ? 'text-danger' : 'text-ink-soft'}`}>{block.name}</span>
+        <span className={`shrink-0 text-[10.5px] ${isFailed ? 'text-danger font-medium' : 'text-ink-faint'}`}>
           {t(`subagent.event.${block.event}` as I18nKey)}
         </span>
+        {block.error !== undefined ? (
+          <span
+            title={block.error}
+            className="min-w-0 flex-1 truncate text-[10.5px] text-danger"
+          >
+            {block.error}
+          </span>
+        ) : null}
         <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-faint">
           {block.at === undefined ? '' : <RelativeTime at={block.at} />}
         </span>
@@ -1773,6 +1791,9 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({
 export const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTailInfo }) {
   const { t, time } = useI18n();
   useNow();
+  const [copied, setCopied] = useState(false);
+  const isFailed = tail.state === 'failed';
+  const isCancelled = tail.state === 'cancelled';
   const facts: string[] = [time.relativeTime(tail.endedAt)];
   if (tail.durationMs !== undefined) {
     facts.push(t('transcript.ranFor', { duration: time.formatDuration(tail.durationMs) }));
@@ -1785,11 +1806,57 @@ export const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTai
       t('transcript.tokensPerSecond', { rate: formatTokensPerSecond(tail.tokensPerSecond) }),
     );
   }
+
+  const handleCopyError = useCallback(() => {
+    if (tail.error === undefined) return;
+    void copyTextToClipboard(tail.error).then(() => {
+      setCopied(true);
+      setTimeout(() => { setCopied(false); }, 1500);
+    });
+  }, [tail.error]);
+
   return (
-    <div data-turn-tail className="anim-enter flex items-center gap-3 py-0.5">
-      <span className="h-px flex-1 bg-hairline" />
-      <span className="font-mono text-[10.5px] text-ink-faint">{facts.join(' · ')}</span>
-      <span className="h-px flex-1 bg-hairline" />
+    <div
+      data-turn-tail
+      data-turn-tail-state={tail.state}
+      className={`anim-enter py-1 ${isFailed ? 'text-danger' : isCancelled ? 'text-amber-ink' : ''}`}
+    >
+      <div className="flex items-center gap-3">
+        <span className={`h-px flex-1 ${isFailed ? 'bg-danger/30' : isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
+        <div className="flex items-center gap-2">
+          {isFailed ? (
+            <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[10.5px] font-semibold text-danger">
+              {t('notice.turnFailed')}
+            </span>
+          ) : isCancelled ? (
+            <span className="rounded-full bg-amber-card px-2 py-0.5 text-[10.5px] font-semibold text-amber-ink">
+              {t('transcript.stopped')}
+            </span>
+          ) : null}
+          <span className={`font-mono text-[10.5px] ${isFailed ? 'text-danger/80' : isCancelled ? 'text-amber-ink/80' : 'text-ink-faint'}`}>
+            {facts.join(' · ')}
+          </span>
+          {isFailed && tail.error !== undefined ? (
+            <button
+              type="button"
+              onClick={handleCopyError}
+              className="rounded border border-danger/30 px-1.5 py-0.5 text-[10px] font-medium text-danger hover:bg-danger/10"
+              title={tail.error}
+            >
+              {copied ? t('cb.copied') : t('cb.copy')}
+            </button>
+          ) : null}
+        </div>
+        <span className={`h-px flex-1 ${isFailed ? 'bg-danger/30' : isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
+      </div>
+      {isFailed && tail.error !== undefined ? (
+        <div
+          title={tail.error}
+          className="mx-auto mt-1 max-w-[var(--kiki-chat-content-width,760px)] truncate rounded border border-danger/30 bg-danger/5 px-2.5 py-1 text-center font-mono text-[11px] text-danger"
+        >
+          {tail.error}
+        </div>
+      ) : null}
     </div>
   );
 });

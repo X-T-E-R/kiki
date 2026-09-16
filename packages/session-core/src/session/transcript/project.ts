@@ -476,6 +476,7 @@ const MARKER_SUMMARY_KEYS = {
   swarm: 'transcript.marker.swarm',
   'swarm.enter': 'transcript.marker.swarm',
   'swarm.exit': 'transcript.marker.swarm',
+  interruption: 'transcript.marker.interruption',
 } as const satisfies Record<string, I18nKey>;
 
 function markerToBlock(item: {
@@ -751,6 +752,7 @@ type RawSubagentEvent = {
   readonly event: SubagentEventBlock['event'];
   readonly at: string | undefined;
   readonly turnId?: string;
+  readonly error?: string;
   readonly anchorToolCallId?: string;
 };
 
@@ -867,7 +869,7 @@ function subagentBlocksFromSnapshot(
         thinkingEffort: existing?.thinkingEffort,
         status: mapTaskState(task.state),
         summary: task.resultSummary ?? (task.outputTail === '' ? existing?.summary : task.outputTail),
-        error: task.error ?? existing?.error,
+        error: task.error ?? task.stateReason ?? existing?.error,
         usage: task.usage ?? existing?.usage,
         startedAt,
         endedAt: task.endedAt ?? existing?.endedAt,
@@ -955,7 +957,7 @@ function subagentBlocksFromSnapshot(
               task?.resultSummary ??
               (task?.outputTail === '' ? undefined : task?.outputTail) ??
               existing?.summary,
-            error: task?.error ?? existing?.error,
+            error: task?.error ?? task?.stateReason ?? existing?.error,
             usage: task?.usage ?? existing?.usage,
             startedAt: task?.startedAt ?? existing?.startedAt ?? frame.startedAt,
             endedAt: task?.endedAt ?? existing?.endedAt,
@@ -983,6 +985,7 @@ function subagentBlocksFromSnapshot(
         subagentId: agentId,
         event: terminal,
         at: task.endedAt,
+        error: task.error ?? task.stateReason,
       });
     }
   }
@@ -997,6 +1000,7 @@ function subagentBlocksFromSnapshot(
       subagentId: block.subagentId,
       event: terminal,
       at: block.endedAt,
+      error: block.error,
     });
   }
   const events: SubagentEventBlock[] = rawEvents.map((raw) => {
@@ -1011,6 +1015,7 @@ function subagentBlocksFromSnapshot(
       status: owner?.status ?? 'unknown',
       at: raw.at,
       turnId: raw.turnId,
+      error: raw.error,
       anchorToolCallId: raw.anchorToolCallId,
     };
   });
@@ -1509,16 +1514,17 @@ function mergeTranscriptPromptBlocks(
           ? { ...block, promptStatus: undefined }
           : block,
       );
-      const noticeId = `notice-aborted-${prompt.promptId}`;
+      const isFailed = prompt.status === 'failed';
+      const noticeId = isFailed ? `notice-failed-${prompt.promptId}` : `notice-aborted-${prompt.promptId}`;
       if (!next.some((block) => block.id === noticeId)) {
         next = [
           ...next,
           {
             kind: 'notice',
             id: noticeId,
-            text: 'Prompt aborted',
-            tone: 'neutral',
-            i18n: { key: 'notice.promptAborted' },
+            text: isFailed ? 'Prompt failed' : 'Prompt aborted',
+            tone: isFailed ? 'danger' : 'neutral',
+            i18n: { key: isFailed ? 'notice.promptFailed' : 'notice.promptAborted' },
           },
         ];
       }
@@ -1565,8 +1571,16 @@ export function retainPendingPromptBlocks(previous: readonly Block[], next: Bloc
   }
   const abortedPromptIds = new Set(
     next
-      .filter((block) => block.kind === 'notice' && block.id.startsWith('notice-aborted-'))
-      .map((block) => block.id.slice('notice-aborted-'.length)),
+      .filter(
+        (block) =>
+          block.kind === 'notice' &&
+          (block.id.startsWith('notice-aborted-') || block.id.startsWith('notice-failed-')),
+      )
+      .map((block) =>
+        block.id.startsWith('notice-aborted-')
+          ? block.id.slice('notice-aborted-'.length)
+          : block.id.slice('notice-failed-'.length),
+      ),
   );
   const extras: Block[] = [];
   for (const block of previous) {
@@ -1662,6 +1676,7 @@ function sameTurnExecution(
 function turnTailFromItem(item: {
   readonly turnId: string;
   readonly state?: string;
+  readonly error?: string;
   readonly endedAt?: string;
   readonly durationMs?: number;
   readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number };
@@ -1673,6 +1688,8 @@ function turnTailFromItem(item: {
   const output = item.steps.reduce((sum, step) => sum + (step.usage?.output ?? 0), 0);
   return {
     turnId: item.turnId,
+    state: item.state,
+    error: item.error,
     endedAt: item.endedAt,
     durationMs: item.durationMs,
     ttftMs: timing?.llmFirstTokenLatencyMs,
@@ -1820,11 +1837,18 @@ export function agentTranscriptToBlocks(
         });
         continue;
       }
+      const taskFailed =
+        task.state === 'failed' || task.state === 'lost' || task.state === 'timed_out';
+      const taskError = task.error ?? task.stateReason;
+      const taskText =
+        taskFailed && taskError !== undefined
+          ? `${task.description ?? task.taskId} — ${taskError}`
+          : (task.description ?? task.taskId);
       blocks.push({
         kind: 'notice',
         id: `agent-taskref-${item.refId}`,
-        text: task.description ?? task.taskId,
-        tone: task.state === 'failed' ? 'danger' : 'neutral',
+        text: taskText,
+        tone: taskFailed ? 'danger' : 'neutral',
       });
       continue;
     }

@@ -83,7 +83,8 @@ export function toolSummary(block: ToolBlock, t: Translate, tp: TranslatePlural)
  * errorSummary, Apache-2.0): the first line of the error output, shown in the
  * danger color without requiring expansion. undefined when no text is usable.
  */
-export function toolErrorSummary(block: ToolBlock): string | undefined {
+/** The untruncated counterpart of toolErrorSummary, for hover tooltips. */
+export function toolErrorFullText(block: ToolBlock): string | undefined {
   if (block.status !== 'error') return undefined;
   const output = block.output;
   const text =
@@ -92,7 +93,12 @@ export function toolErrorSummary(block: ToolBlock): string | undefined {
       : typeof output === 'object' && output !== null
         ? ((output as { message?: unknown }).message as string | undefined)
         : undefined;
-  if (typeof text !== 'string') return undefined;
+  return typeof text === 'string' && text.trim() !== '' ? text : undefined;
+}
+
+export function toolErrorSummary(block: ToolBlock): string | undefined {
+  const text = toolErrorFullText(block);
+  if (text === undefined) return undefined;
   const line = (text.split('\n', 1)[0] ?? '').trim();
   return line === '' ? undefined : line;
 }
@@ -174,8 +180,16 @@ function StatusIcon({ block }: { block: ToolBlock }) {
     );
   }
   if (block.status === 'stopped') {
+    const reasonText =
+      typeof block.output === 'string' && block.output.trim() !== ''
+        ? block.output
+        : t('transcript.stopped');
     return (
-      <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-rule/15 text-[9px] font-bold text-amber-ink" aria-label={t('transcript.stoppedAria')}>
+      <span
+        className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-rule/15 text-[9px] font-bold text-amber-ink"
+        aria-label={t('transcript.stoppedAria')}
+        title={reasonText}
+      >
         ■
       </span>
     );
@@ -292,6 +306,7 @@ export const ToolCard = memo(function ToolCard({
   const { t, tp, time } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const errorSummary = toolErrorSummary(block);
+  const errorTitle = toolErrorFullText(block) ?? errorSummary;
   const summary = toolSummary(block, t, tp);
   const isCommand = block.display?.kind === 'command';
   const keepCommandSummary = hasCommandSummary(block, summary);
@@ -314,7 +329,7 @@ export const ToolCard = memo(function ToolCard({
   const stat = editSource !== undefined ? diffStat(editSource.hunks) : undefined;
 
   return (
-    <div className="anim-enter overflow-hidden rounded-xl border border-hairline bg-panel">
+    <div data-tool data-tool-id={block.toolCallId} className="anim-enter overflow-hidden rounded-xl border border-hairline bg-panel">
       <button
         type="button"
         onClick={() => { setExpanded((value) => !value); }}
@@ -329,8 +344,20 @@ export const ToolCard = memo(function ToolCard({
             {summary}
           </span>
         ) : errorSummary !== undefined ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-danger">
+          <span
+            title={errorTitle}
+            className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-danger"
+          >
             {errorSummary}
+          </span>
+        ) : block.status === 'stopped' ? (
+          <span
+            title={typeof block.output === 'string' && block.output.trim() !== '' ? block.output : t('transcript.stopped')}
+            className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-amber-ink"
+          >
+            {typeof block.output === 'string' && block.output.trim() !== ''
+              ? `${t('transcript.stopped')} — ${block.output.split('\n', 1)[0]}`
+              : t('transcript.stopped')}
           </span>
         ) : displayPath !== undefined ? (
           <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-soft">

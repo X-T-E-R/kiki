@@ -21,9 +21,17 @@ import type {
 import { useI18n } from '../i18n';
 import { RelativeTime } from './RelativeTime';
 
-/** Marker notices (goal/plan/swarm …) are the neutral, transcript-owned ones. */
+/** Marker notices (goal/plan/swarm …) are the neutral, transcript-owned ones.
+ * Interruption markers ('agent-marker-*-interruption' or id ending with interruption)
+ * are user turn stops and must remain standalone/unfolded.
+ */
 export function isMarkerNotice(block: NoticeBlock): boolean {
-  return block.tone === 'neutral' && block.id.startsWith('agent-marker-');
+  return (
+    block.tone === 'neutral' &&
+    block.id.startsWith('agent-marker-') &&
+    !block.id.includes('interruption') &&
+    block.i18n?.key !== 'transcript.marker.interruption'
+  );
 }
 
 /**

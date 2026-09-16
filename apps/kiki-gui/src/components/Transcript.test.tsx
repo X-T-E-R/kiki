@@ -723,6 +723,92 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-turn-tail]')).not.toBeNull();
   });
 
+  it('renders turn tail failure state with error message and copy action', async () => {
+    const { root, container } = makeRoot();
+    const props = {
+      onLoadOlder: () => Promise.resolve(false),
+      onResolveApproval: () => noopActions(),
+      onAnswerQuestion: () => noopActions(),
+      onDismissQuestion: () => noopActions(),
+    };
+    await renderSettled(
+      root,
+      <Transcript
+        state={{
+          ...transcriptState([
+            { kind: 'assistant', id: 'assistant-1', text: 'response', streaming: false, createdAt: undefined },
+          ]),
+          busy: false,
+          turnTail: {
+            turnId: 't1',
+            state: 'failed',
+            error: 'Provider token quota exceeded',
+            endedAt: new Date().toISOString(),
+            durationMs: 5_000,
+            ttftMs: undefined,
+            usage: undefined,
+            tokensPerSecond: undefined,
+          },
+        }}
+        {...props}
+      />,
+    );
+    const tail = container.querySelector('[data-turn-tail]');
+    expect(tail).not.toBeNull();
+    expect(tail?.getAttribute('data-turn-tail-state')).toBe('failed');
+    expect(tail?.textContent).toContain('Turn failed');
+    expect(tail?.textContent).toContain('Provider token quota exceeded');
+    expect(tail?.querySelector('button')?.textContent).toBe('copy');
+  });
+
+  it('renders tool stopped status with title and interrupted summary', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'tool',
+        id: 'tool-stopped-1',
+        toolCallId: 'c-stop',
+        name: 'Bash',
+        argsText: '',
+        args: {},
+        display: undefined,
+        description: undefined,
+        status: 'stopped',
+        output: 'user cancelled the process',
+        isError: false,
+        durationMs: 1200,
+        durationSource: 'frame',
+        progressText: undefined,
+      },
+    ]);
+    const tool = container.querySelector('[data-tool]');
+    expect(tool).not.toBeNull();
+    expect(tool?.textContent).toContain('Stopped — user cancelled the process');
+    const stoppedIcon = tool?.querySelector('[aria-label="stopped"]');
+    expect(stoppedIcon?.getAttribute('title')).toBe('user cancelled the process');
+  });
+
+  it('renders subagent event row failure with danger styling and error tooltip', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'subagent-event',
+        id: 'event-sub-failed',
+        subagentId: 'agent-child-1',
+        parentAgentId: 'main',
+        name: 'explorer',
+        event: 'failed',
+        status: 'failed',
+        at: new Date().toISOString(),
+        error: 'Connection timeout after 30s',
+      },
+    ]);
+    const eventRow = container.querySelector('[data-subagent-event="agent-child-1"]');
+    expect(eventRow).not.toBeNull();
+    expect(eventRow?.textContent).toContain('explorer');
+    expect(eventRow?.textContent).toContain('Failed');
+    expect(eventRow?.textContent).toContain('Connection timeout after 30s');
+    expect(eventRow?.getAttribute('title')).toBe('Connection timeout after 30s');
+  });
+
   it('hides the working status while assistant text streams even when busy', async () => {
     const { root, container } = makeRoot();
     await renderSettled(

@@ -35,7 +35,7 @@ vi.mock('./AgentPanelContainer', () => ({
 }));
 import { PendingBadge } from './PendingBadge';
 import { QueueStrip } from './QueueStrip';
-import { toolErrorSummary } from './ToolCard';
+import { toolErrorFullText, toolErrorSummary } from './ToolCard';
 import { projectUserText } from './Transcript';
 import {
   NOT_FOUND_FALLBACK_MS,
@@ -259,6 +259,38 @@ describe('toolErrorSummary', () => {
 
   it('returns undefined for non-error statuses', () => {
     expect(toolErrorSummary({ ...baseBlock, status: 'done', output: 'fine' })).toBeUndefined();
+  });
+});
+
+describe('toolErrorFullText', () => {
+  const baseBlock = {
+    kind: 'tool' as const,
+    id: 'b1',
+    toolCallId: 'tc1',
+    name: 'Bash',
+    argsText: '',
+    args: undefined,
+    display: undefined,
+    description: undefined,
+    status: 'error' as const,
+    output: undefined,
+    isError: true,
+    startedAt: 0,
+    durationMs: undefined,
+    progressText: undefined,
+  };
+
+  it('keeps multi-line string output untruncated for tooltips', () => {
+    expect(
+      toolErrorFullText({ ...baseBlock, output: 'boom: permission denied\nstack line two' }),
+    ).toBe('boom: permission denied\nstack line two');
+  });
+
+  it('reads the full { message } text and rejects blank or missing text', () => {
+    expect(toolErrorFullText({ ...baseBlock, output: { message: 'disk full\ntrace' } })).toBe('disk full\ntrace');
+    expect(toolErrorFullText({ ...baseBlock, output: { message: '   \n  ' } })).toBeUndefined();
+    expect(toolErrorFullText({ ...baseBlock, output: 42 })).toBeUndefined();
+    expect(toolErrorFullText({ ...baseBlock, status: 'done', output: 'fine' })).toBeUndefined();
   });
 });
 

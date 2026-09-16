@@ -626,6 +626,7 @@ export const zh: Record<I18nKey, string> = {
   'transcript.marker.goal': '目标已更新',
   'transcript.marker.plan': '计划已更新',
   'transcript.marker.swarm': '集群',
+  'transcript.marker.interruption': '你已停止本轮',
   'transcript.failed': '失败',
   'transcript.steps': '步骤 · {count}',
   'transcript.runningAria': '运行中',
@@ -736,6 +737,7 @@ export const zh: Record<I18nKey, string> = {
   'notice.compacting': '正在压缩上下文…',
   'notice.compacted': '上下文已压缩 — {before} → {after} tokens',
   'notice.promptAborted': '消息已中止',
+  'notice.promptFailed': '消息发送失败',
   'notice.turnFailed': '本轮失败',
 
   // ---- interaction cards ----

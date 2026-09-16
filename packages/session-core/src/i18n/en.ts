@@ -632,6 +632,7 @@ export const en = {
   'transcript.marker.goal': 'Goal updated',
   'transcript.marker.plan': 'Plan updated',
   'transcript.marker.swarm': 'Swarm',
+  'transcript.marker.interruption': 'You stopped this turn',
   'transcript.failed': 'failed',
   'transcript.steps': 'Steps · {count}',
   'transcript.runningAria': 'running',
@@ -745,6 +746,7 @@ export const en = {
   'notice.compacting': 'Compacting context…',
   'notice.compacted': 'Context compacted — {before} → {after} tokens',
   'notice.promptAborted': 'Prompt aborted',
+  'notice.promptFailed': 'Prompt failed',
   'notice.turnFailed': 'Turn failed',
 
   // ---- interaction cards ----

@@ -1708,9 +1708,18 @@ export function SessionView({
             }
           })
           .catch((error: unknown) => {
+            const isApi = error instanceof ApiError;
             pushToast({
               tone: 'error',
               text: error instanceof Error ? error.message : String(error),
+              code: isApi ? error.code : undefined,
+              requestId: isApi ? error.requestId : undefined,
+              detail: error instanceof Error ? error.stack : undefined,
+              retry: {
+                run: () => {
+                  void actions?.send(text, composerAttachments);
+                },
+              },
             });
             // Only a definitive server-side business rejection (e.g.
             // route-locked) drops the pending pick; a network failure or
@@ -1772,6 +1781,7 @@ export function SessionView({
             setAttachments(emptyAttachments);
           },
         }).catch((error: unknown) => {
+          const isApi = error instanceof ApiError;
           const text =
             error instanceof ApiError && error.code === API_CODES.SKILL_NOT_FOUND
               ? t('sv.skillGone', { name })
@@ -1780,7 +1790,18 @@ export function SessionView({
                 : error instanceof Error
                   ? error.message
                   : String(error);
-          pushToast({ tone: 'error', text });
+          pushToast({
+            tone: 'error',
+            text,
+            code: isApi ? error.code : undefined,
+            requestId: isApi ? error.requestId : undefined,
+            detail: error instanceof Error ? error.stack : undefined,
+            retry: {
+              run: () => {
+                void actions?.activateSkill(name, args, composerAttachments, goalObjectiveOverride);
+              },
+            },
+          });
         });
       },
       abort: () =>

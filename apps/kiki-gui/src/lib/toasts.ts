@@ -18,6 +18,10 @@ export interface ToastRetry {
 export interface ToastInput {
   readonly tone: ToastTone;
   readonly text: string;
+  /** Optional error details (code, requestId, full trace). */
+  readonly detail?: string;
+  readonly code?: number | string;
+  readonly requestId?: string;
   /** Errors only: an optional retry action rendered beside the close button. */
   readonly retry?: ToastRetry;
 }

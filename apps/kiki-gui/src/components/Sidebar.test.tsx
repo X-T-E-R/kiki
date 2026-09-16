@@ -507,6 +507,23 @@ describe('Sidebar semantic structure', () => {
     expect(regions[0]?.hasAttribute('data-search-results')).toBe(true);
     expect(container.querySelector('[data-session-list]')).toBeNull();
   });
+
+  it('renders a retry button when initial search fails and allows refetching', async () => {
+    searchMessages.mockRejectedValueOnce(new Error('Network offline'));
+    const { container } = await mount();
+    await typeQuery(container, 'beta');
+    await waitForText(container, 'Search failed');
+
+    const retryBtn = container.querySelector<HTMLButtonElement>('[data-search-initial-retry]');
+    expect(retryBtn).not.toBeNull();
+    expect(retryBtn?.textContent).toBe('Retry');
+
+    searchMessages.mockResolvedValueOnce(page([hit({ session_id: 's2', snippet: 'beta result' })], false));
+    await act(async () => {
+      retryBtn?.click();
+    });
+    await waitForText(container, 'beta result');
+  });
 });
 
 describe('Sidebar view menu', () => {

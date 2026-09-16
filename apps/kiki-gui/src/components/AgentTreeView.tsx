@@ -110,6 +110,7 @@ const AgentTreeRow = memo(function AgentTreeRow({
               data-agent-depth={depth}
               aria-current={selected ? 'page' : undefined}
               aria-label={t('subagent.openAgent', { name: node.label })}
+              title={node.error}
               onClick={() => {
                 onOpen(node.agentId);
               }}
@@ -138,6 +139,15 @@ const AgentTreeRow = memo(function AgentTreeRow({
                   {children.length > 0 ? ` · ${tp('subagent.children', children.length)}` : ''}
                 </span>
               </span>
+              {node.status === 'failed' && node.error !== undefined ? (
+                <span
+                  aria-hidden
+                  title={node.error}
+                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-danger/10 text-[10px] font-bold text-danger"
+                >
+                  !
+                </span>
+              ) : null}
             </button>
           </div>
           {expanded && children.length > 0 ? (

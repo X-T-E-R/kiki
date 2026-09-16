@@ -533,6 +533,14 @@ export function Sidebar({
                   ? searchResultsQuery.error.message
                   : t('common.unknownError')}
               </p>
+              <button
+                type="button"
+                data-search-initial-retry
+                onClick={() => { void searchResultsQuery.refetch(); }}
+                className="mt-1.5 text-[11px] font-medium text-danger underline"
+              >
+                {t('common.retry')}
+              </button>
             </div>
           ) : searchGroups.length === 0 ? (
             <p className="px-2 pt-6 text-center text-[12px] text-ink-faint">

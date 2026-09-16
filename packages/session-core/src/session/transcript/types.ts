@@ -205,6 +205,7 @@ export interface SubagentEventBlock {
   readonly status: SubagentBlock['status'];
   readonly at: string | undefined;
   readonly turnId?: string;
+  readonly error?: string;
   /**
    * Tool call that triggered this entry (sent/resumed). When the triggering
    * ToolBlock is on the page, the entry anchors right after it instead of
@@ -277,6 +278,8 @@ export interface SessionCursorState {
 
 export interface TurnTailInfo {
   readonly turnId: string;
+  readonly state?: string;
+  readonly error?: string;
   readonly endedAt: string;
   readonly durationMs: number | undefined;
   readonly ttftMs: number | undefined;

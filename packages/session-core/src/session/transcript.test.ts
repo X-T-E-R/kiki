@@ -3078,6 +3078,86 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ).toBe(true);
   });
 
+  it('keeps the settled user bubble and shows a danger notice when the matching prompt fails', () => {
+    const previous = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      userTurnSnapshot({ streaming: true }),
+    );
+    const queued = applyOpsToSnapshot(userTurnSnapshot({ streaming: true }), [
+      {
+        op: 'prompt.upsert',
+        prompt: {
+          promptId: 'p-queued',
+          status: 'queued',
+          userMessageId: 'um-queued',
+          content: [{ type: 'text', text: 'B: fail me.' }],
+          createdAt: '2026-01-01T00:00:03.000Z',
+        },
+      },
+    ]);
+    const withQueued = projectAgentTranscriptView(previous, 'main', queued);
+    expect(
+      withQueued.blocks.some((block) => block.kind === 'user' && block.promptStatus === 'queued' && block.promptId === 'p-queued'),
+    ).toBe(true);
+    const failed = applyOpsToSnapshot(queued, [
+      {
+        op: 'prompt.upsert',
+        prompt: {
+          promptId: 'p-queued',
+          status: 'failed',
+          userMessageId: 'um-queued',
+          createdAt: '2026-01-01T00:00:03.000Z',
+        },
+      },
+    ]);
+    const projected = projectAgentTranscriptView(withQueued, 'main', failed);
+    expect(
+      projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued' && block.promptStatus === 'queued'),
+    ).toBe(false);
+    expect(
+      projected.blocks.some(
+        (block) => block.kind === 'notice' && block.id === 'notice-failed-p-queued' && block.tone === 'danger',
+      ),
+    ).toBe(true);
+    expect(
+      projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued' && block.text === 'B: fail me.'),
+    ).toBe(true);
+  });
+
+  it('shows a danger taskref notice with the error for lost and timed_out background tasks', () => {
+    for (const state of ['lost', 'timed_out'] as const) {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [{ kind: 'taskref', refId: 'ref-bg-1', taskId: 'task-bg-1', at: FIXED_AT }],
+          tasks: [
+            {
+              taskId: 'task-bg-1',
+              kind: 'other',
+              state,
+              detached: true,
+              description: 'background probe',
+              outputTail: '',
+              error: 'worker quota exhausted',
+              startedAt: FIXED_AT,
+              endedAt: FIXED_AT_1,
+            },
+          ],
+        }),
+      );
+      expect(projected.blocks).toEqual([
+        expect.objectContaining({
+          kind: 'notice',
+          id: 'agent-taskref-ref-bg-1',
+          tone: 'danger',
+          text: 'background probe — worker quota exhausted',
+        }),
+      ]);
+    }
+  });
+
   it('clears a running chip once the matching prompt completes so edit/fork return', () => {
     const previous = projectAgentTranscriptView(
       createViewState('session_test'),

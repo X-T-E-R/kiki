@@ -294,7 +294,9 @@ const SubagentTaskSection = memo(function SubagentTaskSection({
     block !== undefined && block.status !== 'unknown'
       ? block.status
       : (node?.status ?? block?.status ?? 'unknown');
+  const error = block?.error ?? node?.error;
   const description = block?.description ?? block?.instruction ?? node?.description;
+  const isFailed = status === 'failed';
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -313,9 +315,17 @@ const SubagentTaskSection = memo(function SubagentTaskSection({
           </span>
         ) : null}
       </div>
+      {isFailed && error !== undefined ? (
+        <div className="mt-2 rounded-lg border border-danger/30 bg-danger/5 p-2.5">
+          <ClampText text={error} className="font-mono text-[11.5px] leading-snug text-danger" />
+        </div>
+      ) : null}
       {description !== undefined ? (
         <div className="mt-2">
-          <ClampText text={description} className="text-[12px] leading-snug text-ink" />
+          <ClampText
+            text={description}
+            className={`text-[12px] leading-snug ${isFailed && error !== undefined ? 'text-ink-soft' : 'text-ink'}`}
+          />
         </div>
       ) : null}
     </div>
