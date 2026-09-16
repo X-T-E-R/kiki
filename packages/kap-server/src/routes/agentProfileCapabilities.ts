@@ -12,6 +12,7 @@ import {
   ISessionAgentProfileCatalog,
   ISessionAgentProfileCatalogSeed,
   ISessionContext,
+  ISessionIndex,
   ISessionManager,
   ISubagentTool,
   IWorkspaceInstanceManager,
@@ -20,7 +21,6 @@ import {
   SessionAgentProfileCatalogService,
   type Scope,
 } from '@kiki/agent-core-v2';
-import { resumeSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { projectSubagentCapabilities, type SubagentCapabilityCatalog } from '@kiki/agent-core-v2/agent/tools/agent/subagentCapabilities';
 import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v2/agent/toolPolicy/evaluate';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
@@ -67,24 +67,30 @@ export async function agentCapabilities(
   signal?: AbortSignal,
 ): Promise<AgentCapabilitiesResponse | 'workspace-not-found' | 'profile-not-found'> {
   if ('session_id' in query) {
-    const session = core.accessor.get(ISessionManager).get(query.session_id)
-      ?? await resumeSessionById(core.accessor, query.session_id);
+    const session = core.accessor.get(ISessionManager).get(query.session_id);
+    const workspaceId = session?.accessor.get(ISessionContext).workspaceId
+      ?? (await core.accessor.get(ISessionIndex).get(query.session_id))?.workspaceId;
     const lifecycle = session?.accessor.get(IAgentLifecycleService);
     const agent = lifecycle?.get(query.agent_id);
     const pricing = core.accessor.get(IModelPricingService);
-    const cacheRevision = lifecycle === undefined ? '' : lifecycle.list()
-      .map((handle) => {
-        const accounting = handle.accessor.get(IAgentStateService).get(panelAccountingKey);
-        return `${handle.id}:${accounting.records > 0}:${accounting.incomplete}`;
-      })
-      .join('|');
-    const persisted = session === undefined ? {} : await readPersistedAgentPanelMetrics(
+    const skipAgentIds: string[] = [];
+    const mutableAgentIds: string[] = [];
+    for (const handle of lifecycle?.list() ?? []) {
+      const accounting = handle.accessor.get(IAgentStateService).get(panelAccountingKey);
+      if (accounting.incomplete) mutableAgentIds.push(handle.id);
+      else skipAgentIds.push(handle.id);
+    }
+    const persisted = workspaceId === undefined ? {} : await readPersistedAgentPanelMetrics(
       core,
-      session.accessor.get(ISessionContext).workspaceId,
+      workspaceId,
       query.session_id,
       pricing,
-      cacheRevision,
-      { signal, agentIds: query.agent_id === 'main' ? undefined : [query.agent_id] },
+      {
+        signal,
+        agentIds: query.agent_id === 'main' ? undefined : [query.agent_id],
+        skipAgentIds,
+        mutableAgentIds,
+      },
     );
     if (agent === undefined) return {
       context: 'live', owner: { agent_id: query.agent_id }, available: false,

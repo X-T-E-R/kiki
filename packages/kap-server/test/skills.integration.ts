@@ -163,15 +163,17 @@ describe('server-v2 /api skills', () => {
       expect(body.msg).toMatch(/does not exist/);
     });
 
-    it('cold-loads a persisted but not live (archived) session and lists skills', async () => {
+    it('lists workspace skills for an archived (cold) session without resuming it', async () => {
       const id = await createSession();
       const archived = await postJson<{ archived: boolean }>(`/api/sessions/${id}:archive`);
       expect(archived.body.code).toBe(0);
+      expect(getLiveSessionById((server as RunningServer).core.accessor, id)).toBeUndefined();
 
       const { body } = await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`);
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
       expect(skills.some((s) => s.name === 'update-config')).toBe(true);
+      expect(getLiveSessionById((server as RunningServer).core.accessor, id)).toBeUndefined();
     });
 
     it('lists builtin skills projected to the wire shape', async () => {

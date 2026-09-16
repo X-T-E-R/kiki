@@ -99,6 +99,32 @@ describe('GET /api/agents', () => {
     expect(lifecycle.list()).toHaveLength(1);
   });
 
+  it('answers capabilities for a cold session without resuming it', async () => {
+    await writeFile(join(home!, 'config.toml'), [
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
+      'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const create = await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'agent', model: 'stub' } }),
+    });
+    const created = await create.json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const manager = server.core.accessor.get(ISessionManager);
+    expect(manager.get(created.data.id)).toBeDefined();
+    await manager.close(created.data.id);
+    expect(manager.get(created.data.id)).toBeUndefined();
+    const response = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
+    const body = await response.json() as Envelope<unknown>;
+    expect(body.code).toBe(0);
+    const data = agentCapabilitiesResponseSchema.parse(body.data);
+    expect(data.available).toBe(false);
+    expect(data.unavailable_reason).toContain('not live');
+    expect(manager.get(created.data.id)).toBeUndefined();
+  });
+
   it('writes the winning SYSTEM source rather than a same-name user file and refreshes draft capabilities', async () => {
     const systemPath = join(home!, 'SYSTEM.md');
     const agentPath = join(home!, 'agents', 'agent.md');

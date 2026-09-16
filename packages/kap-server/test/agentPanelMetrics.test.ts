@@ -146,12 +146,11 @@ function persistedFixture(
 async function persisted(
   core: Scope,
   pricingService: IModelPricingService,
-  revision = '',
   key = 'default',
-  options?: Parameters<typeof readPersistedAgentPanelMetrics>[5],
+  options?: Parameters<typeof readPersistedAgentPanelMetrics>[4],
 ): Promise<Readonly<Record<string, ReturnType<typeof readAgentPanelMetrics>>>> {
   return readPersistedAgentPanelMetrics(
-    core, `workspace-${key}`, `session-${key}`, pricingService, revision, options,
+    core, `workspace-${key}`, `session-${key}`, pricingService, options,
   );
 }
 
@@ -200,7 +199,6 @@ describe('persisted agent panel metrics provenance', () => {
     const metrics = (await persisted(
       fixture.core,
       pricing({ 'known-model': 1, 'legacy-model': 1 }),
-      '',
       'unknown',
     ))['main'];
     expect(metrics).toMatchObject({
@@ -215,7 +213,7 @@ describe('persisted agent panel metrics provenance', () => {
 
   it('projects explicitly known zero usage and zero cost as complete', async () => {
     const fixture = persistedFixture([record('free-model', ZERO_USAGE, true)]);
-    const metrics = (await persisted(fixture.core, pricing({ 'free-model': 0 }), '', 'zero'))['main'];
+    const metrics = (await persisted(fixture.core, pricing({ 'free-model': 0 }), 'zero'))['main'];
     expect(metrics).toMatchObject({
       inputTokens: 0,
       outputTokens: 0,
@@ -239,7 +237,6 @@ describe('persisted agent panel metrics provenance', () => {
     const metrics = (await persisted(
       fixture.core,
       pricing({ 'known-model': 2, 'unknown-model': undefined }),
-      '',
       'mixed',
     ))['main'];
     expect(metrics).toMatchObject({
@@ -265,7 +262,6 @@ describe('persisted agent panel metrics provenance', () => {
     const metrics = (await persisted(
       fixture.core,
       pricing({ 'known-model': 2, 'unpriced-model': undefined }),
-      '',
       'unpriced',
     ))['main'];
     expect(metrics).toMatchObject({
@@ -284,7 +280,7 @@ describe('persisted agent panel metrics provenance', () => {
       { type: 'usage.record', model: 'bad-known-model', usage: ZERO_USAGE, usageKnown: 'invalid' } as unknown as WireRecord,
       record('known-model', usage(2, 3), true),
     ]);
-    const metrics = (await persisted(fixture.core, pricing({ 'known-model': 2 }), '', 'bad'))['main'];
+    const metrics = (await persisted(fixture.core, pricing({ 'known-model': 2 }), 'bad'))['main'];
     expect(metrics).toMatchObject({
       inputTokens: 2,
       outputTokens: 3,
@@ -300,7 +296,7 @@ describe('persisted agent panel metrics provenance', () => {
       record('known-model', usage(2, 3), true),
       { type: 'usage.record', model: 'bad-model', usage: { inputOther: -1 } } as unknown as WireRecord,
     ]);
-    const metrics = (await persisted(fixture.core, pricing({ 'known-model': 2 }), '', 'bad-after-known'))['main'];
+    const metrics = (await persisted(fixture.core, pricing({ 'known-model': 2 }), 'bad-after-known'))['main'];
     expect(metrics).toMatchObject({
       inputTokens: 2,
       outputTokens: 3,
@@ -313,7 +309,7 @@ describe('persisted agent panel metrics provenance', () => {
 
   it('marks known cost partial after append-log reading fails', async () => {
     const fixture = persistedFixture([record('known-model', usage(2, 3), true)], 0);
-    const metrics = (await persisted(fixture.core, pricing({ 'known-model': 2 }), '', 'read-failure'))['main'];
+    const metrics = (await persisted(fixture.core, pricing({ 'known-model': 2 }), 'read-failure'))['main'];
     expect(metrics).toMatchObject({
       inputTokens: 2,
       outputTokens: 3,
@@ -330,42 +326,69 @@ describe('persisted agent panel metrics cache scope', () => {
     const first = persistedFixture([record('model', usage(1, 0), true)]);
     const second = persistedFixture([record('model', usage(9, 0), true)]);
     const modelPricing = pricing({ model: 1 });
-    const firstMetrics = (await persisted(first.core, modelPricing, 'r1'))['main'];
-    const secondMetrics = (await persisted(second.core, modelPricing, 'r1'))['main'];
+    const firstMetrics = (await persisted(first.core, modelPricing))['main'];
+    const secondMetrics = (await persisted(second.core, modelPricing))['main'];
     expect(firstMetrics?.totalTokens).toBe(1);
     expect(secondMetrics?.totalTokens).toBe(9);
     expect(first.reads()).toBe(1);
     expect(second.reads()).toBe(1);
   });
 
-  it('keeps usage growth cached for five seconds and refreshes after thirty seconds', async () => {
+  it('keeps mutable usage growth cached for five seconds and refreshes after thirty seconds', async () => {
     vi.useFakeTimers({ now: 0 });
     try {
       const fixture = persistedFixture([record('model', usage(1, 0), true)]);
       const modelPricing = pricing({ model: 1 });
-      expect((await persisted(fixture.core, modelPricing, 'recorded-complete', 'ttl'))['main']?.totalTokens).toBe(1);
+      const mutable = { mutableAgentIds: ['main'] } as const;
+      expect((await persisted(fixture.core, modelPricing, 'ttl', mutable))['main']?.totalTokens).toBe(1);
       fixture.setRecords([record('model', usage(2, 0), true)]);
       await vi.advanceTimersByTimeAsync(5_000);
-      expect((await persisted(fixture.core, modelPricing, 'recorded-complete', 'ttl'))['main']?.totalTokens).toBe(1);
+      expect((await persisted(fixture.core, modelPricing, 'ttl', mutable))['main']?.totalTokens).toBe(1);
       expect(fixture.reads()).toBe(1);
       await vi.advanceTimersByTimeAsync(25_001);
-      expect((await persisted(fixture.core, modelPricing, 'recorded-complete', 'ttl'))['main']?.totalTokens).toBe(2);
+      expect((await persisted(fixture.core, modelPricing, 'ttl', mutable))['main']?.totalTokens).toBe(2);
       expect(fixture.reads()).toBe(2);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('replaces a session entry when the roster revision changes', async () => {
-    const fixture = persistedFixture([record('model', usage(1, 0), true)]);
-    const modelPricing = pricing({ model: 1 });
-    expect((await persisted(fixture.core, modelPricing, 'recorded-complete'))['main']?.totalTokens).toBe(1);
-    fixture.setRecords([record('model', usage(2, 0), true)]);
-    expect((await persisted(fixture.core, modelPricing, 'recorded-incomplete'))['main']?.totalTokens).toBe(2);
-    expect(fixture.reads()).toBe(2);
-    fixture.setRecords([record('model', usage(3, 0), true)]);
-    expect((await persisted(fixture.core, modelPricing, 'recorded-complete'))['main']?.totalTokens).toBe(3);
-    expect(fixture.reads()).toBe(3);
+  it('excludes skipped agents from the scan and the result', async () => {
+    const fixture = persistedFixture([record('model', usage(3, 0), true)], undefined, {
+      agentIds: ['main', 'child-1'],
+    });
+    const metrics = await persisted(fixture.core, pricing({ model: 1 }), 'skip', {
+      skipAgentIds: ['child-1'],
+    });
+    expect(Object.keys(metrics)).toEqual(['main']);
+    expect(fixture.reads()).toBe(1);
+    expect(fixture.scopes()[0]).toContain('main');
+  });
+
+  it('refreshes mutable agents after the mutable ttl while immutable agents stay cached', async () => {
+    vi.useFakeTimers({ now: 0 });
+    try {
+      const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
+        agentIds: ['main', 'child-1'],
+      });
+      const modelPricing = pricing({ model: 1 });
+      const mutable = { mutableAgentIds: ['main'] } as const;
+      const first = await persisted(fixture.core, modelPricing, 'ttl-split', mutable);
+      expect(first['main']?.totalTokens).toBe(1);
+      expect(fixture.reads()).toBe(2);
+      fixture.setRecords([record('model', usage(2, 0), true)]);
+      await vi.advanceTimersByTimeAsync(31_000);
+      const second = await persisted(fixture.core, modelPricing, 'ttl-split', mutable);
+      expect(second['main']?.totalTokens).toBe(2);
+      expect(second['child-1']?.totalTokens).toBe(1);
+      expect(fixture.reads()).toBe(3);
+      await vi.advanceTimersByTimeAsync(600_000);
+      const third = await persisted(fixture.core, modelPricing, 'ttl-split', mutable);
+      expect(third['child-1']?.totalTokens).toBe(2);
+      expect(fixture.reads()).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('folds concurrent cache misses into one persisted scan', async () => {
@@ -375,7 +398,7 @@ describe('persisted agent panel metrics cache scope', () => {
       beforeRead: async () => { entered.resolve(); await release.promise; },
     });
     const modelPricing = pricing({ model: 1 });
-    const calls = Array.from({ length: 24 }, () => persisted(fixture.core, modelPricing, 'stable', 'singleflight'));
+    const calls = Array.from({ length: 24 }, () => persisted(fixture.core, modelPricing, 'singleflight'));
     await entered.promise;
     expect(fixture.reads()).toBe(1);
     release.resolve();
@@ -397,8 +420,9 @@ describe('persisted agent panel metrics cache scope', () => {
         beforeRead: async () => { entered.resolve(); await release.promise; },
       });
       const modelPricing = pricing({ model: 1 });
-      const first = persisted(fixture.core, modelPricing, 'stable', 'completion-ttl', {
+      const first = persisted(fixture.core, modelPricing, 'completion-ttl', {
         limits: { wallTimeMs: 10_000 },
+        mutableAgentIds: ['main'],
       });
       await entered.promise;
       await vi.advanceTimersByTimeAsync(5_000);
@@ -406,9 +430,9 @@ describe('persisted agent panel metrics cache scope', () => {
       await first;
       fixture.setRecords([record('model', usage(2, 0), true)]);
       await vi.advanceTimersByTimeAsync(29_999);
-      expect((await persisted(fixture.core, modelPricing, 'stable', 'completion-ttl'))['main']?.totalTokens).toBe(1);
+      expect((await persisted(fixture.core, modelPricing, 'completion-ttl', { mutableAgentIds: ['main'] }))['main']?.totalTokens).toBe(1);
       await vi.advanceTimersByTimeAsync(2);
-      expect((await persisted(fixture.core, modelPricing, 'stable', 'completion-ttl'))['main']?.totalTokens).toBe(2);
+      expect((await persisted(fixture.core, modelPricing, 'completion-ttl', { mutableAgentIds: ['main'] }))['main']?.totalTokens).toBe(2);
       expect(fixture.reads()).toBe(2);
     } finally {
       vi.useRealTimers();
@@ -421,7 +445,7 @@ describe('persisted agent panel metrics cache scope', () => {
       record('model', usage(2, 0), true),
       record('model', usage(4, 0), true),
     ]);
-    const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'stable', 'record-budget', {
+    const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'record-budget', {
       limits: { maxRecords: 2 },
     }))['main'];
     expect(metrics).toMatchObject({ totalTokens: 3, usagePartial: true, costPartial: true });
@@ -433,7 +457,7 @@ describe('persisted agent panel metrics cache scope', () => {
 
   it('marks usage and cost partial when the byte budget is reached', async () => {
     const fixture = persistedFixture([record('model', usage(1, 0), true)]);
-    const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'stable', 'byte-budget', {
+    const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'byte-budget', {
       limits: { maxBytes: 1 },
     }))['main'];
     expect(metrics).toMatchObject({ totalTokens: null, usagePartial: true, costPartial: true });
@@ -455,7 +479,7 @@ describe('persisted agent panel metrics cache scope', () => {
           });
         },
       });
-      const call = persisted(fixture.core, pricing({ model: 1 }), 'stable', 'wall-budget', {
+      const call = persisted(fixture.core, pricing({ model: 1 }), 'wall-budget', {
         limits: { wallTimeMs: 10 },
       });
       await entered.promise;
@@ -483,10 +507,10 @@ describe('persisted agent panel metrics cache scope', () => {
       },
     });
     const controller = new AbortController();
-    const first = persisted(fixture.core, pricing({ model: 1 }), 'stable', 'shared-abort', {
+    const first = persisted(fixture.core, pricing({ model: 1 }), 'shared-abort', {
       signal: controller.signal,
     });
-    const second = persisted(fixture.core, pricing({ model: 1 }), 'stable', 'shared-abort');
+    const second = persisted(fixture.core, pricing({ model: 1 }), 'shared-abort');
     await entered.promise;
     controller.abort(new DOMException('one caller left', 'AbortError'));
     await expect(first).rejects.toMatchObject({ name: 'AbortError' });
@@ -508,7 +532,7 @@ describe('persisted agent panel metrics cache scope', () => {
       },
     });
     const controller = new AbortController();
-    const call = persisted(fixture.core, pricing({ model: 1 }), 'stable', 'abort', {
+    const call = persisted(fixture.core, pricing({ model: 1 }), 'abort', {
       signal: controller.signal,
     });
     await entered.promise;
@@ -521,7 +545,7 @@ describe('persisted agent panel metrics cache scope', () => {
     const fixture = persistedFixture([record('model', usage(3, 0), true)], undefined, {
       agentIds: ['main', 'child-1', 'child-2'],
     });
-    const metrics = await persisted(fixture.core, pricing({ model: 1 }), 'stable', 'targeted', {
+    const metrics = await persisted(fixture.core, pricing({ model: 1 }), 'targeted', {
       agentIds: ['child-1'],
     });
     expect(Object.keys(metrics)).toEqual(['child-1']);
@@ -531,15 +555,42 @@ describe('persisted agent panel metrics cache scope', () => {
     expect(fixture.scopes()[0]).toContain('child-1');
   });
 
+  it('invalidates cached entries when an agent goes live and when it dies', async () => {
+    vi.useFakeTimers({ now: 0 });
+    try {
+      const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
+        agentIds: ['main', 'child-1'],
+      });
+      const modelPricing = pricing({ model: 1 });
+      const cold = await persisted(fixture.core, modelPricing, 'live-invalidate');
+      expect(cold['child-1']?.totalTokens).toBe(1);
+      expect(fixture.reads()).toBe(2);
+      fixture.setRecords([record('model', usage(5, 0), true)]);
+      const live = await persisted(fixture.core, modelPricing, 'live-invalidate', {
+        skipAgentIds: ['child-1'],
+      });
+      expect(live['child-1']).toBeUndefined();
+      expect(fixture.reads()).toBe(2);
+      const afterDeath = await persisted(fixture.core, modelPricing, 'live-invalidate');
+      expect(afterDeath['child-1']?.totalTokens).toBe(5);
+      expect(fixture.reads()).toBe(3);
+      const cachedAfterDeath = await persisted(fixture.core, modelPricing, 'live-invalidate');
+      expect(cachedAfterDeath['child-1']?.totalTokens).toBe(5);
+      expect(fixture.reads()).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('evicts the oldest session entry after reaching the per-core capacity', async () => {
     const fixture = persistedFixture([record('model', usage(1, 0), true)]);
     const modelPricing = pricing({ model: 1 });
-    for (let index = 0; index < 257; index += 1) {
-      await persisted(fixture.core, modelPricing, 'stable', `capacity-${index}`);
+    for (let index = 0; index < 1025; index += 1) {
+      await persisted(fixture.core, modelPricing, `capacity-${index}`);
     }
-    expect(fixture.reads()).toBe(257);
+    expect(fixture.reads()).toBe(1025);
     fixture.setRecords([record('model', usage(2, 0), true)]);
-    expect((await persisted(fixture.core, modelPricing, 'stable', 'capacity-0'))['main']?.totalTokens).toBe(2);
-    expect(fixture.reads()).toBe(258);
+    expect((await persisted(fixture.core, modelPricing, 'capacity-0'))['main']?.totalTokens).toBe(2);
+    expect(fixture.reads()).toBe(1026);
   });
 });

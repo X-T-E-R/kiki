@@ -8,6 +8,7 @@ import {
   ISessionContext,
   ISessionIndex,
   ISessionMediaStore,
+  ISessionManager,
   ISessionSkillCatalog,
   ITelemetryService,
   IWorkspaceInstanceManager,
@@ -109,15 +110,31 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       const { session_id } = req.params;
-      const resolved = await resolveActivatedSession(core, session_id, req.id);
-      if ('envelope' in resolved) {
-        reply.send(resolved.envelope);
+      const live = core.accessor.get(ISessionManager).get(session_id);
+      if (live !== undefined) {
+        const catalog = live.accessor.get(ISessionSkillCatalog);
+        await catalog.ready;
+        const skills = catalog.catalog.listSkills().map(toProtocolSkill);
+        reply.send(okEnvelope({ skills }, req.id));
         return;
       }
-      const catalog = resolved.handle.accessor.get(ISessionSkillCatalog);
-      await catalog.ready;
-      const skills = catalog.catalog.listSkills().map(toProtocolSkill);
-      reply.send(okEnvelope({ skills }, req.id));
+      const summary = await core.accessor.get(ISessionIndex).get(session_id);
+      if (summary === undefined) {
+        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+        return;
+      }
+      if (await core.accessor.get(IWorkspaceService).get(summary.workspaceId) === undefined) {
+        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `workspace ${summary.workspaceId} for session ${session_id} does not exist`, req.id));
+        return;
+      }
+      const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: summary.workspaceId });
+      try {
+        await lease.instance.program.ready;
+        const skills = lease.instance.program.skills.catalog.listSkills().map(toProtocolSkill);
+        reply.send(okEnvelope({ skills }, req.id));
+      } finally {
+        lease.dispose();
+      }
     },
   );
   app.get(
