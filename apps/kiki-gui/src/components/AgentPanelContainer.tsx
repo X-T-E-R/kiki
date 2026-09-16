@@ -46,14 +46,17 @@ export function AgentPanelContainer({ state, forest, agentId }: {
   const tree = sumAgentTreeMetrics(ids, metrics);
   const todos = state.todos.filter((todo): todo is typeof todo & { status: 'pending' | 'in_progress' | 'done' } =>
     todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'done');
+  const profileName = profile?.name === 'unknown' ? t('diagnostics.unknown') : (profile?.name ?? state.profile ?? t('diagnostics.unknown'));
   return <div data-agent-panel-container className="space-y-3">
     <AgentIdentitySection identity={{
-      id: agentId, profile: profile?.name ?? state.profile ?? t('diagnostics.unknown'),
+      id: agentId, profile: profileName,
       label: node?.label ?? agentId, model: profile?.model ?? state.model,
+      thinkingEffort: profile?.thinking_effort,
       status: node?.status ?? 'unknown', summary: profile?.description,
       description: profile?.description, source: profile?.source, sourceFile: profile?.source_file,
       context: data?.context ?? 'live', isMain: agentId === 'main',
       configContentPreview: profile === undefined ? undefined : JSON.stringify(profile, null, 2),
+      rawProfile: profile,
     }} usage={usage} treeMetrics={agentId === 'main' ? {
       ...tree, activeSubagentsCount: Object.values(forest.byId).filter((entry) => entry.agentId !== 'main' && entry.busy).length,
       totalSubagentsCount: ids.filter((id) => id !== 'main').length,
@@ -76,8 +79,21 @@ export function AgentPanelContainer({ state, forest, agentId }: {
     {data !== undefined && (data.tools === undefined || data.skills === undefined) ?
       <p role="status" className="text-xs text-ink-soft">{data.unavailable_reason ?? t('diagnostics.unknown')}</p> : null}
     {data?.tools !== undefined && data.skills !== undefined ? <AgentCapabilitiesSection
-      tools={(data.tools ?? []).map((tool) => ({ ...tool, unavailableReason: tool.unavailable_reason }))}
-      skills={(data.skills ?? []).map((skill) => ({ ...skill, id: `${skill.source}:${skill.path}`, unavailableReason: skill.unavailable_reason }))}
+      tools={(data.tools ?? []).map((tool) => ({
+        ...tool,
+        unavailableReason: tool.unavailable_reason,
+        parametersSchema: tool.parameters ? JSON.stringify(tool.parameters, null, 2) : undefined,
+        readOnly: tool.read_only,
+      }))}
+      skills={(data.skills ?? []).map((skill) => ({
+        ...skill,
+        id: `${skill.source}:${skill.path}`,
+        unavailableReason: skill.unavailable_reason,
+        argumentHint: skill.argument_hint,
+        type: skill.type,
+        disableModelInvocation: skill.disable_model_invocation,
+        promptCommand: skill.prompt_command,
+      }))}
       subagentTargets={data.targets.map((target) => ({
         profile: target.profile, route: target.route, executor: target.executor,
         modelAlias: target.model_alias, thinkingEffort: target.thinking_effort,

@@ -199,7 +199,7 @@ function toProtocolTool(info: ToolInfo, active: boolean): ToolDescriptor {
   const base: ToolDescriptor = {
     name: info.name,
     description: info.description,
-    input_schema: null,
+    input_schema: info.parameters ?? null,
     source,
     active,
   };

@@ -26,7 +26,7 @@ import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
 import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse, AgentPanelMetrics } from '@kiki/protocol';
-import { livePanelCapabilities, panelSkills } from './agentPanelCapabilities';
+import { livePanelCapabilities, panelSkills, READ_ONLY_DISPLAY_TOOL_NAMES } from './agentPanelCapabilities';
 import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from './agentPanelMetrics';
 import { IModelPricingService } from '../pricing/modelPricingService';
 import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistry/toolContribution';
@@ -153,7 +153,8 @@ export async function agentCapabilities(
         return { name: options.name, source: options.source ?? 'builtin', category: options.domain ?? 'other',
           state: active ? 'unknown' : 'disabled', unavailable_reason: active
             ? 'Draft inventory only; runtime connection and invocation approval are not evaluated'
-            : 'Disabled by draft profile or global tool policy' };
+            : 'Disabled by draft profile or global tool policy',
+          read_only: READ_ONLY_DISPLAY_TOOL_NAMES.has(options.name) ? true : undefined };
       }),
       skills: panelSkills(workspace.skills.listSkills(), isToolActiveComposed(policy, 'Skill')),
     };

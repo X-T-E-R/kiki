@@ -169,11 +169,11 @@ describe('server-v2 /api tools + mcp', () => {
       const tools = listToolsResponseSchema.parse(body.data).tools;
 
       const echo = tools.find((t) => t.name === 'Echo');
-      expect(echo).toMatchObject({ source: 'builtin', input_schema: null, active: true });
+      expect(echo).toMatchObject({ source: 'builtin', input_schema: schema, active: true });
       expect(echo?.mcp_server_id).toBeUndefined();
 
       const skill = tools.find((t) => t.name === 'MySkill');
-      expect(skill).toMatchObject({ source: 'skill' });
+      expect(skill).toMatchObject({ source: 'skill', input_schema: null });
 
       const mcp = tools.find((t) => t.name === 'mcp__myserver__search');
       expect(mcp).toMatchObject({ source: 'mcp', mcp_server_id: 'myserver' });

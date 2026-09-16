@@ -1,6 +1,9 @@
 import { memo } from 'react';
 import { useI18n } from '../../i18n';
 import { Dialog } from '../Dialog';
+import { FilePathLink } from '../mediaPreview';
+import { SkillContentCollapse } from '../capabilities/SkillContentCollapse';
+import { ProfileDetailSections } from './ProfileDetailSections';
 import type {
   AgentIdentity,
   AgentToolCapability,
@@ -106,101 +109,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
       {/* Body content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 text-[12px] leading-relaxed">
         {target.kind === 'profile' && (
-          <div data-profile-detail className="space-y-3.5">
-            {/* Title & Status */}
-            <div className="flex items-start justify-between gap-2 border-b border-hairline pb-3">
-              <div>
-                <h3 className="font-display text-[16px] font-semibold text-ink">
-                  {target.identity.label}
-                </h3>
-                <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-ink-soft">
-                  <span className="rounded bg-paper border border-hairline px-1.5 py-0.2">
-                    {target.identity.profile}
-                  </span>
-                  <span>
-                    {target.identity.context === 'live'
-                      ? t('agentPanel.liveContext')
-                      : t('agentPanel.draftContext')}
-                  </span>
-                </div>
-              </div>
-              <span
-                data-detail-status={target.identity.status}
-                className="rounded-full px-2 py-0.5 text-[10px] font-mono font-medium capitalize bg-paper text-ink border border-hairline"
-              >
-                {t(`subagent.status.${target.identity.status}`)}
-              </span>
-            </div>
-
-            {/* Metadata Fields */}
-            <dl className="grid grid-cols-1 gap-2 font-mono text-[11px] bg-paper/50 rounded-lg p-2.5 border border-hairline">
-              <div className="flex items-baseline justify-between gap-2">
-                <dt className="text-ink-faint">{t('agentPanel.internalId')}</dt>
-                <dd className="font-medium text-ink truncate select-all">{target.identity.id}</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <dt className="text-ink-faint">{t('agentPanel.runtimeContext')}</dt>
-                <dd className="text-ink">
-                  {target.identity.context === 'live'
-                    ? t('agentPanel.liveContext')
-                    : t('agentPanel.draftContext')}
-                </dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <dt className="text-ink-faint">{t('agentPanel.sourceLabel')}</dt>
-                <dd className="text-ink">{target.identity.source ?? t('agentPanel.unknown')}</dd>
-              </div>
-              {target.identity.sourceFile ? (
-                <div className="flex flex-col gap-0.5 pt-1 border-t border-hairline">
-                  <dt className="text-ink-faint">{t('agentPanel.fileLabel')}</dt>
-                  <dd className="text-ink-soft break-all font-mono text-[10px]">
-                    {target.identity.sourceFile}
-                  </dd>
-                </div>
-              ) : null}
-            </dl>
-
-            {/* Description / Summary */}
-            {target.identity.description || target.identity.summary ? (
-              <div className="space-y-1">
-                <div className="font-mono text-[10px] font-semibold uppercase text-ink-faint">
-                  {t('agentPanel.profileDescription')}
-                </div>
-                <p className="text-ink leading-relaxed whitespace-pre-wrap">
-                  {target.identity.description ?? target.identity.summary}
-                </p>
-              </div>
-            ) : null}
-
-            {/* Role Parameters */}
-            {target.identity.roleParameters && Object.keys(target.identity.roleParameters).length > 0 ? (
-              <div className="space-y-1">
-                <div className="font-mono text-[10px] font-semibold uppercase text-ink-faint">
-                  {t('agentPanel.roleParameters')}
-                </div>
-                <dl className="rounded-lg border border-hairline bg-paper/40 p-2 font-mono text-[10.5px] space-y-1">
-                  {Object.entries(target.identity.roleParameters).map(([k, v]) => (
-                    <div key={k} className="flex justify-between gap-2">
-                      <dt className="text-ink-faint">{k}</dt>
-                      <dd className="text-ink font-medium">{String(v)}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-            ) : null}
-
-            {/* Config Content Preview */}
-            {target.identity.configContentPreview ? (
-              <div className="space-y-1">
-                <div className="font-mono text-[10px] font-semibold uppercase text-ink-faint">
-                  {t('agentPanel.configPreview')}
-                </div>
-                <pre className="max-h-56 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2.5 font-mono text-[10px] leading-snug text-ink-soft whitespace-pre-wrap">
-                  {target.identity.configContentPreview}
-                </pre>
-              </div>
-            ) : null}
-          </div>
+          <ProfileDetailSections identity={target.identity} />
         )}
 
         {target.kind === 'tool' && (
@@ -259,16 +168,16 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             ) : null}
 
             {/* Parameters Schema */}
-            <div className="space-y-1">
-              <div className="font-mono text-[10px] font-semibold uppercase text-ink-faint">
+            <details open className="space-y-1">
+              <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
                 {t('agentPanel.parametersSchema')}
-              </div>
-              <pre className="max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2.5 font-mono text-[10px] leading-snug text-ink-soft whitespace-pre-wrap">
+              </summary>
+              <pre className="mt-1 max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2.5 font-mono text-[10px] leading-snug text-ink-soft whitespace-pre-wrap">
                 {target.tool.parametersSchema ??
                   target.tool.parametersSummary ??
                   t('agentPanel.noParameters')}
               </pre>
-            </div>
+            </details>
           </div>
         )}
 
@@ -323,10 +232,30 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
                     : t('agentPanel.scopeGlobal')}
                 </dd>
               </div>
+              {target.skill.type ? (
+                <div className="flex items-baseline justify-between gap-2 pt-1 border-t border-hairline">
+                  <dt className="text-ink-faint">{t('agentPanel.skillTypeLabel')}</dt>
+                  <dd className="text-ink">{target.skill.type}</dd>
+                </div>
+              ) : null}
+              {target.skill.disableModelInvocation ? (
+                <div className="flex items-baseline justify-between gap-2 pt-1 border-t border-hairline">
+                  <dt className="text-ink-faint">{t('agentPanel.disableModelInvocationBadge')}</dt>
+                  <dd className="text-amber-ink font-semibold">{t('agentPanel.disableModelInvocationBadge')}</dd>
+                </div>
+              ) : null}
+              {target.skill.promptCommand ? (
+                <div className="flex items-baseline justify-between gap-2 pt-1 border-t border-hairline">
+                  <dt className="text-ink-faint">{t('agentPanel.promptCommandBadge')}</dt>
+                  <dd className="text-accent font-semibold">{t('agentPanel.promptCommandBadge')}</dd>
+                </div>
+              ) : null}
               {target.skill.path ? (
                 <div className="flex flex-col gap-0.5 pt-1 border-t border-hairline">
                   <dt className="text-ink-faint">{t('agentPanel.fileLabel')}</dt>
-                  <dd className="text-ink-soft break-all text-[10px]">{target.skill.path}</dd>
+                  <dd className="text-ink-soft break-all text-[10px]">
+                    <FilePathLink path={target.skill.path} />
+                  </dd>
                 </div>
               ) : null}
               {target.skill.argumentHint ? (
@@ -336,6 +265,10 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
                 </div>
               ) : null}
             </dl>
+
+            {target.skill.path ? (
+              <SkillContentCollapse path={target.skill.path} />
+            ) : null}
           </div>
         )}
 
@@ -388,15 +321,15 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             {/* Metadata Fields */}
             <dl className="grid grid-cols-1 gap-2 font-mono text-[11px] bg-paper/50 rounded-lg p-2.5 border border-hairline">
               <div className="flex items-baseline justify-between gap-2">
-                <dt className="text-ink-faint">{t('agentPanel.executor', { value: '' }).replace(':', '').trim()}</dt>
+                <dt className="text-ink-faint">{t('agentPanel.label.executor')}</dt>
                 <dd className="font-medium text-ink">{target.target.executor}</dd>
               </div>
               <div className="flex items-baseline justify-between gap-2">
-                <dt className="text-ink-faint">{t('agentPanel.model', { value: '' }).replace(':', '').trim()}</dt>
+                <dt className="text-ink-faint">{t('agentPanel.label.model')}</dt>
                 <dd className="text-ink">{target.target.modelAlias ?? t('agentPanel.default')}</dd>
               </div>
               <div className="flex items-baseline justify-between gap-2">
-                <dt className="text-ink-faint">{t('agentPanel.thinkingEffort', { value: '' }).replace(':', '').trim()}</dt>
+                <dt className="text-ink-faint">{t('agentPanel.label.effort')}</dt>
                 <dd className="text-ink">{target.target.thinkingEffort ?? t('agentPanel.default')}</dd>
               </div>
             </dl>

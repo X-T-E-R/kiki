@@ -18,8 +18,21 @@ export function panelSkills(
     state: !toolActive || skill.metadata.disableModelInvocation === true ? 'disabled' : 'enabled',
     unavailable_reason: !toolActive ? 'Skill tool is not active for this agent'
       : skill.metadata.disableModelInvocation === true ? 'Model invocation is disabled for this skill' : undefined,
+    type: skill.metadata.type,
+    disable_model_invocation: skill.metadata.disableModelInvocation,
+    prompt_command: skill.metadata.promptCommand,
+    argument_hint: skill.metadata.argumentHint,
   }));
 }
+
+export const READ_ONLY_DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'Read',
+  'ReadMediaFile',
+  'Glob',
+  'Grep',
+  'WebSearch',
+  'FetchURL',
+]);
 
 export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<Pick<AgentCapabilitiesResponse, 'profile' | 'tools' | 'skills'>> {
   const data = agent.accessor.get(IAgentProfileService).data();
@@ -51,6 +64,8 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
       category: previous?.category ?? tool.source,
       state: policy.isToolActive(tool.name, tool.source) ? previous?.state ?? 'enabled' : 'disabled',
       unavailable_reason: policy.isToolActive(tool.name, tool.source) ? previous?.unavailable_reason : 'Disabled by effective tool policy',
+      parameters: tool.parameters,
+      read_only: (data.executionRestriction === 'research-readonly' || READ_ONLY_DISPLAY_TOOL_NAMES.has(tool.name)) ? true : undefined,
     });
   }
   for (const interaction of agent.accessor.get(ISessionInteractionService).listPending('approval', { agentId: agent.id })) {

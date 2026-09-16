@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { AgentCapabilitiesQuery, AgentCapabilityTarget } from '@kiki/protocol';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
+import { ProfileDetailSections } from './agent-panel/ProfileDetailSections';
 
 export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuery }) {
   const { klient } = useConnection();
@@ -37,10 +38,12 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
           <button type="button" onClick={() => { void capabilities.refetch(); }} className="mt-1 underline">{t('common.retry')}</button>
         </div> : null}
         {!capabilities.isError && data !== undefined ? <>
-          {data.owner.profile !== undefined ? <p className="break-all text-ink-soft">{t('composer.agentProfileAria')} · {data.owner.profile}</p> : null}
-          {data.profile !== undefined ? <details data-profile-details>
-            <summary>{t('composer.agentProfileAria')} · {t('diagnostics.source')}</summary>
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-[10px]">{JSON.stringify(data.profile, null, 2)}</pre>
+          {data.owner.profile !== undefined ? <p className="break-all text-ink-soft">{t('agentPanel.profileDetail')} · {data.owner.profile}</p> : null}
+          {data.profile !== undefined ? <details data-profile-details className="rounded border border-hairline bg-panel p-2">
+            <summary className="cursor-pointer font-medium text-ink hover:text-accent">{t('agentPanel.profileDetail')} · {t('diagnostics.source')}</summary>
+            <div className="mt-2">
+              <ProfileDetailSections profile={data.profile} query={query} />
+            </div>
           </details> : null}
           {data.tools !== undefined ? [...new Set(data.tools.map((tool) => tool.category))].map((category) => <details key={category} data-tool-category={category}>
             <summary>{category} · {data.tools!.filter((tool) => tool.category === category).length}</summary>

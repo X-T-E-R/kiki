@@ -43,11 +43,14 @@ describe('GET /api/agents', () => {
       { ...shared, name: 'global-example', source: 'user', metadata: {} },
     ], true);
     expect(skills).toMatchObject([
-      { scope: 'workspace', source: 'project', state: 'disabled' },
+      { scope: 'workspace', source: 'project', state: 'disabled', disable_model_invocation: true },
       { scope: 'global', source: 'user', state: 'enabled' },
     ]);
     expect(JSON.stringify(skills)).not.toContain('PRIVATE SKILL BODY');
-    expect(panelSkills([{ ...shared, source: 'builtin', metadata: {} }], false)[0]?.state).toBe('disabled');
+    expect(panelSkills([{ ...shared, source: 'builtin', metadata: { argumentHint: 'arg1' } }], false)[0]).toMatchObject({
+      state: 'disabled',
+      argument_hint: 'arg1',
+    });
   });
 
   let server: RunningServer | undefined;

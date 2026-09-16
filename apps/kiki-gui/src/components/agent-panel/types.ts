@@ -9,6 +9,7 @@ export interface AgentIdentity {
   readonly profile: string;
   readonly label: string;
   readonly model?: string;
+  readonly thinkingEffort?: string;
   readonly status: AgentStatus;
   readonly summary?: string;
   readonly description?: string;
@@ -19,6 +20,7 @@ export interface AgentIdentity {
   readonly context: 'live' | 'draft';
   readonly roleParameters?: Record<string, string | number | boolean>;
   readonly isMain?: boolean;
+  readonly rawProfile?: import('@kiki/protocol').AgentCapabilitiesResponse['profile'];
 }
 
 /**
@@ -96,6 +98,9 @@ export interface AgentSkillCapability {
   readonly source?: string;
   readonly path?: string;
   readonly argumentHint?: string;
+  readonly type?: string;
+  readonly disableModelInvocation?: boolean;
+  readonly promptCommand?: boolean;
 }
 
 /**

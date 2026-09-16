@@ -166,6 +166,8 @@ export const agentPanelToolSchema = z.object({
   category: z.string(),
   state: agentPanelCapabilityStateSchema,
   unavailable_reason: z.string().optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
+  read_only: z.boolean().optional(),
 });
 
 export const agentPanelSkillSchema = z.object({
@@ -176,6 +178,10 @@ export const agentPanelSkillSchema = z.object({
   path: z.string(),
   state: agentPanelCapabilityStateSchema,
   unavailable_reason: z.string().optional(),
+  type: z.string().optional(),
+  disable_model_invocation: z.boolean().optional(),
+  prompt_command: z.boolean().optional(),
+  argument_hint: z.string().optional(),
 });
 
 export const agentPanelProfileSchema = z.object({
@@ -197,6 +203,7 @@ export const agentPanelProfileSchema = z.object({
   tool_allow_policies: z.array(z.array(z.string())).optional(),
   spawn_constraints: namedAgentSpawnConstraintsSchema.optional(),
 });
+export type AgentPanelProfile = z.infer<typeof agentPanelProfileSchema>;
 
 export const agentPanelMetricsSchema = z.object({
   inputTokens: z.number().nonnegative().nullable(),

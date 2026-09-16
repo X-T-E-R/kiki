@@ -444,6 +444,7 @@ describe('AgentPanel Component Presentation', () => {
     expect(skillDetail!.textContent).toContain('code-review');
     expect(skillDetail!.textContent).toContain('.agents/skills/code-review');
     expect(skillDetail!.textContent).toContain('工作区专属');
+    expect(skillDetail!.textContent).toContain('查看 SKILL.md');
 
     // Close
     await act(async () => {

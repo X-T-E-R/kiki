@@ -65,7 +65,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
         : 'bg-accent';
 
   const effortValue =
-    identity.roleParameters?.['thinkingEffort'] ?? identity.roleParameters?.['effort'];
+    identity.thinkingEffort ?? identity.roleParameters?.['thinkingEffort'] ?? identity.roleParameters?.['effort'];
 
   return (
     <div

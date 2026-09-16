@@ -16,6 +16,8 @@ import { useI18n } from '../../i18n';
 import { skillGroupId } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, type Feedback } from '../controls';
+import { FilePathLink } from '../mediaPreview';
+import { SkillContentCollapse } from './SkillContentCollapse';
 import { SECONDARY_BUTTON } from '../ui';
 
 const BADGE_CLASS =
@@ -26,9 +28,24 @@ export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sour
   const location = useLocation();
   return (
     <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <p className="min-w-0 truncate text-[13px] font-medium text-ink">{skill.name}</p>
         <span className={BADGE_CLASS}>{sourceLabel}</span>
+        {skill.type ? (
+          <span className="shrink-0 rounded bg-paper border border-hairline px-1.5 py-0.2 font-mono text-[9px] text-ink-soft">
+            {skill.type}
+          </span>
+        ) : null}
+        {skill.disable_model_invocation ? (
+          <span className="shrink-0 rounded bg-amber-card border border-amber-rule/40 px-1.5 py-0.2 font-mono text-[9px] text-amber-ink">
+            {t('agentPanel.disableModelInvocationBadge')}
+          </span>
+        ) : null}
+        {skill.prompt_command ? (
+          <span className="shrink-0 rounded bg-accent-soft px-1.5 py-0.2 font-mono text-[9px] text-accent">
+            {t('agentPanel.promptCommandBadge')}
+          </span>
+        ) : null}
         {skillGroupId(skill.source) === 'plugin' ? (
           <Link
             to={{ pathname: '/settings/plugins', search: location.search }}
@@ -38,14 +55,20 @@ export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sour
           </Link>
         ) : null}
       </div>
+      {skill.argument_hint ? (
+        <p className="mt-1 font-mono text-[10px] text-ink-soft bg-paper/60 rounded px-1.5 py-0.5 border border-hairline inline-block">
+          {skill.argument_hint}
+        </p>
+      ) : null}
       {skill.description !== '' ? (
-        <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-ink-soft">
+        <p className="mt-1 text-[11px] leading-snug text-ink-soft whitespace-pre-wrap">
           {skill.description}
         </p>
       ) : null}
-      <p className="mt-0.5 truncate font-mono text-[10px] text-ink-faint" title={skill.path}>
-        {skill.path}
-      </p>
+      <div className="mt-1 truncate font-mono text-[10px] text-ink-faint">
+        <FilePathLink path={skill.path} />
+      </div>
+      <SkillContentCollapse path={skill.path} />
     </div>
   );
 }
