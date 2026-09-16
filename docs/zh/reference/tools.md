@@ -146,7 +146,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`�
 
 **`TodoList`** 是 Agent 自己的执行清单。主 Agent 与各子 Agent 的清单相互独立，工具不能读取或修改其他 Agent 的清单。`todos` 参数接受一个数组，每项含 `title` 和 `status`（`pending` / `in_progress` / `done`）；省略 `todos` 仅查询调用者的当前清单，传入空数组也只清空该清单。清单随所属 Agent 恢复，会话撤销只回滚该 Agent 的清单；提醒与压缩摘要同样使用接收方自己的清单。历史共享清单仍归主 Agent，不从旧工具消息推测并重建各子 Agent 的历史清单。
 
-任务看板是跨会话持久化的需求记录。`BoardRead` 支持 `preview` / `list` / `show` / `overview`，可查看当前工作区或其他已授权工作区中的卡。`BoardWrite` 的 `create` 始终以 `active` 开始，因此不要传 `status`；`update` 只有在改状态时才显式传 `status`。允许的状态值包括 `active`、`in_progress`、`paused`、`done`、`cancelled` 和 `superseded`；`done`、`cancelled`、`superseded` 是终态，不可重开。修改必须使用卡片当前的 `revision`；发生冲突后，重新读取卡片再重试。
+任务看板是跨会话持久化的需求记录。`BoardRead` 支持 `preview` / `list` / `show` / `overview`，可查看当前工作区或其他已授权工作区中的卡。`BoardWrite` 的 `create` 始终以 `active` 开始，因此不要传 `status`；`update` 只有在改状态时才显式传 `status`。允许的状态值包括 `active`、`in_progress`、`paused`、`done`、`cancelled` 和 `superseded`；`done`、`cancelled`、`superseded` 是终态，将 `status` 改回 `active`、`in_progress` 或 `paused` 即可重开，重开会清空 `completedAt`。修改必须使用卡片当前的 `revision`；发生冲突后，重新读取卡片再重试。
 
 卡是持久化需求记录，不是 Agent 运行，也不是每个 Agent 自己的 `TodoList`。读卡不会改卡；各 Agent 的 `TodoList` 相互独立；Todo 全部 `done` 也不会自动改卡。两个工具默认只提供给主 Agent，并受 `task_board` 实验开关控制。Plan 模式下可以用 `BoardRead` 读取，但 `BoardWrite` 会在审批前拒绝。写卡遵循普通权限策略，不额外要求 workspace trust（工作区信任）。
 
