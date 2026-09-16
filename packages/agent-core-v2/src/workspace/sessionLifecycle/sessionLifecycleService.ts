@@ -659,6 +659,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     throw error;
   }
 
+  /** Forks a session into a new Session scope. Fails before allocating or copying a target when the
+   *  source holds an external-delegation root: that root is Session-scoped authority rather than
+   *  ordinary conversation state, and with no authority-transfer protocol in the MVP, cloning it
+   *  would leave its child ownership dangling. */
   async fork(opts: ForkSessionOptions): Promise<ISessionScopeHandle> {
     const sourceId = opts.sourceSessionId;
 
@@ -693,10 +697,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           ? await sourceHandle.accessor.get(ISessionMetadata).read()
           : await this.readMetaFromDisk(sourceId);
 
-      // An external-delegation root is Session-scoped authority, not ordinary
-      // conversation state. The MVP has no authority-transfer protocol, so a
-      // fork must fail before allocating or copying a target rather than
-      // recursively cloning the root and leaving its child ownership dangling.
       const externalRoot = await this.docs.get(
         join(sessionScopeOf(this.handlerScope, sourceId), 'external-delegation'),
         'root',

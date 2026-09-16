@@ -1,13 +1,8 @@
-/**
- * `threadCommunication` domain — registers the global thread-communication preference.
- *
- * Owns the opt-in `[thread_communication]` section. Bound at App scope.
- */
-
 import { z } from 'zod';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 
+/** The opt-in `[thread_communication]` section owned by the `threadCommunication` domain. */
 export const THREAD_COMMUNICATION_SECTION = 'threadCommunication';
 
 export const ThreadCommunicationConfigSchema = z

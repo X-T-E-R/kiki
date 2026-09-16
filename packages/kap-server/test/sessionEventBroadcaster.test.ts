@@ -3419,8 +3419,6 @@ describe('SessionEventBroadcaster', () => {
       sessions.set('s1', lc);
       bc = makeBroadcasterWithTranscript();
 
-      // Accumulate history on a turn-graded stream: the client's cursor
-      // advances, but every step/frame op was redacted away.
       const view = collectingTarget();
       await bc.subscribe('s1', view.target, undefined, { main: 'turn' });
       main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
@@ -3434,9 +3432,6 @@ describe('SessionEventBroadcaster', () => {
         turnGraded.at(-1)!.payload as { cursor: { epoch?: string; seq: number } }
       ).cursor;
 
-      // Upgrade the same target to delta with the turn-graded cursor: a
-      // journal replay of newer batches cannot backfill the redacted history,
-      // so the seed must send a reset carrying the full detail.
       const before = transcriptEnvelopes(view.envelopes).length;
       await bc.subscribe('s1', view.target, undefined, { main: 'delta' }, {
         transcriptSince: { main: cursor }, deferTranscriptReset,

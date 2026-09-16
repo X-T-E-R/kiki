@@ -2,6 +2,9 @@ import { z } from 'zod';
 
 export type InputJsonSchemaFinalizer = (schema: Record<string, unknown>) => void;
 
+/** Projects a Zod schema to input JSON Schema with ordinary object nodes closed; `finalize` then
+ *  attaches tool-specific AJV constraints, because Zod refinements and transforms do not survive
+ *  the projection and conditional object probes must keep their intended open semantics. */
 export function toInputJsonSchema(
   schema: z.ZodType,
   finalize?: InputJsonSchemaFinalizer,
@@ -11,9 +14,6 @@ export function toInputJsonSchema(
     io: 'input',
   });
   closeObjectNodes(jsonSchema);
-  // Zod refinements and transforms do not survive JSON Schema projection.
-  // Attach tool-specific AJV constraints after closing ordinary object nodes
-  // so conditional object probes keep their intended open semantics.
   finalize?.(jsonSchema);
   ensureObjectRoot(jsonSchema);
   return jsonSchema;

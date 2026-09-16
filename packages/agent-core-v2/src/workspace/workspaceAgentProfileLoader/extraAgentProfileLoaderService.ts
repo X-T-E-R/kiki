@@ -1,14 +1,3 @@
-/**
- * `workspaceAgentProfileLoader` domain — `IExtraAgentProfileLoader` implementation.
- *
- * Resolves the configured `extraAgentDirs` through `configService`,
- * `workspaceContext`, `bootstrap`, and `hostFs`, reporting skipped files
- * through `log`. Watches the resolved candidate roots through `hostFsWatch`,
- * rebuilding the watch set when `extraAgentDirs` changes and reloading
- * debounced on filesystem changes. Bound at Workspace scope.
- */
-
-
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { ILogService } from '#/_base/log/log';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
@@ -43,6 +32,11 @@ import { IExtraAgentProfileLoader } from './extraAgentProfileLoader';
 
 const WATCH_DEBOUNCE_MS = 200;
 
+/** `IExtraAgentProfileLoader` implementation (Workspace scope): resolves the configured
+ *  `extraAgentDirs` through `configService`, `workspaceContext`, `bootstrap`, and `hostFs` (reporting
+ *  skipped files through `log`), then watches the resolved candidate roots through `hostFsWatch`,
+ *  rebuilding the watch set when `extraAgentDirs` changes and reloading debounced on filesystem
+ *  changes. */
 export class ExtraAgentProfileLoaderService
   extends AgentProfileLoaderBase
   implements IExtraAgentProfileLoader

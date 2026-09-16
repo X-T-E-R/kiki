@@ -142,7 +142,6 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
           'Pass either an MCP server name or an inline server config, not both',
         );
       }
-      // The schema is strict and `name` is not a persisted config field.
       const { name: serverName, ...serverConfig } = server;
       const parsed = McpServerConfigSchema.safeParse(serverConfig);
       if (!parsed.success) {

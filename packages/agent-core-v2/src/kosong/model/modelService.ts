@@ -18,7 +18,7 @@ export { resolveModelId };
 
 const NO_ABORT = new AbortController().signal;
 
-// NOTE: stays Disposable — its own 'get' collides with the Fiber
+/** Stays on `Disposable` rather than `Service`: its own `get` collides with the Fiber vocabulary. */
 export class ModelService extends Disposable implements IModelService {
   declare readonly _serviceBrand: undefined;
 

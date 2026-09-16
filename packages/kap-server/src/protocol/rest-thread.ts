@@ -1,8 +1,3 @@
-/**
- * Peer-thread REST contracts. References always include host, workspace, and
- * session identity; waits are bounded to eight threads and sixty seconds.
- */
-
 import { z } from 'zod';
 
 import {
@@ -12,6 +7,8 @@ import {
   threadTurnSchema,
 } from './thread';
 
+/** Peer-thread REST contracts: references always include host, workspace, and session identity, and
+ *  waits are bounded to eight threads and sixty seconds. */
 export const listThreadsQuerySchema = z.object({
   workspace_id: z.string().trim().min(1).optional(),
   cursor: z.string().min(1).optional(),

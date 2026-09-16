@@ -1,10 +1,3 @@
-/**
- * Scenario: `model_steering` injects near-field guidance on every new turn.
- *
- * Run: `pnpm --filter @kiki/agent-core-v2 exec vitest run
- * test/features/modelSteering/modelSteering.test.ts`
- */
-
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';

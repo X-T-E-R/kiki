@@ -1,18 +1,3 @@
-/**
- * `kosong/model` domain — the `ModelRequester` contract: per-turn input,
- * streamed events, and the per-turn intent carrier `ModelRequestParams`.
- *
- * `ModelRequestParams` is how every per-turn intent reaches the wire: prompt-cache
- * key, service tier, transport headers, additional request params, sampling
- * overrides, thinking effort/keep, and the completion-token budget (with its
- * window-clamp companions).
- * It is deliberately dialect-free — each wire dialect encodes (or silently drops)
- * an intent in its own hooks. The requester maps the params onto `GenerateOptions`,
- * with the configured model service tier supplying a fallback for the request tier.
- * Typed fields are resolved before `requestParams`, whose entries only fill
- * keys the dialect has not already produced.
- */
-
 import type { Message, StreamedMessagePart, VideoURLPart } from '#/kosong/contract/message';
 import type {
   FinishReason,
@@ -73,6 +58,13 @@ export interface ModelRequestParams {
   readonly requestIdentity?: RequestIdentityWireOptions;
 }
 
+/** The `ModelRequester` contract: per-turn input, the streamed `ModelRequestEvent` output, and the
+ *  deliberately dialect-free per-turn intent carrier `ModelRequestParams` (prompt-cache key, service
+ *  tier, transport headers, additional request params, sampling overrides, thinking effort/keep, and
+ *  the completion-token budget with its window-clamp companions). The requester maps the params onto
+ *  `GenerateOptions`, with the configured model service tier supplying a fallback for the request
+ *  tier; typed fields are resolved before `requestParams`, whose entries only fill keys the dialect
+ *  has not already produced. */
 export interface ModelRequester {
   readonly model: Model;
 

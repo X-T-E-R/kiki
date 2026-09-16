@@ -1,7 +1,6 @@
-/** Optional context-attribution extensions shared by status and snapshot wire surfaces. */
-
 import { z } from 'zod';
 
+/** Optional context-attribution extensions shared by the status and snapshot wire surfaces. */
 export const contextBreakdownSchema = z.object({
   systemTokens: z.number().int().nonnegative(),
   toolsTokens: z.number().int().nonnegative(),

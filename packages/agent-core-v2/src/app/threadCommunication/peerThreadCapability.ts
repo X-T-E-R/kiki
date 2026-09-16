@@ -1,10 +1,3 @@
-/**
- * `threadCommunication` domain — non-reflective peer-send capability.
- *
- * The symbol-keyed method is consumed only by the main-agent tool adapter;
- * string-addressable local clients cannot claim peer provenance.
- */
-
 import type {
   IThreadCommunicationService,
   SendThreadMessageResult,
@@ -20,6 +13,9 @@ export interface SendPeerThreadMessageInput {
   readonly idempotencyKey: string;
 }
 
+/** `threadCommunication` domain — non-reflective peer-send capability. The symbol-keyed method is
+ *  consumed only by the main-agent tool adapter, so string-addressable local clients cannot claim
+ *  peer provenance. */
 export interface IThreadPeerSendCapability {
   [SEND_PEER_THREAD_MESSAGE](input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult>;
 }

@@ -1,18 +1,3 @@
-/**
- * `workspaceAgentProfileLoader` domain — `IUserAgentProfileLoader` implementation.
- *
- * Discovers user agent profiles through `bootstrap` home paths and `hostFs`,
- * reports skipped files through `log`, and appends the `<home>/SYSTEM.md`
- * prompt-override profile (synthesized against the builtin default from the
- * App builtin loader) after the scanned profiles so it wins same-name
- * collisions within this contribution. Watches user agent-root candidates and
- * `SYSTEM.md` through `hostFsWatch`, reloading debounced on changes. The user
- * roots are global os directories, but per-workspace contribution keeps every
- * record flowing through the same workspace-tagged lane. Bound at Workspace
- * scope.
- */
-
-
 import { ILogService } from '#/_base/log/log';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
 import { TimeoutTimer } from '#/_base/utils/timer';
@@ -40,6 +25,12 @@ import { IUserAgentProfileLoader } from './userAgentProfileLoader';
 
 const WATCH_DEBOUNCE_MS = 200;
 
+/** `IUserAgentProfileLoader` implementation (Workspace scope): discovers user agent profiles through
+ *  `bootstrap` home paths and `hostFs`, and appends the `<home>/SYSTEM.md` prompt-override profile
+ *  (synthesized against the builtin default) after the scanned profiles so it wins same-name
+ *  collisions within this contribution; watches user agent-root candidates and `SYSTEM.md` through
+ *  `hostFsWatch`, reloading debounced on changes. The roots are global OS directories, but the
+ *  per-workspace contribution keeps every record in the same workspace-tagged lane. */
 export class UserAgentProfileLoaderService
   extends AgentProfileLoaderBase
   implements IUserAgentProfileLoader

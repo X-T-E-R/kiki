@@ -28,6 +28,9 @@ export class McpRegistryService implements IMcpRegistryService {
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
   ) {}
 
+  /** Lists entries for a query. `cwd` stays absolute but case-preserving: the canonical form is a
+   *  lookup key, and folding it here would leak a lowercased drive path into entry origins, while
+   *  trust lookups canonicalize on their own. */
   async list(query: McpRegistryQuery = {}): Promise<readonly McpRegistryEntry[]> {
     const out: McpRegistryEntry[] = [];
 
@@ -44,9 +47,6 @@ export class McpRegistryService implements IMcpRegistryService {
         });
       }
     } else {
-      // Absolute but case-preserving: the canonical form is a lookup key, and
-      // folding it here would leak a lowercased drive path into entry origins.
-      // Trust lookups canonicalize on their own.
       const cwd = resolvePath(process.cwd(), query.cwd);
       if (!(await readWorkspaceTrust(this.docs, cwd))) {
         const userEntries = await this.store.list();

@@ -1,12 +1,3 @@
-/**
- * `cognition` domain — `IAgentCognitionAnchorService` implementation.
- *
- * Request-time projection of `[models.<alias>.cognition].anchor` onto
- * turn LLM requests. The file is loaded once and cached. Whether a
- * request is anchored is a function of `source.step`, `anchorSteps`,
- * `anchorScope`, and the turn id. Bound at Agent scope.
- */
-
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -25,11 +16,12 @@ import { cognitionPathRefs, readCognitionSlot } from './cognitionFiles';
 const DEFAULT_ANCHOR_STEPS = 1;
 const DEFAULT_ANCHOR_SCOPE = 'session';
 
-// The loop reserves turn ids from a wire-persisted clock that starts at zero
-// (`agent/loop/turnOps.ts`), so this identifies the agent's opening turn even
-// after a cold resume, where an in-memory latch would re-anchor mid-session.
 const FIRST_TURN_ID = 0;
 
+/** `cognition` domain — `IAgentCognitionAnchorService` implementation (Agent scope): request-time
+ *  projection of `[models.<alias>.cognition].anchor` onto turn LLM requests, with the anchor file
+ *  loaded once and cached. Whether a request is anchored is a function of `source.step`,
+ *  `anchorSteps`, `anchorScope`, and the turn id. */
 export class AgentCognitionAnchorService implements IAgentCognitionAnchorService {
   declare readonly _serviceBrand: undefined;
 

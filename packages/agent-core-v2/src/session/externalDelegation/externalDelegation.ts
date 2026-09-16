@@ -1,10 +1,3 @@
-/**
- * `externalDelegation` domain — durable external work ownership contract.
- *
- * Defines the Session-scoped root, named-child, dispatch, event, result, and
- * transcript operations used by narrow authenticated edges.
- */
-
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ErrorCodes } from '#/errors';
 import type { AgentMessageAcceptance } from '#/session/agentCollaboration/messageMailbox';
@@ -44,7 +37,6 @@ const EXTERNAL_FAILURE_DESCRIPTIONS: Readonly<Record<ExternalFailureCategory, st
   internal: 'External agent run failed.',
 };
 
-/** Known internal error codes mapped onto the external failure taxonomy. */
 const CODE_TO_EXTERNAL_FAILURE: Readonly<Record<string, ExternalFailureCategory>> = {
   [ErrorCodes.PROVIDER_AUTH_ERROR]: 'auth_expired',
   [ErrorCodes.AUTH_TOKEN_UNAUTHORIZED]: 'auth_expired',

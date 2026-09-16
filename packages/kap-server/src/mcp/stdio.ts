@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-/**
- * Kiki MCP stdio entrypoint — connects the narrow external-delegation server.
- */
 
 import { kikiMcpConfigFromEnv, type KikiMcpConfig } from './server';
 import { runKikiMcpStdio } from './stdioServer';

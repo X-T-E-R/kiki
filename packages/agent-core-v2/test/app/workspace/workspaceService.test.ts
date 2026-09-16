@@ -481,7 +481,6 @@ describe('WorkspaceService (file-backed)', () => {
     expect(await readWorkspacesJson().then((f) => f.workspaces[created.id]?.pinned)).toBe(true);
     expect((await restart().get(created.id))?.pinned).toBe(true);
 
-    // createOrTouch on an already-pinned root must not silently unpin it.
     expect((await build().createOrTouch(homeDir)).pinned).toBe(true);
 
     await build().update(created.id, { pinned: false });

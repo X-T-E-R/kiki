@@ -175,8 +175,6 @@ export class McpConfigStore extends Disposable implements IMcpConfigStore {
 const NO_ABORT = new AbortController().signal;
 
 function parseServerInput(server: GlobalMcpServerConfig): GlobalMcpServerConfig {
-  // The schema is strict, and `name` is a store-level key rather than a
-  // persisted config field, so it has to come off before validation.
   const { name, ...config } = server;
   return parseServer(normalizeServerName(name), config);
 }

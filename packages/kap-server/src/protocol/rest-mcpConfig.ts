@@ -1,14 +1,10 @@
-/**
- * MCP JSON management REST schemas.
- *
- * Covers listing and mutating the editable user/project MCP server entries.
- */
-
 import { McpServerConfigSchema } from '@kiki/agent-core-v2';
 import { z } from 'zod';
 
 export const mcpJsonWriteScopeSchema = z.enum(['user', 'project']);
 
+/** MCP JSON management REST schemas: listing and mutating the editable user/project MCP server
+ *  entries. */
 export const mcpJsonServerEntrySchema = z.object({
   name: z.string().trim().min(1).max(256),
   scope: mcpJsonWriteScopeSchema,

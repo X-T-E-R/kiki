@@ -1,19 +1,3 @@
-/**
- * `sessionAgentProfileCatalog` domain — Session-scoped merged agent-profile
- * catalog contract.
- *
- * The Catalog of the agent-profile extension point: a read-only projection
- * over the App-scope `IAgentProfileRegistry`, scoped to THIS session — it
- * merges the global contributions (builtin / plugin / user) with the ones the
- * workspace loaders tagged with this session's seeded workspace key
- * (workspace / extra / explicit). Name-level dedup happens HERE, in the
- * projection: higher-priority sources win name collisions, while builtin
- * names require an explicit `override: true` opt-in to be replaced. Disabled
- * builtins are absent from `get` / `list` / `resolveSelection` / `inspect`,
- * while `getDefault` retains the default binding fallback needed by the main
- * agent. Bound at Session scope.
- */
-
 import { createDecorator } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
 import type {
@@ -54,6 +38,13 @@ export interface AgentProfileInspection {
   readonly suppressed: readonly AgentProfileSuppressedCandidate[];
 }
 
+/** Session-scoped merged agent-profile catalog: a read-only projection over the App-scope
+ *  `IAgentProfileRegistry` scoped to THIS session, merging the global contributions (builtin /
+ *  plugin / user) with the ones the workspace loaders tagged with this session's seeded workspace key
+ *  (workspace / extra / explicit). Name-level dedup happens here — higher-priority sources win name
+ *  collisions, and builtin names require an explicit `override: true` opt-in to be replaced. Disabled
+ *  builtins are absent from `get` / `list` / `resolveSelection` / `inspect`, while `getDefault`
+ *  retains the default binding fallback the main agent needs. */
 export interface ISessionAgentProfileCatalog {
   readonly _serviceBrand: undefined;
 

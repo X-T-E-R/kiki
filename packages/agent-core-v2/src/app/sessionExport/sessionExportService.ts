@@ -297,11 +297,6 @@ async function openOptionalZipSource(
   }
 }
 
-/**
- * These sources are bundled when they are there. A path that is absent, or that
- * holds something other than a regular file, is "not available to bundle" and
- * degrades to an omitted entry — only a genuine read failure fails the export.
- */
 function isUnbundlablePath(error: unknown): boolean {
   if (typeof error !== 'object' || error === null || !('code' in error)) return false;
   const code = (error as { readonly code?: unknown }).code;

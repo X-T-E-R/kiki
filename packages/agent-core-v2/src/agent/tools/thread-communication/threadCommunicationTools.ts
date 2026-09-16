@@ -1,11 +1,3 @@
-/**
- * `tools` domain — main-agent peer-thread tools.
- *
- * Exposes bounded list, read, send, and wait operations through the App-scope
- * `threadCommunication` service while deriving the sending Thread from the
- * current Session. Registered for the main Agent only. Bound at Agent scope.
- */
-
 import { z } from 'zod';
 
 import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation';

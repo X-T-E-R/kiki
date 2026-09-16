@@ -1,5 +1,3 @@
-/** Per-agent step-usage fold that enriches the terminal turn frame. */
-
 import type { Event2 } from '@kiki/agent-core-v2';
 import type { TurnStepCompleted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type { TurnEnded } from '@kiki/agent-core-v2/agent/loop/turnOps';
@@ -18,6 +16,7 @@ interface TurnUsageAccum {
   streamDurationMs: number;
 }
 
+/** Per-agent step-usage fold that enriches the terminal turn frame. */
 export class TurnUsageTracker {
   private readonly turns = new Map<number, TurnUsageAccum>();
 

@@ -1,10 +1,3 @@
-/**
- * Scenario: cognition path confinement and slot loading.
- *
- * Run: `pnpm --filter @kiki/agent-core-v2 exec vitest run
- * test/agent/cognition/cognitionFiles.test.ts`
- */
-
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';

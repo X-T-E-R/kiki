@@ -1,16 +1,3 @@
-/**
- * Message history actions for edit-resend and regenerate.
- *
- * Performs media/auth/control preflight before taking the Session-scoped core
- * mutation lease, then validates cursor + complete-idle state, commits the
- * undo cut and replacement user message, flushes wire state, invalidates the
- * live transcript, emits the durable rewrite fact, and only then admits the
- * replacement turn. This version provides process-local linearization rather
- * than crash-atomic history/event transactions. Search-index deletion for the
- * removed suffix is intentionally deferred; the next index sync may retain
- * stale hits until a rebuild.
- */
-
 import {
   Error2,
   ErrorCodes,
@@ -62,6 +49,13 @@ export interface MessageActionDeps {
   readonly transcriptService: TranscriptService;
 }
 
+/** Edits and resends a user message (see `regenerateMessage` for the sibling flow). Performs
+ *  media/auth/control preflight before taking the Session-scoped core mutation lease, then validates
+ *  cursor + complete-idle state, commits the undo cut and the replacement user message, flushes wire
+ *  state, invalidates the live transcript, emits the durable rewrite fact, and only then admits the
+ *  replacement turn. Linearization is process-local rather than crash-atomic, and search-index
+ *  deletion for the removed suffix is deferred, so the next index sync may retain stale hits until a
+ *  rebuild. */
 export async function editAndResendMessage(
   deps: MessageActionDeps,
   session: ISessionScopeHandle,

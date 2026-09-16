@@ -1,14 +1,3 @@
-/**
- * `kosong/provider` domain — per-request auth resolution for the bases.
- *
- * A base caches a construction-time client when an apiKey is available; a
- * per-request `ProviderRequestAuth` (OAuth token, extra headers) rebuilds the
- * client for that call. Runtime request headers are merged last, while the
- * reserved `x-kiki-*` namespace is removed from config/auth inputs.
- * `requireProviderApiKey` is the single "no credential" failure — it never
- * invents a key from a vendor-specific source.
- */
-
 import { ChatProviderError } from '#/kosong/contract/errors';
 import type { ProviderRequestAuth } from '#/kosong/contract/provider';
 import {

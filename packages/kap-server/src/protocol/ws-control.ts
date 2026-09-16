@@ -305,9 +305,7 @@ export type TerminalAttachMessage = z.infer<typeof terminalAttachMessageSchema>;
 export const terminalAttachAckPayloadSchema = z.object({
   attached: z.literal(true),
   replayed: z.number().int().nonnegative(),
-  /** First retained terminal_output seq, or null when no output is retained. */
   earliest_seq: z.number().int().positive().nullable(),
-  /** The requested since_seq predates the retained contiguous output suffix. */
   truncated: z.boolean(),
 });
 

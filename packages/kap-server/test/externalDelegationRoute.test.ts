@@ -48,9 +48,6 @@ describe('external delegation REST facade', () => {
     delete process.env['KIKI_EXTERNAL_SESSION_TITLE'];
     home = await mkdtemp(join(tmpdir(), 'kiki-external-delegation-'));
 
-    // Create the operator-selected Sessions before attaching the constrained
-    // route. Restarting over the same home also proves the allowlist is server
-    // composition rather than a caller-provided create-time value.
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',

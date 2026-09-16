@@ -1,17 +1,12 @@
-/**
- * `agentLifecycle` domain — persisted subagent relationship labels.
- *
- * Provides the label helpers that record and read the requester → subagent
- * relationship without making the flat lifecycle registry interpret parentage
- * itself.
- */
-
 import type { AgentMeta, DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
 
 const REQUEST_IDENTITY_PARENT_TURN_LABEL = 'requestIdentityParentTurn';
 const REQUEST_IDENTITY_ROOT_AGENT_LABEL = 'requestIdentityRootAgent';
 const REQUEST_IDENTITY_ROOT_TURN_LABEL = 'requestIdentityRootTurn';
 
+/** `agentLifecycle` domain — persisted subagent relationship labels: the helpers that record and read
+ *  the requester → subagent relationship without making the flat lifecycle registry interpret
+ *  parentage itself. */
 export function subagentLabels(
   parentAgentId: string,
   options: { readonly swarmItem?: string } = {},

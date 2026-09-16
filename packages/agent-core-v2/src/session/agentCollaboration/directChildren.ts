@@ -1,12 +1,3 @@
-/**
- * `agentCollaboration` domain — the caller's direct child agents.
- *
- * Reads the persisted relationship and name labels so every dispatch surface
- * resolves the same working set: a caller owns the children it delegated to,
- * whether they were started one at a time or as a swarm batch, and never
- * reaches a grandchild.
- */
-
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import {
   subagentParentAgentId,
@@ -37,6 +28,9 @@ export function agentNameIssue(value: string): string | undefined {
   return undefined;
 }
 
+/** The caller's direct child agents, read from the persisted relationship and name labels so every
+ *  dispatch surface resolves the same working set: a caller owns the children it delegated to —
+ *  started one at a time or as a swarm batch — and never reaches a grandchild. */
 export function directChildAgents(
   agents: Readonly<Record<string, AgentMeta>> | undefined,
   callerAgentId: string,

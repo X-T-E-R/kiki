@@ -20,8 +20,7 @@ describe('FileStorageService — file permissions', () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
-  it.skipIf(isWin)('creates scope directories with dirMode (0700)', async () => {
+  it.skipIf(isWin)('creates scope directories with dirMode (0700) (POSIX only — Windows does not model POSIX modes, chmod is a no-op)', async () => {
     const svc = new FileStorageService(dir, 0o700, 0o600);
     await svc.write('cron/ws', 'abc.json', encoder.encode('{}'));
 
@@ -29,8 +28,7 @@ describe('FileStorageService — file permissions', () => {
     expect(dirStat.mode & 0o777).toBe(0o700);
   });
 
-  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
-  it.skipIf(isWin)('writes documents with fileMode (0600)', async () => {
+  it.skipIf(isWin)('writes documents with fileMode (0600) (POSIX only — Windows does not model POSIX modes, chmod is a no-op)', async () => {
     const svc = new FileStorageService(dir, 0o700, 0o600);
     await svc.write('cron/ws', 'abc.json', encoder.encode('{"x":1}'));
 
@@ -38,8 +36,7 @@ describe('FileStorageService — file permissions', () => {
     expect(fileStat.mode & 0o777).toBe(0o600);
   });
 
-  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
-  it.skipIf(isWin)('defaults to the process umask when modes are omitted', async () => {
+  it.skipIf(isWin)('defaults to the process umask when modes are omitted (POSIX only — Windows does not model POSIX modes, chmod is a no-op)', async () => {
     const svc = new FileStorageService(dir);
     await svc.write('scope', 'k.json', encoder.encode('{}'));
     const fileStat = await stat(join(dir, 'scope', 'k.json'));

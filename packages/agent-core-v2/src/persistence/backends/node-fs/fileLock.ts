@@ -1,11 +1,3 @@
-/**
- * `storage` domain — renewable local-filesystem exclusive locks.
- *
- * Publishes tokenized process ownership with atomic create/takeover semantics,
- * keeps live ownership fresh through a lease heartbeat, reclaims dead or
- * expired owners, and releases only the token held by this lock instance.
- */
-
 import { randomUUID } from 'node:crypto';
 import fsSync from 'node:fs';
 import {
@@ -91,6 +83,9 @@ function hookExit(): void {
   });
 }
 
+/** Acquires a renewable local-filesystem exclusive lock: tokenized process ownership with atomic
+ *  create/takeover semantics, kept fresh through a lease heartbeat, reclaiming dead or expired owners
+ *  and releasing only the token held by this lock instance. */
 export async function acquireFileLock(
   lockPath: string,
   options: StorageLockOptions = {},

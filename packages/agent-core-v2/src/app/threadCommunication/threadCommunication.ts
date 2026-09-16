@@ -1,12 +1,3 @@
-/**
- * `threadCommunication` domain — local peer-thread coordination contract.
- *
- * Defines host-qualified Thread references, bounded list/read/wait views,
- * durable send receipts, and workspace override management. A Thread is an
- * existing Session; Agent identities never enter the addressing contract.
- * Bound at App scope.
- */
-
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
 export interface ThreadRef {
@@ -107,6 +98,10 @@ export interface WaitThreadsResult {
   readonly timedOut: boolean;
 }
 
+/** `threadCommunication` domain — local peer-thread coordination contract (App scope). Defines
+ *  host-qualified Thread references, bounded list/read/wait views, durable send receipts, and
+ *  workspace override management. A Thread is an existing Session, and agent identities never
+ *  enter the addressing contract. */
 export interface IThreadCommunicationService {
   readonly _serviceBrand: undefined;
   readonly hostId: string;

@@ -1,9 +1,3 @@
-/**
- * The engine copy of the `agent_config` schemas is what the routes validate
- * against; the `@kiki/protocol` copy is what SDK clients compile
- * against. Nothing forces them to agree, so a field added to one and not the
- * other reappears as the accepted-but-ignored bug this pair was fixed for.
- */
 import {
   sessionAgentConfigCreateSchema as engineCreateSchema,
   sessionAgentConfigPartialSchema as enginePatchSchema,

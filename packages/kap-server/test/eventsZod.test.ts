@@ -16,11 +16,6 @@ import {
   thinkingDeltaEventSchema,
 } from '../src/protocol/events-zod';
 
-/**
- * Every prompt event the engine dispatches reaches the session WS untouched,
- * so a type missing from the parse union is a frame no spec-compliant client
- * can read.
- */
 const ENGINE_PROMPT_EVENTS = [
   PromptQueued,
   PromptStarted,

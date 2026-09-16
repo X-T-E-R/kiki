@@ -1,7 +1,3 @@
-/**
- * Peer-thread tool schema and activation scenarios.
- */
-
 import { describe, expect, it } from 'vitest';
 
 import type { ServicesAccessor } from '#/_base/di/instantiation';

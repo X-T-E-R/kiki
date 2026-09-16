@@ -174,9 +174,6 @@ function modelCandidates(model: string): readonly string[] {
   if (slash > 0) {
     const bare = model.slice(slash + 1);
     if (!PROVIDER_PREFIXES.includes(model.slice(0, slash) as never)) {
-      // An unknown first segment is a routing prefix (gateway / runtime name),
-      // not a pricing provider: also try the bare model id, then the bare id
-      // under every known provider prefix.
       candidates.push(bare);
       for (const provider of PROVIDER_PREFIXES) candidates.push(`${provider}/${bare}`);
       return candidates;
@@ -188,8 +185,6 @@ function modelCandidates(model: string): readonly string[] {
   return candidates;
 }
 
-/** A trailing MMDD-style snapshot pin (`-0813`), stripped only as a last
- *  resort after the full candidate chain missed. */
 const DATE_SUFFIX_PATTERN = /-?\d{4}$/;
 
 export function validatePriceCatalogText(
@@ -283,13 +278,19 @@ export class ModelPriceCatalog {
             name: typeof rule.name === 'string' ? rule.name : `fallback-rule-${index}`,
           });
         } catch {
-          // An invalid upstream regex is ignored rather than breaking all pricing.
         }
       }
     }
     this.familyRules = familyRules;
   }
 
+  /** Resolves the priced entry for `model`. Order: the local override table (an override pointing at
+   *  a catalog key missing from this snapshot yields no price rather than an invented figure), then
+   *  the candidate chain — the exact id, plus, when the first `/` segment is an unknown routing
+   *  prefix rather than a pricing provider, the bare id under every known provider prefix. As a last
+   *  resort a trailing date pin (`deepseek-v4-pro-0813`) is stripped and the chain retried: a real
+   *  name ending in four digits still resolves by its exact id first, and overrides are deliberately
+   *  not consulted for the stripped name, which carries a bare id with no `kimi-code/` prefix. */
   resolve(model: string): ModelPriceMatch | undefined {
     const requestedModel = model.trim();
     if (requestedModel.length === 0) return undefined;
@@ -300,13 +301,6 @@ export class ModelPriceCatalog {
 
     const direct = this.matchChain(requestedModel, modelCandidates(requestedModel));
     if (direct !== undefined) return direct;
-    // Last resort: a trailing date suffix (`deepseek-v4-pro-0813`) is a
-    // snapshot pin, not part of the priced family — strip it once and retry
-    // the full chain. Only reached after a complete miss, so a model whose
-    // real name ends in four digits still resolves by its exact name first.
-    // The local override table is consulted for the plain name above, but is
-    // deliberately NOT consulted for the stripped name: date pins carry the
-    // bare model id (`deepseek-v4-pro-0813`), which has no `kimi-code/` prefix.
     const stripped = requestedModel.replace(DATE_SUFFIX_PATTERN, '');
     if (stripped.length === 0 || stripped === requestedModel) return undefined;
     return this.matchChain(requestedModel, modelCandidates(stripped));
@@ -326,10 +320,6 @@ export class ModelPriceCatalog {
           prices: toPrices(entry),
         };
       }
-      // The override pointed at a catalog key that is absent from the active
-      // snapshot (older vendored copy, or a reset catalog). Fall through so the
-      // alias is reported as "no price" rather than inventing a non-catalog
-      // figure.
       return undefined;
     }
     const prices = override.prices;

@@ -1,11 +1,3 @@
-/**
- * `historyMutation` domain — `ISessionHistoryMutationService` implementation.
- *
- * Owns one Session's in-process FIFO mutation/admission gate. The gate provides
- * process-local linearization only; crash-atomic history/event transactions are
- * intentionally outside this version. Bound at Session scope.
- */
-
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
@@ -18,6 +10,10 @@ interface Lease extends SessionHistoryMutationLease {
   dispose(): void;
 }
 
+/** `historyMutation` domain — `ISessionHistoryMutationService` implementation (Session scope). Owns
+ *  one Session's in-process FIFO mutation/admission gate; the gate provides process-local
+ *  linearization only, while crash-atomic history/event transactions are intentionally outside this
+ *  version. */
 export class SessionHistoryMutationService implements ISessionHistoryMutationService {
   declare readonly _serviceBrand: undefined;
 

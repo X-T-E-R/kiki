@@ -53,8 +53,6 @@ describe('native Windows terminal lifecycle', () => {
                 terminal: new HostTerminalService(),
                 environment: {
                   ...base.environment,
-                  // The smoke test asserts the spawned shell is a real file and
-                  // drives it with cmd-style input; pin the shell to ComSpec.
                   shellPath: process.env['ComSpec'] ?? 'C:\\Windows\\System32\\cmd.exe',
                 },
               });
@@ -128,9 +126,6 @@ describe('native Windows terminal lifecycle', () => {
       );
 
       expect(output).toContain(marker);
-      // Let the shell release its ConPTY handles through the same input path a
-      // user can take, then exercise the session service's idempotent close.
-      // The fake-host test above separately proves close kills a live process.
       await service.write(terminal.id, 'exit\r');
       await withTimeout(exitReady, 5000, () => `timed out waiting for native PTY exit: ${output}`);
       expect(await service.close(terminal.id)).toEqual({ closed: true });

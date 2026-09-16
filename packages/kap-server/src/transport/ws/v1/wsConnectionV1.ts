@@ -295,7 +295,6 @@ export class WsConnectionV1 implements BroadcastTarget {
 
   private onMessage(data: RawData): void {
     if (this.closed) return;
-    // Any inbound frame proves transport liveness, even if its payload is not understood.
     this.lastInboundAt = Date.now();
     let frame: InboundFrame;
     try {
@@ -978,7 +977,6 @@ export class WsConnectionV1 implements BroadcastTarget {
     try {
       this.socket.terminate();
     } catch {
-      // Cleanup below is authoritative even if the socket implementation throws.
     }
     this.onClose();
   }

@@ -1,9 +1,6 @@
-/**
- * `agentProfileCatalog` domain error codes — named profile-route failures.
- */
-
 import { registerErrorDomain, type ErrorDomain } from '#/_base/errors/codes';
 
+/** `agentProfileCatalog` domain error codes — named profile-route failures. */
 export const AgentProfileRouteErrors = {
   codes: {
     ROUTE_FEATURE_DISABLED: 'agent_profile_route.feature_disabled',

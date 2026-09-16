@@ -1,10 +1,3 @@
-/**
- * `workspaceAgentProfileLoader` domain — agent-root resolution primitives.
- *
- * Resolves user, project, and configured discovery roots through the `hostFs`
- * filesystem boundary. Pure path probes; no scoped state.
- */
-
 import { dirname, join } from 'pathe';
 
 import { findUpwardRoot } from '#/_base/utils/paths';
@@ -23,6 +16,9 @@ const USER_GENERIC_DIRS = ['.agents/agents'] as const;
 const PROJECT_BRAND_DIRS = ['.kiki/agents'] as const;
 const PROJECT_GENERIC_DIRS = ['.agents/agents'] as const;
 
+/** `workspaceAgentProfileLoader` domain — agent-root resolution primitives: the user, project, and
+ *  configured discovery roots resolved through the `hostFs` boundary (pure path probes, no scoped
+ *  state). */
 export async function userAgentRoots(
   fs: IHostFileSystem,
   homeDir: string,

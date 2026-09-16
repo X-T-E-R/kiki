@@ -1,12 +1,3 @@
-/**
- * `workspaceAgentProfileLoader` domain — validated agent-profile file writer.
- *
- * Locates one user, project, or extra contribution in the live App registry,
- * validates targeted frontmatter or whole-file replacements, writes each
- * changed file atomically, reloads the owning source, and returns the
- * post-reload registry entry. Workspace-scoped.
- */
-
 import { isUpgradedSystemMd, parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
 
 import { atomicWrite } from '#/_base/utils/fs';
@@ -77,6 +68,10 @@ const TOP_LEVEL_KEYS = new Set([
 ]);
 const ROUTE_KEYS = new Set(['id', 'description', 'modelAlias']);
 
+/** Validated agent-profile file writer (Workspace-scoped): locates one user, project, or extra
+ *  contribution in the live App registry, validates targeted frontmatter or whole-file replacements,
+ *  writes each changed file atomically, reloads the owning source, and returns the post-reload
+ *  registry entry. */
 export class AgentProfileWriterService implements IAgentProfileWriter {
   declare readonly _serviceBrand: undefined;
 

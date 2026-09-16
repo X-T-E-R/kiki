@@ -24,14 +24,10 @@ import {
 
 const SEP = String.fromCodePoint(0);
 const CHECKPOINT_COLLECTION = '__checkpoint__';
-// Reuse the session-index storage generation so binaries with incompatible
-// shard-lock policies never share physical lock or WAL files.
+/** Reuse the session-index storage generation so binaries with incompatible shard-lock policies
+ *  never share physical lock or WAL files. */
 export const MINIDB_QUERY_STORE_SUBDIR = `query-store-v${SESSION_INDEX_STORAGE_VERSION}`;
 const SHARD_COUNT = 16;
-// MiniDb coordinates a multi-shard batch sequentially. Its 250ms default can
-// expire the early shard writers before one fan-out finishes, forcing every
-// following batch to reopen the shards and replay their growing WALs. The
-// acquire timeout stays longer than the hold so a peer can wait for handoff.
 const LOCK_HOLD_MS = 5_000;
 const LOCK_ACQUIRE_TIMEOUT_MS = 7_000;
 export const QUERY_STORE_COMPACT_THRESHOLD_BYTES = 4 * 1024 * 1024;
@@ -51,6 +47,11 @@ export async function drainQueryStoreDisposals(): Promise<void> {
   await Promise.all(pendingDisposals);
 }
 
+/** Query store over a sharded MiniDb cluster. Writes fan out shard by shard under an exclusive
+ *  lock: MiniDb's 250ms default would expire the early shard writers before one fan-out finishes,
+ *  forcing every following batch to reopen the shards and replay their growing WALs, so the lock is
+ *  held for `LOCK_HOLD_MS` and acquired with a longer `LOCK_ACQUIRE_TIMEOUT_MS` that lets a peer wait
+ *  for handoff. */
 export class MiniDbQueryStore extends Disposable implements IQueryStore {
   declare readonly _serviceBrand: undefined;
 

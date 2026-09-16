@@ -217,8 +217,6 @@ describe('loadMcpServers', () => {
       command: 'node',
       cwd: join(repoRoot, 'tools', 'mcp'),
     });
-    // A rooted-but-driveless cwd keeps its shape on POSIX; on Windows it is
-    // anchored to the drive of the .mcp.json that declared it.
     const driveOfRoot = /^[A-Za-z]:/.exec(repoRoot)?.[0] ?? '';
     expect(servers['absolute']).toEqual({
       transport: 'stdio',

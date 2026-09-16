@@ -1,11 +1,3 @@
-/**
- * `workspaceAgentProfileLoader` domain — validated named-profile write-back contract.
- *
- * A Workspace-scoped writer applies validated common-field or whole-file
- * updates to user, project, and extra profiles, reloads the owning source, and
- * returns the authoritative registry projection after reload.
- */
-
 import type {
   AgentProfile,
   AgentProfileRouteDefinition,
@@ -42,6 +34,10 @@ export interface AgentProfileWriteResult {
   readonly routes: readonly AgentProfileRouteDefinition[];
 }
 
+/** `workspaceAgentProfileLoader` domain — validated named-profile write-back contract. A
+ *  Workspace-scoped writer applies validated common-field or whole-file updates to user, project,
+ *  and extra profiles, reloads the owning source, and returns the authoritative registry projection
+ *  after reload. */
 export interface IAgentProfileWriter {
   readonly _serviceBrand: undefined;
   update(request: AgentProfileWriteRequest): Promise<AgentProfileWriteResult>;

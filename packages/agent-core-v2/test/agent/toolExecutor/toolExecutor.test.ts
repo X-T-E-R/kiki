@@ -1324,7 +1324,6 @@ describe('truncation pipeline', () => {
   });
 });
 
-// Spill pointers render storage paths POSIX-style even on Windows.
 function toPosix(path: string): string {
   return path.replaceAll('\\', '/');
 }

@@ -934,8 +934,6 @@ describe('AgentRun tool description', () => {
       ISessionAgentProfileCatalog,
       catalog as unknown as ISessionAgentProfileCatalog,
     ));
-    // Prime the tool, then let catalog.ready settle: from the next read on,
-    // the description freezes the catalog list.
     expect(agentDescription()).toContain('- coder: Coder');
     await Promise.resolve();
 

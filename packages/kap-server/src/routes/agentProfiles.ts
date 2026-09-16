@@ -1,12 +1,3 @@
-/**
- * `/agents` REST routes — named agent-profile catalog and validated write-back.
- *
- * GET merges logical profiles across workspace registrations, exposes an
- * expanded view, and projects builtin and named disable state. PATCH borrows
- * the addressed workspace's validated common-field / raw-file
- * writer and echoes the authoritative post-reload profile.
- */
-
 import {
   AgentProfileSourceDiagnosticCodes,
   AgentProfileWriteErrors,
@@ -71,6 +62,10 @@ interface AgentProfilesRouteHost {
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
+/** Registers the `/agents` routes — named agent-profile catalog and validated write-back. GET merges
+ *  logical profiles across workspace registrations, exposes an expanded view, and projects builtin and
+ *  named disable state; PATCH borrows the addressed workspace's validated common-field / raw-file
+ *  writer and echoes the authoritative post-reload profile. */
 export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Scope): void {
   const capabilitiesRoute = defineRoute({
     method: 'GET',

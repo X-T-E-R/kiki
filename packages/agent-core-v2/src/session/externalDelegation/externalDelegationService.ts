@@ -1,13 +1,3 @@
-/**
- * `externalDelegation` domain — `ISessionExternalDelegationService` implementation.
- *
- * Persists one versioned delegation root through the atomic-document store,
- * materializes externally-owned agents through `agentLifecycle`, drives turns
- * through `subagent`, and reads their context through `contextMemory`. Profile,
- * workspace, process, flag, and main-agent services supply composition-owned
- * defaults. Bound at Session scope.
- */
-
 import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 import { ulid } from 'ulid';
 
@@ -174,6 +164,10 @@ const TASK_NAME = /^(?!root$)[a-z0-9_]+$/;
 const ACTIVE = new Set<ExternalDispatchStatus>(['queued', 'running']);
 const EXTERNAL_FAILURE_MESSAGE_MAX_BYTES = 512;
 
+/** `ISessionExternalDelegationService` implementation (Session scope): persists one versioned
+ *  delegation root through the atomic-document store, materializes externally-owned agents through
+ *  `agentLifecycle`, drives turns through `subagent`, and reads their context through `contextMemory`.
+ *  Profile, workspace, process, flag, and main-agent services supply composition-owned defaults. */
 export class SessionExternalDelegationService
   extends Disposable
   implements ISessionExternalDelegationService

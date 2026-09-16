@@ -1,11 +1,3 @@
-/**
- * Scenario: cognition `anchor` replaces the outbound system prompt for
- * the configured opening steps of a turn.
- *
- * Run: `pnpm --filter @kiki/agent-core-v2 exec vitest run
- * test/agent/cognition/cognitionAnchor.test.ts`
- */
-
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
@@ -30,8 +22,6 @@ const MOCK_MODEL = 'mock-model';
 const ANCHOR_TEXT = 'PLAN FIRST THEN ACT';
 const OVERLAY_TEXT = 'FLASH OVERLAY';
 const EXPLICIT_PROMPT = 'explicit-override';
-// `loopService.reserveTurnId` hands out the wire-persisted turn clock, which
-// starts at zero, so this is the id the session's opening turn actually gets.
 const FIRST_TURN = 0;
 
 describe('cognition first-turn anchor', () => {
@@ -179,8 +169,6 @@ describe('cognition first-turn anchor', () => {
       anchorScope: 'session',
     });
 
-    // A cold resume gives a fresh service whose first observed turn is not the
-    // session's first turn; session scope must stay released.
     expect(await requestTurn(requester, agent, FIRST_TURN + 4, 1)).toBe(fullPrompt);
     expect(await requestTurn(requester, agent, FIRST_TURN + 5, 1)).toBe(fullPrompt);
   });

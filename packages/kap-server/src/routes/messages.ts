@@ -100,11 +100,8 @@ const messageIdParamSchema = z.object({
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
-// --- Registration -----------------------------------------------------------
-
 export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRouteDeps): void {
   const { core } = deps;
-  // GET /sessions/{session_id}/messages --------------------------------
   const listRoute = defineRoute(
     {
       method: 'GET',

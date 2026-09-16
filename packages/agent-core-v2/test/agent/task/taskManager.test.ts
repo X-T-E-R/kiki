@@ -1260,9 +1260,6 @@ describe('AgentTaskService', () => {
 
     await expect(manager.wait(taskId, 60_000)).resolves.toMatchObject({ status: 'completed' });
 
-    // Push the clock well past the 60s deadline: a deadline that still fires
-    // must not reopen or re-terminate the settled task. Deadlines that are
-    // *supposed* to fire are covered by the `timed_out` cases above.
     await vi.advanceTimersByTimeAsync(120_000);
 
     expect(manager.getTask(taskId)).toMatchObject({ status: 'completed' });

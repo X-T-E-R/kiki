@@ -819,7 +819,6 @@ describe('SessionMetadata', () => {
       kind: 'external',
       delegationId: 'delegation_b',
     });
-    // Agent registration remains structural even when the delegator changes.
     expect(next.updatedAt).toBe(before);
   });
 

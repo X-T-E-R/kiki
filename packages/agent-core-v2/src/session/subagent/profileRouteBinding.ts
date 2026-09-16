@@ -1,16 +1,12 @@
-/**
- * `subagent` domain — named profile-route binding guards shared by Agent tools.
- *
- * Route model pins keep their conflict semantics, while identity comparison and
- * availability checks use the app model registry's canonical resolver.
- */
-
 import type { ModelAliasResolver } from '@kiki/agent-profiles/ports';
 
 import { Error2, ErrorCodes } from '#/errors';
 import type { ResolvedAgentProfileRoute } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { IModelCatalog } from '#/kosong/model/catalog';
 
+/** `subagent` domain — named profile-route binding guards shared by Agent tools: route model pins
+ *  keep their conflict semantics, while identity comparison and availability checks use the app model
+ *  registry's canonical resolver. */
 export function assertProfileRouteBinding(
   route: ResolvedAgentProfileRoute | undefined,
   input: {

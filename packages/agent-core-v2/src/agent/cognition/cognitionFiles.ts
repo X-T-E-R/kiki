@@ -1,11 +1,3 @@
-/**
- * `cognition` helpers — resolve and load `[models.<alias>.cognition]` files.
- *
- * Paths are relative to the Kiki home directory (`IBootstrapService.homeDir`).
- * Declared files must exist and stay inside that home; missing or escaped
- * paths fail closed. The host does not interpret pack layout.
- */
-
 import { isAbsolute, join, normalize } from 'pathe';
 
 import type { CognitionConfig, CognitionPathRef } from '#/kosong/model/model';
@@ -34,6 +26,9 @@ export function cognitionPathRefs(value: CognitionPathRef | undefined): string[]
   return typeof value === 'string' ? [value] : [...value];
 }
 
+/** `cognition` helpers — resolves and loads `[models.<alias>.cognition]` files. Paths are relative to
+ *  the Kiki home directory (`IBootstrapService.homeDir`); declared files must exist and stay inside
+ *  that home, missing or escaped paths fail closed, and the host does not interpret pack layout. */
 export function resolveCognitionPath(
   homeDir: string,
   ref: string,

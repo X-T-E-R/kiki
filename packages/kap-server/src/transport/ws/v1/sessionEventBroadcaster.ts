@@ -824,7 +824,6 @@ export class SessionEventBroadcaster {
       try {
         target.sendControl?.(frame);
       } catch {
-        // best-effort compatibility notification; the durable event remains authoritative
       }
     }
   }
@@ -959,8 +958,6 @@ export class SessionEventBroadcaster {
     const state = this.sessions.get(sessionId) ?? (pending === undefined ? undefined : await pending);
     if (state === undefined || this.sessions.get(sessionId) !== state) return;
 
-    // Remove the state before awaiting its queue so global fan-out immediately
-    // stops scanning the dead session and a later activation cannot reuse it.
     this.sessions.delete(sessionId);
     await state.queue;
     await disposeSessionState(state);

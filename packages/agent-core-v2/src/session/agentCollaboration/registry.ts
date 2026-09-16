@@ -1,10 +1,3 @@
-/**
- * `agentCollaboration` domain — Session-scoped named-delegation reservation registry.
- *
- * Coordinates task-name ownership across agent and external delegators while
- * durable ownership remains in Session metadata and delegation documents.
- */
-
 import { createDecorator } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -14,6 +7,9 @@ export const COLLABORATION_TASK_NAME_LABEL = 'collaborationTaskName';
 export const COLLABORATION_AGENT_TYPE_LABEL = 'collaborationAgentType';
 export const COLLABORATION_LATEST_TASK_LABEL = 'collaborationLatestTaskId';
 
+/** Session-scoped named-delegation reservation registry: coordinates task-name ownership across agent
+ *  and external delegators, while durable ownership stays in Session metadata and delegation
+ *  documents. */
 export interface IAgentCollaborationRegistry {
   readonly _serviceBrand: undefined;
   reserve(taskName: string, owner: DelegatorRef): Promise<boolean>;

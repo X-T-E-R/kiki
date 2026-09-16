@@ -36,15 +36,13 @@ afterEach(() => {
 });
 
 describe('privateFiles', () => {
-  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
-  it.skipIf(process.platform === 'win32')('writes a file with mode 0600', async () => {
+  it.skipIf(process.platform === 'win32')('writes a file with mode 0600 (POSIX only — Windows does not model POSIX modes, chmod is a no-op)', async () => {
     const p = join(tmpDir, 'secret');
     await writePrivateFile(p, 'hello');
     expect(statSync(p).mode & 0o777).toBe(0o600);
   });
 
-  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
-  it.skipIf(process.platform === 'win32')('creates an absent parent dir with mode 0700', async () => {
+  it.skipIf(process.platform === 'win32')('creates an absent parent dir with mode 0700 (POSIX only — Windows does not model POSIX modes, chmod is a no-op)', async () => {
     const p = join(tmpDir, 'nested', 'dir', 'secret');
     await writePrivateFile(p, 'hello');
     expect(statSync(join(tmpDir, 'nested', 'dir')).mode & 0o777).toBe(0o700);
@@ -65,8 +63,7 @@ describe('privateFiles', () => {
     expect(buf.equals(data)).toBe(true);
   });
 
-  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
-  it.skipIf(process.platform === 'win32')('readPrivateFile throws on a 0644 file', async () => {
+  it.skipIf(process.platform === 'win32')('readPrivateFile throws on a 0644 file (POSIX only — Windows does not model POSIX modes, chmod is a no-op)', async () => {
     const p = join(tmpDir, 'leaky');
     writeFileSync(p, 'x', { mode: 0o644 });
     chmodSync(p, 0o644);
@@ -106,8 +103,7 @@ describe('tokenStore', () => {
     await store.dispose();
   });
 
-  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
-  it.skipIf(process.platform === 'win32')('writes the token file with mode 0600', async () => {
+  it.skipIf(process.platform === 'win32')('writes the token file with mode 0600 (POSIX only — Windows does not model POSIX modes, chmod is a no-op)', async () => {
     const home = join(tmpDir, 'home');
     const store = await createTokenStore(home);
     expect(statSync(store.tokenPath).mode & 0o777).toBe(0o600);
@@ -157,8 +153,7 @@ describe('persistentToken', () => {
     expect(a).toBe(b);
   });
 
-  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
-  it.skipIf(process.platform === 'win32')('writes server.token with mode 0600', async () => {
+  it.skipIf(process.platform === 'win32')('writes server.token with mode 0600 (POSIX only — Windows does not model POSIX modes, chmod is a no-op)', async () => {
     const home = join(tmpDir, 'home');
     await loadOrCreateServerToken(home);
     expect(statSync(join(home, 'server.token')).mode & 0o777).toBe(0o600);

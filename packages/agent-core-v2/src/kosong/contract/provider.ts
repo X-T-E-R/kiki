@@ -1,23 +1,3 @@
-/**
- * `kosong/contract` domain — the ChatProvider wire contract.
- *
- * ⚠ Named `provider` but this is the L0 contract, not an implementation:
- * the slimmed `ChatProvider` interface plus everything a single generation
- * call needs. Two invariants hold here:
- *
- *  - A ChatProvider is immutable after construction. The interface has no
- *    `with*` methods; every per-turn intent (prompt-cache key, service tier,
- *    additional request params, sampling overrides, thinking effort/keep,
- *    completion-token budget) flows through
- *    `GenerateOptions` on each `generate` call instead of through morphs.
- *  - `GenerateOptions` is the per-turn intent carrier. Each wire dialect
- *    decides how — or whether — to encode an intent (e.g. a cache key may
- *    become `prompt_cache_key`, `metadata.user_id`, or be silently dropped),
- *    while request headers stay on the transport options rather than the body.
- *
- * Pure types only — no other domain, no I/O, no SDKs.
- */
-
 import type { Message, StreamedMessagePart, VideoURLPart } from './message';
 import type { Tool } from './tool';
 import type { TokenUsage } from './usage';
@@ -123,6 +103,13 @@ export interface GenerateOptions {
   requestIdentity?: RequestIdentityWireOptions;
 }
 
+/** The L0 `ChatProvider` wire contract (the file is named `provider`, but this is the contract, not an
+ *  implementation). Two invariants: a provider is immutable after construction — there are no `with*`
+ *  methods, so every per-turn intent (prompt-cache key, service tier, additional request params,
+ *  sampling overrides, thinking effort/keep, completion-token budget) flows through `GenerateOptions`
+ *  on each `generate` call; and `GenerateOptions` is the per-turn intent carrier, whose encoding each
+ *  wire dialect decides (a cache key may become `prompt_cache_key`, `metadata.user_id`, or be silently
+ *  dropped), while request headers stay on the transport options rather than the body. */
 export interface ChatProvider {
   readonly name: string;
   readonly modelName: string;

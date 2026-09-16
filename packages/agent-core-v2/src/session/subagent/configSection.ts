@@ -1,14 +1,3 @@
-/**
- * `subagent` domain — subagent config schema and binding resolution.
- *
- * Owns the subagent timeout and resolves the model a spawn binds. A subagent
- * model has exactly two legitimate sources: a pin on the agent profile (or the
- * route/lease that stands in for it) and an explicit `model_alias` at dispatch
- * time. Nothing derives a subagent model from the caller, so a spawn with
- * neither source fails closed instead of silently following the main agent.
- * Self-registered at module load via `registerConfigSection`.
- */
-
 import { z } from 'zod';
 
 import { Error2, ErrorCodes, isError2 } from '#/errors';
@@ -31,6 +20,11 @@ import {
 
 export type { SubagentRoleModelConstraints } from './modelConstraints';
 
+/** `subagent` domain — the `[subagent]` config section and schema: owns the subagent timeout and
+ *  resolves the model a spawn binds. A subagent model has exactly two legitimate sources — a pin on
+ *  the agent profile (or the route/lease standing in for it) and an explicit `model_alias` at
+ *  dispatch time — so a spawn with neither fails closed instead of silently following the main agent.
+ *  Self-registered at module load via `registerConfigSection`. */
 export const SUBAGENT_SECTION = 'subagent';
 
 export const SubagentConfigSchema = z.object({

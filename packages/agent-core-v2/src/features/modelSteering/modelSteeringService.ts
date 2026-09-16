@@ -1,17 +1,3 @@
-/**
- * `modelSteering` domain (L4) — `IAgentModelSteeringService` implementation.
- *
- * Owns the `model_steering` context-injection provider. On every new turn
- * (including after compaction re-arm) it appends the bound model's
- * `[models.<alias>.cognition].steering` text as a following user message
- * after the user/task prompt — the dsh near-field shape (`inbox.append`
- * after the real user message), not a `<system-reminder>`. Identical text
- * is re-injected each turn so the cue does not drift away from the latest
- * prompt. File presence is validated at profile bind; a later read failure
- * is skipped by the injector (fail-open at this seam only). Bound at Agent
- * scope.
- */
-
 import { Disposable } from '#/_base/di/lifecycle';
 import {
   IAgentContextInjectorService,
@@ -29,6 +15,12 @@ import { IAgentModelSteeringService } from './modelSteering';
 
 const MODEL_STEERING_INJECTION_VARIANT = 'model_steering';
 
+/** `modelSteering` domain (L4) — `IAgentModelSteeringService` implementation (Agent scope). Owns the
+ *  `model_steering` context-injection provider: each turn (including after compaction re-arm) it
+ *  appends the bound model's `[models.<alias>.cognition].steering` text as a following user message
+ *  after the user/task prompt — the dsh near-field shape, not a `<system-reminder>` — and re-injects
+ *  the same text each turn so the cue does not drift from the latest prompt. File presence is
+ *  validated at profile bind; a later read failure is skipped by the injector (fail-open there only). */
 export class AgentModelSteeringService extends Disposable implements IAgentModelSteeringService {
   declare readonly _serviceBrand: undefined;
 

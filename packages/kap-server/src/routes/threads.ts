@@ -1,11 +1,3 @@
-/**
- * `/threads` routes — host-qualified peer-thread coordination over REST.
- *
- * List/read/send calls are ordinary request/response operations. Wait is a
- * bounded long poll and stops writing a response when the client disconnects;
- * durable mailbox state remains owned by the App-scoped core service.
- */
-
 import {
   IThreadCommunicationService,
   type Scope,
@@ -93,6 +85,9 @@ const threadErrors = {
   [ErrorCode.THREAD_DELIVERY_FAILED]: {},
 } as const;
 
+/** Registers the `/threads` routes — host-qualified peer-thread coordination over REST. List/read/send
+ *  are ordinary request/response calls; wait is a bounded long poll that stops writing a response when
+ *  the client disconnects, while durable mailbox state stays owned by the App-scoped core service. */
 export function registerThreadsRoutes(
   app: ThreadsRouteHost,
   core: Scope,

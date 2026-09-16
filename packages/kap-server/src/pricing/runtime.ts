@@ -1,9 +1,3 @@
-/**
- * Process-wide registration for the SEA-extracted LiteLLM pricing snapshot.
- * Repository/dev runs resolve the vendored JSON directly; the single-file
- * executable extracts the native asset and configures its absolute path here.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -13,6 +7,9 @@ export type ModelPricingRuntimeState =
 
 let configuredPath: string | null = null;
 
+/** Process-wide registration for the SEA-extracted LiteLLM pricing snapshot: repository/dev runs
+ *  resolve the vendored JSON directly, while the single-file executable extracts the native asset
+ *  and configures its absolute path here. */
 export function configureModelPricingRuntime(snapshotPath: string): ModelPricingRuntimeState {
   if (!path.isAbsolute(snapshotPath)) {
     throw new TypeError('model pricing snapshot path must be absolute');

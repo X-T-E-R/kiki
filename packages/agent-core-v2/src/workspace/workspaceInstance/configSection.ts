@@ -1,15 +1,10 @@
-/**
- * `workspaceInstance` domain — workspace-instance idle eviction configuration.
- *
- * Registers the App-level idle TTL used after the final live-session reference
- * is released, with an environment override for embedding hosts.
- */
-
 import { z } from 'zod';
 
 import { envBindings, stripEnvBoundFields } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 
+/** `workspaceInstance` domain — the App-level idle TTL applied after the final live-session
+ *  reference is released, with an environment override for embedding hosts. */
 export const WORKSPACE_INSTANCE_SECTION = 'workspaceInstance';
 export const DEFAULT_WORKSPACE_IDLE_TTL_MS = 5 * 60 * 1000;
 export const WORKSPACE_IDLE_TTL_ENV = 'KIKI_WORKSPACE_IDLE_TTL_MS';
