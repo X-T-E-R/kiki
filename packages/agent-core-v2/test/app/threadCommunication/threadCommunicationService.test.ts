@@ -50,7 +50,7 @@ import type {
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import type { WireRecord } from '#/wire/record';
 import { stubLog } from '../../_base/log/stubs';
-import { ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes } from '#/errors';
 
 const summaries: Record<string, SessionSummary> = {
   source: {
@@ -83,6 +83,8 @@ describe('ThreadCommunicationService', () => {
   let promptState: PromptHandle['state'];
   let promptEnqueue: Mock<IAgentPromptService['enqueue']>;
   let promptInject: ReturnType<typeof vi.fn>;
+  let promptSteer: ReturnType<typeof vi.fn>;
+  let steerBehavior: 'success' | 'prompt-not-found';
   let resume: ReturnType<typeof vi.fn>;
   let activityEvents: Array<{
     seq: number;
@@ -114,7 +116,13 @@ describe('ThreadCommunicationService', () => {
       .fn<IThreadMailboxStore['listPendingTargets']>()
       .mockResolvedValue([]);
     promptState = 'running';
+    steerBehavior = 'success';
     promptInject = vi.fn();
+    promptSteer = vi.fn(async (promptIds: readonly string[]) => {
+      events.push(`steer:${promptIds.join(',')}`);
+      if (steerBehavior === 'success') return promptIds.map((id) => ({ id, state: 'steered' }));
+      throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active turn to steer into');
+    });
     promptEnqueue = vi.fn(async (input) => {
       events.push('enqueue');
       const launched = promptState === 'pending' ? new Promise<undefined>(() => {}) : Promise.resolve(undefined);
@@ -131,7 +139,7 @@ describe('ThreadCommunicationService', () => {
       } as PromptHandle;
       return handle;
     });
-    const prompt = { enqueue: promptEnqueue, inject: promptInject } as unknown as IAgentPromptService;
+    const prompt = { enqueue: promptEnqueue, inject: promptInject, steer: promptSteer } as unknown as IAgentPromptService;
     const agent: IAgentScopeHandle = {
       id: 'main',
       kind: LifecycleScope.Agent,
@@ -328,21 +336,40 @@ describe('ThreadCommunicationService', () => {
     expect(resume).toHaveBeenCalledWith('target');
   });
 
-  it('leaves an active target message queued and never injects it', async () => {
+  it('steers a queued message into the running target turn and acks it', async () => {
     promptState = 'pending';
     const service = ix.get(IThreadCommunicationService);
     const result = await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
       source: ref(service.hostId, 'workspace-a', 'source'),
       target: ref(service.hostId, 'workspace-b', 'target'),
-      content: 'queued',
-      idempotencyKey: 'queued-key',
+      content: 'steered',
+      idempotencyKey: 'steer-key',
+    });
+
+    expect(result.delivery).toBe('delivered');
+    expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']);
+    expect(promptSteer).toHaveBeenCalledWith(['message-1']);
+    expect(promptInject).not.toHaveBeenCalled();
+    await expect(service.shutdown()).resolves.toBeUndefined();
+    expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']);
+  });
+
+  it('falls back to the queued delivery when the steer races a finished turn', async () => {
+    promptState = 'pending';
+    steerBehavior = 'prompt-not-found';
+    const service = ix.get(IThreadCommunicationService);
+    const result = await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: ref(service.hostId, 'workspace-a', 'source'),
+      target: ref(service.hostId, 'workspace-b', 'target'),
+      content: 'raced',
+      idempotencyKey: 'race-key',
     });
 
     expect(result.delivery).toBe('pending');
-    expect(events).toEqual(['persist', 'resume', 'enqueue']);
+    expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1']);
     expect(promptInject).not.toHaveBeenCalled();
     await expect(service.shutdown()).resolves.toBeUndefined();
-    expect(events).toEqual(['persist', 'resume', 'enqueue']);
+    expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1']);
   });
 
   it('treats a raw external source claim as data outside the accepted authority shape', async () => {

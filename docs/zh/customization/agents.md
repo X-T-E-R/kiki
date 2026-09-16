@@ -32,7 +32,7 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 `AgentList` 返回这些直属子 Agent，包括保留的历史 swarm 条目。默认 `include_finished=false` 列出运行中的，以及没有跟踪任务的；需要已经结束或失败的，再传 `true`。最多返回 50 条，运行中的排在前面。
 
-`AgentSend` 把消息排进邮箱，不会启动或中断 turn。空闲的子 Agent 会保持空闲，到下一步开始时才读这条消息。用 `name` 或 agent id 指定目标。
+`AgentSend` 把消息排进邮箱，投递语义是尽早送达：子 Agent 正在运行时，消息会在下一个 step 边界被 steer 进其活跃 turn；空闲的子 Agent 不会被唤醒，消息到下一步开始时才读。用 `name` 或 agent id 指定目标。
 
 已移除的 v1 Codex 风格协作适配器及其实验开关不适用于 v2 引擎。
 

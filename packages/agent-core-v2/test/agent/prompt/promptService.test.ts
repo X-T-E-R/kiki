@@ -1050,6 +1050,44 @@ describe('AgentPromptService', () => {
     ]);
   });
 
+  it('keeps the peer_thread origin at the merged steer message', async () => {
+    const { prompt, context, loop } = harness();
+    const active = await prompt.enqueue({ message: message('active') });
+    await active.launched;
+    const one = await prompt.enqueue({ message: peerMessage('peer-1', 'one') });
+
+    await prompt.steer([one.id]);
+    loop.drainNextBatch(context);
+
+    const merged = context
+      .get()
+      .filter((entry) => entry.origin?.kind === 'peer_thread')
+      .at(-1);
+    expect(merged?.origin).toEqual(peerMessage('peer-1', 'one').origin);
+  });
+
+  it('falls back to the user origin when steered records mix origins', async () => {
+    const { prompt, context, loop } = harness();
+    const active = await prompt.enqueue({ message: message('active') });
+    await active.launched;
+    const one = await prompt.enqueue({ message: peerMessage('peer-1', 'one') });
+    const two = await prompt.enqueue({ message: message('user two') });
+
+    await prompt.steer([one.id, two.id]);
+    loop.drainNextBatch(context);
+
+    const merged = context
+      .get()
+      .filter(
+        (entry) => entry.origin?.kind === 'user' && entry.origin.skillActivations === undefined,
+      )
+      .at(-1);
+    expect(merged?.content).toEqual([
+      { type: 'text', text: 'one' },
+      { type: 'text', text: 'user two' },
+    ]);
+  });
+
   it('restarts the queue after restoring a steer raced by the active turn settling', async () => {
     const { prompt, loop } = harness({ manualTurnResult: true });
     const active = await prompt.enqueue({ message: message('active') });

@@ -15,7 +15,7 @@ export const AgentSendInputSchema = z
     message: z
       .string()
       .describe(
-        'Non-empty message to queue in the child mailbox. The child reads it on its next turn; this tool does not start or interrupt a turn.',
+        'Non-empty message to queue in the child mailbox. If the child is running, the message is injected into its active turn at the next step boundary as early as possible; if the child is idle, it is delivered when the child next runs.',
       ),
   })
   .strict();

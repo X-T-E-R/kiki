@@ -167,14 +167,14 @@ Only `ThreadSend`, called by the source thread's main Agent, records peer attrib
 
 On Kiki desktop and the `kiki` CLI/TUI, the main `agent` profile always receives `AgentRun`, `AgentList`, and `AgentSend`. These tools address only the caller's direct children — by the optional `name` passed to `AgentRun`, or by agent id. They are not behind an experiment. Built-in `coder` and `explore` profiles do not receive them. The retired `AgentSwarm` callable tool is not available for new calls; historical swarm child records remain readable.
 
-`AgentList` returns those direct children, including retained historical swarm entries, and never lists grandchildren. `AgentSend` queues a mailbox message without starting or interrupting a turn, so an idle child stays idle and reads the message at the beginning of its next step.
+`AgentList` returns those direct children, including retained historical swarm entries, and never lists grandchildren. `AgentSend` queues a mailbox message that is delivered as early as possible: when the child is running, the message is steered into its active turn at the next step boundary; when the child is idle (or a race just ended its turn), it stays queued and is read at the beginning of the child's next step.
 Collaboration tools handle inter-Agent coordination, user interaction, and Skill invocation.
 
 | Tool | Default Approval | Description |
 | --- | --- | --- |
 | `AgentRun` | Auto-allow | Spawn a sub-Agent to execute a subtask, or continue a direct child |
 | `AgentList` | Auto-allow | List the caller's direct child agents |
-| `AgentSend` | Auto-allow | Queue a mailbox message for a direct child without starting a turn |
+| `AgentSend` | Auto-allow | Deliver a mailbox message to a direct child as early as possible; steered into an active turn while running |
 | `AskUserQuestion` | Auto-allow | Ask the user a question to gather structured input |
 | `Skill` | Auto-allow | Invoke a registered inline Skill |
 
@@ -182,7 +182,7 @@ Collaboration tools handle inter-Agent coordination, user interaction, and Skill
 
 **`AgentList`** lists direct children of the current agent. Optional `include_finished` defaults to false. A live child that is starting, running, or cancelling stays visible as `running`, even after its previous background task has completed or timed out. A broken live executor is `errored`; otherwise status follows the latest background task, or is `untracked` when there is no task record. Pass `true` to also include finished or errored children. At most 50 entries are returned, running first; `omitted` is the count that did not fit. Each entry includes `agent_id`, optional `name` and `profile`, `status`, and `swarm_item` when a retained historical swarm child has an item label. A `running` child does not necessarily have a tracked background task or a pending completion notification; use `TaskList` to inspect tracked work.
 
-**`AgentSend`** queues a non-empty `message` for a direct child identified by `target` (a `name` from `AgentRun`, or an agent id). It does not start, steer, or interrupt a turn. If more than one direct child matches, or none do, the call fails — use `AgentList` and retry with an unambiguous value. A full mailbox means the child has too many unread queued messages; wait until it consumes some, then retry.
+**`AgentSend`** queues a non-empty `message` for a direct child identified by `target` (a `name` from `AgentRun`, or an agent id). A running child receives the message as soon as possible: it is steered into the child's active turn at the next step boundary. An idle child is not woken — the message waits in the mailbox until the child next runs. If more than one direct child matches, or none do, the call fails — use `AgentList` and retry with an unambiguous value. A full mailbox means the child has too many unread queued messages; wait until it consumes some, then retry.
 
 **`AskUserQuestion`** asks the user a structured multiple-choice question — useful for disambiguation or option selection. The `questions` parameter accepts 1–4 questions; each question requires `question` (ending with `?`), `options` (2–4 choices, each with a `label` and `description`), and optional `header` (max 12 characters) and `multi_select` (defaults to false). An "Other" option is appended automatically. Setting `background` to true starts a background question task and returns a task ID immediately. When the host does not support interactive questioning, a failure message is returned and the Agent should ask the user directly in a text reply instead.
 

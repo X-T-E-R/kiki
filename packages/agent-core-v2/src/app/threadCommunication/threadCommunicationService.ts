@@ -17,7 +17,7 @@ import {
   type PromptOrigin,
 } from '#/agent/contextMemory/types';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
@@ -515,6 +515,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     claim: ThreadDeliveryClaim,
   ): Promise<SendThreadMessageResult['delivery']> {
     const message = claim.message;
+    let prompt: IAgentPromptService;
     let handle: PromptHandle;
     try {
       await this.requireThread(message.target);
@@ -523,6 +524,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         throw new Error2(ErrorCodes.THREAD_NOT_FOUND, `Thread "${message.target.sessionId}" does not exist.`);
       }
       const main = await ensureMainAgent(session);
+      prompt = main.accessor.get(IAgentPromptService);
       const origin: PromptOrigin = message.producer.kind === 'peer_thread'
         ? {
             kind: 'peer_thread',
@@ -531,7 +533,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             acceptedAt: message.acceptedAt,
           } satisfies PeerThreadOrigin
         : USER_PROMPT_ORIGIN;
-      handle = await main.accessor.get(IAgentPromptService).enqueue({
+      handle = await prompt.enqueue({
         id: message.messageId,
         message: {
           id: message.messageId,
@@ -545,7 +547,21 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       if (this.closing) return 'pending';
       return this.recordUndeliverable(claim, error);
     }
-    if (handle.state === 'running' || isTerminalPromptState(handle.state)) {
+    if (handle.state === 'running' || handle.state === 'steered' || isTerminalPromptState(handle.state)) {
+      return this.acknowledgeClaim(claim);
+    }
+    if (handle.state === 'pending') {
+      try {
+        await prompt.steer([message.messageId]);
+      } catch (error) {
+        if (!(isError2(error) && error.code === ErrorCodes.PROMPT_NOT_FOUND)) {
+          if (this.closing) return 'pending';
+          return this.recordUndeliverable(claim, error);
+        }
+        this.detach(this.observePromptOutcome(claim, handle));
+        return 'pending';
+      }
+      if (this.closing) return 'pending';
       return this.acknowledgeClaim(claim);
     }
     this.detach(this.observePromptOutcome(claim, handle));

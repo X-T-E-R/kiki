@@ -10,7 +10,7 @@ import { abortable, userCancellationReason } from '#/_base/utils/abort';
 import { toErrorPayload } from '#/_base/errors/serialize';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { newMessageId } from '#/agent/contextMemory/messageId';
-import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
+import { USER_PROMPT_ORIGIN, type BundledSkillActivation, type ContextMessage, type PromptOrigin } from '#/agent/contextMemory/types';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService, type Turn, type TurnResult } from '#/agent/loop/loop';
 import { TurnSteer } from '#/agent/loop/turnOps';
@@ -241,8 +241,30 @@ function mergeSteerMessages(records: readonly Record[]): ContextMessage {
       ...records.flatMap((item) => stripBundledSkillBlocks(item.message)),
     ],
     toolCalls: [],
-    origin: skillActivations.length === 0 ? USER_PROMPT_ORIGIN : { kind: 'user', skillActivations },
+    origin: sharedSteerOrigin(records, skillActivations),
   };
+}
+
+function sharedSteerOrigin(
+  records: readonly Record[],
+  skillActivations: readonly BundledSkillActivation[],
+): PromptOrigin {
+  if (skillActivations.length > 0) return { kind: 'user', skillActivations };
+  const [first] = records;
+  if (
+    first === undefined ||
+    first.message.origin === undefined ||
+    first.message.origin.kind === 'user'
+  ) {
+    return USER_PROMPT_ORIGIN;
+  }
+  const origin = first.message.origin;
+  for (const item of records) {
+    if (JSON.stringify(item.message.origin) !== JSON.stringify(origin)) {
+      return USER_PROMPT_ORIGIN;
+    }
+  }
+  return origin;
 }
 
 export const promptLaunchingKey = defineState<boolean>('prompt.launching', () => false);

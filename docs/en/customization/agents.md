@@ -32,7 +32,7 @@ The default v2 engine (Kiki desktop and `kiki` CLI/TUI) gives the main `agent` p
 
 `AgentList` returns direct children, including retained historical swarm entries. Default `include_finished=false` lists running children and children with no tracking task; pass `true` when you need children whose latest background task has already finished or failed. At most 50 entries are returned, running first.
 
-`AgentSend` queues a mailbox message without starting or interrupting a turn. An idle child stays idle and reads the message at the beginning of its next step. Address the child by `name` or agent id.
+`AgentSend` queues a mailbox message that is delivered as early as possible: when the child is running, the message is steered into its active turn at the next step boundary; when the child is idle, it stays queued and is read at the beginning of the child's next step. Address the child by `name` or agent id.
 
 The removed v1 Codex-style collaboration adapter and its experimental flag do not apply to the v2 engine.
 

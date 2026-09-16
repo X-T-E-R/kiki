@@ -167,14 +167,14 @@ Peer thread 通信只能在同一台主机内进行，可以跨工作区，并�
 
 Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 `coder` 与 `explore` profile 没有这组工具。已退役的 `AgentSwarm` 可调用工具不再支持新调用；历史 swarm 子 Agent 记录仍可读取。
 
-`AgentList` 返回这些直属子 Agent，包括保留的历史 swarm 条目，不会列出孙级。`AgentSend` 把消息排进邮箱，不会启动或中断 turn，因此空闲的子 Agent 会保持空闲，到下一步开始时才读这条消息。
+`AgentList` 返回这些直属子 Agent，包括保留的历史 swarm 条目，不会列出孙级。`AgentSend` 的投递语义是尽早送达：子 Agent 正在运行时，消息会在下一个 step 边界被 steer 进其活跃 turn；子 Agent 空闲（或竞态恰逢 turn 结束）时保持排队，到下一步开始时才读这条消息。
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
 | `AgentRun` | 自动放行 | 派生 subagent 执行子任务，或继续一个直属子 Agent |
 | `AgentList` | 自动放行 | 列出调用方的直属子 Agent |
-| `AgentSend` | 自动放行 | 向直属子 Agent 的邮箱排队一条消息，不启动新 turn |
+| `AgentSend` | 自动放行 | 尽早向直属子 Agent 送达一条邮箱消息，运行中会被 steer 进活跃 turn |
 | `AskUserQuestion` | 自动放行 | 向用户提问以获取结构化输入 |
 | `Skill` | 自动放行 | 调用已注册的 inline Skill |
 
@@ -182,7 +182,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 **`AgentList`** 列出当前 Agent 的直属子 Agent。可选参数 `include_finished` 默认为 false。实例正在启动、运行或取消时，即使之前的后台任务已完成或超时，也会以 `running` 保持可见。执行器处于故障状态时显示 `errored`；其他情况采用最近一次后台任务状态，没有任务记录则为 `untracked`。传 `true` 才会额外包含已结束或出错的子 Agent。最多返回 50 条，运行中的排在前面；装不下的数量记在 `omitted`。每条记录含 `agent_id`、可选的 `name` 与 `profile`、`status`，以及保留的历史 swarm 子 Agent 有 item 标签时才会出现的 `swarm_item`。`running` 不代表一定有跟踪中的后台任务或之后的完成通知；用 `TaskList` 查看跟踪中的工作。
 
-**`AgentSend`** 把非空的 `message` 排进直属子 Agent 的邮箱。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。它不会启动、steer 或中断 turn。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
+**`AgentSend`** 把非空的 `message` 排进直属子 Agent 的邮箱。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 正在运行时，消息会在下一个 step 边界被 steer 进其活跃 turn，尽早送达；空闲的子 Agent 不会被唤醒，消息等到下一次运行时才读。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 
 **`AskUserQuestion`** 以结构化多选题的形式向用户提问，适用于需要消歧或选择方案的场景。`questions` 参数接受 1–4 道题，每道题需提供 `question`（以 `?` 结尾）、`options`（2–4 个选项，每项含 `label` 和 `description`）以及可选的 `header`（最多 12 字符）和 `multi_select`（默认 false）。系统自动附加"其他"选项。`background` 为 true 时启动后台问题任务并立即返回任务 ID。宿主未实现交互式提问能力时返回失败提示，Agent 应改为在文本回复中直接提问。
 
