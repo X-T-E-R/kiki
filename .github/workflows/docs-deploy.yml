@@ -3,6 +3,11 @@ name: Deploy Docs to GitHub Pages
 on:
   workflow_call:
   workflow_dispatch:
+  push:
+    branches: [main, kiki]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs-deploy.yml'
 
 permissions:
   contents: read
