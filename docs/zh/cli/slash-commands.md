@@ -122,6 +122,7 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 | `/custom-theme [<text>]` | 创建或编辑自定义 TUI 配色主题。详见 [主题](../customization/themes.md) |
 | `/update-config` | 查看或编辑 `config.toml`（模型、供应商、权限、hooks）和 `tui.toml`（主题、编辑器、通知、自动更新） |
 | `/check-kiki-docs` | 读取随 Kiki 安装的本地文档，回答 CLI 与 GUI 用法、配置、斜杠命令、功能和错误相关的 Kiki 产品问题 |
+| `/kiki-profile` | 创建或编辑 agent profile 文件与 `SYSTEM.md`。详见 [Agent 与子 Agent](../customization/agents.md) |
 | `/import-from-cc-codex` | 从 Claude Code 和 Codex 导入 instructions、skills 和 MCP 设置 |
 | `/sub-skill` | 发现并将本地 skill 库存重组为分层子 skill 包。包含 `/sub-skill.review`（只读提案）和 `/sub-skill.consolidate`（执行重组） |
 

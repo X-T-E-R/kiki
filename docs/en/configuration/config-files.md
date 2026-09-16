@@ -102,7 +102,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |
 | `extra_agent_dirs` | `array<string>` | — | Extra custom agent search directories, layered on top of the default directories |
 | `disabled_builtin_profiles` | `array<string>` | `[]` | Built-in profile names to remove from subagent discovery and dispatch: `agent`, `coder`, `explore`, or `plan`. Dispatching a disabled profile fails as an unknown role. Disabling `agent` leaves the main agent's default binding available; a same-name file profile no longer needs `override: true` when its built-in is disabled |
-| `builtin_product_skills` | `boolean` | `true` | Whether the built-in skills that document Kiki itself are offered to the model: `update-config`, `custom-theme`, `mcp-config`, `check-kiki-docs`, and `import-from-cc-codex`. Turning them off trims their names and descriptions from the system prompt, at the cost of the guided flows for those tasks |
+| `builtin_product_skills` | `boolean` | `true` | Whether the built-in skills that document Kiki itself are offered to the model: `update-config`, `custom-theme`, `mcp-config`, `check-kiki-docs`, `kiki-profile`, and `import-from-cc-codex`. Turning them off trims their names and descriptions from the system prompt, at the cost of the guided flows for those tasks |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |

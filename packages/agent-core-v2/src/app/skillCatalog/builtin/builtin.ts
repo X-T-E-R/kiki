@@ -4,6 +4,7 @@ import type { SkillDefinition } from '#/app/skillCatalog/types';
 import { CHECK_KIKI_DOCS_SKILL } from './check-kiki-docs';
 import { CUSTOM_THEME_SKILL } from './custom-theme';
 import { IMPORT_FROM_CC_CODEX_SKILL } from './import-from-cc-codex';
+import { KIKI_PROFILE_SKILL } from './kiki-profile';
 import { MCP_CONFIG_SKILL } from './mcp-config';
 import { getBuiltinSkillContributions } from './registry';
 import {
@@ -21,6 +22,7 @@ export const BUILTIN_SKILLS: readonly SkillDefinition[] = [
   CUSTOM_THEME_SKILL,
   WRITE_GOAL_SKILL,
   CHECK_KIKI_DOCS_SKILL,
+  KIKI_PROFILE_SKILL,
   SUB_SKILL_PARENT,
   SUB_SKILL_REVIEW,
   SUB_SKILL_CONSOLIDATE,
@@ -44,6 +46,7 @@ export {
   CHECK_KIKI_DOCS_SKILL,
   CUSTOM_THEME_SKILL,
   IMPORT_FROM_CC_CODEX_SKILL,
+  KIKI_PROFILE_SKILL,
   MCP_CONFIG_SKILL,
   SUB_SKILL_CONSOLIDATE,
   SUB_SKILL_PARENT,

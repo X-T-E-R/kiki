@@ -124,6 +124,7 @@ Kiki ships with a set of built-in Skills that appear directly as `/<name>` slash
 | `/custom-theme [<text>]` | Create or edit a custom TUI color theme. See [Themes](../customization/themes.md) |
 | `/update-config` | Inspect or edit `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update) |
 | `/check-kiki-docs` | Answer Kiki product questions (CLI and GUI usage, configuration, slash commands, features, and errors) from the local docs installed with Kiki |
+| `/kiki-profile` | Create or edit agent profile files and `SYSTEM.md`. See [Agents and Sub-Agents](../customization/agents.md) |
 | `/import-from-cc-codex` | Import Claude Code and Codex instructions, skills, and MCP settings into Kiki |
 | `/sub-skill` | Discover and reorganize the local skill inventory into hierarchical sub-skill bundles. Includes `/sub-skill.review` (read-only proposal) and `/sub-skill.consolidate` (apply the reorganization) |
 

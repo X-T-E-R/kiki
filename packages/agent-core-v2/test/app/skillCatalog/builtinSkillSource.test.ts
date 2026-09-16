@@ -16,6 +16,7 @@ const PRODUCT_SKILLS = [
   'update-config',
   'custom-theme',
   'check-kiki-docs',
+  'kiki-profile',
 ];
 const NEUTRAL_SKILLS = BUILTIN_SKILLS.map((s) => s.name).filter(
   (name) => !PRODUCT_SKILLS.includes(name),

@@ -102,7 +102,7 @@ timeout = 5
 | `extra_skill_dirs` | `array<string>` | — | 额外 Skill 搜索目录，叠加到默认目录之上 |
 | `extra_agent_dirs` | `array<string>` | — | 额外自定义 Agent 搜索目录，叠加到默认目录之上 |
 | `disabled_builtin_profiles` | `array<string>` | `[]` | 从 subagent 发现与派发列表中移除的内置 profile 名称：`agent`、`coder`、`explore` 或 `plan`。派发已禁用 profile 时按未知角色报错。禁用 `agent` 不影响 main agent 的默认绑定；文件 profile 与已禁用内置 profile 同名时不再需要 `override: true` |
-| `builtin_product_skills` | `boolean` | `true` | 是否向模型提供介绍 Kiki 自身的内置 Skills：`update-config`、`custom-theme`、`mcp-config`、`check-kiki-docs`、`import-from-cc-codex`。关闭后它们的名称和描述不再进入系统提示词，代价是失去这些任务的引导流程 |
+| `builtin_product_skills` | `boolean` | `true` | 是否向模型提供介绍 Kiki 自身的内置 Skills：`update-config`、`custom-theme`、`mcp-config`、`check-kiki-docs`、`kiki-profile`、`import-from-cc-codex`。关闭后它们的名称和描述不再进入系统提示词，代价是失去这些任务的引导流程 |
 | `providers` | `table` | `{}` | API 供应商表 → [`providers`](#providers) |
 | `models` | `table` | — | 模型别名表 → [`models`](#models) |
 | `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
