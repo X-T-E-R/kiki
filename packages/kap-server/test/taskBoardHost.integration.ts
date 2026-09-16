@@ -69,6 +69,12 @@ it('uses the bundled Own Work package over real HTTP without requiring workspace
     expect(done.completedAt).not.toBeNull();
     const reopened = value(await client.global.board.write({ action: 'update', workspaceId, storage: done.storage, id: done.id, expectedRevision: done.revision, patch: { status: 'active' } }));
     expect(reopened).toMatchObject({ status: 'active', completedAt: null });
+    const cancelledCard = value(await client.global.board.write({ ...create, requestKey: 'cancelled-reopen' }));
+    const cancelled = value(await client.global.board.write({ action: 'update', workspaceId, storage: cancelledCard.storage, id: cancelledCard.id, expectedRevision: cancelledCard.revision, patch: { status: 'cancelled' } }));
+    expect(value(await client.global.board.write({ action: 'update', workspaceId, storage: cancelled.storage, id: cancelled.id, expectedRevision: cancelled.revision, patch: { status: 'paused' } }))).toMatchObject({ status: 'paused', completedAt: null });
+    const supersededCard = value(await client.global.board.write({ ...create, requestKey: 'superseded-reopen' }));
+    const superseded = value(await client.global.board.write({ action: 'update', workspaceId, storage: supersededCard.storage, id: supersededCard.id, expectedRevision: supersededCard.revision, patch: { status: 'superseded' } }));
+    expect(value(await client.global.board.write({ action: 'update', workspaceId, storage: superseded.storage, id: superseded.id, expectedRevision: superseded.revision, patch: { status: 'in_progress' } }))).toMatchObject({ status: 'in_progress', completedAt: null });
     const legacyTarget = value(await client.global.board.write({ ...create, requestKey: 'legacy-target' }));
     const legacySource = value(await client.global.board.write({ ...create, requestKey: 'legacy-source' }));
     const legacyTaskPath = join(legacySource.storage.root, 'tasks', legacySource.id, 'task.json');

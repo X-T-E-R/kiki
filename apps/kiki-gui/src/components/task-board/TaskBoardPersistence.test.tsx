@@ -271,6 +271,38 @@ describe('board container and controlled forms (mock transport, no persistence c
     }));
   });
 
+  it('persists a terminal card reopened from the detail editor', async () => {
+    const doneCard = { ...card, status: 'done' as const, completedAt: '2026-01-02' as const };
+    const read = vi.fn<BoardClient['read']>().mockImplementation(async (input) => {
+      if (input.action === 'show') return { ok: true, value: doneCard };
+      if (input.action === 'list') return { ok: true, value: { workspaceId: 'workspace-a', storage, cards: [doneCard], issues: [] } };
+      throw new Error('This fixture only handles list and show reads.');
+    });
+    const write = vi.fn<BoardClient['write']>().mockResolvedValue({ ok: true, value: { ...doneCard, status: 'active' as const, completedAt: null, revision: 4 } });
+    await act(async () => renderWithI18n(
+      <TaskBoardContainer
+        client={{ read, write }}
+        workspaceIds={['workspace-a']}
+        currentWorkspaceId="workspace-a"
+        workspaces={[{ id: 'workspace-a', title: 'Example' }]}
+      />,
+    ));
+    const boardCard = container.querySelector('[data-board-task-card]');
+    expect(boardCard).not.toBeNull();
+    await act(async () => (boardCard as HTMLElement).click());
+    await act(async () => button('Edit Task').click());
+    const statusSelect = [...container.querySelectorAll<HTMLSelectElement>('[data-task-detail-modal] select')]
+      .find((select) => [...select.options].some((option) => option.value === 'active'));
+    expect(statusSelect).not.toBeUndefined();
+    expect(statusSelect!.disabled).toBe(false);
+    await act(async () => changeSelect(statusSelect!, 'active'));
+    await act(async () => button('Save Changes').click());
+    expect(write).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'update',
+      patch: expect.objectContaining({ status: 'active' }),
+    }));
+  });
+
   it('loads associated session Todos read-only by agent, shares one source, and releases local ownership', async () => {
     const source = makeFakeBoardController('session-a');
     const manager = createBoardAssociatedTodoManager({
