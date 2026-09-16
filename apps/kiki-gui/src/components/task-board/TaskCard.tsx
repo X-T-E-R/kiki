@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { BoardAssociatedTodos } from './BoardAssociatedTodos';
+import { ClampText } from '../ClampText';
 import type { BoardTask, TaskPriority } from './types';
 
 export interface TaskCardProps {
@@ -47,7 +48,7 @@ export const TaskCard = memo(function TaskCard({
     <div
       data-board-task-card={task.id}
       aria-busy={pending}
-      draggable={!pending && !task.archivedAt && !['done', 'cancelled', 'superseded'].includes(task.status)}
+      draggable={!pending && !task.archivedAt}
       onDragStart={(e) => {
         e.dataTransfer.setData('text/plain', task.id);
         e.dataTransfer.effectAllowed = 'move';
@@ -77,9 +78,13 @@ export const TaskCard = memo(function TaskCard({
 
       {/* Card Excerpt */}
       {task.description ? (
-        <p className="mt-1.5 min-w-0 text-[12px] text-ink-soft leading-relaxed line-clamp-2">
-          {task.description}
-        </p>
+        <div className="mt-1.5 min-w-0" onClick={(e) => e.stopPropagation()}>
+          <ClampText
+            text={task.description}
+            className="text-[12px] text-ink-soft leading-relaxed"
+            lines={2}
+          />
+        </div>
       ) : null}
 
       {/* Context Freeze Snapshot Pill */}

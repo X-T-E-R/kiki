@@ -87,4 +87,4 @@ export interface BoardClient {
   read(input: BoardReadInput): Promise<BoardResult<BoardReadValue>>;
   write(input: BoardWriteInput): Promise<BoardResult<BoardCard>>;
 }
-export const ownWorkBoardCapabilities = Object.freeze({ create: true, read: true, editDetails: true, associations: true, idempotentCreate: true, reopenTerminal: false });
+export const ownWorkBoardCapabilities = Object.freeze({ create: true, read: true, editDetails: true, associations: true, idempotentCreate: true, reopenTerminal: true });

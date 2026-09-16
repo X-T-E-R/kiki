@@ -124,7 +124,6 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                   </label>
                   <select
                     value={status}
-                    disabled={['done', 'cancelled', 'superseded'].includes(task.status)}
                     onChange={(e) => setStatus(e.target.value as BoardTask['status'])}
                     className={SELECT_INPUT}
                   >

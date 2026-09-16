@@ -65,6 +65,10 @@ it('uses the bundled Own Work package over real HTTP without requiring workspace
     const inProgressList = pageValue(await client.global.board.read({ action: 'list', workspaceId, storage: inProgress.storage, status: 'in_progress' }));
     expect(inProgressList.cards.map((card) => card.id)).toContain(inProgress.id);
     expect(inProgressList.cards.every((card) => card.status === 'in_progress')).toBe(true);
+    const done = value(await client.global.board.write({ action: 'update', workspaceId, storage: inProgress.storage, id: inProgress.id, expectedRevision: inProgress.revision, patch: { status: 'done' } }));
+    expect(done.completedAt).not.toBeNull();
+    const reopened = value(await client.global.board.write({ action: 'update', workspaceId, storage: done.storage, id: done.id, expectedRevision: done.revision, patch: { status: 'active' } }));
+    expect(reopened).toMatchObject({ status: 'active', completedAt: null });
     const legacyTarget = value(await client.global.board.write({ ...create, requestKey: 'legacy-target' }));
     const legacySource = value(await client.global.board.write({ ...create, requestKey: 'legacy-source' }));
     const legacyTaskPath = join(legacySource.storage.root, 'tasks', legacySource.id, 'task.json');
@@ -99,11 +103,10 @@ it('uses the bundled Own Work package over real HTTP without requiring workspace
     await server.close();
     server = await startServer(options);
     client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: 'board-test' });
-    for (const card of [inProgress, fixedCard, globalCard]) expect(value<BoardReadValue>(await show(card))).toMatchObject({ id: card.id, revision: card.revision });
-    expect(value(await show(inProgress))).toMatchObject({ status: 'in_progress' });
-    const restartedInProgressList = pageValue(await client.global.board.read({ action: 'list', workspaceId, storage: inProgress.storage, status: 'in_progress' }));
-    expect(restartedInProgressList.cards.map((card) => card.id)).toContain(inProgress.id);
-    expect(restartedInProgressList.cards.every((card) => card.status === 'in_progress')).toBe(true);
+    for (const card of [reopened, fixedCard, globalCard]) expect(value<BoardReadValue>(await show(card))).toMatchObject({ id: card.id, revision: card.revision });
+    expect(value(await show(reopened))).toMatchObject({ status: 'active', completedAt: null });
+    const restartedActiveList = pageValue(await client.global.board.read({ action: 'list', workspaceId, storage: reopened.storage, status: 'active' }));
+    expect(restartedActiveList.cards.map((card) => card.id)).toContain(reopened.id);
     const restartedLegacyList = pageValue(await client.global.board.read({ action: 'list', workspaceId, storage: legacySource.storage }));
     expect(restartedLegacyList.issues).toEqual([]);
     expect(restartedLegacyList.cards.map((card) => card.id)).toEqual(expect.arrayContaining([legacyTarget.id, legacySource.id]));

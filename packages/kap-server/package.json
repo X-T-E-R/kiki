@@ -58,7 +58,7 @@
     "@kiki/transcript": "workspace:^",
     "bcryptjs": "^2.4.3",
     "fastify": "^5.1.0",
-    "own-work": "file:../../vendor/own-work-0.1.1-kiki-034a4314.tgz",
+    "own-work": "file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz",
     "pino": "^9.5.0",
     "semver": "^7.7.4",
     "smol-toml": "^1.6.1",

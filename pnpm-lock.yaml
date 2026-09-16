@@ -589,8 +589,8 @@ importers:
         specifier: ^5.1.0
         version: 5.8.5
       own-work:
-        specifier: file:../../vendor/own-work-0.1.1-kiki-034a4314.tgz
-        version: file:vendor/own-work-0.1.1-kiki-034a4314.tgz
+        specifier: file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz
+        version: file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz
       pino:
         specifier: ^9.5.0
         version: 9.14.0
@@ -6235,6 +6235,12 @@ packages:
 
   own-work@file:vendor/own-work-0.1.1-kiki-034a4314.tgz:
     resolution: {integrity: sha512-c8sS64LU0NEg9VIwUy9C4wD2sdbYoAjczX+4g7wd13iKOzOfh7KgvyXIEJuBKGKYGUSutBHLF2Jd72aZ6VUt3w==, tarball: file:vendor/own-work-0.1.1-kiki-034a4314.tgz}
+    version: 0.1.1
+    engines: {node: '>=22.13.0'}
+    hasBin: true
+
+  own-work@file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz:
+    resolution: {integrity: sha512-s0fM45JRfFASTBODKkUzA0ptzB7DrcA6K9k6ZTSH7K4ZO+no2XpUSAXNg/NP3wKiHxJswbusHu3iUJbPGWFYWA==, tarball: file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz}
     version: 0.1.1
     engines: {node: '>=22.13.0'}
     hasBin: true
@@ -14056,6 +14062,14 @@ snapshots:
       - supports-color
 
   own-work@file:vendor/own-work-0.1.1-kiki-034a4314.tgz:
+    dependencies:
+      '@commander-js/extra-typings': 12.1.0(commander@12.1.0)
+      absorb-anything-core: 0.1.2
+      commander: 12.1.0
+      yaml: 2.8.3
+      zod: 3.25.76
+
+  own-work@file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz:
     dependencies:
       '@commander-js/extra-typings': 12.1.0(commander@12.1.0)
       absorb-anything-core: 0.1.2
