@@ -27,10 +27,10 @@ import {
   writeLayoutPreferences,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
+import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
 import { AgentSubtreeView, AgentTreeView } from './AgentTreeView';
 import { AgentPanelContainer } from './AgentPanelContainer';
-import { ClampText } from './ClampText';
 import { useNow } from './RelativeTime';
 
 /** Differentiated subagent-page rail context (G-3). */
@@ -173,13 +173,9 @@ const TasksSection = memo(function TasksSection({
               <p className="mt-1 truncate font-mono text-[10.5px] text-ink-faint">{task.command}</p>
             ) : null}
             {task.output_preview !== undefined && task.output_preview !== '' ? (
-              <div className="mt-1">
-                <ClampText
-                  text={task.output_preview}
-                  className="font-mono text-[10.5px] break-all text-ink-faint"
-                  lines={2}
-                />
-              </div>
+              <p className="mt-1 line-clamp-2 font-mono text-[10.5px] break-all text-ink-faint">
+                {task.output_preview}
+              </p>
             ) : null}
           </li>
         ))}
@@ -243,6 +239,38 @@ function railTimelineMs(value: string | undefined): number | undefined {
   if (value === undefined || value === '') return undefined;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/**
+ * Clamped rail prose (task description / result summary): three lines by
+ * default with an on-demand show more/less toggle when content overflows.
+ */
+function ClampText({ text, className }: { text: string; className: string }) {
+  const { t } = useI18n();
+  const { contentRef, contentId, isOverflowing, expanded, toggle } =
+    useCollapsibleOverflow<HTMLParagraphElement>(text);
+  return (
+    <div>
+      <p
+        ref={contentRef}
+        id={contentId}
+        className={`${className} ${expanded ? '' : 'line-clamp-3'}`}
+      >
+        {text}
+      </p>
+      {isOverflowing || expanded ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          onClick={toggle}
+          className="mt-0.5 text-[10.5px] text-ink-faint transition-colors hover:text-accent"
+        >
+          {expanded ? t('transcript.showLess') : t('transcript.showMore')}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 /**

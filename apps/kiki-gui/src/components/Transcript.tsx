@@ -691,7 +691,7 @@ function SubagentCardBody({
       </div>
       {description !== undefined || error !== undefined ? (
         <p
-          title={error ?? description}
+          title={error}
           className={`mt-1 truncate pl-5 text-[11.5px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
         >
           {error ?? description}
@@ -773,7 +773,7 @@ function SubagentCompactCard({
           </span>
           {line !== undefined ? (
             <span
-              title={error ?? summary}
+              title={error}
               className={`min-w-0 flex-1 truncate text-[11px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
             >
               {line}

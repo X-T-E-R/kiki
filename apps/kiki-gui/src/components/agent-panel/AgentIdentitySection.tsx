@@ -1,6 +1,5 @@
 import { memo, useState } from 'react';
 import { useI18n } from '../../i18n';
-import { ClampText } from '../ClampText';
 import type { AgentIdentity, AgentTokenUsage, AgentTreeMetrics } from './types';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
 
@@ -136,11 +135,9 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
 
       {/* 2. One-line Summary */}
       {identity.summary ? (
-        <ClampText
-          text={identity.summary}
-          className="text-[12px] leading-relaxed text-ink-soft"
-          lines={2}
-        />
+        <p className="text-[12px] leading-relaxed text-ink-soft line-clamp-2">
+          {identity.summary}
+        </p>
       ) : null}
 
       {/* 3. Compact Integrated Accounting Strip */}
