@@ -14,6 +14,7 @@ import { extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { DiffCard } from './DiffCard';
 import { FilePathLink, MediaPartList } from './mediaPreview';
+import { CollapsiblePre } from './CollapsiblePre';
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
@@ -209,9 +210,12 @@ function CommandIsland({ command, output }: { command: string; output?: ReactNod
         {command}
       </div>
       {output !== undefined ? (
-        <div className="max-h-72 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
+        <CollapsiblePre
+          className="px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink"
+          maxHeightClass="max-h-72"
+        >
           {output}
-        </div>
+        </CollapsiblePre>
       ) : null}
     </div>
   );
@@ -227,9 +231,12 @@ function OutputView({ output }: { output: unknown }) {
     return (
       <div className="space-y-2">
         {mediaOutput.text !== '' ? (
-          <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+          <CollapsiblePre
+            className="rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink"
+            maxHeightClass="max-h-72"
+          >
             {mediaOutput.text}
-          </pre>
+          </CollapsiblePre>
         ) : null}
         <MediaPartList media={mediaOutput.media} />
       </div>
@@ -237,9 +244,12 @@ function OutputView({ output }: { output: unknown }) {
   }
   if (typeof output === 'string') {
     return (
-      <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+      <CollapsiblePre
+        className="rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink"
+        maxHeightClass="max-h-72"
+      >
         {output}
-      </pre>
+      </CollapsiblePre>
     );
   }
   if (typeof output === 'object') {
@@ -249,10 +259,20 @@ function OutputView({ output }: { output: unknown }) {
       return (
         <div className="space-y-1">
           {o.stdout !== undefined && o.stdout !== '' ? (
-            <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">{o.stdout}</pre>
+            <CollapsiblePre
+              className="rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap"
+              maxHeightClass="max-h-72"
+            >
+              {o.stdout}
+            </CollapsiblePre>
           ) : null}
           {o.stderr !== undefined && o.stderr !== '' ? (
-            <pre className="max-h-72 overflow-auto rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-danger">{o.stderr}</pre>
+            <CollapsiblePre
+              className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-danger"
+              maxHeightClass="max-h-72"
+            >
+              {o.stderr}
+            </CollapsiblePre>
           ) : null}
           <p className="font-mono text-[11px] text-ink-faint">{t('tc.exit', { code: o.exit_code })}</p>
         </div>
@@ -261,26 +281,44 @@ function OutputView({ output }: { output: unknown }) {
     if (candidate.kind === 'text') {
       const o = output as { text: string };
       return (
-        <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">{o.text}</pre>
+        <CollapsiblePre
+          className="rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap"
+          maxHeightClass="max-h-72"
+        >
+          {o.text}
+        </CollapsiblePre>
       );
     }
     if (candidate.kind === 'error') {
       const o = output as { message: string };
       return (
-        <pre className="max-h-72 overflow-auto rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-danger">{o.message}</pre>
+        <CollapsiblePre
+          className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-danger"
+          maxHeightClass="max-h-72"
+        >
+          {o.message}
+        </CollapsiblePre>
       );
     }
     if (candidate.kind === 'file_content') {
       const o = output as { path: string; content: string };
       return (
-        <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">{o.content}</pre>
+        <CollapsiblePre
+          className="rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap"
+          maxHeightClass="max-h-72"
+        >
+          {o.content}
+        </CollapsiblePre>
       );
     }
   }
   return (
-    <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">
+    <CollapsiblePre
+      className="rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap"
+      maxHeightClass="max-h-72"
+    >
       {truncateJson(output, t('tc.truncated'))}
-    </pre>
+    </CollapsiblePre>
   );
 }
 
@@ -436,13 +474,16 @@ export const ToolCard = memo(function ToolCard({
                   <p className="mb-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
                     {t('tc.input')}
                   </p>
-                  <pre className="max-h-60 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+                  <CollapsiblePre
+                    className="rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink"
+                    maxHeightClass="max-h-60"
+                  >
                     {block.args !== undefined
                       ? truncateJson(block.args, t('tc.truncated'))
                       : block.argsText !== ''
                         ? block.argsText
                         : t('tc.noInput')}
-                  </pre>
+                  </CollapsiblePre>
                 </div>
               )}
               {block.output !== undefined ? (

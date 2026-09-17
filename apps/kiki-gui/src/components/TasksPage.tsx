@@ -25,6 +25,7 @@ import { sortTasks } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
+import { CollapsiblePre } from './CollapsiblePre';
 
 const STATUS_FILTERS: readonly (TaskStatus | 'all')[] = [
   'all',
@@ -122,12 +123,13 @@ function TaskDetail({ task }: { task: Task }) {
             {t('tasks.outputLoading')}
           </p>
         ) : output !== undefined && output !== '' ? (
-          <pre
+          <CollapsiblePre
             data-task-output
-            className="max-h-72 overflow-auto rounded-lg bg-paper px-3 py-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap text-ink-soft"
+            className="rounded-lg bg-paper px-3 py-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap text-ink-soft"
+            maxHeightClass="max-h-72"
           >
             {output}
-          </pre>
+          </CollapsiblePre>
         ) : (
           <p className="text-[11px] text-ink-faint">{t('tasks.noOutput')}</p>
         )}
