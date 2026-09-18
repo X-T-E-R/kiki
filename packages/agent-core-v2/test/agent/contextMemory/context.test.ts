@@ -2,6 +2,8 @@ import type { Message } from '#/kosong/contract/message';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { estimateTokens, estimateTokensForMessages } from '#/kosong/contract/tokens';
+import { IEventBus } from '#/app/event/eventBus';
+import { ContextAppendObservableMessage } from '#/agent/contextMemory/contextEvents';
 import { buildImageCompressionCaption } from '#/agent/media/image-compress';
 import {
   buildContextCompactionShape,
@@ -69,6 +71,45 @@ describe('Agent context', () => {
       { role: 'tool', origin: undefined },
     ]);
     expect(ctx.project().some((message) => 'origin' in message)).toBe(false);
+  });
+
+  it('publishes only the selectively observable append event', () => {
+    const events: unknown[] = [];
+    const subscription = ctx.get(IEventBus).subscribe((event) => events.push(event));
+    const appendEvents = () => events.filter((event) =>
+      typeof event === 'object' && event !== null && 'type' in event && event.type === 'context.append_message'
+    );
+    context.append({
+      id: 'ordinary-message',
+      role: 'user',
+      content: [{ type: 'text', text: 'ordinary' }],
+      toolCalls: [],
+      origin: { kind: 'user' },
+    });
+    expect(appendEvents()).toEqual([]);
+
+    context.appendObservable({
+      id: 'mailbox-message',
+      role: 'user',
+      content: [{ type: 'text', text: 'mailbox' }],
+      toolCalls: [],
+      origin: {
+        kind: 'agent_message',
+        messageId: 'mailbox-message',
+        senderAgentId: 'main',
+        senderTaskName: 'root',
+      },
+    });
+
+    expect(ContextAppendObservableMessage.durable).toBe(true);
+    expect(ContextAppendObservableMessage.observable).toBe(true);
+    expect(appendEvents()).toEqual([
+      expect.objectContaining({
+        type: 'context.append_message',
+        message: expect.objectContaining({ id: 'mailbox-message' }),
+      }),
+    ]);
+    subscription.dispose();
   });
 
   it('renders tool error and empty-output status as model-visible text', () => {

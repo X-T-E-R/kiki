@@ -138,6 +138,40 @@ describe('classifyTranscriptText', () => {
     ).toMatchObject({ lane: 'you', text: 'Inspect the renderer' });
   });
 
+  it('projects agent mailbox messages into attributed user blocks', () => {
+    const origin = {
+      kind: 'agent_message',
+      senderAgentId: 'main',
+      senderTaskName: 'root',
+    } as const;
+    expect(classifyTranscriptText({ text: 'review this', role: 'user', origin })).toMatchObject({
+      lane: 'peer',
+      origin,
+    });
+
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'agent-target',
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't0',
+          ordinal: 0,
+          state: 'running',
+          origin: { kind: 'other', payload: origin },
+          prompt: 'Message from agent "root" (main):\n\nreview this',
+          steps: [],
+        },
+      ],
+    });
+    expect(blocks).toEqual([
+      expect.objectContaining({
+        kind: 'user',
+        text: 'Message from agent "root" (main):\n\nreview this',
+        agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
+      }),
+    ]);
+  });
+
   it('keeps historical shell commands separate from their output', () => {
     const classified = classifyTranscriptText({
       text: '<bash-input>\necho hello\n</bash-input><bash-stdout>hello\n</bash-stdout>',
@@ -1857,6 +1891,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
                       name: 'AgentSend',
                       state: 'done',
                       input: { target: 'agent-1', message: 'also check the wire envelope' },
+                      output: JSON.stringify({ status: 'queued' }),
                       startedAt: '2026-01-01T00:00:03.000Z',
                     },
                     {
@@ -1913,6 +1948,8 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
         subagentId: 'agent-1',
         at: '2026-01-01T00:00:03.000Z',
         turnId: 't1',
+        message: 'also check the wire envelope',
+        delivery: 'queued',
       });
       expect(resumed).toMatchObject({
         id: 'subagent-event-agent-1-resume-call-resume-1',
@@ -3035,7 +3072,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
   });
 
-  it('clears the queued chip when the matching prompt is aborted', () => {
+  it('removes the queued user block when the prompt is aborted before start', () => {
     const previous = projectAgentTranscriptView(
       createViewState('session_test'),
       'main',
@@ -3065,17 +3102,20 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
           status: 'aborted',
           userMessageId: 'um-queued',
           createdAt: '2026-01-01T00:00:03.000Z',
+          abortedBeforeStart: true,
         },
       },
     ]);
     const projected = projectAgentTranscriptView(withQueued, 'main', aborted);
+    expect(projected.queuedPromptIds).toEqual([]);
     expect(
-      projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued' && block.promptStatus === 'queued'),
+      projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued'),
     ).toBe(false);
-    expect(projected.blocks.some((block) => block.id === 'notice-aborted-p-queued')).toBe(true);
-    expect(
-      projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued' && block.text === 'B: cancel me.'),
-    ).toBe(true);
+    expect(projected.blocks.some((block) => block.id === 'notice-aborted-p-queued')).toBe(false);
+
+    const replayed = projectAgentTranscriptView(createViewState('session_test'), 'main', aborted);
+    expect(replayed.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued')).toBe(false);
+    expect(replayed.blocks.some((block) => block.id === 'notice-aborted-p-queued')).toBe(false);
   });
 
   it('keeps the settled user bubble and shows a danger notice when the matching prompt fails', () => {
@@ -3339,6 +3379,40 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       userMessageId: USER_MESSAGE_ID,
       promptStatus: 'running',
     });
+  });
+
+  it('orders queued prompt ids by the projected move positions', () => {
+    const snapshot = emptySnapshot({
+      prompts: [
+        {
+          promptId: 'p1',
+          status: 'queued',
+          userMessageId: 'm1',
+          content: [{ type: 'text', text: 'one' }],
+          createdAt: FIXED_AT,
+          queuePosition: 2,
+        },
+        {
+          promptId: 'p2',
+          status: 'queued',
+          userMessageId: 'm2',
+          content: [{ type: 'text', text: 'two' }],
+          createdAt: FIXED_AT_1,
+          queuePosition: 0,
+        },
+        {
+          promptId: 'p3',
+          status: 'queued',
+          userMessageId: 'm3',
+          content: [{ type: 'text', text: 'three' }],
+          createdAt: FIXED_AT_2,
+          queuePosition: 1,
+        },
+      ],
+    });
+
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(projected.queuedPromptIds).toEqual(['p2', 'p3', 'p1']);
   });
 
   it('drops a steered prompt from the queue and keeps it as a settled user bubble', () => {

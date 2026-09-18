@@ -139,6 +139,13 @@ function classifiedTextToBlocks(input: {
           clientRequestId: input.clientRequestId,
           promptStatus: input.promptStatus,
           turnId: input.turnId,
+          agentMessage:
+            classified.origin?.kind === 'agent_message'
+              ? {
+                  senderAgentId: classified.origin.senderAgentId,
+                  senderTaskName: classified.origin.senderTaskName,
+                }
+              : undefined,
         });
       }
       break;
@@ -753,6 +760,8 @@ type RawSubagentEvent = {
   readonly at: string | undefined;
   readonly turnId?: string;
   readonly error?: string;
+  readonly message?: string;
+  readonly delivery?: 'queued' | 'delivered';
   readonly anchorToolCallId?: string;
 };
 
@@ -786,6 +795,26 @@ function sendTargetFromToolArgs(args: unknown): string | undefined {
   if (typeof args !== 'object' || args === null) return undefined;
   const target = (args as Record<string, unknown>)['target'];
   return typeof target === 'string' && target.trim() !== '' ? target.trim() : undefined;
+}
+
+function sendMessageFromToolArgs(args: unknown): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined;
+  const message = (args as Record<string, unknown>)['message'];
+  return typeof message === 'string' && message.trim() !== '' ? message : undefined;
+}
+
+function sendDeliveryFromToolOutput(output: unknown): 'queued' | 'delivered' | undefined {
+  let value = output;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof value !== 'object' || value === null) return undefined;
+  const status = (value as Record<string, unknown>)['status'];
+  return status === 'queued' || status === 'delivered' ? status : undefined;
 }
 
 function terminalEventForStatus(
@@ -928,6 +957,8 @@ function subagentBlocksFromSnapshot(
               event: 'sent',
               at: frameAt,
               turnId: item.turnId,
+              message: sendMessageFromToolArgs(frame.input),
+              delivery: sendDeliveryFromToolOutput(frame.output),
               anchorToolCallId: frame.toolCallId,
             });
           }
@@ -1016,6 +1047,8 @@ function subagentBlocksFromSnapshot(
       at: raw.at,
       turnId: raw.turnId,
       error: raw.error,
+      message: raw.message,
+      delivery: raw.delivery,
       anchorToolCallId: raw.anchorToolCallId,
     };
   });
@@ -1509,6 +1542,12 @@ function mergeTranscriptPromptBlocks(
       continue;
     }
     if (prompt.status === 'aborted' || prompt.status === 'failed') {
+      if (prompt.status === 'aborted' && prompt.abortedBeforeStart === true) {
+        next = next.filter(
+          (block) => block.kind !== 'user' || !isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
+        );
+        continue;
+      }
       next = next.map((block) =>
         block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId)
           ? { ...block, promptStatus: undefined }
@@ -1607,6 +1646,21 @@ export function retainPendingPromptBlocks(previous: readonly Block[], next: Bloc
     insertByTimeline(merged, block);
   }
   return merged;
+}
+
+function dropAbortedBeforeStartPromptBlocks(
+  blocks: readonly Block[],
+  prompts: readonly TranscriptPrompt[],
+): Block[] {
+  const removed = prompts.filter(
+    (prompt) => prompt.status === 'aborted' && prompt.abortedBeforeStart === true,
+  );
+  if (removed.length === 0) return [...blocks];
+  return blocks.filter(
+    (block) =>
+      block.kind !== 'user' ||
+      !removed.some((prompt) => isPromptIdentity(block, prompt.promptId, prompt.userMessageId)),
+  );
 }
 
 export function stabilizeProjectedBlocks(
@@ -2273,12 +2327,13 @@ export function projectAgentTranscriptView(
 ): SessionViewState {
   const source = agentStateToProjectionSource(agentId, snapshot);
   const projected = agentTranscriptToBlocks(source, previous.blocks);
+  const prompts = Array.isArray(snapshot.prompts) ? snapshot.prompts : [...snapshot.prompts.values()];
   const retained =
     options.retainPendingPrompts === false
       ? projected
       : retainPendingPromptBlocks(previous.blocks, projected);
-  const prompts = Array.isArray(snapshot.prompts) ? snapshot.prompts : [...snapshot.prompts.values()];
-  const blocks = settleCompletedPrompts(retained, prompts);
+  const withoutRemovedQueuedPrompts = dropAbortedBeforeStartPromptBlocks(retained, prompts);
+  const blocks = settleCompletedPrompts(withoutRemovedQueuedPrompts, prompts);
   const withSnapshotFields = overlaySnapshotSubagentFields(blocks, previous.snapshotSubagents);
   const stableBlocks = stabilizeProjectedBlocks(previous.blocks, withSnapshotFields);
   let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
@@ -2302,10 +2357,16 @@ export function projectAgentTranscriptView(
   const parsedTurnStartedAt =
     runningTurn?.startedAt === undefined ? Number.NaN : Date.parse(runningTurn.startedAt);
   const meta = snapshot.meta.agent;
-  const queuedPromptIds: string[] = [];
+  const queuedPromptIds = prompts
+    .filter((prompt) => prompt.status === 'queued')
+    .toSorted(
+      (left, right) =>
+        (left.queuePosition ?? Number.MAX_SAFE_INTEGER) -
+        (right.queuePosition ?? Number.MAX_SAFE_INTEGER),
+    )
+    .map((prompt) => prompt.promptId);
   let running: TranscriptPrompt | undefined;
   for (const prompt of prompts) {
-    if (prompt.status === 'queued') queuedPromptIds.push(prompt.promptId);
     if (running === undefined && prompt.status === 'running') running = prompt;
   }
   const interactions = Array.isArray(snapshot.interactions)

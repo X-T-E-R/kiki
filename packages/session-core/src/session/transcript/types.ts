@@ -29,6 +29,10 @@ export interface UserBlock {
   readonly userMessageId?: string;
   readonly clientRequestId?: string;
   readonly promptStatus?: PromptStatus;
+  readonly agentMessage?: {
+    readonly senderAgentId?: string;
+    readonly senderTaskName?: string;
+  };
 }
 
 export interface SystemReminderBlock {
@@ -206,6 +210,8 @@ export interface SubagentEventBlock {
   readonly at: string | undefined;
   readonly turnId?: string;
   readonly error?: string;
+  readonly message?: string;
+  readonly delivery?: 'queued' | 'delivered';
   /**
    * Tool call that triggered this entry (sent/resumed). When the triggering
    * ToolBlock is on the page, the entry anchors right after it instead of

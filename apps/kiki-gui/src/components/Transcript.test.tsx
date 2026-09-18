@@ -846,6 +846,46 @@ describe('live and event chrome', () => {
     expect(eventRow?.getAttribute('title')).toBe('Connection timeout after 30s');
   });
 
+  it('renders AgentSend message summary with full hover text and pending delivery status', async () => {
+    const message = `Inspect the mailbox delivery path and verify that the injected content remains visible in the child transcript. ${'detail '.repeat(20)}`;
+    const container = await renderTranscript([
+      {
+        kind: 'subagent-event',
+        id: 'event-sub-sent',
+        subagentId: 'agent-child-1',
+        parentAgentId: 'main',
+        name: 'explorer',
+        event: 'sent',
+        status: 'running',
+        at: new Date().toISOString(),
+        message,
+        delivery: 'queued',
+      },
+    ]);
+    const eventRow = container.querySelector('[data-subagent-event="agent-child-1"]');
+    const summary = eventRow?.querySelector('[data-agent-message-summary]');
+    const delivery = eventRow?.querySelector('[data-agent-message-delivery="queued"]');
+    expect(summary?.textContent).toContain('Inspect the mailbox delivery path');
+    expect(summary?.textContent).toMatch(/…$/);
+    expect(summary?.getAttribute('title')).toBe(message);
+    expect(delivery?.textContent).toBe('Pending delivery');
+  });
+
+  it('labels a mailbox-injected user bubble with its sender', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'user',
+        id: 'user-agent-message-1',
+        text: 'Message from agent "root" (main):\n\ncheck the tests',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
+      },
+    ]);
+    expect(container.querySelector('[data-agent-message-sender="main"]')?.textContent).toBe(
+      'Main agent injected',
+    );
+  });
+
   it('hides the working status while assistant text streams even when busy', async () => {
     const { root, container } = makeRoot();
     await renderSettled(

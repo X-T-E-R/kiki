@@ -18,6 +18,10 @@ export class ContextAppendMessage extends Event2<z.infer<typeof contextAppendMes
 }
 export interface ContextAppendMessage extends z.infer<typeof contextAppendMessageSchema> {}
 
+export class ContextAppendObservableMessage extends ContextAppendMessage {
+  static override readonly observable = true;
+}
+
 const contextAppendLoopEventSchema = z.object({ event: loopRecordedEventSchema });
 
 export class ContextAppendLoopEvent extends Event2<

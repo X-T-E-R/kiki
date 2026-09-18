@@ -249,6 +249,55 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
+  it('projects observable agent mailbox delivery exactly like its durable context message', () => {
+    const message = {
+      id: 'agent-message-1',
+      role: 'user',
+      content: [{ type: 'text', text: 'Message from agent "root" (main):\n\ncheck the tests' }],
+      toolCalls: [],
+      origin: {
+        kind: 'agent_message',
+        messageId: 'agent-message-1',
+        senderAgentId: 'main',
+        senderTaskName: 'root',
+      },
+    } as const;
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+    });
+    coldReducer.apply(coldAdapter.add({
+      type: 'context.append_message',
+      message,
+      time: 1_000,
+    }));
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    main.bus.emit(ev({
+      type: 'context.append_message',
+      message,
+      time: 1_000,
+    }) as unknown as Event2<any>);
+
+    const live = store.getAgent('main')!;
+    expect(live.snapshot()).toEqual(cold.snapshot());
+    expect(normalizedBlocks(live.snapshot())).toEqual([
+      expect.objectContaining({
+        kind: 'user',
+        text: 'Message from agent "root" (main):\n\ncheck the tests',
+        agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
+      }),
+    ]);
+    binding.dispose();
+  });
+
   it('projects a user-origin steer as a live user frame on the next step', () => {
     const agents = new FakeAgents();
     const main = agents.add('main');

@@ -100,7 +100,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
           toolCalls: [],
           origin,
         };
-        memory.append(contextMessage);
+        memory.appendObservable(contextMessage);
       }
       await wire.flush();
       await this.store.markDelivered(claim);

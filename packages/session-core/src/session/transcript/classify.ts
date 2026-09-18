@@ -35,6 +35,8 @@ export interface PromptOriginLike {
   readonly isError?: boolean;
   readonly payload?: unknown;
   readonly taskId?: string;
+  readonly senderAgentId?: string;
+  readonly senderTaskName?: string;
 }
 
 export function unwrapOrigin(origin: PromptOriginLike | undefined): PromptOriginLike | undefined {
@@ -87,7 +89,6 @@ const INTERNAL_ORIGIN_KINDS = new Set<string>([
   'task',
   'background_task',
   'retry',
-  'agent_message',
 ]);
 
 const SYSTEM_VARIANTS = new Set<SystemVariant>([
@@ -215,7 +216,7 @@ export function classifyTranscriptText(input: {
   ) {
     return { lane: 'you', origin, text: split.text, reminders: split.reminders };
   }
-  if (kind === 'peer_thread') {
+  if (kind === 'peer_thread' || kind === 'agent_message') {
     return { lane: 'peer', origin, text: split.text, reminders: split.reminders };
   }
   if (kind === 'skill_activation' || kind === 'plugin_command') {

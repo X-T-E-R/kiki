@@ -26,6 +26,7 @@ import {
   ContextApplyCompaction,
   ContextAppendLoopEvent,
   ContextAppendMessage,
+  ContextAppendObservableMessage,
   ContextClear,
   ContextSpliced,
   ContextUndo,
@@ -72,6 +73,12 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
       void this.dispatcher.dispatch(new ContextAppendMessage({ message }));
     }
     this.publishSplice({ start, deleteCount: 0, messages: [...messages] });
+  }
+
+  appendObservable(message: ContextMessage): void {
+    const start = this.get().length;
+    void this.dispatcher.dispatch(new ContextAppendObservableMessage({ message }));
+    this.publishSplice({ start, deleteCount: 0, messages: [message] });
   }
 
   appendLoopEvent(event: LoopRecordedEvent): void {

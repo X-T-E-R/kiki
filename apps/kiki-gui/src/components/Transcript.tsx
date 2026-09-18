@@ -202,6 +202,17 @@ const UserMessage = memo(function UserMessage({
   // the queue strip instead of a rewrite.
   const settled = block.promptStatus === undefined;
   const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled;
+  const agentMessageLabel =
+    block.agentMessage === undefined
+      ? undefined
+      : block.agentMessage.senderAgentId === 'main'
+        ? t('agentMessage.fromMain')
+        : t('agentMessage.fromAgent', {
+            name:
+              block.agentMessage.senderTaskName ??
+              block.agentMessage.senderAgentId ??
+              t('agentMessage.agent'),
+          });
   return (
     <div className="anim-enter group/msg flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
       <span className="mb-1 flex items-baseline gap-1.5 pr-1">
@@ -215,8 +226,11 @@ const UserMessage = memo(function UserMessage({
             onFork={() => { rowActions.onFork(block); }}
           />
         ) : null}
-        <span className="text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
-          {t('transcript.you')}
+        <span
+          data-agent-message-sender={block.agentMessage?.senderAgentId}
+          className="text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase"
+        >
+          {agentMessageLabel ?? t('transcript.you')}
         </span>
         <span className="text-xs text-ink-faint"><RelativeTime at={block.createdAt} /></span>
       </span>
@@ -968,6 +982,11 @@ const SubagentCard = memo(function SubagentCard({
   );
 });
 
+function agentMessageSummary(message: string, limit = 140): string {
+  const compact = message.replaceAll(/\s+/g, ' ').trim();
+  return compact.length <= limit ? compact : `${compact.slice(0, limit - 1).trimEnd()}…`;
+}
+
 /**
  * One-line lifecycle entry (G-4 compact form): status dot + name + event +
  * relative time; the whole row jumps to the agent page. Rows sit in place at
@@ -983,6 +1002,7 @@ const SubagentEventRow = memo(function SubagentEventRow({
   const { t, time } = useI18n();
   const busy = block.status === 'running' || block.status === 'suspended';
   const isFailed = block.event === 'failed' || block.status === 'failed';
+  const messageSummary = block.message === undefined ? undefined : agentMessageSummary(block.message);
   return (
     <div className="ml-6">
       <button
@@ -1004,6 +1024,27 @@ const SubagentEventRow = memo(function SubagentEventRow({
         <span className={`shrink-0 text-[10.5px] ${isFailed ? 'text-danger font-medium' : 'text-ink-faint'}`}>
           {t(`subagent.event.${block.event}` as I18nKey)}
         </span>
+        {messageSummary === undefined ? null : (
+          <span
+            data-agent-message-summary
+            title={block.message}
+            className="min-w-0 flex-1 truncate text-[10.5px] text-ink-soft"
+          >
+            {messageSummary}
+          </span>
+        )}
+        {block.delivery === undefined ? null : (
+          <span
+            data-agent-message-delivery={block.delivery}
+            className={`shrink-0 rounded-full border px-1.5 py-px text-[9.5px] font-medium ${
+              block.delivery === 'queued'
+                ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
+                : 'border-success/30 bg-success/5 text-success'
+            }`}
+          >
+            {t(block.delivery === 'queued' ? 'agentMessage.pending' : 'agentMessage.delivered')}
+          </span>
+        )}
         {block.error !== undefined ? (
           <span
             title={block.error}

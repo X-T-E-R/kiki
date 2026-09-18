@@ -213,7 +213,12 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect.objectContaining({ kind: 'agent_message', senderAgentId: 'main', senderTaskName: 'root' }),
       expect.objectContaining({ kind: 'agent_message', senderAgentId: 'main', senderTaskName: 'root' }),
     ]);
-    expect(target.operations).toEqual(['append', 'flush', 'append', 'flush']);
+    expect(target.operations).toEqual([
+      'appendObservable',
+      'flush',
+      'appendObservable',
+      'flush',
+    ]);
     expect(lifecycle.service.create).not.toHaveBeenCalled();
     service.dispose();
   });
@@ -360,11 +365,11 @@ describe('agent collaboration safe-boundary delivery', () => {
       code: 'runtime.connection_failed',
     });
     expect(target.messages).toHaveLength(1);
-    expect(target.operations).toEqual(['append', 'flush']);
+    expect(target.operations).toEqual(['appendObservable', 'flush']);
 
     await target.execution.hooks.onWillRun.run({ signal });
     expect(target.messages).toHaveLength(1);
-    expect(target.operations).toEqual(['append', 'flush']);
+    expect(target.operations).toEqual(['appendObservable', 'flush']);
     expect(order).toEqual(['claim', 'ack-committed', 'ack-confirmed', 'claim']);
     expect(ackRequestIds).toHaveLength(2);
     expect(new Set(ackRequestIds).size).toBe(1);
@@ -935,6 +940,7 @@ function agentHandle(agentId: string) {
     _serviceBrand: undefined,
     get: () => messages,
     append: (...added) => { operations.push('append'); messages.push(...added); },
+    appendObservable: (message) => { operations.push('appendObservable'); messages.push(message); },
     appendLoopEvent: () => {},
     publishTrailingRemoval: () => false,
     clear: () => {},
