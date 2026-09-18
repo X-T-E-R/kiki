@@ -51,6 +51,7 @@ export const en = {
   'taskBoard.issueReason.BOARD_UNAVAILABLE': 'Board storage is incompatible or needs migration',
   'taskBoard.issueReason.BOARD_ACCESS_DENIED': 'Board storage is not authorized for this workspace',
   'taskBoard.issueReason.WORKSPACE_NOT_FOUND': 'Workspace is not registered on the backend',
+  'taskBoard.issueReason.WORKSPACE_CUTOVER_REQUIRED': 'Board storage uses an older layout and needs a one-time migration; update Kiki or run the workspace migration',
   'taskBoard.issueReason.BOARD_REQUEST_FAILED': 'Board request failed (outdated backend or connection problem)',
   'taskBoard.issueReason.unknown': 'Unknown reason',
   'st.prompt.title': 'Prompt fields',

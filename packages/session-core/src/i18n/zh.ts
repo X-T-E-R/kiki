@@ -51,6 +51,7 @@ export const zh: Record<I18nKey, string> = {
   'taskBoard.issueReason.BOARD_UNAVAILABLE': '看板存储不兼容或需要迁移',
   'taskBoard.issueReason.BOARD_ACCESS_DENIED': '看板存储未获该工作区授权',
   'taskBoard.issueReason.WORKSPACE_NOT_FOUND': '工作区未在后端注册',
+  'taskBoard.issueReason.WORKSPACE_CUTOVER_REQUIRED': '看板存储来自旧版布局，需要一次性迁移：升级 Kiki 或执行工作区迁移',
   'taskBoard.issueReason.BOARD_REQUEST_FAILED': '看板请求失败（后端版本过旧或连接异常）',
   'taskBoard.issueReason.unknown': '未知原因',
   'st.prompt.title': '提示词字段',

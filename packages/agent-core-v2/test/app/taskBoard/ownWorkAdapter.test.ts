@@ -56,7 +56,7 @@ describe('Own Work adapter (explicit native API mocks, not a persistence test)',
     expect(api.updateWorkItem).toHaveBeenCalledExactlyOnceWith({ root, workspaceId: 'workspace-a', id: 'task-example', expectedRevision: 3, patch });
   });
 
-  it.each(['TASK_REVISION_CONFLICT', 'TASK_TERMINAL'])('propagates %s without retries or replacement cards', async (code) => {
+  it.each(['TASK_REVISION_CONFLICT', 'TASK_TERMINAL', 'WORKSPACE_CUTOVER_REQUIRED'])('propagates %s without retries or replacement cards', async (code) => {
     const { service, api } = fixture();
     api.updateWorkItem.mockRejectedValue(Object.assign(new Error(code), { code }));
     expect(await service.write({ action: 'update', workspaceId: 'workspace-a', storage, id: 'task-example', expectedRevision: 3, patch: { status: 'active' } })).toMatchObject({ ok: false, error: { code } });

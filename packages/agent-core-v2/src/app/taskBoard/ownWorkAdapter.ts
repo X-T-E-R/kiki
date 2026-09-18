@@ -54,7 +54,7 @@ const itemSchema = z.object({ workspaceId: z.string(), category: z.string(), ses
 function fail<T>(code: string, message: string): BoardResult<T> { return { ok: false, error: { code, message } }; }
 function failure<T>(error: unknown): BoardResult<T> {
   if (error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
-    && (error.code.startsWith('TASK_') || error.code.startsWith('BOARD_') || error.code === 'WORKSPACE_NOT_FOUND')) {
+    && (error.code.startsWith('TASK_') || error.code.startsWith('BOARD_') || error.code.startsWith('WORKSPACE_'))) {
     return fail(error.code, error instanceof Error ? error.message : 'Own Work rejected the operation.');
   }
   return fail('BOARD_UNAVAILABLE', 'Own Work storage is unavailable or incompatible. No fallback store was selected.');

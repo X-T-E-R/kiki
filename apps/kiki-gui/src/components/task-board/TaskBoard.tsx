@@ -19,6 +19,7 @@ const ISSUE_REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   BOARD_UNAVAILABLE: 'taskBoard.issueReason.BOARD_UNAVAILABLE',
   BOARD_ACCESS_DENIED: 'taskBoard.issueReason.BOARD_ACCESS_DENIED',
   WORKSPACE_NOT_FOUND: 'taskBoard.issueReason.WORKSPACE_NOT_FOUND',
+  WORKSPACE_CUTOVER_REQUIRED: 'taskBoard.issueReason.WORKSPACE_CUTOVER_REQUIRED',
   BOARD_REQUEST_FAILED: 'taskBoard.issueReason.BOARD_REQUEST_FAILED',
 };
 
