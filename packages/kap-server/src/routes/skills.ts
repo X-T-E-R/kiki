@@ -225,6 +225,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
       try {
         const attachments = req.body.attachments ?? [];
         const attachmentParts: ContentPart[] = [];
+        const agent = await ensureMainAgent(resolved.handle);
         if (attachments.length > 0) {
           const catalog = resolved.handle.accessor.get(ISessionSkillCatalog);
           await catalog.ready;
@@ -251,7 +252,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
             core.accessor.get(IBootstrapService).cacheDir,
             {
               telemetry,
-              providerType: resolved.handle.accessor
+              providerType: agent.accessor
                 .get(IAgentProfileService)
                 .getModelProviderType(),
               resolveOriginalsDir: async () => sessionMediaOriginalsDir(sessionDir),
@@ -260,7 +261,6 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
           );
           attachmentParts.push(...contentToCoreParts(preparedMedia.content));
         }
-        const agent = await ensureMainAgent(resolved.handle);
         await agent.accessor
           .get(IAgentSkillService)
           .activate({ name: parsed.id, args: req.body.args, content: attachmentParts });
