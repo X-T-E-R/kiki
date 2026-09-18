@@ -13,6 +13,7 @@ import type { SpawnConstraints, SubagentLease } from '#/app/agentProfileCatalog/
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { RequestParams, ServiceTier, ThinkingEffort } from '#/kosong/contract/provider';
 import type { ModelRequestParams } from '#/kosong/model/modelRequester';
+import type { ToolGroupId } from '@kiki/agent-profiles/toolGroups';
 
 import { createDecorator } from "#/_base/di/instantiation";
 import type { ErrorCode } from '#/errors';
@@ -67,6 +68,7 @@ export interface ProfileData extends AgentConfigData {
   readonly activeToolNames?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
+  readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnPolicy?: SpawnConstraints;
@@ -87,6 +89,7 @@ export type ProfileUpdateData = Partial<{
   environmentDisclosure: EnvironmentDisclosureSnapshot;
   agentsMdPaths: readonly string[];
   disallowedTools: readonly string[];
+  disabledToolGroups: readonly ToolGroupId[];
   activeToolNames: readonly string[];
 }>;
 
@@ -112,6 +115,7 @@ export interface ProfileBindingSnapshot {
   readonly activeToolNames?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
+  readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnPolicy?: SpawnConstraints;

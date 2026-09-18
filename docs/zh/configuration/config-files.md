@@ -378,6 +378,7 @@ thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析�
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | 为配置兼容而保留，目前不控制任何行为 |
+| `notify_parent` | `boolean` | `true` | 允许仅 subagent 可用的 `AgentNotify` 工具——向父 Agent 的邮箱排入一条 fire-and-forget 消息。设为 `false` 后所有 subagent 都不再获得该工具 |
 
 `[agents.delegation]` 是嵌套表，两个槽位都只接受 boolean。`false` 会跳过对应说明，并始终优先于提示词字段覆写；省略槽位或设为 `true` 都表示启用说明。
 

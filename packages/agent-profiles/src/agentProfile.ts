@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import type { PromptOverrides } from './promptOverrides';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
+import type { ToolGroupId } from './toolGroups';
 
 export type ServiceTier = 'auto' | 'default' | 'flex' | 'priority';
 export type RequestParamValue = string | number | boolean;
@@ -86,6 +87,7 @@ export interface AgentProfile extends AgentModelParameters {
   readonly tools?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
+  readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;

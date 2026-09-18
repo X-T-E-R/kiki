@@ -15,9 +15,11 @@ import {
 } from '#/_base/di/scope';
 import { createServices } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
+import { IConfigService } from '#/app/config/config';
 import { Emitter, Event } from '#/_base/event';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import { AgentToolActivationService } from '#/agent/toolActivation/toolActivationService';
 import {
@@ -36,6 +38,7 @@ import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionT
 import type { RuntimeCapability } from '#/runtime/runtime';
 import type { AgentTool, ToolExecution } from '#/tool/toolContract';
 import '#/agent/tools/agent/agentTool';
+import '#/agent/tools/agent-notify/agentNotifyTool';
 import '#/agent/tools/ask-user-question/askUserQuestionTool';
 import '#/agent/tools/edit/editTool';
 import '#/agent/tools/fetch-url/fetchUrlTool';
@@ -142,12 +145,19 @@ describe('AgentToolActivationService', () => {
   const profileData: {
     activeToolNames?: readonly string[];
     disallowedTools?: readonly string[];
+    disabledToolGroups?: readonly string[];
   } = {};
   const gateData: { disabledTools: readonly string[] } = { disabledTools: [] };
   const runtimeChangeEmitter = new Emitter<void>();
   const runtimeData = {
     available: true,
     capabilities: new Set<RuntimeCapability>(['fs', 'process']),
+  };
+  const mainScopeContext: IAgentScopeContext = {
+    _serviceBrand: undefined,
+    agentId: 'main',
+    parentAgentId: undefined,
+    scope: (subKey?: string) => (subKey === undefined ? 'agents/main' : `agents/main/${subKey}`),
   };
 
   function createActivationHost() {
@@ -160,6 +170,10 @@ describe('AgentToolActivationService', () => {
         });
         reg.definePartialInstance(IEventBus, {
           subscribe: () => toDisposable(() => {}),
+        });
+        reg.defineInstance(IAgentScopeContext, mainScopeContext);
+        reg.definePartialInstance(IConfigService, {
+          get: (() => ({ notify_parent: true })) as IConfigService['get'],
         });
         reg.definePartialInstance(IAgentRuntimeService, {
           onDidChange: runtimeChangeEmitter.event,
@@ -199,6 +213,7 @@ describe('AgentToolActivationService', () => {
     _clearAgentToolContributionsForTests();
     delete profileData.activeToolNames;
     delete profileData.disallowedTools;
+    delete profileData.disabledToolGroups;
     gateData.disabledTools = [];
   });
 
@@ -358,6 +373,106 @@ describe('AgentToolActivationService', () => {
     expect(betaConstructions).toBe(0);
   });
 
+  it('honors the profile disabled tool groups', async () => {
+    profileData.disabledToolGroups = ['fsRead'];
+    registerAgentToolService(IAlphaTool, AlphaTool, { name: 'Read' });
+    registerAgentToolService(IBetaTool, BetaTool, { name: 'Bash' });
+    const ix = createActivationHost();
+
+    await ix.get(IAgentToolActivationService).activate();
+
+    const registry = ix.get(IAgentToolRegistryService);
+    expect(registry.resolve('Alpha')).toBeUndefined();
+    expect(alphaConstructions).toBe(0);
+    expect(registry.resolve('Beta')).toBeInstanceOf(BetaTool);
+  });
+
+  it('lets an explicit profile tools list re-allow a tool from a disabled group', async () => {
+    profileData.activeToolNames = ['Read'];
+    profileData.disabledToolGroups = ['fsRead'];
+    registerAgentToolService(IAlphaTool, AlphaTool, { name: 'Read' });
+    registerAgentToolService(IBetaTool, BetaTool, { name: 'Write' });
+    const ix = createActivationHost();
+
+    await ix.get(IAgentToolActivationService).activate();
+
+    const registry = ix.get(IAgentToolRegistryService);
+    expect(registry.resolve('Alpha')).toBeInstanceOf(AlphaTool);
+    expect(registry.resolve('Beta')).toBeUndefined();
+    expect(betaConstructions).toBe(0);
+  });
+
+  it('exposes the stable tool group on capability entries', () => {
+    registerAgentToolService(IAlphaTool, AlphaTool, { name: 'Alpha' });
+    registerAgentToolService(IBetaTool, BetaTool, { name: 'Read' });
+    const ix = createActivationHost();
+
+    const capabilities = ix.get(IAgentToolActivationService).capabilities();
+
+    expect(capabilities.find((capability) => capability.name === 'Read')?.group).toBe('fsRead');
+    expect(capabilities.find((capability) => capability.name === 'Alpha')?.group).toBeUndefined();
+  });
+
+  it('only offers AskUserQuestion outside subagent scopes', () => {
+    const record = savedContributions.find(
+      (contribution) => contribution.options.name === 'AskUserQuestion',
+    );
+    expect(record).toBeDefined();
+    const when = record!.options.when!;
+    const scopeFor = (parentAgentId: string | undefined): IAgentScopeContext => ({
+      _serviceBrand: undefined,
+      agentId: parentAgentId === undefined ? 'main' : 'agent-1',
+      parentAgentId,
+      scope: () => 'agents/scope',
+    });
+    const accessorFor = (parentAgentId: string | undefined) =>
+      ({ get: (id: unknown) => (id === IAgentScopeContext ? scopeFor(parentAgentId) : undefined) }) as never;
+
+    expect(when(accessorFor(undefined))).toBe(true);
+    expect(when(accessorFor('main'))).toBe(false);
+  });
+
+  it('only offers AgentNotify to subagents while the parent-notify switch stays on', () => {
+    const record = savedContributions.find(
+      (contribution) => contribution.options.name === 'AgentNotify',
+    );
+    expect(record).toBeDefined();
+    const when = record!.options.when!;
+    const accessorFor = (parentAgentId: string | undefined, notifyParent: boolean) =>
+      ({
+        get: (id: unknown) => {
+          if (id === IAgentScopeContext) {
+            return {
+              _serviceBrand: undefined,
+              agentId: parentAgentId === undefined ? 'main' : 'agent-1',
+              parentAgentId,
+              scope: () => 'agents/scope',
+            };
+          }
+          if (id === IConfigService) {
+            return { get: () => ({ notify_parent: notifyParent }) };
+          }
+          return undefined;
+        },
+      }) as never;
+
+    expect(when(accessorFor(undefined, true))).toBe(false);
+    expect(when(accessorFor('main', true))).toBe(true);
+    expect(when(accessorFor('main', false))).toBe(false);
+  });
+
+  it('withholds the AgentNotify contribution from main-agent scopes', async () => {
+    const record = savedContributions.find(
+      (contribution) => contribution.options.name === 'AgentNotify',
+    )!;
+    registerAgentToolService(record.id, record.ctor, record.options);
+    const ix = createActivationHost();
+
+    await ix.get(IAgentToolActivationService).activate();
+
+    expect(ix.get(IAgentToolRegistryService).resolve('AgentNotify')).toBeUndefined();
+  });
+
   it('skips contributions whose when predicate fails', async () => {
     registerAgentToolService(IGammaTool, GammaTool, { name: 'Gamma', when: () => false });
     const ix = createActivationHost();
@@ -461,6 +576,7 @@ describe('AgentToolActivationService', () => {
       return [
         [IAgentProfileService, { data: () => profileData as ProfileData }],
         [IEventBus, { subscribe: () => toDisposable(() => {}) }],
+        [IAgentScopeContext, mainScopeContext],
         [
           IAgentRuntimeService,
           {
@@ -537,8 +653,31 @@ describe('AgentToolActivationService', () => {
       app.dispose();
     });
 
+    it('withholds the AskUserQuestion contribution from subagent scopes', async () => {
+      const record = savedContributions.find(
+        (contribution) => contribution.options.name === 'AskUserQuestion',
+      )!;
+      registerAgentToolService(record.id, record.ctor, record.options);
+      const { app, agent } = createScopeTree([
+        [
+          IAgentScopeContext,
+          {
+            _serviceBrand: undefined,
+            agentId: 'agent-1',
+            parentAgentId: 'main',
+            scope: () => 'agents/agent-1',
+          } satisfies IAgentScopeContext,
+        ],
+      ]);
+
+      await agent.accessor.get(IAgentToolActivationService).activate();
+
+      expect(agent.accessor.get(IAgentToolRegistryService).resolve('AskUserQuestion')).toBeUndefined();
+      app.dispose();
+    });
+
     it('feeds every built-in contribution through the App-scope assembly unchanged', async () => {
-      expect(savedContributions).toHaveLength(20);
+      expect(savedContributions).toHaveLength(21);
       for (const contribution of savedContributions) {
         registerAgentToolService(contribution.id, contribution.ctor, contribution.options);
       }

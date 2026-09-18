@@ -4,6 +4,7 @@ import { CoreErrors } from '#/_base/errors/codes';
 import { Error2 } from '#/_base/errors/errors';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { isAbortError } from '#/_base/utils/abort';
+import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -190,6 +191,8 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
 registerAgentToolService(IAskUserQuestionTool, AskUserQuestionTool, {
   name: 'AskUserQuestion',
   domain: 'questionTools',
+  when: (accessor: ServicesAccessor) =>
+    accessor.get(IAgentScopeContext).parentAgentId === undefined,
 });
 
 function questionDescription(questions: AskUserQuestionInput['questions']): string {

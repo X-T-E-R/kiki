@@ -9,6 +9,7 @@ import type { SkippedAgentFile } from './agentProfileContribution';
 import type { PromptOverrides } from './promptOverrides';
 import type { AgentProfileDiagnostic } from './scopedAgentProfile';
 import type { SpawnConstraints, SubagentLease, SourceSubagentLease } from './subagentLease';
+import type { ToolGroupId } from './toolGroups';
 
 export type { SkippedAgentFile } from './agentProfileContribution';
 
@@ -32,6 +33,7 @@ export interface AgentFileDefinition {
   readonly main?: boolean;
   readonly tools?: readonly string[];
   readonly disallowedTools?: readonly string[];
+  readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;

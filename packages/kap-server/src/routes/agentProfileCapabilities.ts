@@ -30,6 +30,7 @@ import { livePanelCapabilities, panelSkills, READ_ONLY_DISPLAY_TOOL_NAMES } from
 import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from './agentPanelMetrics';
 import { IModelPricingService } from '../pricing/modelPricingService';
 import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistry/toolContribution';
+import { toolGroupForName } from '@kiki/agent-core-v2/agent/toolRegistry/toolGroups';
 import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccounting';
 
 export async function acquireWorkspaceProfileCatalog(
@@ -153,10 +154,12 @@ export async function agentCapabilities(
         service_tier: profile.serviceTier,
         tools: profile.tools === undefined ? undefined : [...profile.tools],
         disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
+        disabled_tool_groups: profile.disabledToolGroups === undefined ? undefined : [...profile.disabledToolGroups],
       },
       tools: getAgentToolContributions().map(({ options }) => {
         const active = isToolActiveComposed(policy, options.name, options.source);
         return { name: options.name, source: options.source ?? 'builtin', category: options.domain ?? 'other',
+          group: toolGroupForName(options.name),
           state: active ? 'unknown' : 'disabled', unavailable_reason: active
             ? 'Draft inventory only; runtime connection and invocation approval are not evaluated'
             : 'Disabled by draft profile or global tool policy',

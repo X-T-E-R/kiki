@@ -1,6 +1,7 @@
 import type { AgentCapabilitiesResponse } from '@kiki/protocol';
 import { IAgentProfileService, IAgentToolRegistryService, IAgentToolPolicyService, ISubagentTool, ISessionAgentProfileCatalog, type IAgentScopeHandle } from '@kiki/agent-core-v2';
 import { IAgentToolActivationService } from '@kiki/agent-core-v2/agent/toolActivation/toolActivation';
+import { toolGroupForName } from '@kiki/agent-core-v2/agent/toolRegistry/toolGroups';
 import { ISessionSkillCatalog } from '@kiki/agent-core-v2/session/sessionSkillCatalog/skillCatalog';
 import type { SkillDefinition } from '@kiki/agent-core-v2/app/skillCatalog/types';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
@@ -50,6 +51,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
     const active = policy.isToolActive(contribution.name, contribution.source);
     tools.set(contribution.name, {
       name: contribution.name, source: contribution.source, category: contribution.category,
+      group: contribution.group,
       state: !active ? 'disabled' : !contribution.runtimeAvailable ? 'disconnected'
         : !contribution.conditionAvailable ? 'disabled' : 'enabled',
       unavailable_reason: !active ? 'Disabled by effective tool policy'
@@ -62,6 +64,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
     tools.set(tool.name, {
       name: tool.name, description: tool.description, source: tool.source,
       category: previous?.category ?? tool.source,
+      group: previous?.group ?? toolGroupForName(tool.name),
       state: policy.isToolActive(tool.name, tool.source) ? previous?.state ?? 'enabled' : 'disabled',
       unavailable_reason: policy.isToolActive(tool.name, tool.source) ? previous?.unavailable_reason : 'Disabled by effective tool policy',
       parameters: tool.parameters,
@@ -86,6 +89,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
       executor: data.executorId, service_tier: data.serviceTier,
       tools: data.activeToolNames === undefined ? undefined : [...data.activeToolNames],
       disallowed_tools: data.disallowedTools === undefined ? undefined : [...data.disallowedTools],
+      disabled_tool_groups: data.disabledToolGroups === undefined ? undefined : [...data.disabledToolGroups],
       execution_restriction: data.executionRestriction,
       locked_model: data.lockedModelAlias, locked_effort: data.lockedThinkingEffort,
       tool_allow_policies: data.toolAllowPolicies?.map((policy) => [...policy]),

@@ -405,6 +405,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         activeToolNames: snapshot.activeToolNames,
         toolAllowPolicies: snapshot.toolAllowPolicies,
         disallowedTools: snapshot.disallowedTools ?? [],
+        disabledToolGroups: snapshot.disabledToolGroups,
         subagents: snapshot.subagents,
         subagentLeases: snapshot.subagentLeases,
         spawnPolicy: snapshot.spawnPolicy,
@@ -652,6 +653,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       activeToolNames: profile.tools,
       toolAllowPolicies: profile.toolAllowPolicies,
       disallowedTools: profile.disallowedTools ?? [],
+      disabledToolGroups: profile.disabledToolGroups,
       subagents: profile.subagents,
       subagentLeases,
       spawnPolicy,
@@ -1062,6 +1064,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       environmentDisclosure: rendered.environment,
       agentsMdPaths: context.agentsMdPaths ?? [],
       disallowedTools: profile.disallowedTools ?? [],
+      disabledToolGroups: profile.disabledToolGroups,
     });
     this.setActiveTools(profile.tools);
   }
@@ -1084,6 +1087,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       environmentDisclosure: assembled.environment,
       agentsMdPaths: context.agentsMdPaths ?? [],
       disallowedTools: profile.disallowedTools ?? [],
+      disabledToolGroups: profile.disabledToolGroups,
     });
     this.setActiveTools(profile.tools);
     this.seedAgentsMdReminder(context);
@@ -1348,6 +1352,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         ? [...(this.profileState.toolAllowPolicies ?? []), RESEARCH_READONLY_TOOLS]
         : this.profileState.toolAllowPolicies?.map((policy) => [...policy]),
       disallowedTools: [...(this.profileState.disallowedTools ?? [])],
+      disabledToolGroups:
+        this.profileState.disabledToolGroups === undefined
+          ? undefined
+          : [...this.profileState.disabledToolGroups],
       subagents:
         this.profileState.subagents === undefined ? undefined : [...this.profileState.subagents],
       subagentLeases: this.profileState.subagentLeases,
@@ -1576,6 +1584,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
     if (changed.disallowedTools !== undefined) {
       payload.disallowedTools = [...changed.disallowedTools];
+    }
+    if (changed.disabledToolGroups !== undefined) {
+      payload.disabledToolGroups = [...changed.disabledToolGroups];
     }
     return payload;
   }

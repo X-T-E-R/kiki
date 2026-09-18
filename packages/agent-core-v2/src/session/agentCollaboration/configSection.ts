@@ -7,6 +7,7 @@ export const AGENTS_SECTION = 'agents';
 
 export const AgentsConfigSchema = z.object({
   enabled: z.boolean().optional(),
+  notify_parent: z.boolean().default(true),
   delegation: z
     .object({
       sub: z.boolean().optional(),
@@ -18,13 +19,17 @@ export const AgentsConfigSchema = z.object({
 
 export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;
 
+export function isParentNotifyEnabled(config: AgentsConfig | undefined): boolean {
+  return config?.notify_parent !== false;
+}
+
 const REMOVED_AGENTS_KEYS = [
   'default_subagent_model',
   'default_subagent_reasoning_effort',
 ] as const;
 
 registerConfigSection(AGENTS_SECTION, AgentsConfigSchema, {
-  defaultValue: { enabled: true },
+  defaultValue: { enabled: true, notify_parent: true },
   collectDiagnostics: (rawSection) =>
     collectRemovedKeyDiagnostics(AGENTS_SECTION, rawSection, REMOVED_AGENTS_KEYS),
 });

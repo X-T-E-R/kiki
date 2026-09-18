@@ -382,6 +382,7 @@ This strict section controls the boolean gates for [delegation notices](../custo
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | Accepted for configuration compatibility; currently controls no behavior |
+| `notify_parent` | `boolean` | `true` | Permits the subagent-only `AgentNotify` tool, which queues a fire-and-forget message in the parent agent's mailbox. Set to `false` to withhold the tool from every subagent |
 
 `[agents.delegation]` is a nested table. Both slots accept booleans only. `false` skips that notice and always wins over any prompt field override; omitting a slot or setting it to `true` keeps the notice enabled.
 

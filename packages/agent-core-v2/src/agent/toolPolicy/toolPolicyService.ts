@@ -44,6 +44,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
         tools: profile.activeToolNames,
         toolAllowPolicies: profile.toolAllowPolicies,
         disallowedTools: profile.disallowedTools,
+        disabledToolGroups: profile.disabledToolGroups,
       },
       name,
       source,
@@ -57,6 +58,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,
         profile: {
           disallowedTools: profile.disallowedTools,
+          disabledToolGroups: profile.disabledToolGroups,
           executionRestriction: profile.executionRestriction,
         },
         global: this.config.get<ToolsConfig>(TOOLS_SECTION),

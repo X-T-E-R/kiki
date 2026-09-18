@@ -1,4 +1,5 @@
 import { createDecorator } from '#/_base/di/instantiation';
+import type { ToolGroupId } from '@kiki/agent-profiles/toolGroups';
 
 export interface IAgentToolActivationService {
   readonly _serviceBrand: undefined;
@@ -8,6 +9,7 @@ export interface IAgentToolActivationService {
     name: string;
     source: 'builtin' | 'user' | 'mcp';
     category: string;
+    group?: ToolGroupId;
     runtimeAvailable: boolean;
     conditionAvailable: boolean;
   }[];

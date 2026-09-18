@@ -1945,6 +1945,17 @@ describe('AgentToolPolicyService tool denylist', () => {
       disallowedTools: ['mcp__github__*'],
       systemPrompt: () => 'deny test',
     });
+    registerAgentProfile({
+      name: 'deny-group',
+      disabledToolGroups: ['shell'],
+      systemPrompt: () => 'deny group test',
+    });
+    registerAgentProfile({
+      name: 'group-overridden-by-tools',
+      tools: ['Bash', 'Read'],
+      disabledToolGroups: ['shell'],
+      systemPrompt: () => 'deny group test',
+    });
   });
 
   let ctx: TestAgentContext;
@@ -1983,6 +1994,30 @@ describe('AgentToolPolicyService tool denylist', () => {
     expect(svc.isToolActive('mcp__github__create_pr', 'mcp')).toBe(false);
     expect(svc.isToolActive('mcp__other__ping', 'mcp')).toBe(true);
     expect(svc.isToolActive('Read')).toBe(true);
+  });
+
+  it('blocks every builtin tool in a disabled group', async () => {
+    const svc = await bindProfile('deny-group');
+    expect(svc.isToolActive('Bash')).toBe(false);
+    expect(svc.isToolActive('Read')).toBe(true);
+  });
+
+  it('lets an explicit tools entry survive a disabled group', async () => {
+    const svc = await bindProfile('group-overridden-by-tools');
+    expect(svc.isToolActive('Bash')).toBe(true);
+    expect(svc.isToolActive('Read')).toBe(true);
+  });
+
+  it('persists disabled tool groups in the bind records', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    ctx = createTestAgent({ persistence }, hostEnvironmentServices(homeDir, hostPathClass));
+
+    await ctx.get(IAgentProfileService).bind({ profile: 'deny-group', model: MOCK_MODEL });
+    await ctx.get(IWireService).flush();
+
+    const record = persistence.records.find((candidate) => candidate.type === 'profile.bind');
+    expect(record).toMatchObject({ profileName: 'deny-group', disabledToolGroups: ['shell'] });
+    expect(ctx.get(IAgentProfileService).data().disabledToolGroups).toEqual(['shell']);
   });
 
   it('lists available profiles when binding an unknown profile', async () => {

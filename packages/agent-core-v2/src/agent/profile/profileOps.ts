@@ -7,6 +7,7 @@ import type { SpawnConstraints, SubagentLease } from '#/app/agentProfileCatalog/
 import { Event2 } from '#/app/event/event2';
 import type { RequestParams, ServiceTier, ThinkingEffort } from '#/kosong/contract/provider';
 import { defineState } from '#/state/state';
+import { TOOL_GROUP_ID_SCHEMA, type ToolGroupId } from '@kiki/agent-profiles/toolGroups';
 
 import { ProfileError, ProfileErrors } from './profile';
 
@@ -40,6 +41,7 @@ export interface ProfileModelState {
   readonly renderGeneration: number;
   readonly agentsMdPaths?: readonly string[];
   readonly disallowedTools?: readonly string[];
+  readonly disabledToolGroups?: readonly ToolGroupId[];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnPolicy?: SpawnConstraints;
@@ -70,6 +72,7 @@ const profileBindSchema = z.object({
   activeToolNames: z.array(z.string()).readonly().optional(),
   toolAllowPolicies: z.array(z.array(z.string()).readonly()).readonly().optional(),
   disallowedTools: z.array(z.string()).readonly(),
+  disabledToolGroups: z.array(TOOL_GROUP_ID_SCHEMA).readonly().optional(),
   subagents: z.array(z.string()).readonly().optional(),
   subagentLeases: z.custom<Readonly<Record<string, SubagentLease>>>().optional(),
   spawnPolicy: z.custom<SpawnConstraints>().optional(),
@@ -95,6 +98,7 @@ const configUpdateSchema = z.object({
   renderGeneration: z.number().optional(),
   agentsMdPaths: z.array(z.string()).readonly().optional(),
   disallowedTools: z.array(z.string()).readonly().optional(),
+  disabledToolGroups: z.array(TOOL_GROUP_ID_SCHEMA).readonly().optional(),
 });
 
 export type ConfigUpdatePayload = z.infer<typeof configUpdateSchema>;
@@ -163,6 +167,7 @@ export const profileKey = defineState(
     renderGeneration: e.renderGeneration ?? s.renderGeneration + 1,
     agentsMdPaths: e.agentsMdPaths ?? s.agentsMdPaths,
     disallowedTools: e.disallowedTools,
+    disabledToolGroups: e.disabledToolGroups,
     subagents: e.subagents,
     subagentLeases: e.subagentLeases,
     spawnPolicy: e.spawnPolicy,
@@ -200,6 +205,12 @@ export const profileKey = defineState(
       !stringArrayEqual(e.disallowedTools, s.disallowedTools)
     ) {
       s.disallowedTools = e.disallowedTools as string[];
+    }
+    if (
+      e.disabledToolGroups !== undefined &&
+      !stringArrayEqual(e.disabledToolGroups, s.disabledToolGroups)
+    ) {
+      s.disabledToolGroups = e.disabledToolGroups as ToolGroupId[];
     }
   });
 

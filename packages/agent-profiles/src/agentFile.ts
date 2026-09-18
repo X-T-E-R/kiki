@@ -5,6 +5,7 @@ import type { AgentFileDefinition, AgentFileSource } from './agentFileTypes';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
 import { parsePromptOverrides, type PromptOverrides } from './promptOverrides';
 import { openIfEmpty, parseSpawnConstraints, parseSubagentList, SubagentLeaseParseError } from './subagentLease';
+import { isToolGroupId } from './toolGroups';
 
 export class AgentFileParseError extends Error {
   readonly code = 'validation.failed';
@@ -41,6 +42,7 @@ const AGENT_FILE_KEYS = new Set([
   'delegation_notice',
   'tools',
   'disallowedTools',
+  'disabled-tool-groups',
   'subagents',
   'spawn_constraints',
   'executor',
@@ -152,6 +154,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     'disallowedTools',
     options.path,
   );
+  const disabledToolGroups = parseDisabledToolGroups(frontmatter['disabled-tool-groups'], options.path);
   let parsedSubagents;
   let spawnConstraints;
   try {
@@ -277,6 +280,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     main: typeof frontmatter['main'] === 'boolean' ? main : undefined,
     tools,
     disallowedTools,
+    disabledToolGroups,
     subagents,
     subagentLeases,
     spawnConstraints,
@@ -649,6 +653,25 @@ function optionalNonEmptyStringField(
     );
   }
   return value.trim();
+}
+
+function parseDisabledToolGroups(
+  value: unknown,
+  filePath: string,
+): AgentFileDefinition['disabledToolGroups'] {
+  if (value === undefined || value === null) return undefined;
+  const entries = parseStringList(value, 'disabled-tool-groups', filePath);
+  if (entries === undefined) return undefined;
+  const groups: NonNullable<AgentFileDefinition['disabledToolGroups']>[number][] = [];
+  for (const entry of entries) {
+    if (!isToolGroupId(entry)) {
+      throw new AgentFileParseError(
+        `Frontmatter field "disabled-tool-groups" in ${filePath} contains unknown tool group "${entry}"`,
+      );
+    }
+    groups.push(entry);
+  }
+  return groups;
 }
 
 function deriveNameFromPath(filePath: string): string | undefined {

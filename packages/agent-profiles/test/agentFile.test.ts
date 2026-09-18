@@ -43,6 +43,29 @@ describe('parseAgentFileText', () => {
     expect(def.source).toBe('project');
   });
 
+  it('parses disabled-tool-groups as a list or comma-separated string', () => {
+    const listed = parse('---\nname: solo\ndescription: d\ndisabled-tool-groups: [shell, web]\n---\n\nbody\n');
+    expect(listed.disabledToolGroups).toEqual(['shell', 'web']);
+
+    const commaSeparated = parse('---\nname: solo\ndescription: d\ndisabled-tool-groups: shell, fsWrite\n---\n\nbody\n');
+    expect(commaSeparated.disabledToolGroups).toEqual(['shell', 'fsWrite']);
+
+    const omitted = parse('---\nname: solo\ndescription: d\n---\n\nbody\n');
+    expect(omitted.disabledToolGroups).toBeUndefined();
+  });
+
+  it('rejects an unknown tool group in disabled-tool-groups', () => {
+    expect(() =>
+      parse('---\nname: solo\ndescription: d\ndisabled-tool-groups: [shells]\n---\n\nbody\n'),
+    ).toThrow(AgentFileParseError);
+  });
+
+  it('projects disabledToolGroups onto the parsed profile', () => {
+    const def = parse('---\nname: solo\ndescription: d\ndisabled-tool-groups: [shell]\n---\n\nbody\n');
+    const profile = agentProfileFromFile(def, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } }));
+    expect(profile.disabledToolGroups).toEqual(['shell']);
+  });
+
   it('leaves optional fields undefined when omitted', () => {
     const def = parse('---\nname: solo\ndescription: d\n---\n\nbody\n');
 

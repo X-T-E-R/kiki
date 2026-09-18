@@ -111,6 +111,7 @@ interface ConfigUpdatePayload {
   renderGeneration?: number;
   agentsMdPaths?: string[];
   disallowedTools?: string[];
+  disabledToolGroups?: TOOL_GROUP_ID_SCHEMA[];
 }
 
 /**
@@ -528,6 +529,7 @@ interface ProfileBindPayload {
   activeToolNames?: string[];
   toolAllowPolicies?: string[][];
   disallowedTools: string[];
+  disabledToolGroups?: TOOL_GROUP_ID_SCHEMA[];
   subagents?: string[];
   subagentLeases?: Readonly<Record<string, SubagentLease>>;
   spawnPolicy?: SpawnConstraints;

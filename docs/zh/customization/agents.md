@@ -12,7 +12,7 @@ Kiki 内置三种 subagent，开箱即用，分别面向不同任务形态：
 - **`explore`**：代码库探索专用，只做只读操作，不修改任何文件。适合在不改动文件的前提下快速搜索、阅读和总结仓库。
 - **`plan`**：实现规划与架构设计专用，连 Shell 命令都不提供，专注于"想清楚怎么做"而不是"动手做"。
 
-`coder` subagent 与 main agent 共享大部分工具集：可以在后台执行 Shell 命令、维护待办列表、进入 Plan 模式、调用 Agent Skills，也可以用 `TaskWait` 等待后台任务。它没有 `AgentRun`、`AgentList` 或 `AgentSend`；要嵌套派发，需要在自定义 profile 里显式列出这些工具。如果它结束自己的轮次时仍有后台任务在运行，那么只有在这些后台任务全部落定后，这次运行才会回报完成——main agent 拿到结果时，背后的工作也已经真正完成。
+`coder` subagent 与 main agent 共享大部分工具集：可以在后台执行 Shell 命令、维护待办列表、进入 Plan 模式、调用 Agent Skills，也可以用 `TaskWait` 等待后台任务。它没有 `AgentRun`、`AgentList` 或 `AgentSend`；要嵌套派发，需要在自定义 profile 里显式列出这些工具。它也没有 `AskUserQuestion`——脱离上下文的提问无人回答——因此它改用 `AgentNotify` 向父 Agent 报告阻塞与问题。如果它结束自己的轮次时仍有后台任务在运行，那么只有在这些后台任务全部落定后，这次运行才会回报完成——main agent 拿到结果时，背后的工作也已经真正完成。
 
 顶层配置 [`disabled_builtin_profiles`](../configuration/config-files.md#顶层字段) 会从 subagent 发现与派发列表中移除指定的内置 profile（`agent`、`coder`、`explore` 或 `plan`）。禁用 `agent` 不会影响 main agent 使用默认绑定启动；文件 profile 与已禁用内置 profile 同名时，不再需要 `override: true`。
 
@@ -33,6 +33,8 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 `AgentList` 返回这些直属子 Agent，包括保留的历史 swarm 条目。默认 `include_finished=false` 列出运行中的，以及没有跟踪任务的；需要已经结束或失败的，再传 `true`。最多返回 50 条，运行中的排在前面。
 
 `AgentSend` 把消息排进邮箱，投递语义是尽早送达：子 Agent 正在运行时，消息会在下一个 step 边界被 steer 进其活跃 turn；空闲的子 Agent 不会被唤醒，消息到下一步开始时才读。用 `name` 或 agent id 指定目标。
+
+`AgentNotify` 方向相反，且只有 subagent 可用：它把一条 fire-and-forget 消息排进父 Agent 的邮箱，父 Agent 正在运行时会在下一个 step 边界注入其活跃 turn，空闲时则在下一次运行时读取。Main agent 没有父 Agent，永远不会拿到这个工具。在 `config.toml` 中设置 `[agents] notify_parent = false` 可以全局关闭它，默认开启。
 
 已移除的 v1 Codex 风格协作适配器及其实验开关不适用于 v2 引擎。
 
@@ -158,6 +160,7 @@ disallowedTools:
 | `max_completion_tokens` | 否 | 单次 LLM step 的输出 token 上限。仅作为上限声明，生效值取所有声明层的最小值；与输入上限、总上下文窗口互相独立，详见[配置文件](../configuration/config-files.md#models) |
 | `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省表示允许全部工具；单独的 `*` 同样表示允许全部工具；空列表（`tools: []`）表示禁用全部工具 |
 | `disallowedTools` | 否 | 禁止列表，写法与匹配规则相同，在 `tools` 之后应用 |
+| `disabled-tool-groups` | 否 | 内置工具组的禁止列表，YAML 列表或逗号分隔字符串，如 `disabled-tool-groups: [shell, web]`。组内每个内置工具都会被收回，除非该工具在 `tools` 中被显式点名；未知的组名会在加载时报错。同一 profile 内的优先级，从最具体开始：`disallowedTools`（被点名的工具保持禁用）> `tools`（显式列出的工具不受组禁用影响）> `disabled-tool-groups`。只有内置工具属于工具组，MCP 工具与用户工具永远不匹配。各组归属：`agent`（`AgentRun`、`AgentList`、`AgentSend`、`AgentNotify`）、`board`（`BoardRead`、`BoardWrite`）、`cron`（`CronCreate`、`CronList`、`CronDelete`）、`fsRead`（`Read`、`ReadMediaFile`、`Glob`、`Grep`）、`fsWrite`（`Write`、`Edit`）、`goal`（`CreateGoal`、`GetGoal`、`UpdateGoal`、`SetGoalBudget`）、`plan`（`EnterPlanMode`、`ExitPlanMode`、`TodoList`）、`question`（`AskUserQuestion`）、`shell`（`Bash`）、`skill`（`Skill`）、`task`（`TaskList`、`TaskOutput`、`TaskStop`、`TaskWait`）、`thread`（`ThreadList`、`ThreadRead`、`ThreadSend`、`ThreadWait`）、`toolSelect`（`SelectTools`）、`web`（`WebSearch`、`FetchURL`） |
 | `subagents` | 否 | 允许委派的子 Agent 名称列表，写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。省略字段或单独写 `*` 表示不限制；空列表（`subagents: []`）表示禁止派发任何子 Agent；其他显式名称构成白名单 |
 
 `model_profiles` 是一个 YAML mapping 列表。顶层写成字符串、标量或单个 mapping 都是非法的，因为每个条目都需要 `alias`；`when` 与其他字段全部可选。示例：

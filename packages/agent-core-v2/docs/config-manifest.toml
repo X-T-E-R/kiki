@@ -88,6 +88,7 @@
 
 [agents]
 enabled = true
+notify_parent = true
 
 # [agents.delegation]
   # sub: boolean

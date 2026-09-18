@@ -1651,6 +1651,7 @@ export interface AgentStateSnapshot {
     readonly renderGeneration: number;
     readonly agentsMdPaths?: readonly string[];
     readonly disallowedTools?: readonly string[];
+    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
     readonly subagents?: readonly string[];
     readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
       readonly source?: undefined;
@@ -1844,6 +1845,7 @@ export interface AgentStateSnapshot {
         readonly main?: boolean;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
+        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
         readonly subagents?: readonly string[];
         readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
           readonly source?: undefined;
@@ -1984,6 +1986,7 @@ export interface AgentStateSnapshot {
       readonly tools?: readonly string[];
       readonly toolAllowPolicies?: readonly readonly string[][];
       readonly disallowedTools?: readonly string[];
+      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
       readonly subagents?: readonly string[];
       readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
         readonly source?: undefined;
@@ -2169,6 +2172,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagents?: readonly string[];
           readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;
@@ -2290,6 +2294,7 @@ export interface AgentStateSnapshot {
           readonly activeToolNames?: readonly string[];
           readonly toolAllowPolicies?: readonly readonly string[][];
           readonly disallowedTools?: readonly string[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagents?: readonly string[];
           readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;
@@ -2524,6 +2529,7 @@ export interface AgentStateSnapshot {
             readonly main?: boolean;
             readonly tools?: readonly string[];
             readonly disallowedTools?: readonly string[];
+            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
             readonly subagents?: readonly string[];
             readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
               readonly source?: undefined;
@@ -2658,6 +2664,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagents?: readonly string[];
           readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;

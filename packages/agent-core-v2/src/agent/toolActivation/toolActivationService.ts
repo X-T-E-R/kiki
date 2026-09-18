@@ -14,6 +14,7 @@ import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionT
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 
 import { IAgentToolActivationService } from './toolActivation';
+import { toolGroupForName } from '#/agent/toolRegistry/toolGroups';
 
 export class AgentToolActivationService extends Service implements IAgentToolActivationService {
   declare readonly _serviceBrand: undefined;
@@ -56,6 +57,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
       name: record.options.name,
       source: record.options.source ?? 'builtin',
       category: record.options.domain ?? 'other',
+      group: toolGroupForName(record.options.name),
       runtimeAvailable: this.runtimeAllows(record),
       conditionAvailable: record.options.when?.(accessor) ?? true,
     })));
@@ -68,6 +70,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
       tools: data.activeToolNames,
       toolAllowPolicies: data.toolAllowPolicies,
       disallowedTools: data.disallowedTools,
+      disabledToolGroups: data.disabledToolGroups,
     };
     const workspaceVeto = { disallowedTools: this.toolPolicyGate.disabledTools };
     this.instantiationService.invokeFunction((accessor) => {

@@ -20,6 +20,7 @@ const DEFAULT_APPROVE_TOOLS = new Set([
   'AgentRun',
   'AgentList',
   'AgentSend',
+  'AgentNotify',
   'AskUserQuestion',
   'Skill',
   'EnterPlanMode',

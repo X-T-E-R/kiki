@@ -124,3 +124,53 @@ describe('isToolActiveComposed workspace veto', () => {
     ).toBe(false);
   });
 });
+
+describe('disabled tool groups', () => {
+  it('denies every builtin tool that belongs to a disabled group', () => {
+    const policy = { disabledToolGroups: ['fsRead' as const] };
+    expect(isToolActive(policy, 'Read')).toBe(false);
+    expect(isToolActive(policy, 'Grep')).toBe(false);
+    expect(isToolActive(policy, 'Bash')).toBe(true);
+  });
+
+  it('keeps unknown and MCP tools untouched by group disables', () => {
+    const policy = { disabledToolGroups: ['fsRead' as const, 'web' as const] };
+    expect(isToolActive(policy, 'mcp__github__create_issue', 'mcp')).toBe(true);
+    expect(isToolActive(policy, 'SomeUserTool', 'user')).toBe(true);
+  });
+
+  it('lets an explicit tools entry re-allow a tool from a disabled group', () => {
+    const policy = { tools: ['Bash', 'Read'], disabledToolGroups: ['shell' as const, 'fsRead' as const] };
+    expect(isToolActive(policy, 'Bash')).toBe(true);
+    expect(isToolActive(policy, 'Read')).toBe(true);
+  });
+
+  it('still applies the group deny when no explicit tools list exists', () => {
+    const policy = { disabledToolGroups: ['shell' as const] };
+    expect(isToolActive(policy, 'Bash')).toBe(false);
+  });
+
+  it('keeps explicit disallowedTools ahead of the explicit-tools override', () => {
+    const policy = {
+      tools: ['Bash'],
+      disallowedTools: ['Bash'],
+      disabledToolGroups: ['shell' as const],
+    };
+    expect(isToolActive(policy, 'Bash')).toBe(false);
+  });
+
+  it('applies group disables inside composed evaluation', () => {
+    expect(
+      isToolActiveComposed(
+        { profile: { disabledToolGroups: ['shell' as const] } },
+        'Bash',
+      ),
+    ).toBe(false);
+    expect(
+      isToolActiveComposed(
+        { profile: { disabledToolGroups: ['shell' as const] }, global: { enabled: ['Bash'] } },
+        'Bash',
+      ),
+    ).toBe(false);
+  });
+});

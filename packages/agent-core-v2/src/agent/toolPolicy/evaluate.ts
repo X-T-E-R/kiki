@@ -2,12 +2,15 @@ import picomatch from 'picomatch';
 
 import { isMcpToolName, type ToolSource } from '#/tool/toolContract';
 import { allowsResearchTool, type ExecutionRestriction } from '#/agent/profile/executionRestriction';
+import { toolGroupForName } from '#/agent/toolRegistry/toolGroups';
+import type { ToolGroupId } from '@kiki/agent-profiles/toolGroups';
 
 export interface ToolActivationPolicy {
   readonly executionRestriction?: ExecutionRestriction;
   readonly tools?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
+  readonly disabledToolGroups?: readonly ToolGroupId[];
 }
 
 export function isToolActive(
@@ -30,9 +33,26 @@ export function isToolActive(
             .some((pattern) => picomatch.isMatch(name, pattern));
     if (!allowed) return false;
   }
-  if (policy.disallowedTools === undefined) return true;
-  if (source !== 'mcp') return !policy.disallowedTools.includes(name);
-  return !policy.disallowedTools
+  if (policy.disallowedTools !== undefined) {
+    if (source !== 'mcp' ? policy.disallowedTools.includes(name) : isDeniedByMcpGlob(policy.disallowedTools, name)) {
+      return false;
+    }
+  }
+  if (policy.disabledToolGroups !== undefined && policy.disabledToolGroups.length > 0) {
+    const group = toolGroupForName(name);
+    if (
+      group !== undefined &&
+      policy.disabledToolGroups.includes(group) &&
+      !(source !== 'mcp' && policy.tools !== undefined && policy.tools.includes(name))
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isDeniedByMcpGlob(patterns: readonly string[], name: string): boolean {
+  return patterns
     .filter((pattern) => isMcpToolName(pattern))
     .some((pattern) => picomatch.isMatch(name, pattern));
 }

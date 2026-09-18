@@ -481,6 +481,8 @@ export * from '#/agent/tools/agent/agent';
 import '#/agent/tools/agent/agentTool';
 export * from '#/agent/tools/agent-list/agent-list';
 import '#/agent/tools/agent-list/agentListTool';
+export * from '#/agent/tools/agent-notify/agent-notify';
+import '#/agent/tools/agent-notify/agentNotifyTool';
 export * from '#/agent/tools/agent-send/agent-send';
 import '#/agent/tools/agent-send/agentSendTool';
 export * from '#/agent/tools/thread-communication/threadCommunicationTools';
