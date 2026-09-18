@@ -80,6 +80,7 @@ const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
 const originalElementDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
 const elementHeights = new WeakMap<Element, number>();
+const blockHeights = new Map<string, number>();
 const resizeObservers = new Set<TestResizeObserver>();
 
 class TestResizeObserver {
@@ -250,7 +251,10 @@ beforeAll(() => {
   installElementProperty('offsetHeight', {
     get(this: HTMLElement) {
       if (this.hasAttribute('data-transcript-scroll')) return 320;
-      if (this.hasAttribute('data-transcript-virtual-item')) return elementHeights.get(this) ?? 96;
+      if (this.hasAttribute('data-transcript-virtual-item')) {
+        const blockId = this.querySelector<HTMLElement>('[data-block-id]')?.dataset['blockId'];
+        return elementHeights.get(this) ?? (blockId === undefined ? undefined : blockHeights.get(blockId)) ?? 96;
+      }
       return 0;
     },
   });
@@ -1578,6 +1582,25 @@ describe('virtualized transcript scrolling', () => {
       resizeElement(first, 120);
       expect(virtualItemStart(second)).toBe(virtualItemStart(first) + 120 + 16);
     });
+  });
+
+  it('remeasures a returning row before positioning its successor', async () => {
+    const first = assistantBlock('returning-first', 'first');
+    const second = assistantBlock('returning-second', 'second');
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([first, second])));
+    await renderSettled(root, virtualTranscript(transcriptState([second])));
+    blockHeights.set('returning-first', 180);
+    try {
+      await renderSettled(root, virtualTranscript(transcriptState([first, second])));
+      const firstItem = container.querySelector<HTMLElement>('[data-block-id="returning-first"]')!
+        .closest<HTMLElement>('[data-transcript-virtual-item]')!;
+      const secondItem = container.querySelector<HTMLElement>('[data-block-id="returning-second"]')!
+        .closest<HTMLElement>('[data-transcript-virtual-item]')!;
+      expect(virtualItemStart(secondItem)).toBe(virtualItemStart(firstItem) + 180 + 16);
+    } finally {
+      blockHeights.delete('returning-first');
+    }
   });
 
   it('keeps the mounted block DOM bounded for a large transcript', async () => {

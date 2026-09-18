@@ -1430,6 +1430,10 @@ function virtualNodeKey(node: TranscriptVirtualNode): string {
   return node === undefined ? EMPTY_TRANSCRIPT_ITEM_KEY : groupedNodeKey(node);
 }
 
+function measureTranscriptRow(element: HTMLDivElement, entry: ResizeObserverEntry | undefined): number {
+  return Math.round(entry?.borderBoxSize[0]?.blockSize ?? element.offsetHeight);
+}
+
 function captureTranscriptAnchor(
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>,
 ): TranscriptViewportAnchor {
@@ -2014,6 +2018,7 @@ export function Transcript({
     count: virtualNodes.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => TRANSCRIPT_ESTIMATED_ROW_HEIGHT,
+    measureElement: measureTranscriptRow,
     getItemKey: (index) => virtualNodeKey(virtualNodes[index]),
     anchorTo: 'end',
     followOnAppend: true,
