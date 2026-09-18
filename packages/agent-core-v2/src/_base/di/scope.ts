@@ -50,6 +50,7 @@ export function registerScopedService<T>(
   ctor: new (...args: any[]) => T,
   activation: ScopeActivation = ScopeActivation.OnScopeCreated,
   domain: string = 'unknown',
+  staticArguments: ReadonlyArray<unknown> = [],
 ): void {
   const existing = findScopedEntryIndex(scope, id as ServiceIdentifier<unknown>);
   if (existing !== -1) {
@@ -57,7 +58,7 @@ export function registerScopedService<T>(
       `duplicate scoped service registration for '${String(id)}' in scope '${scope}' (registered domain '${_scopedRegistry[existing]?.domain}', attempted domain '${domain}'); use overrideScopedService for intentional replacement`,
     );
   }
-  const descriptor = new SyncDescriptor<T>(ctor);
+  const descriptor = new SyncDescriptor<T>(ctor, staticArguments);
   _scopedRegistry.push({
     scope,
     id: id as ServiceIdentifier<unknown>,

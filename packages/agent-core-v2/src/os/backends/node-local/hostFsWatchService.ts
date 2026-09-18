@@ -412,4 +412,5 @@ registerScopedService(
   HostFsWatchService,
   ScopeActivation.OnScopeCreated,
   'hostFsWatch',
+  [NODE_HOST_FS_WATCH_RUNTIME],
 );
