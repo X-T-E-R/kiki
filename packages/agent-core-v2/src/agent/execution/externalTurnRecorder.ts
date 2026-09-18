@@ -21,7 +21,7 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecutor';
 import { toKimiErrorPayload } from '#/errors';
 import type { ContentPart } from '#/kosong/contract/message';
-import type { TokenUsage } from '#/kosong/contract/usage';
+import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
@@ -470,16 +470,17 @@ export class ExternalTurnRecorder {
         losses: [...this.losses].toSorted(),
       }),
     );
-    if (usage !== undefined) {
+    if (reason === 'completed') {
+      const context = {
+        provider: this.metadata.provider,
+        modelAlias: this.metadata.modelAlias,
+        executorId: this.metadata.executorId,
+      };
       this.#usage.record(
         this.metadata.model,
-        usage,
+        usage ?? emptyUsage(),
         { type: 'turn', turnId: this.turnId, step: 1 },
-        {
-          provider: this.metadata.provider,
-          modelAlias: this.metadata.modelAlias,
-          executorId: this.metadata.executorId,
-        },
+        usage === undefined ? { ...context, usageKnown: false } : context,
       );
     }
     await this.#wire.flush();

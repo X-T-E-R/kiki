@@ -40,7 +40,12 @@ function pricing(costs: Readonly<Record<string, number | undefined>>): IModelPri
 
 function liveAgent(
   byModel: Readonly<Record<string, TokenUsage>>,
-  accounting: { records: number; incomplete: boolean } = { records: 1, incomplete: false },
+  accounting?: {
+    records: number;
+    knownRecords?: number;
+    knownByModel?: Readonly<Record<string, TokenUsage>>;
+    incomplete: boolean;
+  },
 ): IAgentScopeHandle {
   const total = Object.values(byModel).reduce<TokenUsage>(
     (sum, value) => ({
@@ -51,9 +56,15 @@ function liveAgent(
     }),
     { ...ZERO_USAGE },
   );
+  const effectiveAccounting = accounting ?? {
+    records: Object.keys(byModel).length,
+    knownRecords: Object.keys(byModel).length,
+    knownByModel: byModel,
+    incomplete: false,
+  };
   const services = {
     usage: { status: () => ({ byModel, total }) },
-    state: { get: () => ({ ...accounting, successfulCompactions: 0 }) },
+    state: { get: () => ({ ...effectiveAccounting, successfulCompactions: 0 }) },
     profile: { data: () => ({ executorId: 'native', modelCapabilities: { max_context_tokens: 4096 } }) },
     tokens: { statusSize: () => 0 },
   };
@@ -161,6 +172,83 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
 }
 
 describe('agent panel metrics cost provenance', () => {
+  it('keeps the known live token and cost subtotals when another usage record is missing', () => {
+    const known = usage(4, 3);
+    const metrics = readAgentPanelMetrics(
+      liveAgent({ known, missing: ZERO_USAGE }, {
+        records: 2,
+        knownRecords: 1,
+        knownByModel: { known },
+        incomplete: true,
+      }),
+      pricing({ known: 2, missing: 1 }),
+    );
+    expect(metrics).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 3,
+      totalTokens: 7,
+      totalCostUsd: 2,
+      usagePartial: true,
+      costPartial: true,
+    });
+  });
+
+  it('does not present an unknown-only live record as a known zero', () => {
+    const metrics = readAgentPanelMetrics(
+      liveAgent({ missing: ZERO_USAGE }, {
+        records: 1,
+        knownRecords: 0,
+        knownByModel: {},
+        incomplete: true,
+      }),
+      pricing({ missing: 0 }),
+    );
+    expect(metrics).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+      totalCostUsd: null,
+      usagePartial: true,
+      costPartial: true,
+    });
+  });
+
+  it('keeps an explicitly known zero when another live record is unknown', () => {
+    const metrics = readAgentPanelMetrics(
+      liveAgent({ free: ZERO_USAGE, missing: ZERO_USAGE }, {
+        records: 2,
+        knownRecords: 1,
+        knownByModel: { free: ZERO_USAGE },
+        incomplete: true,
+      }),
+      pricing({ free: 0, missing: 1 }),
+    );
+    expect(metrics).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      totalCostUsd: 0,
+      usagePartial: true,
+      costPartial: true,
+    });
+  });
+
+  it('degrades legacy incomplete live accounting without known provenance', () => {
+    const metrics = readAgentPanelMetrics(
+      liveAgent({ known: usage(4, 3), missing: ZERO_USAGE }, {
+        records: 2,
+        incomplete: true,
+      }),
+      pricing({ known: 2, missing: 1 }),
+    );
+    expect(metrics).toMatchObject({
+      totalTokens: null,
+      totalCostUsd: null,
+      usagePartial: true,
+      costPartial: true,
+    });
+  });
+
   it.each([
     { entries: [['known', 2], ['unknown', undefined]] as const },
     { entries: [['unknown', undefined], ['known', 2]] as const },
@@ -409,6 +497,61 @@ describe('persisted agent panel metrics cache scope', () => {
       'agent panel persisted metrics scan shared',
       expect.objectContaining({ cache_state: 'shared' }),
     );
+  });
+
+  it('does not share a persisted scan across different agent selections', async () => {
+    const entered = deferred();
+    const release = deferred();
+    const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
+      beforeRead: async (scope) => {
+        if (!scope.includes('child-1')) return;
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    const modelPricing = pricing({ model: 1 });
+    const first = persisted(fixture.core, modelPricing, 'selection-flight', {
+      agentIds: ['child-1'],
+    });
+    await entered.promise;
+    const second = persisted(fixture.core, modelPricing, 'selection-flight', {
+      agentIds: ['child-2'],
+    });
+    await vi.waitFor(() => { expect(fixture.reads()).toBe(2); });
+    release.resolve();
+    const [firstMetrics, secondMetrics] = await Promise.all([first, second]);
+    expect(firstMetrics['child-1']?.totalTokens).toBe(1);
+    expect(secondMetrics['child-2']?.totalTokens).toBe(1);
+  });
+
+  it('does not share a persisted scan across different limits', async () => {
+    const entered = deferred();
+    const release = deferred();
+    let invocation = 0;
+    const fixture = persistedFixture([
+      record('model', usage(1, 0), true),
+      record('model', usage(2, 0), true),
+    ], undefined, {
+      beforeRead: async () => {
+        invocation += 1;
+        if (invocation !== 1) return;
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    const modelPricing = pricing({ model: 1 });
+    const first = persisted(fixture.core, modelPricing, 'limits-flight', {
+      limits: { maxRecords: 1 },
+    });
+    await entered.promise;
+    const second = persisted(fixture.core, modelPricing, 'limits-flight', {
+      limits: { maxRecords: 2 },
+    });
+    await vi.waitFor(() => { expect(fixture.reads()).toBe(2); });
+    release.resolve();
+    const [firstMetrics, secondMetrics] = await Promise.all([first, second]);
+    expect(firstMetrics['main']).toMatchObject({ totalTokens: 1, usagePartial: true });
+    expect(secondMetrics['main']).toMatchObject({ totalTokens: 3, usagePartial: false });
   });
 
   it('starts cache ttl when a scan completes', async () => {

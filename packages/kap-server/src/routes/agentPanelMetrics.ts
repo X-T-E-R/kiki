@@ -85,12 +85,20 @@ export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelP
   const usage = agent.accessor.get(IAgentUsageService).status();
   const accounting = agent.accessor.get(IAgentStateService).get(panelAccountingKey);
   const profile = agent.accessor.get(IAgentProfileService).data();
-  const known = accounting.records > 0 && !accounting.incomplete && usage.total !== undefined;
-  const total = known ? usage.total : undefined;
+  const hasKnownProvenance = accounting.knownRecords !== undefined &&
+    accounting.knownByModel !== undefined;
+  const knownRecords = hasKnownProvenance
+    ? accounting.knownRecords
+    : accounting.incomplete ? 0 : accounting.records;
+  const knownByModel = hasKnownProvenance
+    ? accounting.knownByModel
+    : accounting.incomplete ? {} : usage.byModel ?? {};
+  const total = knownRecords > 0 ? sumUsage(Object.values(knownByModel)) : undefined;
+  const hasKnownUsage = total !== undefined;
   const costSummary = summarizeCosts(
-    Object.entries(usage.byModel ?? {}).map(([model, value]) => pricing.calculate(model, value)),
+    Object.entries(knownByModel).map(([model, value]) => pricing.calculate(model, value)),
   );
-  const cost = known ? costSummary.total : null;
+  const cost = hasKnownUsage ? costSummary.total : null;
   const input = total === undefined ? null : total.inputOther + total.inputCacheRead + total.inputCacheCreation;
   return {
     inputTokens: input,
@@ -104,7 +112,7 @@ export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelP
     contextLimit: profile.modelCapabilities.max_context_tokens > 0 ? profile.modelCapabilities.max_context_tokens : null,
     compactionCount: profile.executorId !== undefined && profile.executorId !== 'native' ? null : accounting.successfulCompactions,
     usagePartial: accounting.incomplete,
-    costPartial: !known || costSummary.partial,
+    costPartial: accounting.incomplete || !hasKnownUsage || costSummary.partial,
     usageSource: 'live',
   };
 }
@@ -152,7 +160,12 @@ export async function readPersistedAgentPanelMetrics(
     else missing.push(agentId);
   }
   if (missing.length === 0) return Object.freeze(Object.fromEntries(result));
-  const flightKey = `${workspaceId}\0${sessionId}`;
+  const limitsKey = [
+    options.limits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
+    options.limits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
+    options.limits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS,
+  ].join(':');
+  const flightKey = `${workspaceId}\0${sessionId}\0${missing.toSorted().join('\0')}\0${limitsKey}`;
   let flight = state.flights.get(flightKey);
   if (flight !== undefined) {
     flight.sharedWaiters += 1;
@@ -419,6 +432,15 @@ function toPersistedMetrics(state: PersistedUsage): AgentPanelMetrics {
     usagePartial, costPartial: state.costPartial || !hasKnownCost,
     usageSource: 'persisted',
   };
+}
+
+function sumUsage(values: Iterable<TokenUsage>): TokenUsage | undefined {
+  let total: TokenUsage | undefined;
+  for (const value of values) {
+    if (total === undefined) total = { ...value };
+    else addUsage(total, value);
+  }
+  return total;
 }
 
 function summarizeCosts(costs: Iterable<number | undefined>): { total: number | null; partial: boolean } {

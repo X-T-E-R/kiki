@@ -548,12 +548,7 @@ export function convertAnthropicError(
 
 class AnthropicStreamedMessage implements StreamedMessage {
   private _id: string | null = null;
-  private _usage: TokenUsage = {
-    inputOther: 0,
-    output: 0,
-    inputCacheRead: 0,
-    inputCacheCreation: 0,
-  };
+  private _usage: TokenUsage | null = null;
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
@@ -625,11 +620,29 @@ class AnthropicStreamedMessage implements StreamedMessage {
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
   }): void {
+    const inputOther = typeof usage.input_tokens === 'number' ? usage.input_tokens : undefined;
+    const output = typeof usage.output_tokens === 'number' ? usage.output_tokens : undefined;
+    const inputCacheRead = typeof usage.cache_read_input_tokens === 'number'
+      ? usage.cache_read_input_tokens
+      : undefined;
+    const inputCacheCreation = typeof usage.cache_creation_input_tokens === 'number'
+      ? usage.cache_creation_input_tokens
+      : undefined;
+    if (
+      inputOther === undefined && output === undefined &&
+      inputCacheRead === undefined && inputCacheCreation === undefined
+    ) return;
+    const current = this._usage ?? {
+      inputOther: 0,
+      output: 0,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    };
     this._usage = {
-      inputOther: usage.input_tokens ?? 0,
-      output: usage.output_tokens ?? 0,
-      inputCacheRead: usage.cache_read_input_tokens ?? 0,
-      inputCacheCreation: usage.cache_creation_input_tokens ?? 0,
+      inputOther: inputOther ?? current.inputOther,
+      output: output ?? current.output,
+      inputCacheRead: inputCacheRead ?? current.inputCacheRead,
+      inputCacheCreation: inputCacheCreation ?? current.inputCacheCreation,
     };
   }
 
@@ -766,18 +779,24 @@ class AnthropicStreamedMessage implements StreamedMessage {
         } else if (eventType === 'message_delta') {
           const deltaUsage = (evt as { usage?: Record<string, unknown> }).usage;
           if (deltaUsage !== undefined) {
-            if (typeof deltaUsage['output_tokens'] === 'number') {
-              this._usage.output = deltaUsage['output_tokens'];
-            }
-            if (typeof deltaUsage['cache_read_input_tokens'] === 'number') {
-              this._usage.inputCacheRead = deltaUsage['cache_read_input_tokens'];
-            }
-            if (typeof deltaUsage['cache_creation_input_tokens'] === 'number') {
-              this._usage.inputCacheCreation = deltaUsage['cache_creation_input_tokens'];
-            }
-            if (typeof deltaUsage['input_tokens'] === 'number') {
-              this._usage.inputOther = deltaUsage['input_tokens'];
-            }
+            this._extractUsage({
+              input_tokens:
+                typeof deltaUsage['input_tokens'] === 'number'
+                  ? deltaUsage['input_tokens']
+                  : undefined,
+              output_tokens:
+                typeof deltaUsage['output_tokens'] === 'number'
+                  ? deltaUsage['output_tokens']
+                  : undefined,
+              cache_read_input_tokens:
+                typeof deltaUsage['cache_read_input_tokens'] === 'number'
+                  ? deltaUsage['cache_read_input_tokens']
+                  : undefined,
+              cache_creation_input_tokens:
+                typeof deltaUsage['cache_creation_input_tokens'] === 'number'
+                  ? deltaUsage['cache_creation_input_tokens']
+                  : undefined,
+            });
           }
           const messageDeltaPayload = (evt as { delta?: Record<string, unknown> }).delta;
           if (messageDeltaPayload !== undefined && 'stop_reason' in messageDeltaPayload) {

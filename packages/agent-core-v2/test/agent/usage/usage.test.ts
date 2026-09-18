@@ -113,9 +113,15 @@ const a2 = { inputOther: 10, output: 20, inputCacheRead: 30, inputCacheCreation:
 const b1 = { inputOther: 100, output: 200, inputCacheRead: 300, inputCacheCreation: 400 };
 
 describe('AgentUsageService (wire-backed)', () => {
-  it('retains missing accounting and only successful compactions across replay', async () => {
+  it('retains known and missing accounting with only successful compactions across replay', async () => {
     const state = ix.get(IAgentStateService);
-    expect(state.get(panelAccountingKey)).toEqual({ records: 0, incomplete: false, successfulCompactions: 0 });
+    expect(state.get(panelAccountingKey)).toEqual({
+      records: 0,
+      knownRecords: 0,
+      knownByModel: {},
+      incomplete: false,
+      successfulCompactions: 0,
+    });
     svc.record('model-a', a1, undefined, { usageKnown: true });
     await dispatcher.dispatch(new FullCompactionCancel({}));
     expect(state.get(panelAccountingKey).successfulCompactions).toBe(0);
@@ -124,11 +130,31 @@ describe('AgentUsageService (wire-backed)', () => {
     svc.record('model-a', zero, undefined, { usageKnown: true });
     expect(state.get(panelAccountingKey).incomplete).toBe(false);
     svc.record('model-a', zero, undefined, { usageKnown: false });
-    expect(state.get(panelAccountingKey)).toEqual({ records: 3, incomplete: true, successfulCompactions: 1 });
+    expect(state.get(panelAccountingKey)).toEqual({
+      records: 3,
+      knownRecords: 2,
+      knownByModel: { 'model-a': a1 },
+      incomplete: true,
+      successfulCompactions: 1,
+    });
     const fresh = createFreshHost('panel-accounting');
     await restoreTestEventDispatcher(fresh.dispatcher, fresh.freshLog,
       testWireScope(SCOPE, 'panel-accounting'), await readRecords());
     expect(fresh.agentState.get(panelAccountingKey)).toEqual(state.get(panelAccountingKey));
+  });
+
+  it('defaults known provenance when parsing legacy accounting state', () => {
+    expect(panelAccountingKey.replayable.schema.parse({
+      records: 2,
+      incomplete: true,
+      successfulCompactions: 1,
+    })).toEqual({
+      records: 2,
+      knownRecords: 0,
+      knownByModel: {},
+      incomplete: true,
+      successfulCompactions: 1,
+    });
   });
 
   it('accumulates usage by model', () => {

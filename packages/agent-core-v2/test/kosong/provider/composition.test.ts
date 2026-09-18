@@ -917,6 +917,10 @@ async function* openAIChunkStream(): AsyncIterable<unknown> {
   yield {
     id: 'chatcmpl-probe',
     choices: [{ index: 0, delta: { content: 'Hello' }, finish_reason: 'stop' }],
+  };
+  yield {
+    id: 'chatcmpl-probe',
+    choices: [],
     usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
   };
 }
@@ -943,6 +947,13 @@ async function* anthropicEventStream(): AsyncIterable<unknown> {
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
   yield { type: 'content_block_stop', index: 0 };
   yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } };
+}
+
+async function* anthropicEventStreamWithoutUsage(): AsyncIterable<unknown> {
+  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
+  yield { type: 'content_block_stop', index: 0 };
+  yield { type: 'message_delta', delta: { stop_reason: 'end_turn' } };
 }
 
 function anthropicMessageResponse(): Record<string, unknown> {
@@ -1063,6 +1074,48 @@ async function captureResponsesBody(
   return captured;
 }
 
+describe('provider usage reporting', () => {
+  it('reads the usage-only chunk from an OpenAI-compatible stream', async () => {
+    const provider = new OpenAILegacyChatProvider({
+      model: 'example-model',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test/v1',
+    });
+    const client = sdkClient(provider) as { chat: { completions: { create: unknown } } };
+    client.chat.completions.create = vi.fn().mockReturnValue({
+      withResponse: () => Promise.resolve({
+        data: openAIChunkStream(),
+        response: { headers: new Headers() },
+      }),
+    });
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.usage).toEqual({
+      inputOther: 3,
+      output: 1,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+  });
+
+  it('keeps Anthropic-compatible usage unknown when the stream omits usage events', async () => {
+    const provider = new AnthropicChatProvider({
+      model: 'example-model',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+    });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicEventStreamWithoutUsage());
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.usage).toBeNull();
+  });
+});
+
 describe('per-turn intent wire encoding (behavior probes)', () => {
   it('encodes cacheKey + thinking + budget on the Kimi wire as prompt_cache_key + expanded thinking, never reasoning_effort', async () => {
     const provider = registry.createChatProvider({
@@ -1080,6 +1133,7 @@ describe('per-turn intent wire encoding (behavior probes)', () => {
 
     expect(body['prompt_cache_key']).toBe('session-probe');
     expect(body['thinking']).toEqual({ type: 'enabled', effort: 'high', keep: 'all' });
+    expect(body['stream_options']).toEqual({ include_usage: true });
     expect(body).not.toHaveProperty('extra_body');
     expect(body['max_completion_tokens']).toBe(5000);
     expect(body).not.toHaveProperty('max_tokens');
@@ -1096,6 +1150,7 @@ describe('per-turn intent wire encoding (behavior probes)', () => {
     const body = await captureOpenAIBody(provider, { cacheKey: 'session-probe' });
 
     expect(body['prompt_cache_key']).toBe('session-probe');
+    expect(body['stream_options']).toEqual({ include_usage: true });
   });
 
   it('encodes cacheKey on Anthropic as metadata.user_id', async () => {

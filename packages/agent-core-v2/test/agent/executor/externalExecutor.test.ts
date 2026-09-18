@@ -972,6 +972,27 @@ describe('ACP external executor', () => {
     )).toMatchObject({ usage });
   });
 
+  it('records an explicit unknown usage fact when the executor omits completion usage', async () => {
+    const harness = createHarness({
+      executorId: 'kimi-acp',
+      providerName: 'kimi',
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await expect(run.completion).resolves.toEqual({ summary: '', usage: undefined });
+
+    expect(harness.usageRecords).toEqual([[
+      'model-a',
+      { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 },
+      { type: 'turn', turnId: 4, step: 1 },
+      { provider: 'kimi', modelAlias: 'model-a', executorId: 'kimi-acp', usageKnown: false },
+    ]]);
+  });
+
   it('leaves provider empty when the external model is absent from the catalog', async () => {
     const harness = createHarness({
       executorId: 'cursor-acp',
