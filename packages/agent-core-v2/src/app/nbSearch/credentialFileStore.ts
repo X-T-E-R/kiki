@@ -7,6 +7,12 @@ const MAX_FILE_BYTES = 4 * 1024 * 1024;
 export const NB_SEARCH_ACL_TIMEOUT_MS = 15000;
 const ACL_SCRIPT = "$ErrorActionPreference='Stop'; $paths=ConvertFrom-Json $env:NB_SEARCH_ACL_PATHS; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $allowed=@($sid.Value,'S-1-5-18','S-1-5-32-544'); foreach($p in $paths){$item=Get-Item -LiteralPath $p -Force; $walk=$item; while($null -ne $walk){if(($walk.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){throw 'reparse'}; $walk=$walk.Parent}; $acl=Get-Acl -LiteralPath $p; $owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; if($allowed -notcontains $owner){throw 'owner'}; foreach($r in $acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])){if($r.AccessControlType -eq 'Allow' -and $allowed -notcontains $r.IdentityReference.Value){throw 'permissions'}}}; [Console]::Write('ok')";
 
+export function windowsPowerShellModulePath(env: NodeJS.ProcessEnv): string {
+  const programFiles = env['ProgramFiles'] ?? 'C:\\Program Files';
+  const systemRoot = env['SystemRoot'] ?? 'C:\\Windows';
+  return `${programFiles}\\WindowsPowerShell\\Modules;${systemRoot}\\system32\\WindowsPowerShell\\v1.0\\Modules`;
+}
+
 export class NbSearchLocalFileError extends Error {
   constructor(readonly issue: 'LOCAL_CONFIG_BUSY' | 'LOCAL_CREDENTIALS_UNREADABLE' | 'LOCAL_CREDENTIALS_UNSAFE' | 'LOCAL_CONFIG_CHANGED' | 'LOCAL_CREDENTIALS_TIMEOUT') {
     super(issue);
@@ -102,7 +108,11 @@ export class NbSearchCredentialFileStore {
     });
     const inspection = (async () => {
       processHandle = await this.processes.spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ACL_SCRIPT], {
-        env: { NB_SEARCH_ACL_PATHS: JSON.stringify(paths.map((path) => resolve(path))) }, windowsHide: true,
+        env: {
+          NB_SEARCH_ACL_PATHS: JSON.stringify(paths.map((path) => resolve(path))),
+          PSModulePath: windowsPowerShellModulePath(process.env),
+        },
+        windowsHide: true,
       });
       if (expired) {
         release();

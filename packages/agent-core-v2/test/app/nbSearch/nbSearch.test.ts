@@ -2,6 +2,7 @@ import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { Readable, Writable } from 'node:stream';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 
 import {
@@ -44,7 +45,7 @@ import { INbSearchSourceStore, NbSearchSourceStore } from '#/app/nbSearch/source
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { applyLocalCredentials } from '#/app/nbSearch/localCredentials';
-import { NbSearchCredentialFileStore } from '#/app/nbSearch/credentialFileStore';
+import { NbSearchCredentialFileStore, windowsPowerShellModulePath } from '#/app/nbSearch/credentialFileStore';
 import { resolveNbSearchConfig, nbSearchConfigRevision } from '#/app/nbSearch/donorConfig';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
@@ -680,6 +681,37 @@ describe('NbSearchSourceStore', () => {
     const source = await ix.get(INbSearchSourceStore).withSource(true, undefined, (value) => value);
     expect(source.status).toMatchObject({ local_config: 'unreadable', availability: 'unavailable', issues: ['LOCAL_CONFIG_UNREADABLE'] });
     expect(write).not.toHaveBeenCalled();
+  });
+});
+
+describe('NbSearchCredentialFileStore', () => {
+  it.runIf(process.platform === 'win32')('insulates the ACL inspection process from a poisoned PSModulePath', async () => {
+    vi.stubEnv('PSModulePath', 'C:\\poisoned\\codex-runtimes\\Modules');
+    const entry = { isFile: true, isDirectory: false, isSymbolicLink: false, size: 2, ino: 1, mtimeMs: 1 };
+    const fs = {
+      lstat: vi.fn(async () => entry),
+      readBytes: vi.fn(async () => new TextEncoder().encode('{}')),
+    } as unknown as IHostFileSystem;
+    let spawnedEnv: Record<string, string> | undefined;
+    const processes = {
+      spawn: vi.fn(async (_command: string, _args: readonly string[], options?: { env?: Record<string, string> }) => {
+        spawnedEnv = options?.env;
+        return {
+          pid: 1,
+          exitCode: null,
+          stdout: Readable.from(['ok']),
+          stderr: Readable.from([]),
+          stdin: new Writable({ write: (_chunk, _encoding, callback) => callback() }),
+          wait: async () => 0,
+          kill: async () => {},
+          dispose: () => {},
+        };
+      }),
+    } as unknown as IHostProcessService;
+    const store = new NbSearchCredentialFileStore(fs, processes);
+    await expect(store.read('C:\\fixture\\secrets.json', true)).resolves.toBe('{}');
+    expect(spawnedEnv?.['PSModulePath']).toBe(windowsPowerShellModulePath(process.env));
+    expect(spawnedEnv?.['PSModulePath']).not.toContain('codex-runtimes');
   });
 });
 
