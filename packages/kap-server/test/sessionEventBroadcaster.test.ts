@@ -3482,6 +3482,14 @@ describe('SessionEventBroadcaster', () => {
           content: [{ type: 'text', text: 'now' }],
         }),
       );
+      main.bus.emit(
+        agentEvent('prompt.moved', {
+          promptId: 'p2',
+          targetIndex: 0,
+          queuedPromptIds: ['p2'],
+          movedAt: '2026-01-01T00:00:03.000Z',
+        }),
+      );
       await bc.getCursor('s1');
 
       expect(transcriptEnvelopes(graded.envelopes).length).toBeGreaterThan(0);
@@ -3493,6 +3501,7 @@ describe('SessionEventBroadcaster', () => {
       expect(gradedTypes).not.toContain('agent.status.updated');
       expect(gradedTypes).not.toContain('prompt.queued');
       expect(gradedTypes).not.toContain('prompt.replaced');
+      expect(gradedTypes).not.toContain('prompt.moved');
 
       const legacyTypes = legacy.envelopes.map((e) => e.type);
       expect(legacyTypes).toContain('turn.started');
@@ -3501,7 +3510,8 @@ describe('SessionEventBroadcaster', () => {
       expect(legacyTypes).toContain('tool.result');
       expect(legacyTypes).toContain('prompt.queued');
       expect(legacyTypes).toContain('prompt.replaced');
-      for (const envelope of legacy.envelopes.filter((entry) => ['turn.started', 'tool.result', 'prompt.queued', 'prompt.replaced'].includes(entry.type))) {
+      expect(legacyTypes).toContain('prompt.moved');
+      for (const envelope of legacy.envelopes.filter((entry) => ['turn.started', 'tool.result', 'prompt.queued', 'prompt.replaced', 'prompt.moved'].includes(entry.type))) {
         expect(durableCursors).toHaveBeenCalledWith({ seq: envelope.seq, epoch: envelope.epoch });
       }
       expect(transcriptEnvelopes(legacy.envelopes)).toHaveLength(0);

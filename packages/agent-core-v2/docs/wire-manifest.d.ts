@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (67 record types)
+// Index (68 record types)
 //   config.update                      profile                                                               src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory, turn                                                   src/agent/contextMemory/contextEvents.ts
 //   context.append_message             contextMemory, goalForkNotice, plan, task.notificationDelivery, todo  src/agent/contextMemory/contextEvents.ts
@@ -60,6 +60,7 @@
 //   prompt.aborted                     promptResolution                                                      src/agent/prompt/promptService.ts
 //   prompt.accepted                    promptAdmission                                                       src/agent/prompt/promptOps.ts
 //   prompt.completed                   promptResolution                                                      src/agent/prompt/promptService.ts
+//   prompt.moved                       (none)                                                                src/agent/prompt/promptService.ts
 //   prompt.steered                     promptResolution                                                      src/agent/prompt/promptService.ts
 //   runtime.set_binding                runtimeBinding                                                        src/agent/runtimeBinding/runtimeBindingOps.ts
 //   staleGuard.cleared                 staleGuard                                                            src/features/staleGuard/staleGuardOps.ts
@@ -545,6 +546,7 @@ interface PromptAbortedPayload {
   _name: 'prompt.aborted';
   promptId: string;
   abortedAt: string;
+  beforeStart?: boolean;
 }
 
 /**
@@ -565,6 +567,18 @@ interface PromptCompletedPayload {
   promptId: string;
   finishedAt: string;
   reason: 'completed' | 'failed' | 'blocked';
+}
+
+/**
+ * states: (none)
+ * owner: src/agent/prompt/promptService.ts
+ */
+interface PromptMovedPayload {
+  _name: 'prompt.moved';
+  promptId: string;
+  targetIndex: number;
+  queuedPromptIds: string[];
+  movedAt: string;
 }
 
 /**
@@ -1032,6 +1046,7 @@ interface WirePayloadMap {
   "prompt.aborted": PromptAbortedPayload;
   "prompt.accepted": PromptAcceptedPayload;
   "prompt.completed": PromptCompletedPayload;
+  "prompt.moved": PromptMovedPayload;
   "prompt.steered": PromptSteeredPayload;
   "runtime.set_binding": RuntimeSetBindingPayload;
   "staleGuard.cleared": StaleGuardClearedPayload;

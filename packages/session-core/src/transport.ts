@@ -8,6 +8,8 @@ import type {
   PatchConfigRequest,
   PermissionMode,
   PromptAbortResponse,
+  PromptMoveRequest,
+  PromptMoveResult,
   PromptPlanGate,
   PromptReplaceRequest,
   PromptReplaceResult,
@@ -144,6 +146,7 @@ export interface RuntimeConfigProjection {
   readonly disabled_named_profiles?: string[];
   readonly mcp?: { readonly startupTimeoutMs?: number; readonly toolTimeoutMs?: number };
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
+  readonly agents?: { readonly enabled?: boolean; readonly notify_parent?: boolean };
 }
 
 export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & RuntimeConfigProjection & {
@@ -182,6 +185,7 @@ export interface RuntimeConfigPatch {
   readonly disabled_named_profiles?: string[];
   readonly mcp?: { readonly startup_timeout_ms?: number; readonly tool_timeout_ms?: number };
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
+  readonly agents?: { readonly enabled?: boolean; readonly notify_parent?: boolean };
 }
 
 export type KikiConfigPatch = Omit<
@@ -362,6 +366,8 @@ export interface AgentTranscriptPrompt {
   readonly content?: unknown;
   readonly createdAt: string;
   readonly finishedAt?: string;
+  readonly queuePosition?: number;
+  readonly abortedBeforeStart?: boolean;
   readonly steeredAt?: string;
 }
 
@@ -424,6 +430,7 @@ export interface SessionTransport {
   regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session>;
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse>;
+  movePrompt(sessionId: string, promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
   replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
   steerPrompt(sessionId: string, promptId: string): Promise<PromptSteerResult>;
   resolveApproval(

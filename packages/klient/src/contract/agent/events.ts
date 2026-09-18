@@ -217,6 +217,16 @@ export const promptAbortedEventSchema = z.object({
   promptId: z.string(),
   /** ISO 8601 datetime string on the wire. */
   abortedAt: z.string(),
+  beforeStart: z.boolean().optional(),
+});
+
+export const promptMovedEventSchema = z.object({
+  type: z.literal('prompt.moved'),
+  time: z.number().optional(),
+  promptId: z.string(),
+  targetIndex: z.number().int().nonnegative(),
+  queuedPromptIds: z.array(z.string()),
+  movedAt: z.string(),
 });
 
 export const compactionStartedEventSchema = z.object({
@@ -313,6 +323,7 @@ export interface AgentEventPayloads {
   'prompt.queued': z.infer<typeof promptQueuedEventSchema>;
   'prompt.started': z.infer<typeof promptStartedEventSchema>;
   'prompt.replaced': z.infer<typeof promptReplacedEventSchema>;
+  'prompt.moved': z.infer<typeof promptMovedEventSchema>;
   'prompt.steered': z.infer<typeof promptSteeredEventSchema>;
   'prompt.completed': z.infer<typeof promptCompletedEventSchema>;
   'prompt.aborted': z.infer<typeof promptAbortedEventSchema>;
@@ -348,6 +359,7 @@ export const agentEvents = {
   'prompt.queued': { kind: 'stream', name: 'events', type: 'prompt.queued', schema: promptQueuedEventSchema },
   'prompt.started': { kind: 'stream', name: 'events', type: 'prompt.started', schema: promptStartedEventSchema },
   'prompt.replaced': { kind: 'stream', name: 'events', type: 'prompt.replaced', schema: promptReplacedEventSchema },
+  'prompt.moved': { kind: 'stream', name: 'events', type: 'prompt.moved', schema: promptMovedEventSchema },
   'prompt.steered': { kind: 'stream', name: 'events', type: 'prompt.steered', schema: promptSteeredEventSchema },
   'prompt.completed': { kind: 'stream', name: 'events', type: 'prompt.completed', schema: promptCompletedEventSchema },
   'prompt.aborted': { kind: 'stream', name: 'events', type: 'prompt.aborted', schema: promptAbortedEventSchema },

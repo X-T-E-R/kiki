@@ -423,6 +423,8 @@ export const transcriptPromptSchema = z.object({
   content: z.unknown().optional(),
   createdAt: z.string(),
   finishedAt: z.string().optional(),
+  queuePosition: z.number().int().nonnegative().optional(),
+  abortedBeforeStart: z.boolean().optional(),
   steeredAt: z.string().optional(),
 });
 

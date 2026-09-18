@@ -1011,6 +1011,15 @@ export interface PromptAbortedEvent {
   readonly type: 'prompt.aborted';
   readonly promptId: string;
   readonly abortedAt: string;
+  readonly beforeStart?: boolean;
+}
+
+export interface PromptMovedEvent {
+  readonly type: 'prompt.moved';
+  readonly promptId: string;
+  readonly targetIndex: number;
+  readonly queuedPromptIds: readonly string[];
+  readonly movedAt: string;
 }
 
 export interface PromptSteeredEvent {
@@ -1098,6 +1107,7 @@ export type AgentEvent =
   | PromptQueuedEvent
   | PromptStartedEvent
   | PromptReplacedEvent
+  | PromptMovedEvent
   | PromptCompletedEvent
   | PromptAbortedEvent
   | PromptSteeredEvent;
@@ -1990,7 +2000,16 @@ export const promptAbortedEventSchema = z.object({
   type: z.literal('prompt.aborted'),
   promptId: z.string(),
   abortedAt: isoDateTimeSchema,
+  beforeStart: z.boolean().optional(),
 }) satisfies z.ZodType<PromptAbortedEvent>;
+
+export const promptMovedEventSchema = z.object({
+  type: z.literal('prompt.moved'),
+  promptId: z.string(),
+  targetIndex: z.number().int().nonnegative(),
+  queuedPromptIds: z.array(z.string()),
+  movedAt: isoDateTimeSchema,
+}) satisfies z.ZodType<PromptMovedEvent>;
 
 export const promptSteeredEventSchema = z.object({
   type: z.literal('prompt.steered'),
@@ -2081,6 +2100,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   promptQueuedEventSchema,
   promptStartedEventSchema,
   promptReplacedEventSchema,
+  promptMovedEventSchema,
   promptCompletedEventSchema,
   promptAbortedEventSchema,
   promptSteeredEventSchema,

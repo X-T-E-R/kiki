@@ -1,6 +1,7 @@
 import type {
   ApprovalResolveRequest, ApprovalResolveResult, CancelTaskQuery, EditMessageRequest, ForkSessionRequest,
-  PromptAbortResponse, PromptReplaceRequest, PromptReplaceResult, PromptSteerResult,
+  PromptAbortResponse, PromptMoveRequest, PromptMoveResult, PromptReplaceRequest, PromptReplaceResult,
+  PromptSteerResult,
   PromptSubmission, PromptSubmitResult, QuestionDismissResult, QuestionResolveRequest,
   QuestionResolveResult, RegenerateMessageRequest, Session,
 } from '@kiki/protocol';
@@ -15,6 +16,7 @@ export interface SessionCommandsFacade {
   regenerate(messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   fork(body?: ForkSessionRequest): Promise<Session>;
   abort(promptId: string): Promise<PromptAbortResponse>;
+  move(promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
   replace(promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
   steer(promptId: string): Promise<PromptSteerResult>;
   approve(approvalId: string, body: ApprovalResolveRequest): Promise<ApprovalResolveResult>;
@@ -44,6 +46,7 @@ export function createSessionCommandsFacade(channel: SessionCommandChannel | und
     regenerate: (target, body) => invoke('regenerate', { target, body }),
     fork: (body = {}) => invoke('fork', { body }),
     abort: (target) => invoke('abort', { target }),
+    move: (target, body) => invoke('move', { target, body }),
     replace: (target, body) => invoke('replace', { target, body }),
     steer: (target) => invoke('steer', { target }),
     approve: (target, body) => invoke('approve', { target, body }),

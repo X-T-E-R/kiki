@@ -1751,6 +1751,50 @@ describe('AgentTranscriptLiveAdapter', () => {
     });
   });
 
+  it('projects prompt moves as queue positions and preserves before-start aborts', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
+
+    for (const [index, promptId] of ['p1', 'p2', 'p3'].entries()) {
+      feed(
+        ev({
+          type: 'prompt.submitted',
+          promptId,
+          userMessageId: `m${index + 1}`,
+          status: 'queued',
+          content: [{ type: 'text', text: promptId }],
+          createdAt: `2026-01-01T00:00:0${index}.000Z`,
+        }),
+      );
+      feed(ev({
+        type: 'prompt.queued',
+        promptId,
+        content: [{ type: 'text', text: promptId }],
+        queueLength: index + 1,
+      }));
+    }
+    feed(ev({
+      type: 'prompt.moved',
+      promptId: 'p3',
+      targetIndex: 0,
+      queuedPromptIds: ['p3', 'p1', 'p2'],
+      movedAt: '2026-01-01T00:00:04.000Z',
+    }));
+
+    expect(tx.getPrompt('p3')).toMatchObject({ status: 'queued', queuePosition: 0 });
+    expect(tx.getPrompt('p1')).toMatchObject({ status: 'queued', queuePosition: 1 });
+    expect(tx.getPrompt('p2')).toMatchObject({ status: 'queued', queuePosition: 2 });
+
+    feed(ev({
+      type: 'prompt.aborted',
+      promptId: 'p2',
+      abortedAt: '2026-01-01T00:00:05.000Z',
+      beforeStart: true,
+    }));
+    expect(tx.getPrompt('p2')).toMatchObject({ status: 'aborted', abortedBeforeStart: true });
+  });
+
   it('projects prompt.steered media content to the wire shape (no daemon ref or path leak)', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

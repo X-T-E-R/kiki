@@ -232,6 +232,7 @@ interface Harness {
     submitPrompt: ReturnType<typeof vi.fn>;
     replacePrompt: ReturnType<typeof vi.fn>;
     abortPrompt: ReturnType<typeof vi.fn>;
+    movePrompt: ReturnType<typeof vi.fn>;
     steerPrompt: ReturnType<typeof vi.fn>;
     editMessage: ReturnType<typeof vi.fn>;
     regenerateMessage: ReturnType<typeof vi.fn>;
@@ -254,6 +255,12 @@ async function openController(options: { defaultScheduler?: boolean } = {}): Pro
     submitPrompt: vi.fn(),
     replacePrompt: vi.fn(),
     abortPrompt: vi.fn(async () => ({ aborted: true, at_seq: 1 })),
+    movePrompt: vi.fn(async (_sessionId: string, promptId: string, body: { target_index: number }) => ({
+      moved: true as const,
+      prompt_id: promptId,
+      target_index: body.target_index,
+      queued_prompt_ids: [],
+    })),
     steerPrompt: vi.fn(async () => ({ steered: true as const, prompt_ids: [] as string[] })),
     editMessage: vi.fn(async () => ({
       prompt_id: 'p-edit',
@@ -890,6 +897,7 @@ describe('SessionController transcript authority', () => {
       })),
       submitPrompt: vi.fn(),
       replacePrompt: vi.fn(),
+      movePrompt: vi.fn(),
       getTranscriptOps: vi.fn(async () => ({
         session_id: 'session_test',
         agent_id: 'main',
@@ -1731,6 +1739,39 @@ describe('SessionController transcript authority', () => {
     expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
       text: 'replaced',
     });
+    controller.close();
+  });
+
+  it('moves a queued prompt through the transport and applies the returned order immediately', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 1,
+      ops: ['p1', 'p2', 'p3'].map((promptId, index) => ({
+        op: 'prompt.upsert' as const,
+        prompt: {
+          promptId,
+          status: 'queued' as const,
+          userMessageId: `m${index + 1}`,
+          content: [{ type: 'text', text: promptId }],
+          createdAt: `2026-01-01T00:00:0${index}.000Z`,
+          queuePosition: index,
+        },
+      })),
+    }));
+    flushAll();
+    client.movePrompt.mockResolvedValueOnce({
+      moved: true,
+      prompt_id: 'p3',
+      target_index: 0,
+      queued_prompt_ids: ['p3', 'p1', 'p2'],
+    });
+
+    await controller.moveQueued('p3', 0);
+
+    expect(client.movePrompt).toHaveBeenCalledWith('session_test', 'p3', { target_index: 0 });
+    expect(controller.getState().queuedPromptIds).toEqual(['p3', 'p1', 'p2']);
     controller.close();
   });
 

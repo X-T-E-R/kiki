@@ -1260,6 +1260,18 @@ export class SessionController {
     );
   }
 
+  async moveQueued(promptId: string, targetIndex: number): Promise<void> {
+    assertSessionWritable(this.state);
+    const result = await this.client.movePrompt(this.sessionId, promptId, {
+      target_index: targetIndex,
+    });
+    this.setState({
+      ...this.state,
+      version: this.state.version + 1,
+      queuedPromptIds: result.queued_prompt_ids,
+    });
+  }
+
   /**
    * "Send now" for a parked prompt — a REAL wire capability, not a client
    * approximation: `POST …:steer` injects the queued prompt's content into

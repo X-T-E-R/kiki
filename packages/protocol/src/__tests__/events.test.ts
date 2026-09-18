@@ -204,9 +204,19 @@ describe('events / display re-exports', () => {
       content: [{ type: 'text', text: 'replacement' }],
       replacedAt: '2026-06-11T00:00:01.000Z',
     });
+    const moved = eventSchema.parse({
+      type: 'prompt.moved',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      promptId: 'prompt_2',
+      targetIndex: 0,
+      queuedPromptIds: ['prompt_2', 'prompt_1'],
+      movedAt: '2026-06-11T00:00:02.000Z',
+    });
 
     expect(queued.type).toBe('prompt.queued');
     expect(replaced.type).toBe('prompt.replaced');
+    expect(moved.type).toBe('prompt.moved');
   });
 
   it('validates prompt.started events', () => {

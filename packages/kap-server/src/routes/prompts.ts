@@ -44,6 +44,8 @@ import { projectPromptContentParts } from '../services/messages/messageProjectio
 import {
   promptAbortResponseSchema,
   promptListResponseSchema,
+  promptMoveRequestSchema,
+  promptMoveResultSchema,
   promptReplaceRequestSchema,
   promptReplaceResultSchema,
   promptSteerRequestSchema,
@@ -413,9 +415,19 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     {
       method: 'POST',
       path: '/sessions/{session_id}/prompts/{tail}',
-      body: z.union([z.undefined(), z.object({}).strict(), promptReplaceRequestSchema]),
+      body: z.union([
+        z.undefined(),
+        z.object({}).strict(),
+        promptMoveRequestSchema,
+        promptReplaceRequestSchema,
+      ]),
       success: {
-        data: z.union([promptAbortResponseSchema, promptReplaceResultSchema, promptSteerResultSchema]),
+        data: z.union([
+          promptAbortResponseSchema,
+          promptMoveResultSchema,
+          promptReplaceResultSchema,
+          promptSteerResultSchema,
+        ]),
       },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
@@ -423,7 +435,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         [ErrorCode.PROMPT_NOT_FOUND]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
       },
-      description: 'Abort, replace, or steer a prompt',
+      description: 'Abort, move, replace, or steer a prompt',
       tags: ['prompts'],
       operationId: 'promptAction',
     },
@@ -434,7 +446,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         const { session_id, tail } = req.params as { session_id: string; tail: string };
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['abort', 'replace', 'steer'] as const,
+          allowedActions: ['abort', 'move', 'replace', 'steer'] as const,
           resourceLabel: 'prompt',
         });
         if (parsed.kind !== 'action') {
@@ -487,7 +499,19 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           return;
         }
         const resolved = await resolvePrompt(core, session_id);
-        if (parsed.action === 'abort') {
+        if (parsed.action === 'move') {
+          const move = promptMoveRequestSchema.safeParse(req.body);
+          if (!move.success) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'target_index is required');
+          }
+          resolved.prompt.move(parsed.id, move.data.target_index);
+          reply.send(okEnvelope({
+            moved: true,
+            prompt_id: parsed.id,
+            target_index: move.data.target_index,
+            queued_prompt_ids: resolved.prompt.list().pending.map((prompt) => prompt.id),
+          }, req.id));
+        } else if (parsed.action === 'abort') {
           resolved.prompt.abort(parsed.id);
           requestLog(req)?.info({ session_id, prompt_id: parsed.id }, 'prompt aborted');
           reply.send(okEnvelope({ aborted: true }, req.id));

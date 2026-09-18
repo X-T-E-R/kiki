@@ -24,6 +24,7 @@ import type { WarningIssued } from '@kiki/agent-core-v2/agent/profile/profileOps
 import type {
   PromptAborted,
   PromptCompleted,
+  PromptMoved,
   PromptQueued,
   PromptReplaced,
   PromptStarted,
@@ -103,6 +104,7 @@ type PromptAbortedEvent = { readonly type: 'prompt.aborted' } & PromptAborted;
 type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
 type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued;
 type PromptReplacedEvent = { readonly type: 'prompt.replaced' } & PromptReplaced;
+type PromptMovedEvent = { readonly type: 'prompt.moved' } & PromptMoved;
 type TaskNotifiedEvent = { readonly type: 'task.notified' } & TaskNotified;
 
 export type LiveAdapterBusEvent =
@@ -140,6 +142,7 @@ export type LiveAdapterBusEvent =
   | PromptSteeredEvent
   | PromptQueuedEvent
   | PromptReplacedEvent
+  | PromptMovedEvent
   | ({ readonly type: 'hook.result' } & HookResult)
   | ({ readonly type: 'skill.activated' } & SkillActivated)
   | ({ readonly type: 'plugin_command.activated' } & PluginCommandActivated)
@@ -328,6 +331,8 @@ export class AgentTranscriptLiveAdapter {
         return this.onPromptQueued(event);
       case 'prompt.replaced':
         return this.onPromptReplaced(event);
+      case 'prompt.moved':
+        return this.onPromptMoved(event);
       case 'prompt.completed':
         return this.onPromptCompleted(event);
       case 'prompt.aborted':
@@ -1477,6 +1482,8 @@ export class AgentTranscriptLiveAdapter {
       content: projectPromptContentParts(event.content),
       createdAt: prev?.createdAt ?? event.createdAt,
       finishedAt: prev?.finishedAt,
+      queuePosition: event.status === 'queued' ? prev?.queuePosition : undefined,
+      abortedBeforeStart: prev?.abortedBeforeStart,
       steeredAt: prev?.steeredAt,
     }));
     return [{ op: 'prompt.upsert', prompt }];
@@ -1495,6 +1502,8 @@ export class AgentTranscriptLiveAdapter {
       content: projectPromptContentParts(event.content),
       createdAt: prev?.createdAt ?? nowIso(),
       finishedAt: prev?.finishedAt,
+      queuePosition: prev?.queuePosition,
+      abortedBeforeStart: prev?.abortedBeforeStart,
       steeredAt: prev?.steeredAt,
     }));
     return [{ op: 'prompt.upsert', prompt }];
@@ -1521,9 +1530,30 @@ export class AgentTranscriptLiveAdapter {
       content: projectPromptContentParts(event.content),
       createdAt: prev?.createdAt ?? event.replacedAt,
       finishedAt: prev?.finishedAt,
+      queuePosition: prev?.queuePosition,
+      abortedBeforeStart: prev?.abortedBeforeStart,
       steeredAt: prev?.steeredAt,
     }));
     return [{ op: 'prompt.upsert', prompt }];
+  }
+
+  private onPromptMoved(event: PromptMovedEvent): TranscriptOperation[] {
+    const ops: TranscriptOperation[] = [];
+    for (const [queuePosition, promptId] of event.queuedPromptIds.entries()) {
+      const prompt = this.upsertPrompt(promptId, (prev) => ({
+        promptId,
+        status: prev?.status ?? 'queued',
+        userMessageId: prev?.userMessageId,
+        content: prev?.content,
+        createdAt: prev?.createdAt ?? event.movedAt,
+        finishedAt: prev?.finishedAt,
+        queuePosition,
+        abortedBeforeStart: prev?.abortedBeforeStart,
+        steeredAt: prev?.steeredAt,
+      }));
+      ops.push({ op: 'prompt.upsert', prompt });
+    }
+    return ops;
   }
 
   private onPromptCompleted(event: PromptCompletedEvent): TranscriptOperation[] {
@@ -1547,6 +1577,7 @@ export class AgentTranscriptLiveAdapter {
       content: prev?.content,
       createdAt: prev?.createdAt ?? event.abortedAt,
       finishedAt: event.abortedAt,
+      abortedBeforeStart: event.beforeStart === true ? true : undefined,
       steeredAt: prev?.steeredAt,
     }));
     return [{ op: 'prompt.upsert', prompt }];

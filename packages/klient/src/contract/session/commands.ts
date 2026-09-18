@@ -5,7 +5,8 @@ import {
   editMessageRequestSchema, regenerateMessageRequestSchema, messageActionResponseSchema,
   forkSessionRequestSchema, sessionSchema,
   promptSubmissionSchema, promptSubmitResultSchema, promptAbortResponseSchema,
-  promptReplaceRequestSchema, promptReplaceResultSchema, promptSteerResultSchema,
+  promptMoveRequestSchema, promptMoveResultSchema, promptReplaceRequestSchema,
+  promptReplaceResultSchema, promptSteerResultSchema,
   questionResolveRequestSchema, questionResolveResultSchema, questionDismissResultSchema,
 } from '@kiki/protocol';
 
@@ -21,6 +22,7 @@ export const sessionCommandContract = {
   regenerate: { method: 'POST', suffix: '/messages/{target}:regenerate', input: targetBodyInput(regenerateMessageRequestSchema), output: messageActionResponseSchema, okCodes: [0] },
   fork: { method: 'POST', suffix: ':fork', input: bodyInput(forkSessionRequestSchema), output: sessionSchema, okCodes: [0] },
   abort: { method: 'POST', suffix: '/prompts/{target}:abort', input: targetInput, output: promptAbortResponseSchema, okCodes: [0, 40903] },
+  move: { method: 'POST', suffix: '/prompts/{target}:move', input: targetBodyInput(promptMoveRequestSchema), output: promptMoveResultSchema, okCodes: [0] },
   replace: { method: 'POST', suffix: '/prompts/{target}:replace', input: targetBodyInput(promptReplaceRequestSchema), output: promptReplaceResultSchema, okCodes: [0] },
   steer: { method: 'POST', suffix: '/prompts/{target}:steer', input: targetInput, output: promptSteerResultSchema, okCodes: [0] },
   approve: { method: 'POST', suffix: '/approvals/{target}', input: targetBodyInput(approvalResolveRequestSchema), output: approvalResolveResultSchema, okCodes: [0] },

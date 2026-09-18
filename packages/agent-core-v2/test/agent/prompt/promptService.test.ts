@@ -19,6 +19,7 @@ import {
   AgentPromptService,
   PromptAborted,
   PromptCompleted,
+  PromptMoved,
   PromptQueued,
   PromptReplaced,
   PromptStarted,
@@ -406,6 +407,54 @@ describe('AgentPromptService', () => {
     expect(prompt.list().pending.map((item) => item.id)).toEqual([first.id, second.id]);
   });
 
+  it('moves queued prompts to an exact final index and publishes the resulting order', async () => {
+    const { prompt, eventBus } = harness();
+    const moved: Array<{ promptId: string; targetIndex: number; queuedPromptIds: string[] }> = [];
+    eventBus.subscribe(PromptMoved, (event) => {
+      moved.push({
+        promptId: event.promptId,
+        targetIndex: event.targetIndex,
+        queuedPromptIds: event.queuedPromptIds,
+      });
+    });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    await prompt.enqueue({ id: 'a', message: message('a') });
+    await prompt.enqueue({ id: 'b', message: message('b') });
+    await prompt.enqueue({ id: 'c', message: message('c') });
+
+    prompt.move('a', 2);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['b', 'c', 'a']);
+    expect(moved).toEqual([
+      { promptId: 'a', targetIndex: 2, queuedPromptIds: ['b', 'c', 'a'] },
+    ]);
+
+    prompt.move('a', 0);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['a', 'b', 'c']);
+    expect(moved[1]).toEqual({
+      promptId: 'a',
+      targetIndex: 0,
+      queuedPromptIds: ['a', 'b', 'c'],
+    });
+  });
+
+  it('rejects moving a running, missing, or out-of-range prompt without mutating the queue', async () => {
+    const { prompt } = harness();
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    await prompt.enqueue({ id: 'queued', message: message('queued') });
+    const before = prompt.list();
+
+    expect(() => prompt.move('active', 0)).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }),
+    );
+    expect(() => prompt.move('missing', 0)).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }),
+    );
+    expect(() => prompt.move('queued', 1)).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.REQUEST_INVALID }),
+    );
+    expect(prompt.list()).toEqual(before);
+  });
+
   it('atomically replaces a queued prompt without changing identity, order, or terminal state', async () => {
     const { prompt, context, eventBus, loop } = harness({ manualTurnResult: true });
     const replaced: Array<{ promptId: string; content: ContentPart[] }> = [];
@@ -783,13 +832,18 @@ describe('AgentPromptService', () => {
     loop.drainNextBatch(context);
   });
 
-  it('aborts pending prompts and settles completion', async () => {
-    const { prompt } = harness();
+  it('aborts pending prompts and marks the durable event as before-start', async () => {
+    const { prompt, eventBus } = harness();
+    const aborted: Array<{ promptId: string; beforeStart?: boolean }> = [];
+    eventBus.subscribe(PromptAborted, (event) => {
+      aborted.push({ promptId: event.promptId, beforeStart: event.beforeStart });
+    });
     await prompt.enqueue({ message: message('active') });
     const handle = await prompt.enqueue({ message: message('queued') });
     expect(prompt.abort(handle.id)).toBe(true);
     await expect(handle.completion).resolves.toMatchObject({ state: 'cancelled' });
     expect(prompt.list().pending).toEqual([]);
+    expect(aborted).toEqual([{ promptId: handle.id, beforeStart: true }]);
   });
 
   it('keeps injections outside the prompt queue', async () => {

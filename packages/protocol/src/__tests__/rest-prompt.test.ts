@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   promptAbortResponseSchema,
   promptListResponseSchema,
+  promptMoveRequestSchema,
+  promptMoveResultSchema,
   promptReplaceRequestSchema,
   promptReplaceResultSchema,
   promptSubmissionSchema,
@@ -244,6 +246,26 @@ describe('promptReplaceSchema', () => {
         created_at: '2026-06-09T00:00:01.000Z',
       }),
     ).toMatchObject({ prompt_id: 'prompt_queued', status: 'queued' });
+  });
+});
+
+describe('promptMoveSchema', () => {
+  it('requires a nonnegative target index and returns the resulting queue order', () => {
+    expect(promptMoveRequestSchema.parse({ target_index: 1 })).toEqual({ target_index: 1 });
+    expect(promptMoveRequestSchema.safeParse({ target_index: -1 }).success).toBe(false);
+    expect(
+      promptMoveResultSchema.parse({
+        moved: true,
+        prompt_id: 'prompt_b',
+        target_index: 0,
+        queued_prompt_ids: ['prompt_b', 'prompt_a'],
+      }),
+    ).toEqual({
+      moved: true,
+      prompt_id: 'prompt_b',
+      target_index: 0,
+      queued_prompt_ids: ['prompt_b', 'prompt_a'],
+    });
   });
 });
 

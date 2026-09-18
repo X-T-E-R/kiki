@@ -537,6 +537,54 @@ describe('server-v2 /api prompts', () => {
     expect(main!.accessor.get(IAgentPlanService).planGate).toBe('gated');
   });
 
+  it('moves a queued prompt to an exact final index', async () => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'active' }],
+    });
+    expect(active.body.code, active.body.msg).toBe(0);
+    const queued: PromptItemWire[] = [];
+    for (const text of ['one', 'two', 'three']) {
+      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        content: [{ type: 'text', text }],
+      });
+      expect(submitted.body.code, submitted.body.msg).toBe(0);
+      queued.push(submitted.body.data);
+    }
+
+    const moved = await call<{
+      moved: true;
+      prompt_id: string;
+      target_index: number;
+      queued_prompt_ids: string[];
+    }>(
+      'POST',
+      `/api/sessions/${id}/prompts/${queued[2]!.prompt_id}:move`,
+      { target_index: 0 },
+    );
+
+    expect(moved.body.code, moved.body.msg).toBe(0);
+    expect(moved.body.data).toEqual({
+      moved: true,
+      prompt_id: queued[2]!.prompt_id,
+      target_index: 0,
+      queued_prompt_ids: [queued[2]!.prompt_id, queued[0]!.prompt_id, queued[1]!.prompt_id],
+    });
+    const listed = await call<{ active: PromptItemWire | null; queued: PromptItemWire[] }>(
+      'GET',
+      `/api/sessions/${id}/prompts`,
+    );
+    expect(listed.body.data.queued.map((prompt) => prompt.prompt_id)).toEqual(
+      moved.body.data.queued_prompt_ids,
+    );
+    await getLiveSessionById(server!.core.accessor, id)!
+      .accessor.get(IAgentLifecycleService)
+      .get('main')!
+      .accessor.get(IAgentPromptService)
+      .drain();
+  });
+
   it('steers a queued prompt with model and thinking bindings without rebinding the active turn', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
@@ -584,7 +632,7 @@ describe('server-v2 /api prompts', () => {
 
     const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
-      skills: [{ name: 'kiki-ops' }, { name: 'kiki-ops.docs' }],
+      skills: [{ name: 'kiki-ops' }, { name: 'kiki-profile' }],
     });
     expect(submitted.body.code).toBe(0);
     expect(submitted.body.data.prompt_id).toMatch(/^msg_/);
@@ -597,7 +645,7 @@ describe('server-v2 /api prompts', () => {
     const bundled = history.find((message) => message.origin?.kind === 'user');
     expect(bundled?.origin).toMatchObject({
       kind: 'user',
-      skillActivations: [{ skillName: 'kiki-ops' }, { skillName: 'kiki-ops.docs' }],
+      skillActivations: [{ skillName: 'kiki-ops' }, { skillName: 'kiki-profile' }],
     });
     const texts = bundled?.content
       .filter((part) => part.type === 'text')

@@ -24,7 +24,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IFileService } from '#/app/file/fileService';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IEventService } from '#/app/event/event';
-import { Event2 } from '#/app/event/event2';
+import { Event2, registerEvent2Class } from '#/app/event/event2';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
 import { OrderedHookSlot } from '#/hooks';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -85,11 +85,13 @@ export interface PromptCompleted extends PromptCompletedPayload {}
 export interface PromptAbortedPayload {
   readonly promptId: string;
   readonly abortedAt: string;
+  readonly beforeStart?: boolean;
 }
 
 const promptAbortedSchema = z.object({
   promptId: z.string().min(1),
   abortedAt: z.string(),
+  beforeStart: z.boolean().optional(),
 });
 
 export class PromptAborted extends Event2<PromptAbortedPayload> {
@@ -161,6 +163,29 @@ export class PromptReplaced extends Event2<PromptReplacedPayload> {
   static override readonly observable = true;
 }
 export interface PromptReplaced extends PromptReplacedPayload {}
+
+export interface PromptMovedPayload {
+  readonly promptId: string;
+  readonly targetIndex: number;
+  readonly queuedPromptIds: string[];
+  readonly movedAt: string;
+}
+
+const promptMovedSchema = z.object({
+  promptId: z.string().min(1),
+  targetIndex: z.number().int().nonnegative(),
+  queuedPromptIds: z.array(z.string().min(1)),
+  movedAt: z.string(),
+});
+
+export class PromptMoved extends Event2<PromptMovedPayload> {
+  static override readonly type = 'prompt.moved';
+  static override readonly durable = true;
+  static override readonly observable = true;
+  static override readonly schema = promptMovedSchema;
+}
+export interface PromptMoved extends PromptMovedPayload {}
+registerEvent2Class(PromptMoved);
 
 export interface PromptSubmittedPayload {
   readonly agentId: string;
@@ -563,6 +588,27 @@ export class AgentPromptService implements IAgentPromptService {
     return item.handle;
   }
 
+  move(promptId: string, targetIndex: number): void {
+    const sourceIndex = this.pending.findIndex((candidate) => candidate.id === promptId);
+    if (sourceIndex < 0 || this.steeringPromptIds.has(promptId)) {
+      throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${promptId} is not movable`);
+    }
+    if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= this.pending.length) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'target_index is outside the queued prompt range');
+    }
+    if (sourceIndex === targetIndex) return;
+    const [item] = this.pending.splice(sourceIndex, 1) as [Record];
+    this.pending.splice(targetIndex, 0, item);
+    void this.dispatcher.dispatch(
+      new PromptMoved({
+        promptId,
+        targetIndex,
+        queuedPromptIds: this.pending.map((candidate) => candidate.id),
+        movedAt: new Date().toISOString(),
+      }),
+    );
+  }
+
   async steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {
     if (promptIds.length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
     const targetTurnId = this.active?.turn.id ?? this.loop.status().activeTurnId;
@@ -629,7 +675,7 @@ export class AgentPromptService implements IAgentPromptService {
           for (const item of selected) {
             item.state = state;
             item.completionDeferred.resolve({ promptId: item.id, result, state });
-            if (state === 'cancelled') this.publishAborted(item.id);
+            if (state === 'cancelled') this.publishAborted(item.id, false);
             else this.publishCompleted(item.id, state);
           }
         });
@@ -650,7 +696,7 @@ export class AgentPromptService implements IAgentPromptService {
     const [item] = this.pending.splice(index, 1) as [Record];
     item.state = 'cancelled'; item.launchedDeferred.resolve(undefined);
     item.completionDeferred.resolve({ promptId, result: undefined, state: 'cancelled' });
-    this.publishAborted(promptId);
+    this.publishAborted(promptId, true);
     return true;
   }
 
@@ -757,7 +803,7 @@ export class AgentPromptService implements IAgentPromptService {
     item.state = state; item.completionDeferred.resolve({ promptId: item.id, result, state });
     for (const child of this.steered.get(item.id) ?? []) { child.state = state; child.completionDeferred.resolve({ promptId: child.id, result, state }); }
     this.steered.delete(item.id);
-    if (state === 'cancelled') this.publishAborted(item.id); else this.publishCompleted(item.id, state);
+    if (state === 'cancelled') this.publishAborted(item.id, false); else this.publishCompleted(item.id, state);
     void this.startNext();
   }
 
@@ -854,7 +900,7 @@ export class AgentPromptService implements IAgentPromptService {
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
     void this.dispatcher.dispatch(new PromptStarted({ agentId: this.scopeContext.agentId, promptId: record.id }));
   }
-  private publishAborted(promptId: string): void { void this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString() })); }
+  private publishAborted(promptId: string, beforeStart: boolean): void { void this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart })); }
 }
 
 function snapshot(item: Record): PromptSnapshot { return { id: item.id, userMessageId: item.userMessageId, createdAt: item.createdAt, state: item.state, message: item.message }; }

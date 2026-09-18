@@ -17,6 +17,10 @@ export interface TranscriptPrompt {
   readonly content?: unknown;
   readonly createdAt: string;
   readonly finishedAt?: string;
+  /** Zero-based position while the prompt is queued. */
+  readonly queuePosition?: number;
+  /** True when the prompt was aborted before it ever started. */
+  readonly abortedBeforeStart?: boolean;
   /** Set when the prompt was rerouted by a steer. */
   readonly steeredAt?: string;
 }

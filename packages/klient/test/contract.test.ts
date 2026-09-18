@@ -128,6 +128,7 @@ describe('prompt lifecycle events', () => {
     'prompt.queued',
     'prompt.started',
     'prompt.replaced',
+    'prompt.moved',
     'prompt.steered',
     'prompt.completed',
     'prompt.aborted',
@@ -210,8 +211,9 @@ describe('request identity contract validation', () => {
     });
     expect(
       modelCatalogItemSchema.parse({
-        provider: 'example',
-        model: 'example/model',
+        id: 'fast',
+        provider_id: 'example',
+        remote_id: 'vendor/model:v1',
         max_context_size: 1024,
         request_identity: wire,
       }),

@@ -8,6 +8,8 @@ import type {
   ListNamedAgentProfilesResponse,
   MessageContent,
   PromptAbortResponse,
+  PromptMoveRequest,
+  PromptMoveResult,
   PromptReplaceRequest,
   PromptReplaceResult,
   PromptSteerResult,
@@ -226,6 +228,10 @@ export class DaemonClient implements SessionTransport {
 
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse> {
     return this.sessions.abortPrompt(sessionId, promptId);
+  }
+
+  movePrompt(sessionId: string, promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult> {
+    return this.sessions.movePrompt(sessionId, promptId, body);
   }
 
   replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult> {

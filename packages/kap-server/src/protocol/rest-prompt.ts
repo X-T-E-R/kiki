@@ -81,6 +81,19 @@ export type PromptReplaceRequest = z.infer<typeof promptReplaceRequestSchema>;
 export const promptReplaceResultSchema = promptItemSchema;
 export type PromptReplaceResult = z.infer<typeof promptReplaceResultSchema>;
 
+export const promptMoveRequestSchema = z.object({
+  target_index: z.number().int().nonnegative(),
+});
+export type PromptMoveRequest = z.infer<typeof promptMoveRequestSchema>;
+
+export const promptMoveResultSchema = z.object({
+  moved: z.literal(true),
+  prompt_id: z.string().min(1),
+  target_index: z.number().int().nonnegative(),
+  queued_prompt_ids: z.array(z.string().min(1)),
+});
+export type PromptMoveResult = z.infer<typeof promptMoveResultSchema>;
+
 export const promptSteerRequestSchema = z.object({
   prompt_ids: z.array(z.string().min(1)).min(1),
 });

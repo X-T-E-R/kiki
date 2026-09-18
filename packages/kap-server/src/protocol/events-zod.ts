@@ -989,6 +989,15 @@ export const promptAbortedEventSchema = z.object({
   type: z.literal('prompt.aborted'),
   promptId: z.string(),
   abortedAt: isoDateTimeSchema,
+  beforeStart: z.boolean().optional(),
+});
+
+export const promptMovedEventSchema = z.object({
+  type: z.literal('prompt.moved'),
+  promptId: z.string(),
+  targetIndex: z.number().int().nonnegative(),
+  queuedPromptIds: z.array(z.string()),
+  movedAt: isoDateTimeSchema,
 });
 
 export const promptSteeredEventSchema = z.object({
@@ -1081,6 +1090,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   promptQueuedEventSchema,
   promptStartedEventSchema,
   promptReplacedEventSchema,
+  promptMovedEventSchema,
   promptCompletedEventSchema,
   promptAbortedEventSchema,
   promptSteeredEventSchema,
