@@ -1,14 +1,15 @@
 import '#/_base/utils/fsWatchGuard';
 import { watch as fsWatch } from 'node:fs';
-import { basename, isAbsolute, join, relative } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, isAbsolute, join, posix, relative, win32 } from 'node:path';
 
 import { FSWatcher } from 'chokidar';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
-import { Emitter, type Event } from '#/_base/event';
-import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { onUnexpectedError } from '#/_base/errors/unexpectedError';
+import { Emitter, type Event } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
+import { LifecycleScope } from '#/app/scopes';
 
 import {
   type HostFsChange,
@@ -24,7 +25,11 @@ const DEFAULT_IGNORED = (p: string): boolean => /(?:^|[/\\])\.git(?:$|[/\\])/.te
 
 const NATIVE_RETRY_BASE_MS = 1000;
 const NATIVE_RETRY_MAX_MS = 30000;
+const NATIVE_ERROR_LIMIT = 5;
+const WATCH_ERROR_THROTTLE_MS = 300000;
 const IGNORED_TOP_LEVEL_CACHE_SIZE = 4096;
+
+type WatchErrorReporter = (root: string, error: unknown, source: 'native' | 'chokidar') => void;
 
 interface NativeFsWatcher {
   close(): void;
@@ -33,17 +38,26 @@ interface NativeFsWatcher {
 
 interface HostFsWatchRuntime {
   readonly platform: NodeJS.Platform;
+  readonly homeDir: string;
   watchNative(
     root: string,
     listener: (eventType: string, filename: string | null) => void,
   ): NativeFsWatcher;
+  watchFallback(
+    root: string,
+    options: HostFsWatchOptions | undefined,
+    reportError: WatchErrorReporter,
+  ): IHostFsWatchHandle;
   scheduleRetry(callback: () => void, delayMs: number): IDisposable;
 }
 
 const NODE_HOST_FS_WATCH_RUNTIME: HostFsWatchRuntime = {
   platform: process.platform,
+  homeDir: homedir(),
   watchNative: (root, listener) =>
     fsWatch(root, { persistent: false, recursive: true }, listener),
+  watchFallback: (root, options, reportError) =>
+    new HostFsWatchHandle(root, options, reportError),
   scheduleRetry: (callback, delayMs) => {
     const timer = setTimeout(callback, delayMs);
     timer.unref?.();
@@ -94,7 +108,11 @@ class HostFsWatchHandle implements IHostFsWatchHandle {
   private readonly watcher: FSWatcher;
   private disposed = false;
 
-  constructor(path: string, options: HostFsWatchOptions | undefined) {
+  constructor(
+    private readonly root: string,
+    options: HostFsWatchOptions | undefined,
+    private readonly reportError: WatchErrorReporter,
+  ) {
     this.ready = this.readiness.promise;
     this.emitter = new Emitter<HostFsChange>();
     this.onDidChange = this.emitter.event;
@@ -111,10 +129,10 @@ class HostFsWatchHandle implements IHostFsWatchHandle {
     });
     this.watcher.on('error', (error: unknown) => {
       this.readiness.reject(error);
-      onUnexpectedError(error);
+      this.reportError(this.root, error, 'chokidar');
     });
     this.watcher.once('ready', () => this.readiness.resolve());
-    this.watcher.add(path);
+    this.watcher.add(this.root);
   }
 
   dispose(): void {
@@ -135,16 +153,18 @@ class SignalWatchHandle implements IHostFsWatchHandle {
   private readonly ignored: HostFsWatchIgnore;
   private readonly ignoredTopLevel = new Map<string, boolean>();
   private nativeWatcher: NativeFsWatcher | undefined;
-  private chokidarLeg: HostFsWatchHandle | undefined;
+  private chokidarLeg: IHostFsWatchHandle | undefined;
   private retry: IDisposable | undefined;
   private retryAttempts = 0;
   private recovering = false;
+  private recoveryInvalidated = false;
   private disposed = false;
 
   constructor(
     private readonly root: string,
     options: HostFsWatchOptions | undefined,
     private readonly runtime: HostFsWatchRuntime,
+    private readonly reportError: WatchErrorReporter,
   ) {
     this.ready = this.readiness.promise;
     this.emitter = new Emitter<HostFsChange>();
@@ -159,6 +179,7 @@ class SignalWatchHandle implements IHostFsWatchHandle {
       const watcher = this.runtime.watchNative(this.root, (_eventType, filename) => {
         if (this.disposed) return;
         this.retryAttempts = 0;
+        this.recoveryInvalidated = false;
         if (this.isIgnoredTopLevel(filename)) return;
         const absPath = resolveNativeSignalPath(this.root, filename);
         if (absPath !== this.root && this.ignored(absPath)) return;
@@ -171,7 +192,7 @@ class SignalWatchHandle implements IHostFsWatchHandle {
       this.readiness.resolve();
       if (this.recovering) {
         this.recovering = false;
-        this.fireInvalidation();
+        this.fireRecoveryInvalidation();
       }
     } catch (error) {
       this.onNativeError(undefined, error as NodeJS.ErrnoException);
@@ -186,15 +207,24 @@ class SignalWatchHandle implements IHostFsWatchHandle {
     if (error.code === 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM') {
       this.recovering = false;
       this.startChokidarLeg();
-      this.fireInvalidation();
+      this.fireRecoveryInvalidation();
       return;
     }
-    onUnexpectedError(error);
     this.recovering = true;
-    this.fireInvalidation();
-    const delay = Math.min(NATIVE_RETRY_BASE_MS * 2 ** this.retryAttempts, NATIVE_RETRY_MAX_MS);
     this.retryAttempts += 1;
     this.retry?.dispose();
+    this.retry = undefined;
+    if (this.retryAttempts >= NATIVE_ERROR_LIMIT) {
+      this.recovering = false;
+      this.readiness.resolve();
+      this.fireRecoveryInvalidation();
+      this.reportError(this.root, error, 'native');
+      return;
+    }
+    const delay = Math.min(
+      NATIVE_RETRY_BASE_MS * 2 ** (this.retryAttempts - 1),
+      NATIVE_RETRY_MAX_MS,
+    );
     this.retry = this.runtime.scheduleRetry(() => {
       this.retry = undefined;
       this.startNativeLeg();
@@ -203,7 +233,11 @@ class SignalWatchHandle implements IHostFsWatchHandle {
 
   private startChokidarLeg(): void {
     if (this.chokidarLeg !== undefined) return;
-    const leg = new HostFsWatchHandle(this.root, { recursive: true, ignored: this.ignored });
+    const leg = this.runtime.watchFallback(
+      this.root,
+      { recursive: true, ignored: this.ignored },
+      this.reportError,
+    );
     leg.onDidChange((event) => {
       if (!this.disposed) this.emitter.fire(event);
     });
@@ -212,6 +246,12 @@ class SignalWatchHandle implements IHostFsWatchHandle {
       (error: unknown) => this.readiness.reject(error),
     );
     this.chokidarLeg = leg;
+  }
+
+  private fireRecoveryInvalidation(): void {
+    if (this.recoveryInvalidated) return;
+    this.recoveryInvalidated = true;
+    this.fireInvalidation();
   }
 
   private isIgnoredTopLevel(filename: string | null): boolean {
@@ -260,13 +300,36 @@ function topLevelSegment(filename: string): string {
 export class HostFsWatchService implements IHostFsWatchService {
   declare readonly _serviceBrand: undefined;
 
-  constructor(private readonly runtime: HostFsWatchRuntime = NODE_HOST_FS_WATCH_RUNTIME) {}
+  private readonly reportedErrors = new Map<string, number>();
+  private readonly reportError: WatchErrorReporter = (root, error, source) => {
+    const code = watchErrorCode(error);
+    const key = `${normalizeWatchRoot(root, this.runtime.platform)}\0${code}`;
+    const now = Date.now();
+    const lastReported = this.reportedErrors.get(key);
+    if (lastReported !== undefined && now - lastReported < WATCH_ERROR_THROTTLE_MS) return;
+    if (this.reportedErrors.size >= IGNORED_TOP_LEVEL_CACHE_SIZE) this.reportedErrors.clear();
+    this.reportedErrors.set(key, now);
+    const message =
+      source === 'native'
+        ? 'native recursive filesystem watch disabled after repeated errors'
+        : 'filesystem watch failed';
+    const payload = { root, code, source, message: describeWatchError(error) };
+    this.log?.warn(message, payload);
+  };
+
+  constructor(
+    private readonly runtime: HostFsWatchRuntime = NODE_HOST_FS_WATCH_RUNTIME,
+    @ILogService private readonly log?: ILogService,
+  ) {}
 
   watch(path: string, options?: HostFsWatchOptions): IHostFsWatchHandle {
-    if (useNativeRecursive(options, this.runtime.platform)) {
-      return new SignalWatchHandle(path, options, this.runtime);
+    if (
+      useNativeRecursive(options, this.runtime.platform) &&
+      !isExpansiveNativeRoot(path, this.runtime)
+    ) {
+      return new SignalWatchHandle(path, options, this.runtime, this.reportError);
     }
-    return new HostFsWatchHandle(path, options);
+    return this.runtime.watchFallback(path, options, this.reportError);
   }
 }
 
@@ -279,6 +342,32 @@ function useNativeRecursive(
     options.recursive !== false &&
     (platform === 'darwin' || platform === 'win32')
   );
+}
+
+function isExpansiveNativeRoot(root: string, runtime: HostFsWatchRuntime): boolean {
+  const pathApi = runtime.platform === 'win32' ? win32 : posix;
+  const normalizedRoot = normalizeWatchRoot(root, runtime.platform);
+  const normalizedHome = normalizeWatchRoot(runtime.homeDir, runtime.platform);
+  const filesystemRoot = normalizeWatchRoot(
+    pathApi.parse(pathApi.resolve(root)).root,
+    runtime.platform,
+  );
+  return normalizedRoot === normalizedHome || normalizedRoot === filesystemRoot;
+}
+
+function normalizeWatchRoot(root: string, platform: NodeJS.Platform): string {
+  const resolved = (platform === 'win32' ? win32 : posix).resolve(root);
+  return platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function watchErrorCode(error: unknown): string {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return 'UNKNOWN';
+  const code = (error as { readonly code?: unknown }).code;
+  return typeof code === 'string' && code !== '' ? code : 'UNKNOWN';
+}
+
+function describeWatchError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function resolveNativeSignalPath(root: string, filename: string | null): string {

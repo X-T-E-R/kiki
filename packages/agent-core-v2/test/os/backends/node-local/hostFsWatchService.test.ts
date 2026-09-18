@@ -17,6 +17,8 @@ import type {
   IHostFsWatchService,
 } from '#/os/interface/hostFsWatch';
 
+import { stubLog } from '../../../_base/log/stubs';
+
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 type HostFsWatchRuntime = NonNullable<ConstructorParameters<typeof HostFsWatchService>[0]>;
@@ -50,18 +52,27 @@ interface TestRetry {
   run(): void;
 }
 
-function signalRig(options?: { readonly synchronousFailures?: number }): {
+function signalRig(options?: {
+  readonly synchronousFailures?: number;
+  readonly platform?: NodeJS.Platform;
+  readonly homeDir?: string;
+}): {
   readonly service: IHostFsWatchService;
   readonly attempts: TestNativeAttempt[];
   readonly retries: TestRetry[];
+  readonly fallbackRoots: string[];
+  readonly warnings: { readonly message: string; readonly payload: unknown }[];
   attempt(index: number): TestNativeAttempt;
   retry(index: number): TestRetry;
 } {
   const attempts: TestNativeAttempt[] = [];
   const retries: TestRetry[] = [];
+  const fallbackRoots: string[] = [];
+  const warnings: { message: string; payload: unknown }[] = [];
   let synchronousFailures = options?.synchronousFailures ?? 0;
   const runtime: HostFsWatchRuntime = {
-    platform: 'darwin',
+    platform: options?.platform ?? 'darwin',
+    homeDir: options?.homeDir ?? '/Users/example',
     watchNative: (_root, listener) => {
       if (synchronousFailures > 0) {
         synchronousFailures -= 1;
@@ -75,6 +86,14 @@ function signalRig(options?: { readonly synchronousFailures?: number }): {
         },
       });
       return watcher;
+    },
+    watchFallback: (path) => {
+      fallbackRoots.push(path);
+      return {
+        ready: Promise.resolve(),
+        onDidChange: () => ({ dispose: () => {} }),
+        dispose: () => {},
+      };
     },
     scheduleRetry: (callback, delayMs) => {
       let active = true;
@@ -96,10 +115,16 @@ function signalRig(options?: { readonly synchronousFailures?: number }): {
       };
     },
   };
+  const log = {
+    ...stubLog(),
+    warn: (message: string, payload?: unknown) => warnings.push({ message, payload }),
+  };
   return {
-    service: new HostFsWatchService(runtime),
+    service: new HostFsWatchService(runtime, log),
     attempts,
     retries,
+    fallbackRoots,
+    warnings,
     attempt: (index) => requiredAt(attempts, index),
     retry: (index) => requiredAt(retries, index),
   };
@@ -214,7 +239,7 @@ describe('host filesystem change notifications', () => {
     expect(rig.retries.map((retry) => retry.delayMs)).toEqual([1000, 2000, 4000]);
   });
 
-  it('invalidates again after a native watch is rearmed', () => {
+  it('invalidates once after a native watch is rearmed', () => {
     const rig = signalRig();
     const events: HostFsChange[] = [];
     handle = rig.service.watch('/repo', { signal: true });
@@ -223,10 +248,63 @@ describe('host filesystem change notifications', () => {
     rig.attempt(0).watcher.fail();
     rig.retry(0).run();
 
-    expect(events).toEqual([
-      { path: '/repo', action: 'modified', kind: 'directory' },
-      { path: '/repo', action: 'modified', kind: 'directory' },
+    expect(events).toEqual([{ path: '/repo', action: 'modified', kind: 'directory' }]);
+  });
+
+  it('opens the native circuit after five errors and deduplicates the warning', () => {
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    const rig = signalRig();
+    const events: HostFsChange[] = [];
+    handle = rig.service.watch('/repo', { signal: true });
+    handle.onDidChange((event) => events.push(event));
+
+    for (let index = 0; index < 4; index += 1) {
+      rig.attempt(index).watcher.fail('EPERM');
+      rig.retry(index).run();
+    }
+    rig.attempt(4).watcher.fail('EPERM');
+
+    expect(rig.attempts).toHaveLength(5);
+    expect(rig.retries).toHaveLength(4);
+    expect(events).toEqual([{ path: '/repo', action: 'modified', kind: 'directory' }]);
+    expect(rig.warnings).toEqual([
+      {
+        message: 'native recursive filesystem watch disabled after repeated errors',
+        payload: {
+          root: '/repo',
+          code: 'EPERM',
+          source: 'native',
+          message: 'native watch failed',
+        },
+      },
     ]);
+    expect(unexpected).toEqual([]);
+
+    handle.dispose();
+    handle = rig.service.watch('/repo', { signal: true });
+    for (let index = 5; index < 9; index += 1) {
+      rig.attempt(index).watcher.fail('EPERM');
+      rig.retry(index - 1).run();
+    }
+    rig.attempt(9).watcher.fail('EPERM');
+
+    expect(rig.attempts).toHaveLength(10);
+    expect(rig.retries).toHaveLength(8);
+    expect(rig.warnings).toHaveLength(1);
+  });
+
+  it('uses the filtered fallback watcher for an OS home directory or filesystem root', () => {
+    const rig = signalRig({ platform: 'win32', homeDir: 'C:\\Users\\Example' });
+
+    handle = rig.service.watch('c:\\users\\example\\', { signal: true, recursive: true });
+    expect(rig.fallbackRoots).toEqual(['c:\\users\\example\\']);
+    expect(rig.attempts).toEqual([]);
+
+    handle.dispose();
+    handle = rig.service.watch('D:\\', { signal: true, recursive: true });
+    expect(rig.fallbackRoots).toEqual(['c:\\users\\example\\', 'D:\\']);
+    expect(rig.attempts).toEqual([]);
   });
 
   it('invalidates after recovering from a synchronous native-watch creation failure', () => {
