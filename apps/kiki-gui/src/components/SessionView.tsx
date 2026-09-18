@@ -1201,6 +1201,12 @@ export function SessionView({
     { decision: 'approved' | 'rejected'; ids: readonly string[] } | undefined
   >(undefined);
   const [confirmClearQueue, setConfirmClearQueue] = useState(false);
+  // Queue edit round-trip: the queued text being edited lives in the composer;
+  // `savedDraft` is what the composer held before the edit parked itself there.
+  const [queueEdit, setQueueEdit] = useState<{
+    readonly promptId: string;
+    readonly savedDraft: string;
+  } | null>(null);
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
     () =>
@@ -1558,7 +1564,7 @@ export function SessionView({
   const sessionModel = state.model;
   const inheritedDefault = serverDefaultModel ?? liveSettings.defaultModel;
   const effectiveModel = resolveEffectiveModel(modelOverride, sessionModel, inheritedDefault);
-  const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.model === effectiveModel);
+  const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.id === effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
   // Keep the local choice through delayed bindings and catalog changes. The
   // Composer diagnoses incompatibility without destroying the saved value.
@@ -2198,10 +2204,6 @@ export function SessionView({
     (promptId: string) => actions?.cancelQueued(promptId) ?? Promise.resolve(),
     [actions],
   );
-  const handleEditQueued = useCallback(
-    (promptId: string, text: string) => actions?.editQueued(promptId, text) ?? Promise.resolve(),
-    [actions],
-  );
   // Transcript's prop type predates the queue strip and wants a void return:
   // hand it a memoized fire-and-forget view of the same action.
   const handleCancelQueuedChips = useCallback(
@@ -2217,6 +2219,75 @@ export function SessionView({
     setConfirmClearQueue(true);
   }, [actions]);
   const queuedItems = useMemo(() => queuedPromptPreviews(state), [state]);
+  // Queue edit round-trip: "edit" parks the queued text in the composer
+  // (remembering the in-progress draft); confirm replaces it in place via
+  // actions.editQueued, cancel/remove hand the saved draft back.
+  const handleStartQueueEdit = useCallback(
+    (promptId: string) => {
+      if (queueEdit !== null) return;
+      const item = queuedItems.find((entry) => entry.promptId === promptId);
+      if (item === undefined || item.text === '') return;
+      setQueueEdit({ promptId, savedDraft: draftRef.current });
+      updateDraft(item.text);
+    },
+    [queueEdit, queuedItems, updateDraft],
+  );
+  const handleQueueEditConfirm = useCallback(
+    (text: string): Promise<void> => {
+      const edit = queueEdit;
+      if (edit === null) return Promise.resolve();
+      const exit = () => {
+        setQueueEdit(null);
+        updateDraft(edit.savedDraft);
+      };
+      const item = queuedItems.find((entry) => entry.promptId === edit.promptId);
+      // Row vanished (sent/cleared elsewhere) or text unchanged: nothing to
+      // replace — just restore the draft.
+      if (item === undefined || item.text === text || actions === null) {
+        exit();
+        return Promise.resolve();
+      }
+      return actions
+        .editQueued(edit.promptId, text)
+        .then(() => { exit(); })
+        // editQueued already toasted the failure; keep the edit open so the
+        // text can be retried or cancelled.
+        .catch(() => undefined);
+    },
+    [queueEdit, queuedItems, actions, updateDraft],
+  );
+  const handleQueueEditCancel = useCallback(() => {
+    if (queueEdit === null) return;
+    updateDraft(queueEdit.savedDraft);
+    setQueueEdit(null);
+  }, [queueEdit, updateDraft]);
+  const handleQueueEditRemove = useCallback(() => {
+    const edit = queueEdit;
+    if (edit === null) return;
+    setQueueEdit(null);
+    updateDraft(edit.savedDraft);
+    void handleCancelQueued(edit.promptId);
+  }, [queueEdit, updateDraft, handleCancelQueued]);
+  const handleMoveQueued = useCallback(
+    (promptId: string, targetIndex: number) =>
+      controller?.moveQueued(promptId, targetIndex).catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('queue.moveFailed', {
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        });
+      }) ?? Promise.resolve(),
+    [controller, t],
+  );
+  // Self-heal: if the row being edited leaves the queue (steered, cleared, or
+  // aborted from another surface), leave edit mode and restore the draft.
+  useEffect(() => {
+    if (queueEdit === null || !state.loaded) return;
+    if (!state.queuedPromptIds.includes(queueEdit.promptId)) {
+      handleQueueEditCancel();
+    }
+  }, [queueEdit, state.loaded, state.queuedPromptIds, handleQueueEditCancel]);
   const handleRetryLoad = useCallback(() => void controller?.retryOpen(), [controller]);
 
   // Submit the prompt or skill that was drafted on /new, now that the live
@@ -2405,6 +2476,10 @@ export function SessionView({
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}
             onAbort={handleComposerAbort}
+            queueEditing={queueEdit !== null}
+            onQueueEditConfirm={handleQueueEditConfirm}
+            onQueueEditCancel={handleQueueEditCancel}
+            onQueueEditRemove={handleQueueEditRemove}
           />
         </ContextBreakdownProvider>
       ),
@@ -2451,6 +2526,10 @@ export function SessionView({
     handleCompactContext,
     handleComposerSend,
     handleComposerAbort,
+    queueEdit,
+    handleQueueEditConfirm,
+    handleQueueEditCancel,
+    handleQueueEditRemove,
     handleModelChange,
     handleEffortChange,
     handleAgentProfileChange,
@@ -2862,7 +2941,9 @@ export function SessionView({
                   items={queuedItems}
                   onSendNow={handleSendNowQueued}
                   onRemove={handleCancelQueued}
-                  onEdit={handleEditQueued}
+                  onEdit={handleStartQueueEdit}
+                  onMove={handleMoveQueued}
+                  editingPromptId={queueEdit?.promptId}
                   onClearAll={handleClearQueue}
                   sendNowDisabled={state.resyncing || state.resyncFailed}
                 />

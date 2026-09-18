@@ -902,6 +902,57 @@ export class TranscriptProjector {
         projected = { agentId, ops };
         break;
       }
+      case 'prompt.replaced': {
+        // In-place content swap: the prompt keeps its queue slot, so carry the
+        // previous record forward (prompt.upsert replaces, it does not merge).
+        const id = payload.promptId ?? payload.prompt_id ?? promptId;
+        if (id === undefined) break;
+        const prev = agent.snapshot.prompts.find((entry) => entry.promptId === id);
+        projected = {
+          agentId,
+          ops: [
+            {
+              op: 'prompt.upsert',
+              prompt: {
+                promptId: id,
+                status: prev?.status ?? 'queued',
+                ...(prev?.userMessageId !== undefined ? { userMessageId: prev.userMessageId } : {}),
+                content: payload.content ?? prev?.content,
+                createdAt: prev?.createdAt ?? at,
+                ...(prev?.queuePosition !== undefined ? { queuePosition: prev.queuePosition } : {}),
+              },
+            },
+          ],
+        };
+        break;
+      }
+      case 'prompt.moved': {
+        // The wire event carries the full post-move queue order; stamp each
+        // parked prompt with its slot so the projection re-sorts from truth
+        // (prompt.upsert replaces, so the previous fields ride along).
+        const ids = [
+          ...(Array.isArray(payload.queuedPromptIds) ? payload.queuedPromptIds : []),
+          ...(Array.isArray(payload.queued_prompt_ids) ? payload.queued_prompt_ids : []),
+        ].filter((id, index, all) => typeof id === 'string' && id !== '' && all.indexOf(id) === index);
+        if (ids.length === 0) break;
+        const movedAt = payload.movedAt ?? at;
+        const ops = ids.map((id, index) => {
+          const prev = agent.snapshot.prompts.find((entry) => entry.promptId === id);
+          return {
+            op: 'prompt.upsert',
+            prompt: {
+              promptId: id,
+              status: prev?.status ?? 'queued',
+              ...(prev?.userMessageId !== undefined ? { userMessageId: prev.userMessageId } : {}),
+              content: prev?.content,
+              createdAt: prev?.createdAt ?? movedAt,
+              queuePosition: index,
+            },
+          };
+        });
+        projected = { agentId, ops };
+        break;
+      }
       case 'event.approval.requested': {
         projected = {
           agentId,

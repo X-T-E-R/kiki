@@ -218,6 +218,10 @@ export function Composer({
   onChangeEffort,
   onSend,
   onAbort,
+  queueEditing = false,
+  onQueueEditConfirm,
+  onQueueEditCancel,
+  onQueueEditRemove,
   autoFocus,
 }: {
   busy: boolean;
@@ -332,6 +336,17 @@ export function Composer({
   onSend: (text: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
+  /**
+   * Queue-edit mode (a queued message's text is parked in the draft): the send
+   * button becomes a confirm check that routes to onQueueEditConfirm — the
+   * edit lands back at the message's ORIGINAL queue position — and the stop
+   * button becomes a two-step remove for that queued message. Slash-command
+   * classification is skipped: the draft is verbatim message text here.
+   */
+  queueEditing?: boolean;
+  onQueueEditConfirm?: (text: string) => void | Promise<unknown>;
+  onQueueEditCancel?: () => void;
+  onQueueEditRemove?: () => void;
   /** Marks the textarea as the dialog's initial-focus target (`data-autofocus`). */
   autoFocus?: boolean;
 }) {
@@ -412,6 +427,25 @@ export function Composer({
     name: string;
     reason: 'unknown' | 'disabled';
   } | null>(null);
+  // Queue-edit remove is a two-step control: the first click arms the button
+  // ("Remove?"), the second actually drops the queued message. The arm times
+  // out so a stray hover never leaves a live one-click remove behind.
+  const [queueEditRemoveArmed, setQueueEditRemoveArmed] = useState(false);
+  const queueEditRemoveArmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (queueEditing) return;
+    setQueueEditRemoveArmed(false);
+    if (queueEditRemoveArmTimerRef.current !== null) {
+      clearTimeout(queueEditRemoveArmTimerRef.current);
+      queueEditRemoveArmTimerRef.current = null;
+    }
+  }, [queueEditing]);
+  useEffect(
+    () => () => {
+      if (queueEditRemoveArmTimerRef.current !== null) clearTimeout(queueEditRemoveArmTimerRef.current);
+    },
+    [],
+  );
 
   // C-1 input history: per-scope (session, or the /new draft's workspace),
   // memory-only, recorded at send time (see lib/drafts.ts). Browsing state is
@@ -470,16 +504,18 @@ export function Composer({
               ? inheritTargetId
               : undefined,
           badges:
-            inheritResolved !== undefined ? [{ label: inheritResolved.provider }] : undefined,
+            inheritResolved !== undefined ? [{ label: inheritResolved.provider_id }] : undefined,
         },
         ...models.map((item) => ({
-          value: item.model,
-          label: `${item.display_name ?? item.model}${item.model === defaultModel ? t('composer.sessionDefaultSuffix') : ''}`,
+          value: item.id,
+          label: `${item.display_name ?? item.id}${item.id === defaultModel ? t('composer.sessionDefaultSuffix') : ''}`,
+          // The hint names the local alias: two aliases of one remote model
+          // (the supported shape) must stay distinguishable in the picker.
           hint:
-            item.display_name !== undefined && item.display_name !== item.model
-              ? item.model
-              : undefined,
-          group: item.provider,
+            item.display_name !== undefined && item.display_name !== item.id
+              ? item.id
+              : item.remote_id,
+          group: item.provider_id,
           badges: [
             ...(item.capabilities ?? []).map((capability) => ({ label: capability })),
             ...(item.support_efforts ?? []).map((level) => ({
@@ -490,8 +526,8 @@ export function Composer({
               accent: level === item.default_effort,
             })),
           ],
-          keywords: item.model,
-          title: item.model,
+          keywords: `${item.id} ${item.remote_id}`,
+          title: item.id,
         })),
       ];
     },
@@ -534,7 +570,7 @@ export function Composer({
   // as the resolved catalog row, so the trigger names the serving provider's
   // model instead of an unmatched raw id.
   const resolvedModelKey = model !== undefined
-    ? resolveCatalogModel(models, model)?.model
+    ? resolveCatalogModel(models, model)?.id
     : undefined;
   const selectionLoading = modelsQuery.isPending || (validateProfile && agentProfilesQuery.isPending);
   const selectionCatalogError = modelsQuery.error ?? (validateProfile ? agentProfilesQuery.error : null);
@@ -654,17 +690,21 @@ export function Composer({
       (attachment.kind === 'upload' && attachment.fileId === undefined),
   );
 
-  const canSend =
-    (text.trim() !== '' || attachments.length > 0) &&
-    !disabled &&
-    !sendDisabled &&
-    !selectionBlocked &&
-    !pendingAttachments &&
-    !turnInFlight;
+  // Queue-edit mode only gates on the text itself: the model catalog and
+  // attachment reads belong to a real send, not to an in-place queue edit.
+  const canSend = queueEditing
+    ? text.trim() !== '' && !disabled && !sendDisabled && !turnInFlight
+    : (text.trim() !== '' || attachments.length > 0) &&
+      !disabled &&
+      !sendDisabled &&
+      !selectionBlocked &&
+      !pendingAttachments &&
+      !turnInFlight;
 
   // The chips band (quote/annotations/attachments/errors/typo guard) only
   // exists with content; it gates the wrapper's top padding above the input.
   const hasChips =
+    queueEditing ||
     (quote !== undefined && quote !== null) ||
     (annotations !== undefined && annotations.length > 0) ||
     goalStatus !== undefined ||
@@ -1016,6 +1056,17 @@ export function Composer({
 
   const send = () => {
     if (!canSend) return;
+    // Queue-edit mode: the draft IS a queued message's text. Confirming hands
+    // it to the queue round-trip (in-place replace at the original slot) —
+    // never to command classification, skill activation, or a fresh send.
+    if (queueEditing) {
+      setMenu(null);
+      const edited = text.trim();
+      runAgentTurn(async () => {
+        await onQueueEditConfirm?.(edited);
+      });
+      return;
+    }
     // An open menu owns Enter: accept the highlighted row instead of sending.
     if (menu !== null && menuRowCount > 0) {
       if (menu.kind === 'slash') {
@@ -1158,6 +1209,13 @@ export function Composer({
     }
     if (event.key === 'Escape' && exitHistoryRecall()) {
       event.preventDefault();
+      return;
+    }
+    // Queue-edit mode: Escape hands the pre-edit draft back (one Esc per
+    // layer — an open menu or history browse above eats its own first).
+    if (event.key === 'Escape' && queueEditing) {
+      event.preventDefault();
+      onQueueEditCancel?.();
       return;
     }
     if (event.nativeEvent.isComposing) return;
@@ -1309,6 +1367,28 @@ export function Composer({
               textarea keeps its comfortable top padding on an empty draft. */}
           {hasChips ? (
             <div className="pt-2 pb-1.5">
+          {queueEditing ? (
+            <div
+              data-queue-edit-banner
+              className="anim-enter mx-3.5 mt-2 flex items-center gap-2 rounded-lg border border-amber-rule/40 bg-amber-card px-2.5 py-1.5"
+            >
+              <span aria-hidden className="shrink-0 text-[11.5px] leading-snug text-amber-ink">
+                ✎
+              </span>
+              <p className="min-w-0 flex-1 truncate text-[11.5px] leading-snug text-amber-ink">
+                {t('composer.queueEditBanner')}
+              </p>
+              <button
+                type="button"
+                aria-label={t('composer.queueEditCancel')}
+                title={t('composer.queueEditCancel')}
+                onClick={() => { onQueueEditCancel?.(); }}
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-amber-ink/60 transition-colors hover:bg-amber-ink/10 hover:text-amber-ink"
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
           {quote !== undefined && quote !== null ? (
             <div
               data-quote-chip
@@ -1757,7 +1837,60 @@ export function Composer({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              {busy && onAbort !== undefined ? (
+              {queueEditing && onQueueEditRemove !== undefined ? (
+                // Queue-edit mode: the stop button becomes the remove control
+                // for the queued message being edited (two-step: arm, then
+                // confirm). Turn abort resumes when the edit ends.
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!queueEditRemoveArmed) {
+                      setQueueEditRemoveArmed(true);
+                      if (queueEditRemoveArmTimerRef.current !== null) {
+                        clearTimeout(queueEditRemoveArmTimerRef.current);
+                      }
+                      queueEditRemoveArmTimerRef.current = setTimeout(() => {
+                        setQueueEditRemoveArmed(false);
+                        queueEditRemoveArmTimerRef.current = null;
+                      }, 5_000);
+                      return;
+                    }
+                    setQueueEditRemoveArmed(false);
+                    if (queueEditRemoveArmTimerRef.current !== null) {
+                      clearTimeout(queueEditRemoveArmTimerRef.current);
+                      queueEditRemoveArmTimerRef.current = null;
+                    }
+                    onQueueEditRemove();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape' && queueEditRemoveArmed) {
+                      event.preventDefault();
+                      setQueueEditRemoveArmed(false);
+                    }
+                  }}
+                  title={queueEditRemoveArmed ? t('composer.queueEditRemoveConfirm') : t('composer.queueEditRemoveTitle')}
+                  aria-label={queueEditRemoveArmed ? t('composer.queueEditRemoveConfirm') : t('composer.queueEditRemoveAria')}
+                  className={`flex h-8 shrink-0 items-center justify-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none ${
+                    queueEditRemoveArmed
+                      ? 'gap-1 border-danger/60 bg-danger/10 px-2.5 text-[11px] font-medium text-danger hover:bg-danger/20'
+                      : 'w-8 border-danger/40 text-danger hover:bg-danger/10'
+                  }`}
+                >
+                  {queueEditRemoveArmed ? (
+                    t('composer.queueEditRemoveConfirm')
+                  ) : (
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+                      <path
+                        d="M2.5 4h11M6.5 4V2.9a.4.4 0 0 1 .4-.4h2.2a.4.4 0 0 1 .4.4V4m-7.2 0 .65 8.15a1.4 1.4 0 0 0 1.4 1.35h3.3a1.4 1.4 0 0 0 1.4-1.35L13.7 4M6.6 6.8v4.4m2.8-4.4v4.4"
+                        stroke="currentColor"
+                        strokeWidth="1.3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                </button>
+              ) : busy && onAbort !== undefined ? (
                 <button
                   type="button"
                   onClick={onAbort}
@@ -1775,24 +1908,38 @@ export function Composer({
                 onClick={send}
                 disabled={!canSend}
                 title={
-                  sendDisabled && !disabled && sendDisabledTitle !== undefined
-                    ? sendDisabledTitle
-                    : busy
-                      ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
-                      : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
+                  queueEditing
+                    ? t(sendShortcut === 'cmd-enter' ? 'composer.queueEditConfirmTitleCmdEnter' : 'composer.queueEditConfirmTitle')
+                    : sendDisabled && !disabled && sendDisabledTitle !== undefined
+                      ? sendDisabledTitle
+                      : busy
+                        ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
+                        : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
                 }
-                aria-label={busy ? t('composer.queueAria') : t('composer.sendAria')}
+                aria-label={queueEditing ? t('composer.queueEditConfirm') : busy ? t('composer.queueAria') : t('composer.sendAria')}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
               >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-                  <path
-                    d="M2.5 8h10M9 3.5 13.5 8 9 12.5"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
+                {queueEditing ? (
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                    <path
+                      d="M3 8.5 6.5 12 13 4.5"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                    <path
+                      d="M2.5 8h10M9 3.5 13.5 8 9 12.5"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
               </button>
             </div>
           </div>

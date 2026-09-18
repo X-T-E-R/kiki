@@ -211,6 +211,71 @@ describe('QueueStrip', () => {
     );
     expect(withHandler).toContain('aria-label="Edit queued prompt"');
   });
+
+  it('renders drag handles only when onMove is wired and more than one prompt is parked', () => {
+    const bare = renderToStaticMarkup(
+      <I18nProvider>
+        <QueueStrip
+          items={[
+            { promptId: 'p1', text: 'first parked prompt' },
+            { promptId: 'p2', text: 'second parked prompt' },
+          ]}
+          onSendNow={noop}
+          onRemove={noop}
+          onClearAll={noop}
+        />
+      </I18nProvider>,
+    );
+    expect(bare).not.toContain('aria-label="Reorder this queued prompt"');
+    const single = renderToStaticMarkup(
+      <I18nProvider>
+        <QueueStrip
+          items={[{ promptId: 'p1', text: 'only parked prompt' }]}
+          onSendNow={noop}
+          onRemove={noop}
+          onClearAll={noop}
+          onMove={noop}
+        />
+      </I18nProvider>,
+    );
+    expect(single).not.toContain('aria-label="Reorder this queued prompt"');
+    const pair = renderToStaticMarkup(
+      <I18nProvider>
+        <QueueStrip
+          items={[
+            { promptId: 'p1', text: 'first parked prompt' },
+            { promptId: 'p2', text: 'second parked prompt' },
+          ]}
+          onSendNow={noop}
+          onRemove={noop}
+          onClearAll={noop}
+          onMove={noop}
+        />
+      </I18nProvider>,
+    );
+    expect(pair.match(/aria-label="Reorder this queued prompt"/g)).toHaveLength(2);
+  });
+
+  it('marks the row parked in the composer and force-expands the list while editing', () => {
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <QueueStrip
+          items={[
+            { promptId: 'p1', text: 'first parked prompt' },
+            { promptId: 'p2', text: 'second parked prompt' },
+          ]}
+          onSendNow={noop}
+          onRemove={noop}
+          onClearAll={noop}
+          onEdit={noop}
+          editingPromptId="p2"
+        />
+      </I18nProvider>,
+    );
+    expect(html).toContain('Editing in the composer');
+    expect(html).not.toContain('hidden=""');
+    expect(html).toMatch(/aria-expanded="true"/);
+  });
 });
 
 describe('queued prompt editing', () => {
@@ -1571,8 +1636,8 @@ describe('nested subagent task ownership', () => {
 
 describe('SubagentDetailActions', () => {
   const MODELS = [
-    { provider: 'provider', model: 'provider/model-a', max_context_size: 128000 },
-    { provider: 'provider', model: 'provider/model-b', max_context_size: 64000 },
+    { id: 'provider/model-a', provider_id: 'provider', remote_id: 'model-a', max_context_size: 128000 },
+    { id: 'provider/model-b', provider_id: 'provider', remote_id: 'model-b', max_context_size: 64000 },
   ];
 
   it('renders message, model, and terminate controls for a live agent', () => {

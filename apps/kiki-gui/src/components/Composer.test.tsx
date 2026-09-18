@@ -61,7 +61,9 @@ beforeAll(() => {
 beforeEach(() => {
   resetInputHistoryForTests();
   clearToasts();
-  listModels.mockReset().mockResolvedValue({ items: [{ model: 'fixture/kiki-pro', provider: 'fixture' }] });
+  listModels.mockReset().mockResolvedValue({
+    items: [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', max_context_size: 128000 }],
+  });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
@@ -746,7 +748,15 @@ describe('Composer mode dropdown', () => {
 
   it('rests on one trigger per control, each carrying its own state', async () => {
     listModels.mockResolvedValue({
-      items: [{ provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro' }],
+      items: [
+        {
+          id: 'fixture/kiki-pro',
+          provider_id: 'fixture',
+          remote_id: 'kiki-pro',
+          display_name: 'Kiki Pro',
+          max_context_size: 128000,
+        },
+      ],
     });
     const { container } = await renderComposer({ planMode: true, swarmMode: true });
     for (let index = 0; index < 5; index += 1) await settle();
@@ -807,8 +817,20 @@ describe('Composer goal run-state chip', () => {
 describe('Composer model chip', () => {
   const catalog = {
     items: [
-      { provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro' },
-      { provider: 'fixture', model: 'fixture/kiki-air', display_name: 'Kiki Air' },
+      {
+        id: 'fixture/kiki-pro',
+        provider_id: 'fixture',
+        remote_id: 'kiki-pro',
+        display_name: 'Kiki Pro',
+        max_context_size: 128000,
+      },
+      {
+        id: 'fixture/kiki-air',
+        provider_id: 'fixture',
+        remote_id: 'kiki-air',
+        display_name: 'Kiki Air',
+        max_context_size: 128000,
+      },
     ],
   };
 
@@ -871,8 +893,20 @@ describe('Composer model chip', () => {
   it('treats an ambiguous bare alias as available, naming the serving provider', async () => {
     listModels.mockResolvedValue({
       items: [
-        { provider: 'alpha', model: 'alpha/k3-256k', display_name: 'K3 256K' },
-        { provider: 'beta', model: 'beta/k3-256k', display_name: 'K3 256K' },
+        {
+          id: 'alpha/k3-256k',
+          provider_id: 'alpha',
+          remote_id: 'k3-256k',
+          display_name: 'K3 256K',
+          max_context_size: 128000,
+        },
+        {
+          id: 'beta/k3-256k',
+          provider_id: 'beta',
+          remote_id: 'k3-256k',
+          display_name: 'K3 256K',
+          max_context_size: 128000,
+        },
       ],
     });
     const { container } = await renderComposer({ serverDefaultModel: 'k3-256k' });
@@ -900,8 +934,20 @@ describe('Composer model chip', () => {
   it('resolves a bare-alias override onto the first candidate row', async () => {
     listModels.mockResolvedValue({
       items: [
-        { provider: 'alpha', model: 'alpha/k3-256k', display_name: 'K3 256K' },
-        { provider: 'beta', model: 'beta/k3-256k', display_name: 'K3 256K' },
+        {
+          id: 'alpha/k3-256k',
+          provider_id: 'alpha',
+          remote_id: 'k3-256k',
+          display_name: 'K3 256K',
+          max_context_size: 128000,
+        },
+        {
+          id: 'beta/k3-256k',
+          provider_id: 'beta',
+          remote_id: 'k3-256k',
+          display_name: 'K3 256K',
+          max_context_size: 128000,
+        },
       ],
     });
     const { container } = await renderComposer({ model: 'k3-256k' });
@@ -1703,5 +1749,96 @@ describe('Composer restored selection diagnostics', () => {
     expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('high');
     await click(container.querySelector('[data-selection-diagnostic] button')!);
     expect(onChangeEffort).toHaveBeenCalledWith(undefined);
+  });
+});
+
+
+describe('Composer queue edit mode', () => {
+  function queueEditProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
+    return {
+      queueEditing: true,
+      onQueueEditConfirm: vi.fn(async () => {}),
+      onQueueEditCancel: vi.fn(),
+      onQueueEditRemove: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  it('routes Enter to the queue edit confirm instead of a fresh send', async () => {
+    const onSend = vi.fn();
+    const props = queueEditProps({ onSend });
+    const { container } = await renderComposer({ value: 'edited queued text', ...props });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Confirm edit"]')!;
+
+    expect(sendButton.disabled).toBe(false);
+    await pressKey(textarea, { key: 'Enter' });
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('edited queued text');
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('skips the slash typo guard while editing a queued message', async () => {
+    const props = queueEditProps();
+    const { container } = await renderComposer({ value: '/not-a-skill at all', ...props });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    await pressKey(textarea, { key: 'Enter' });
+    // A slash-looking edit is queue text, not a command attempt: no guard.
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('/not-a-skill at all');
+    expect(container.textContent).not.toContain('Send as plain text');
+  });
+
+  it('cancels the edit with Escape and from the banner', async () => {
+    const props = queueEditProps();
+    const { container } = await renderComposer({ value: 'queued text', ...props });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    expect(container.querySelector('[data-queue-edit-banner]')?.textContent).toContain(
+      'Editing a queued message',
+    );
+    await pressKey(textarea, { key: 'Escape' });
+    expect(props.onQueueEditCancel).toHaveBeenCalledTimes(1);
+
+    await click(container.querySelector('button[aria-label="Cancel editing"]')!);
+    expect(props.onQueueEditCancel).toHaveBeenCalledTimes(2);
+  });
+
+  it('turns the stop button into a two-step remove while editing', async () => {
+    const props = queueEditProps();
+    const { container } = await renderComposer({ value: 'queued text', busy: true, onAbort: vi.fn(), ...props });
+
+    const removeButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove this queued message"]',
+    )!;
+    // The turn-abort button is parked for the duration of the edit.
+    expect(container.querySelector('button[aria-label="Abort the running prompt"]')).toBeNull();
+
+    await click(removeButton);
+    expect(props.onQueueEditRemove).not.toHaveBeenCalled();
+    const armed = container.querySelector<HTMLButtonElement>('button[aria-label="Remove?"]')!;
+    expect(armed.textContent).toContain('Remove?');
+
+    await click(armed);
+    expect(props.onQueueEditRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it('latches the confirm while the round trip is in flight', async () => {
+    const gate = deferred<void>();
+    const props = queueEditProps({ onQueueEditConfirm: vi.fn(() => gate.promise) });
+    const { container } = await renderComposer({ value: 'queued text', ...props });
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Confirm edit"]')!;
+
+    await click(sendButton);
+    expect(props.onQueueEditConfirm).toHaveBeenCalledTimes(1);
+    expect(sendButton.disabled).toBe(true);
+
+    await click(sendButton);
+    expect(props.onQueueEditConfirm).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      gate.resolve();
+    });
+    await settle();
+    expect(sendButton.disabled).toBe(false);
   });
 });

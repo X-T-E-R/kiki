@@ -157,7 +157,7 @@ function sleep(ms) {
 
 function fixtureProviderFromBody(id, body, previousHasKey = false, previousRequestIdentity) {
   const hasApiKey = body.api_key === undefined ? previousHasKey : body.api_key !== '';
-  const aliases = (body.models ?? []).map((model) => `${id}/${model.model}`);
+  const aliases = (body.models ?? []).map((model) => `${id}/${model.remote_id}`);
   const requestIdentity = body.request_identity === null
     ? undefined
     : (body.request_identity ?? previousRequestIdentity);
@@ -175,9 +175,10 @@ function fixtureProviderFromBody(id, body, previousHasKey = false, previousReque
 
 function fixtureModelsFromBody(providerId, models) {
   return models.map((model) => ({
-    provider: providerId,
-    model: `${providerId}/${model.model}`,
-    display_name: model.display_name ?? model.model,
+    id: `${providerId}/${model.remote_id}`,
+    provider_id: providerId,
+    remote_id: model.remote_id,
+    display_name: model.display_name ?? model.remote_id,
     max_context_size: model.max_context_size,
     capabilities: model.capabilities,
     support_efforts: model.support_efforts,
@@ -1361,17 +1362,18 @@ class FixtureServer {
     if (path === '/models') {
       return this.envelope(res, {
         items: this.models.length > 0 || this.modelsDeclared ? this.models : [
-          { provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
-          { provider: 'fixture', model: 'fixture/kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 },
+          { id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
+          { id: 'fixture/kiki-lite', provider_id: 'fixture', remote_id: 'kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 },
         ],
       });
     }
     const setDefaultModelMatch = /^\/models\/([^/]+):set_default$/.exec(path);
     if (setDefaultModelMatch !== null && method === 'POST') {
       const modelId = decodeURIComponent(setDefaultModelMatch[1]);
-      const model = this.models.find((item) => item.model === modelId) ?? {
-        provider: modelId.split('/')[0] ?? 'fixture',
-        model: modelId,
+      const model = this.models.find((item) => item.id === modelId) ?? {
+        id: modelId,
+        provider_id: modelId.split('/')[0] ?? 'fixture',
+        remote_id: modelId.slice(modelId.lastIndexOf('/') + 1),
         display_name: modelId,
         max_context_size: 262144,
       };
@@ -2197,6 +2199,56 @@ class FixtureServer {
         },
       });
       return this.envelope(res, { steered: true, prompt_ids: [promptId] });
+    }
+    const replaceMatch = /^\/prompts\/([^/]+):replace$/.exec(tail);
+    if (replaceMatch !== null) {
+      // Mirrors kap-server: in-place content swap for a QUEUED prompt — the row
+      // keeps its queue slot (prompt.replaced) and the route answers the
+      // updated PromptItem. Replacing a missing/running prompt is PROMPT_NOT_FOUND.
+      const promptId = replaceMatch[1];
+      const item = session.queuedPrompts.find((entry) => entry.prompt_id === promptId);
+      if (item === undefined || body === undefined || !Array.isArray(body.content)) {
+        return this.envelope(res, null, 40402, 'prompt.not_found');
+      }
+      item.content = body.content;
+      item.text = body.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+      this.emit(session.record.id, {
+        type: 'prompt.replaced',
+        payload: { promptId, content: body.content, replacedAt: now() },
+      });
+      return this.envelope(res, {
+        prompt_id: item.prompt_id,
+        user_message_id: item.user_message_id,
+        status: 'queued',
+        content: item.content,
+        created_at: item.created_at,
+      });
+    }
+    const moveMatch = /^\/prompts\/([^/]+):move$/.exec(tail);
+    if (moveMatch !== null) {
+      // Mirrors kap-server: `target_index` counts the queue AFTER the row is
+      // lifted out (splice-out-then-insert); the route answers the new order
+      // and prompt.moved carries it to the transcript projection.
+      const promptId = moveMatch[1];
+      const targetIndex = body?.target_index;
+      const fromIndex = session.queuedPrompts.findIndex((entry) => entry.prompt_id === promptId);
+      if (fromIndex < 0 || typeof targetIndex !== 'number') {
+        return this.envelope(res, null, 40402, 'prompt.not_found');
+      }
+      const [item] = session.queuedPrompts.splice(fromIndex, 1);
+      const clamped = Math.max(0, Math.min(Math.trunc(targetIndex), session.queuedPrompts.length));
+      session.queuedPrompts.splice(clamped, 0, item);
+      const queuedPromptIds = session.queuedPrompts.map((entry) => entry.prompt_id);
+      this.emit(session.record.id, {
+        type: 'prompt.moved',
+        payload: { promptId, targetIndex: clamped, queuedPromptIds, movedAt: now() },
+      });
+      return this.envelope(res, {
+        moved: true,
+        prompt_id: promptId,
+        target_index: clamped,
+        queued_prompt_ids: queuedPromptIds,
+      });
     }
     if (tail === '/approvals') {
       return this.envelope(res, { items: session.pendingApprovals });

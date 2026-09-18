@@ -216,6 +216,12 @@ const STRINGS = {
     ranForPattern: /Ran for/,
     ttftPattern: /TTFT/,
     queueExpandAria: 'Show or hide the queued prompts',
+    queueEditRowAria: 'Edit queued prompt',
+    queueEditingBadge: 'Editing in the composer',
+    queueEditConfirmAria: 'Confirm edit',
+    queueEditBanner: 'Editing a queued message',
+    queueRemoveConfirm: 'Remove?',
+    queueDragHandleAria: 'Reorder this queued prompt',
     previewSource: 'Source',
     previewCollapse: 'Collapse preview panel',
     previewReadonlyPattern: /Read-only here/,
@@ -384,6 +390,12 @@ const STRINGS = {
     ranForPattern: /用时/,
     ttftPattern: /首 token/,
     queueExpandAria: '展开或收起排队消息',
+    queueEditRowAria: '编辑排队的消息',
+    queueEditingBadge: '正在输入框中编辑',
+    queueEditConfirmAria: '确认编辑',
+    queueEditBanner: '正在编辑排队消息',
+    queueRemoveConfirm: '确认移除？',
+    queueDragHandleAria: '调整这条排队消息的顺序',
     previewSource: '源码',
     previewCollapse: '收起预览面板',
     previewReadonlyPattern: /此处为只读/,
@@ -2268,6 +2280,65 @@ async function scenarioQueue() {
   await page.waitForTimeout(600);
   await shot('queue-two-rows');
 
+  // Edit round-trip: the row's Edit parks its text in the composer (banner +
+  // confirm icon + row badge), Enter replaces the prompt AT ITS SLOT.
+  await strip.locator('li', { hasText: 'C: clear me out.' })
+    .locator(`button[aria-label="${S.queueEditRowAria}"]`)
+    .click();
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === 'C: clear me out.');
+  await page.waitForSelector(`text=${S.queueEditBanner}`, { timeout: 5000 });
+  if ((await page.locator(`button[aria-label="${S.queueEditConfirmAria}"]`).count()) !== 1) {
+    throw new Error('composer send button did not switch to the queue-edit confirm');
+  }
+  if ((await strip.locator('li', { hasText: S.queueEditingBadge }).count()) !== 1) {
+    throw new Error('edited row did not pick up the editing badge');
+  }
+  // The banner and badge mount with anim-enter — let the fade land.
+  await page.waitForTimeout(300);
+  await shot('queue-edit-roundtrip');
+  await page.fill('textarea', 'C: clear me out. (edited)');
+  await page.press('textarea', 'Enter');
+  await page.waitForSelector('[data-queue-edit-banner]', { state: 'detached', timeout: 10_000 });
+  // Confirmed: the composer hands the pre-edit draft back (empty here)…
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
+  // …and the row keeps its #2 slot with the new text — no requeue to the tail.
+  await page.waitForFunction(
+    (expected) => {
+      const rows = Array.from(document.querySelectorAll('[data-queue-strip] ol > li:not([aria-hidden])'));
+      return rows.length === 2 && rows[1]?.textContent?.includes(expected) === true;
+    },
+    'C: clear me out. (edited)',
+    { timeout: 10_000 },
+  );
+  await shot('queue-edit-confirmed');
+
+  // Keyboard reorder: focus C's drag handle, ArrowUp moves it above B. The
+  // strip repaints from the server's post-move order (prompt.moved).
+  const rowTexts = async () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll('[data-queue-strip] ol > li:not([aria-hidden])')).map(
+        (row) => row.textContent ?? '',
+      ),
+    );
+  await strip.locator('li', { hasText: 'C: clear me out. (edited)' })
+    .locator(`button[aria-label="${S.queueDragHandleAria}"]`)
+    .press('ArrowUp');
+  await page.waitForFunction(
+    (expected) => {
+      const rows = Array.from(document.querySelectorAll('[data-queue-strip] ol > li:not([aria-hidden])'));
+      return rows.length === 2 && rows[0]?.textContent?.includes(expected) === true;
+    },
+    'C: clear me out. (edited)',
+    { timeout: 10_000 },
+  );
+  if (!((await rowTexts())[1] ?? '').includes('B: steer me in.')) {
+    throw new Error('keyboard reorder did not land B below C');
+  }
+  // Reordering moves the DOM rows, which replays their anim-enter fade — let
+  // it finish before the shot.
+  await page.waitForTimeout(600);
+  await shot('queue-reordered');
+
   // Send now (wire steer): B leaves the queue immediately while A keeps
   // running; the strip drops to one row and B's transcript chip detaches.
   // Chip queries are scoped to the transcript log: the strip header copy
@@ -2297,6 +2368,40 @@ async function scenarioQueue() {
     throw new Error('a Queued chip survived Clear all');
   }
   await shot('queue-cleared');
+
+  // Two-step remove: the first click only arms the row's Remove ("Remove?"),
+  // the second actually drops the parked prompt.
+  await sendPrompt('B: remove me.');
+  await page.waitForSelector('[data-queue-strip] li', { timeout: 10_000 });
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
+  await sendPrompt('C: remove me too.');
+  await page.waitForSelector(`text=${S.twoPromptsQueued}`, { timeout: 10_000 });
+  await strip.locator(`button[aria-label="${S.queueExpandAria}"]`).click();
+  const removeRow = strip.locator('li', { hasText: 'B: remove me.' });
+  await removeRow.locator(`button[aria-label="${S.removeQueued}"]`).click();
+  // Armed, not executed: both rows are still there and the button now asks.
+  await page.waitForSelector(`button[aria-label="${S.queueRemoveConfirm}"]`, { timeout: 5000 });
+  if ((await strip.locator('li').count()) !== 2) {
+    throw new Error('an armed (not confirmed) Remove dropped the row');
+  }
+  // The hover-revealed action group fades in (transition-opacity) — let it land.
+  await page.waitForTimeout(300);
+  await shot('queue-remove-armed');
+  await removeRow.locator(`button[aria-label="${S.queueRemoveConfirm}"]`).click();
+  await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 10_000 });
+  if ((await strip.locator('li').count()) !== 1) {
+    throw new Error('confirmed Remove did not drop the row');
+  }
+  if ((await strip.locator('li', { hasText: 'B: remove me.' }).count()) !== 0) {
+    throw new Error('removed row is still in the strip');
+  }
+  await shot('queue-remove-confirmed');
+  // Leave the session clean: clear the leftover row, then release the floor.
+  await page.getByRole('button', { name: S.clearQueue }).click();
+  const tailClearDialog = page.getByRole('alertdialog', { name: S.queueClearTitle });
+  await tailClearDialog.waitFor({ timeout: 5000 });
+  await tailClearDialog.getByRole('button', { name: S.clearQueue }).click();
+  await page.waitForSelector('[data-queue-strip]', { state: 'detached', timeout: 10_000 });
   await control({ action: 'release', session_id: 'session_fixture_queue' });
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 10_000 }).catch(() => undefined);
 }
