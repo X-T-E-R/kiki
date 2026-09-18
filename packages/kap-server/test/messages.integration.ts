@@ -3,20 +3,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  AGENT_WIRE_RECORD_KEY,
   IAgentContextMemoryService,
   IAgentLifecycleService,
   IAppendLogStore,
   IAuthSummaryService,
+  IFileSystemStorageService,
   IWireService,
   getLiveSessionById,
   IModelCatalog,
   ISessionInteractionService,
+  resumeSessionById,
   type ContextMessage,
   type ScopeSeed,
 } from '@kiki/agent-core-v2';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
+import { MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES } from '../src/services/messages/messageHistory';
 import { PROMPT_BODY_LIMIT_BYTES } from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
@@ -728,5 +732,133 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
 
     const missing = await getJson<null>(`/api/sessions/${id}/messages/msg_does_not_exist`);
     expect(missing.body.code).toBe(40403);
+  });
+
+  it('drops the cached history entry when the session is archived', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { role: 'user', content: [{ type: 'text', text: 'cached-a' }], toolCalls: [] },
+    ]);
+    const first = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(first.body.data.items.map((m) => m.content[0]?.['text'])).toEqual(['cached-a']);
+    await seedMainAgentMessages(id, [
+      { role: 'user', content: [{ type: 'text', text: 'cached-b' }], toolCalls: [] },
+    ]);
+
+    const storage = server!.core.accessor.get(IFileSystemStorageService);
+    const originalReadStream = storage.readStream.bind(storage);
+    let tailReads = 0;
+    storage.readStream = ((scope: string, key: string, range?: unknown, options?: unknown) => {
+      if (
+        key === AGENT_WIRE_RECORD_KEY &&
+        typeof range === 'object' &&
+        range !== null &&
+        typeof (range as { start?: unknown }).start === 'number'
+      ) {
+        tailReads += 1;
+      }
+      return originalReadStream(scope, key, range as never, options as never);
+    }) as IFileSystemStorageService['readStream'];
+
+    const hit = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(hit.body.data.items.map((m) => m.content[0]?.['text'])).toEqual(['cached-b', 'cached-a']);
+    expect(tailReads).toBe(1);
+
+    const archived = await postJson(`/api/sessions/${id}:archive`, {});
+    expect(archived.code).toBe(0);
+
+    await resumeSessionById(server!.core.accessor, id);
+    await seedMainAgentMessages(id, [
+      { role: 'user', content: [{ type: 'text', text: 'cached-c' }], toolCalls: [] },
+    ]);
+
+    const afterArchive = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(afterArchive.body.code).toBe(0);
+    expect(afterArchive.body.data.items.map((m) => m.content[0]?.['text'])).toEqual([
+      'cached-c',
+      'cached-b',
+      'cached-a',
+    ]);
+    expect(tailReads).toBe(1);
+  });
+
+  it('serves an oversized history entry without retaining it in the cache', async () => {
+    const id = await createSession();
+    const bigText = 'x'.repeat(MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES / 2 + 1024);
+    await seedMainAgentMessages(id, [
+      { role: 'user', content: [{ type: 'text', text: bigText }], toolCalls: [] },
+    ]);
+
+    const first = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(first.body.data.items).toHaveLength(1);
+    expect(first.body.data.items[0]?.content[0]?.['text']).toBe(bigText);
+
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const originalRead = appendLog.read.bind(appendLog);
+    let reads = 0;
+    appendLog.read = ((...args: Parameters<IAppendLogStore['read']>) => {
+      reads += 1;
+      return originalRead(...args);
+    }) as IAppendLogStore['read'];
+
+    const second = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(second.body.data.items).toHaveLength(1);
+    expect(second.body.data.items[0]?.content[0]?.['text']).toBe(bigText);
+    expect(reads).toBe(1);
+  });
+
+  it('does not cache a history refresh whose admission crosses any session archive (global generation guard)', async () => {
+    const id = await createSession();
+    const other = await createSession();
+    await seedMainAgentMessages(id, [
+      { role: 'user', content: [{ type: 'text', text: 'raced-a' }], toolCalls: [] },
+    ]);
+    const warmed = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(warmed.body.data.items.map((m) => m.content[0]?.['text'])).toEqual(['raced-a']);
+    await seedMainAgentMessages(id, [
+      { role: 'user', content: [{ type: 'text', text: 'raced-b' }], toolCalls: [] },
+    ]);
+
+    const storage = server!.core.accessor.get(IFileSystemStorageService);
+    const originalReadStream = storage.readStream.bind(storage);
+    let entered: (() => void) | undefined;
+    const enteredPromise = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release: (() => void) | undefined;
+    const releasePromise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    storage.readStream = ((scope: string, key: string, options?: unknown) => {
+      const stream = originalReadStream(scope, key, options as never);
+      if (key !== AGENT_WIRE_RECORD_KEY) return stream;
+      entered?.();
+      return (async function* (): AsyncIterableIterator<Uint8Array> {
+        await releasePromise;
+        yield* stream;
+      })();
+    }) as IFileSystemStorageService['readStream'];
+
+    const racing = getJson<PageWire>(`/api/sessions/${id}/messages`);
+    await enteredPromise;
+    const archived = await postJson(`/api/sessions/${other}:archive`, {});
+    expect(archived.code).toBe(0);
+    release?.();
+    const raced = await racing;
+    expect(raced.body.code).toBe(0);
+    expect(raced.body.data.items.map((m) => m.content[0]?.['text'])).toEqual(['raced-b', 'raced-a']);
+
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const originalRead = appendLog.read.bind(appendLog);
+    let reads = 0;
+    appendLog.read = ((...args: Parameters<IAppendLogStore['read']>) => {
+      reads += 1;
+      return originalRead(...args);
+    }) as IAppendLogStore['read'];
+
+    const after = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(after.body.code).toBe(0);
+    expect(after.body.data.items.map((m) => m.content[0]?.['text'])).toEqual(['raced-b', 'raced-a']);
+    expect(reads).toBe(1);
   });
 });

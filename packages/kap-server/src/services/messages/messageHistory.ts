@@ -9,6 +9,7 @@ import {
   IWireService,
   createContextTranscriptReducer,
   ensureMainAgent,
+  followSessionLifecycles,
   resumeSessionById,
   type ContextMessage,
   type ContextTranscript,
@@ -23,6 +24,15 @@ import { toProtocolMessage } from './messageProjection';
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 const MESSAGE_HISTORY_CACHE_CAPACITY = 128;
+export const MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES = 8 << 20;
+export const MESSAGE_HISTORY_CACHE_MAX_TOTAL_BYTES = 64 << 20;
+const MESSAGE_HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES = 256;
+const MESSAGE_HISTORY_ESTIMATE_PART_OVERHEAD_BYTES = 32;
+const MESSAGE_HISTORY_ESTIMATE_TOOL_CALL_BYTES = 128;
+const MESSAGE_HISTORY_ESTIMATE_TOOL_DECLARATION_BYTES = 4096;
+const MESSAGE_HISTORY_ESTIMATE_ENTRY_OVERHEAD_BYTES = 512;
+const MESSAGE_HISTORY_ESTIMATE_INDEX_ENTRY_BYTES = 64;
+const MESSAGE_HISTORY_ESTIMATE_TIMESTAMP_BYTES = 8;
 
 interface MessageHistoryCacheEntry {
   readonly messages: ContextMessage[];
@@ -31,9 +41,17 @@ interface MessageHistoryCacheEntry {
   readonly observedContext: ContextMessage[];
   readonly scope: string;
   offset: number;
+  bytes: number;
 }
 
-const messageHistoryCaches = new WeakMap<Scope, Map<string, MessageHistoryCacheEntry>>();
+interface MessageHistoryCacheState {
+  readonly cache: Map<string, MessageHistoryCacheEntry>;
+  totalBytes: number;
+  generation: number;
+}
+
+const messageHistoryCacheStates = new WeakMap<Scope, MessageHistoryCacheState>();
+const messageHistoryLifecycleScopes = new WeakSet<Scope>();
 const messageHistoryRefreshes = new WeakMap<Scope, Map<string, Promise<MessageHistoryCacheEntry>>>();
 
 /** Sentinel — the route maps it to 40401. */
@@ -218,13 +236,11 @@ async function refreshMessageHistoryCacheNow(
   sessionId: string,
   sessionCreatedAtMs: number,
 ): Promise<MessageHistoryCacheEntry> {
-  let cache = messageHistoryCaches.get(core);
-  if (cache === undefined) {
-    cache = new Map();
-    messageHistoryCaches.set(core, cache);
-  }
+  ensureMessageHistoryLifecycle(core);
+  const state = messageHistoryCacheState(core);
+  const generation = state.generation;
   const contextMessages = agent.accessor.get(IAgentContextMemoryService).get();
-  const existing = cache.get(sessionId);
+  const existing = state.cache.get(sessionId);
   let entry: MessageHistoryCacheEntry;
   if (existing === undefined) {
     entry = await rebuildMessageHistoryCache(core, agent, contextMessages, sessionCreatedAtMs);
@@ -242,14 +258,145 @@ async function refreshMessageHistoryCacheNow(
       entry = existing;
     }
   }
-  cache.delete(sessionId);
-  cache.set(sessionId, entry);
-  while (cache.size > MESSAGE_HISTORY_CACHE_CAPACITY) {
-    const oldest = cache.keys().next().value;
-    if (oldest === undefined) break;
-    cache.delete(oldest);
-  }
+  admitMessageHistoryCacheEntry(state, sessionId, entry, generation);
   return entry;
+}
+
+function messageHistoryCacheState(core: Scope): MessageHistoryCacheState {
+  let state = messageHistoryCacheStates.get(core);
+  if (state === undefined) {
+    state = { cache: new Map(), totalBytes: 0, generation: 0 };
+    messageHistoryCacheStates.set(core, state);
+  }
+  return state;
+}
+
+function ensureMessageHistoryLifecycle(core: Scope): void {
+  if (messageHistoryLifecycleScopes.has(core)) return;
+  messageHistoryLifecycleScopes.add(core);
+  followSessionLifecycles(core.accessor, (service) => {
+    const onClose = service.onDidCloseSession(({ sessionId }) =>
+      dropMessageHistoryCacheEntry(core, sessionId),
+    );
+    const onArchive = service.onDidArchiveSession(({ sessionId }) =>
+      dropMessageHistoryCacheEntry(core, sessionId),
+    );
+    return {
+      dispose: () => {
+        onClose.dispose();
+        onArchive.dispose();
+      },
+    };
+  });
+}
+
+function dropMessageHistoryCacheEntry(core: Scope, sessionId: string): void {
+  const state = messageHistoryCacheStates.get(core);
+  if (state === undefined) return;
+  const existing = state.cache.get(sessionId);
+  if (existing !== undefined) {
+    state.cache.delete(sessionId);
+    state.totalBytes -= existing.bytes;
+  }
+  state.generation += 1;
+}
+
+function admitMessageHistoryCacheEntry(
+  state: MessageHistoryCacheState,
+  sessionId: string,
+  entry: MessageHistoryCacheEntry,
+  generation: number,
+): void {
+  const previous = state.cache.get(sessionId);
+  if (previous !== undefined) {
+    state.cache.delete(sessionId);
+    state.totalBytes -= previous.bytes;
+  }
+  entry.bytes = estimateMessageHistoryEntryBytes(entry);
+  if (
+    generation !== state.generation ||
+    MESSAGE_HISTORY_CACHE_CAPACITY <= 0 ||
+    MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES <= 0 ||
+    MESSAGE_HISTORY_CACHE_MAX_TOTAL_BYTES <= 0 ||
+    entry.bytes > MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES
+  ) {
+    return;
+  }
+  state.cache.set(sessionId, entry);
+  state.totalBytes += entry.bytes;
+  for (;;) {
+    const overCapacity = state.cache.size > MESSAGE_HISTORY_CACHE_CAPACITY;
+    const overBytes = state.totalBytes > MESSAGE_HISTORY_CACHE_MAX_TOTAL_BYTES;
+    if (!overCapacity && !overBytes) return;
+    const oldest = state.cache.keys().next().value;
+    if (oldest === undefined) return;
+    const dropped = state.cache.get(oldest);
+    state.cache.delete(oldest);
+    if (dropped !== undefined) state.totalBytes -= dropped.bytes;
+  }
+}
+
+function estimateMessageHistoryEntryBytes(entry: MessageHistoryCacheEntry): number {
+  let bytes = MESSAGE_HISTORY_ESTIMATE_ENTRY_OVERHEAD_BYTES;
+  bytes += entry.createdAtMs.length * MESSAGE_HISTORY_ESTIMATE_TIMESTAMP_BYTES;
+  bytes += entry.explicitIndexes.size * MESSAGE_HISTORY_ESTIMATE_INDEX_ENTRY_BYTES;
+  bytes += estimateContextMessagesBytes(entry.messages);
+  bytes += estimateContextMessagesBytes(entry.observedContext);
+  return bytes;
+}
+
+function estimateContextMessagesBytes(messages: readonly ContextMessage[]): number {
+  let bytes = 0;
+  for (const message of messages) {
+    bytes += MESSAGE_HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES;
+    bytes += message.role.length * 2;
+    if (message.id !== undefined) bytes += message.id.length * 2;
+    if (message.name !== undefined) bytes += message.name.length * 2;
+    if (message.note !== undefined) bytes += message.note.length * 2;
+    if (message.toolCallId !== undefined) bytes += message.toolCallId.length * 2;
+    if (message.providerMessageId !== undefined) bytes += message.providerMessageId.length * 2;
+    for (const part of message.content) {
+      bytes += estimateContentPartBytes(part);
+    }
+    for (const call of message.toolCalls) {
+      bytes +=
+        MESSAGE_HISTORY_ESTIMATE_TOOL_CALL_BYTES +
+        call.id.length * 2 +
+        call.name.length * 2 +
+        (call.arguments?.length ?? 0) * 2;
+    }
+    if (message.tools !== undefined) {
+      bytes += message.tools.length * MESSAGE_HISTORY_ESTIMATE_TOOL_DECLARATION_BYTES;
+    }
+  }
+  return bytes;
+}
+
+function estimateContentPartBytes(part: ContextMessage['content'][number]): number {
+  switch (part.type) {
+    case 'text':
+      return MESSAGE_HISTORY_ESTIMATE_PART_OVERHEAD_BYTES + part.text.length * 2;
+    case 'think':
+      return (
+        MESSAGE_HISTORY_ESTIMATE_PART_OVERHEAD_BYTES +
+        (part.think.length + (part.encrypted?.length ?? 0)) * 2
+      );
+    case 'image_url':
+      return (
+        MESSAGE_HISTORY_ESTIMATE_PART_OVERHEAD_BYTES +
+        (part.imageUrl.url.length + (part.imageUrl.id?.length ?? 0) + (part.imageUrl.name?.length ?? 0)) * 2
+      );
+    case 'audio_url':
+      return (
+        MESSAGE_HISTORY_ESTIMATE_PART_OVERHEAD_BYTES +
+        (part.audioUrl.url.length + (part.audioUrl.id?.length ?? 0)) * 2
+      );
+    case 'video_url':
+      return (
+        MESSAGE_HISTORY_ESTIMATE_PART_OVERHEAD_BYTES +
+        (part.videoUrl.url.length + (part.videoUrl.id?.length ?? 0) + (part.videoUrl.name?.length ?? 0)) * 2
+      );
+  }
 }
 
 async function rebuildMessageHistoryCache(
@@ -273,6 +420,7 @@ async function rebuildMessageHistoryCache(
     observedContext: [...contextMessages],
     scope,
     offset,
+    bytes: 0,
   };
 }
 
@@ -466,20 +614,51 @@ export async function loadMessageHistory(
   );
 }
 
-export async function loadCapturedMessageHistory(
+export interface CapturedMessageHistoryTail {
+  readonly items: Message[];
+  readonly has_more: boolean;
+}
+
+/**
+ * Projects only the newest `tailCount` messages of an already-captured
+ * logical history: hydration, DTO mapping, and timestamp clamping run on the
+ * tail slice alone. Message ids keep their absolute indexes
+ * (`msg_<sessionId>_<absoluteIndex>`), the monotonic timestamp clamp is
+ * seeded with the normalized end of the skipped prefix, and `has_more`
+ * reports whether older messages exist beyond the tail.
+ */
+export async function loadCapturedMessageHistoryTail(
   agent: IAgentScopeHandle,
   sessionId: string,
   sessionCreatedAtMs: number,
   contextMessages: readonly ContextMessage[],
   contextMessageTimes: readonly (number | undefined)[],
-): Promise<Message[]> {
-  return projectMessageHistory(
-    agent,
-    sessionId,
-    sessionCreatedAtMs,
-    contextMessages,
-    contextMessageTimes,
-  );
+  tailCount: number,
+): Promise<CapturedMessageHistoryTail> {
+  const startIndex = Math.max(0, contextMessages.length - Math.max(0, tailCount));
+  const hydrated = await rehydrate(agent, contextMessages.slice(startIndex));
+  let previousMs = normalizedPrefixEndMs(contextMessageTimes, startIndex, sessionCreatedAtMs);
+  const items = hydrated.map((message, offset) => {
+    const index = startIndex + offset;
+    const baseMs = contextMessageTimes[index] ?? sessionCreatedAtMs + index;
+    const createdAtMs = Math.max(previousMs + 1, baseMs);
+    previousMs = createdAtMs;
+    return toProtocolMessage(sessionId, index, message, sessionCreatedAtMs, createdAtMs);
+  });
+  return { items, has_more: startIndex > 0 };
+}
+
+function normalizedPrefixEndMs(
+  times: readonly (number | undefined)[],
+  startIndex: number,
+  sessionCreatedAtMs: number,
+): number {
+  let previousMs = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < startIndex; index += 1) {
+    const baseMs = times[index] ?? sessionCreatedAtMs + index;
+    previousMs = Math.max(previousMs + 1, baseMs);
+  }
+  return previousMs;
 }
 
 async function projectMessageHistory(

@@ -32,7 +32,7 @@ import {
 import { sessionSnapshotResponseSchema } from '../src/protocol/rest-snapshot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { registerSnapshotRoutes } from '../src/routes/snapshot';
+import { assembleSnapshot, registerSnapshotRoutes } from '../src/routes/snapshot';
 import { type RunningServer, startServer } from '../src/start';
 import {
   type EventEnvelope,
@@ -1065,5 +1065,156 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     for (const message of snap.messages.items) {
       expect(Number.isNaN(Date.parse(message.created_at))).toBe(false);
     }
+  });
+});
+
+describe('legacy snapshot message tail projection', () => {
+  const sessionId = 'sess_tail';
+  const workspaceId = 'wd_tail_012345abcdef';
+  const createdAt = Date.parse('2026-02-01T00:00:00.000Z');
+
+  function projectedCreatedAt(
+    times: readonly (number | undefined)[],
+    count: number,
+  ): string[] {
+    const out: string[] = [];
+    let previousMs = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < count; index += 1) {
+      const baseMs = times[index] ?? createdAt + index;
+      const ms = Math.max(previousMs + 1, baseMs);
+      previousMs = ms;
+      out.push(new Date(ms).toISOString());
+    }
+    return out;
+  }
+
+  async function assembleWithHistory(
+    size: number,
+    times: readonly (number | undefined)[],
+  ): Promise<{
+    messages: { items: Array<{ id: string; created_at: string; content: unknown }>; has_more: boolean };
+    asOfSeq: number;
+    epoch: string;
+    loadParts: ReturnType<typeof vi.fn>;
+  }> {
+    const loadParts = vi.fn(async (parts: unknown) => parts);
+    const main = {
+      accessor: fakeAccessor([
+        [IAgentProfileService, { getModel: () => 'provider/tail-model' }],
+        [IAgentPermissionModeService, { mode: 'yolo' }],
+        [IAgentPlanService, { status: async () => null }],
+        [IAgentSwarmService, { isActive: false }],
+        [IAgentBlobService, { loadParts }],
+      ]),
+    };
+    const session = {
+      accessor: fakeAccessor([
+        [ISessionContext, { workspaceId }],
+        [
+          ISessionMetadata,
+          {
+            read: async () => ({
+              id: sessionId,
+              title: 'Tail',
+              createdAt,
+              updatedAt: createdAt,
+              archived: false,
+              agents: {},
+            }),
+          },
+        ],
+        [IAgentLifecycleService, { get: () => main, create: async () => main }],
+        [ISessionInteractionService, { listPending: () => [] }],
+      ]),
+    };
+    const core = {
+      accessor: fakeAccessor([
+        [
+          ISessionManager,
+          { resume: async () => session, get: () => undefined, list: () => [] },
+        ],
+        [IWorkspaceService, { get: async () => ({ root: '/workspace' }) }],
+      ]),
+    };
+    const contextMessages = Array.from({ length: size }, (_, index) => ({
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: `m${index}` }],
+      toolCalls: [],
+    }));
+    const broadcaster = {
+      getSnapshotState: async (
+        _sessionId: string,
+        options: { captureMessages?: boolean; capture?: () => Promise<unknown> },
+      ) => ({
+        seq: 7,
+        epoch: 'ep_tail',
+        captured: await options.capture?.(),
+        pendingApprovals: [],
+        pendingQuestions: [],
+        contextMessages: options.captureMessages === false ? [] : contextMessages,
+        contextMessageTimes: options.captureMessages === false ? [] : [...times],
+        currentPromptId: undefined,
+        inFlightTurn: null,
+        status: undefined,
+        subagents: [],
+      }),
+      getTranscriptToolCallCounts: async () => new Map<string, number>(),
+      getMaterializedTranscriptToolCallCounts: () => new Map<string, number>(),
+    };
+    const data = await assembleSnapshot(core as never, broadcaster as never, sessionId, undefined);
+    return {
+      messages: data.messages as {
+        items: Array<{ id: string; created_at: string; content: unknown }>;
+        has_more: boolean;
+      },
+      asOfSeq: data.as_of_seq,
+      epoch: data.epoch,
+      loadParts,
+    };
+  }
+
+  it.each([0, 1, 99, 100, 101, 10_000])(
+    'projects only the newest 100 messages when the captured history has %i messages',
+    async (size) => {
+      const times = Array.from({ length: size }, (_, index) => createdAt + index);
+      const { messages, asOfSeq, epoch, loadParts } = await assembleWithHistory(size, times);
+
+      const expectedCount = Math.min(size, 100);
+      expect(messages.items).toHaveLength(expectedCount);
+      expect(messages.has_more).toBe(size > 100);
+      expect(asOfSeq).toBe(7);
+      expect(epoch).toBe('ep_tail');
+      expect(loadParts).toHaveBeenCalledTimes(expectedCount);
+
+      const expectedCreatedAt = projectedCreatedAt(times, size).slice(-expectedCount);
+      expect(messages.items.map((message) => message.created_at)).toEqual(expectedCreatedAt);
+      if (size > 0) {
+        const firstIndex = Math.max(0, size - 100);
+        expect(messages.items[0]?.id).toBe(
+          `msg_${sessionId}_${String(firstIndex).padStart(6, '0')}`,
+        );
+        expect(messages.items.at(-1)?.content).toEqual([{ type: 'text', text: `m${size - 1}` }]);
+      }
+    },
+  );
+
+  it('keeps absolute ids and the monotonic clamp when prefix times are unordered', async () => {
+    const size = 105;
+    const times = Array.from({ length: size }, (_, index) =>
+      index < 5 ? 60_000 - index * 10_000 : createdAt + index,
+    );
+    const { messages, loadParts } = await assembleWithHistory(size, times);
+
+    expect(messages.has_more).toBe(true);
+    expect(loadParts).toHaveBeenCalledTimes(100);
+    const expectedCreatedAt = projectedCreatedAt(times, size).slice(5);
+    expect(messages.items.map((message) => message.created_at)).toEqual(expectedCreatedAt);
+    for (let index = 1; index < messages.items.length; index += 1) {
+      expect(Date.parse(messages.items[index]!.created_at)).toBeGreaterThan(
+        Date.parse(messages.items[index - 1]!.created_at),
+      );
+    }
+    expect(messages.items[0]?.id).toBe(`msg_${sessionId}_000005`);
+    expect(messages.items.at(-1)?.content).toEqual([{ type: 'text', text: 'm104' }]);
   });
 });

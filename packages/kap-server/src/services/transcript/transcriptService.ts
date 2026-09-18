@@ -56,6 +56,10 @@ const AGENTS_DIR = 'agents';
 const MAIN_AGENT_ID = 'main';
 const WIRE_FILE = 'wire.jsonl';
 const STATE_FILE = 'state.json';
+const OPS_JOURNAL_COMPACT_MIN_HEAD = 1024;
+const OPS_JOURNAL_ESTIMATE_NODE_OVERHEAD_BYTES = 64;
+const OPS_JOURNAL_ESTIMATE_SCALAR_BYTES = 8;
+const OPS_JOURNAL_ESTIMATE_MAX_DEPTH = 24;
 const DEFAULT_TOOL_CALL_COUNT_MAX_BYTES = 32 << 20;
 const DEFAULT_TOOL_CALL_COUNT_MAX_FILES = 64;
 const DEFAULT_TOOL_CALL_COUNT_CACHE_ENTRIES = 256;
@@ -77,6 +81,12 @@ export interface TranscriptColdReadLimits {
   readonly chunkBytes?: number;
 }
 
+export interface TranscriptOpsJournalLimits {
+  readonly maxAgentBytes?: number;
+  readonly maxSessionBytes?: number;
+  readonly maxTotalBytes?: number;
+}
+
 export interface TranscriptServiceDeps {
   readonly homeDir: string;
   readonly core: Scope;
@@ -88,6 +98,7 @@ export interface TranscriptServiceDeps {
     options: BoundedWireScanOptions,
   ) => Promise<number>;
   readonly coldReadLimits?: TranscriptColdReadLimits;
+  readonly opsJournalLimits?: TranscriptOpsJournalLimits;
   readonly wireRecordReader?: (
     wirePath: string,
     options: WireRecordsStreamOptions,
@@ -101,6 +112,7 @@ interface LiveEntry {
   readonly agentBackfills: Map<string, Promise<void>>;
   readonly agentHistory: Map<string, AgentHistoryState>;
   readonly opsJournals: Map<string, AgentOpsJournal>;
+  opsJournalSessionBytes: number;
   readonly agentToolCallStates: Map<string, MaterializedAgentToolCallState>;
   readonly agentDisposal: IDisposable;
 }
@@ -142,7 +154,15 @@ interface ToolCallCountCandidate {
 interface AgentOpsJournal {
   epoch: string;
   nextSeq: number;
-  batches: { seq: number; ops: TranscriptOperation[] }[];
+  start: number;
+  batches: JournaledOpsBatch[];
+  bytes: number;
+}
+
+interface JournaledOpsBatch {
+  readonly seq: number;
+  readonly ops: TranscriptOperation[];
+  readonly bytes: number;
 }
 
 interface ColdSnapshotFlight {
@@ -155,6 +175,9 @@ interface ColdSnapshotFlight {
 type TranscriptOpsListener = (event: TranscriptChangeEvent, cursor: TranscriptCursor) => void;
 
 export const TRANSCRIPT_OPS_JOURNAL_CAPACITY = 2000;
+export const TRANSCRIPT_OPS_JOURNAL_MAX_AGENT_BYTES = 2 << 20;
+export const TRANSCRIPT_OPS_JOURNAL_MAX_SESSION_BYTES = 8 << 20;
+export const TRANSCRIPT_OPS_JOURNAL_MAX_TOTAL_BYTES = 64 << 20;
 
 export interface TranscriptOpsCatchup {
   readonly epoch: string;
@@ -176,8 +199,10 @@ export class TranscriptService {
   private readonly persistedToolCallPins = new Map<string, number>();
   private readonly toolCallCountReader: NonNullable<TranscriptServiceDeps['toolCallCountReader']>;
   private readonly coldReadLimits: Required<TranscriptColdReadLimits>;
+  private readonly opsJournalLimits: Required<TranscriptOpsJournalLimits>;
   private readonly wireRecordReader: NonNullable<TranscriptServiceDeps['wireRecordReader']>;
   private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
+  private opsJournalTotalBytes = 0;
 
   constructor(private readonly deps: TranscriptServiceDeps) {
     this.toolCallCountReader = deps.toolCallCountReader ?? readWireRecordsBounded;
@@ -196,6 +221,12 @@ export class TranscriptService {
       maxRecords: nonNegativeLimit(coldReadLimits?.maxRecords, WIRE_COLD_READ_MAX_RECORDS),
       maxLineBytes: nonNegativeLimit(coldReadLimits?.maxLineBytes, WIRE_COLD_READ_MAX_LINE_BYTES),
       chunkBytes: positiveLimit(coldReadLimits?.chunkBytes, WIRE_READ_CHUNK_BYTES),
+    };
+    const opsJournalLimits = deps.opsJournalLimits;
+    this.opsJournalLimits = {
+      maxAgentBytes: nonNegativeLimit(opsJournalLimits?.maxAgentBytes, TRANSCRIPT_OPS_JOURNAL_MAX_AGENT_BYTES),
+      maxSessionBytes: nonNegativeLimit(opsJournalLimits?.maxSessionBytes, TRANSCRIPT_OPS_JOURNAL_MAX_SESSION_BYTES),
+      maxTotalBytes: nonNegativeLimit(opsJournalLimits?.maxTotalBytes, TRANSCRIPT_OPS_JOURNAL_MAX_TOTAL_BYTES),
     };
     followSessionLifecycles(deps.core.accessor, (service) => {
       const d1 = service.onDidCloseSession(({ sessionId }) => this.dropSession(sessionId));
@@ -247,6 +278,7 @@ export class TranscriptService {
       agentBackfills: new Map(),
       agentHistory: new Map(),
       opsJournals: new Map(),
+      opsJournalSessionBytes: 0,
       agentToolCallStates: new Map(),
       agentDisposal: session.accessor
         .get(IAgentLifecycleService)
@@ -277,7 +309,11 @@ export class TranscriptService {
     if (session?.accessor.get(IAgentLifecycleService).get(agentId) !== undefined) return;
     entry.agentBackfills.delete(agentId);
     entry.agentHistory.delete(agentId);
-    entry.opsJournals.delete(agentId);
+    const journal = entry.opsJournals.get(agentId);
+    if (journal !== undefined) {
+      this.disposeOpsJournal(entry, journal);
+      entry.opsJournals.delete(agentId);
+    }
     entry.agentToolCallStates.delete(agentId);
     store.evictAgentTranscript(agentId);
   }
@@ -463,7 +499,7 @@ export class TranscriptService {
     if (entry === undefined) return undefined;
     let journal = entry.opsJournals.get(agentId);
     if (journal === undefined) {
-      journal = { epoch: randomUUID(), nextSeq: 1, batches: [] };
+      journal = { epoch: randomUUID(), nextSeq: 1, start: 0, batches: [], bytes: 0 };
       entry.opsJournals.set(agentId, journal);
     }
     return journal;
@@ -471,12 +507,74 @@ export class TranscriptService {
 
   private journalOps(sessionId: string, event: TranscriptChangeEvent): TranscriptCursor | undefined {
     if (event.ops.length === 0) return undefined;
+    const entry = this.live.get(sessionId);
     const journal = this.journalFor(sessionId, event.agentId);
-    if (journal === undefined) return undefined;
+    if (entry === undefined || journal === undefined) return undefined;
     const seq = journal.nextSeq++;
-    journal.batches.push({ seq, ops: [...event.ops] });
-    if (journal.batches.length > TRANSCRIPT_OPS_JOURNAL_CAPACITY) journal.batches.shift();
+    const bytes = estimateOpsJournalBatchBytes(event.ops, this.opsJournalLimits.maxAgentBytes);
+    if (bytes <= this.opsJournalLimits.maxAgentBytes) {
+      this.retainOpsJournalBatch(entry, journal, { seq, ops: [...event.ops], bytes });
+    } else {
+      this.evictOpsJournalBatchesBefore(entry, journal, seq);
+    }
     return { epoch: journal.epoch, seq };
+  }
+
+  private opsJournalBatchCount(journal: AgentOpsJournal): number {
+    return journal.batches.length - journal.start;
+  }
+
+  private retainOpsJournalBatch(
+    entry: LiveEntry,
+    journal: AgentOpsJournal,
+    batch: JournaledOpsBatch,
+  ): void {
+    journal.batches.push(batch);
+    journal.bytes += batch.bytes;
+    entry.opsJournalSessionBytes += batch.bytes;
+    this.opsJournalTotalBytes += batch.bytes;
+    for (;;) {
+      const overCapacity = this.opsJournalBatchCount(journal) > TRANSCRIPT_OPS_JOURNAL_CAPACITY;
+      const overAgent = journal.bytes > this.opsJournalLimits.maxAgentBytes;
+      const overSession = entry.opsJournalSessionBytes > this.opsJournalLimits.maxSessionBytes;
+      const overTotal = this.opsJournalTotalBytes > this.opsJournalLimits.maxTotalBytes;
+      if (!overCapacity && !overAgent && !overSession && !overTotal) return;
+      if (!this.evictOpsJournalOldest(entry, journal)) return;
+    }
+  }
+
+  private evictOpsJournalOldest(entry: LiveEntry, journal: AgentOpsJournal): boolean {
+    if (journal.start >= journal.batches.length) return false;
+    const batch = journal.batches[journal.start]!;
+    journal.start += 1;
+    journal.bytes -= batch.bytes;
+    entry.opsJournalSessionBytes -= batch.bytes;
+    this.opsJournalTotalBytes -= batch.bytes;
+    if (
+      journal.start >= OPS_JOURNAL_COMPACT_MIN_HEAD &&
+      journal.start * 2 >= journal.batches.length
+    ) {
+      journal.batches.splice(0, journal.start);
+      journal.start = 0;
+    }
+    return true;
+  }
+
+  private evictOpsJournalBatchesBefore(
+    entry: LiveEntry,
+    journal: AgentOpsJournal,
+    beforeSeq: number,
+  ): void {
+    while (
+      journal.start < journal.batches.length &&
+      journal.batches[journal.start]!.seq < beforeSeq
+    ) {
+      this.evictOpsJournalOldest(entry, journal);
+    }
+  }
+
+  private disposeOpsJournal(entry: LiveEntry, journal: AgentOpsJournal): void {
+    this.evictOpsJournalBatchesBefore(entry, journal, journal.nextSeq);
   }
 
   getTranscriptCursor(sessionId: string, agentId: string): TranscriptCursor {
@@ -503,11 +601,14 @@ export class TranscriptService {
     if ((since.epoch !== undefined && since.epoch !== journal.epoch) || since.seq > throughSeq) {
       return { epoch: journal.epoch, batches: [], throughSeq, complete: false };
     }
-    const retained = journal.batches.filter((batch) => batch.seq > since.seq);
-    const oldest = journal.batches[0]?.seq;
+    const retained: JournaledOpsBatch[] = [];
+    for (let index = journal.start; index < journal.batches.length; index += 1) {
+      const batch = journal.batches[index]!;
+      if (batch.seq > since.seq) retained.push(batch);
+    }
     const complete =
       since.seq === throughSeq ||
-      (retained.length > 0 && oldest !== undefined && oldest <= since.seq + 1);
+      (retained.length > 0 && retained[0]!.seq <= since.seq + 1);
     const batches = retained.map((batch) => ({ seq: batch.seq, ops: batch.ops }));
     return { epoch: journal.epoch, batches, throughSeq, complete };
   }
@@ -1086,7 +1187,9 @@ export class TranscriptService {
     entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot(materialized));
     entry.agentHistory.set(agentId, { status: 'complete' });
     this.dispatchToolCallCount(sessionId, transcript, countToolCallFrames(materialized.items), true);
-    entry.opsJournals.set(agentId, { epoch: randomUUID(), nextSeq: 1, batches: [] });
+    const journal = entry.opsJournals.get(agentId);
+    if (journal !== undefined) this.disposeOpsJournal(entry, journal);
+    entry.opsJournals.set(agentId, { epoch: randomUUID(), nextSeq: 1, start: 0, batches: [], bytes: 0 });
   }
 
   /** Dispose the live store + binding for a session (session closed / server shutdown). */
@@ -1095,6 +1198,9 @@ export class TranscriptService {
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
     this.live.delete(sessionId);
+    for (const journal of entry.opsJournals.values()) {
+      this.disposeOpsJournal(entry, journal);
+    }
     entry.agentDisposal.dispose();
     entry.binding.dispose();
   }
@@ -1331,4 +1437,37 @@ function positiveLimit(value: number | undefined, fallback: number): number {
 
 function nonNegativeLimit(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+}
+
+function estimateOpsJournalBatchBytes(ops: readonly TranscriptOperation[], cap: number): number {
+  let bytes = 0;
+  const stack: Array<{ readonly value: unknown; readonly depth: number }> = [];
+  for (let index = ops.length - 1; index >= 0; index -= 1) {
+    stack.push({ value: ops[index], depth: 0 });
+  }
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    const value = node.value;
+    if (typeof value === 'string') {
+      bytes += value.length * 2;
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+      bytes += OPS_JOURNAL_ESTIMATE_SCALAR_BYTES;
+    } else if (typeof value === 'object' && value !== null) {
+      bytes += OPS_JOURNAL_ESTIMATE_NODE_OVERHEAD_BYTES;
+      if (node.depth < OPS_JOURNAL_ESTIMATE_MAX_DEPTH) {
+        const depth = node.depth + 1;
+        if (Array.isArray(value)) {
+          for (let index = value.length - 1; index >= 0; index -= 1) {
+            stack.push({ value: value[index], depth });
+          }
+        } else {
+          for (const nested of Object.values(value)) {
+            stack.push({ value: nested, depth });
+          }
+        }
+      }
+    }
+    if (bytes > cap) return bytes;
+  }
+  return bytes;
 }

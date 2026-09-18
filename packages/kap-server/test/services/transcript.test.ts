@@ -2121,5 +2121,140 @@ describe('TranscriptService live integration', () => {
       );
       service.dropSession('s1');
     });
+
+    it('keeps a continuous newest window after repeated evictions compact the journal head', async () => {
+      const agents = new FakeAgents();
+      const main = agents.add('main');
+      const service = new TranscriptService({
+        homeDir: '/nonexistent-home',
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      const base = service.getSeqWatermark('s1', 'main');
+
+      const extra = 1100;
+      for (let turnId = 1; turnId <= TRANSCRIPT_OPS_JOURNAL_CAPACITY + extra; turnId++) {
+        main.bus.emit(ev({ type: 'turn.started', turnId, origin: { kind: 'user' } }));
+      }
+      const watermark = service.getSeqWatermark('s1', 'main');
+      expect(watermark).toBe(base + TRANSCRIPT_OPS_JOURNAL_CAPACITY + extra);
+
+      const window = service.getOpsSince('s1', 'main', watermark - TRANSCRIPT_OPS_JOURNAL_CAPACITY);
+      expect(window?.complete).toBe(true);
+      expect(window?.batches).toHaveLength(TRANSCRIPT_OPS_JOURNAL_CAPACITY);
+      expect(window?.batches[0]?.seq).toBe(watermark - TRANSCRIPT_OPS_JOURNAL_CAPACITY + 1);
+
+      const evicted = service.getOpsSince('s1', 'main', base);
+      expect(evicted?.complete).toBe(false);
+      service.dropSession('s1');
+    });
+
+    it('drops a batch over the agent byte cap without retaining it or the prefix it gaps', async () => {
+      const agents = new FakeAgents();
+      const main = agents.add('main');
+      const service = new TranscriptService({
+        homeDir: '/nonexistent-home',
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+        opsJournalLimits: { maxAgentBytes: 640, maxSessionBytes: 1 << 20, maxTotalBytes: 1 << 20 },
+      });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      const base = service.getSeqWatermark('s1', 'main');
+      const epoch = service.getTranscriptCursor('s1', 'main').epoch;
+
+      main.bus.emit(
+        ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, prompt: 'a'.repeat(32) }),
+      );
+      expect(service.getTranscriptCursor('s1', 'main')).toMatchObject({ seq: base + 1, epoch });
+
+      main.bus.emit(
+        ev({ type: 'turn.started', turnId: 2, origin: { kind: 'user' }, prompt: 'b'.repeat(2048) }),
+      );
+      const watermark = service.getSeqWatermark('s1', 'main');
+      expect(watermark).toBe(base + 2);
+
+      const beforeGap = service.getOpsSince('s1', 'main', base);
+      expect(beforeGap).toMatchObject({ epoch, throughSeq: watermark, complete: false });
+      expect(beforeGap?.batches).toEqual([]);
+      expect(service.getOpsSince('s1', 'main', base + 1)?.complete).toBe(false);
+
+      main.bus.emit(ev({ type: 'turn.started', turnId: 3, origin: { kind: 'user' }, prompt: 'ok' }));
+      const afterGap = service.getOpsSince('s1', 'main', base + 2);
+      expect(afterGap?.complete).toBe(true);
+      expect(afterGap?.epoch).toBe(epoch);
+      expect(afterGap?.batches.map((batch) => batch.seq)).toEqual([base + 3]);
+      expect(service.getOpsSince('s1', 'main', base + 1)?.complete).toBe(false);
+      service.dropSession('s1');
+    });
+
+    it('evicts the oldest retained batch once the per-agent byte budget trips', async () => {
+      const agents = new FakeAgents();
+      const main = agents.add('main');
+      const service = new TranscriptService({
+        homeDir: '/nonexistent-home',
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+        opsJournalLimits: { maxAgentBytes: 3000, maxSessionBytes: 1 << 20, maxTotalBytes: 1 << 20 },
+      });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      const base = service.getSeqWatermark('s1', 'main');
+      const epoch = service.getTranscriptCursor('s1', 'main').epoch;
+
+      for (let turnId = 1; turnId <= 4; turnId += 1) {
+        main.bus.emit(
+          ev({ type: 'turn.started', turnId, origin: { kind: 'user' }, prompt: 'm'.repeat(512) }),
+        );
+      }
+      const watermark = service.getSeqWatermark('s1', 'main');
+      expect(watermark).toBe(base + 4);
+
+      const evicted = service.getOpsSince('s1', 'main', base);
+      expect(evicted?.complete).toBe(false);
+      expect(evicted?.throughSeq).toBe(watermark);
+      const recent = service.getOpsSince('s1', 'main', base + 2);
+      expect(recent?.complete).toBe(true);
+      expect(recent?.epoch).toBe(epoch);
+      expect(recent?.batches.map((batch) => batch.seq)).toEqual([base + 3, base + 4]);
+      expect(service.getOpsSince('s1', 'main', { epoch: 'ep_stale', seq: base + 2 })?.complete).toBe(
+        false,
+      );
+      service.dropSession('s1');
+    });
+
+    it('enforces the per-session byte budget across agent journals', async () => {
+      const agents = new FakeAgents();
+      const main = agents.add('main');
+      const service = new TranscriptService({
+        homeDir: '/nonexistent-home',
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+        opsJournalLimits: { maxAgentBytes: 1 << 20, maxSessionBytes: 3000, maxTotalBytes: 1 << 20 },
+      });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      const base = service.getSeqWatermark('s1', 'main');
+
+      for (let turnId = 1; turnId <= 2; turnId += 1) {
+        main.bus.emit(
+          ev({ type: 'turn.started', turnId, origin: { kind: 'user' }, prompt: 'm'.repeat(512) }),
+        );
+      }
+      expect(service.getOpsSince('s1', 'main', base)?.complete).toBe(true);
+      expect(service.getOpsSince('s1', 'main', base)?.batches).toHaveLength(2);
+
+      const sub = agents.add('sub-1');
+      sub.bus.emit(
+        ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, prompt: 's'.repeat(512) }),
+      );
+      const subCatchup = service.getOpsSince('s1', 'sub-1', 0);
+      expect(subCatchup?.throughSeq).toBe(1);
+      expect(subCatchup?.complete).toBe(false);
+      expect(subCatchup?.batches).toEqual([]);
+
+      const mainCatchup = service.getOpsSince('s1', 'main', base);
+      expect(mainCatchup?.complete).toBe(true);
+      expect(mainCatchup?.batches).toHaveLength(2);
+      service.dropSession('s1');
+    });
   });
 });

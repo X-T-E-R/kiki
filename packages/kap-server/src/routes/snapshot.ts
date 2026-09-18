@@ -26,7 +26,7 @@ import {
   type SessionSnapshotResponse,
   type SnapshotSubagent,
 } from '../protocol/rest-snapshot';
-import { loadCapturedMessageHistory } from '../services/messages/messageHistory';
+import { loadCapturedMessageHistoryTail } from '../services/messages/messageHistory';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { readAgentRuntimeControls } from './sessionAgentConfig';
 import { resolveSessionFacts, toWireSession } from './sessions';
@@ -154,17 +154,16 @@ export async function assembleSnapshot(
       );
   const status = snapState.status;
 
-  const all = compact
-    ? []
-    : await loadCapturedMessageHistory(
+  const messageTail = compact
+    ? undefined
+    : await loadCapturedMessageHistoryTail(
         main,
         sessionId,
         meta.createdAt,
         snapState.contextMessages,
         snapState.contextMessageTimes,
+        SNAPSHOT_MESSAGE_PAGE_SIZE,
       );
-  const hasMore = !compact && all.length > SNAPSHOT_MESSAGE_PAGE_SIZE;
-  const items = compact ? [] : all.slice(-SNAPSHOT_MESSAGE_PAGE_SIZE);
 
   const inFlightTurn = attachCurrentPromptIdToInFlight(
     snapState.inFlightTurn,
@@ -175,7 +174,7 @@ export async function assembleSnapshot(
     as_of_seq: snapState.seq,
     epoch: snapState.epoch,
     session,
-    messages: { items, has_more: hasMore },
+    messages: { items: messageTail?.items ?? [], has_more: messageTail?.has_more ?? false },
     in_flight_turn: inFlightTurn,
     subagents,
     context_tokens: status?.contextTokens,
