@@ -6,6 +6,7 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
+import { requestOnboardingOpen } from '../OnboardingWizard';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 
@@ -114,6 +115,17 @@ export function AboutSection() {
           <Hint>{t('st.about.browserHint')}</Hint>
         </div>
       )}
+
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-hairline pt-4">
+        <Hint>{t('onboarding.reenterHint')}</Hint>
+        <button
+          type="button"
+          onClick={() => { requestOnboardingOpen(); }}
+          className={SECONDARY_BUTTON}
+        >
+          {t('onboarding.reenter')}
+        </button>
+      </div>
 
       <ConfirmDialog
         open={confirmInstall && update !== null}

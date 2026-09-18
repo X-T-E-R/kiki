@@ -35,6 +35,11 @@ import { ConfirmDialog } from './components/ConfirmDialog';
 import { GlobalTaskBoard } from './components/GlobalTaskBoard';
 import { DirtyGuardContext, shouldGuardNavigation } from './components/dirtyGuard';
 import { NewSessionPage } from './components/NewSessionPage';
+import {
+  OnboardingWizard,
+  shouldOfferOnboarding,
+  subscribeOnboardingOpenRequests,
+} from './components/OnboardingWizard';
 import { CapabilitiesShim } from './components/CapabilitiesShim';
 import { ConversationShell } from './components/ConversationShell';
 import { QuickSwitcher } from './components/QuickSwitcher';
@@ -59,6 +64,7 @@ import {
   type SessionListData,
 } from '@kiki/session-core/sessions';
 import {
+  isOnboardingCompleted,
   readLastSessionId,
   writeDesktopPrefs,
   writeLayoutPreferences,
@@ -109,6 +115,41 @@ export function App() {
   const layoutPrefs = useLayoutPreferences();
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  // Decided exactly once per app run, the moment both probes have answered:
+  // a "configured" answer latches too, so a later catalog hiccup can never
+  // pop the wizard over an established session.
+  const onboardingDecided = useRef(false);
+  const onboardingAuthQuery = useQuery({
+    queryKey: ['auth'],
+    queryFn: () => client.getAuth(),
+    staleTime: 10_000,
+    retry: false,
+  });
+  const onboardingModelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: () => client.listModels(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  useEffect(() => {
+    if (onboardingDecided.current) return;
+    if (onboardingAuthQuery.data === undefined || onboardingModelsQuery.data === undefined) return;
+    onboardingDecided.current = true;
+    if (
+      shouldOfferOnboarding({
+        completed: isOnboardingCompleted(),
+        auth: onboardingAuthQuery.data,
+        models: onboardingModelsQuery.data.items,
+      })
+    ) {
+      setOnboardingOpen(true);
+    }
+  }, [onboardingAuthQuery.data, onboardingModelsQuery.data]);
+  useEffect(
+    () => subscribeOnboardingOpenRequests(() => { setOnboardingOpen(true); }),
+    [],
+  );
   const [dirtyIds, setDirtyIds] = useState<readonly string[]>([]);
   const [pendingNavigation, setPendingNavigation] = useState<{
     readonly target: To;
@@ -490,6 +531,9 @@ export function App() {
         <QuickSwitcher sessions={sessions} onClose={() => { setQuickSwitcherOpen(false); }} />
       ) : null}
         {shortcutsOpen ? <ShortcutsOverlay onClose={() => { setShortcutsOpen(false); }} /> : null}
+        {onboardingOpen ? (
+          <OnboardingWizard onClose={() => { setOnboardingOpen(false); }} />
+        ) : null}
         <Toasts />
       </div>
       <ConfirmDialog
