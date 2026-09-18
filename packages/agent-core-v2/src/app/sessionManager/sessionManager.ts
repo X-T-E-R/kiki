@@ -9,6 +9,7 @@ import type {
   SessionArchivedEvent,
   SessionClosedEvent,
   SessionCreatedEvent,
+  SessionDeletedEvent,
   SessionForkedEvent,
   SessionWillCloseEvent,
   SessionWillCreateEvent,
@@ -30,6 +31,7 @@ export interface ISessionManager {
   readonly onWillCloseSession?: Event<SessionWillCloseEvent & IWaitUntil>;
   readonly onDidCloseSession?: Event<SessionClosedEvent>;
   readonly onDidArchiveSession?: Event<SessionArchivedEvent>;
+  readonly onDidDeleteSession?: Event<SessionDeletedEvent>;
   readonly onDidForkSession?: Event<SessionForkedEvent>;
   create(options: CreateManagedSessionOptions): Promise<ISessionScopeHandle>;
   resume(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;

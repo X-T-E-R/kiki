@@ -9,6 +9,7 @@ import { Event, Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import type { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
 import {
@@ -21,6 +22,7 @@ import type {
   ThreadDeliveryClaim,
   ThreadMailboxMutationOptions,
 } from '#/app/threadCommunication/threadMailboxStore';
+import type { SessionArchivedEvent, SessionDeletedEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { createHooks } from '#/hooks';
 import { IAgentContextMemoryService, type IAgentContextMemoryService as AgentContextMemory } from '#/agent/contextMemory/contextMemory';
@@ -32,7 +34,13 @@ import {
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
 import { AgentMessageMailboxFullError } from '#/session/agentCollaboration/messageMailbox';
-import { AgentCollaborationMessageStoreAdapter } from '#/session/agentCollaboration/threadMailboxAdapter';
+import type { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
+import {
+  AgentCollaborationMailboxCleanup,
+  AgentCollaborationMessageStoreAdapter,
+  MAILBOX_HOST_ID,
+} from '#/session/agentCollaboration/threadMailboxAdapter';
+import type { AgentMeta, ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
 
@@ -185,7 +193,7 @@ describe('agent collaboration safe-boundary delivery', () => {
   it('does not wake an idle target and delivers FIFO before its next run', async () => {
     const store = mailboxStore(tempDir());
     const lifecycle = lifecycleHarness([]);
-    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext());
+    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
     const target = agentHandle('agent-target');
 
     await service.send(sendInput('first', 'call-1'));
@@ -244,7 +252,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     };
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext());
+    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
     try {
       const interruptedRun = target.execution.hooks.onWillRun.run({ signal });
       await gate.entered;
@@ -269,7 +277,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext());
+    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
 
     await service.send({
       sourceAgentId: 'external:delegation_test',
@@ -346,7 +354,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     const adapter = new AgentCollaborationMessageStoreAdapter(threadStore);
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    const service = new AgentCollaborationMessagingService(adapter, lifecycle.service, sessionContext());
+    const service = new AgentCollaborationMessagingService(adapter, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
 
     await expect(target.execution.hooks.onWillRun.run({ signal })).rejects.toMatchObject({
       code: 'runtime.connection_failed',
@@ -363,6 +371,364 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 });
+
+describe('agent collaboration mailbox restart durability', () => {
+  it('delivers queued messages FIFO after the service and store are rebuilt on the same home', async () => {
+    const homeDir = tempDir();
+    const firstStore = mailboxStore(homeDir);
+    const firstService = new AgentCollaborationMessagingService(
+      firstStore,
+      lifecycleHarness([]).service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+    );
+    const first = await firstService.send(sendInput('first', 'call-1'));
+    const second = await firstService.send(sendInput('second', 'call-2'));
+    firstService.dispose();
+
+    const reopened = mailboxStore(homeDir);
+    const target = agentHandle('agent-target');
+    const lifecycle = lifecycleHarness([target.handle]);
+    const service = new AgentCollaborationMessagingService(
+      reopened,
+      lifecycle.service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+    );
+
+    await target.execution.hooks.onWillRun.run({ signal });
+
+    expect(target.messages.map((message) => message.id)).toEqual([
+      first.message.messageId,
+      second.message.messageId,
+    ]);
+    expect(target.messages.map((message) => message.content[0])).toEqual([
+      { type: 'text', text: 'Message from agent "root" (main):\n\nfirst' },
+      { type: 'text', text: 'Message from agent "root" (main):\n\nsecond' },
+    ]);
+    expect(await reopened.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    expect(lifecycle.service.create).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it('discards queued messages for agents missing from the session registry and records the skip', async () => {
+    const homeDir = tempDir();
+    const { adapter, thread } = rawMailbox(homeDir);
+    const orphan = await adapter.accept(messageInput('orphan', 'orphan-1'));
+    const kept = await adapter.accept({ ...messageInput('kept', 'kept-1'), targetAgentId: 'main' });
+    const lifecycle = lifecycleHarness([]);
+    const service = new AgentCollaborationMessagingService(
+      adapter,
+      lifecycle.service,
+      sessionContext(),
+      metadataHarness({ main: {} }),
+    );
+
+    await waitFor(async () =>
+      !(await thread.listPendingTargets()).some((target) =>
+        target.hostId === MAILBOX_HOST_ID &&
+        target.workspaceId === 'session-1' &&
+        target.sessionId === 'agent-target',
+      ),
+    );
+
+    const keptQueued = await adapter.nextQueued('session-1', 'main');
+    expect(keptQueued?.message.messageId).toBe(kept.message.messageId);
+    const page = await thread.readActivity(
+      { hostId: MAILBOX_HOST_ID, workspaceId: 'session-1', sessionId: 'agent-target' },
+      0,
+      10,
+    );
+    expect(page.activities).toEqual([
+      expect.objectContaining({
+        kind: 'message_undeliverable',
+        messageId: orphan.message.messageId,
+        reason: 'target agent is not registered in the session',
+      }),
+    ]);
+    service.dispose();
+  });
+
+  it('never discards queued messages for the main agent', async () => {
+    const homeDir = tempDir();
+    const { adapter, thread } = rawMailbox(homeDir);
+    await adapter.accept(messageInput('orphan', 'orphan-2'));
+    const mainMessage = await adapter.accept({
+      ...messageInput('for main', 'main-1'),
+      targetAgentId: 'main',
+    });
+    const service = new AgentCollaborationMessagingService(
+      adapter,
+      lifecycleHarness([]).service,
+      sessionContext(),
+      metadataHarness({}),
+    );
+
+    await waitFor(async () =>
+      !(await thread.listPendingTargets()).some((target) =>
+        target.hostId === MAILBOX_HOST_ID &&
+        target.workspaceId === 'session-1' &&
+        target.sessionId === 'agent-target',
+      ),
+    );
+
+    const queued = await adapter.nextQueued('session-1', 'main');
+    expect(queued?.message.messageId).toBe(mainMessage.message.messageId);
+    service.dispose();
+  });
+
+  it('keeps queued messages while the session metadata document is created by this load', async () => {
+    const homeDir = tempDir();
+    const { adapter, thread } = rawMailbox(homeDir);
+    const orphan = await adapter.accept(messageInput('orphan', 'fresh-1'));
+    const target = { hostId: MAILBOX_HOST_ID, workspaceId: 'session-1', sessionId: 'agent-target' };
+    let swept!: () => void;
+    const sweepChecked = new Promise<void>((resolve) => {
+      swept = resolve;
+    });
+    const fresh = new AgentCollaborationMessagingService(
+      adapter,
+      lifecycleHarness([]).service,
+      sessionContext(),
+      metadataHarness({}, { createdByLoad: true, onCreatedByLoad: swept }),
+    );
+
+    await sweepChecked;
+    await drain();
+
+    expect(await pendingAgentIds(thread)).toEqual(['agent-target']);
+
+    const existing = new AgentCollaborationMessagingService(
+      adapter,
+      lifecycleHarness([]).service,
+      sessionContext(),
+      metadataHarness({}),
+    );
+    await waitFor(async () => !(await pendingAgentIds(thread)).includes('agent-target'));
+    const page = await thread.readActivity(target, 0, 10);
+    expect(page.activities).toEqual([
+      expect.objectContaining({
+        kind: 'message_undeliverable',
+        messageId: orphan.message.messageId,
+        reason: 'target agent is not registered in the session',
+      }),
+    ]);
+    fresh.dispose();
+    existing.dispose();
+  });
+
+  it('re-reads the agent registry per pending target so a late registration is not discarded', async () => {
+    const homeDir = tempDir();
+    const { adapter, thread } = rawMailbox(homeDir);
+    await adapter.accept(messageInput('late', 'late-1'));
+    await adapter.accept({ ...messageInput('gone', 'gone-1'), targetAgentId: 'agent-ghost' });
+    let registry: Readonly<Record<string, AgentMeta>> = {};
+    const service = new AgentCollaborationMessagingService(
+      wrapStore(adapter, {
+        listPendingAgents: async (sessionId) => {
+          registry = { 'agent-target': {} };
+          return adapter.listPendingAgents(sessionId);
+        },
+      }),
+      lifecycleHarness([]).service,
+      sessionContext(),
+      metadataHarness(() => registry),
+    );
+
+    await waitFor(async () => !(await pendingAgentIds(thread)).includes('agent-ghost'));
+
+    expect(await pendingAgentIds(thread)).toEqual(['agent-target']);
+    service.dispose();
+  });
+});
+
+describe('agent collaboration mailbox lifecycle cleanup', () => {
+  it('keeps mailbox messages when a session is archived so a restored session still delivers them', async () => {
+    const homeDir = tempDir();
+    const { adapter } = rawMailbox(homeDir);
+    const archivedEmitter = new Emitter<SessionArchivedEvent>();
+    const sessions = {
+      _serviceBrand: undefined,
+      onDidArchiveSession: archivedEmitter.event,
+      onDidDeleteSession: Event.None,
+    } as unknown as ISessionManager;
+    const discardPending = vi.fn(wrapStore(adapter).discardPending);
+    const cleanup = new AgentCollaborationMailboxCleanup(
+      sessions,
+      wrapStore(adapter, { discardPending }),
+    );
+    const accepted = await adapter.accept(messageInput('survives archive', 'archive-1'));
+
+    archivedEmitter.fire({ sessionId: 'session-1' });
+    await drain();
+
+    expect(discardPending).not.toHaveBeenCalled();
+    const target = agentHandle('agent-target');
+    const service = new AgentCollaborationMessagingService(
+      adapter,
+      lifecycleHarness([target.handle]).service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+    );
+    await target.execution.hooks.onWillRun.run({ signal });
+
+    expect(target.messages.map((message) => message.id)).toEqual([accepted.message.messageId]);
+    expect(await adapter.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    cleanup.dispose();
+    service.dispose();
+  });
+
+  it('discards mailbox messages and records the skip when the session is deleted', async () => {
+    const homeDir = tempDir();
+    const { adapter, thread } = rawMailbox(homeDir);
+    const deletedEmitter = new Emitter<SessionDeletedEvent>();
+    const sessions = {
+      _serviceBrand: undefined,
+      onDidArchiveSession: Event.None,
+      onDidDeleteSession: deletedEmitter.event,
+    } as unknown as ISessionManager;
+    const cleanup = new AgentCollaborationMailboxCleanup(sessions, adapter);
+    const accepted = await adapter.accept(messageInput('dropped', 'delete-1'));
+
+    deletedEmitter.fire({ sessionId: 'session-1' });
+    await waitFor(async () =>
+      !(await thread.listPendingTargets()).some((target) =>
+        target.hostId === MAILBOX_HOST_ID && target.workspaceId === 'session-1',
+      ),
+    );
+
+    const page = await thread.readActivity(
+      { hostId: MAILBOX_HOST_ID, workspaceId: 'session-1', sessionId: 'agent-target' },
+      0,
+      10,
+    );
+    expect(page.activities).toEqual([
+      expect.objectContaining({
+        kind: 'message_undeliverable',
+        messageId: accepted.message.messageId,
+        reason: 'session deleted',
+      }),
+    ]);
+    cleanup.dispose();
+  });
+
+  it('only discards agent-collaboration messages of the named session', async () => {
+    const homeDir = tempDir();
+    const { adapter, thread } = rawMailbox(homeDir);
+    await adapter.accept(messageInput('one', 'filter-1'));
+    await adapter.accept(messageInput('two', 'filter-2'));
+    const other = await adapter.accept({ ...messageInput('other', 'filter-3'), sessionId: 'session-2' });
+    const threadTarget = {
+      hostId: 'device-host',
+      workspaceId: 'session-1',
+      sessionId: 'agent-target',
+    };
+    const threadMessage = await thread.acceptMessage({
+      producer: { kind: 'external_client' },
+      target: threadTarget,
+      content: 'thread message',
+      idempotencyKey: 'thread-1',
+    });
+
+    expect(await adapter.listPendingAgents('session-1')).toEqual(['agent-target']);
+    await expect(adapter.discardPending({
+      sessionId: 'session-1',
+      agentIds: ['agent-target'],
+      reason: 'test discard',
+    })).resolves.toEqual({ discarded: 2 });
+
+    expect(await adapter.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    const otherQueued = await adapter.nextQueued('session-2', 'agent-target');
+    expect(otherQueued?.message.messageId).toBe(other.message.messageId);
+    const threadClaim = await thread.claimNext({
+      target: threadTarget,
+      consumerId: 'thread-communication/test',
+      leaseMs: 30_000,
+    });
+    expect(threadClaim?.message.messageId).toBe(threadMessage.message.messageId);
+  });
+
+  it('reuses the per-target cleanup claim request id after a committed claim response is lost', async () => {
+    const target = {
+      hostId: MAILBOX_HOST_ID,
+      workspaceId: 'session-1',
+      sessionId: 'agent-target',
+    };
+    const claim: ThreadDeliveryClaim = {
+      message: {
+        messageId: 'cleanup-claim',
+        producer: { kind: 'peer_thread', source: { ...target, sessionId: 'main' } },
+        target,
+        content: JSON.stringify({
+          v: 1,
+          kind: 'agent_collaboration_message',
+          sourceTaskName: 'root',
+          targetTaskName: 'target',
+          content: 'cleanup retry',
+        }),
+        idempotencyKey: 'cleanup-claim',
+        acceptedAt: 1,
+        targetSeq: 1,
+      },
+      consumerId: 'agent-collaboration-cleanup/session-1/agent-target',
+      fence: 1,
+      leaseUntil: Date.now() + 30_000,
+      hostEpoch: 1,
+    };
+    const requestIds: string[] = [];
+    let committed: string | undefined;
+    const markUndeliverable = vi.fn<IThreadMailboxStore['markUndeliverable']>(async () => true);
+    const threadStore = {
+      _serviceBrand: undefined,
+      listPendingTargets: async () => [target],
+      claimNext: vi.fn<IThreadMailboxStore['claimNext']>(async (_input, options) => {
+        const requestId = options?.requestId ?? '';
+        requestIds.push(requestId);
+        if (committed === undefined) {
+          committed = requestId;
+          throw new HomeRuntimeError('runtime.connection_failed', 'simulated committed claim response loss');
+        }
+        return requestId === committed ? claim : undefined;
+      }),
+      markUndeliverable,
+      appendActivity: vi.fn<IThreadMailboxStore['appendActivity']>(async (input) => ({
+        seq: 1,
+        epoch: 'epoch',
+        kind: input.kind,
+        at: Date.now(),
+        reason: input.reason,
+      })),
+    } as unknown as IThreadMailboxStore;
+    const adapter = new AgentCollaborationMessageStoreAdapter(threadStore);
+    const discard = () => adapter.discardPending({
+      sessionId: 'session-1',
+      agentIds: ['agent-target'],
+      reason: 'test cleanup',
+    });
+
+    await expect(discard()).rejects.toMatchObject({ code: 'runtime.connection_failed' });
+    await expect(discard()).resolves.toEqual({ discarded: 1 });
+
+    expect(requestIds[0]).toBe(requestIds[1]);
+    expect(markUndeliverable).toHaveBeenCalledTimes(1);
+  });
+});
+
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await predicate()) return;
+    if (Date.now() >= deadline) throw new Error('waitFor timed out');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function pendingAgentIds(thread: RuntimeThreadMailboxStore, sessionId = 'session-1'): Promise<string[]> {
+  return (await thread.listPendingTargets())
+    .filter((target) => target.hostId === MAILBOX_HOST_ID && target.workspaceId === sessionId)
+    .map((target) => target.sessionId)
+    .toSorted();
+}
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -413,11 +779,18 @@ function tempDir(): string {
 }
 
 function mailboxStore(homeDir: string): AgentCollaborationMessageStoreAdapter {
+  return rawMailbox(homeDir).adapter;
+}
+
+function rawMailbox(homeDir: string): {
+  readonly adapter: AgentCollaborationMessageStoreAdapter;
+  readonly thread: RuntimeThreadMailboxStore;
+} {
   const seed = bootstrap(homeDir);
   const runtime = new HomeRuntimeHostService(seed);
-  const store = new RuntimeThreadMailboxStore(seed, runtime, new HostFileSystem());
-  runtimeMailboxes.push({ runtime, store });
-  return new AgentCollaborationMessageStoreAdapter(store);
+  const thread = new RuntimeThreadMailboxStore(seed, runtime, new HostFileSystem());
+  runtimeMailboxes.push({ runtime, store: thread });
+  return { adapter: new AgentCollaborationMessageStoreAdapter(thread), thread };
 }
 
 function bootstrap(homeDir: string): IBootstrapService {
@@ -478,6 +851,49 @@ function sessionContext(): ISessionContext {
     cwd: 'cwd',
     scope: (subKey) => subKey === undefined ? 'session/scope' : `session/scope/${subKey}`,
   };
+}
+
+function metadataHarness(
+  agents: Readonly<Record<string, AgentMeta>> | (() => Readonly<Record<string, AgentMeta>>),
+  options: {
+    readonly createdByLoad?: boolean;
+    readonly onCreatedByLoad?: () => void;
+  } = {},
+): ISessionMetadata {
+  return {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    read: async () => ({
+      id: 'session-1',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+      agents: typeof agents === 'function' ? agents() : agents,
+    }),
+    createdByLoad: () => {
+      options.onCreatedByLoad?.();
+      return options.createdByLoad ?? false;
+    },
+  } as unknown as ISessionMetadata;
+}
+
+function wrapStore(
+  adapter: AgentCollaborationMessageStoreAdapter,
+  overrides: Partial<IAgentCollaborationMessageStore> = {},
+): IAgentCollaborationMessageStore {
+  return {
+    _serviceBrand: undefined,
+    accept: (input) => adapter.accept(input),
+    nextQueued: (sessionId, agentId) => adapter.nextQueued(sessionId, agentId),
+    markDelivered: (claim) => adapter.markDelivered(claim),
+    listPendingAgents: (sessionId) => adapter.listPendingAgents(sessionId),
+    discardPending: (input) => adapter.discardPending(input),
+    ...overrides,
+  };
+}
+
+async function drain(ticks = 25): Promise<void> {
+  for (let index = 0; index < ticks; index++) await Promise.resolve();
 }
 
 function lifecycleHarness(initial: readonly IAgentScopeHandle[]) {

@@ -306,6 +306,46 @@ describe('ThreadCommunicationService', () => {
     expect(listPendingTargets).toHaveBeenCalledTimes(3);
   });
 
+  it('startup recovery leaves pending targets owned by other mailbox hosts untouched', async () => {
+    const foreign = {
+      hostId: 'agent-collaboration-v2',
+      workspaceId: 'session-1',
+      sessionId: 'agent-target',
+    };
+    const claimNext = vi.fn<IThreadMailboxStore['claimNext']>(async () => undefined);
+    const markUndeliverable = vi.fn<IThreadMailboxStore['markUndeliverable']>(async () => true);
+    listPendingTargets.mockResolvedValue([foreign]);
+    ix.stub(IThreadMailboxStore, {
+      acceptMessage: async () => {
+        throw new Error('unexpected accept');
+      },
+      claimNext,
+      acknowledgeDelivery: async () => false,
+      markUndeliverable,
+      listPendingTargets,
+      appendActivity: async (input) => ({
+        seq: 1,
+        epoch: 'epoch',
+        kind: input.kind,
+        at: Date.now(),
+        reason: input.reason,
+      }),
+      readActivity: async () => ({ epoch: 'epoch', latestSeq: 0, activities: [] }),
+      getWorkspaceOverride: async () => undefined,
+      setWorkspaceOverride: async () => {},
+      clearWorkspaceOverride: async () => {},
+      close: mailboxClose,
+    });
+    const service = ix.get(IThreadCommunicationService);
+
+    await vi.waitFor(() => expect(listPendingTargets).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(claimNext).not.toHaveBeenCalled();
+    expect(markUndeliverable).not.toHaveBeenCalled();
+    await service.shutdown();
+  });
+
   it('persists before cross-workspace resume and enqueue without injection', async () => {
     const service = ix.get(IThreadCommunicationService);
     const source = ref(service.hostId, 'workspace-a', 'source');

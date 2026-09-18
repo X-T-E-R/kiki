@@ -1,7 +1,10 @@
+import { Disposable } from '#/_base/di/lifecycle';
+import { createDecorator } from '#/_base/di/instantiation';
 import { randomUUID } from 'node:crypto';
 
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ThreadMailboxBacklogError } from '#/app/threadCommunication/mailboxErrors';
 import {
   IThreadMailboxStore,
@@ -16,9 +19,10 @@ import {
   IAgentCollaborationMessageStore,
   type AcceptedAgentMessage,
   type AgentMessageAcceptance,
+  type AgentMessageDiscardResult,
 } from './messageMailbox';
 
-const MAILBOX_HOST_ID = 'agent-collaboration-v2';
+export const MAILBOX_HOST_ID = 'agent-collaboration-v2';
 const CLAIM_LEASE_MS = 30_000;
 
 interface AgentMailboxEnvelopeV1 {
@@ -38,6 +42,7 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
   declare readonly _serviceBrand: undefined;
 
   private readonly claimRequestIds = new Map<string, string>();
+  private readonly cleanupClaimRequestIds = new Map<string, string>();
   private readonly pendingAcks = new Map<string, AgentPendingAck>();
 
   constructor(@IThreadMailboxStore private readonly mailbox: IThreadMailboxStore) {}
@@ -120,6 +125,98 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
     if (this.pendingAcks.get(key) === pending) this.pendingAcks.delete(key);
     return changed;
   }
+
+  async listPendingAgents(sessionId: string): Promise<readonly string[]> {
+    const targets = await this.mailbox.listPendingTargets();
+    const agents = new Set<string>();
+    for (const target of targets) {
+      if (target.hostId !== MAILBOX_HOST_ID || target.workspaceId !== sessionId) continue;
+      agents.add(target.sessionId);
+    }
+    return [...agents];
+  }
+
+  async discardPending(input: {
+    readonly sessionId: string;
+    readonly agentIds: readonly string[];
+    readonly reason: string;
+  }): Promise<AgentMessageDiscardResult> {
+    let discarded = 0;
+    for (const agentId of input.agentIds) {
+      discarded += await this.discardTarget(agentRef(input.sessionId, agentId), input.reason);
+    }
+    return { discarded };
+  }
+
+  private async discardTarget(target: ThreadRef, reason: string): Promise<number> {
+    let discarded = 0;
+    const key = threadIdentity(target);
+    const consumerId = `agent-collaboration-cleanup/${target.workspaceId}/${target.sessionId}`;
+    for (;;) {
+      const claim = await this.claimForDiscard(target, key, consumerId);
+      if (claim === undefined) return discarded;
+      const changed = await this.mailbox.markUndeliverable(claim, reason, {
+        requestId: threadMailboxClaimRequestId('agent-cleanup', claim),
+      });
+      if (!changed) continue;
+      discarded += 1;
+      await this.mailbox.appendActivity({
+        target,
+        kind: 'message_undeliverable',
+        reason,
+        messageId: claim.message.messageId,
+      }, {
+        requestId: threadMailboxClaimRequestId('agent-cleanup-activity', claim),
+      });
+    }
+  }
+
+  private async claimForDiscard(
+    target: ThreadRef,
+    key: string,
+    consumerId: string,
+  ): Promise<ThreadDeliveryClaim | undefined> {
+    const requestId = this.cleanupClaimRequestIds.get(key) ?? randomUUID();
+    this.cleanupClaimRequestIds.set(key, requestId);
+    const claim = await this.mailbox.claimNext({
+      target,
+      consumerId,
+      leaseMs: CLAIM_LEASE_MS,
+    }, {
+      requestId,
+    });
+    if (this.cleanupClaimRequestIds.get(key) === requestId) this.cleanupClaimRequestIds.delete(key);
+    return claim;
+  }
+}
+
+export interface IAgentCollaborationMailboxCleanup {
+  readonly _serviceBrand: undefined;
+}
+
+export const IAgentCollaborationMailboxCleanup =
+  createDecorator<IAgentCollaborationMailboxCleanup>('agentCollaborationMailboxCleanup');
+
+export class AgentCollaborationMailboxCleanup extends Disposable implements IAgentCollaborationMailboxCleanup {
+  declare readonly _serviceBrand: undefined;
+
+  constructor(
+    @ISessionManager private readonly sessions: ISessionManager,
+    @IAgentCollaborationMessageStore private readonly store: IAgentCollaborationMessageStore,
+  ) {
+    super();
+    if (sessions.onDidDeleteSession !== undefined) {
+      this._register(sessions.onDidDeleteSession((event) => {
+        void this.discardSession(event.sessionId).catch(() => {});
+      }));
+    }
+  }
+
+  private async discardSession(sessionId: string): Promise<void> {
+    const agentIds = await this.store.listPendingAgents(sessionId);
+    if (agentIds.length === 0) return;
+    await this.store.discardPending({ sessionId, agentIds, reason: 'session deleted' });
+  }
 }
 
 function agentRef(sessionId: string, agentId: string): ThreadRef {
@@ -193,4 +290,12 @@ registerScopedService(
   AgentCollaborationMessageStoreAdapter,
   ScopeActivation.OnScopeCreated,
   'agentCollaborationMessageStore',
+);
+
+registerScopedService(
+  LifecycleScope.App,
+  IAgentCollaborationMailboxCleanup,
+  AgentCollaborationMailboxCleanup,
+  ScopeActivation.OnScopeCreated,
+  'agentCollaborationMailboxCleanup',
 );

@@ -47,6 +47,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   );
   private readonly scope: string;
   private updateQueue: Promise<void> = Promise.resolve();
+  private createdDocument = false;
 
   constructor(
     @ISessionStateService private readonly states: ISessionStateService,
@@ -82,6 +83,10 @@ export class SessionMetadata extends Service implements ISessionMetadata {
 
   usage(): SessionMeta['usage'] {
     return this.data.usage;
+  }
+
+  createdByLoad(): boolean {
+    return this.createdDocument;
   }
 
   recordUsage(model: string, usage: TokenUsage): void {
@@ -214,6 +219,9 @@ export class SessionMetadata extends Service implements ISessionMetadata {
         this.data.custom === undefined ||
         sessionMetaTitleNeedsMigration(existing, this.data)
       ) {
+        if (this.data.agents === undefined) {
+          this.createdDocument = true;
+        }
         this.data = {
           ...this.data,
           agents: this.data.agents ?? {},
@@ -235,6 +243,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       custom: {},
     };
     await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
+    this.createdDocument = true;
     this.mirrorToReadModel();
     this.log.debug('session metadata created', { sessionId: this.ctx.sessionId });
   }

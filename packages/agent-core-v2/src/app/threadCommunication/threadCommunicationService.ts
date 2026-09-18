@@ -636,6 +636,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     });
     for (const target of targets) {
       if (this.closing || !(await this.globalEnabled())) return;
+      if (target.hostId !== this.hostId) continue;
       await this.requestTargetDrain(target);
     }
   }

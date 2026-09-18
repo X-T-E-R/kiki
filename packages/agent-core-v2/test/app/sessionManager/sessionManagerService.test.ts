@@ -196,6 +196,63 @@ describe('SessionManager', () => {
     manager.dispose();
   });
 
+  it('fires onDidDeleteSession when the controller reports removal before failing', async () => {
+    const fake = controller();
+    (fake.service as unknown as {
+      delete: (sessionId: string, onRemoved?: () => void) => Promise<void>;
+    }).delete = async (_sessionId, onRemoved) => {
+      onRemoved?.();
+      throw new Error('index removal failed');
+    };
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
+    } as unknown as WorkspaceInstance;
+    const workspaces = {
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
+      get: () => workspace,
+    } as unknown as IWorkspaceInstanceManager;
+    const index = {
+      get: async () => ({ workspaceId: 'workspace-1', cwd: '/workspace' }),
+    } as unknown as ISessionIndex;
+    const manager = new SessionManager(workspaces, index);
+    const deleted: string[] = [];
+    manager.onDidDeleteSession?.((event) => deleted.push(event.sessionId));
+
+    await expect(manager.delete('session-1')).rejects.toThrow('index removal failed');
+
+    expect(deleted).toEqual(['session-1']);
+    manager.dispose();
+  });
+
+  it('does not fire onDidDeleteSession when the controller fails before reporting removal', async () => {
+    const fake = controller();
+    (fake.service as unknown as {
+      delete: (sessionId: string, onRemoved?: () => void) => Promise<void>;
+    }).delete = async () => {
+      throw new Error('session directory removal failed');
+    };
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
+    } as unknown as WorkspaceInstance;
+    const workspaces = {
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
+      get: () => workspace,
+    } as unknown as IWorkspaceInstanceManager;
+    const index = {
+      get: async () => ({ workspaceId: 'workspace-1', cwd: '/workspace' }),
+    } as unknown as ISessionIndex;
+    const manager = new SessionManager(workspaces, index);
+    const deleted: string[] = [];
+    manager.onDidDeleteSession?.((event) => deleted.push(event.sessionId));
+
+    await expect(manager.delete('session-1')).rejects.toThrow('session directory removal failed');
+
+    expect(deleted).toEqual([]);
+    manager.dispose();
+  });
+
   it('serializes fork of the source session with the lifecycle chain', async () => {
     const order: string[] = [];
     const fake = controller();

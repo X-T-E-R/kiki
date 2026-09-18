@@ -5,7 +5,8 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import type { AgentMessageOrigin, ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IWireService } from '#/wire/wire';
-import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import {
@@ -15,6 +16,7 @@ import {
 } from './messageMailbox';
 
 const DELIVERY_HOOK_ID = 'agent-collaboration-message-delivery';
+const MISSING_TARGET_REASON = 'target agent is not registered in the session';
 
 export class AgentCollaborationMessagingService extends Disposable implements IAgentCollaborationMessagingService {
   declare readonly _serviceBrand: undefined;
@@ -24,11 +26,13 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     @IAgentCollaborationMessageStore private readonly store: IAgentCollaborationMessageStore,
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
     @ISessionContext private readonly session: ISessionContext,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
   ) {
     super();
     for (const handle of lifecycle.list()) this.attach(handle);
     this._register(lifecycle.onDidCreate((handle) => this.attach(handle)));
     this._register(lifecycle.onDidDispose((agentId) => this.subscriptions.deleteAndDispose(agentId)));
+    void this.discardUnregisteredTargetMessages().catch(() => {});
   }
 
   send(input: {
@@ -40,6 +44,24 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     readonly idempotencyKey: string;
   }): Promise<AgentMessageAcceptance> {
     return this.store.accept({ sessionId: this.session.sessionId, ...input });
+  }
+
+  private async discardUnregisteredTargetMessages(): Promise<void> {
+    await this.metadata.ready;
+    if (this.metadata.createdByLoad?.() !== false) return;
+    const pending = await this.store.listPendingAgents(this.session.sessionId);
+    const stale: string[] = [];
+    for (const agentId of pending) {
+      if (agentId === MAIN_AGENT_ID) continue;
+      const agents = (await this.metadata.read()).agents ?? {};
+      if (agents[agentId] === undefined) stale.push(agentId);
+    }
+    if (stale.length === 0) return;
+    await this.store.discardPending({
+      sessionId: this.session.sessionId,
+      agentIds: stale,
+      reason: MISSING_TARGET_REASON,
+    });
   }
 
   private attach(handle: IAgentScopeHandle): void {

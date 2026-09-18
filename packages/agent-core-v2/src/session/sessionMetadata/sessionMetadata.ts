@@ -75,6 +75,14 @@ export interface ISessionMetadata {
   setArchived(archived: boolean): Promise<void>;
   registerAgent(agentId: string, meta: AgentMeta): Promise<void>;
   unregisterAgent?(agentId: string): Promise<void>;
+  /**
+   * True when the on-disk document could not vouch for its agent registry: either this instance
+   * created the document because the session had none, or the stored document predates the
+   * registry field. The registry is then empty by construction rather than because its agents
+   * are gone, so consumers that read an empty registry as "the agent no longer exists" must not
+   * act on it. Implementations without this method are treated as undecidable.
+   */
+  createdByLoad?(): boolean;
 }
 
 export const ISessionMetadata: ServiceIdentifier<ISessionMetadata> =

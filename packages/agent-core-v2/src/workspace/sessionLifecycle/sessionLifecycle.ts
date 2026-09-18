@@ -73,6 +73,10 @@ export interface SessionArchivedEvent {
   readonly sessionId: string;
 }
 
+export interface SessionDeletedEvent {
+  readonly sessionId: string;
+}
+
 export interface SessionForkedEvent {
   readonly sourceSessionId: string;
   readonly sessionId: string;
@@ -116,7 +120,13 @@ export interface ISessionLifecycleService {
   close(sessionId: string): Promise<void>;
   archive(sessionId: string): Promise<void>;
   restore(sessionId: string, opts?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
-  delete(sessionId: string): Promise<void>;
+  /**
+   * Deletes the session. `onRemoved` runs once the session directory is gone, before the
+   * remaining bookkeeping, and runs even when that bookkeeping throws: a session that no
+   * longer exists on disk must be reported as removed, or per-session data outside the
+   * session directory would be orphaned forever.
+   */
+  delete(sessionId: string, onRemoved?: () => void): Promise<void>;
   fork(opts: ForkSessionOptions): Promise<ISessionScopeHandle>;
   createChild(opts: CreateChildSessionOptions): Promise<ISessionScopeHandle>;
 }

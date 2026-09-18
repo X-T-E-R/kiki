@@ -12,6 +12,7 @@ import {
   type SessionArchivedEvent,
   type SessionClosedEvent,
   type SessionCreatedEvent,
+  type SessionDeletedEvent,
   type SessionForkedEvent,
   type SessionWillCloseEvent,
   type SessionWillCreateEvent,
@@ -55,6 +56,8 @@ export class SessionManager implements ISessionManager {
   readonly onDidCloseSession = this.didCloseEmitter.event;
   private readonly didArchiveEmitter = new Emitter<SessionArchivedEvent>();
   readonly onDidArchiveSession = this.didArchiveEmitter.event;
+  private readonly didDeleteEmitter = new Emitter<SessionDeletedEvent>();
+  readonly onDidDeleteSession = this.didDeleteEmitter.event;
   private readonly didForkEmitter = new Emitter<SessionForkedEvent>();
   readonly onDidForkSession = this.didForkEmitter.event;
 
@@ -222,7 +225,7 @@ export class SessionManager implements ISessionManager {
       }
       await this.runWorkspaceOperation(
         target.workspaceId,
-        () => target.controller.delete(sessionId),
+        () => target.controller.delete(sessionId, () => this.didDeleteEmitter.fire({ sessionId })),
         target.release,
       );
     });
@@ -288,6 +291,7 @@ export class SessionManager implements ISessionManager {
     this.willCloseEmitter.dispose();
     this.didCloseEmitter.dispose();
     this.didArchiveEmitter.dispose();
+    this.didDeleteEmitter.dispose();
     this.didForkEmitter.dispose();
   }
 

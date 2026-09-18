@@ -562,7 +562,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return handle;
   }
 
-  async delete(sessionId: string): Promise<void> {
+  async delete(sessionId: string, onRemoved?: () => void): Promise<void> {
     const inflight = this.resuming.get(sessionId);
     if (inflight !== undefined) {
       await inflight.catch(() => undefined);
@@ -578,9 +578,20 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
     await this.retainedUsage.retainDeletedSession((await this.index.get(sessionId))!);
     await this.hostFs.remove(sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sessionId));
-    await this.index.remove(sessionId);
-    this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });
-    await this.appendLogStore.flush();
+    try {
+      await this.index.remove(sessionId);
+      this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });
+      await this.appendLogStore.flush();
+    } finally {
+      try {
+        onRemoved?.();
+      } catch (error) {
+        this.log.error('session removal callback failed after the session directory was deleted', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   private async announceWillClose(event: SessionWillCloseEvent): Promise<void> {

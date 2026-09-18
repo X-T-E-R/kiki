@@ -27,6 +27,16 @@ export interface QueuedAgentMessage {
   readonly claim: ThreadDeliveryClaim;
 }
 
+export interface AgentMessageDiscardInput {
+  readonly sessionId: string;
+  readonly agentIds: readonly string[];
+  readonly reason: string;
+}
+
+export interface AgentMessageDiscardResult {
+  readonly discarded: number;
+}
+
 export interface IAgentCollaborationMessageStore {
   readonly _serviceBrand: undefined;
 
@@ -41,6 +51,11 @@ export interface IAgentCollaborationMessageStore {
   }): Promise<AgentMessageAcceptance>;
   nextQueued(sessionId: string, targetAgentId: string): Promise<QueuedAgentMessage | undefined>;
   markDelivered(claim: ThreadDeliveryClaim): Promise<boolean>;
+  /** Target agent ids of this session that still have undelivered messages. */
+  listPendingAgents(sessionId: string): Promise<readonly string[]>;
+  /** Drops every undelivered message of the given targets; each drop is recorded as mailbox
+   *  activity so the skip leaves an auditable trace. */
+  discardPending(input: AgentMessageDiscardInput): Promise<AgentMessageDiscardResult>;
 }
 
 export const IAgentCollaborationMessageStore: ServiceIdentifier<IAgentCollaborationMessageStore> =
