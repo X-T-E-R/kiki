@@ -136,7 +136,7 @@ describe('acp-server skills / available commands', () => {
       .toEqual(ACP_BUILTIN_SLASH_COMMANDS.map((command) => command.name));
     // …followed by the engine's builtin skills (bare command names).
     expect(commands.length).toBeGreaterThan(ACP_BUILTIN_SLASH_COMMANDS.length);
-    expect(commands.some((command) => command.name === 'kiki-ops.goal')).toBe(true);
+    expect(commands.some((command) => command.name === 'kiki-ops.docs')).toBe(true);
     const compact = commands.find((command) => command.name === 'compact');
     expect(compact?.input?.hint).toBe('<optional custom summarization instructions>');
   }, 30_000);
@@ -200,19 +200,19 @@ describe('acp-server skills / available commands', () => {
 
   it('a builtin-source skill activates through its bare command name', async () => {
     const c = await bootWithFixtureSkill();
-    scripted!.mockNextText('goal noted');
+    scripted!.mockNextText('docs noted');
     const sessionId = await newSession(c);
 
     const result = (await c.send('session/prompt', {
       sessionId,
-      prompt: [{ type: 'text', text: '/kiki-ops.goal ship it' }],
+      prompt: [{ type: 'text', text: '/kiki-ops.docs what providers exist' }],
     })) as { stopReason: string };
     expect(result.stopReason).toBe('end_turn');
     expect(scripted!.callCount()).toBe(1);
 
     const history = JSON.stringify(scripted!.callHistory()[0]);
     expect(history).toContain('skill-loaded');
-    expect(history).toContain('kiki-ops.goal');
+    expect(history).toContain('kiki-ops.docs');
   }, 30_000);
 
   it('an unknown slash command is answered locally and never reaches the model', async () => {

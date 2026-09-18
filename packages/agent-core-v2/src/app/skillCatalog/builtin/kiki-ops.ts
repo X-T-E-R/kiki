@@ -2,7 +2,6 @@ import type { SkillDefinition } from '#/app/skillCatalog/types';
 import { parseSkillText } from '#/app/skillCatalog/parser';
 import CONFIG_BODY from './kiki-ops/config.md?raw';
 import DOCS_BODY from './kiki-ops/docs.md?raw';
-import GOAL_BODY from './kiki-ops/goal.md?raw';
 import IMPORT_BODY from './kiki-ops/import.md?raw';
 import MCP_BODY from './kiki-ops/mcp.md?raw';
 import PROFILE_BODY from './kiki-ops/profile.md?raw';
@@ -82,15 +81,6 @@ export const KIKI_OPS_PROFILE_SKILL = makeKikiOpsSkill(
   '/builtin/skills/kiki-ops/profile.md',
   'builtin://kiki-ops/profile',
   { isSubSkill: true },
-);
-
-export const KIKI_OPS_GOAL_SKILL = makeKikiOpsSkill(
-  GOAL_BODY,
-  'kiki-ops.goal',
-  '/builtin/skills/kiki-ops/goal.md',
-  'builtin://kiki-ops/goal',
-  { isSubSkill: true },
-  false,
 );
 
 export const KIKI_OPS_DOCS_SKILL = makeKikiOpsSkill(

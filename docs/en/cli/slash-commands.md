@@ -126,7 +126,6 @@ Kiki ships with a set of built-in Skills that appear directly as `/<name>` slash
 | `/kiki-ops.mcp` | Configure MCP servers and handle MCP OAuth login. See [MCP](../server/mcp.md) |
 | `/kiki-ops.import` | Import Claude Code and Codex instructions, skills, and MCP settings into Kiki |
 | `/kiki-ops.profile` | Create or edit agent profile files and `SYSTEM.md`. See [Agents and Sub-Agents](../customization/agents.md) |
-| `/kiki-ops.goal` | Draft a well-specified `/goal` objective together with the user |
 | `/kiki-ops.docs` | Answer Kiki product questions (CLI and GUI usage, configuration, slash commands, features, and errors) from the local docs installed with Kiki |
 | `/sub-skill` | Discover and reorganize the local skill inventory into hierarchical sub-skill bundles. Includes `/sub-skill.review` (read-only proposal) and `/sub-skill.consolidate` (apply the reorganization) |
 

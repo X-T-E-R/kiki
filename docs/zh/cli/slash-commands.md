@@ -124,7 +124,6 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 | `/kiki-ops.mcp` | 配置 MCP server 并处理 MCP OAuth 登录。详见 [MCP](../server/mcp.md) |
 | `/kiki-ops.import` | 从 Claude Code 和 Codex 导入 instructions、skills 和 MCP 设置 |
 | `/kiki-ops.profile` | 创建或编辑 agent profile 文件与 `SYSTEM.md`。详见 [Agent 与子 Agent](../customization/agents.md) |
-| `/kiki-ops.goal` | 与用户一起把粗糙想法打磨成规格明确的 `/goal` 目标 |
 | `/kiki-ops.docs` | 读取随 Kiki 安装的本地文档，回答 CLI 与 GUI 用法、配置、斜杠命令、功能和错误相关的 Kiki 产品问题 |
 | `/sub-skill` | 发现并将本地 skill 库存重组为分层子 skill 包。包含 `/sub-skill.review`（只读提案）和 `/sub-skill.consolidate`（执行重组） |
 

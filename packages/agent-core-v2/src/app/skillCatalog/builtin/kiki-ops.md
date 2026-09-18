@@ -1,12 +1,12 @@
 ---
 name: kiki-ops
-description: Kiki product operations — answer Kiki usage questions from local docs, edit config.toml/tui.toml, create TUI themes, configure MCP servers + OAuth, import from Claude Code/Codex, author agent profiles and SYSTEM.md, write /goal objectives.
+description: Kiki product operations — answer Kiki usage questions from local docs, edit config.toml/tui.toml, create TUI themes, configure MCP servers + OAuth, import from Claude Code/Codex, author agent profiles and SYSTEM.md.
 has-sub-skill: true
 ---
 
 # Kiki ops (kiki-ops)
 
-Kiki's one-stop entry for using and configuring the product: answer product questions from the docs installed with the running version, explain or edit `config.toml` / `tui.toml`, build a custom TUI theme, configure MCP servers, import Claude Code / Codex assets, author agent profiles, and write a well-specified `/goal` objective.
+Kiki's one-stop entry for using and configuring the product: answer product questions from the docs installed with the running version, explain or edit `config.toml` / `tui.toml`, build a custom TUI theme, configure MCP servers, import Claude Code / Codex assets, and author agent profiles.
 
 ## Topic routing
 
@@ -20,7 +20,6 @@ Load the matching topic before doing the work — call the `Skill` tool with the
 | mcp | `kiki-ops.mcp` | Add / edit / remove / list `mcp.json` servers, and complete MCP OAuth login |
 | import | `kiki-ops.import` | Migrate instructions, skills, and MCP declarations from Claude Code and Codex into Kiki |
 | profile | `kiki-ops.profile` | Author or repair agent profile files and `SYSTEM.md` |
-| goal | `kiki-ops.goal` | Draft a well-specified `/goal` objective with the user |
 
 ## Cross-topic rules
 

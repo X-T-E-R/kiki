@@ -29,7 +29,6 @@ const KIKI_OPS_TRIGGERS = [
   'codex',
   'profile',
   'system.md',
-  'goal',
   'docs',
 ];
 const NEUTRAL_SKILLS = BUILTIN_SKILLS.map((s) => s.name).filter(
@@ -71,7 +70,6 @@ describe('BuiltinSkillSource product-skill switch', () => {
       'kiki-ops.mcp',
       'kiki-ops.import',
       'kiki-ops.profile',
-      'kiki-ops.goal',
       'kiki-ops.docs',
     ]);
     for (const topic of topics) {
