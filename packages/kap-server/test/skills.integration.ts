@@ -184,14 +184,14 @@ describe('server-v2 /api skills', () => {
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
 
-      const updateConfig = skills.find((s) => s.name === 'kiki-ops');
-      expect(updateConfig).toBeDefined();
-      expect(updateConfig).toMatchObject({ source: 'builtin' });
-      expect(updateConfig).not.toHaveProperty('is_sub_skill');
-      expect(updateConfig).not.toHaveProperty('isSubSkill');
+      const opsSkill = skills.find((s) => s.name === 'kiki-ops');
+      expect(opsSkill).toBeDefined();
+      expect(opsSkill).toMatchObject({ source: 'builtin' });
+      expect(opsSkill).not.toHaveProperty('is_sub_skill');
+      expect(opsSkill).not.toHaveProperty('isSubSkill');
     });
 
-    it('lists the kiki-ops.docs builtin skill', async () => {
+    it('lists the narrow kiki-profile builtin skill', async () => {
       const id = await createSession();
       const { body } = await getJson<{ skills: SkillWire[] }>(
         `/api/sessions/${id}/skills`,
@@ -199,10 +199,10 @@ describe('server-v2 /api skills', () => {
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
 
-      const docsSkill = skills.find((s) => s.name === 'kiki-ops.docs');
-      expect(docsSkill).toBeDefined();
-      expect(docsSkill).toMatchObject({ source: 'builtin' });
-      expect(docsSkill?.description.length).toBeGreaterThan(0);
+      const profileSkill = skills.find((s) => s.name === 'kiki-profile');
+      expect(profileSkill).toBeDefined();
+      expect(profileSkill).toMatchObject({ source: 'builtin' });
+      expect(profileSkill?.description.length).toBeGreaterThan(0);
     });
   });
 

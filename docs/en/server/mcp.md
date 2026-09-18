@@ -23,7 +23,7 @@ The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migr
 
 Entries with the same name: the project-level entry takes precedence and overrides the user-level entry.
 
-Run `/kiki-ops.mcp` in the TUI to interactively add, edit, or delete servers without manually editing the JSON file. Run `/mcp` to view the connection status of all current servers.
+Run `/kiki-ops help me configure MCP` in the TUI to interactively add, edit, or delete servers without manually editing the JSON file. Run `/mcp` to view the connection status of all current servers.
 
 Deleting a server from the configuration does not interrupt open sessions: the server stays listed in `/mcp` as `removed`, its tools remain visible there, and calls to them fail with a removal notice, while new sessions do not register the tools at all. Conversely, a server added mid-session — by editing `mcp.json` or installing a plugin — is not registered in already-open sessions; it only joins sessions created later.
 
@@ -67,7 +67,7 @@ Optional fields:
 
 You do not have to set the connection timeout or the single tool-call timeout per server: `[mcp] startup_timeout_ms` / `[mcp] tool_timeout_ms` in `config.toml` or the `KIKI_MCP_STARTUP_TIMEOUT_MS` / `KIKI_MCP_TOOL_TIMEOUT_MS` environment variables change the global defaults. Precedence is: per-server field > environment variable > `config.toml` > built-in default. See [Configuration files](../configuration/config-files.md#mcp).
 
-HTTP and SSE servers support providing static credentials via `headers` or `bearerTokenEnvVar`. When OAuth is needed, run `/kiki-ops.mcp login <server-name>` to complete browser-based authorization.
+HTTP and SSE servers support providing static credentials via `headers` or `bearerTokenEnvVar`. When OAuth is needed, run `/kiki-ops help me log in to MCP <server-name>` to complete browser-based authorization.
 
 Plugins can also declare MCP servers in their manifest. Servers declared by a plugin are enabled by default and can be disabled or re-enabled in `/plugins`: disabling or removing stops the tools in open sessions — calls fail with a removal notice — and adding or enabling a server connects it in open sessions right away. See [Plugins](../customization/plugins.md#mcp-servers-in-plugins) for details.
 

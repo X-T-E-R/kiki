@@ -11,25 +11,22 @@ import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import { stubFlag } from '../flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
 
-const PRODUCT_SKILLS = [
-  'kiki-ops',
-  'kiki-ops.config',
-  'kiki-ops.theme',
-  'kiki-ops.mcp',
-  'kiki-ops.import',
-  'kiki-ops.profile',
-  'kiki-ops.docs',
-];
+const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile'];
 const KIKI_OPS_TRIGGERS = [
+  'first-run',
+  'provider',
+  'default-model',
   'config.toml',
   'tui.toml',
-  'theme',
+  'websearch',
+  'fetchurl',
+  'sessions',
+  'subagents',
+  'background tasks',
+  'requirements board',
   'mcp',
-  'claude code',
-  'codex',
-  'profile',
-  'system.md',
-  'docs',
+  'themes',
+  'imports',
 ];
 const NEUTRAL_SKILLS = BUILTIN_SKILLS.map((s) => s.name).filter(
   (name) => !PRODUCT_SKILLS.includes(name),
@@ -49,43 +46,40 @@ async function loadNames(configured?: boolean): Promise<readonly string[]> {
 }
 
 describe('BuiltinSkillSource product-skill switch', () => {
-  it('marks exactly the product-documentation skills', () => {
-    expect(BUILTIN_SKILLS.filter((s) => s.productSpecific === true).map((s) => s.name).toSorted())
-      .toEqual([...PRODUCT_SKILLS].toSorted());
-    expect(NEUTRAL_SKILLS.length).toBeGreaterThan(0);
+  it('ships exactly the two product-facing builtin skills', () => {
+    expect(BUILTIN_SKILLS.map((skill) => skill.name)).toEqual(PRODUCT_SKILLS);
+    expect(BUILTIN_SKILLS.every((skill) => skill.productSpecific === true)).toBe(true);
+    expect(NEUTRAL_SKILLS).toEqual([]);
   });
 
-  it('bundles every product topic under one model-invocable kiki-ops entry', () => {
-    const parent = BUILTIN_SKILLS.find((s) => s.name === 'kiki-ops');
-    expect(parent?.metadata.disableModelInvocation).not.toBe(true);
-    const description = parent?.description.toLowerCase() ?? '';
+  it('keeps kiki-ops broad but narrowly limited to Kiki product operations', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops');
+    expect(ops?.metadata.disableModelInvocation).not.toBe(true);
+    expect(ops?.metadata.isSubSkill).not.toBe(true);
+    expect(ops?.description.toLowerCase()).toContain('do not use for ordinary');
+    const description = ops?.description.toLowerCase() ?? '';
     for (const trigger of KIKI_OPS_TRIGGERS) {
       expect(description).toContain(trigger);
     }
-
-    const topics = BUILTIN_SKILLS.filter((s) => s.name.startsWith('kiki-ops.'));
-    expect(topics.map((s) => s.name)).toEqual([
-      'kiki-ops.config',
-      'kiki-ops.theme',
-      'kiki-ops.mcp',
-      'kiki-ops.import',
-      'kiki-ops.profile',
-      'kiki-ops.docs',
-    ]);
-    for (const topic of topics) {
-      expect(topic.metadata.isSubSkill).toBe(true);
-      expect(topic.metadata.disableModelInvocation).not.toBe(true);
-      expect(topic.content.length).toBeGreaterThan(0);
-    }
+    expect(BUILTIN_SKILLS.some((skill) => skill.name.startsWith('kiki-ops.'))).toBe(false);
   });
 
-  it('keeps every topic trigger visible in the rendered model listing', () => {
+  it('keeps kiki-profile independent and narrow', () => {
+    const profile = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-profile');
+    expect(profile?.metadata.disableModelInvocation).not.toBe(true);
+    expect(profile?.metadata.isSubSkill).not.toBe(true);
+    expect(profile?.description.toLowerCase()).toContain('create, modify, or repair');
+    expect(profile?.description.toLowerCase()).toContain('do not use merely to select');
+    expect(profile?.content).toContain('by default the body is the complete system prompt');
+  });
+
+  it('keeps the primary kiki-ops triggers visible in the rendered model listing', () => {
     const catalog = new InMemorySkillCatalog();
-    const parent = BUILTIN_SKILLS.find((s) => s.name === 'kiki-ops');
-    expect(parent).toBeDefined();
-    catalog.registerBuiltinSkill(parent!);
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops');
+    expect(ops).toBeDefined();
+    catalog.registerBuiltinSkill(ops!);
     const listing = catalog.getModelSkillListing().toLowerCase();
-    for (const trigger of KIKI_OPS_TRIGGERS) {
+    for (const trigger of KIKI_OPS_TRIGGERS.slice(0, 10)) {
       expect(listing).toContain(trigger);
     }
   });

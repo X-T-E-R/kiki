@@ -1,17 +1,17 @@
 import type { SkillDefinition } from '#/app/skillCatalog/types';
 import { parseSkillText } from '#/app/skillCatalog/parser';
-import KIKI_OPS_BODY from './kiki-ops.md?raw';
+import KIKI_PROFILE_BODY from './kiki-profile.md?raw';
 
-const PSEUDO_PATH = 'builtin://kiki-ops';
+const PSEUDO_PATH = 'builtin://kiki-profile';
 
 const parsed = parseSkillText({
-  skillMdPath: '/builtin/skills/kiki-ops.md',
-  skillDirName: 'kiki-ops',
+  skillMdPath: '/builtin/skills/kiki-profile.md',
+  skillDirName: 'kiki-profile',
   source: 'builtin',
-  text: KIKI_OPS_BODY,
+  text: KIKI_PROFILE_BODY,
 });
 
-export const KIKI_OPS_SKILL: SkillDefinition = {
+export const KIKI_PROFILE_SKILL: SkillDefinition = {
   ...parsed,
   path: PSEUDO_PATH,
   dir: PSEUDO_PATH,

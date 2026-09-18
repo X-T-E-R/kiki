@@ -1,29 +1,85 @@
 ---
 name: kiki-ops
-description: Kiki product operations — answer Kiki usage questions from local docs, edit config.toml/tui.toml, create TUI themes, configure MCP servers + OAuth, import from Claude Code/Codex, author agent profiles and SYSTEM.md.
-has-sub-skill: true
+description: Configure, operate, or troubleshoot Kiki itself. Use for Kiki product questions, first-run provider, authentication, and default-model setup, config.toml or tui.toml changes, WebSearch/FetchURL setup, sessions, subagents, background tasks, the requirements board, MCP, themes, imports, and interpreting Kiki errors. Do not use for ordinary coding, writing, research, or other project work that merely happens inside Kiki.
 ---
 
-# Kiki ops (kiki-ops)
+# Kiki operations (kiki-ops)
 
-Kiki's one-stop entry for using and configuring the product: answer product questions from the docs installed with the running version, explain or edit `config.toml` / `tui.toml`, build a custom TUI theme, configure MCP servers, import Claude Code / Codex assets, and author agent profiles.
+Help the user use, configure, and troubleshoot the installed Kiki product. This is the single general Kiki operations skill. Ground answers in the documentation installed with the running version, keep configuration changes narrow and reversible, and continue a setup flow step by step instead of only describing it.
 
-## Topic routing
+Agent profile authoring is intentionally separate. If the user wants to create or modify an agent profile or `SYSTEM.md`, load `kiki-profile` instead.
 
-Load the matching topic before doing the work — call the `Skill` tool with the topic name from the table (for example `skill: "kiki-ops.mcp"`). Load every relevant topic when a request spans several of them. When the user arrived through a slash command, route from the command name and its arguments instead of asking again what they want.
+## Installed documentation is the source of truth
 
-| Topic | Load | Covers |
-| --- | --- | --- |
-| docs | `kiki-ops.docs` | Answer Kiki product questions (CLI and GUI usage, configuration, slash commands, features, error behavior) from the local docs |
-| config | `kiki-ops.config` | Explain, change, or validate `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update); fix a deprecated key or env-var warning |
-| theme | `kiki-ops.theme` | Design, write, and apply a custom TUI color theme JSON file |
-| mcp | `kiki-ops.mcp` | Add / edit / remove / list `mcp.json` servers, and complete MCP OAuth login |
-| import | `kiki-ops.import` | Migrate instructions, skills, and MCP declarations from Claude Code and Codex into Kiki |
-| profile | `kiki-ops.profile` | Author or repair agent profile files and `SYSTEM.md` |
+Kiki installs version-matched documentation under `<KIKI_HOME>/docs/`, where `<KIKI_HOME>` is the configured `KIKI_HOME` value or the platform default `~/.kiki`. Resolve the actual data root before reading files; never assume the default when `KIKI_HOME` is set.
 
-## Cross-topic rules
+Choose the user's locale when available and fall back to `en/`. Use `Glob`, `Grep`, and `Read` against the local Markdown tree before answering questions about product behavior. Do not fetch upstream Kimi Code documentation to explain Kiki: this fork may differ.
 
-- `<KIKI_HOME>` is the configured Kiki data root (`KIKI_HOME` first, falling back to `~/.kiki`). Resolve the real directory with the topic's Bash snippet before reading or writing anything — **never assume `~/.kiki`**.
-- Never edit a live file in place: copy it to a candidate, edit the candidate, validate, then back up the original under a **new timestamped name** (keep every backup) and move the candidate into place.
-- Put discrete choices to the user with `AskUserQuestion` when it is available (plain labelled options otherwise); keep free-form questions in plain text.
-- Say how the change takes effect — `/reload`, `/reload-tui`, `/theme`, or a new session (`/new`); the topic states which one applies.
+Start with the most specific area:
+
+| Question | Local documentation |
+| --- | --- |
+| Installation, first launch, migration | `{locale}/getting-started/` |
+| GUI/TUI interaction, sessions, goals, settings | `{locale}/guides/` |
+| Profiles, skills, plugins, hooks, themes | `{locale}/customization/` |
+| `config.toml`, providers, search/fetch, environment, data paths | `{locale}/configuration/` |
+| Slash commands, CLI commands, tools, keyboard | `{locale}/reference/` |
+| MCP, local server, IDE/ACP, REST/SDK | `{locale}/server/` |
+| Version history | `{locale}/release-notes/changelog.md` |
+
+Cite the local relative paths used. If the installed docs do not establish a claim, say so instead of inventing a key, command, model id, or error meaning.
+
+## First-run configuration guide
+
+When the user opens a new session with `/kiki-ops help me configure...`, `/kiki-ops 帮我配置...`, or an equivalent onboarding prompt, act as an interactive setup guide. Do not answer with a static checklist and stop.
+
+1. Ask which provider type they want: Kimi Code OAuth, an API-key provider from Kiki's catalog, or a custom OpenAI-/Anthropic-compatible endpoint. If they are unsure, explain the choices briefly before asking them to select one.
+2. Ask which authentication method that provider supports or they prefer: OAuth or API key. Never ask the user to paste a secret into ordinary chat. Route OAuth through the product login flow; route an API key through the secure Settings/provider credential field or the documented environment/config mechanism, and never echo a key back.
+3. Ask which configured model should be the default. If the provider exposes a catalog, help the user select an available model rather than guessing an id.
+4. Ask whether they need web search, URL fetching, both, or neither. If either is wanted, continue through the search and retrieval setup below.
+5. Apply one step at a time using the available GUI management surface or documented commands. After each step, verify the resulting provider/model/tool readiness before moving on.
+6. Finish with a compact summary of the selected provider, auth method, default model, search/fetch readiness, files or settings changed, and any reload/new-session action still required. Never include secret values.
+
+Use `AskUserQuestion` for discrete choices when available. Free-form values such as a custom endpoint belong in a plain question. If the invocation already supplies an answer, keep it and ask only for missing information.
+
+## Configuration workflow
+
+Prefer the GUI Settings pages or dedicated management commands when they expose the requested setting. For file-level work, first read the matching installed documentation and the current file:
+
+- `<KIKI_HOME>/config.toml`: providers, models, default model, permissions, subagents, MCP defaults, search/retrieval, and runtime behavior.
+- `<KIKI_HOME>/tui.toml`: terminal theme, editor, notifications, status line, and other TUI preferences.
+- `<KIKI_HOME>/mcp.json` and project `.kiki/mcp.json`: MCP server declarations.
+
+For a direct file change:
+
+1. Resolve the real path and read the existing file. Stop on parse errors instead of overwriting a broken file.
+2. Confirm the exact documented key, section, type, and scope. Preserve unrelated entries and comments.
+3. Work on a candidate copy, validate it with the documented Kiki command or parser, create a timestamped backup of the original, then replace it.
+4. Explain how the change takes effect: `/reload` for runtime config, `/reload-tui` for TUI preferences, `/theme` for selecting a theme, or a new session when the capability is session-scoped.
+
+Treat deprecation warnings literally: rename only the key named by the warning and keep its value. Environment-variable warnings must be fixed where that environment variable is set, not by inventing a TOML entry.
+
+## Search and URL-fetch setup
+
+`WebSearch` and `FetchURL` use Kiki's built-in search and retrieval module. Read `{locale}/configuration/config-files.md#nb-search`, `{locale}/configuration/env-vars.md`, and `{locale}/reference/tools.md` before changing it.
+
+- Search needs an available lane and normally a `[nb_search.defaults] search_lane`. Configure the selected provider's credential slot through its documented environment variable; do not store secret values in `config.toml`.
+- URL fetch uses the configured fetch chain. The built-in URL chain can work independently from a search lane; do not claim search and fetch have identical credential requirements.
+- The GUI's **Settings → Search & retrieval** page shows the active source and whether local nb-search configuration is reused. For a remote Kiki server, settings, files, and environment variables belong to the server host, not the browser machine.
+- After configuration, run one small search and one harmless public URL fetch for the capabilities the user enabled. Report tool readiness separately; a saved setting is not proof that a provider is reachable.
+
+## Core operating map
+
+- **Sessions and workspaces:** `/new` starts a new session, `/sessions` resumes one, `/fork` creates an independent copy, and `/compact` compresses context. The GUI groups sessions by workspace. Read `{locale}/guides/sessions.md` for persistence, recovery, export, and activity behavior.
+- **Subagents:** the main agent can dispatch focused child agents with `AgentRun`, inspect them with `AgentList`, and message them with `AgentSend`. Each child has isolated context and returns a result to its parent. The GUI's **Dispatch capabilities** view shows effective profiles, models, routes, and launch constraints. Read `{locale}/customization/agents.md`.
+- **Background tasks:** `TaskList`, `TaskOutput`, `TaskStop`, and `TaskWait` manage tracked background work. Completion notifications normally arrive automatically; do not busy-poll.
+- **Requirements board and todos:** the GUI requirements board stores durable requirement cards and session references; `BoardRead`/`BoardWrite` operate on it. `TodoList` is a separate per-agent execution checklist, and background tasks are a third, separate runtime concept. Read `{locale}/guides/sessions.md#requirements-board`.
+- **MCP:** `/mcp` shows status. Use `/kiki-ops configure MCP ...` or `/kiki-ops help me log in to MCP ...` for guided changes; inspect `{locale}/server/mcp.md` before editing declarations or starting OAuth.
+- **Themes and imports:** use `/kiki-ops create a theme ...` or `/kiki-ops import from Claude Code/Codex ...`. Follow the installed customization and migration docs, preserve existing files, preview destructive changes, and never import credentials or session history.
+
+## Safety and answer style
+
+- Keep secrets out of chat, logs, examples, and committed files. Prefer OAuth or environment-backed credentials.
+- State the target path and intended change before writing. Preserve unrelated settings and keep recoverable backups.
+- Distinguish local GUI state from server-side state, especially when the GUI connects to a remote Kiki server.
+- For read-only questions, answer directly after checking the local docs; do not turn every product question into a configuration flow.

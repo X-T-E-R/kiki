@@ -30,13 +30,13 @@ Kiki 可以使用内置配色，也可以使用自定义 JSON 主题文件。自
 
 ## 使用主题 skill
 
-你不需要手写 JSON。运行内置 `/kiki-ops.theme [附加文本]` skill 命令进入主题流程；这个 skill 可以帮你选颜色，把文件写到 `~/.kiki/themes/`，校验十六进制色值，并告诉你如何应用。
+你不需要手写 JSON。运行内置 `/kiki-ops [请求]` skill 命令并描述想要的主题；这个 skill 可以帮你选颜色，把文件写到 `~/.kiki/themes/`，校验十六进制色值，并告诉你如何应用。
 
 调用示例：
 
-- `/kiki-ops.theme Create a warm dark theme with amber accents.`
-- `/kiki-ops.theme Make a light theme based on Solarized, but keep errors easy to see.`
-- `/kiki-ops.theme Tweak my ember theme so diffs have higher contrast.`
+- `/kiki-ops Create a warm dark theme with amber accents.`
+- `/kiki-ops Make a light theme based on Solarized, but keep errors easy to see.`
+- `/kiki-ops Tweak my ember theme so diffs have higher contrast.`
 
 激活后，skill 通常会先问你想用浅色还是深色基准、偏好的风格或调色板，以及是否有必须包含的精确颜色。如果你用它编辑已有主题，请确保它先读取并备份文件，再覆盖写入。
 

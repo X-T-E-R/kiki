@@ -12,7 +12,7 @@ export const LoopErrors = {
       retryable: false,
       public: true,
       action:
-        'Raise loop_control.max_steps_per_turn in config.toml, or run "/kiki-ops.config" then "/reload".',
+        'Raise loop_control.max_steps_per_turn in config.toml, or run "/kiki-ops update loop_control.max_steps_per_turn" then "/reload".',
     },
   },
 } as const satisfies ErrorDomain;

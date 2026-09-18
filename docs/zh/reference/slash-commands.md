@@ -118,14 +118,8 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 
 | 命令 | 说明 |
 | --- | --- |
-| `/kiki-ops` | Kiki 产品使用与配置的一站式入口，按主题路由到下面的命令 |
-| `/kiki-ops.config` | 查看或编辑 `config.toml`（模型、供应商、权限、hooks）和 `tui.toml`（主题、编辑器、通知、自动更新） |
-| `/kiki-ops.theme [<text>]` | 创建或编辑自定义 TUI 配色主题。详见 [主题](../customization/themes.md) |
-| `/kiki-ops.mcp` | 配置 MCP server 并处理 MCP OAuth 登录。详见 [MCP](../server/mcp.md) |
-| `/kiki-ops.import` | 从 Claude Code 和 Codex 导入 instructions、skills 和 MCP 设置 |
-| `/kiki-ops.profile` | 创建或编辑 agent profile 文件与 `SYSTEM.md`。详见 [Agent 与子 Agent](../customization/agents.md) |
-| `/kiki-ops.docs` | 读取随 Kiki 安装的本地文档，回答 CLI 与 GUI 用法、配置、斜杠命令、功能和错误相关的 Kiki 产品问题 |
-| `/sub-skill` | 发现并将本地 skill 库存重组为分层子 skill 包。包含 `/sub-skill.review`（只读提案）和 `/sub-skill.consolidate`（执行重组） |
+| `/kiki-ops [<请求>]` | 配置、操作或排查 Kiki 本身：产品答疑、首次运行的供应商与模型配置、搜索与抓取、会话、subagent、任务、MCP、主题和导入 |
+| `/kiki-profile [<请求>]` | 创建或修改 agent profile 文件与 `SYSTEM.md`。详见 [Agent 与子 Agent](../customization/agents.md) |
 
 所有内置 Skill 命令仅在空闲状态下可用。
 
@@ -149,7 +143,7 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 
 为方便输入，外部 Skill 命令同时支持省略 `skill:` 前缀的简写形式 `/<name>`，前提是该名称未被系统斜杠命令占用——即 `/code-style` 会回退匹配到 `/skill:code-style`。
 
-Kiki 随包内置的 Skill 会直接以 `/<name>` 形式出现在斜杠命令面板中。例如，`/kiki-ops` 是 Kiki 产品使用与配置的一站式入口，会按主题路由到 `/kiki-ops.mcp`（MCP server 与 OAuth 登录）、`/kiki-ops.theme [附加文本]`（自定义 TUI 主题）等命令。
+Kiki 随包内置的 Skill 会直接以 `/<name>` 形式出现在斜杠命令面板中。使用 `/kiki-ops [请求]` 处理 Kiki 产品操作；仅在创建或修改 agent profile 时使用 `/kiki-profile [请求]`。
 
 ::: info 说明
 所有 Skill 命令仅在空闲状态下可用。`flow` 类型的 Skill 同样通过 `/skill:<name>` 暴露，没有独立的 `/flow:` 命名空间。

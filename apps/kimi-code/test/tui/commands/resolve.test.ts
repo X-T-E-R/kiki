@@ -213,18 +213,18 @@ describe('resolveSlashCommandInput', () => {
   });
 
   it('resolves unprefixed built-in skill commands and keeps them resolvable while busy', () => {
-    const skillCommandMap = new Map([['kiki-ops.mcp', 'kiki-ops.mcp']]);
+    const skillCommandMap = new Map([['kiki-profile', 'kiki-profile']]);
 
-    expect(resolve('/kiki-ops.mcp', { skillCommandMap })).toEqual({
+    expect(resolve('/kiki-profile', { skillCommandMap })).toEqual({
       kind: 'skill',
-      commandName: 'kiki-ops.mcp',
-      skillName: 'kiki-ops.mcp',
+      commandName: 'kiki-profile',
+      skillName: 'kiki-profile',
       args: '',
     });
-    expect(resolve('/kiki-ops.mcp', { skillCommandMap, isCompacting: true })).toEqual({
+    expect(resolve('/kiki-profile', { skillCommandMap, isCompacting: true })).toEqual({
       kind: 'skill',
-      commandName: 'kiki-ops.mcp',
-      skillName: 'kiki-ops.mcp',
+      commandName: 'kiki-profile',
+      skillName: 'kiki-profile',
       args: '',
     });
   });
@@ -296,12 +296,12 @@ describe('slash command busy helpers', () => {
   it('resolves skill command aliases with and without skill prefix', () => {
     const map = new Map([
       ['skill:review', 'review'],
-      ['kiki-ops.mcp', 'kiki-ops.mcp'],
+      ['kiki-profile', 'kiki-profile'],
     ]);
 
     expect(resolveSkillCommand(map, 'skill:review')).toBe('review');
     expect(resolveSkillCommand(map, 'review')).toBe('review');
-    expect(resolveSkillCommand(map, 'kiki-ops.mcp')).toBe('kiki-ops.mcp');
+    expect(resolveSkillCommand(map, 'kiki-profile')).toBe('kiki-profile');
   });
 
   it('formats busy messages', () => {

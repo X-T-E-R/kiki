@@ -20,7 +20,7 @@ export function createMaxStepsExceededError(maxSteps: number, message?: string):
   return new LoopError(
     LoopErrors.codes.LOOP_MAX_STEPS_EXCEEDED,
     message ??
-      `Turn exceeded maxSteps=${maxSteps}. If max_steps_per_turn is too small, raise it in config.toml (loop_control.max_steps_per_turn), or run "/kiki-ops.config" to update it, then "/reload".`,
+      `Turn exceeded maxSteps=${maxSteps}. If max_steps_per_turn is too small, raise it in config.toml (loop_control.max_steps_per_turn), or run "/kiki-ops update loop_control.max_steps_per_turn", then "/reload".`,
     { details: { maxSteps } },
   );
 }

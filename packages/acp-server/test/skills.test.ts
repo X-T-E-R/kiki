@@ -136,7 +136,8 @@ describe('acp-server skills / available commands', () => {
       .toEqual(ACP_BUILTIN_SLASH_COMMANDS.map((command) => command.name));
     // …followed by the engine's builtin skills (bare command names).
     expect(commands.length).toBeGreaterThan(ACP_BUILTIN_SLASH_COMMANDS.length);
-    expect(commands.some((command) => command.name === 'kiki-ops.docs')).toBe(true);
+    expect(commands.some((command) => command.name === 'kiki-ops')).toBe(true);
+    expect(commands.some((command) => command.name === 'kiki-profile')).toBe(true);
     const compact = commands.find((command) => command.name === 'compact');
     expect(compact?.input?.hint).toBe('<optional custom summarization instructions>');
   }, 30_000);
@@ -205,14 +206,14 @@ describe('acp-server skills / available commands', () => {
 
     const result = (await c.send('session/prompt', {
       sessionId,
-      prompt: [{ type: 'text', text: '/kiki-ops.docs what providers exist' }],
+      prompt: [{ type: 'text', text: '/kiki-ops what providers exist' }],
     })) as { stopReason: string };
     expect(result.stopReason).toBe('end_turn');
     expect(scripted!.callCount()).toBe(1);
 
     const history = JSON.stringify(scripted!.callHistory()[0]);
     expect(history).toContain('skill-loaded');
-    expect(history).toContain('kiki-ops.docs');
+    expect(history).toContain('kiki-ops');
   }, 30_000);
 
   it('an unknown slash command is answered locally and never reaches the model', async () => {

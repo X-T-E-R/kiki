@@ -117,15 +117,9 @@ export default {
         source: 'builtin',
       },
       {
-        name: 'kiki-ops.config',
-        description: 'Guide configuration updates for the agent runtime.',
-        path: 'builtin:kiki-ops/config',
-        source: 'builtin',
-      },
-      {
-        name: 'kiki-ops.import',
-        description: 'Import settings and skills from other agent tools.',
-        path: 'builtin:kiki-ops/import',
+        name: 'kiki-profile',
+        description: 'Create or modify Kiki agent profile files.',
+        path: 'builtin:kiki-profile',
         source: 'builtin',
       },
     ],

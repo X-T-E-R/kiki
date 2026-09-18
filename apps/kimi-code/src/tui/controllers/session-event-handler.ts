@@ -1026,7 +1026,7 @@ export class SessionEventHandler {
         return;
       }
       case 'needs-auth': {
-        const message = `MCP server "${server.name}" needs OAuth — run /kiki-ops.mcp login ${server.name}`;
+        const message = `MCP server "${server.name}" needs OAuth — run /kiki-ops help me log in to MCP ${server.name}`;
         this.finalizeMcpServerStatusRow(server.name, message, 'warning');
         return;
       }

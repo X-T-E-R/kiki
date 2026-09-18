@@ -120,14 +120,8 @@ Kiki ships with a set of built-in Skills that appear directly as `/<name>` slash
 
 | Command | Description |
 | --- | --- |
-| `/kiki-ops` | One-stop entry for Kiki product usage and configuration; routes to the topic commands below |
-| `/kiki-ops.config` | Inspect or edit `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update) |
-| `/kiki-ops.theme [<text>]` | Create or edit a custom TUI color theme. See [Themes](../customization/themes.md) |
-| `/kiki-ops.mcp` | Configure MCP servers and handle MCP OAuth login. See [MCP](../server/mcp.md) |
-| `/kiki-ops.import` | Import Claude Code and Codex instructions, skills, and MCP settings into Kiki |
-| `/kiki-ops.profile` | Create or edit agent profile files and `SYSTEM.md`. See [Agents and Sub-Agents](../customization/agents.md) |
-| `/kiki-ops.docs` | Answer Kiki product questions (CLI and GUI usage, configuration, slash commands, features, and errors) from the local docs installed with Kiki |
-| `/sub-skill` | Discover and reorganize the local skill inventory into hierarchical sub-skill bundles. Includes `/sub-skill.review` (read-only proposal) and `/sub-skill.consolidate` (apply the reorganization) |
+| `/kiki-ops [<request>]` | Configure, operate, or troubleshoot Kiki itself: product questions, first-run provider/model setup, search and retrieval, sessions, subagents, tasks, MCP, themes, and imports |
+| `/kiki-profile [<request>]` | Create or modify agent profile files and `SYSTEM.md`. See [Agents and Sub-Agents](../customization/agents.md) |
 
 All built-in Skill commands are only available in the idle state.
 
@@ -151,7 +145,7 @@ For example, a child Skill named `review` inside a parent Skill named `code-styl
 
 For convenience, external Skill commands also support a shorthand form that omits the `skill:` prefix — `/<name>` — as long as the name is not taken by a system slash command. That is, `/code-style` falls back to matching `/skill:code-style`.
 
-Built-in Skills shipped with Kiki appear directly as `/<name>` in the slash command panel. For example, `/kiki-ops` is the one-stop entry for using and configuring Kiki — it routes to topics such as `/kiki-ops.mcp` (MCP servers and OAuth login) and `/kiki-ops.theme [extra text]` (custom TUI themes).
+Built-in Skills shipped with Kiki appear directly as `/<name>` in the slash command panel. Use `/kiki-ops [request]` for Kiki product operations and `/kiki-profile [request]` only when authoring or modifying an agent profile.
 
 ::: info
 All Skill commands are only available in the idle state. `flow`-type Skills are also exposed via `/skill:<name>` — there is no separate `/flow:` namespace.

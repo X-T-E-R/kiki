@@ -352,7 +352,7 @@ export class McpConnectionManager implements McpConnectionView {
       }
       if (this.shouldMarkNeedsAuth(entry, error)) {
         entry.status = 'needs-auth';
-        entry.error = `${entry.name} requires OAuth — run /kiki-ops.mcp login ${entry.name}`;
+        entry.error = `${entry.name} requires OAuth — run /kiki-ops help me log in to MCP ${entry.name}`;
       } else {
         entry.status = 'failed';
         entry.error = formatStartupError(error, client);

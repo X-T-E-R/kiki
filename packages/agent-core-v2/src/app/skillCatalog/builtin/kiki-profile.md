@@ -1,9 +1,9 @@
 ---
-name: kiki-ops.profile
-description: Create or edit Kiki agent profile files — Markdown role definitions with YAML frontmatter under `~/.kiki/agents/`, a project's `.kiki/agents/` or `.agents/agents/`, or `$KIKI_HOME/SYSTEM.md`. Use when writing a new agent or main profile, changing a profile's fields (model pin, tools, subagents, prompt body, prompt_overrides), or fixing a profile that fails to load. Not needed when merely dispatching an agent or selecting an existing profile.
+name: kiki-profile
+description: Create, modify, or repair Kiki agent profile files and SYSTEM.md. Use only when the user wants to author a main-agent or subagent profile, change profile frontmatter, loading precedence, tool/model policy, prompt body, or prompt_overrides. Do not use merely to select, dispatch, inspect, or discuss an existing agent.
 ---
 
-# Kiki profile authoring (kiki-ops.profile)
+# Kiki profile authoring (kiki-profile)
 
 Author and repair Kiki agent profile files. An agent profile is one Markdown file: a YAML frontmatter block declares the role's name, description, model, and tool access, and the Markdown body is the role's system prompt. This skill gives the loading rules, the file format, and the prompt-replacement semantics you must get right; the complete field-by-field reference lives in the installed docs at `<KIKI_HOME>/docs/<locale>/customization/agents.md`.
 

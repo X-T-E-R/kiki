@@ -2,4 +2,4 @@
 "@kiki/cli": minor
 ---
 
-Add a built-in `kiki-ops` skill that bundles Kiki's product usage and configuration workflows — `config.toml` / `tui.toml` settings, custom TUI themes, MCP servers and OAuth login, Claude Code and Codex imports, agent profiles and `SYSTEM.md`, `/goal` authoring, and answers from the locally installed docs — replacing the separate built-in product skills.
+Consolidate Kiki product guidance, first-run setup, configuration, search and retrieval, sessions, subagents, tasks, MCP, themes, and imports into `/kiki-ops`, while keeping profile authoring in the narrowly scoped `/kiki-profile` skill.
