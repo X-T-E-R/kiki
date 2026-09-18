@@ -189,6 +189,27 @@ describe('server-v2 /api/debug RPC', () => {
     expect(prompts?.methods.map((m) => m.name)).not.toContain('reserve');
   });
 
+  it('reports bounded-memory diagnostics without session identifiers or user content', async () => {
+    const { status, body } = await call<{
+      process: { rss: number; heapUsed: number; heapTotal: number; external: number; arrayBuffers: number };
+      residency: { liveSessions: number; pendingRestores: number; workspaces: number };
+      transcript: {
+        liveSessions: number;
+        opsJournalBytes: number;
+        eventLoopDelay: { meanMs: number; maxMs: number; p99Ms: number };
+      };
+    }>('GET', '/api/debug/memory');
+
+    expect(status).toBe(200);
+    expect(body.code).toBe(0);
+    expect(body.data.process.rss).toBeGreaterThan(0);
+    expect(body.data.process.heapUsed).toBeGreaterThan(0);
+    expect(body.data.residency.liveSessions).toBeGreaterThanOrEqual(0);
+    expect(body.data.transcript.opsJournalBytes).toBeGreaterThanOrEqual(0);
+    expect(body.data.transcript.eventLoopDelay.p99Ms).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(body.data)).not.toContain(home!);
+  });
+
   it('reaches a runtime-contributed Service absent from /channels (decorator-name fallback)', async () => {
     const channels = await call<readonly { name: string }[]>(
       'GET',

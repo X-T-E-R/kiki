@@ -44,6 +44,11 @@ function controller(sessionId = 'session-1'): {
     list: () => [handle],
     resume: async () => handle,
     close: async (sessionId: string) => { didClose.fire({ sessionId }); },
+    unload: async (sessionId: string, canCommit?: () => boolean) => {
+      if (canCommit?.() === false) return false;
+      didClose.fire({ sessionId, reason: 'evict' });
+      return true;
+    },
     archive: async () => {},
     restore: async () => handle,
     delete: async () => {},
@@ -661,6 +666,71 @@ describe('SessionManager', () => {
 
     createSubscription.dispose();
     forkSubscription.dispose();
+    manager.dispose();
+  });
+
+  it('evicts an eligible idle session through the unload path', async () => {
+    const fake = controller();
+    const unload = vi.spyOn(fake.service, 'unload');
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
+    } as unknown as WorkspaceInstance;
+    const manager = new SessionManager(
+      {
+        acquire: async () => ({ instance: workspace, dispose: () => {} }),
+        get: () => workspace,
+      } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      {
+        ready: Promise.resolve(),
+        get: () => ({ idleTtlMs: 0, minIdleMs: 0, maxLiveSessions: 8, sweepIntervalMs: 300_000 }),
+      } as never,
+      { enabled: () => true } as never,
+    );
+
+    await manager.create({ workDir: '/workspace' });
+    await expect(manager.evictIfIdle('session-1')).resolves.toBe(true);
+
+    expect(unload).toHaveBeenCalledTimes(1);
+    expect(manager.get('session-1')).toBeUndefined();
+    expect(manager.residencyReport()).toMatchObject({
+      liveSessions: 0,
+      evictionAttempts: 1,
+      evictionSuccesses: 1,
+      evictionFailures: 0,
+    });
+    manager.dispose();
+  });
+
+  it('keeps an acquired session pinned until its lease is released', async () => {
+    const fake = controller();
+    const unload = vi.spyOn(fake.service, 'unload');
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
+    } as unknown as WorkspaceInstance;
+    const manager = new SessionManager(
+      {
+        acquire: async () => ({ instance: workspace, dispose: () => {} }),
+        get: () => workspace,
+      } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      {
+        ready: Promise.resolve(),
+        get: () => ({ idleTtlMs: 0, minIdleMs: 0, maxLiveSessions: 8, sweepIntervalMs: 300_000 }),
+      } as never,
+      { enabled: () => true } as never,
+    );
+
+    await manager.create({ workDir: '/workspace' });
+    const lease = await manager.acquire('session-1', 'test');
+    await expect(manager.evictIfIdle('session-1')).resolves.toBe(false);
+    expect(unload).not.toHaveBeenCalled();
+    expect(manager.residencyReport().pinnedSessions).toBe(1);
+
+    lease?.dispose();
+    await expect(manager.evictIfIdle('session-1')).resolves.toBe(true);
     manager.dispose();
   });
 });

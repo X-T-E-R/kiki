@@ -1,5 +1,6 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ISessionScopeHandle } from '#/_base/di/scope';
+import type { IDisposable } from '#/_base/di/lifecycle';
 import type { Event, IWaitUntil } from '#/_base/event';
 import type {
   CreateChildSessionOptions,
@@ -24,6 +25,21 @@ export interface UnguardedSessionLifecycle {
   restore(): Promise<ISessionScopeHandle | undefined>;
 }
 
+export interface SessionLease extends IDisposable {
+  readonly handle: ISessionScopeHandle;
+}
+
+export interface SessionResidencyReport {
+  readonly liveSessions: number;
+  readonly pinnedSessions: number;
+  readonly idleSessions: number;
+  readonly pendingRestores: number;
+  readonly lifecycleOperations: number;
+  readonly evictionAttempts: number;
+  readonly evictionSuccesses: number;
+  readonly evictionFailures: number;
+}
+
 export interface ISessionManager {
   readonly _serviceBrand: undefined;
   readonly onWillCreateSession?: Event<SessionWillCreateEvent>;
@@ -35,7 +51,10 @@ export interface ISessionManager {
   readonly onDidForkSession?: Event<SessionForkedEvent>;
   create(options: CreateManagedSessionOptions): Promise<ISessionScopeHandle>;
   resume(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
+  acquire?(sessionId: string, reason: string, options?: ResumeSessionOptions): Promise<SessionLease | undefined>;
   get(sessionId: string): ISessionScopeHandle | undefined;
+  residencyReport?(): SessionResidencyReport;
+  evictIfIdle?(sessionId: string): Promise<boolean>;
   whenResumeSettled(sessionId: string): Promise<void>;
   withLifecycleSerialization<T>(
     sessionId: string,

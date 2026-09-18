@@ -11,11 +11,13 @@ import {
 } from '#/_base/errors/unexpectedError';
 import { BugIndicatingError } from '#/_base/errors/errors';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
 import { Event2, event2FromRecord } from '#/app/event/event2';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { CycleError, EventDispatcherService } from '#/state/eventDispatcherService';
 import { defineState } from '#/state/state';
@@ -352,6 +354,162 @@ describe('EventDispatcherService', () => {
 
     await replayed.dispatch(new UndoEvent({ count: 1 }));
     expect(replayedState.get(checkpointedKey).items).toEqual(['x']);
+  });
+
+  it('restores an exact durable checkpoint and falls back when the wire identity changes', async () => {
+    const records: WireRecord[] = [
+      { type: 'state.test.item.add', item: 'x', time: 1 },
+      { type: 'state.test.anchor', time: 2 },
+      { type: 'state.test.item.add', item: 'y', time: 3 },
+    ];
+    let identity = { size: 123, mtimeMs: 456, headHash: 'head-a' };
+    let reads = 0;
+    const wire: IWireService = {
+      ...stubWireJournal(records),
+      readJournal: async function* () {
+        reads += 1;
+        for (const record of records) yield record;
+      },
+      journalIdentity: async () => identity,
+    };
+    const documents = new Map<string, unknown>();
+    const docs = {
+      _serviceBrand: undefined,
+      get: async <T>(scope: string, key: string) => documents.get(`${scope}/${key}`) as T | undefined,
+      set: async <T>(scope: string, key: string, value: T) => {
+        documents.set(`${scope}/${key}`, structuredClone(value));
+      },
+      update: async () => undefined,
+      delete: async (scope: string, key: string) => { documents.delete(`${scope}/${key}`); },
+      list: async () => [],
+      watch: () => () => ({ dispose: () => {} }),
+      acquire: () => ({ dispose: () => {} }),
+    } as unknown as IAtomicDocumentStore;
+    const scope = {
+      _serviceBrand: undefined,
+      agentId: 'main',
+      agentScope: 'sessions/ws/s1/agents/main',
+      parentAgentId: undefined,
+      scope: (subKey?: string) =>
+        subKey === undefined
+          ? 'sessions/ws/s1/agents/main'
+          : `sessions/ws/s1/agents/main/${subKey}`,
+    } as unknown as IAgentScopeContext;
+    const create = (): { dispatcher: IEventDispatcher; state: IAgentStateService } => {
+      const host = disposables.add(new TestInstantiationService());
+      host.set(IEventBus, new SyncDescriptor(EventBusService));
+      host.set(IAgentBlobService, noopBlob);
+      host.set(IWireService, wire);
+      host.set(IAtomicDocumentStore, docs);
+      host.set(IAgentScopeContext, scope);
+      host.set(IAgentStateService, new AgentStateService());
+      host.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+      const restoredDispatcher = host.get(IEventDispatcher);
+      const restoredState = host.get(IAgentStateService);
+      restoredState.contributeState(checkpointedKey);
+      return { dispatcher: restoredDispatcher, state: restoredState };
+    };
+
+    const first = create();
+    await first.dispatcher.restore();
+    expect(reads).toBe(1);
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+
+    const second = create();
+    await second.dispatcher.restore();
+    expect(reads).toBe(1);
+    expect(second.state.get(checkpointedKey).items).toEqual(['x', 'y']);
+    expect(second.dispatcher.checkpointDepth(checkpointedKey)).toBe(1);
+
+    identity = { size: 124, mtimeMs: 457, headHash: 'head-b' };
+    const third = create();
+    await third.dispatcher.restore();
+    expect(reads).toBe(2);
+    expect(third.state.get(checkpointedKey).items).toEqual(['x', 'y']);
+  });
+
+  it('binds checkpoints to the journal head hash across same-size rewrites and legacy envelopes', async () => {
+    const records: WireRecord[] = [
+      { type: 'state.test.item.add', item: 'x', time: 1 },
+      { type: 'state.test.anchor', time: 2 },
+      { type: 'state.test.item.add', item: 'y', time: 3 },
+    ];
+    let identity = { size: 500, mtimeMs: 800, headHash: 'head-a' };
+    let reads = 0;
+    const wire: IWireService = {
+      ...stubWireJournal(records),
+      readJournal: async function* () {
+        reads += 1;
+        for (const record of records) yield record;
+      },
+      journalIdentity: async () => identity,
+    };
+    const documents = new Map<string, unknown>();
+    const docs = {
+      _serviceBrand: undefined,
+      get: async <T>(scope: string, key: string) => documents.get(`${scope}/${key}`) as T | undefined,
+      set: async <T>(scope: string, key: string, value: T) => {
+        documents.set(`${scope}/${key}`, structuredClone(value));
+      },
+      update: async () => undefined,
+      delete: async (scope: string, key: string) => { documents.delete(`${scope}/${key}`); },
+      list: async () => [],
+      watch: () => () => ({ dispose: () => {} }),
+      acquire: () => ({ dispose: () => {} }),
+    } as unknown as IAtomicDocumentStore;
+    const scope = {
+      _serviceBrand: undefined,
+      agentId: 'main',
+      agentScope: 'sessions/ws/s1/agents/main',
+      parentAgentId: undefined,
+      scope: (subKey?: string) =>
+        subKey === undefined
+          ? 'sessions/ws/s1/agents/main'
+          : `sessions/ws/s1/agents/main/${subKey}`,
+    } as unknown as IAgentScopeContext;
+    const create = (): { dispatcher: IEventDispatcher; state: IAgentStateService } => {
+      const host = disposables.add(new TestInstantiationService());
+      host.set(IEventBus, new SyncDescriptor(EventBusService));
+      host.set(IAgentBlobService, noopBlob);
+      host.set(IWireService, wire);
+      host.set(IAtomicDocumentStore, docs);
+      host.set(IAgentScopeContext, scope);
+      host.set(IAgentStateService, new AgentStateService());
+      host.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+      const restoredDispatcher = host.get(IEventDispatcher);
+      const restoredState = host.get(IAgentStateService);
+      restoredState.contributeState(checkpointedKey);
+      return { dispatcher: restoredDispatcher, state: restoredState };
+    };
+
+    const first = create();
+    await first.dispatcher.restore();
+    expect(reads).toBe(1);
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+
+    const second = create();
+    await second.dispatcher.restore();
+    expect(reads).toBe(1);
+    expect(second.state.get(checkpointedKey).items).toEqual(['x', 'y']);
+    expect(second.dispatcher.checkpointDepth(checkpointedKey)).toBe(1);
+
+    identity = { size: 500, mtimeMs: 800, headHash: 'head-b' };
+    const third = create();
+    await third.dispatcher.restore();
+    expect(reads).toBe(2);
+    expect(third.state.get(checkpointedKey).items).toEqual(['x', 'y']);
+    expect(third.dispatcher.checkpointDepth(checkpointedKey)).toBe(1);
+
+    const legacy = structuredClone(
+      documents.get('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1'),
+    ) as { wire: { headHash?: string } };
+    delete legacy.wire.headHash;
+    documents.set('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1', legacy);
+    const fourth = create();
+    await fourth.dispatcher.restore();
+    expect(reads).toBe(3);
+    expect(fourth.state.get(checkpointedKey).items).toEqual(['x', 'y']);
+    expect(fourth.dispatcher.checkpointDepth(checkpointedKey)).toBe(1);
   });
 
   it('skips unknown and malformed records during restore and reports them', async () => {

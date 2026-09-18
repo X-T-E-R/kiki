@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { ILogService } from '#/_base/log/log';
@@ -13,7 +15,7 @@ import {
 } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 
-import { IWireService } from './wire';
+import { IWireService, type WireJournalIdentity } from './wire';
 import { WireError, WireErrors } from './errors';
 import { repairWireJournal } from './repair';
 import {
@@ -33,6 +35,9 @@ import {
   type RecordDehydrator,
   type WireRecord,
 } from './record';
+
+const JOURNAL_HEAD_HASH_BYTES = 64 * 1024;
+const JOURNAL_HEAD_HASH_HEX_LENGTH = 32;
 
 export class WireService extends Service implements IWireService {
   declare readonly _serviceBrand: undefined;
@@ -220,6 +225,26 @@ export class WireService extends Service implements IWireService {
       throw error;
     }
     if (this.persistFailure !== undefined) throw this.persistFailure.error;
+  }
+
+  async journalIdentity(): Promise<WireJournalIdentity> {
+    await this.flush();
+    return {
+      size: await this.storage.size(this.wireScope, AGENT_WIRE_RECORD_KEY) ?? 0,
+      mtimeMs: await this.storage.mtime(this.wireScope, AGENT_WIRE_RECORD_KEY) ?? 0,
+      headHash: await this.journalHeadHash(),
+    };
+  }
+
+  private async journalHeadHash(): Promise<string> {
+    const hash = createHash('sha256');
+    for await (const chunk of this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY, {
+      start: 0,
+      end: JOURNAL_HEAD_HASH_BYTES - 1,
+    })) {
+      hash.update(chunk);
+    }
+    return hash.digest('hex').slice(0, JOURNAL_HEAD_HASH_HEX_LENGTH);
   }
 
   private reportPersistFailure(error: unknown): void {

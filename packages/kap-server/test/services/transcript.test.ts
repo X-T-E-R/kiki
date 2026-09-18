@@ -14,6 +14,7 @@ import {
   ISessionIndex,
   ISessionInteractionService,
   ISessionMetadata,
+  IQueryStore,
   ISessionLifecycleService,
   ISessionManager,
   IWorkspaceInstanceManager,
@@ -50,6 +51,10 @@ import {
   snapshotToOps,
   TRANSCRIPT_OPS_JOURNAL_CAPACITY,
 } from '../../src/services/transcript/transcriptService';
+import {
+  DEFAULT_TRANSCRIPT_MEMORY_CONFIG,
+  TranscriptMemoryConfigSchema,
+} from '../../src/services/transcript/configSection';
 import { readWireRecordsBounded } from '../../src/services/transcript/boundedWireScan';
 import { registerTranscriptRoutes } from '../../src/routes/transcript';
 
@@ -99,6 +104,33 @@ function turnOps(turnId: string, items: ReturnType<AgentTranscript['getItems']>)
   if (turn === undefined) throw new Error(`turn ${turnId} not found`);
   return turn;
 }
+
+describe('transcript memory config', () => {
+  it('exposes only the resident limits consumed by TranscriptService', () => {
+    expect(DEFAULT_TRANSCRIPT_MEMORY_CONFIG).toEqual({
+      tailTurns: 20,
+      maxAgentBytes: 16 << 20,
+    });
+    expect(TranscriptMemoryConfigSchema.parse(DEFAULT_TRANSCRIPT_MEMORY_CONFIG)).toEqual(
+      DEFAULT_TRANSCRIPT_MEMORY_CONFIG,
+    );
+    for (const field of [
+      'maxSessionBytes',
+      'maxTotalBytes',
+      'opsMaxBatches',
+      'opsMaxAgentBytes',
+      'opsMaxSessionBytes',
+      'opsMaxTotalBytes',
+    ]) {
+      expect(
+        TranscriptMemoryConfigSchema.safeParse({
+          ...DEFAULT_TRANSCRIPT_MEMORY_CONFIG,
+          [field]: 1,
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
 
 describe('TranscriptService projection', () => {
   it('snapshotToOps anchors standalone items so backfill keeps history order against live turns', () => {
@@ -500,6 +532,16 @@ describe('TranscriptService live integration', () => {
   }
 
   function fakeCoreWithAgents(interactions: SessionInteractionService, agents: FakeAgents): Scope {
+    const queryValues = new Map<string, unknown>();
+    const queryStore = {
+      get: async <T>(collection: string, key: string) => queryValues.get(`${collection}\0${key}`) as T | undefined,
+      put: async <T>(collection: string, key: string, value: T) => {
+        queryValues.set(`${collection}\0${key}`, structuredClone(value));
+      },
+      delete: async (collection: string, key: string) => {
+        queryValues.delete(`${collection}\0${key}`);
+      },
+    } as unknown as IQueryStore;
     const sessionLifecycle = {
       onDidCloseSession: () => ({ dispose: () => undefined }),
       onDidArchiveSession: () => ({ dispose: () => undefined }),
@@ -526,6 +568,7 @@ describe('TranscriptService live integration', () => {
             };
           }
           if (token === ISessionIndex) return { get: async () => ({ workspaceId: 'ws' }) };
+          if (token === IQueryStore) return queryStore;
           return undefined;
         },
       },
@@ -1590,6 +1633,44 @@ describe('TranscriptService live integration', () => {
         expect(firstSnapshot?.toolCallCount).toBe(1);
         expect(firstSnapshot?.toolCallCountKnown).toBe(true);
       } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('reuses a projection checkpoint and scans only an appended wire tail', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const filler = Array.from({ length: 300 }, (_, index) =>
+        JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index }));
+      await appendFile(wirePath, `${filler.join('\n')}\n`);
+      const starts: (number | undefined)[] = [];
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+        wireRecordReader: async (path, options) => {
+          starts.push(options.startByteOffset);
+          return streamWireRecords(path, options);
+        },
+      });
+      try {
+        const first = await service.readColdSnapshot('s1', 'main');
+        expect(first?.items.length).toBeGreaterThan(0);
+        const checkpointSize = (await fsPromises.stat(wirePath)).size;
+        await appendFile(wirePath, `${JSON.stringify({
+          type: 'turn.prompt',
+          turnId: 1,
+          promptId: 'tail-prompt',
+          input: [{ type: 'text', text: 'tail' }],
+          origin: { kind: 'user' },
+          time: 10,
+        })}\n${JSON.stringify({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 11 })}\n`);
+
+        const second = await service.readColdSnapshot('s1', 'main');
+        expect(starts).toEqual([undefined, checkpointSize]);
+        expect(second?.items.some((item) => item.kind === 'turn' && item.turnId === 't1')).toBe(true);
+        expect(service.memoryReport().coldReads.records).toBeLessThan(350);
+      } finally {
+        service.dispose();
         await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     });

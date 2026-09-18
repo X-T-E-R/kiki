@@ -33,7 +33,7 @@ interface PendingSteerMedia {
   readonly name?: string;
 }
 
-interface PendingSteer {
+export interface PendingSteer {
   readonly promptId: string;
   readonly explicitPromptId?: string;
   readonly text: string;
@@ -44,6 +44,43 @@ interface PendingSteer {
     readonly recordOrdinal?: number;
   };
   readonly origin: unknown;
+}
+
+export interface TranscriptWireAdapterCheckpoint {
+  readonly version: 1;
+  readonly agentId: string;
+  readonly turns: readonly string[];
+  readonly turnIds: readonly string[];
+  readonly turnHeaders: readonly [string, TurnHeader][];
+  readonly steps: readonly [string, { readonly stepId: string; readonly ordinal: number }][];
+  readonly turnIdByStepId: readonly [string, string][];
+  readonly stepHeaders: readonly [string, StepHeader][];
+  readonly stepIdsByTurn: readonly [string, readonly string[]][];
+  readonly runningStepIdsByTurn: readonly [string, readonly string[]][];
+  readonly tools: readonly [string, { readonly turnId: string; readonly stepId: string; readonly frame: ToolCallFrame }][];
+  readonly toolIdsByTurn: readonly [string, readonly string[]][];
+  readonly runningToolIdsByTurn: readonly [string, readonly string[]][];
+  readonly stepUsages: readonly [string, readonly StepUsage[]][];
+  readonly tasks: readonly [string, TranscriptTask][];
+  readonly subagentTaskIds: readonly [string, string][];
+  readonly replayedSubagentSpawns: readonly [string, string][];
+  readonly interactions: readonly [string, TranscriptInteraction][];
+  readonly canonicalTurns: readonly string[];
+  readonly undoAnchors: readonly string[];
+  readonly turnOwnedItemIds: readonly [string, readonly string[]][];
+  readonly steeredMessageIds: readonly string[];
+  readonly pendingSteers: readonly [string, readonly PendingSteer[]][];
+  readonly pendingTaskNotifications: readonly [string, readonly TranscriptWireRecord[]][];
+  readonly projectedTaskNotificationIds: readonly string[];
+  readonly unpairedSteerCredits: readonly [string, readonly [string, number][]][];
+  readonly executions: readonly [string, TranscriptTurnExecution][];
+  readonly goal?: GoalMeta;
+  readonly plan?: { readonly reviewPath?: string; readonly version?: number };
+  readonly recordOrdinal: number;
+  readonly legacyTurnOrdinal: number;
+  readonly lastRecordTime?: number;
+  readonly currentTurnId?: string;
+  readonly currentPromptId?: string;
 }
 
 export class TranscriptWireAdapter {
@@ -84,6 +121,89 @@ export class TranscriptWireAdapter {
     readonly agentId: string,
     readonly lookups?: TranscriptWireAdapterLookups,
   ) {}
+
+  checkpoint(): TranscriptWireAdapterCheckpoint {
+    return {
+      version: 1,
+      agentId: this.agentId,
+      turns: [...this.#turns],
+      turnIds: [...this.#turnIds],
+      turnHeaders: [...this.#turnHeaders],
+      steps: [...this.#steps],
+      turnIdByStepId: [...this.#turnIdByStepId],
+      stepHeaders: [...this.#stepHeaders],
+      stepIdsByTurn: [...this.#stepIdsByTurn].map(([key, value]) => [key, [...value]]),
+      runningStepIdsByTurn: [...this.#runningStepIdsByTurn].map(([key, value]) => [key, [...value]]),
+      tools: [...this.#tools],
+      toolIdsByTurn: [...this.#toolIdsByTurn].map(([key, value]) => [key, [...value]]),
+      runningToolIdsByTurn: [...this.#runningToolIdsByTurn].map(([key, value]) => [key, [...value]]),
+      stepUsages: [...this.#stepUsages],
+      tasks: [...this.#tasks],
+      subagentTaskIds: [...this.#subagentTaskIds],
+      replayedSubagentSpawns: [...this.#replayedSubagentSpawns],
+      interactions: [...this.#interactions],
+      canonicalTurns: [...this.#canonicalTurns],
+      undoAnchors: [...this.#undoAnchors],
+      turnOwnedItemIds: [...this.#turnOwnedItemIds],
+      steeredMessageIds: [...this.#steeredMessageIds],
+      pendingSteers: [...this.#pendingSteers],
+      pendingTaskNotifications: [...this.#pendingTaskNotifications],
+      projectedTaskNotificationIds: [...this.#projectedTaskNotificationIds],
+      unpairedSteerCredits: [...this.#unpairedSteerCredits].map(([key, value]) => [key, [...value]]),
+      executions: [...this.#executions],
+      goal: this.#goal,
+      plan: this.#plan,
+      recordOrdinal: this.#recordOrdinal,
+      legacyTurnOrdinal: this.#legacyTurnOrdinal,
+      lastRecordTime: this.#lastRecordTime,
+      currentTurnId: this.#currentTurnId,
+      currentPromptId: this.#currentPromptId,
+    };
+  }
+
+  restore(checkpoint: TranscriptWireAdapterCheckpoint): void {
+    if (checkpoint.version !== 1 || checkpoint.agentId !== this.agentId) {
+      throw new Error('transcript adapter checkpoint is incompatible');
+    }
+    this.#turns.splice(0, this.#turns.length, ...checkpoint.turns);
+    replaceSet(this.#turnIds, checkpoint.turnIds);
+    replaceMap(this.#turnHeaders, checkpoint.turnHeaders);
+    replaceMap(this.#steps, checkpoint.steps);
+    replaceMap(this.#turnIdByStepId, checkpoint.turnIdByStepId);
+    replaceMap(this.#stepHeaders, checkpoint.stepHeaders);
+    replaceSetMap(this.#stepIdsByTurn, checkpoint.stepIdsByTurn);
+    replaceSetMap(this.#runningStepIdsByTurn, checkpoint.runningStepIdsByTurn);
+    replaceMap(this.#tools, checkpoint.tools);
+    replaceSetMap(this.#toolIdsByTurn, checkpoint.toolIdsByTurn);
+    replaceSetMap(this.#runningToolIdsByTurn, checkpoint.runningToolIdsByTurn);
+    replaceMap(this.#stepUsages, checkpoint.stepUsages.map(([key, value]) => [key, [...value]]));
+    replaceMap(this.#tasks, checkpoint.tasks);
+    replaceMap(this.#subagentTaskIds, checkpoint.subagentTaskIds);
+    replaceMap(this.#replayedSubagentSpawns, checkpoint.replayedSubagentSpawns);
+    replaceMap(this.#interactions, checkpoint.interactions);
+    replaceSet(this.#canonicalTurns, checkpoint.canonicalTurns);
+    replaceSet(this.#undoAnchors, checkpoint.undoAnchors);
+    replaceMap(this.#turnOwnedItemIds, checkpoint.turnOwnedItemIds.map(([key, value]) => [key, [...value]]));
+    replaceSet(this.#steeredMessageIds, checkpoint.steeredMessageIds);
+    replaceMap(this.#pendingSteers, checkpoint.pendingSteers.map(([key, value]) => [key, [...value]]));
+    replaceMap(
+      this.#pendingTaskNotifications,
+      checkpoint.pendingTaskNotifications.map(([key, value]) => [key, [...value]]),
+    );
+    replaceSet(this.#projectedTaskNotificationIds, checkpoint.projectedTaskNotificationIds);
+    replaceMap(
+      this.#unpairedSteerCredits,
+      checkpoint.unpairedSteerCredits.map(([key, value]) => [key, new Map(value)]),
+    );
+    replaceMap(this.#executions, checkpoint.executions);
+    this.#goal = checkpoint.goal;
+    this.#plan = checkpoint.plan;
+    this.#recordOrdinal = checkpoint.recordOrdinal;
+    this.#legacyTurnOrdinal = checkpoint.legacyTurnOrdinal;
+    this.#lastRecordTime = checkpoint.lastRecordTime;
+    this.#currentTurnId = checkpoint.currentTurnId;
+    this.#currentPromptId = checkpoint.currentPromptId;
+  }
 
   add(record: TranscriptWireRecord): TranscriptFact[] {
     const ordinal = this.#recordOrdinal++;
@@ -1868,4 +1988,22 @@ function stringOf(value: unknown): string | undefined {
 
 function numberOf(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function replaceSet<T>(target: Set<T>, values: readonly T[]): void {
+  target.clear();
+  for (const value of values) target.add(value);
+}
+
+function replaceMap<K, V>(target: Map<K, V>, entries: readonly (readonly [K, V])[]): void {
+  target.clear();
+  for (const [key, value] of entries) target.set(key, value);
+}
+
+function replaceSetMap<K, V>(
+  target: Map<K, Set<V>>,
+  entries: readonly (readonly [K, readonly V[]])[],
+): void {
+  target.clear();
+  for (const [key, values] of entries) target.set(key, new Set(values));
 }

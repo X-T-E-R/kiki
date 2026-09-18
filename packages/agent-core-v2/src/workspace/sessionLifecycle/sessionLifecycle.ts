@@ -61,6 +61,7 @@ export interface SessionCreatedEvent {
 
 export interface SessionClosedEvent {
   readonly sessionId: string;
+  readonly reason?: 'exit' | 'evict';
 }
 
 export interface SessionWillCloseEvent {
@@ -118,6 +119,7 @@ export interface ISessionLifecycleService {
   list(): readonly ISessionScopeHandle[];
   resume(sessionId: string, opts?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
   close(sessionId: string): Promise<void>;
+  unload?(sessionId: string, canCommit?: () => boolean): Promise<boolean>;
   archive(sessionId: string): Promise<void>;
   restore(sessionId: string, opts?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
   /**

@@ -127,6 +127,7 @@ export interface TargetSubscription {
   readonly agentFilter?: AgentFilter;
   readonly transcriptGrades?: TranscriptGradeSpec;
   readonly transcriptGeneration?: number;
+  readonly residencyLease?: IDisposable;
 }
 
 export type TranscriptSince = Record<string, TranscriptCursor | number>;
@@ -177,6 +178,8 @@ async function disposeSessionState(state: SessionState): Promise<void> {
     state.interactionService?.releaseConsumer(id);
   }
   state.interactionConsumers.clear();
+  for (const subscription of state.targets.values()) subscription.residencyLease?.dispose();
+  state.targets.clear();
   for (const d of state.lifecycleDisposables) d.dispose();
   for (const d of state.agentDisposables.values()) d.dispose();
   state.roster.clear(state.sessionId);
@@ -276,6 +279,9 @@ export class SessionEventBroadcaster {
     const state = await this.ensureState(sessionId);
     if (state === undefined) return false;
     const prev = state.targets.get(target);
+    const residencyLease = prev?.residencyLease ?? await this.opts.core.accessor
+      .get(ISessionManager)
+      .acquire?.(sessionId, 'ws-subscription');
     if (prev === undefined && state.interactionService !== undefined) {
       const consumerId = `kap-ws:${sessionId}:${nextInteractionConsumerId++}`;
       state.interactionConsumers.set(target, consumerId);
@@ -286,6 +292,7 @@ export class SessionEventBroadcaster {
       agentFilter: filter,
       transcriptGrades,
       transcriptGeneration: generation,
+      residencyLease,
     });
     if (transcriptGrades === undefined) {
       state.transcriptSeeded.delete(target);
@@ -384,6 +391,7 @@ export class SessionEventBroadcaster {
     const state = this.sessions.get(sessionId);
     if (state === undefined) return;
     this.nextTranscriptGeneration(state, target);
+    state.targets.get(target)?.residencyLease?.dispose();
     state.targets.delete(target);
     const consumerId = state.interactionConsumers.get(target);
     if (consumerId !== undefined) {
@@ -421,6 +429,7 @@ export class SessionEventBroadcaster {
       agentFilter: sub.agentFilter,
       transcriptGrades: next,
       transcriptGeneration: generation,
+      residencyLease: sub.residencyLease,
     });
     if (next === undefined || !wasSeeded) state.transcriptSeeded.delete(target);
   }
@@ -1705,6 +1714,7 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'prompt.steered',
   'prompt.queued',
   'prompt.replaced',
+  'prompt.moved',
   'event.question.requested',
   'event.question.dismissed',
   'event.question.answered',

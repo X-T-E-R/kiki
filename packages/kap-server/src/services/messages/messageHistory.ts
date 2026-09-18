@@ -5,6 +5,7 @@ import {
   IAgentScopeContext,
   IAppendLogStore,
   IFileSystemStorageService,
+  IQueryStore,
   ISessionIndex,
   IWireService,
   createContextTranscriptReducer,
@@ -33,6 +34,7 @@ const MESSAGE_HISTORY_ESTIMATE_TOOL_DECLARATION_BYTES = 4096;
 const MESSAGE_HISTORY_ESTIMATE_ENTRY_OVERHEAD_BYTES = 512;
 const MESSAGE_HISTORY_ESTIMATE_INDEX_ENTRY_BYTES = 64;
 const MESSAGE_HISTORY_ESTIMATE_TIMESTAMP_BYTES = 8;
+const MESSAGE_HISTORY_SPILL_COLLECTION = '__message_history_spill__';
 
 interface MessageHistoryCacheEntry {
   readonly messages: ContextMessage[];
@@ -53,6 +55,19 @@ interface MessageHistoryCacheState {
 const messageHistoryCacheStates = new WeakMap<Scope, MessageHistoryCacheState>();
 const messageHistoryLifecycleScopes = new WeakSet<Scope>();
 const messageHistoryRefreshes = new WeakMap<Scope, Map<string, Promise<MessageHistoryCacheEntry>>>();
+
+export function messageHistoryCacheReport(core: Scope): {
+  readonly entries: number;
+  readonly bytes: number;
+  readonly refreshes: number;
+} {
+  const state = messageHistoryCacheStates.get(core);
+  return {
+    entries: state?.cache.size ?? 0,
+    bytes: state?.totalBytes ?? 0,
+    refreshes: messageHistoryRefreshes.get(core)?.size ?? 0,
+  };
+}
 
 /** Sentinel — the route maps it to 40401. */
 export class SessionNotFoundError extends Error {
@@ -240,7 +255,7 @@ async function refreshMessageHistoryCacheNow(
   const state = messageHistoryCacheState(core);
   const generation = state.generation;
   const contextMessages = agent.accessor.get(IAgentContextMemoryService).get();
-  const existing = state.cache.get(sessionId);
+  const existing = state.cache.get(sessionId) ?? await loadSpilledMessageHistory(core, sessionId);
   let entry: MessageHistoryCacheEntry;
   if (existing === undefined) {
     entry = await rebuildMessageHistoryCache(core, agent, contextMessages, sessionCreatedAtMs);
@@ -258,7 +273,8 @@ async function refreshMessageHistoryCacheNow(
       entry = existing;
     }
   }
-  admitMessageHistoryCacheEntry(state, sessionId, entry, generation);
+  const admission = admitMessageHistoryCacheEntry(state, sessionId, entry, generation);
+  await persistSpilledMessageHistory(core, sessionId, entry, admission === 'spill');
   return entry;
 }
 
@@ -306,34 +322,78 @@ function admitMessageHistoryCacheEntry(
   sessionId: string,
   entry: MessageHistoryCacheEntry,
   generation: number,
-): void {
+): 'admitted' | 'spill' | 'stale' {
   const previous = state.cache.get(sessionId);
   if (previous !== undefined) {
     state.cache.delete(sessionId);
     state.totalBytes -= previous.bytes;
   }
   entry.bytes = estimateMessageHistoryEntryBytes(entry);
+  if (generation !== state.generation) return 'stale';
   if (
-    generation !== state.generation ||
     MESSAGE_HISTORY_CACHE_CAPACITY <= 0 ||
     MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES <= 0 ||
     MESSAGE_HISTORY_CACHE_MAX_TOTAL_BYTES <= 0 ||
     entry.bytes > MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES
   ) {
-    return;
+    return 'spill';
   }
   state.cache.set(sessionId, entry);
   state.totalBytes += entry.bytes;
   for (;;) {
     const overCapacity = state.cache.size > MESSAGE_HISTORY_CACHE_CAPACITY;
     const overBytes = state.totalBytes > MESSAGE_HISTORY_CACHE_MAX_TOTAL_BYTES;
-    if (!overCapacity && !overBytes) return;
+    if (!overCapacity && !overBytes) return state.cache.has(sessionId) ? 'admitted' : 'spill';
     const oldest = state.cache.keys().next().value;
-    if (oldest === undefined) return;
+    if (oldest === undefined) return 'spill';
     const dropped = state.cache.get(oldest);
     state.cache.delete(oldest);
     if (dropped !== undefined) state.totalBytes -= dropped.bytes;
   }
+}
+
+async function loadSpilledMessageHistory(
+  core: Scope,
+  sessionId: string,
+): Promise<MessageHistoryCacheEntry | undefined> {
+  try {
+    const value = await core.accessor.get(IQueryStore).get<{
+      readonly messages: ContextMessage[];
+      readonly createdAtMs: number[];
+      readonly explicitIndexes: readonly [string, number][];
+      readonly observedContext: ContextMessage[];
+      readonly scope: string;
+      readonly offset: number;
+      readonly bytes: number;
+    }>(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId);
+    return value === undefined
+      ? undefined
+      : { ...value, explicitIndexes: new Map(value.explicitIndexes) };
+  } catch {
+    return undefined;
+  }
+}
+
+async function persistSpilledMessageHistory(
+  core: Scope,
+  sessionId: string,
+  entry: MessageHistoryCacheEntry,
+  spill: boolean,
+): Promise<void> {
+  const store = core.accessor.get(IQueryStore);
+  if (!spill) {
+    await store.delete(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId).catch(() => undefined);
+    return;
+  }
+  await store.put(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId, {
+    messages: entry.messages,
+    createdAtMs: entry.createdAtMs,
+    explicitIndexes: [...entry.explicitIndexes],
+    observedContext: entry.observedContext,
+    scope: entry.scope,
+    offset: entry.offset,
+    bytes: entry.bytes,
+  }).catch(() => undefined);
 }
 
 function estimateMessageHistoryEntryBytes(entry: MessageHistoryCacheEntry): number {

@@ -1,5 +1,9 @@
 import type { AgentId } from '../model/ids';
-import { AgentTranscript, type Disposable } from './agentTranscript';
+import {
+  AgentTranscript,
+  type Disposable,
+  type TranscriptResidentLimits,
+} from './agentTranscript';
 
 export interface AgentDescriptor {
   readonly agentId: AgentId;
@@ -21,13 +25,16 @@ export class TranscriptStore {
   readonly #descriptors = new Map<AgentId, AgentDescriptor>();
   readonly #rosterListeners = new Set<RosterListener>();
 
-  constructor(readonly sessionId: string) { }
+  constructor(
+    readonly sessionId: string,
+    readonly residentLimits?: TranscriptResidentLimits,
+  ) { }
 
   /** Lazily create (or fetch) the transcript for an agent. */
   ensureAgent(agentId: AgentId, descriptor?: AgentDescriptor): AgentTranscript {
     let transcript = this.#agents.get(agentId);
     if (!transcript) {
-      transcript = new AgentTranscript(agentId);
+      transcript = new AgentTranscript(agentId, this.residentLimits);
       this.#agents.set(agentId, transcript);
     }
     if (descriptor && this.#descriptors.get(agentId) !== descriptor) {

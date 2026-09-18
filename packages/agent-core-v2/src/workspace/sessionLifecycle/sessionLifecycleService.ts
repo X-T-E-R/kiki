@@ -46,6 +46,7 @@ import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
+import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import { ISessionContext, sessionContextSeed } from '#/session/sessionContext/sessionContext';
 import { sessionEphemeralMcpServersSeed } from '#/session/mcp/ephemeralMcpServers';
 import { sessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
@@ -529,7 +530,44 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     handle.dispose();
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
-    this._onDidCloseSession.fire({ sessionId });
+    this._onDidCloseSession.fire({ sessionId, reason: 'exit' });
+  }
+
+  async unload(sessionId: string, canCommit: () => boolean = () => true): Promise<boolean> {
+    const handle = this.sessions.get(sessionId);
+    if (handle === undefined) return false;
+    const activity = handle.accessor.get(ISessionActivityView).state();
+    if (activity.busy || activity.pendingInteraction !== 'none') return false;
+    const agents = handle.accessor.get(IAgentLifecycleService);
+    if (agents.countPendingBackgroundTasks() > 0) return false;
+    const cronTasks = await this.cronStore.list({ workspaceId: this.workspaceId });
+    if (cronTasks.some((task) => task.tags?.[CRON_SESSION_TAG] === sessionId)) return false;
+    const externalRoot = await this.docs.get(
+      join(sessionScopeOf(this.handlerScope, sessionId), 'external-delegation'),
+      'root',
+    );
+    if (externalRoot !== undefined) return false;
+    for (const agent of agents.list()) {
+      const dispatcher = agent.accessor.get(IEventDispatcher);
+      await dispatcher.flush();
+      if (dispatcher.saveReplayCheckpoint === undefined) return false;
+      if (!(await dispatcher.saveReplayCheckpoint())) return false;
+    }
+    const usageFallback = aggregateSessionUsage(handle);
+    await this.persistUsage(handle, usageFallback);
+    await this.appendLogStore.drainRetirements();
+    await drainSessionMetadataWrites();
+    await this.indexMirror.drain();
+    if (!canCommit()) return false;
+    const finalActivity = handle.accessor.get(ISessionActivityView).state();
+    if (finalActivity.busy || finalActivity.pendingInteraction !== 'none') return false;
+    if (agents.countPendingBackgroundTasks() > 0) return false;
+    this.sessions.delete(sessionId);
+    handle.dispose();
+    await drainLogCloses();
+    await this.releaseSessionLock(sessionId);
+    this._onDidCloseSession.fire({ sessionId, reason: 'evict' });
+    return true;
   }
 
   async archive(sessionId: string): Promise<void> {

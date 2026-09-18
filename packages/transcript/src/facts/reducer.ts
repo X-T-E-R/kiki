@@ -22,6 +22,15 @@ export class TranscriptFactReducer {
 
   constructor(readonly transcript: TranscriptFactTarget) {}
 
+  checkpoint(): readonly string[] {
+    return [...this.#acceptedDurableFacts];
+  }
+
+  restore(factIds: readonly string[]): void {
+    this.#acceptedDurableFacts.clear();
+    for (const factId of factIds) this.#acceptedDurableFacts.add(factId);
+  }
+
   apply(facts: readonly TranscriptFact[]): TranscriptFactResult {
     const acceptedFacts: TranscriptFact[] = [];
     const acceptedOperations: TranscriptOperation[] = [];

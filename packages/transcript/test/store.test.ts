@@ -69,6 +69,49 @@ describe('AgentTranscript', () => {
     expect(turn.steps[0]?.frames.map((f) => f.kind)).toEqual(['tool']);
   });
 
+  it('keeps a bounded resident tail without emitting history-removal operations', () => {
+    const tx = new AgentTranscript('main', { tailTurns: 20, maxBytes: 16 << 20 });
+    const emitted: TranscriptOperation[][] = [];
+    tx.onChange((event) => emitted.push([...event.ops]));
+    for (let ordinal = 0; ordinal < 10_000; ordinal += 1) {
+      tx.apply([{
+        op: 'turn.upsert',
+        turn: {
+          kind: 'turn',
+          turnId: `t${ordinal}`,
+          ordinal,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: `prompt-${ordinal}`,
+        },
+      }]);
+    }
+
+    expect(tx.getItems().filter((item) => item.kind === 'turn')).toHaveLength(20);
+    expect(tx.getItems().filter((item) => item.kind === 'turn').at(0)?.turnId).toBe('t9980');
+    expect(tx.hasMoreOlder).toBe(true);
+    expect(tx.residentReport()).toMatchObject({ turns: 20, trimmedTurns: 9_980, overBudget: false });
+    expect(emitted.flat().some((operation) => operation.op === 'items.remove')).toBe(false);
+  });
+
+  it('never trims a running turn to satisfy the resident byte target', () => {
+    const tx = new AgentTranscript('main', { tailTurns: 1, maxBytes: 1_024 });
+    tx.apply([{
+      op: 'turn.upsert',
+      turn: {
+        kind: 'turn',
+        turnId: 't0',
+        ordinal: 0,
+        state: 'running',
+        origin: { kind: 'user' },
+        prompt: 'x'.repeat(10_000),
+      },
+    }]);
+
+    expect(tx.getTurn('t0')).toBeDefined();
+    expect(tx.residentReport().overBudget).toBe(true);
+  });
+
   it('auto-vivifies missing parents so any op order stays self-consistent', () => {
     const tx = new AgentTranscript('main');
     tx.apply([

@@ -463,6 +463,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     capabilityInstallSubscription.dispose();
     authFailureLimiter?.dispose();
     modelCatalogRefreshScheduler.dispose();
+    transcriptService.dispose();
     try {
       await postListenWarmup;
       await drainSessionMetadataWrites();

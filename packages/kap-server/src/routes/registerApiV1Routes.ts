@@ -112,7 +112,11 @@ export async function registerApiV1Routes(
       registerHealthRoute(apiV1);
 
       if (opts.debugEndpoints === true) {
-        registerDebugRoutes(apiV1 as unknown as Parameters<typeof registerDebugRoutes>[0], core);
+        registerDebugRoutes(
+          apiV1 as unknown as Parameters<typeof registerDebugRoutes>[0],
+          core,
+          opts.transcriptService,
+        );
       }
 
       registerMetaRoute(apiV1, {

@@ -34,6 +34,18 @@ export interface TranscriptToolCallLookup {
   readonly frame: ToolCallFrame;
 }
 
+export interface TranscriptResidentLimits {
+  readonly tailTurns: number;
+  readonly maxBytes: number;
+}
+
+export interface TranscriptResidentReport {
+  readonly turns: number;
+  readonly estimatedBytes: number;
+  readonly trimmedTurns: number;
+  readonly overBudget: boolean;
+}
+
 const mapValuesCache = new WeakMap<object, readonly unknown[]>();
 
 function stableMapValues<K, V>(map: ReadonlyMap<K, V>): readonly V[] {
@@ -50,8 +62,13 @@ export class AgentTranscript {
   readonly #appendDirty = new Set<string>();
   readonly #toolCalls = new Map<string, TranscriptToolCallLookup>();
   readonly #toolCallIdByFrame = new Map<string, string>();
+  #trimmedTurns = 0;
+  #estimatedBytes = 0;
 
-  constructor(readonly agentId: AgentId) {}
+  constructor(
+    readonly agentId: AgentId,
+    readonly residentLimits?: TranscriptResidentLimits,
+  ) {}
 
   /** Full load == applying a reset: there is no second seeding path. */
   receive(ops: readonly TranscriptOperation[]): AppliedOps {
@@ -106,6 +123,7 @@ export class AgentTranscript {
       index = run.nextIndex;
     }
     this.#state = state;
+    this.trimResidentState();
     if (accepted.length > 0) {
       const event: TranscriptChangeEvent = { agentId: this.agentId, ops: accepted };
       for (const listener of this.#listeners) listener(event);
@@ -226,6 +244,50 @@ export class AgentTranscript {
       meta: this.#state.meta,
       hasMoreOlder,
     };
+  }
+
+  residentReport(): TranscriptResidentReport {
+    const turns = this.#state.items.filter((item) => item.kind === 'turn').length;
+    const limit = this.residentLimits?.maxBytes;
+    return {
+      turns,
+      estimatedBytes: this.#estimatedBytes,
+      trimmedTurns: this.#trimmedTurns,
+      overBudget: limit !== undefined && this.#estimatedBytes > limit,
+    };
+  }
+
+  private trimResidentState(): void {
+    const limits = this.residentLimits;
+    this.#estimatedBytes = estimateResidentStateBytes(this.#state);
+    if (limits === undefined) return;
+    const tailTurns = Math.max(0, Math.floor(limits.tailTurns));
+    const maxBytes = Math.max(1, Math.floor(limits.maxBytes));
+    let turnCount = 0;
+    for (const item of this.#state.items) {
+      if (item.kind === 'turn') turnCount += 1;
+    }
+    let estimatedBytes = this.#estimatedBytes;
+    if (turnCount <= tailTurns && estimatedBytes <= maxBytes) return;
+    const drop = new Set<string>();
+    for (const item of this.#state.items) {
+      if (item.kind !== 'turn' || item.state === 'running') continue;
+      if (turnCount <= tailTurns && estimatedBytes <= maxBytes) break;
+      drop.add(item.turnId);
+      turnCount -= 1;
+      estimatedBytes -= estimateResidentValueBytes(item);
+    }
+    if (drop.size === 0) return;
+    this.#state = {
+      ...this.#state,
+      items: this.#state.items.filter(
+        (item) => item.kind !== 'turn' || !drop.has(item.turnId),
+      ),
+      hasMoreOlder: true,
+    };
+    this.#trimmedTurns += drop.size;
+    this.#estimatedBytes = estimateResidentStateBytes(this.#state);
+    this.rebuildToolCallIndex(this.#state.items);
   }
 
   private syncToolCallIndex(op: TranscriptOperation, state: AgentState): void {
@@ -364,4 +426,51 @@ function appendTargetKey(op: TranscriptOperation): string | undefined {
   }
   if (op.op === 'task.upsert') return `task:${op.task.taskId}`;
   return undefined;
+}
+
+function estimateResidentStateBytes(state: AgentState): number {
+  return estimateResidentValueBytes({
+    items: state.items,
+    tasks: state.tasks,
+    interactions: state.interactions,
+    attachments: state.attachments,
+    todos: state.todos,
+    prompts: state.prompts,
+    toolCallCount: state.toolCallCount,
+    meta: state.meta,
+    pendingInteractions: state.pendingInteractions,
+    hasMoreOlder: state.hasMoreOlder,
+  });
+}
+
+function estimateResidentValueBytes(value: unknown, seen = new WeakSet<object>()): number {
+  if (value === null || value === undefined) return 8;
+  if (typeof value === 'string') return 24 + value.length * 2;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return 8;
+  if (typeof value !== 'object') return 16;
+  if (seen.has(value)) return 8;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    let bytes = 32 + value.length * 8;
+    for (const item of value) bytes += estimateResidentValueBytes(item, seen);
+    return bytes;
+  }
+  if (value instanceof Map) {
+    let bytes = 48 + value.size * 24;
+    for (const [key, entry] of value) {
+      bytes += estimateResidentValueBytes(key, seen);
+      bytes += estimateResidentValueBytes(entry, seen);
+    }
+    return bytes;
+  }
+  if (value instanceof Set) {
+    let bytes = 48 + value.size * 16;
+    for (const entry of value) bytes += estimateResidentValueBytes(entry, seen);
+    return bytes;
+  }
+  let bytes = 48;
+  for (const [key, entry] of Object.entries(value)) {
+    bytes += 16 + key.length * 2 + estimateResidentValueBytes(entry, seen);
+  }
+  return bytes;
 }

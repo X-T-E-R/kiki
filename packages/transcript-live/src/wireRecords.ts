@@ -17,6 +17,7 @@ export interface WireRecordsStreamOptions {
   readonly maxBytes?: number;
   readonly maxRecords?: number;
   readonly maxLineBytes?: number;
+  readonly startByteOffset?: number;
   readonly signal?: AbortSignal;
   readonly onRecord: (record: ContextRecord) => void;
 }
@@ -24,6 +25,7 @@ export interface WireRecordsStreamOptions {
 export interface WireRecordsStreamResult {
   readonly recordCount: number;
   readonly bytesRead: number;
+  readonly nextByteOffset: number;
   readonly complete: boolean;
   readonly incompleteReason?: WireRecordsIncompleteReason;
 }
@@ -57,6 +59,7 @@ export async function streamWireRecords(
   const maxBytes = optionalLimit(options.maxBytes);
   const maxRecords = optionalLimit(options.maxRecords);
   const maxLineBytes = optionalLimit(options.maxLineBytes);
+  const startByteOffset = optionalLimit(options.startByteOffset) ?? 0;
   const signal = options.signal;
   let remainingBytes = maxBytes ?? Number.POSITIVE_INFINITY;
   let lineChunks: Buffer[] = [];
@@ -64,6 +67,7 @@ export async function streamWireRecords(
   let lineNumber = 0;
   let recordCount = 0;
   let bytesRead = 0;
+  let nextByteOffset = startByteOffset;
   let stopped = false;
   let incompleteReason: WireRecordsIncompleteReason | undefined;
 
@@ -96,6 +100,7 @@ export async function streamWireRecords(
     }
     recordCount += 1;
     options.onRecord(record as ContextRecord);
+    nextByteOffset += line.length + (terminated ? 1 : 0);
   };
 
   const mergeLine = (): Buffer => {
@@ -142,7 +147,10 @@ export async function streamWireRecords(
       throw new Error(`wire.jsonl: invalid size for ${wirePath}`);
     }
     const fileSize = info.size;
-    let position = 0;
+    if (startByteOffset > fileSize) {
+      throw new Error(`wire.jsonl: start offset exceeds file size for ${wirePath}`);
+    }
+    let position = startByteOffset;
     while (position < fileSize) {
       if (stopped) break;
       signal?.throwIfAborted();
@@ -171,6 +179,7 @@ export async function streamWireRecords(
   return {
     recordCount,
     bytesRead,
+    nextByteOffset,
     complete: incompleteReason === undefined,
     incompleteReason,
   };

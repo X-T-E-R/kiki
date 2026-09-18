@@ -43,6 +43,7 @@
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
     "test:mcp-bin-smoke": "node scripts/mcp-bin-smoke.mjs",
     "test:integration": "vitest run .integration.",
+    "test:bounded-memory": "node --expose-gc ../../node_modules/tsx/dist/cli.mjs scripts/bounded-memory-soak.mts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

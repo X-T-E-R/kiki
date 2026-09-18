@@ -1,10 +1,13 @@
 
-import { DisposableStore } from '#/_base/di/lifecycle';
+import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
+import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import {
   type CreateChildSessionOptions,
   type ForkSessionOptions,
@@ -21,10 +24,26 @@ import type { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessi
 import { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 
 import {
+  DEFAULT_SESSION_RESIDENCY_CONFIG,
+  SESSION_RESIDENCY_SECTION,
+  type SessionResidencyConfig,
+} from './configSection';
+import { SESSION_IDLE_EVICTION_FLAG_ID } from './flag';
+import {
   ISessionManager,
   type CreateManagedSessionOptions,
+  type SessionLease,
+  type SessionResidencyReport,
   type UnguardedSessionLifecycle,
 } from './sessionManager';
+
+interface SessionResidencyEntry {
+  pins: number;
+  idleSince: number | undefined;
+  lastAccess: number;
+  generation: number;
+  activitySubscription?: IDisposable;
+}
 
 interface SessionControllerEntry {
   readonly workspaceId: string;
@@ -46,6 +65,14 @@ export class SessionManager implements ISessionManager {
   private readonly controllerWorkspaces = new Map<SessionLifecycleService, string>();
   private readonly workspaceOperations = new Map<string, Set<Promise<unknown>>>();
   private readonly closingWorkspaces = new Set<string>();
+  private readonly residency = new Map<string, SessionResidencyEntry>();
+  private evictionTimer: ReturnType<typeof setInterval> | undefined;
+  private disposed = false;
+  private activeRestores = 0;
+  private readonly restoreQueue: Array<() => void> = [];
+  private evictionAttempts = 0;
+  private evictionSuccesses = 0;
+  private evictionFailures = 0;
   private readonly willCreateEmitter = new Emitter<SessionWillCreateEvent>();
   readonly onWillCreateSession: Event<SessionWillCreateEvent> = this.willCreateEmitter.event;
   private readonly didCreateEmitter = new Emitter<SessionCreatedEvent & IWaitUntil>();
@@ -64,7 +91,11 @@ export class SessionManager implements ISessionManager {
   constructor(
     @IWorkspaceInstanceManager private readonly workspaces: IWorkspaceInstanceManager,
     @ISessionIndex private readonly index: ISessionIndex,
-  ) {}
+    @IConfigService private readonly config?: IConfigService,
+    @IFlagService private readonly flags?: IFlagService,
+  ) {
+    void this.startEvictionScheduler();
+  }
 
   async create(options: CreateManagedSessionOptions): Promise<ISessionScopeHandle> {
     const lease = await this.workspaces.acquire(
@@ -87,30 +118,129 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     options?: ResumeSessionOptions,
   ): Promise<ISessionScopeHandle | undefined> {
+    this.touchResidency(sessionId);
     const inflight = this.pendingResumes.get(sessionId);
     if (inflight !== undefined) return inflight;
     this.resumeFailures.delete(sessionId);
     const promise = this.serializeLifecycle(sessionId, async () => {
-      const target = await this.controllerForSession(sessionId);
-      if (target === undefined) return undefined;
-      return this.runWorkspaceOperation(
-        target.workspaceId,
-        () => target.controller.resume(sessionId, options),
-        target.release,
-      );
+      const releaseRestore = await this.reserveRestoreSlot(sessionId);
+      try {
+        const target = await this.controllerForSession(sessionId);
+        if (target === undefined) return undefined;
+        return this.runWorkspaceOperation(
+          target.workspaceId,
+          () => target.controller.resume(sessionId, options),
+          target.release,
+        );
+      } finally {
+        releaseRestore();
+      }
     }).finally(() => this.pendingResumes.delete(sessionId));
     this.pendingResumes.set(sessionId, promise);
-    void promise.catch((error: unknown) => {
-      this.resumeFailures.set(
-        sessionId,
-        error instanceof Error ? error : new Error('session resume failed'),
-      );
-    });
+    void promise.then(
+      (handle) => {
+        if (handle === undefined && !this.sessions.has(sessionId)) this.dropResidency(sessionId);
+      },
+      (error: unknown) => {
+        this.resumeFailures.set(
+          sessionId,
+          error instanceof Error ? error : new Error('session resume failed'),
+        );
+        if (!this.sessions.has(sessionId)) this.dropResidency(sessionId);
+      },
+    );
     return promise;
   }
 
+  async acquire(
+    sessionId: string,
+    _reason: string,
+    options?: ResumeSessionOptions,
+  ): Promise<SessionLease | undefined> {
+    const entry = this.ensureResidency(sessionId);
+    entry.pins += 1;
+    entry.generation += 1;
+    entry.idleSince = undefined;
+    let released = false;
+    try {
+      const handle = await this.resume(sessionId, options);
+      if (handle === undefined) {
+        this.releasePin(sessionId, entry);
+        return undefined;
+      }
+      return {
+        handle,
+        dispose: () => {
+          if (released) return;
+          released = true;
+          this.releasePin(sessionId, entry);
+        },
+      };
+    } catch (error) {
+      this.releasePin(sessionId, entry);
+      throw error;
+    }
+  }
+
   get(sessionId: string): ISessionScopeHandle | undefined {
-    return this.sessions.get(sessionId);
+    const handle = this.sessions.get(sessionId);
+    if (handle !== undefined) this.touchResidency(sessionId);
+    return handle;
+  }
+
+  residencyReport(): SessionResidencyReport {
+    let pinnedSessions = 0;
+    let idleSessions = 0;
+    for (const entry of this.residency.values()) {
+      if (entry.pins > 0) pinnedSessions += 1;
+      else if (entry.idleSince !== undefined) idleSessions += 1;
+    }
+    return {
+      liveSessions: this.sessions.size,
+      pinnedSessions,
+      idleSessions,
+      pendingRestores: this.pendingResumes.size,
+      lifecycleOperations: this.lifecycleChains.size,
+      evictionAttempts: this.evictionAttempts,
+      evictionSuccesses: this.evictionSuccesses,
+      evictionFailures: this.evictionFailures,
+    };
+  }
+
+  async evictIfIdle(sessionId: string): Promise<boolean> {
+    if (!this.evictionEnabled()) return false;
+    return this.serializeLifecycle(sessionId, async () => {
+      const entry = this.residency.get(sessionId);
+      const controller = this.owners.get(sessionId);
+      if (entry === undefined || controller === undefined || entry.pins > 0) return false;
+      const idleSince = entry.idleSince;
+      if (idleSince === undefined) return false;
+      const config = this.residencyConfig();
+      const capacityPressure = this.sessions.size > config.maxLiveSessions;
+      const minimum = capacityPressure ? config.minIdleMs : config.idleTtlMs;
+      if (Date.now() - idleSince < minimum) return false;
+      const generation = entry.generation;
+      this.evictionAttempts += 1;
+      try {
+        if (entry.generation !== generation || entry.pins > 0) return false;
+        const workspaceId = this.controllerWorkspaces.get(controller);
+        if (workspaceId === undefined) return false;
+        if (controller.unload === undefined) return false;
+        const unloaded = await this.runWorkspaceOperation(
+          workspaceId,
+          () => controller.unload!(
+            sessionId,
+            () => entry.generation === generation && entry.pins === 0,
+          ),
+        );
+        if (unloaded) this.evictionSuccesses += 1;
+        return unloaded;
+      } catch (error) {
+        this.evictionFailures += 1;
+        if (this.residency.get(sessionId) === entry) entry.idleSince = Date.now();
+        throw error;
+      }
+    });
   }
 
   async whenResumeSettled(sessionId: string): Promise<void> {
@@ -272,6 +402,10 @@ export class SessionManager implements ISessionManager {
   }
 
   dispose(): void {
+    this.disposed = true;
+    if (this.evictionTimer !== undefined) clearInterval(this.evictionTimer);
+    for (const state of this.residency.values()) state.activitySubscription?.dispose();
+    this.residency.clear();
     for (const { controller, subscriptions } of [...this.controllerEntries].reverse()) {
       subscriptions.dispose();
       controller.dispose();
@@ -295,6 +429,116 @@ export class SessionManager implements ISessionManager {
     this.didForkEmitter.dispose();
   }
 
+  private async reserveRestoreSlot(sessionId: string): Promise<() => void> {
+    if (this.sessions.has(sessionId)) return () => {};
+    const config = this.residencyConfig();
+    if (this.activeRestores >= config.maxConcurrentRestores) {
+      if (this.restoreQueue.length >= config.maxQueuedRestores) {
+        throw new Error('session restore queue is full');
+      }
+      await new Promise<void>((resolve) => this.restoreQueue.push(resolve));
+    }
+    this.activeRestores += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeRestores = Math.max(0, this.activeRestores - 1);
+      this.restoreQueue.shift()?.();
+    };
+  }
+
+  private ensureResidency(sessionId: string): SessionResidencyEntry {
+    let entry = this.residency.get(sessionId);
+    if (entry === undefined) {
+      entry = {
+        pins: 0,
+        idleSince: Date.now(),
+        lastAccess: Date.now(),
+        generation: 0,
+      };
+      this.residency.set(sessionId, entry);
+    }
+    return entry;
+  }
+
+  private touchResidency(sessionId: string): void {
+    const entry = this.ensureResidency(sessionId);
+    entry.lastAccess = Date.now();
+    entry.generation += 1;
+    if (entry.pins === 0) entry.idleSince = Date.now();
+  }
+
+  private registerResidency(sessionId: string, handle: ISessionScopeHandle): void {
+    const entry = this.ensureResidency(sessionId);
+    entry.activitySubscription?.dispose();
+    const update = (): void => {
+      try {
+        const state = handle.accessor.get(ISessionActivityView).state();
+        entry.idleSince = entry.pins === 0 && !state.busy && state.pendingInteraction === 'none'
+          ? (entry.idleSince ?? Date.now())
+          : undefined;
+      } catch {
+        entry.idleSince = entry.pins === 0 ? (entry.idleSince ?? Date.now()) : undefined;
+      }
+      entry.generation += 1;
+    };
+    try {
+      entry.activitySubscription = handle.accessor.get(ISessionActivityView).onDidChange(update);
+    } catch {
+      entry.activitySubscription = undefined;
+    }
+    update();
+  }
+
+  private releasePin(sessionId: string, expected: SessionResidencyEntry): void {
+    const entry = this.residency.get(sessionId);
+    if (entry !== expected) return;
+    entry.pins = Math.max(0, entry.pins - 1);
+    entry.generation += 1;
+    if (entry.pins === 0) {
+      const handle = this.sessions.get(sessionId);
+      if (handle === undefined) {
+        this.dropResidency(sessionId);
+      } else {
+        this.registerResidency(sessionId, handle);
+      }
+    }
+  }
+
+  private dropResidency(sessionId: string): void {
+    const entry = this.residency.get(sessionId);
+    entry?.activitySubscription?.dispose();
+    this.residency.delete(sessionId);
+  }
+
+  private residencyConfig(): Required<SessionResidencyConfig> {
+    const configured = this.config?.get<SessionResidencyConfig>(SESSION_RESIDENCY_SECTION) ?? {};
+    return { ...DEFAULT_SESSION_RESIDENCY_CONFIG, ...configured };
+  }
+
+  private evictionEnabled(): boolean {
+    return this.flags?.enabled(SESSION_IDLE_EVICTION_FLAG_ID) === true;
+  }
+
+  private async startEvictionScheduler(): Promise<void> {
+    await this.config?.ready;
+    if (this.disposed || !this.evictionEnabled() || this.evictionTimer !== undefined) return;
+    const interval = this.residencyConfig().sweepIntervalMs;
+    this.evictionTimer = setInterval(() => void this.evictOne().catch(() => undefined), interval);
+    this.evictionTimer.unref?.();
+  }
+
+  private async evictOne(): Promise<void> {
+    if (!this.evictionEnabled()) return;
+    const candidates = [...this.residency.entries()]
+      .filter(([, entry]) => entry.pins === 0 && entry.idleSince !== undefined)
+      .sort((left, right) => left[1].lastAccess - right[1].lastAccess);
+    for (const [sessionId] of candidates) {
+      if (await this.evictIfIdle(sessionId)) return;
+    }
+  }
+
   private controllerForWorkspace(workspaceId: string): SessionLifecycleService {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace === undefined) throw new Error(`workspace ${workspaceId} is not materialized`);
@@ -315,6 +559,7 @@ export class SessionManager implements ISessionManager {
       entry.sessionCount += 1;
       this.sessions.set(event.sessionId, event.handle);
       this.owners.set(event.sessionId, controller);
+      this.registerResidency(event.sessionId, event.handle);
       this.didCreateEmitter.fire(event);
     }));
     subscriptions.add(controller.onWillCloseSession((event) => this.willCloseEmitter.fire(event)));
@@ -322,6 +567,7 @@ export class SessionManager implements ISessionManager {
       entry.sessionCount -= 1;
       this.sessions.delete(event.sessionId);
       this.owners.delete(event.sessionId);
+      this.dropResidency(event.sessionId);
       this.didCloseEmitter.fire(event);
       this.retireEntryIfIdle(workspaceId, entry);
     }));
@@ -329,6 +575,7 @@ export class SessionManager implements ISessionManager {
       entry.sessionCount -= 1;
       this.sessions.delete(event.sessionId);
       this.owners.delete(event.sessionId);
+      this.dropResidency(event.sessionId);
       this.didArchiveEmitter.fire(event);
       this.retireEntryIfIdle(workspaceId, entry);
     }));

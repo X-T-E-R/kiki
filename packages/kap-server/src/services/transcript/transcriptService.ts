@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { readFile, stat } from 'node:fs/promises';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 import {
   IAgentActivityView,
   IAgentLifecycleService,
+  IConfigService,
+  IFlagService,
+  IQueryStore,
   ISessionIndex,
   ISessionMetadata,
   followSessionLifecycles,
@@ -26,6 +30,8 @@ import {
   type TranscriptCursor,
   type TranscriptMarker,
   type TranscriptOperation,
+  type TranscriptResidentLimits,
+  type TranscriptWireAdapterCheckpoint,
   type ToolCountSetOp,
   type TranscriptTaskRef,
   type TranscriptTurn,
@@ -50,12 +56,21 @@ import {
   readWireRecordsBounded,
   type BoundedWireScanOptions,
 } from './boundedWireScan';
+import {
+  DEFAULT_TRANSCRIPT_MEMORY_CONFIG,
+  TRANSCRIPT_MEMORY_SECTION,
+  TRANSCRIPT_RESIDENT_WINDOW_FLAG_ID,
+  type TranscriptMemoryConfig,
+} from './configSection';
 
 const SESSIONS_ROOT = 'sessions';
 const AGENTS_DIR = 'agents';
 const MAIN_AGENT_ID = 'main';
 const WIRE_FILE = 'wire.jsonl';
 const STATE_FILE = 'state.json';
+const TRANSCRIPT_CHECKPOINT_COLLECTION = '__transcript_projection_checkpoint__';
+const TRANSCRIPT_CHECKPOINT_FORMAT = 1;
+const TRANSCRIPT_CHECKPOINT_MIN_RECORDS = 256;
 const OPS_JOURNAL_COMPACT_MIN_HEAD = 1024;
 const OPS_JOURNAL_ESTIMATE_NODE_OVERHEAD_BYTES = 64;
 const OPS_JOURNAL_ESTIMATE_SCALAR_BYTES = 8;
@@ -99,6 +114,7 @@ export interface TranscriptServiceDeps {
   ) => Promise<number>;
   readonly coldReadLimits?: TranscriptColdReadLimits;
   readonly opsJournalLimits?: TranscriptOpsJournalLimits;
+  readonly residentLimits?: TranscriptResidentLimits | false;
   readonly wireRecordReader?: (
     wirePath: string,
     options: WireRecordsStreamOptions,
@@ -165,6 +181,16 @@ interface JournaledOpsBatch {
   readonly bytes: number;
 }
 
+interface TranscriptProjectionCheckpoint {
+  readonly format: typeof TRANSCRIPT_CHECKPOINT_FORMAT;
+  readonly fingerprint: string;
+  readonly nextByteOffset: number;
+  readonly recordCount: number;
+  readonly snapshot: AgentTranscriptSnapshot;
+  readonly adapter: TranscriptWireAdapterCheckpoint;
+  readonly acceptedDurableFacts: readonly string[];
+}
+
 interface ColdSnapshotFlight {
   readonly controller: AbortController;
   readonly promise: Promise<AgentTranscriptSnapshot | undefined>;
@@ -178,6 +204,34 @@ export const TRANSCRIPT_OPS_JOURNAL_CAPACITY = 2000;
 export const TRANSCRIPT_OPS_JOURNAL_MAX_AGENT_BYTES = 2 << 20;
 export const TRANSCRIPT_OPS_JOURNAL_MAX_SESSION_BYTES = 8 << 20;
 export const TRANSCRIPT_OPS_JOURNAL_MAX_TOTAL_BYTES = 64 << 20;
+
+export interface TranscriptMemoryReport {
+  readonly liveSessions: number;
+  readonly liveAgents: number;
+  readonly residentTurns: number;
+  readonly residentBytes: number;
+  readonly trimmedTurns: number;
+  readonly overBudgetAgents: number;
+  readonly opsJournalBytes: number;
+  readonly opsJournalBatches: number;
+  readonly opsJournalDroppedBytes: number;
+  readonly toolCallCacheEntries: number;
+  readonly toolCallCacheBytes: number;
+  readonly eventLoopDelay: {
+    readonly meanMs: number;
+    readonly maxMs: number;
+    readonly p99Ms: number;
+  };
+  readonly coldReads: {
+    readonly completed: number;
+    readonly shared: number;
+    readonly cancelled: number;
+    readonly fenced: number;
+    readonly bytes: number;
+    readonly records: number;
+    readonly durationMs: number;
+  };
+}
 
 export interface TranscriptOpsCatchup {
   readonly epoch: string;
@@ -203,8 +257,18 @@ export class TranscriptService {
   private readonly wireRecordReader: NonNullable<TranscriptServiceDeps['wireRecordReader']>;
   private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
   private opsJournalTotalBytes = 0;
+  private opsJournalDroppedBytes = 0;
+  private coldReadsCompleted = 0;
+  private coldReadsShared = 0;
+  private coldReadsCancelled = 0;
+  private coldReadsFenced = 0;
+  private coldReadBytes = 0;
+  private coldReadRecords = 0;
+  private coldReadDurationMs = 0;
+  private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 
   constructor(private readonly deps: TranscriptServiceDeps) {
+    this.eventLoopDelay.enable();
     this.toolCallCountReader = deps.toolCallCountReader ?? readWireRecordsBounded;
     const limits = deps.toolCallCountLimits;
     this.toolCallCountLimits = {
@@ -255,7 +319,7 @@ export class TranscriptService {
     }
     const session = getLiveSessionById(this.deps.core.accessor, sessionId);
     if (session === undefined) return undefined;
-    const store = new TranscriptStore(sessionId);
+    const store = new TranscriptStore(sessionId, this.resolveResidentLimits());
     let binding: TranscriptBinding;
     try {
       binding = bindSessionTranscript(
@@ -550,6 +614,7 @@ export class TranscriptService {
     journal.bytes -= batch.bytes;
     entry.opsJournalSessionBytes -= batch.bytes;
     this.opsJournalTotalBytes -= batch.bytes;
+    this.opsJournalDroppedBytes += batch.bytes;
     if (
       journal.start >= OPS_JOURNAL_COMPACT_MIN_HEAD &&
       journal.start * 2 >= journal.batches.length
@@ -1039,6 +1104,7 @@ export class TranscriptService {
     }
     const key = `${sessionId}\0${agentId}`;
     let flight = this.coldSnapshotFlights.get(key);
+    if (flight !== undefined && !flight.controller.signal.aborted) this.coldReadsShared += 1;
     if (flight === undefined || flight.controller.signal.aborted) {
       const controller = new AbortController();
       let created!: ColdSnapshotFlight;
@@ -1071,6 +1137,9 @@ export class TranscriptService {
         signal.addEventListener('abort', onAbort, { once: true });
       });
       return await Promise.race([flight.promise, aborted]);
+    } catch (error) {
+      if (signal?.aborted === true) this.coldReadsCancelled += 1;
+      throw error;
     } finally {
       if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
       flight.waiters -= 1;
@@ -1107,9 +1176,29 @@ export class TranscriptService {
       tool: (toolCallId) => transcript.getToolCall(toolCallId),
       task: (taskId) => transcript.getTask(taskId),
     });
+    const info = await stat(wirePath).catch(() => undefined);
+    const fingerprint = info === undefined ? undefined : fileIdentity(info);
+    const checkpointKey = `${summary.workspaceId}\0${sessionId}\0${agentId}`;
+    const checkpointStore = this.deps.core.accessor.get(IQueryStore) as IQueryStore | undefined;
+    const checkpoint = fingerprint === undefined || preserveOpenTurnIds !== undefined
+      ? undefined
+      : await readTranscriptProjectionCheckpoint(
+          checkpointStore,
+          checkpointKey,
+          fingerprint,
+          info!.size,
+        );
+    if (checkpoint !== undefined) {
+      transcript.seed(checkpoint.snapshot);
+      adapter.restore(checkpoint.adapter);
+      reducer.restore(checkpoint.acceptedDurableFacts);
+    }
     let complete: boolean;
+    let readResult: WireRecordsStreamResult | undefined;
+    const startedAt = Date.now();
     try {
       const read = await this.wireRecordReader(wirePath, {
+        startByteOffset: checkpoint?.nextByteOffset,
         chunkBytes: this.coldReadLimits.chunkBytes,
         maxBytes: this.coldReadLimits.maxBytes,
         maxRecords: this.coldReadLimits.maxRecords,
@@ -1117,7 +1206,13 @@ export class TranscriptService {
         signal,
         onRecord: (record) => reducer.apply(adapter.add(record)),
       });
+      readResult = read;
+      this.coldReadsCompleted += 1;
+      this.coldReadBytes += read.bytesRead;
+      this.coldReadRecords += read.recordCount;
+      this.coldReadDurationMs += Date.now() - startedAt;
       if (!read.complete && read.incompleteReason !== 'partial_tail') {
+        this.coldReadsFenced += 1;
         this.logColdReadFence(sessionId, agentId, read.incompleteReason ?? 'unknown');
         return unknownSnapshot();
       }
@@ -1135,6 +1230,31 @@ export class TranscriptService {
         const candidate = transcript.getTurn(turnId);
         if (candidate?.state === 'running') preservedTurns.push(structuredClone(candidate));
       }
+      if (
+        preserveOpenTurnIds === undefined &&
+        complete &&
+        readResult !== undefined &&
+        fingerprint !== undefined &&
+        (checkpoint?.recordCount ?? 0) + readResult.recordCount >= TRANSCRIPT_CHECKPOINT_MIN_RECORDS
+      ) {
+        const seed = transcript.checkpoint();
+        const checkpointPayload: TranscriptProjectionCheckpoint = {
+          format: TRANSCRIPT_CHECKPOINT_FORMAT,
+          fingerprint,
+          nextByteOffset: readResult.nextByteOffset,
+          recordCount: (checkpoint?.recordCount ?? 0) + readResult.recordCount,
+          snapshot: seed,
+          adapter: adapter.checkpoint(),
+          acceptedDurableFacts: reducer.checkpoint(),
+        };
+        if (checkpointStore !== undefined) {
+          await checkpointStore.put(
+            TRANSCRIPT_CHECKPOINT_COLLECTION,
+            checkpointKey,
+            checkpointPayload,
+          ).catch(() => undefined);
+        }
+      }
       reducer.apply(adapter.finish());
       for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
       const snapshot = transcript.snapshot();
@@ -1147,7 +1267,17 @@ export class TranscriptService {
     }
   }
 
+  private async invalidateProjectionCheckpoint(sessionId: string, agentId: string): Promise<void> {
+    const store = this.deps.core.accessor.get(IQueryStore) as IQueryStore | undefined;
+    if (store === undefined) return;
+    const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
+    if (summary === undefined) return;
+    const key = `${summary.workspaceId}\0${sessionId}\0${agentId}`;
+    await store.delete(TRANSCRIPT_CHECKPOINT_COLLECTION, key).catch(() => undefined);
+  }
+
   async reconcileAfterRewrite(sessionId: string, agentId: string = MAIN_AGENT_ID): Promise<void> {
+    await this.invalidateProjectionCheckpoint(sessionId, agentId);
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
     const transcript = entry.store.ensureAgent(agentId);
@@ -1190,6 +1320,78 @@ export class TranscriptService {
     const journal = entry.opsJournals.get(agentId);
     if (journal !== undefined) this.disposeOpsJournal(entry, journal);
     entry.opsJournals.set(agentId, { epoch: randomUUID(), nextSeq: 1, start: 0, batches: [], bytes: 0 });
+  }
+
+  private resolveResidentLimits(): TranscriptResidentLimits | undefined {
+    if (this.deps.residentLimits === false) return undefined;
+    if (this.deps.residentLimits !== undefined) return this.deps.residentLimits;
+    const flags = this.deps.core.accessor.get(IFlagService) as IFlagService | undefined;
+    if (flags?.enabled(TRANSCRIPT_RESIDENT_WINDOW_FLAG_ID) !== true) return undefined;
+    const configured = (this.deps.core.accessor.get(IConfigService) as IConfigService | undefined)
+      ?.get<TranscriptMemoryConfig>(TRANSCRIPT_MEMORY_SECTION);
+    const config = { ...DEFAULT_TRANSCRIPT_MEMORY_CONFIG, ...(configured ?? {}) };
+    return { tailTurns: config.tailTurns, maxBytes: config.maxAgentBytes };
+  }
+
+  memoryReport(): TranscriptMemoryReport {
+    let liveAgents = 0;
+    let residentTurns = 0;
+    let residentBytes = 0;
+    let trimmedTurns = 0;
+    let overBudgetAgents = 0;
+    let opsJournalBatches = 0;
+    for (const entry of this.live.values()) {
+      const agentIds = new Set([
+        ...entry.store.agents().map((descriptor) => descriptor.agentId),
+        ...entry.agentHistory.keys(),
+      ]);
+      liveAgents += agentIds.size;
+      for (const agentId of agentIds) {
+        const transcript = entry.store.getAgent(agentId);
+        if (transcript !== undefined) {
+          const report = transcript.residentReport();
+          residentTurns += report.turns;
+          residentBytes += report.estimatedBytes;
+          trimmedTurns += report.trimmedTurns;
+          if (report.overBudget) overBudgetAgents += 1;
+        }
+      }
+      for (const journal of entry.opsJournals.values()) {
+        opsJournalBatches += this.opsJournalBatchCount(journal);
+      }
+    }
+    return {
+      liveSessions: this.live.size,
+      liveAgents,
+      residentTurns,
+      residentBytes,
+      trimmedTurns,
+      overBudgetAgents,
+      opsJournalBytes: this.opsJournalTotalBytes,
+      opsJournalBatches,
+      opsJournalDroppedBytes: this.opsJournalDroppedBytes,
+      toolCallCacheEntries: this.persistedToolCallStates.size,
+      toolCallCacheBytes: this.persistedToolCallStateWeight,
+      eventLoopDelay: {
+        meanMs: Number.isFinite(this.eventLoopDelay.mean) ? this.eventLoopDelay.mean / 1e6 : 0,
+        maxMs: this.eventLoopDelay.max / 1e6,
+        p99Ms: this.eventLoopDelay.percentile(99) / 1e6,
+      },
+      coldReads: {
+        completed: this.coldReadsCompleted,
+        shared: this.coldReadsShared,
+        cancelled: this.coldReadsCancelled,
+        fenced: this.coldReadsFenced,
+        bytes: this.coldReadBytes,
+        records: this.coldReadRecords,
+        durationMs: this.coldReadDurationMs,
+      },
+    };
+  }
+
+  dispose(): void {
+    this.eventLoopDelay.disable();
+    for (const sessionId of [...this.live.keys()]) this.dropSession(sessionId);
   }
 
   /** Dispose the live store + binding for a session (session closed / server shutdown). */
@@ -1417,6 +1619,44 @@ function fileFingerprint(info: {
   readonly ctimeMs: number;
 }): string {
   return `${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+}
+
+function fileIdentity(info: {
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+  readonly birthtimeMs: number;
+}): string {
+  return `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+}
+
+async function readTranscriptProjectionCheckpoint(
+  store: IQueryStore | undefined,
+  key: string,
+  fingerprint: string,
+  fileSize: number,
+): Promise<TranscriptProjectionCheckpoint | undefined> {
+  if (store === undefined) return undefined;
+  try {
+    const value = await store.get<TranscriptProjectionCheckpoint>(
+      TRANSCRIPT_CHECKPOINT_COLLECTION,
+      key,
+    );
+    if (value === undefined) return undefined;
+    if (
+      value.format !== TRANSCRIPT_CHECKPOINT_FORMAT ||
+      value.fingerprint !== fingerprint ||
+      !Number.isSafeInteger(value.nextByteOffset) ||
+      value.nextByteOffset < 0 ||
+      value.nextByteOffset > fileSize ||
+      value.adapter?.version !== 1 ||
+      !Array.isArray(value.acceptedDurableFacts)
+    ) {
+      return undefined;
+    }
+    return value;
+  } catch {
+    return undefined;
+  }
 }
 
 function mergeToolCallCount(

@@ -202,11 +202,31 @@ export class AgentTranscriptDraft {
     return this.#tools.get(toolCallId);
   }
 
-  snapshot(): AgentTranscriptSnapshot {
-    if (this.#snapshot !== undefined) return this.#snapshot;
-    const items = this.materializeItems(true);
-    this.#snapshot = {
-      items,
+  seed(snapshot: AgentTranscriptSnapshot): void {
+    if (this.#snapshot !== undefined || this.#itemNodes.size > 0) {
+      throw new Error('transcript draft is not empty');
+    }
+    this.loadState({
+      items: snapshot.items,
+      tasks: new Map(snapshot.tasks.map((entry) => [entry.taskId, entry])),
+      interactions: new Map(snapshot.interactions.map((entry) => [entry.interactionId, entry])),
+      attachments: new Map(snapshot.attachments.map((entry) => [entry.attachmentId, entry])),
+      todos: new Map(snapshot.todos.map((entry) => [entry.todoId, entry])),
+      prompts: new Map(snapshot.prompts.map((entry) => [entry.promptId, entry])),
+      toolCallCount: snapshot.toolCallCountKnown === false ? undefined : snapshot.toolCallCount,
+      meta: snapshot.meta,
+      pendingInteractions: new Set(
+        snapshot.interactions
+          .filter((entry) => entry.state === 'pending')
+          .map((entry) => entry.interactionId),
+      ),
+      hasMoreOlder: snapshot.hasMoreOlder ?? false,
+    });
+  }
+
+  checkpoint(): AgentTranscriptSnapshot {
+    return {
+      items: this.materializeItems(true),
       tasks: [...this.#tasks.values()],
       interactions: [...this.#interactions.values()],
       attachments: [...this.#attachments.values()],
@@ -217,6 +237,10 @@ export class AgentTranscriptDraft {
       meta: this.#meta,
       hasMoreOlder: this.#hasMoreOlder,
     };
+  }
+
+  snapshot(): AgentTranscriptSnapshot {
+    this.#snapshot ??= this.checkpoint();
     return this.#snapshot;
   }
 

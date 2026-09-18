@@ -811,6 +811,31 @@ describe('WireService corruption repair', () => {
   });
 });
 
+describe('WireService journalIdentity', () => {
+  it('binds identity to the journal head bytes across a same-size rewrite', async () => {
+    const target = testWireScope(SCOPE, KEY);
+    const lineA = { type: 'wire.test.head', value: 'aaaa', time: 1 };
+    const lineB = { type: 'wire.test.head', value: 'bbbb', time: 1 };
+
+    const empty = await wire.journalIdentity!();
+    expect(empty.size).toBe(0);
+    expect(empty.mtimeMs).toBe(0);
+
+    log.append(target, AGENT_WIRE_RECORD_KEY, lineA);
+    await log.flush();
+    const first = await wire.journalIdentity!();
+    expect(first.size).toBeGreaterThan(0);
+    expect(first.headHash).toMatch(/^[0-9a-f]{32}$/);
+    expect(await wire.journalIdentity!()).toEqual(first);
+    expect(first.headHash).not.toBe(empty.headHash);
+
+    await log.rewrite(target, AGENT_WIRE_RECORD_KEY, [lineB]);
+    const second = await wire.journalIdentity!();
+    expect(second.size).toBe(first.size);
+    expect(second.headHash).not.toBe(first.headHash);
+  });
+});
+
 describe('WireService flush', () => {
   it('flushes only its own scope and key', async () => {
     const targetLog = recordingWireLog([]);

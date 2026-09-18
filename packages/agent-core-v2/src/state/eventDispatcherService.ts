@@ -1,23 +1,31 @@
 import { applyPatches, produceWithPatches } from 'immer';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { type CollectionView } from '#/_base/di/collection';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { event2FromRecord, type Event2, type Event2Class } from '#/app/event/event2';
 import { IEventBus } from '#/app/event/eventBus';
 import type { ContentPart } from '#/kosong/contract/message';
 import { OrderedHookSlot } from '#/hooks';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IWireService } from '#/wire/wire';
 import { WireError, WireErrors } from '#/wire/errors';
 import type { PartsTransformer } from '#/wire/record';
 
 import { IEventDispatcher } from './eventDispatcher';
 import { StateError, StateErrors } from './errors';
+import {
+  decodeReplayCheckpointGraph,
+  encodeReplayCheckpointGraph,
+  type ReplayCheckpointGraph,
+} from './replayCheckpointCodec';
 import {
   keepsUndoCheckpoints,
   type FoldContext,
@@ -33,6 +41,27 @@ import {
 
 const MAX_DRAIN = 100;
 const HISTORY_TAIL = 500;
+const REPLAY_CHECKPOINT_SCOPE = 'replay-checkpoints';
+const REPLAY_CHECKPOINT_KEY = 'engine-v1';
+
+interface ReplayCheckpointEnvelope {
+  readonly format: 1;
+  readonly wire: {
+    readonly size: number;
+    readonly mtimeMs: number;
+    readonly headHash?: string;
+  };
+  readonly stateNames: readonly string[];
+  readonly graph: ReplayCheckpointGraph;
+}
+
+interface ReplayCheckpointPayload {
+  readonly states: readonly {
+    readonly name: string;
+    readonly value: unknown;
+    readonly meta: StateMeta;
+  }[];
+}
 
 export class CycleError extends StateError {
   constructor(readonly depth: number, readonly eventTypes: readonly string[]) {
@@ -117,6 +146,8 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     @IAgentBlobService private readonly blobService: IAgentBlobService,
     @IAgentStateService private readonly agentState: IAgentStateService,
     @EventStateContribution view: CollectionView<EventStateContributionRecord>,
+    @ref(IAtomicDocumentStore) private readonly docs: LiveRef<IAtomicDocumentStore>,
+    @ref(IAgentScopeContext) private readonly scope: LiveRef<IAgentScopeContext>,
   ) {
     super();
     this.folded = this.foldContributions(view);
@@ -340,6 +371,97 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     return meta;
   }
 
+  private checkpointScope(): string | undefined {
+    return this.scope.current?.scope(REPLAY_CHECKPOINT_SCOPE);
+  }
+
+  async saveReplayCheckpoint(): Promise<boolean> {
+    const checkpointScope = this.checkpointScope();
+    const docs = this.docs.current;
+    if (docs === undefined || checkpointScope === undefined || this.wire.journalIdentity === undefined) {
+      return false;
+    }
+    try {
+      const keys = this.agentState.replayableKeys()
+        .filter((key) => key.replayable.durable)
+        .toSorted((left, right) => left.name.localeCompare(right.name));
+      await this.wire.flush();
+      const wire = await this.wire.journalIdentity();
+      const payload: ReplayCheckpointPayload = {
+        states: keys.map((key) => ({
+          name: key.name,
+          value: this.agentState.get(key),
+          meta: structuredClone(this.ensureMeta(key)),
+        })),
+      };
+      const envelope: ReplayCheckpointEnvelope = {
+        format: 1,
+        wire,
+        stateNames: keys.map((key) => key.name),
+        graph: encodeReplayCheckpointGraph(payload),
+      };
+      await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async restoreReplayCheckpoint(): Promise<boolean> {
+    const checkpointScope = this.checkpointScope();
+    const docs = this.docs.current;
+    if (docs === undefined || checkpointScope === undefined || this.wire.journalIdentity === undefined) {
+      return false;
+    }
+    try {
+      const envelope = await docs.get<ReplayCheckpointEnvelope>(
+        checkpointScope,
+        REPLAY_CHECKPOINT_KEY,
+      );
+      if (envelope?.format !== 1) return false;
+      const wire = await this.wire.journalIdentity();
+      if (wire.size !== envelope.wire.size || wire.mtimeMs !== envelope.wire.mtimeMs) return false;
+      if (envelope.wire.headHash === undefined || envelope.wire.headHash !== wire.headHash) {
+        return false;
+      }
+      const keys = this.agentState.replayableKeys()
+        .filter((key) => key.replayable.durable)
+        .toSorted((left, right) => left.name.localeCompare(right.name));
+      if (
+        keys.length !== envelope.stateNames.length ||
+        keys.some((key, index) => key.name !== envelope.stateNames[index])
+      ) {
+        return false;
+      }
+      const payload = decodeReplayCheckpointGraph(envelope.graph) as ReplayCheckpointPayload;
+      if (!Array.isArray(payload.states) || payload.states.length !== keys.length) return false;
+      const restored: { readonly key: ReplayableStateKey<any>; readonly value: unknown; readonly meta: StateMeta }[] = [];
+      for (let index = 0; index < keys.length; index += 1) {
+        const key = keys[index]!;
+        const saved = payload.states[index];
+        if (saved?.name !== key.name || !isStateMeta(saved.meta)) return false;
+        const parsed = key.replayable.schema.safeParse(saved.value);
+        if (!parsed.success) return false;
+        restored.push({ key, value: parsed.data, meta: saved.meta });
+      }
+      for (const entry of restored) {
+        this.agentState.set(entry.key, Object.freeze(entry.value));
+        this.metas.set(entry.key, entry.meta);
+      }
+      return true;
+    } catch {
+      this.resetReplayableState();
+      return false;
+    }
+  }
+
+  private resetReplayableState(): void {
+    this.metas.clear();
+    for (const key of this.agentState.replayableKeys()) {
+      this.agentState.set(key, key.initial());
+    }
+  }
+
   async restore(): Promise<void> {
     if (this.restorePhase !== 'new') {
       throw new BugIndicatingError(
@@ -348,8 +470,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     }
     this.restorePhase = 'restoring';
     try {
+      const checkpointRestored = await this.restoreReplayCheckpoint();
       let recordIndex = 0;
-      for await (const record of this.wire.readJournal()) {
+      if (!checkpointRestored) for await (const record of this.wire.readJournal()) {
         if (record.type === 'metadata') continue;
         const cls = this.folded.events.get(record.type);
         if (cls === undefined) {
@@ -400,6 +523,17 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
   async flush(): Promise<void> {
     await this.wire.flush();
   }
+}
+
+function isStateMeta(value: unknown): value is StateMeta {
+  if (value === null || typeof value !== 'object') return false;
+  const candidate = value as Partial<StateMeta>;
+  return (
+    Array.isArray(candidate.history) &&
+    Array.isArray(candidate.checkpoints) &&
+    Number.isSafeInteger(candidate.nextPatchId) &&
+    (candidate.nextPatchId ?? 0) > 0
+  );
 }
 
 registerScopedService(

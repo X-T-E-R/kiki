@@ -25,6 +25,25 @@ export async function readSessionViewTranscriptPage(
     await transcriptService.whenReady(sessionId);
     await transcriptService.ensureAgentHistory(sessionId, input.agentId);
     const transcript = store.ensureAgent(input.agentId);
+    if (transcript.hasMoreOlder && input.beforeTurn !== undefined) {
+      const cold = await transcriptService.readColdSnapshot(
+        sessionId,
+        input.agentId,
+        undefined,
+        input.signal,
+      );
+      if (cold === undefined) return undefined;
+      const page = paginateTurns(cold.items, pageQuery);
+      return {
+        session_id: sessionId, agent_id: input.agentId,
+        items: page.items, has_more: page.hasMore, tool_call_count: cold.toolCallCount,
+        tasks: cold.tasks, interactions: cold.interactions, attachments: cold.attachments,
+        todos: cold.todos, prompts: cold.prompts, meta: cold.meta, agents: store.agents(),
+        pending_interactions: transcript.listPendingInteractions(),
+        cursor: transcriptService.getTranscriptCursor(sessionId, input.agentId),
+        coverage: coverageForItems(page.items, page.hasMore),
+      } as unknown as TranscriptResponse;
+    }
     const snapshot = transcript.snapshot();
     const page = paginateTurns(transcript.getItems(), pageQuery);
     return {

@@ -535,6 +535,32 @@ describe('streamWireRecords', () => {
     });
   });
 
+  it('resumes from a record-boundary byte offset without rereading the prefix', async () => {
+    const prefix = `${JSON.stringify({ type: 'metadata', index: 0 })}\n${JSON.stringify({ type: 'metadata', index: 1 })}\n`;
+    const tail = `${JSON.stringify({ type: 'metadata', index: 2 })}\n`;
+    await withWireFile(prefix + tail, async (wirePath) => {
+      const streamed: ContextRecord[] = [];
+      const result = await streamWireRecords(wirePath, {
+        startByteOffset: Buffer.byteLength(prefix),
+        chunkBytes: 7,
+        onRecord: (record) => streamed.push(record),
+      });
+      expect(streamed).toEqual([{ type: 'metadata', index: 2 }]);
+      expect(result.bytesRead).toBe(Buffer.byteLength(tail));
+      expect(result.nextByteOffset).toBe(Buffer.byteLength(prefix + tail));
+      expect(result.complete).toBe(true);
+    });
+  });
+
+  it('rejects a resume offset beyond the current file instead of returning empty history', async () => {
+    await withWireFile(`${JSON.stringify({ type: 'metadata' })}\n`, async (wirePath) => {
+      await expect(streamWireRecords(wirePath, {
+        startByteOffset: 1_000,
+        onRecord: () => undefined,
+      })).rejects.toThrow('start offset exceeds file size');
+    });
+  });
+
   it('bounds peak heap on a >100 MiB wire in isolated GC-enabled processes', { timeout: 240_000 }, async () => {
     const total = 400_000;
     const batchSize = 5_000;

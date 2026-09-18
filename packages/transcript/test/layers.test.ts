@@ -2211,6 +2211,60 @@ describe('TranscriptWireAdapter', () => {
     expect(transcript.getTurn('t9')).toBeUndefined();
   });
 
+  it('restores adapter and reducer checkpoints before replaying a durable tail', () => {
+    const prefix: TranscriptWireRecord[] = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-0',
+        input: [{ type: 'text', text: 'run' }],
+        origin: { kind: 'user' },
+        time: 1,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', uuid: 'step-0' },
+        time: 2,
+      },
+    ];
+    const tail: TranscriptWireRecord[] = [
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'message.delta',
+          uuid: 'step-0',
+          delta: { type: 'text', text: 'done' },
+        },
+        time: 3,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 4 },
+    ];
+    const source = new AgentTranscriptDraft('main');
+    const sourceReducer = new TranscriptFactReducer(source);
+    const sourceAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => source.getTurn(turnId),
+      tool: (toolCallId) => source.getToolCall(toolCallId),
+      task: (taskId) => source.getTask(taskId),
+    });
+    for (const record of prefix) sourceReducer.apply(sourceAdapter.add(record));
+
+    const resumed = new AgentTranscriptDraft('main');
+    resumed.seed(source.snapshot());
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.restore(sourceReducer.checkpoint());
+    const resumedAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => resumed.getTurn(turnId),
+      tool: (toolCallId) => resumed.getToolCall(toolCallId),
+      task: (taskId) => resumed.getTask(taskId),
+    });
+    resumedAdapter.restore(sourceAdapter.checkpoint());
+    for (const record of tail) resumedReducer.apply(resumedAdapter.add(record));
+    resumedReducer.apply(resumedAdapter.finish());
+
+    const full = replay([...prefix, ...tail]);
+    expect(resumed.snapshot()).toEqual(full.snapshot());
+  });
+
   it('deduplicates durable facts and reports changed ids from accepted operations', () => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);

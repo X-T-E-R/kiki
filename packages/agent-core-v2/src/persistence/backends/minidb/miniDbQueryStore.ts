@@ -91,7 +91,7 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
       dir: this.dir,
       shardCount: SHARD_COUNT,
       valueCodec: 'json',
-      valueMode: 'memory',
+      valueMode: 'disk',
       fsyncPolicy: 'everysec',
       compactThresholdBytes: QUERY_STORE_COMPACT_THRESHOLD_BYTES,
       lockAcquireTimeoutMs: LOCK_ACQUIRE_TIMEOUT_MS,

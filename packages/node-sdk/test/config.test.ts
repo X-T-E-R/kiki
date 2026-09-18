@@ -567,6 +567,7 @@ describe('KimiHarness config API', () => {
     // the model-inheritance removal.)
     expect(features.map((feature) => feature.id)).toEqual([
       'agent-profile-routes',
+      'session_idle_eviction',
       'auto_session_title',
       'task_wait',
       'tool-select',

@@ -18,6 +18,7 @@ export interface IEventDispatcher {
   checkpointDepth(key: ReplayableStateKey<any>): number;
   undo<S>(key: ReplayableStateKey<S>, patchId: number): void;
   restore(): Promise<void>;
+  saveReplayCheckpoint?(): Promise<boolean>;
   flush(): Promise<void>;
 }
 
