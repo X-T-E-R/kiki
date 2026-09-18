@@ -10,7 +10,10 @@ hero:
       link: ./getting-started/installation
     - theme: alt
       text: 桌面端应用
-      link: ./desktop/interface
+      link: ./guides/interface
+    - theme: alt
+      text: 发布说明
+      link: ./release-notes/changelog
 features:
   - title: 三端协同，共享 daemon
     details: 桌面 GUI、CLI/TUI 与本地 API 服务器共享同一个后台进程与会话状态，无缝切换交互界面。

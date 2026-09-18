@@ -38,10 +38,10 @@ The removed `prompt.shared` and `prompt.tools` keys have moved into fields under
 
 ## Desktop settings entry point
 
-In the desktop GUI, open **Settings → Agents → Prompt** to edit this section — see [Settings pages](../desktop/settings.md#agents). The card is collapsed by default.
+In the desktop GUI, open **Settings → Agents → Prompt** to edit this section — see [Settings pages](../guides/settings.md#agents). The card is collapsed by default.
 
 ## Next steps
 
 - [Configuration files: `prompt`](../configuration/config-files.md#prompt) — full field registry, override format, and validation rules
-- [`kiki` command reference](../cli/command.md) — command-line flags for the CLI entry
+- [`kiki` command reference](../reference/command.md) — command-line flags for the CLI entry
 - [Agents and subagents](../customization/agents.md) — agent files and `prompt_overrides` frontmatter

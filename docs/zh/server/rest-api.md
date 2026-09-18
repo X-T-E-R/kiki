@@ -1,6 +1,6 @@
 # 服务 API
 
-`kiki web` 启动的本地服务在 `/api` 下提供 REST API，并在 `/api/ws` 提供 WebSocket 事件流。`GET /api/sessions` 保留扁平的 GUI 会话列表契约；`GET /api/sessions/query` 提供按域分组的高级查询契约。本页是这两组接口的协议参考；服务的启动方式与命令行选项见 [kiki 命令](../cli/command.md#kiki-web)，端到端的上手流程见[本地服务与 API](./local-server.md)。
+`kiki web` 启动的本地服务在 `/api` 下提供 REST API，并在 `/api/ws` 提供 WebSocket 事件流。`GET /api/sessions` 保留扁平的 GUI 会话列表契约；`GET /api/sessions/query` 提供按域分组的高级查询契约。本页是这两组接口的协议参考；服务的启动方式与命令行选项见 [kiki 命令](../reference/command.md#kiki-web)，端到端的上手流程见[本地服务与 API](./local-server.md)。
 
 每个端点的完整请求 / 响应 schema 以服务自描述的规范文档为准：`GET /openapi.json`（OpenAPI）与 `GET /asyncapi.json`（AsyncAPI），两者都需要鉴权。
 
@@ -381,4 +381,4 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 ## 下一步
 
 - [本地服务与 API](./local-server.md) — 启动、鉴权与端到端调用流程
-- [kiki 命令](../cli/command.md#kiki-web) — `kiki web` 的全部命令行选项
+- [kiki 命令](../reference/command.md#kiki-web) — `kiki web` 的全部命令行选项

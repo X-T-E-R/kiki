@@ -93,4 +93,4 @@ Paseo's generic ACP adapter does not drive the login flow, so complete the termi
 ## Next steps
 
 - [kiki acp reference](./acp.md) — ACP capability matrix and method coverage details
-- [kiki command reference](./daemon.md) — full subcommand list
+- [kiki command reference](../reference/command.md) — full subcommand list

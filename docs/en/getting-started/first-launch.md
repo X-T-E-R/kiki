@@ -88,7 +88,7 @@ For a first-time user, the following is all you need to know:
 | `Ctrl-S` | Inject a message mid-stream without waiting for the current response to finish |
 | `Ctrl-O` | Collapse / expand tool output and compaction summaries |
 
-For the full list, type `/help` or visit [Slash commands](../cli/slash-commands.md) and [Keyboard shortcuts](../reference/keyboard.md).
+For the full list, type `/help` or visit [Slash commands](../reference/slash-commands.md) and [Keyboard shortcuts](../reference/keyboard.md).
 
 ## Where data is stored
 
@@ -96,6 +96,6 @@ Kiki stores its local data under `~/.kiki/` by default — config files, session
 
 ## Next steps
 
-- [Interaction and input](../cli/interaction.md) — input box operations, approval flow, Plan mode, and YOLO mode explained
-- [Workspace and session management](../desktop/sessions.md) — resuming sessions, the task board, compressing context, exporting sessions
+- [Interaction and input](../guides/interaction.md) — input box operations, approval flow, Plan mode, and YOLO mode explained
+- [Workspace and session management](../guides/sessions.md) — resuming sessions, the task board, compressing context, exporting sessions
 - [Common use cases](./use-cases.md) — prompt examples for typical tasks

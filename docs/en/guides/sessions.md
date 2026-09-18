@@ -143,4 +143,4 @@ Exported files may contain code, command output, and file paths that are sensiti
 ## Next steps
 
 - [Data locations](../configuration/data-locations.md) — full directory layout for session files
-- [kiki command reference](../cli/command.md) — complete parameter reference for `--continue`, `--session`, `export`, and other commands
+- [kiki command reference](../reference/command.md) — complete parameter reference for `--continue`, `--session`, `export`, and other commands

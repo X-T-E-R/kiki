@@ -146,5 +146,5 @@ The current boundary is anchored in these repository paths:
 ## Next steps
 
 - [Kiki runtime boundary](./architecture.md#integrate-peer-thread-communication) — current local thread tools, REST routes, and Klient surface.
-- [Sessions and context](../desktop/sessions.md#session-storage) — ordinary Kiki session storage under one home directory.
+- [Sessions and context](../guides/sessions.md#session-storage) — ordinary Kiki session storage under one home directory.
 - [Local server and API](./local-server.md) — how clients connect to a `kap-server` instance.

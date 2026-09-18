@@ -1,6 +1,6 @@
 # Kiki runtime boundary
 
-`kiki` is the product's CLI entry point (the terminal form of the three-form product: desktop app, CLI/TUI, and server). It starts the daemon-backed terminal interface, runs non-interactive `-p` requests, and exposes daemon, seat, and MCP integration commands. The package does not install a second `kimi` executable. See [the command reference](./daemon.md) for startup and migration.
+`kiki` is the product's CLI entry point (the terminal form of the three-form product: desktop app, CLI/TUI, and server). It starts the daemon-backed terminal interface, runs non-interactive `-p` requests, and exposes daemon, seat, and MCP integration commands. The package does not install a second `kimi` executable. See [the command reference](../reference/command.md) for startup and migration.
 
 This guide distinguishes inherited implementation from Kiki-owned integration. A package name or a passing source check is not a claim that a corresponding npm package or desktop release has been published.
 
@@ -80,7 +80,7 @@ Kiki maintainers own the downstream CLI identity, client integration, home resol
 
 Runtime configuration, sessions, and OAuth credentials use `KIKI_HOME`, defaulting to `~/.kiki`. Supported explicit `--home` options take precedence. The legacy `KIMI_CODE_HOME` setting is not a startup fallback. Real Kimi provider/OAuth identifiers and endpoints remain unchanged; product home naming does not rename the provider protocol.
 
-The desktop compatibility-home setting selects a migration source only. Login, logout, and token refresh no longer operate on a separately selected legacy home. Use [explicit configuration migration](./daemon.md#migration-from-kimi) or sign in again before depending on legacy credentials.
+The desktop compatibility-home setting selects a migration source only. Login, logout, and token refresh no longer operate on a separately selected legacy home. Use [explicit configuration migration](../reference/command.md#migration-from-kimi) or sign in again before depending on legacy credentials.
 
 `kiki migrate-config` copies supported configuration, credentials, device identity, and authored resources without overwriting existing Kiki files or removing the source. `--workspace <directory>` migrates project `local.toml`, `AGENTS.md`, `mcp.json`, and authored resource trees into `.kiki`. Root `AGENTS.md` and standard `.mcp.json` stay in place with their existing semantics. Project-local MCP remains relative to the selected working directory, not an implicit merge of every ancestor's product MCP file.
 
@@ -117,4 +117,4 @@ The upstream baseline is `MoonshotAI/kimi-code`; Kiki's own repository is `X-T-E
 - [Getting started](../getting-started/first-launch.md) — choose a release or local source build.
 - [Agents and subagents](../customization/agents.md) — configure bindings and child-agent tools.
 - [Environment variables](../configuration/env-vars.md#runtime-switches) — configure runtime settings and experiments.
-- [`kiki` command reference](./daemon.md) — daemon, inbound integration, and explicit migration.
+- [`kiki` command reference](../reference/command.md) — daemon, inbound integration, and explicit migration.

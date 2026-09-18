@@ -235,4 +235,4 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 - [Agent 与 subagent](../customization/agents.md) — `AgentRun` 工具的调度机制与上下文隔离
 - [Hooks](../customization/hooks.md) — 在工具调用前后触发本地脚本
-- [斜杠命令](../cli/slash-commands.md) — TUI 内置控制命令速查
+- [斜杠命令](./slash-commands.md) — TUI 内置控制命令速查

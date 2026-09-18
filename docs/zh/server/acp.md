@@ -80,4 +80,4 @@ ACP 客户端在 `session/new` 或 `session/load` 中提供 `mcpServers` 时，�
 ## 下一步
 
 - [在 IDE 中使用](./ide.md) — Zed / JetBrains 配置步骤和故障排查
-- [kiki 命令参考](../cli/command.md) — 完整子命令列表
+- [kiki 命令参考](../reference/command.md) — 完整子命令列表

@@ -1,6 +1,6 @@
 # Kiki 运行时边界
 
-`kiki` 是产品的 CLI 入口，负责启动 daemon 支持的终端界面、运行非交互 `-p` 请求，并提供 daemon、席位和 MCP 集成命令。安装包不会再安装第二个 `kimi` 可执行文件。启动与迁移方式见[命令参考](./daemon.md)。
+`kiki` 是产品的 CLI 入口，负责启动 daemon 支持的终端界面、运行非交互 `-p` 请求，并提供 daemon、席位和 MCP 集成命令。安装包不会再安装第二个 `kimi` 可执行文件。启动与迁移方式见[命令参考](../reference/command.md)。
 
 本指南区分继承的实现与 Kiki 自有的集成。包名或源码检查通过，不代表对应 npm 包或桌面版本已经发布。
 
@@ -80,7 +80,7 @@ Kiki 维护者负责下游 CLI 身份、客户端集成、home 解析和迁移�
 
 运行时配置、会话和 OAuth 凭据使用 `KIKI_HOME`，默认 `~/.kiki`。支持显式 `--home` 的命令优先使用该选项。旧 `KIMI_CODE_HOME` 设置不是启动回退项。真实 Kimi provider/OAuth 身份与端点保持不变；产品 home 改名不等于改供应商协议。
 
-桌面的兼容 home 设置只选择迁移来源。登录、退出登录和 token 刷新不再作用于单独选择的旧 home。依赖旧凭据前，请执行[显式配置迁移](./daemon.md#从-kimi-迁移)或重新登录。
+桌面的兼容 home 设置只选择迁移来源。登录、退出登录和 token 刷新不再作用于单独选择的旧 home。依赖旧凭据前，请执行[显式配置迁移](../reference/command.md#从-kimi-迁移)或重新登录。
 
 `kiki migrate-config` 复制受支持的配置、凭据、设备身份和自定义资源，不覆盖已有 Kiki 文件，也不删除来源。`--workspace <目录>` 将项目 `local.toml`、`AGENTS.md`、`mcp.json` 和自定义资源树迁到 `.kiki`。根 `AGENTS.md` 与标准 `.mcp.json` 留在原处并保持既有语义。项目本地 MCP 仍针对选定的当前工作目录，不会隐式合并所有祖先目录中的产品 MCP 文件。
 
@@ -117,4 +117,4 @@ pnpm desktop:import-kimi-config --source-home <绝对路径> --target-home <绝�
 - [开始使用](../getting-started/first-launch.md) — 选择发行包或本地源码构建。
 - [Agent 与子 Agent](../customization/agents.md) — 配置绑定与子 Agent 工具。
 - [环境变量](../configuration/env-vars.md#运行时开关) — 设置运行时选项和实验功能。
-- [`kiki` 命令参考](./daemon.md) — daemon、inbound 集成与显式迁移。
+- [`kiki` 命令参考](../reference/command.md) — daemon、inbound 集成与显式迁移。

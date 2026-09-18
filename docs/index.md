@@ -1,7 +1,7 @@
 ---
 layout: home
 hero:
-  name: Kimi Code CLI
+  name: Kiki
   text: ' '
   actions:
     - theme: brand

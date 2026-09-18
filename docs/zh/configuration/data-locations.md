@@ -87,7 +87,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 - **`logs/kimi-code.log`**（全局）：记录启动、登录、导出等跨会话事件。
 - **`<sessionDir>/logs/kimi-code.log`**（会话级）：记录单个会话内的诊断事件。
 
-报 bug 时，优先用 `kiki export` 导出相关会话（详见 [kiki 命令](../cli/command.md)）；会话日志默认包含在导出包里。不想分享全局日志时加 `--no-include-global-log`。
+报 bug 时，优先用 `kiki export` 导出相关会话（详见 [kiki 命令](../reference/command.md)）；会话日志默认包含在导出包里。不想分享全局日志时加 `--no-include-global-log`。
 
 ## 输入历史
 

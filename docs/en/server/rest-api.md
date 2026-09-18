@@ -1,6 +1,6 @@
 # Server API
 
-The local server started by `kiki web` exposes a REST API under `/api` and a WebSocket event stream at `/api/ws`. `GET /api/sessions` keeps the flat GUI-compatible list contract, while `GET /api/sessions/query` provides the domain-grouped advanced query contract. This page is the protocol reference for both. For how to start the server and its command-line options, see the [kiki command](../cli/command.md#kiki-web) reference; for an end-to-end walkthrough, see [Local server and API](./local-server.md).
+The local server started by `kiki web` exposes a REST API under `/api` and a WebSocket event stream at `/api/ws`. `GET /api/sessions` keeps the flat GUI-compatible list contract, while `GET /api/sessions/query` provides the domain-grouped advanced query contract. This page is the protocol reference for both. For how to start the server and its command-line options, see the [kiki command](../reference/command.md#kiki-web) reference; for an end-to-end walkthrough, see [Local server and API](./local-server.md).
 
 The complete request/response schema of every endpoint is owned by the server's live specification documents: `GET /openapi.json` (OpenAPI) and `GET /asyncapi.json` (AsyncAPI). Both require authentication.
 
@@ -381,4 +381,4 @@ Error semantics differ as well: `GET /api/files/{file_id}` answers lookup and st
 ## Next steps
 
 - [Local server and API](./local-server.md) — startup, authentication, and the end-to-end calling flow
-- [kiki command](../cli/command.md#kiki-web) — all `kiki web` command-line options
+- [kiki command](../reference/command.md#kiki-web) — all `kiki web` command-line options

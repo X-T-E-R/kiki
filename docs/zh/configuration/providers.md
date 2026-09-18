@@ -38,7 +38,7 @@ Kiki 支持同时接入多家 LLM 平台——用 Kimi Code 托管服务一键�
 通过 `/login` 登录的 Kimi Code OAuth 托管账号不会在 `/provider` 里显示，请用 `/login` 和 `/logout` 管理。
 :::
 
-非交互环境下也可以用 shell 命令完成同样操作：[`kiki provider`](../cli/command.md#kiki-provider)。
+非交互环境下也可以用 shell 命令完成同样操作：[`kiki provider`](../reference/command.md#kiki-provider)。
 
 ## `kimi`
 

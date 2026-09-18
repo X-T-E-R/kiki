@@ -88,7 +88,7 @@ Kiki 会规划步骤、修改代码、运行测试，并在每一步告诉你它
 | `Ctrl-S` | 在流式输出中途注入消息，无需等待当前响应结束 |
 | `Ctrl-O` | 折叠 / 展开工具输出与压缩摘要 |
 
-完整列表输入 `/help` 查看，或访问[斜杠命令](../cli/slash-commands.md)和[键盘快捷键](../reference/keyboard.md)。
+完整列表输入 `/help` 查看，或访问[斜杠命令](../reference/slash-commands.md)和[键盘快捷键](../reference/keyboard.md)。
 
 ## 数据存储在哪里
 
@@ -96,6 +96,6 @@ Kiki 默认将本地数据存放在 `~/.kiki/` —— 配置文件、会话记�
 
 ## 下一步
 
-- [交互与输入](../cli/interaction.md) —— 输入框操作、审批流程、Plan 模式与 YOLO 模式说明
-- [工作区与会话管理](../desktop/sessions.md) —— 恢复会话、任务看板、压缩上下文、导出会话
+- [交互与输入](../guides/interaction.md) —— 输入框操作、审批流程、Plan 模式与 YOLO 模式说明
+- [工作区与会话管理](../guides/sessions.md) —— 恢复会话、任务看板、压缩上下文、导出会话
 - [常见使用案例](./use-cases.md) —— 典型任务的提示词示例

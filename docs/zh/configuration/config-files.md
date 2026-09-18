@@ -700,7 +700,7 @@ notification_condition = "unfocused" # "unfocused" | "always"
 
 除了 `~/.kiki` 下的用户级文件，Kiki 还会读取位于 `<项目根目录>/.kiki/local.toml` 的项目级本地配置文件。它保存的是与某一个项目检出相关、通常不应与队友共享的设置。旧的 `.kimi-code/local.toml` 路径不会自动加载；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。
 
-该文件会在你通过 [`/add-dir`](../cli/slash-commands.md) 添加额外工作目录并选择记入项目时自动创建，通常无需手动编辑。
+该文件会在你通过 [`/add-dir`](../reference/slash-commands.md) 添加额外工作目录并选择记入项目时自动创建，通常无需手动编辑。
 
 ### `[workspace]`
 

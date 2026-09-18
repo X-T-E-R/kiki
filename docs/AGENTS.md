@@ -6,12 +6,13 @@ This repository uses VitePress for the documentation site. Most user-facing page
 
 - Locales live under `docs/en/` and `docs/zh/` with mirrored paths and filenames.
 - Main sections (nav + sidebar) are:
-  - Guides: getting-started, migration, use-cases, interaction, sessions
-  - Customization: mcp, skills, plugins, datasource, agents, hooks
-  - Configuration: config-files, providers, overrides, env-vars, data-locations
-  - Reference: kiki-command (shared daemon and migration), kimi-command (CLI reference slug), tools, slash-commands, keyboard
-  - Release notes: changelog
-- Navigation and sidebar are defined in `docs/.vitepress/config.ts`. Any new or renamed page must be wired there for both locales.
+  - Getting Started (`getting-started/`): installation, first-launch, desktop-app, use-cases, and Migration group (migration, model-vocabulary)
+  - Guides (`guides/`): Desktop app group (interface, sessions, settings), CLI & TUI group (interaction, goals)
+  - Customization (`customization/`): agents, prompt-fields, skills, plugins, hooks, themes
+  - Server & Integration (`server/`): Usage group (local-server, ide, acp), Protocol & SDK group (rest-api, mcp, sdk), Internals group (architecture, cross-host-session-boundaries)
+  - Configuration (`configuration/`): config-files, providers, overrides, env-vars, data-locations
+  - Reference (`reference/`): command (`kiki` command), slash-commands, keyboard, tools, and Release Notes group (changelog)
+- Navigation, sidebar, and URL rewrites are defined in `docs/.vitepress/config.ts`. Any new, moved, or renamed page must be wired there for both locales.
 
 ## Source of truth
 

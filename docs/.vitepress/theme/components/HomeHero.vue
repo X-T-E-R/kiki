@@ -15,7 +15,9 @@ const copy = computed(() => isZh.value
       primaryText: '快速上手',
       primaryHref: '/zh/getting-started/installation',
       secondaryText: '探索桌面应用',
-      secondaryHref: '/zh/desktop/interface',
+      secondaryHref: '/zh/guides/interface',
+      changelogText: '发布说明',
+      changelogHref: '/zh/release-notes/changelog',
     }
   : {
       titleLead: 'Kiki',
@@ -24,7 +26,9 @@ const copy = computed(() => isZh.value
       primaryText: 'Get Started',
       primaryHref: '/en/getting-started/installation',
       secondaryText: 'Explore Desktop App',
-      secondaryHref: '/en/desktop/interface',
+      secondaryHref: '/en/guides/interface',
+      changelogText: 'Release Notes',
+      changelogHref: '/en/release-notes/changelog',
     })
 </script>
 
@@ -53,6 +57,9 @@ const copy = computed(() => isZh.value
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
+        </a>
+        <a class="KikiBtn KikiBtn--ghost" :href="withBase(copy.changelogHref)">
+          {{ copy.changelogText }}
         </a>
       </div>
     </div>

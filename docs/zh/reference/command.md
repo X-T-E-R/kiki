@@ -1,6 +1,6 @@
 # kiki 命令
 
-`kiki` 是产品的统一 CLI 入口（三端产品中面向终端的一端：桌面版、CLI/TUI、服务器），提供 daemon 支持的交互式 TUI、非交互 `-p` 模式和共享 daemon 控制。无参数运行时在工作区信任后连接健康 daemon，不存在则启动；`kiki -p` 继续走独立的 SDK 非交互链路。显式管理 daemon 用 `kiki serve`，需要兼容的前台服务 / UI 时用 `kiki web`。
+`kiki` 是产品的统一 CLI 入口（三端产品中面向终端的一端：桌面版、CLI/TUI、服务器），提供 daemon 支持的交互式 TUI、非交互 `-p` 模式和共享 daemon 控制。无参数运行时在工作区信任后连接健康 daemon，不存在则启动；`kiki -p` 继续走独立的 SDK 非交互链路。显式管理 daemon 用 `kiki serve`，需要兼容的前台服务 / UI 时用 `kiki web`。席位和 MCP 子命令供 Cursor、Claude Code、Codex 等外部调用方调用 Kiki（inbound），不负责配置 Kiki 用于运行 subagent 的外部执行器（outbound）。
 
 ```sh
 kiki [options]
@@ -135,7 +135,7 @@ kiki -p "List changed files" --output-format stream-json
 
 ## 子命令
 
-`kiki` 提供以下子命令：`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`migrate-config`（显式迁移旧配置和自定义资源）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+`kiki` 提供以下子命令：`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`migrate-config`（显式迁移旧配置和自定义资源）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
 
 ### `kiki serve`
 
@@ -147,11 +147,11 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-交互式 TUI 在工作区信任后也会自动执行同样的连接或启动逻辑。`--idle-exit` 默认是 `30m`；活跃的客户端 lease 和运行中的派遣会让 daemon 保持运行。需要兼容的前台服务和浏览器 UI，而不是共享 daemon 控制时，请用 [`kiki web`](#kiki-web)。
+Kiki 按以下优先级解析 home 目录：支持该选项的命令中显式指定的 `--home`、`KIKI_HOME`、`~/.kiki`。运行时启动不读取旧 `KIMI_CODE_HOME` 设置。Daemon 共用 `<home>/server.token` 中的一份 bearer token。`--idle-exit` 默认是 `30m`；存在活跃客户端 lease 或运行中的派遣时，daemon 不会因空闲退出。客户端通过 `POST /api/leases` 续期 lease。交互式 TUI 在工作区信任后也会自动执行同样的连接或启动逻辑。需要兼容的前台服务和浏览器 UI，而不是共享 daemon 控制时，请用 [`kiki web`](#kiki-web)。
 
 ### `kiki seat`
 
-创建、列出或撤销 Cursor、Claude Code、Codex 等外部 MCP 调用方使用的固定席位。调用方连接前，席位会绑定 workspace、principal、权限模式、模型和 thinking effort。
+管理 Cursor、Claude Code、Codex 等外部 MCP 调用方使用的固定席位。外部调用方连接前，席位会固定 workspace、principal、权限模式、模型和 thinking effort：
 
 ```sh
 kiki seat create --workspace . --principal cursor --mode auto --json
@@ -159,22 +159,94 @@ kiki seat list --json
 kiki seat revoke <seatId>
 ```
 
+Daemon 为每组 workspace 和 principal 创建或复用一个席位。Delegation token 只由 `seat create` 返回；`seat list` 仅包含非敏感身份与配置字段。
+
+#### 安装 MCP 配置
+
+为支持的客户端安装 stdio MCP 配置：
+
+```sh
+kiki seat install --client cursor --workspace .
+kiki seat install --client claude --workspace .
+kiki seat install --client codex --workspace .
+kiki seat install --client generic --workspace .
+```
+
+Cursor 写入 `~/.cursor/mcp.json`；Claude Code 写入 workspace 下的 `.mcp.json`；Codex 打印 `config.toml` 片段；`generic` 打印 JSON。覆盖已有 `kiki` 条目前会先创建备份。
+
 ### `kiki mcp`
 
-为外部调用方运行 stdio MCP 边。命令会确保共享 daemon 已运行，创建或复用该工作区席位，并为调用方固定 workspace 与席位策略。
+为外部调用方运行 stdio MCP 边。命令会确保共享 daemon 已运行，创建或复用该工作区席位，并启动 MCP stdio 边：
 
 ```sh
 kiki mcp --workspace <目录>
 ```
 
+外部 MCP 调用方不能修改绑定的 workspace、权限模式、模型凭据、工具面或 profile 定义。
+
+### `kiki doctor`
+
+诊断本地 Kiki 连接，不会启动 TUI，也不会修改文件。它会检查 daemon 是否可达、当前 home 的 token 路径与权限、服务端身份以及外部调用方席位列表和每个席位的权限模式。默认使用 `KIKI_HOME` 或 `~/.kiki`；如需检查其他 home，可传入 `--home`。报告以 JSON 输出，也不会启动服务；需要先创建服务时，先运行 `kiki serve` 或 `kiki serve --ensure`。
+
+```sh
+kiki doctor
+kiki doctor --home /path/to/kiki --json
+```
+
+报告包含：
+
+- `daemon`：健康 daemon 是否可达；可达时还包含 URL 和 server ID
+- `token`：token 路径、是否存在、文件模式以及权限是否安全
+- `seats`：不含敏感信息的席位 ID、principal、workspace 和权限模式
+
+### `kiki prompt-fields`
+
+`kiki prompt-fields` 是用于发现提示词字段、校验字段配置和解释运行时上下文中生效值的只读操作面；它不会修改 `config.toml`、`SYSTEM.md`、Agent profile 或外部覆写文件。
+
+**列出字段**——`list` 输出所有已注册字段及其 owner、consumer 和覆写策略：
+
+```sh
+kiki prompt-fields list
+```
+
+**查看字段**——`show` 输出单个字段的默认模板、空值策略、允许变量和必需占位符：
+
+```sh
+kiki prompt-fields show system.language
+```
+
+**校验配置**——`validate` 校验所选配置中的提示词覆写、引用的外部 TOML 文件、`SYSTEM.md` 和发现到的 Agent profile：
+
+```sh
+kiki prompt-fields validate --config ./candidate.toml --home ~/.kiki
+```
+
+**解释有效值**——`explain` 输出所选上下文中字段的 `effective`、`shadowed` 或 `inactive` 状态、有效值及完整来源链：
+
+```sh
+kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast --executor native --delegation-position sub
+```
+
+使用 `--agent <名称>`、`--model <alias>`、`--executor <id>` 和 `--delegation-position <main|sub|independent>` 选择解释上下文。使用 `--config <路径>` 检查另一份配置文件，使用 `--home <目录>` 选择读取 `SYSTEM.md`、发现 Agent 以及解析相对外部覆写文件时所用的 Kiki home。不带子命令的 `kiki prompt-fields` 等同于 `list`。
+
+已移除的 `prompt.shared` 与 `prompt.tools` 键已迁入 `[prompt.overrides]` 下的字段；请按 [提示词字段优先级](../configuration/overrides.md#提示词字段优先级) 迁移旧条目，不要恢复旧键。
+
 ### `kiki migrate-config`
 
-将旧配置和自定义资源复制到 `KIKI_HOME`（默认 `~/.kiki`），不会覆盖已有的 Kiki 文件。只有这条命令会读取旧的 `KIMI_CODE_HOME` 环境变量；未显式指定时，默认来源为 `~/.kimi-code`。它不迁移会话、daemon token、缓存、注册表、锁文件或日志。对项目使用 `--workspace`，将项目的旧 `.kimi-code` 资源复制到 `.kiki`。
+将旧配置和自定义资源复制到 `KIKI_HOME`（默认 `~/.kiki`），不会覆盖已有的 Kiki 文件。只有这条显式迁移命令会读取旧的 `KIMI_CODE_HOME` 环境变量；未显式指定时，默认来源依次为 `--from <目录>`、旧 `KIMI_CODE_HOME` 设置、`~/.kimi-code`。使用 `--home <目录>` 可指定目标。解析 home 路径不会自动执行迁移。
 
 ```sh
 kiki migrate-config --json
 kiki migrate-config --workspace <目录> --json
 ```
+
+Home 迁移复制 `config.toml`、`mcp.json`、`tui.toml`、`SYSTEM.md`、`AGENTS.md`、`region`、稳定的 OAuth `device_id`、供应商凭据 JSON，以及 `agents`、`commands`、`skills`、`themes` 目录树和其中的相对引用资源，不输出文件正文。目标中已有文件始终整份优先，不进行字段级合并，源文件不变。会话、daemon token、注册表或锁文件、缓存和日志不复制。自定义文件中的绝对引用不改写；确认这些引用和仍需保留的会话历史前，请勿删除源目录。
+
+对每个项目执行 `kiki migrate-config --workspace <目录> --json`，将 `.kimi-code` 中的 `local.toml`、`AGENTS.md`、`mcp.json` 和上述自定义目录树复制到 `.kiki`。该选项不能与 `--from` 或 `--home` 合用。根 `AGENTS.md` 与标准 `.mcp.json` 保持不变，沿用既有语义和优先级。产品本地 MCP 仍属于选定的当前工作目录；嵌套目录有自己的旧 MCP 配置时，需单独迁移该目录。运行时只发现新的产品路径；存在未迁移的旧 local 配置时会提示迁移，不会静默读取。
+
+文件系统操作失败后，修复提示的问题并重试，已复制文件会保留。迁移拒绝符号链接，不会跟随链接复制。若源目录中有未识别且目标中不存在的条目，结果为 `incomplete`，列出条目名称并以状态码 `2` 退出，不写完成标记。请检查并显式迁移这些资源后重试。只有选定文件处理完成且没有剩余未知条目时，才写入 `.kiki-config-migration-v2.json`；较早的 `.kiki-home-migration.json` 标记不会阻挡这次资源补迁。
+
+桌面的兼容 home 只选择只读迁移来源，不再决定另一套运行时或 OAuth home。模型类别导入不复制凭据；依赖导入的认证引用前，请执行完整的 `migrate-config` 或重新登录。
 
 ### `kiki login`
 
@@ -231,21 +303,6 @@ kiki web --port 58628    # 指定绑定端口
 #### `kiki web rotate-token`
 
 生成新的持久化 bearer token（写入 `~/.kiki/server.token`），旧 token 立即失效。token 是整个 home 目录共享的，所有运行中的实例会在下一次鉴权校验时自动换用新 token，无需重启。
-
-### `kiki doctor`
-
-诊断本地 Kiki 连接，不会启动 TUI，也不会修改文件。它会检查 daemon 是否可达、当前 home 的 token 路径与权限、服务端身份以及外部调用方席位列表。默认使用 `KIKI_HOME` 或 `~/.kiki`；如需检查其他 home，可传入 `--home`。报告以 JSON 输出，也不会启动服务；需要先创建服务时，先运行 `kiki serve` 或 `kiki serve --ensure`。
-
-```sh
-kiki doctor
-kiki doctor --home /path/to/kiki --json
-```
-
-报告包含：
-
-- `daemon`：健康 daemon 是否可达；可达时还包含 URL 和 server ID
-- `token`：token 路径、是否存在、文件模式以及权限是否安全
-- `seats`：不含敏感信息的席位 ID、principal、workspace 和权限模式
 
 ### `kiki export`
 
@@ -354,12 +411,12 @@ kiki provider catalog list anthropic          # 先看可选的模型
 kiki provider catalog add anthropic --api-key sk-ant-... --default-model claude-opus-4-7
 ```
 
-## Kiki daemon 集成
-
-共享 daemon、外部调用方席位与 MCP 配置流程请使用 [`kiki` 命令](../server/daemon.md)。
 ## 下一步
 
 - [斜杠命令](./slash-commands.md) — 交互式 TUI 内的控制命令速查
+- [键盘快捷键](../reference/keyboard.md) — 终端与界面快捷键速查
+- [内置工具](../reference/tools.md) — 工具与权限清单
 - [配置文件](../configuration/config-files.md) — `default_model`、权限模式等启动参数的持久化配置
+- [在 IDE 中使用](../server/ide.md) — 编辑器与 IDE 集成
 - [Agent Skills](../customization/skills.md) — `--skills-dir` 加载的 Skill 文件格式
 - [Agent 与 subagent](../customization/agents.md) — 内置 subagent、自定义 Agent 文件与通过 `--agent` 选择 main agent

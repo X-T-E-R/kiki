@@ -60,7 +60,7 @@ Some commands are only available in the idle state. Executing these commands whi
 
 ## Autonomous Goal
 
-`/goal` starts or manages goal mode: a persistent objective that Kiki works toward across automatically continuing turns. For usage guidance and examples, see [Goals](./goals.md).
+`/goal` starts or manages goal mode: a persistent objective that Kiki works toward across automatically continuing turns. For usage guidance and examples, see [Goals](../guides/goals.md).
 
 ```sh
 /goal Update the checkout docs, run docs build, and stop if still blocked after 20 turns

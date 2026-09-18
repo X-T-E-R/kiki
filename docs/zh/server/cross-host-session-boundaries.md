@@ -146,5 +146,5 @@ Bridge 设计至少包含以下内容后，才适合进入实现：
 ## 下一步
 
 - [Kiki 运行时边界](./architecture.md#集成-peer-thread-通信) — 当前本地 thread 工具、REST 路由与 Klient 表面。
-- [会话与上下文](../desktop/sessions.md#会话存储) — 单个 home 目录下的普通 Kiki 会话存储。
+- [会话与上下文](../guides/sessions.md#会话存储) — 单个 home 目录下的普通 Kiki 会话存储。
 - [本地服务与 API](./local-server.md) — 客户端如何连接到 `kap-server` instance。

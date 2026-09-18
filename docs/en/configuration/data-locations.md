@@ -87,7 +87,7 @@ The first time the `Grep` tool needs ripgrep, the CLI can automatically download
 - **`logs/kimi-code.log`** (global): records startup, login, export, and other cross-session events.
 - **`<sessionDir>/logs/kimi-code.log`** (session-level): records diagnostic events within a single session.
 
-When reporting a bug, prefer exporting the relevant session with `kiki export` (see [kiki command](../cli/command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
+When reporting a bug, prefer exporting the relevant session with `kiki export` (see [kiki command](../reference/command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
 
 ## Input history
 

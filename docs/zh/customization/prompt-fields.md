@@ -38,10 +38,10 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 
 ## 桌面版设置入口
 
-在桌面 GUI 中，打开 **Settings → Agents → Prompt** 编辑此段——见[设置页导览](../desktop/settings.md#agents)。卡片默认折叠。
+在桌面 GUI 中，打开 **Settings → Agents → Prompt** 编辑此段——见[设置页导览](../guides/settings.md#agents)。卡片默认折叠。
 
 ## 下一步
 
 - [配置文件：`prompt`](../configuration/config-files.md#prompt) —— 完整字段注册表、覆写格式与校验规则
-- [`kiki` 命令参考](../cli/command.md) —— CLI 入口的命令行旗标
+- [`kiki` 命令参考](../reference/command.md) —— CLI 入口的命令行旗标
 - [Agent 与 subagent](../customization/agents.md) —— agent 文件与 `prompt_overrides` frontmatter

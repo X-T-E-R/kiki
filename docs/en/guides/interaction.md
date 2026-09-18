@@ -29,7 +29,7 @@ Active [Agent Skills](../customization/skills.md) are automatically registered a
 
 Inside a longer prompt, typing `/` after whitespace — including at the start of a later line — opens a skill-only completion menu. You can reference several Skills in one prompt this way: Kiki activates them together and runs them with the prompt as a single turn (one `/undo` reverts the whole submission), and the prompt text is sent unchanged. A Skill mention in a prompt never carries arguments — activation is by name only; arguments remain a standalone `/skill:<name> args` concept. Built-in and plugin commands still only work at the very start of the input.
 
-Some commands are only available when the agent is idle — you need to press `Esc` to interrupt streaming output or context compression before using them. Mode-toggle and query commands like `/yolo`, `/plan`, `/help`, and `/btw` are always available. For the full list, see [Slash commands reference](./slash-commands.md).
+Some commands are only available when the agent is idle — you need to press `Esc` to interrupt streaming output or context compression before using them. Mode-toggle and query commands like `/yolo`, `/plan`, `/help`, and `/btw` are always available. For the full list, see [Slash commands reference](../reference/slash-commands.md).
 
 ## File references
 
@@ -94,5 +94,5 @@ Editor priority: `/editor` config → `$VISUAL` environment variable → `$EDITO
 ## Next steps
 
 - [Keyboard shortcuts](../reference/keyboard.md) — full quick-reference table of all shortcuts
-- [Slash commands](./slash-commands.md) — all built-in commands with descriptions and aliases
-- [Sessions and context](../desktop/sessions.md) — how to resume sessions, compress context, and export conversations
+- [Slash commands](../reference/slash-commands.md) — all built-in commands with descriptions and aliases
+- [Sessions and context](/en/guides/sessions) — how to resume sessions, compress context, and export conversations

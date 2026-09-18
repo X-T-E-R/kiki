@@ -93,4 +93,4 @@ Paseo 的通用 ACP 适配层不会帮你走登录流程，所以请先完成终
 ## 下一步
 
 - [kiki acp 参考](./acp.md) — ACP 能力矩阵和方法覆盖详情
-- [kiki 命令参考](./daemon.md) — 完整子命令列表
+- [kiki 命令参考](../reference/command.md) — 完整子命令列表

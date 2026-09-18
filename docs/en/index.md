@@ -10,7 +10,10 @@ hero:
       link: ./getting-started/installation
     - theme: alt
       text: Desktop App
-      link: ./desktop/interface
+      link: ./guides/interface
+    - theme: alt
+      text: Release Notes
+      link: ./release-notes/changelog
 features:
   - title: Three Clients, One Daemon
     details: Desktop GUI, CLI/TUI, and local API server share the same daemon process and unified session state.

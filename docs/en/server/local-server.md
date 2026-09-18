@@ -38,7 +38,7 @@ Token:   ...
 Stop:    Ctrl+C
 ```
 
-The server runs in the foreground; press `Ctrl-C` for a clean shutdown. For the full option list such as `--host` and `--log-level`, see the [kiki command reference](../cli/command.md#kiki-web).
+The server runs in the foreground; press `Ctrl-C` for a clean shutdown. For the full option list such as `--host` and `--log-level`, see the [kiki command reference](../reference/command.md#kiki-web).
 
 ## Authentication
 
@@ -57,7 +57,7 @@ The desktop GUI uses this same home token. On launch it looks for a running serv
 If you bind the server to a non-loopback address (`--host`), also set the `KIKI_PASSWORD` environment variable as a parallel credential; the server then rate-limits authentication failures automatically.
 
 ::: danger
-`--dangerous-bypass-auth` disables authentication entirely — anyone who can reach the port can control your sessions, file system, and shell. Only use it on trusted networks or behind your own authenticating proxy. See the [kiki command reference](../cli/command.md#kiki-web).
+`--dangerous-bypass-auth` disables authentication entirely — anyone who can reach the port can control your sessions, file system, and shell. Only use it on trusted networks or behind your own authenticating proxy. See the [kiki command reference](../reference/command.md#kiki-web).
 :::
 
 ## Change a Codex MCP binding model
@@ -153,4 +153,4 @@ While running, the server describes itself with two specification documents, bot
 ## Next steps
 
 - [Server API](./rest-api.md) — full REST endpoint inventory, error codes, WebSocket events, and the transcript protocol
-- [kiki command](../cli/command.md#kiki-web) — all `kiki web` command-line options
+- [kiki command](../reference/command.md#kiki-web) — all `kiki web` command-line options

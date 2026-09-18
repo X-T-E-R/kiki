@@ -80,4 +80,4 @@ When an ACP client provides `mcpServers` in `session/new` or `session/load`, the
 ## Next steps
 
 - [Using in IDEs](./ide.md) — Zed / JetBrains configuration steps and troubleshooting
-- [`kiki` Command Reference](../cli/command.md) — Complete subcommand list
+- [`kiki` Command Reference](../reference/command.md) — Complete subcommand list
