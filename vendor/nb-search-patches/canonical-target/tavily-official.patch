@@ -1,0 +1,650 @@
+diff --git a/src/config-sources.ts b/src/config-sources.ts
+index 84b39aa..ead9df8 100644
+--- a/src/config-sources.ts
++++ b/src/config-sources.ts
+@@ -14,10 +14,15 @@ export interface ResolveConfigurationOptions { env?: NodeJS.ProcessEnv; config?:
+ export interface SearchTimeoutLane { provider_id: string; operation_id: string }
+ export const DEFAULT_SEARCH_TIMEOUT_MS = 30_000;
+ export const DEFAULT_GMA_SEARCH_TIMEOUT_MS = 600_000;
++export const DEFAULT_TAVILY_RESEARCH_TIMEOUT_MS = 900_000;
++export const DEFAULT_TAVILY_CRAWL_TIMEOUT_MS = 180_000;
+ export function resolveSearchTimeout(inputTimeoutMs: number | undefined, lanes: readonly SearchTimeoutLane[], configuredTimeoutMs: number, configuredExplicit: boolean): number {
+   if (inputTimeoutMs !== undefined) return inputTimeoutMs;
+   if (configuredExplicit) return configuredTimeoutMs;
+-  return lanes.some((lane) => lane.provider_id === 'grok-multi-agent' && lane.operation_id === 'research') ? DEFAULT_GMA_SEARCH_TIMEOUT_MS : configuredTimeoutMs;
++  if (lanes.some((lane) => lane.provider_id === 'grok-multi-agent' && lane.operation_id === 'research')) return DEFAULT_GMA_SEARCH_TIMEOUT_MS;
++  if (lanes.some((lane) => lane.provider_id === 'tavily' && lane.operation_id === 'research')) return DEFAULT_TAVILY_RESEARCH_TIMEOUT_MS;
++  if (lanes.some((lane) => lane.provider_id === 'tavily' && lane.operation_id === 'crawl')) return DEFAULT_TAVILY_CRAWL_TIMEOUT_MS;
++  return configuredTimeoutMs;
+ }
+ const instance = (provider_id: string, credential_slot_id: string | undefined, options: Record<string, unknown> = {}, base_url?: string): ProviderInstanceConfig => ({ provider_id, enabled: true, ...(credential_slot_id === undefined ? {} : { credential_slot_id }), ...(base_url === undefined ? {} : { base_url }), options });
+ export const DEFAULT_FETCH_BLOCKED_MARKERS = ['cf-challenge', 'cf-mitigated', 'verify you are human', 'just a moment', 'please enable javascript', '__cf_chl'] as const;
+@@ -52,6 +57,8 @@ export function defaultConfiguration(home: string): CanonicalConfig {
+       'exa.contents': { provider_instance_id: 'exa.default', operation_id: 'contents', latency: 'fast', cost: 'cheap' },
+       'tavily.search': { provider_instance_id: 'tavily.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['tavily'] },
+       'tavily.synthesis': { provider_instance_id: 'tavily.default', operation_id: 'synthesis', latency: 'medium', cost: 'cheap' },
++      'tavily.crawl': { provider_instance_id: 'tavily.default', operation_id: 'crawl', latency: 'slow', cost: 'cheap' },
++      'tavily.research': { provider_instance_id: 'tavily.default', operation_id: 'research', latency: 'slow', cost: 'expensive' },
+       'tavily.extract': { provider_instance_id: 'tavily.default', operation_id: 'extract', latency: 'fast', cost: 'cheap' },
+       'context7.docs': { provider_instance_id: 'context7.default', operation_id: 'docs', latency: 'medium', cost: 'cheap' },
+       'zhipu.search': { provider_instance_id: 'zhipu.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['zhipu'] },
+diff --git a/src/fetch-providers.ts b/src/fetch-providers.ts
+index 0c92ade..4e9f232 100644
+--- a/src/fetch-providers.ts
++++ b/src/fetch-providers.ts
+@@ -43,13 +43,16 @@ export class TavilyExtractFetchProvider implements FetchProvider {
+     try {
+       const response = await this.options.transport.send<unknown>({
+         url: this.endpoint, method: 'POST', headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json' },
+-        body: { urls: [fetchUrl(request)], format: 'text' }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
++        body: { urls: [fetchUrl(request)], format: request.representation, extract_depth: 'basic' },
++        response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
+       });
+       assertFetchStatus(response.status, this.name);
+       if (!isRecord(response.body) || !Array.isArray(response.body['results'])) throw malformed(this.name);
+       const item = response.body['results'].find(isRecord);
+       if (item === undefined) { const failures = Array.isArray(response.body['failed_results']) ? response.body['failed_results'].length : 0; if (failures > 0) throw businessFailure(this.name, { failed_results: failures }); throw malformed(this.name); }
+-      return normalized(request, stringValue(item['url']) || fetchUrl(request), stringValue(item['raw_content']) || stringValue(item['content']), 'text/plain', stringValue(item['title']));
++      const raw = item['raw_content'];
++      if (typeof raw !== 'string') throw malformed(this.name);
++      return normalized(request, stringValue(item['url']) || fetchUrl(request), raw, request.representation === 'markdown' ? 'text/markdown' : 'text/plain');
+     } catch (error) { throw fetchProviderError(error, this.name); }
+   }
+ }
+diff --git a/src/lane-guidance.ts b/src/lane-guidance.ts
+index c9c4fd8..9672704 100644
+--- a/src/lane-guidance.ts
++++ b/src/lane-guidance.ts
+@@ -19,8 +19,10 @@ const guide: Record<string, readonly [GuidanceGroup, string]> = {
+   'brave/search': ['onboarding', 'General web evidence retrieval'], 'parallel/search': ['onboarding', 'General web evidence retrieval'],
+   'searxng/search': ['onboarding', 'Self-hosted general web retrieval'], 'zhipu/search': ['onboarding', 'General web evidence retrieval'],
+   'direct-http/fetch': ['onboarding', 'Default URL document acquisition'], 'jina-reader/reader': ['onboarding', 'URL reader pipeline'],
+-  'exa/synthesis': ['research', 'Provider-generated synthesis with supporting evidence'], 'tavily/synthesis': ['research', 'Provider-generated synthesis with supporting evidence'],
++  'exa/synthesis': ['research', 'Provider-generated synthesis with supporting evidence'], 'tavily/synthesis': ['research', 'Tavily Search built-in answer (include_answer) with supporting results'],
+   'grok/synthesis': ['research', 'Responses web synthesis'], 'grok-multi-agent/research': ['research', 'One complete multi-agent research brief'],
++  'tavily/research': ['research', 'One complete provider research report with cited sources'],
++  'tavily/crawl': ['specialist', 'Provider site crawl returning extracted page documents'],
+   'openai-compatible/synthesis': ['research', 'Explicit compatible-model synthesis'],
+   'grok/x-synthesis': ['specialist', 'Responses X-focused synthesis'], 'context7/docs': ['specialist', 'Library and code documentation'],
+   'github/repositories': ['specialist', 'Repository discovery'], 'firecrawl/search': ['specialist', 'Search with extracted web content'],
+diff --git a/src/provider-registry.ts b/src/provider-registry.ts
+index 51039e6..50b4dc4 100644
+--- a/src/provider-registry.ts
++++ b/src/provider-registry.ts
+@@ -15,7 +15,7 @@ import { OpenAiCompatibleFetchProvider, OpenAiCompatibleSynthesisProvider, valid
+ import { ParallelSearchProvider } from './providers/parallel.ts';
+ import { SearxngSearchProvider, validateSearxngBaseUrl } from './providers/searxng.ts';
+ import { ZhipuSearchProvider } from './providers/zhipu.ts';
+-import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, TavilyAnswerProvider, TavilyProvider, validateGmaEffort, validateGmaApiMode, resolveGmaUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
++import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, TavilyAnswerProvider, TavilyCrawlProvider, TavilyProvider, TavilyResearchProvider, validateGmaEffort, validateGmaApiMode, resolveGmaUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
+ import type { HttpTransport } from './transport.ts';
+ import type { FetchOperationDescriptor, FetchProvider, JsonValue, ProviderId, QueryOperationDescriptor, QueryProvider, QueryProviderValue } from './types.ts';
+ 
+@@ -86,9 +86,9 @@ const exaRegistration: ProviderRegistration = {
+   create(context) { const credential = requireCredential(context); const common = commonOptions(context, credential); const searchPath = option(context.instance, 'search_path'); const synthesisPath = option(context.instance, 'synthesis_path'); const results = new ExaProvider({ ...common, ...(searchPath === undefined ? {} : { searchPath }) }); const synthesis = new ExaResearchLightProvider({ ...common, ...(synthesisPath === undefined ? {} : { operationPath: synthesisPath }) }); return { query: { search: resultsProvider(results), synthesis: { name: 'exa', redactions: synthesis.redactions, async execute(request) { const value = await synthesis.researchLight({ capability: 'research-light', query: request.query, retrieval_result_count: request.limit, ...(request.freshness === undefined ? {} : { freshness: request.freshness }), request_time_utc: request.request_time_utc, signal: request.signal }); return typed({ text: value.synthesis ?? '', supporting_urls: value.supporting_urls, resolved_type: value.resolved_type, citation_status: citationStatus() }); } } }, fetch: { contents: new ExaContentsFetchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }) }) } }; },
+ };
+ const tavilyRegistration: ProviderRegistration = {
+-  descriptor: { provider_id: 'tavily', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }, { operation_id: 'synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true }], fetch_operations: [remoteFetch('extract')], activation: { credential: 'required', endpoint: 'optional' }, option_keys: ['search_path', 'synthesis_path'] },
++  descriptor: { provider_id: 'tavily', adapter_version: '2', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }, { operation_id: 'synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true }, { operation_id: 'crawl', output: { channel: 'typed', schema_id: 'nb-search.crawl@1' }, built_in_async: true }, { operation_id: 'research', output: { channel: 'typed', schema_id: 'nb-search.research@1' }, built_in_async: true }], fetch_operations: [remoteFetch('extract')], activation: { credential: 'required', endpoint: 'optional' }, option_keys: ['search_path', 'synthesis_path'] },
+   validate: (id, instance) => validateRelay(id, instance, ['search_path', 'synthesis_path']),
+-  create(context) { const credential = requireCredential(context); const common = commonOptions(context, credential); const searchPath = option(context.instance, 'search_path'); const synthesisPath = option(context.instance, 'synthesis_path'); const results = new TavilyProvider({ ...common, ...(searchPath === undefined ? {} : { searchPath }) }); const synthesis = new TavilyAnswerProvider({ ...common, ...(synthesisPath === undefined ? {} : { operationPath: synthesisPath }) }); return { query: { search: resultsProvider(results), synthesis: { name: 'tavily', redactions: synthesis.redactions, async execute(request) { const value = await synthesis.answer({ capability: 'answer', query: request.query, limit: request.limit, ...(request.freshness === undefined ? {} : { freshness: request.freshness }), request_time_utc: request.request_time_utc, signal: request.signal }); return typed({ text: value.text ?? '', supporting_urls: value.supporting_results.map((item) => ({ url: item.url, ...(item.title === '' ? {} : { title: item.title }), source: 'provider-result' })), citation_status: citationStatus() }); } } }, fetch: { extract: new TavilyExtractFetchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }) }) } }; },
++  create(context) { const credential = requireCredential(context); const common = commonOptions(context, credential); const searchPath = option(context.instance, 'search_path'); const synthesisPath = option(context.instance, 'synthesis_path'); const results = new TavilyProvider({ ...common, ...(searchPath === undefined ? {} : { searchPath }) }); const synthesis = new TavilyAnswerProvider({ ...common, ...(synthesisPath === undefined ? {} : { operationPath: synthesisPath }) }); const crawl = new TavilyCrawlProvider(common); const research = new TavilyResearchProvider(common); return { query: { search: resultsProvider(results), synthesis: { name: 'tavily', redactions: synthesis.redactions, async execute(request) { const value = await synthesis.answer({ capability: 'answer', query: request.query, limit: request.limit, ...(request.freshness === undefined ? {} : { freshness: request.freshness }), request_time_utc: request.request_time_utc, signal: request.signal }); return typed({ text: value.text ?? '', supporting_urls: value.supporting_results.map((item) => ({ url: item.url, ...(item.title === '' ? {} : { title: item.title }), source: 'provider-result' })), citation_status: citationStatus() }); } }, crawl: { name: 'tavily', redactions: crawl.redactions, async execute(request) { const value = await crawl.crawl({ capability: 'crawl', root_url: request.query, max_pages: request.limit, request_time_utc: request.request_time_utc, signal: request.signal }); return typed(value); } }, research: { name: 'tavily', redactions: research.redactions, async execute(request) { const value = await research.researchTask({ capability: 'research-task', query: request.query, request_time_utc: request.request_time_utc, signal: request.signal }); return typed({ ...value, citation_status: citationStatus() }); } } }, fetch: { extract: new TavilyExtractFetchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }) }) } }; },
+ };
+ const firecrawlRegistration: ProviderRegistration = {
+   descriptor: { provider_id: 'firecrawl', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [remoteFetch('scrape')], activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
+diff --git a/src/providers.ts b/src/providers.ts
+index 771d0dc..44715f7 100644
+--- a/src/providers.ts
++++ b/src/providers.ts
+@@ -1,4 +1,5 @@
+ import { createHash } from 'node:crypto';
++import { setTimeout as delay } from 'node:timers/promises';
+ 
+ import { NbSearchError } from './errors.ts';
+ import { redactText } from './redaction.ts';
+@@ -6,17 +7,27 @@ import { parseRelayAssistantObject, parseRelayChatContent, parseRelayMessagesCon
+ import { ResponseLimitError, type JsonTransport } from './transport.ts';
+ import { normalizeUrl } from './url.ts';
+ import type {
+-  AnswerProvider, CredentialSlotId, GmaClaim, GmaConfidence, GmaConflict, GmaEffort, GmaEvidenceStrength, GmaOmissions,
++  AnswerProvider, CrawlProvider, CredentialSlotId, FetchProviderResult, FetchWarning, GmaClaim, GmaConfidence, GmaConflict,
++  GmaEffort, GmaEvidenceStrength, GmaOmissions,
+   GmaResult, MultiAgentResearchProvider, ProviderAnswerCapabilityRequest, ProviderAnswerCapabilityResult,
++  ProviderCrawlCapabilityRequest, ProviderCrawlCapabilityResult,
+   ProviderInstanceId, ProviderName, ProviderResearchLightCapabilityRequest, ProviderResearchLightCapabilityResult,
+   ProviderMultiAgentResearchCapabilityRequest, ProviderMultiAgentResearchCapabilityResult, ProviderResult,
+-  ProviderSearchRequest, ResearchLightProvider, SearchProvider, SupportingUrl,
++  ProviderResearchTaskCapabilityRequest, ProviderResearchTaskCapabilityResult,
++  ProviderSearchRequest, ResearchLightProvider, ResearchTaskProvider, SearchProvider, SupportingUrl,
+ } from './types.ts';
+ 
+ export const EXA_SEARCH_URL = 'https://api.exa.ai/search';
+ export const TAVILY_SEARCH_URL = 'https://api.tavily.com/search';
++export const TAVILY_CRAWL_URL = 'https://api.tavily.com/crawl';
++export const TAVILY_RESEARCH_URL = 'https://api.tavily.com/research';
+ export const DEFAULT_GMA_MODEL = 'grok-4.20-multi-agent-xhigh';
+ export const DEFAULT_GMA_EFFORT: GmaEffort = 'xhigh';
++export const TAVILY_SEARCH_MAX_RESULTS = 20;
++export const TAVILY_CRAWL_DOCUMENT_CHARS = 200_000;
++export const TAVILY_CRAWL_DEFAULT_TIMEOUT_SECONDS = 150;
++const TAVILY_RESEARCH_POLL_MS = 2_000;
++const TAVILY_RESEARCH_MAX_WAIT_MS = 900_000;
+ const GROK_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+ 
+ export interface ProviderOptions {
+@@ -150,36 +161,27 @@ export class TavilyProvider implements SearchProvider {
+   readonly credential_slot_id?: string;
+   readonly redactions: readonly string[];
+   private readonly endpoint: string;
++  private readonly authorization: string;
+   constructor(private readonly options: ProviderOptions) {
+     this.provider_instance_id = options.providerInstanceId ?? 'tavily.default';
+     this.credential_slot_id = options.credentialSlotId;
+     this.endpoint = resolveSearchUrl(options.baseUrl ?? TAVILY_SEARCH_URL, options.searchPath);
+-    this.redactions = [options.apiKey, this.endpoint];
++    this.authorization = `Bearer ${options.apiKey}`;
++    this.redactions = [options.apiKey, this.authorization, this.endpoint];
+   }
+   async search(request: ProviderSearchRequest): Promise<readonly ProviderResult[]> {
+     try {
+-      const body: Record<string, unknown> = {
+-        api_key: this.options.apiKey, query: request.query, max_results: request.limit, include_answer: false,
+-      };
+-      const days = freshnessDays(request.freshness);
+-      if (days !== undefined) body['days'] = days;
+-      const response = await this.options.transport.send<{ results?: unknown }>({
+-        url: this.endpoint, method: 'POST', headers: { 'Content-Type': 'application/json' },
+-        body,
+-        signal: request.signal,
++      const response = await this.options.transport.send<unknown>({
++        url: this.endpoint, method: 'POST', headers: tavilyHeaders(this.authorization),
++        body: tavilySearchBody(request.query, request.limit, false, request.freshness),
++        response_type: 'json', max_response_bytes: 1_048_576, signal: request.signal,
+       });
+       assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
+-      const rows = Array.isArray(response.body.results) ? response.body.results : [];
+-      return rows.flatMap((item): ProviderResult[] => {
+-        if (!isRecord(item) || stringValue(item['url']) === '') return [];
+-        return [{
+-          title: stringValue(item['title']), url: stringValue(item['url']), snippet: stringValue(item['content']),
+-          ...(stringValue(item['published_date']) === '' ? {} : { published_at: stringValue(item['published_date']) }),
+-          ...(numberValue(item['score']) === undefined ? {} : { score: numberValue(item['score']) }),
+-        }];
+-      });
++      if (!isRecord(response.body)) throw malformedCapabilityError('tavily');
++      return projectTavilyRows(response.body['results'], request.limit);
+     } catch (error) {
+       if (request.signal.aborted) throw error;
++      if (error instanceof ResponseLimitError) throw malformedCapabilityError('tavily', error);
+       throw safeProviderError(error, this.name, this.redactions);
+     }
+   }
+@@ -192,21 +194,19 @@ export class TavilyAnswerProvider implements AnswerProvider {
+   readonly credential_slot_id?: string;
+   readonly redactions: readonly string[];
+   private readonly endpoint: string;
++  private readonly authorization: string;
+   constructor(private readonly options: CapabilityProviderOptions) {
+     this.provider_instance_id = options.providerInstanceId ?? 'tavily.default';
+     this.credential_slot_id = options.credentialSlotId;
+     this.endpoint = resolveSearchUrl(options.baseUrl ?? TAVILY_SEARCH_URL, options.operationPath);
+-    this.redactions = [options.apiKey, this.endpoint];
++    this.authorization = `Bearer ${options.apiKey}`;
++    this.redactions = [options.apiKey, this.authorization, this.endpoint];
+   }
+   async answer(request: ProviderAnswerCapabilityRequest): Promise<ProviderAnswerCapabilityResult> {
+     try {
+-      const body: Record<string, unknown> = {
+-        api_key: this.options.apiKey, query: request.query, max_results: request.limit, include_answer: 'advanced',
+-      };
+-      const days = freshnessDays(request.freshness);
+-      if (days !== undefined) body['days'] = days;
+       const response = await this.options.transport.send<unknown>({
+-        url: this.endpoint, method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
++        url: this.endpoint, method: 'POST', headers: tavilyHeaders(this.authorization),
++        body: tavilySearchBody(request.query, request.limit, 'advanced', request.freshness),
+         response_type: 'json', max_response_bytes: 1_048_576, signal: request.signal,
+       });
+       assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
+@@ -222,6 +222,124 @@ export class TavilyAnswerProvider implements AnswerProvider {
+   }
+ }
+ 
++export class TavilyCrawlProvider implements CrawlProvider {
++  readonly name = 'tavily' as const;
++  readonly provider_id = 'tavily' as const;
++  readonly provider_instance_id: string;
++  readonly credential_slot_id?: string;
++  readonly redactions: readonly string[];
++  private readonly endpoint: string;
++  private readonly authorization: string;
++  constructor(private readonly options: CapabilityProviderOptions) {
++    this.provider_instance_id = options.providerInstanceId ?? 'tavily.default';
++    this.credential_slot_id = options.credentialSlotId;
++    this.endpoint = resolveOperationUrl(options.baseUrl ?? TAVILY_CRAWL_URL, '/crawl');
++    this.authorization = `Bearer ${options.apiKey}`;
++    this.redactions = [options.apiKey, this.authorization, this.endpoint];
++  }
++  async crawl(request: ProviderCrawlCapabilityRequest): Promise<ProviderCrawlCapabilityResult> {
++    try {
++      const rootUrl = tavilyRootUrl(request.root_url);
++      const response = await this.options.transport.send<unknown>({
++        url: this.endpoint, method: 'POST', headers: tavilyHeaders(this.authorization),
++        body: {
++          url: rootUrl, limit: Math.max(1, request.max_pages), format: 'markdown',
++          extract_depth: 'basic', timeout: TAVILY_CRAWL_DEFAULT_TIMEOUT_SECONDS, include_usage: true,
++        },
++        response_type: 'json', max_response_bytes: 8 * 1024 * 1024, signal: request.signal,
++      });
++      assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
++      if (!isRecord(response.body)) throw malformedCapabilityError('tavily');
++      const rows = response.body['results'];
++      if (!Array.isArray(rows)) throw malformedCapabilityError('tavily');
++      const documents = rows.slice(0, 100).flatMap((item): FetchProviderResult[] => {
++        if (!isRecord(item)) return [];
++        const rawContent = item['raw_content'];
++        if (typeof rawContent !== 'string') return [];
++        return [tavilyCrawlDocument(item, rawContent)];
++      });
++      if (documents.length === 0) throw malformedCapabilityError('tavily');
++      const usage = isRecord(response.body['usage']) ? response.body['usage'] : undefined;
++      const responseTime = numberValue(response.body['response_time']);
++      return {
++        capability: 'crawl', base_url: stringValue(response.body['base_url']) || rootUrl, documents,
++        ...(responseTime === undefined ? {} : { response_time: responseTime }),
++        ...(stringValue(response.body['request_id']) === '' ? {} : { request_id: stringValue(response.body['request_id']) }),
++        ...(usage === undefined ? {} : { usage }),
++      };
++    } catch (error) {
++      if (request.signal.aborted) throw error;
++      throw safeProviderError(error, this.name, this.redactions);
++    }
++  }
++}
++
++export class TavilyResearchProvider implements ResearchTaskProvider {
++  readonly name = 'tavily' as const;
++  readonly provider_id = 'tavily' as const;
++  readonly provider_instance_id: string;
++  readonly credential_slot_id?: string;
++  readonly redactions: readonly string[];
++  private readonly endpoint: string;
++  private readonly authorization: string;
++  constructor(private readonly options: CapabilityProviderOptions) {
++    this.provider_instance_id = options.providerInstanceId ?? 'tavily.default';
++    this.credential_slot_id = options.credentialSlotId;
++    this.endpoint = resolveOperationUrl(options.baseUrl ?? TAVILY_RESEARCH_URL, '/research');
++    this.authorization = `Bearer ${options.apiKey}`;
++    this.redactions = [options.apiKey, this.authorization, this.endpoint];
++  }
++  async researchTask(request: ProviderResearchTaskCapabilityRequest): Promise<ProviderResearchTaskCapabilityResult> {
++    try {
++      const created = await this.options.transport.send<unknown>({
++        url: this.endpoint, method: 'POST', headers: tavilyHeaders(this.authorization),
++        body: { input: request.query, model: 'auto', stream: false, output_length: 'standard' },
++        response_type: 'json', max_response_bytes: 1_048_576, signal: request.signal,
++      });
++      assertProviderStatus(created.status, this.name, created.headers, this.options.clock);
++      if (!isRecord(created.body)) throw malformedCapabilityError('tavily');
++      const taskId = stringValue(created.body['request_id']);
++      if (taskId === '') throw malformedCapabilityError('tavily');
++      const final = await this.awaitTask(taskId, request.signal);
++      const content = final['content'];
++      if (typeof content !== 'string' || content.trim() === '') throw malformedCapabilityError('tavily', undefined, final);
++      const model = optionalText(final['model']);
++      const responseTime = numberValue(final['response_time']);
++      return {
++        capability: 'research-task', task_id: taskId, content,
++        sources: normalizeSupportingUrls(tavilySources(final['sources']), 'provider-grounding'),
++        ...(model === undefined ? {} : { model }),
++        ...(responseTime === undefined ? {} : { response_time: responseTime }),
++      };
++    } catch (error) {
++      if (request.signal.aborted) throw error;
++      throw safeProviderError(error, this.name, this.redactions);
++    }
++  }
++  private async awaitTask(taskId: string, signal: AbortSignal): Promise<Record<string, unknown>> {
++    const clock = this.options.clock ?? (() => new Date());
++    const deadlineAt = clock().getTime() + TAVILY_RESEARCH_MAX_WAIT_MS;
++    const statusUrl = `${this.endpoint}/${encodeURIComponent(taskId)}`;
++    for (;;) {
++      const polled = await this.options.transport.send<unknown>({
++        url: statusUrl, method: 'GET', headers: { Authorization: this.authorization },
++        response_type: 'json', max_response_bytes: 1_048_576, signal,
++      });
++      assertProviderStatus(polled.status, this.name, polled.headers, this.options.clock);
++      if (!isRecord(polled.body)) throw malformedCapabilityError('tavily');
++      const status = polled.body['status'];
++      if (status === 'completed') return polled.body;
++      if (status === 'failed' || status === 'error') {
++        throw new NbSearchError('PROVIDER_UNAVAILABLE', 'tavily research task failed.', false, this.name, { data: { task_status: 'failed' } });
++      }
++      if (clock().getTime() >= deadlineAt) {
++        throw new NbSearchError('DEADLINE_EXCEEDED', 'tavily research task did not complete in time.', true, this.name, { data: { task_status: typeof status === 'string' ? status : 'unknown' } });
++      }
++      await delay(TAVILY_RESEARCH_POLL_MS, undefined, { signal });
++    }
++  }
++}
++
+ export class ExaResearchLightProvider implements ResearchLightProvider {
+   readonly name = 'exa' as const;
+   readonly provider_id = 'exa' as const;
+@@ -581,7 +699,7 @@ function assertProviderStatus(
+ function safeProviderError(error: unknown, provider: ProviderName, redactions: readonly string[]): NbSearchError {
+   if (error instanceof NbSearchError) {
+     return new NbSearchError(error.code, redactText(error.message, redactions), error.retryable, provider, {
+-      cause: error, retryAfterMs: error.retryAfterMs,
++      cause: error, retryAfterMs: error.retryAfterMs, data: error.data,
+     });
+   }
+   return new NbSearchError('PROVIDER_UNAVAILABLE', redactText(`${provider} provider failed.`, redactions), true, provider, { cause: error });
+@@ -596,8 +714,73 @@ function semanticText(value: unknown, label: string): string | undefined {
+   return text;
+ }
+ 
+-function malformedCapabilityError(provider: 'exa' | 'tavily', cause?: unknown): NbSearchError {
+-  return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} returned malformed capability content.`, false, provider, { cause });
++function malformedCapabilityError(provider: 'exa' | 'tavily', cause?: unknown, observed?: Record<string, unknown>): NbSearchError {
++  const keys = observed === undefined ? [] : Object.keys(observed).sort().slice(0, 16);
++  return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} returned malformed capability content.`, false, provider, {
++    cause, ...(keys.length === 0 ? {} : { data: { observed_keys: keys } }),
++  });
++}
++
++function tavilyHeaders(authorization: string): Record<string, string> {
++  return { Authorization: authorization, 'Content-Type': 'application/json' };
++}
++
++function tavilySearchBody(
++  query: string,
++  limit: number,
++  includeAnswer: boolean | 'basic' | 'advanced',
++  freshness: ProviderSearchRequest['freshness'],
++): Record<string, unknown> {
++  const timeRange = tavilyTimeRange(freshness);
++  return {
++    query, max_results: Math.max(0, Math.min(TAVILY_SEARCH_MAX_RESULTS, limit)),
++    include_answer: includeAnswer, include_published_date: true,
++    ...(timeRange === undefined ? {} : { time_range: timeRange }),
++  };
++}
++
++function tavilyTimeRange(value: ProviderSearchRequest['freshness']): string | undefined {
++  if (value === 'pd') return 'day';
++  if (value === 'pw') return 'week';
++  if (value === 'pm') return 'month';
++  if (value === 'py') return 'year';
++  return undefined;
++}
++
++function tavilyRootUrl(value: string): string {
++  const candidate = /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value) ? value : `https://${value}`;
++  let url: URL;
++  try { url = new URL(candidate); } catch { throw new NbSearchError('INVALID_INPUT', 'Tavily crawl requires an HTTP(S) root URL.'); }
++  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.hostname === '' || url.username !== '' || url.password !== '') {
++    throw new NbSearchError('INVALID_INPUT', 'Tavily crawl requires an HTTP(S) root URL.');
++  }
++  return url.toString();
++}
++
++function tavilyCrawlDocument(item: Record<string, unknown>, rawContent: string): FetchProviderResult {
++  const truncated = rawContent.length > TAVILY_CRAWL_DOCUMENT_CHARS;
++  const content = truncated ? rawContent.slice(0, TAVILY_CRAWL_DOCUMENT_CHARS) : rawContent;
++  const url = stringValue(item['url']);
++  const warnings: FetchWarning[] = truncated
++    ? [{ code: 'CRAWL_CONTENT_CHARS_LIMIT', message: 'The crawl document character limit was reached.', data: { max_content_chars: TAVILY_CRAWL_DOCUMENT_CHARS } }]
++    : [];
++  return {
++    ...(url === '' ? {} : { url }),
++    ...(url === '' ? {} : { final_url: url }),
++    content, content_type: 'text/markdown', media_type: 'text/markdown', representation: 'markdown', format: 'text',
++    byte_length: Buffer.byteLength(rawContent, 'utf8'), truncated, warnings,
++  };
++}
++
++function tavilySources(value: unknown): Array<{ url: unknown; title?: unknown }> {
++  if (!Array.isArray(value)) return [];
++  return value.slice(0, 100).flatMap((item) => isRecord(item) ? [{ url: item['url'], title: item['title'] }] : []);
++}
++
++function optionalText(value: unknown): string | undefined {
++  if (typeof value !== 'string') return undefined;
++  const text = value.trim();
++  return text === '' || text.length > 128 ? undefined : text;
+ }
+ 
+ function projectTavilyRows(value: unknown, limit: number): ProviderResult[] {
+diff --git a/src/types.ts b/src/types.ts
+index 2c8d6bc..05318e3 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -81,6 +81,12 @@ export interface AnswerProvider { readonly name: ProviderName; readonly redactio
+ export interface ProviderResearchLightCapabilityRequest { capability: 'research-light'; query: string; retrieval_result_count: number; freshness?: Freshness; request_time_utc: string; signal: AbortSignal }
+ export interface ProviderResearchLightCapabilityResult { capability: 'research-light'; synthesis?: string; supporting_urls: readonly SupportingUrl[]; resolved_type: string }
+ export interface ResearchLightProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; researchLight(request: ProviderResearchLightCapabilityRequest): Promise<ProviderResearchLightCapabilityResult> }
++export interface ProviderCrawlCapabilityRequest { capability: 'crawl'; root_url: string; max_pages: number; request_time_utc: string; signal: AbortSignal }
++export interface ProviderCrawlCapabilityResult { capability: 'crawl'; base_url: string; documents: readonly FetchProviderResult[]; response_time?: number; request_id?: string; usage?: Readonly<Record<string, unknown>> }
++export interface CrawlProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; crawl(request: ProviderCrawlCapabilityRequest): Promise<ProviderCrawlCapabilityResult> }
++export interface ProviderResearchTaskCapabilityRequest { capability: 'research-task'; query: string; request_time_utc: string; signal: AbortSignal }
++export interface ProviderResearchTaskCapabilityResult { capability: 'research-task'; task_id: string; content: string; sources: readonly SupportingUrl[]; model?: string; response_time?: number }
++export interface ResearchTaskProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; researchTask(request: ProviderResearchTaskCapabilityRequest): Promise<ProviderResearchTaskCapabilityResult> }
+ export type GmaEffort = 'low' | 'medium' | 'high' | 'xhigh';
+ export type GmaConfidence = 'high' | 'medium' | 'low' | 'unknown';
+ export type GmaEvidenceStrength = 'direct' | 'indirect' | 'background' | 'unknown';
+diff --git a/test/capabilities.test.ts b/test/capabilities.test.ts
+index f4ba5d6..a0d1176 100644
+--- a/test/capabilities.test.ts
++++ b/test/capabilities.test.ts
+@@ -13,5 +13,6 @@ describe('minimal static capabilities', () => {
+   it('does not project a mismatched secret binding as configured', async () => { const root = await mkdtemp(join(tmpdir(), 'nb-search-cap-credential-')); roots.push(root); const secret = 'capability-secret'; const app = createRuntimeComposition({ NB_SEARCH_EXA_API_KEY: secret }, { cwd: root, homeDirectory: root, config: { home: root, jobs_root: join(root, 'jobs') } }); const bindings = app.config.resolved.secret_bindings as Map<string, { credential_slot_id: string; provider_id: string; value: string; worker_grant: { kind: 'environment'; name: string } }>; bindings.set('exa.default', { credential_slot_id: 'exa.default', provider_id: 'tavily', value: secret, worker_grant: { kind: 'environment', name: 'NB_SEARCH_EXA_API_KEY' } }); const value = await app.runtime.capabilities(); expect(value.providers.instances.find((provider) => provider.id === 'exa.default')).toMatchObject({ availability: 'unavailable', credential: { requirement: 'required', configured: false }, issues: expect.arrayContaining([{ code: 'CREDENTIAL_NOT_CONFIGURED' }]) }); expect(JSON.stringify(value)).not.toContain(secret); });
+   it('reports built-in async from operation descriptors and custom operations as sync-only', async () => { const root = await mkdtemp(join(tmpdir(), 'nb-search-cap-modes-')); roots.push(root); const app = createRuntimeComposition({ NB_SEARCH_EXA_API_KEY: 'key' }, { cwd: root, homeDirectory: root, config: { home: root, jobs_root: join(root, 'jobs'), provider_instances: { 'mock.default': { provider_id: 'mock', enabled: true, options: {} } }, lanes: { 'mock.results': { provider_instance_id: 'mock.default', operation_id: 'results', latency: 'fast', cost: 'free' } } }, provider_registrations: [mockRegistration()] }); const value = await app.runtime.capabilities(); expect(value.search.lanes.find((lane) => lane.id === 'exa.search')?.execution_modes).toEqual(['sync', 'async']); expect(value.search.lanes.find((lane) => lane.id === 'mock.results')?.execution_modes).toEqual(['sync']); });
+   it('marks an empty realized provider unavailable and a partially realized provider ready with issues', async () => { for (const mode of ['empty', 'partial'] as const) { const root = await mkdtemp(join(tmpdir(), `nb-search-cap-${mode}-`)); roots.push(root); const base = mockRegistration({}, mode); const registration: ProviderRegistration = { ...base, create(context: Parameters<typeof base.create>[0]) { const ports = base.create(context); return mode === 'empty' ? { query: {} as Record<string, never>, fetch: {} } : { query: { results: ports.query['results']! }, fetch: {} }; } }; const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root, config: mockConfig(root, { provider_instances: { 'mock.default': { provider_id: mode, enabled: true, options: {} } } }), provider_registrations: [registration] }); const value = await app.runtime.capabilities(); const instance = value.providers.instances.find((provider) => provider.id === 'mock.default'); const issueCodes = instance?.issues.map((issue) => issue.code); if (mode === 'empty') { expect(instance?.availability).toBe('unavailable'); expect(issueCodes).toEqual(expect.arrayContaining(['PROVIDER_PORTS_UNAVAILABLE', 'LANE_NOT_CONFIGURED'])); expect(value.search.lanes.find((lane) => lane.id === 'mock.results')?.availability).toBe('unavailable'); } else { expect(instance?.availability).toBe('ready'); expect(issueCodes).toEqual(expect.arrayContaining(['PROVIDER_PORTS_PARTIAL', 'LANE_NOT_CONFIGURED'])); expect(value.search.lanes.find((lane) => lane.id === 'mock.results')?.availability).toBe('ready'); expect(value.search.lanes.find((lane) => lane.id === 'mock.typed')?.availability).toBe('unavailable'); } } });
++  it('publishes the Tavily crawl and research lanes as typed async-capable operations', async () => { const root = await mkdtemp(join(tmpdir(), 'nb-search-cap-tavily-')); roots.push(root); let network = 0; const transport: JsonTransport = { async send<T>() { network += 1; throw new Error() as never; } }; const app = createRuntimeComposition({ NB_SEARCH_TAVILY_API_KEY: 'key' }, { cwd: root, homeDirectory: root, transport }); const value = await app.runtime.capabilities(); expect(value.search.lanes.find((lane) => lane.id === 'tavily.crawl')).toEqual({ id: 'tavily.crawl', output: { channel: 'typed', schema_id: 'nb-search.crawl@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'slow', cost: 'cheap' }); expect(value.search.lanes.find((lane) => lane.id === 'tavily.research')).toEqual({ id: 'tavily.research', output: { channel: 'typed', schema_id: 'nb-search.research@1' }, execution_modes: ['sync', 'async'], availability: 'ready', issues: [], latency: 'slow', cost: 'expensive' }); expect(value.fetch.pipelines.find((pipeline) => pipeline.id === 'tavily.extract')).toMatchObject({ representations: ['markdown', 'text'], media_types: ['text/html', 'text/plain', 'text/markdown'] }); expect(network).toBe(0); });
+   it('propagates browser optional-dependency readiness to the provider instance', async () => { const root = await mkdtemp(join(tmpdir(), 'nb-search-cap-browser-')); roots.push(root); const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root, test_only_browser_render_io: { available: false, async resolve() { return []; }, async render() { throw new Error('must not render'); } }, config: { home: root, jobs_root: join(root, 'jobs') } }); const value = await app.runtime.capabilities(); const instance = value.providers.instances.find((provider) => provider.id === 'browser-render.default'); expect(instance?.availability).toBe('unavailable'); expect(instance?.issues.map((issue) => issue.code)).toEqual(expect.arrayContaining(['PROVIDER_PORTS_UNAVAILABLE', 'BROWSER_NOT_INSTALLED'])); expect(value.fetch.pipelines.find((pipeline) => pipeline.id === 'browser.render')).toMatchObject({ availability: 'unavailable', issues: [{ code: 'BROWSER_NOT_INSTALLED' }] }); });
+ });
+diff --git a/test/config.test.ts b/test/config.test.ts
+index 9edfb63..a94e519 100644
+--- a/test/config.test.ts
++++ b/test/config.test.ts
+@@ -9,7 +9,7 @@ const roots: string[] = [];
+ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+ async function root() { const value = await mkdtemp(join(tmpdir(), 'nb-search-config-v4-')); roots.push(value); return value; }
+ describe('schema v4 configuration', () => {
+-  it('uses operation bindings and input-specific fetch chains', () => { const config = defaultConfiguration('C:/tmp/nb-search'); expect(config.schema_version).toBe('4'); expect(Object.keys(config.lanes).sort()).toEqual(['brave.search', 'browser.render', 'context7.docs', 'direct.fetch', 'direct.local', 'exa.contents', 'exa.search', 'exa.synthesis', 'firecrawl.scrape', 'firecrawl.search', 'github.repositories', 'gma.research', 'grok.synthesis', 'grok.x-synthesis', 'jina.reader', 'oac.fetch', 'oac.synthesis', 'parallel.search', 'searxng.search', 'tavily.extract', 'tavily.search', 'tavily.synthesis', 'wayback.fetch', 'zhipu.search']); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'file', pipelines: ['direct.local'] }); expect(config.fetch.file_scopes).toEqual([]); expect(config.execution.fetch).toMatchObject({ max_source_bytes: 2 * 1024 * 1024, quality: { min_content_chars: 0, blocked_markers: [] } }); expect(config.lanes['exa.search']).toEqual({ provider_instance_id: 'exa.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['exa'] }); });
++  it('uses operation bindings and input-specific fetch chains', () => { const config = defaultConfiguration('C:/tmp/nb-search'); expect(config.schema_version).toBe('4'); expect(Object.keys(config.lanes).sort()).toEqual(['brave.search', 'browser.render', 'context7.docs', 'direct.fetch', 'direct.local', 'exa.contents', 'exa.search', 'exa.synthesis', 'firecrawl.scrape', 'firecrawl.search', 'github.repositories', 'gma.research', 'grok.synthesis', 'grok.x-synthesis', 'jina.reader', 'oac.fetch', 'oac.synthesis', 'parallel.search', 'searxng.search', 'tavily.crawl', 'tavily.extract', 'tavily.research', 'tavily.search', 'tavily.synthesis', 'wayback.fetch', 'zhipu.search']); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'file', pipelines: ['direct.local'] }); expect(config.fetch.file_scopes).toEqual([]); expect(config.execution.fetch).toMatchObject({ max_source_bytes: 2 * 1024 * 1024, quality: { min_content_chars: 0, blocked_markers: [] } }); expect(config.lanes['exa.search']).toEqual({ provider_instance_id: 'exa.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['exa'] }); });
+   it('rejects the removed fetch_lane field', async () => { const home = await root(); expect(() => resolveConfiguration({ env: { NB_SEARCH_HOME: home }, cwd: home, homeDirectory: home, config: { defaults: { fetch_lane: 'direct.fetch' } } as never })).toThrow(/fetch_lane/); });
+   it('ignores every legacy credential and routing environment alias', async () => { const home = await root(); const baseline = resolveConfiguration({ env: { NB_SEARCH_HOME: home }, cwd: home, homeDirectory: home }); const injected = resolveConfiguration({ env: { NB_SEARCH_HOME: home, SEARCH_LAYER_CREDENTIALS: 'x', EXA_API_KEY: 'legacy', TAVILY_API_KEY: 'legacy', GROK_API_KEY: 'legacy', GROK_MODEL: 'legacy', SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS: '1' }, cwd: home, homeDirectory: home }); expect(injected.config_fingerprint).toBe(baseline.config_fingerprint); expect(injected.secret_bindings.size).toBe(0); expect(JSON.stringify(injected)).not.toMatch(/legacy_path|LEGACY_NOT_FOUND|LEGACY_INVALID|legacy-json/); });
+   it('uses canonical provider environment names only', async () => { const home = await root(); const resolved = resolveConfiguration({ env: { NB_SEARCH_HOME: home, NB_SEARCH_EXA_API_KEY: 'canonical', NB_SEARCH_EXA_BASE_URL: 'https://exa.example' }, cwd: home, homeDirectory: home }); expect(resolved.secret_bindings.get('exa.default')?.value).toBe('canonical'); expect(resolved.config.provider_instances['exa.default']?.base_url).toBe('https://exa.example'); });
+diff --git a/test/fetch-providers.test.ts b/test/fetch-providers.test.ts
+index 51c4184..cdc7a2c 100644
+--- a/test/fetch-providers.test.ts
++++ b/test/fetch-providers.test.ts
+@@ -18,8 +18,10 @@ describe('fetch provider adapters', () => {
+   });
+ 
+   it('normalizes Tavily Extract and sends the extract request', async () => {
+-    const transport = new CaptureTransport({ status: 200, body: { results: [{ url: 'https://final.test', raw_content: 'tavily content', title: 'T' }] } }); const provider = new TavilyExtractFetchProvider({ apiKey: 'tavily-secret', transport }); const value = await provider.fetch(request());
+-    expect(transport.requests[0]).toMatchObject({ url: 'https://api.tavily.com/extract', method: 'POST', headers: { Authorization: 'Bearer tavily-secret', 'Content-Type': 'application/json' }, body: { urls: ['https://example.com/page'], format: 'text' } }); expect(value).toMatchObject({ final_url: 'https://final.test', title: 'T', content: 'tavily content', content_type: 'text/plain' });
++    const transport = new CaptureTransport({ status: 200, body: { results: [{ url: 'https://final.test', raw_content: 'tavily content' }], failed_results: [] } }); const provider = new TavilyExtractFetchProvider({ apiKey: 'tavily-secret', transport }); const value = await provider.fetch(request());
++    expect(transport.requests[0]).toMatchObject({ url: 'https://api.tavily.com/extract', method: 'POST', headers: { Authorization: 'Bearer tavily-secret', 'Content-Type': 'application/json' }, body: { urls: ['https://example.com/page'], format: 'markdown', extract_depth: 'basic' } }); expect(value).toMatchObject({ final_url: 'https://final.test', content: 'tavily content', content_type: 'text/markdown', media_type: 'text/markdown', representation: 'markdown' });
++    const textTransport = new CaptureTransport({ status: 200, body: { results: [{ url: 'https://final.test', raw_content: 'plain' }] } }); const text = await new TavilyExtractFetchProvider({ apiKey: 'tavily-secret', transport: textTransport }).fetch({ ...request(), representation: 'text' });
++    expect(textTransport.requests[0]).toMatchObject({ body: { urls: ['https://example.com/page'], format: 'text', extract_depth: 'basic' } }); expect(text).toMatchObject({ content_type: 'text/plain', representation: 'text' });
+   });
+ 
+   it('normalizes Exa Contents and sends the contents request', async () => {
+diff --git a/test/providers.test.ts b/test/providers.test.ts
+index 9731610..54a21c9 100644
+--- a/test/providers.test.ts
++++ b/test/providers.test.ts
+@@ -1,7 +1,7 @@
+ import { describe, expect, it } from 'vitest';
+ import type { ProviderInstanceConfig } from '../src/config-schema.ts';
+ import { builtInProviderRegistrations, ProviderRegistry } from '../src/provider-registry.ts';
+-import { ExaProvider, TavilyProvider, resolveSearchUrl } from '../src/providers.ts';
++import { ExaProvider, TAVILY_CRAWL_DOCUMENT_CHARS, TavilyCrawlProvider, TavilyProvider, TavilyResearchProvider, resolveSearchUrl } from '../src/providers.ts';
+ import type { JsonRequest, JsonResponse, JsonTransport } from '../src/transport.ts';
+ 
+ describe('provider wire adapters', () => {
+@@ -16,10 +16,15 @@ describe('provider wire adapters', () => {
+   it('builds the Tavily results request and normalizes the endpoint once', async () => {
+     const transport = new CaptureTransport({ status: 200, body: { results: [{ title: 'T', url: 'https://t.test', content: 'body', published_date: '2026-02-01' }] } });
+     const provider = new TavilyProvider({ apiKey: 'tavily-secret', transport });
+-    const results = await provider.search(request());
+-    expect(transport.requests[0]).toMatchObject({ url: 'https://api.tavily.com/search', headers: { 'Content-Type': 'application/json' }, body: { api_key: 'tavily-secret', query: 'query', max_results: 3, include_answer: false } });
++    const results = await provider.search({ ...request(), freshness: 'pw' });
++    expect(transport.requests[0]).toMatchObject({ url: 'https://api.tavily.com/search', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tavily-secret' }, body: { query: 'query', max_results: 3, include_answer: false, include_published_date: true, time_range: 'week' } });
++    expect(transport.requests[0]!.body).not.toHaveProperty('api_key');
++    expect(transport.requests[0]!.body).not.toHaveProperty('days');
+     expect(results[0]).toMatchObject({ snippet: 'body', published_at: '2026-02-01' });
+     expect(resolveSearchUrl('https://api.tavily.com/search/')).toBe('https://api.tavily.com/search');
++    const capped = new CaptureTransport({ status: 200, body: { results: [] } });
++    await new TavilyProvider({ apiKey: 'secret', transport: capped }).search({ query: 'query', limit: 100, signal });
++    expect(capped.requests[0]!.body).toMatchObject({ max_results: 20 });
+   });
+ 
+   it('adapts Exa and Tavily synthesis wire responses to schema-bound typed JSON', async () => {
+@@ -32,7 +37,84 @@ describe('provider wire adapters', () => {
+     const tavilyTransport = new CaptureTransport({ status: 200, body: { answer: 'tavily text', results: [{ title: 'Source', url: 'https://source.test', content: 'body' }] } });
+     const tavily = registry.create('tavily.default', instance('tavily'), context('tavily', tavilyTransport));
+     await expect(tavily.query['synthesis']!.execute(queryRequest())).resolves.toEqual({ channel: 'typed', data: { text: 'tavily text', supporting_urls: [{ url: 'https://source.test', title: 'Source', source: 'provider-result' }], citation_status: { claim_linked_citations: false, evidence_map_available: false, semantic_verification: false } } });
+-    expect(tavilyTransport.requests[0]).toMatchObject({ body: { api_key: 'secret', query: 'query', max_results: 3, include_answer: 'advanced' } });
++    expect(tavilyTransport.requests[0]).toMatchObject({ url: 'https://api.tavily.com/search', headers: { Authorization: 'Bearer secret' }, body: { query: 'query', max_results: 3, include_answer: 'advanced', include_published_date: true } });
++  });
++
++  it('crawls the Tavily site endpoint and returns fetch-shaped page documents', async () => {
++    const transport = new CaptureTransport({
++      status: 200,
++      body: {
++        base_url: 'https://docs.tavily.com', response_time: 1.23, request_id: '123e4567-e89b-12d3-a456-426614174111', usage: { credits: 1 },
++        results: [
++          { url: 'https://docs.tavily.com/welcome', raw_content: 'Welcome - Tavily Docs', favicon: 'https://docs.tavily.com/favicon.png' },
++          'not-an-object',
++          { url: 'https://docs.tavily.com/documentation/about', raw_content: 42 },
++        ],
++      },
++    });
++    const registry = new ProviderRegistry(builtInProviderRegistrations());
++    const tavily = registry.create('tavily.default', instance('tavily'), context('tavily', transport));
++    await expect(tavily.query['crawl']!.execute({ ...queryRequest(), query: 'docs.tavily.com', limit: 2 })).resolves.toEqual({
++      channel: 'typed',
++      data: {
++        capability: 'crawl', base_url: 'https://docs.tavily.com', response_time: 1.23, request_id: '123e4567-e89b-12d3-a456-426614174111',
++        usage: { credits: 1 },
++        documents: [
++          { url: 'https://docs.tavily.com/welcome', final_url: 'https://docs.tavily.com/welcome', content: 'Welcome - Tavily Docs', content_type: 'text/markdown', media_type: 'text/markdown', representation: 'markdown', format: 'text', byte_length: 21, truncated: false, warnings: [] },
++        ],
++      },
++    });
++    expect(transport.requests[0]).toMatchObject({ url: 'https://api.tavily.com/crawl', method: 'POST', headers: { Authorization: 'Bearer secret', 'Content-Type': 'application/json' }, body: { url: 'https://docs.tavily.com/', limit: 2, format: 'markdown', extract_depth: 'basic', timeout: 150, include_usage: true }, response_type: 'json' });
++    expect(transport.requests[0]!.body).not.toHaveProperty('instructions');
++    expect(transport.requests[0]!.body).not.toHaveProperty('include_images');
++  });
++
++  it('truncates oversized crawl documents and rejects unusable crawl payloads', async () => {
++    const oversized = 'x'.repeat(TAVILY_CRAWL_DOCUMENT_CHARS + 10);
++    const transport = new CaptureTransport({ status: 200, body: { base_url: 'https://example.test', results: [{ url: 'https://example.test/large', raw_content: oversized }] } });
++    const value = await new TavilyCrawlProvider({ apiKey: 'secret', transport }).crawl({ capability: 'crawl', root_url: 'https://example.test', max_pages: 1, request_time_utc: '2026-01-01T00:00:00.000Z', signal });
++    expect(value.documents[0]!.content).toHaveLength(TAVILY_CRAWL_DOCUMENT_CHARS);
++    expect(value.documents[0]).toMatchObject({ truncated: true, byte_length: TAVILY_CRAWL_DOCUMENT_CHARS + 10, warnings: [{ code: 'CRAWL_CONTENT_CHARS_LIMIT', data: { max_content_chars: TAVILY_CRAWL_DOCUMENT_CHARS } }] });
++    await expect(new TavilyCrawlProvider({ apiKey: 'secret', transport: new CaptureTransport({ status: 200, body: { base_url: 'https://example.test', results: [] } }) }).crawl({ capability: 'crawl', root_url: 'https://example.test', max_pages: 1, request_time_utc: '2026-01-01T00:00:00.000Z', signal })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', provider: 'tavily' });
++    await expect(new TavilyCrawlProvider({ apiKey: 'secret', transport: new CaptureTransport({ status: 429, body: {}, headers: { 'retry-after': '3' } }) }).crawl({ capability: 'crawl', root_url: 'https://example.test', max_pages: 1, request_time_utc: '2026-01-01T00:00:00.000Z', signal })).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT', retryable: true, retryAfterMs: 3000 });
++  });
++
++  it('rejects a crawl root that is not an HTTP(S) URL', async () => {
++    const transport = new CaptureTransport({ status: 200, body: { results: [] } });
++    const provider = new TavilyCrawlProvider({ apiKey: 'secret', transport });
++    await expect(provider.crawl({ capability: 'crawl', root_url: 'mailto:someone@example.test', max_pages: 1, request_time_utc: '2026-01-01T00:00:00.000Z', signal })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
++    expect(transport.requests).toHaveLength(0);
++  });
++
++  it('creates a Tavily research task and polls until the report is complete', async () => {
++    const transport = new SequentialTransport([
++      { status: 201, body: { request_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', created_at: '2026-01-01T00:00:00Z', status: 'pending', input: 'query', model: 'auto', response_time: 0.4 } },
++      { status: 200, body: { request_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', status: 'in_progress' } },
++      { status: 200, body: { request_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', status: 'completed', model: 'mini', response_time: 42.5, content: '# Report', sources: [{ url: 'https://source.test/report', title: 'Report' }, { url: 'https://other.test' }] } },
++    ]);
++    const registry = new ProviderRegistry(builtInProviderRegistrations());
++    const tavily = registry.create('tavily.default', instance('tavily'), context('tavily', transport));
++    const value = await tavily.query['research']!.execute(queryRequest());
++    expect(value).toEqual({
++      channel: 'typed',
++      data: {
++        capability: 'research-task', task_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', content: '# Report', model: 'mini', response_time: 42.5,
++        sources: [{ url: 'https://source.test/report', title: 'Report', source: 'provider-grounding' }, { url: 'https://other.test/', source: 'provider-grounding' }],
++        citation_status: { claim_linked_citations: false, evidence_map_available: false, semantic_verification: false },
++      },
++    });
++    expect(transport.requests[0]).toMatchObject({ url: 'https://api.tavily.com/research', method: 'POST', headers: { Authorization: 'Bearer secret', 'Content-Type': 'application/json' }, body: { input: 'query', model: 'auto', stream: false, output_length: 'standard' } });
++    expect(transport.requests[1]).toMatchObject({ url: 'https://api.tavily.com/research/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', method: 'GET', headers: { Authorization: 'Bearer secret' } });
++    expect(transport.requests).toHaveLength(3);
++  });
++
++  it('maps a failed Tavily research task and a malformed completion to provider errors', async () => {
++    const failed = new SequentialTransport([{ status: 201, body: { request_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' } }, { status: 200, body: { status: 'failed' } }]);
++    await expect(new TavilyResearchProvider({ apiKey: 'secret', transport: failed }).researchTask({ capability: 'research-task', query: 'query', request_time_utc: '2026-01-01T00:00:00.000Z', signal })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', provider: 'tavily', data: { task_status: 'failed' } });
++    const malformed = new SequentialTransport([{ status: 201, body: { request_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' } }, { status: 200, body: { status: 'completed', report: 'unexpected' } }]);
++    await expect(new TavilyResearchProvider({ apiKey: 'secret', transport: malformed }).researchTask({ capability: 'research-task', query: 'query', request_time_utc: '2026-01-01T00:00:00.000Z', signal })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', provider: 'tavily', data: { observed_keys: ['report', 'status'] } });
++    const unreachable = new SequentialTransport([{ status: 503, body: {} }]);
++    await expect(new TavilyResearchProvider({ apiKey: 'secret', transport: unreachable }).researchTask({ capability: 'research-task', query: 'query', request_time_utc: '2026-01-01T00:00:00.000Z', signal })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true, provider: 'tavily' });
+   });
+ 
+   it.each([[401, 'PROVIDER_AUTH', false], [429, 'PROVIDER_RATE_LIMIT', true], [500, 'PROVIDER_UNAVAILABLE', true], [503, 'PROVIDER_UNAVAILABLE', true]] as const)('maps HTTP %s to %s', async (status, code, retryable) => {
+@@ -57,6 +139,18 @@ class CaptureTransport implements JsonTransport {
+   async send<T>(requestValue: JsonRequest): Promise<JsonResponse<T>> { this.requests.push(requestValue); return this.response as JsonResponse<T>; }
+ }
+ 
++class SequentialTransport implements JsonTransport {
++  readonly requests: JsonRequest[] = [];
++  constructor(private readonly responses: readonly JsonResponse[]) {}
++  async send<T>(requestValue: JsonRequest): Promise<JsonResponse<T>> {
++    this.requests.push(requestValue);
++    const response = this.responses[Math.min(this.requests.length - 1, this.responses.length - 1)];
++    if (response === undefined) throw new Error('SequentialTransport ran out of responses.');
++    return response as JsonResponse<T>;
++  }
++}
++
++const signal = new AbortController().signal;
+ function instance(providerId: string): ProviderInstanceConfig { return { provider_id: providerId, enabled: true, credential_slot_id: `${providerId}.default`, options: {} }; }
+ function context(providerId: string, transport: JsonTransport) { return { credential: { credential_slot_id: `${providerId}.default`, provider_id: providerId, value: 'secret', worker_grant: { kind: 'environment' as const, name: 'TEST_KEY' } }, transports: { http: transport }, clock: () => new Date('2026-01-01T00:00:00.000Z') }; }
+ function request() { return { query: 'query', limit: 3, signal: new AbortController().signal }; }
+diff --git a/website/sources/index.md b/website/sources/index.md
+index 4cb1567..2f2030f 100644
+--- a/website/sources/index.md
++++ b/website/sources/index.md
+@@ -18,18 +18,18 @@
+    - **典型源**：
+      - 代码与工程：`github.repositories`（仓库检索）、`context7.docs`（框架文档上下文）。
+      - 深度网页/社交：`firecrawl.search`（带提取内容的搜索）、`grok.x-synthesis`（针对 X 平台的讨论提炼）。
+-     - 专用抓取：`exa.contents`、`tavily.extract`、`firecrawl.scrape`、`direct.local`（兼容的本地免网文件与行内清洗）、`wayback.fetch`（历史快照）、`browser.render`（无头 Chromium 渲染）、`oac.fetch`（模型总结抽取）。
++     - 专用抓取：`exa.contents`、`tavily.extract`、`tavily.crawl`（站点多页抓取）、`firecrawl.scrape`、`direct.local`（兼容的本地免网文件与行内清洗）、`wayback.fetch`（历史快照）、`browser.render`（无头 Chromium 渲染）、`oac.fetch`（模型总结抽取）。
+ 3. **综合与深度研究 (`research`)**：
+    - **配置建议**：需要模型进行多步推演、生成综合分析或结构化报告的场景。此类源调用开销与延迟相对较高，必须以单个 Lane 显式发起，不支持放入多源 Results Preset。
+-   - **典型源**：`exa.synthesis`、`tavily.synthesis`、`grok.synthesis`、`gma.research`、`oac.synthesis`。
++   - **典型源**：`exa.synthesis`、`tavily.synthesis`、`grok.synthesis`、`gma.research`、`tavily.research`、`oac.synthesis`。
+ 
+ ::: info 诊断与能力查询
+ 在本地运行 `node scripts/nb-search.mjs --doctor` 可输出包含用途分组指引的配置就绪摘要；调用 `capabilities` 可查看各源实时的端口激活与支持模式。注意下表中列出的“支持模式”适用于默认未注入自定义 `http_transport` 的标准本地运行时；若宿主显式注入了自定义 transport，所有异步模式将被禁用。`readiness` 仅反映本地配置完整度，并非外部上游的在线可用性探测。
+ :::
+ 
+-## 15 个搜索源 (Search Lanes)
++## 17 个搜索源 (Search Lanes)
+ 
+-内置 15 个搜索源分布在不同的底层 Provider 与操作中：
++内置 17 个搜索源分布在不同的底层 Provider 与操作中：
+ 
+ | Lane 标识 | Provider / 操作 | 输出通道与 Schema | 支持模式 (就绪时) | 必需凭据与端点配置 | 相对成本 / 延迟 | 特征与端点约定 |
+ |---|---|---|---|---|---|---|
+@@ -37,7 +37,9 @@
+ | `exa.search` | `exa/search` | Results (`nb-search.results@1`) | sync, async | 必需 `NB_SEARCH_EXA_API_KEY`；Base URL 可选 | cheap / fast | 神经搜索，端点补全 `/search` |
+ | `exa.synthesis` | `exa/synthesis` | Typed (`nb-search.synthesis@1`) | sync, async | 必需 `NB_SEARCH_EXA_API_KEY`；Base URL 可选 | expensive / medium | 提炼型搜索，返回综合段落与引用 |
+ | `tavily.search` | `tavily/search` | Results (`nb-search.results@1`) | sync, async | 必需 `NB_SEARCH_TAVILY_API_KEY`；Base URL 可选 | cheap / fast | 面向 Agent 优化的搜索，端点补全 `/search` |
+-| `tavily.synthesis` | `tavily/synthesis` | Typed (`nb-search.synthesis@1`) | sync, async | 必需 `NB_SEARCH_TAVILY_API_KEY`；Base URL 可选 | cheap / medium | 返回带直接答案回答的提炼型结果 |
++| `tavily.synthesis` | `tavily/synthesis` | Typed (`nb-search.synthesis@1`) | sync, async | 必需 `NB_SEARCH_TAVILY_API_KEY`；Base URL 可选 | cheap / medium | 官方 `/search` 的 `include_answer: advanced` 内置回答，附带支撑结果 |
++| `tavily.crawl` | `tavily/crawl` | Typed (`nb-search.crawl@1`) | sync, async | 必需 `NB_SEARCH_TAVILY_API_KEY`；Base URL 可选 | cheap / slow | 站点图遍历抓取，调用官方 `/crawl`；`query` 传站点根 URL，`max_results` 即页面上限；`data.documents` 复用抓取文档结构 |
++| `tavily.research` | `tavily/research` | Typed (`nb-search.research@1`) | sync, async | 必需 `NB_SEARCH_TAVILY_API_KEY`；Base URL 可选 | expensive / slow | 官方异步研究任务：`POST /research` 建任务后轮询 `GET /research/{request_id}` 至完成；`data.content` 为报告正文 |
+ | `firecrawl.search` | `firecrawl/search` | Results (`nb-search.results@1`) | sync, async | 必需 `NB_SEARCH_FIRECRAWL_API_KEY`；Base URL 可选 | cheap / fast | 搜索接口，端点补全 `/v2/search` |
+ | `searxng.search` | `searxng/search` | Results (`nb-search.results@1`) | sync, async | 无需 Key；必需 `NB_SEARCH_SEARXNG_BASE_URL` | free / medium | 自建或私有聚合搜索实例，端点补全 `/search` |
+ | `zhipu.search` | `zhipu/search` | Results (`nb-search.results@1`) | sync, async | 必需 `NB_SEARCH_ZHIPU_API_KEY`；Base URL 可选 | cheap / fast | 智谱 Web Search，端点补全 `/paas/v4/web_search` |

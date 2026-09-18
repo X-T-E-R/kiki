@@ -70,6 +70,8 @@ export function defaultNbSearchConfiguration(home: string): CanonicalConfig {
       'exa.contents': { provider_instance_id: 'exa.default', operation_id: 'contents', latency: 'fast', cost: 'cheap' },
       'tavily.search': { provider_instance_id: 'tavily.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['tavily'] },
       'tavily.synthesis': { provider_instance_id: 'tavily.default', operation_id: 'synthesis', latency: 'medium', cost: 'cheap' },
+      'tavily.crawl': { provider_instance_id: 'tavily.default', operation_id: 'crawl', latency: 'slow', cost: 'cheap' },
+      'tavily.research': { provider_instance_id: 'tavily.default', operation_id: 'research', latency: 'slow', cost: 'expensive' },
       'tavily.extract': { provider_instance_id: 'tavily.default', operation_id: 'extract', latency: 'fast', cost: 'cheap' },
       'context7.docs': { provider_instance_id: 'context7.default', operation_id: 'docs', latency: 'medium', cost: 'cheap' },
       'zhipu.search': { provider_instance_id: 'zhipu.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['zhipu'] },

@@ -3,8 +3,15 @@
   "version": "0.1.1",
   "baseArchive": "vendor/own-work-0.1.1-kiki-dc908d2d.tgz",
   "baseArchiveSha256": "dc908d2ddd825ac1e0f65e7c8db48005e4d1e7dc8f1c9d2e3d879d4a2a464d08",
-  "outputArchive": "vendor/own-work-0.1.1-kiki-034a4314.tgz",
-  "outputArchiveSha256": "034a4314db8cf10e792866ec7b8e7000cff38a0945c5f81549b815db9a320792",
+  "outputArchive": "vendor/own-work-0.1.1-kiki-7a5fb754.tgz",
+  "outputArchiveSha256": "7a5fb7546007ababf5f760905e9dc06f5c5a15b18ada2421bf067b3226a75b28",
+  "supersededOutputArchives": [
+    {
+      "archive": "vendor/own-work-0.1.1-kiki-034a4314.tgz",
+      "sha256": "034a4314db8cf10e792866ec7b8e7000cff38a0945c5f81549b815db9a320792",
+      "note": "Terminal-lock build (TASK_TERMINAL throw retained). Never committed to vendor/; node-sdk referenced it without the archive present, breaking fresh installs. Resurrection-semantics build 7a5fb754 supersedes it."
+    }
+  ],
   "sourcePatch": "vendor/own-work-patches/in-progress/source.patch",
   "sourcePatchSha256": "07d357310364c0e0dd308737bf9f8a9a6a4357e3538912bb30c52f2e83e50bdb",
   "sourceReference": "<internal-monorepo>/systems/own-work/packages/own-work",
@@ -19,7 +26,7 @@
     "createDefault": "active",
     "newCanonicalStatus": "in_progress",
     "legacyActivePreserved": true,
-    "terminalReopenRejected": true,
+    "terminalReopenRejected": false,
     "nonterminalTransitions": ["active", "in_progress", "paused"]
   },
   "verification": {

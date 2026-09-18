@@ -109,6 +109,11 @@ describe('nb-search independent donor parity', () => {
     const resolved = resolveNbSearchConfig(env, {}, undefined);
     expect(resolved.lanes['tavily.extract']?.latency).toBe('fast');
     expect(nbSearchConfigRevision(resolved)).toBe(expected.revision);
+    expect(resolved.lanes['tavily.crawl']).toMatchObject({ provider_instance_id: 'tavily.default', operation_id: 'crawl', latency: 'slow', cost: 'cheap' });
+    expect(resolved.lanes['tavily.research']).toMatchObject({ provider_instance_id: 'tavily.default', operation_id: 'research', latency: 'slow', cost: 'expensive' });
+    const configured = await createNbSearchRuntime({ env: { ...env, NB_SEARCH_TAVILY_API_KEY: 'fixture-donor-key' } }).capabilities({});
+    expect(configured.search.lanes.find((lane) => lane.id === 'tavily.crawl')).toMatchObject({ output: { channel: 'typed', schema_id: 'nb-search.crawl@1' }, execution_modes: ['sync', 'async'], availability: 'ready' });
+    expect(configured.search.lanes.find((lane) => lane.id === 'tavily.research')).toMatchObject({ output: { channel: 'typed', schema_id: 'nb-search.research@1' }, execution_modes: ['sync', 'async'], availability: 'ready' });
   });
 
   it('keeps parseResolvedConfig diagnostics to a field path and code', () => {

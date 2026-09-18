@@ -409,8 +409,8 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(zod@4.3.6)
       '@nb-corp/nb-search':
-        specifier: file:../../vendor/nb-search-0.3.0-aa805a24.tgz
-        version: file:vendor/nb-search-0.3.0-aa805a24.tgz(playwright@1.60.0)
+        specifier: file:../../vendor/nb-search-0.3.0-725c0408.tgz
+        version: file:vendor/nb-search-0.3.0-725c0408.tgz(playwright@1.60.0)
       ajv:
         specifier: ^8.18.0
         version: 8.18.0
@@ -656,11 +656,11 @@ importers:
         specifier: ^9.3.0
         version: 9.3.0
       '@nb-corp/nb-search':
-        specifier: file:../../vendor/nb-search-0.3.0-aa805a24.tgz
-        version: file:vendor/nb-search-0.3.0-aa805a24.tgz(playwright@1.60.0)
+        specifier: file:../../vendor/nb-search-0.3.0-725c0408.tgz
+        version: file:vendor/nb-search-0.3.0-725c0408.tgz(playwright@1.60.0)
       own-work:
-        specifier: file:../../vendor/own-work-0.1.1-kiki-034a4314.tgz
-        version: file:vendor/own-work-0.1.1-kiki-034a4314.tgz
+        specifier: file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz
+        version: file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
@@ -2194,8 +2194,8 @@ packages:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
 
-  '@nb-corp/nb-search@file:vendor/nb-search-0.3.0-aa805a24.tgz':
-    resolution: {integrity: sha512-qoBaJDWshttrzeF1UjGxMAopg6TV1NdvIjUnGolgfFkDkKeznNEYvp9KRBqtda7BFPeqluS1NGJqDIiXSfLSkA==, tarball: file:vendor/nb-search-0.3.0-aa805a24.tgz}
+  '@nb-corp/nb-search@file:vendor/nb-search-0.3.0-725c0408.tgz':
+    resolution: {integrity: sha512-clwECDDgY5jCRKl89PH+kx5ThMY0+nGqndCKlLIiNlxJNhcAqy9aslIK5cxQwNxEbK7YpqZa1RwocRctwTo+Hg==, tarball: file:vendor/nb-search-0.3.0-725c0408.tgz}
     version: 0.3.0
     engines: {node: '>=24.15.0'}
     hasBin: true
@@ -6233,12 +6233,6 @@ packages:
     engines: {node: '>= 20'}
     hasBin: true
 
-  own-work@file:vendor/own-work-0.1.1-kiki-034a4314.tgz:
-    resolution: {integrity: sha512-c8sS64LU0NEg9VIwUy9C4wD2sdbYoAjczX+4g7wd13iKOzOfh7KgvyXIEJuBKGKYGUSutBHLF2Jd72aZ6VUt3w==, tarball: file:vendor/own-work-0.1.1-kiki-034a4314.tgz}
-    version: 0.1.1
-    engines: {node: '>=22.13.0'}
-    hasBin: true
-
   own-work@file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz:
     resolution: {integrity: sha512-s0fM45JRfFASTBODKkUzA0ptzB7DrcA6K9k6ZTSH7K4ZO+no2XpUSAXNg/NP3wKiHxJswbusHu3iUJbPGWFYWA==, tarball: file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz}
     version: 0.1.1
@@ -9768,7 +9762,7 @@ snapshots:
       '@tybys/wasm-util': 0.10.1
     optional: true
 
-  '@nb-corp/nb-search@file:vendor/nb-search-0.3.0-aa805a24.tgz(playwright@1.60.0)':
+  '@nb-corp/nb-search@file:vendor/nb-search-0.3.0-725c0408.tgz(playwright@1.60.0)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.29.0(zod@4.3.6)
       zod: 4.3.6
@@ -10940,7 +10934,7 @@ snapshots:
       obug: 2.1.1
       std-env: 4.0.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.4(@types/node@22.19.17)(@vitest/coverage-v8@4.1.4)(jsdom@25.0.1)(msw@2.15.0(@types/node@22.19.17)(typescript@6.0.2))(vite@6.4.2(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3))
+      vitest: 4.1.4(@types/node@22.19.17)(@vitest/coverage-v8@4.1.4)(jsdom@25.0.1)(msw@2.15.0(@types/node@22.19.17)(typescript@6.0.2))(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3))
 
   '@vitest/expect@4.1.4':
     dependencies:
@@ -14060,14 +14054,6 @@ snapshots:
     transitivePeerDependencies:
       - debug
       - supports-color
-
-  own-work@file:vendor/own-work-0.1.1-kiki-034a4314.tgz:
-    dependencies:
-      '@commander-js/extra-typings': 12.1.0(commander@12.1.0)
-      absorb-anything-core: 0.1.2
-      commander: 12.1.0
-      yaml: 2.8.3
-      zod: 3.25.76
 
   own-work@file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz:
     dependencies:

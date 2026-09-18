@@ -73,8 +73,8 @@
   },
   "dependencies": {
     "@antfu/utils": "^9.3.0",
-    "@nb-corp/nb-search": "file:../../vendor/nb-search-0.3.0-aa805a24.tgz",
-    "own-work": "file:../../vendor/own-work-0.1.1-kiki-034a4314.tgz",
+    "@nb-corp/nb-search": "file:../../vendor/nb-search-0.3.0-725c0408.tgz",
+    "own-work": "file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz",
     "pathe": "^2.0.3",
     "smol-toml": "^1.6.1",
     "yazl": "^3.3.1",
