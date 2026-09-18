@@ -3,105 +3,18 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
-  communicationPatch,
   resourceLimitPatch,
   runtimeConfigDraftFromConfig,
   type RuntimeConfigDraft,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
-import { PRIMARY_BUTTON, SMALL_INPUT } from '../ui';
+import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { PRIMARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { NumberField } from './runtimeControls';
 
-type CommunicationDraft = Pick<RuntimeConfigDraft, 'threadCommunicationEnabled' | 'tokenCountingStrategy'>;
 type ResourceLimitDraft = Pick<RuntimeConfigDraft, 'workspaceIdleTtlMs' | 'imageMaxEdgePx' | 'imageReadByteBudget'>;
-
-/**
- * Communication and token counting (runtime split): engine-level behaviour
- * knobs, not GUI↔server connection settings, so they live under Advanced.
- * Saves through the narrow two-domain patch.
- */
-export function CommunicationSettingsCard() {
-  const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<CommunicationDraft | null>(null);
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-
-  useEffect(() => {
-    if (configQuery.data !== undefined && !dirty) {
-      const projected = runtimeConfigDraftFromConfig(configQuery.data);
-      setDraft({
-        threadCommunicationEnabled: projected.threadCommunicationEnabled,
-        tokenCountingStrategy: projected.tokenCountingStrategy,
-      });
-    }
-  }, [configQuery.data, dirty]);
-
-  if (draft === null) {
-    return (
-      <SectionCard id="st-card-communication" title={t('st.communication.title')}>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
-      </SectionCard>
-    );
-  }
-
-  const updateDraft = (next: CommunicationDraft) => {
-    setDraft(next);
-    setDirty(true);
-  };
-
-  const save = async () => {
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig(communicationPatch(draft));
-      queryClient.setQueryData(['config'], echoed);
-      const projected = runtimeConfigDraftFromConfig(echoed);
-      setDraft({
-        threadCommunicationEnabled: projected.threadCommunicationEnabled,
-        tokenCountingStrategy: projected.tokenCountingStrategy,
-      });
-      setDirty(false);
-      setFeedback({ tone: 'success', text: t('st.communication.saved') });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <SectionCard id="st-card-communication" title={t('st.communication.title')}>
-      <div className="space-y-4">
-        <Hint>{t('st.communication.hint')}</Hint>
-        <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
-          <Toggle label={t('st.communication.threadCommunication')} checked={draft.threadCommunicationEnabled} onChange={(threadCommunicationEnabled) => { updateDraft({ ...draft, threadCommunicationEnabled }); }} />
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.communication.tokenCounting')}
-            <select className={`${SMALL_INPUT} mt-1 block`} value={draft.tokenCountingStrategy} onChange={(event) => { updateDraft({ ...draft, tokenCountingStrategy: event.target.value as CommunicationDraft['tokenCountingStrategy'] }); }}>
-              <option value="measured+estimated">measured+estimated</option>
-              <option value="measured">measured</option>
-              <option value="estimated">estimated</option>
-            </select>
-          </label>
-        </fieldset>
-        <div className="flex flex-wrap items-center gap-3 border-t border-hairline pt-3">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-            {saving ? t('common.saving') : t('common.save')}
-          </button>
-          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
-        </div>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
-      </div>
-    </SectionCard>
-  );
-}
 
 /**
  * Workspace and image resource ceilings (runtime split): engine-internal

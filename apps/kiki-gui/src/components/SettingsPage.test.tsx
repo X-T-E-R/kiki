@@ -385,9 +385,14 @@ describe('SettingsPage batch-3 leaves', () => {
     // The cron card is read-only: its toggles render disabled.
     expect(tasks.querySelector<HTMLFieldSetElement>('#st-card-cron fieldset')!.disabled).toBe(true);
 
+    const communication = await renderSettings('/settings/communication');
+    expect(communication.querySelector('#st-card-thread-communication')).not.toBeNull();
+    expect(communication.querySelector('#st-card-thread-communication')!.textContent).toContain('Enable thread communication');
+    expect(communication.querySelector('#st-card-notify-parent')).not.toBeNull();
+    expect(communication.querySelector('#st-card-token-counting')).not.toBeNull();
+
     const advanced = await renderSettings('/settings/advanced');
-    expect(advanced.querySelector('#st-card-communication')).not.toBeNull();
-    expect(advanced.querySelector('#st-card-communication')!.textContent).toContain('Enable thread communication');
+    expect(advanced.querySelector('#st-card-communication')).toBeNull();
     expect(advanced.querySelector('#st-card-resource-limits')).not.toBeNull();
     expect(advanced.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle TTL');
 

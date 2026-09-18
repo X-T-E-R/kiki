@@ -15,6 +15,7 @@ import { AdvancedSection } from './settings/AdvancedSection';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
 import { AutomationSection } from './settings/AutomationSection';
+import { CommunicationSection } from './settings/CommunicationSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { McpSection } from './settings/McpSection';
@@ -189,6 +190,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'connection' ? <ConnectionSection />
     : active === 'agents' ? <AgentsSection />
     : active === 'subagents' ? <SubagentsSection />
+    : active === 'communication' ? <CommunicationSection />
     : active === 'skills' ? <SkillsSection />
     : active === 'mcp' ? <McpSection />
     : active === 'plugins' ? <PluginsSection />

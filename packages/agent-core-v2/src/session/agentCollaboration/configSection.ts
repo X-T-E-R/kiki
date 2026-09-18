@@ -5,7 +5,7 @@ import { collectRemovedKeyDiagnostics } from '#/app/config/deprecations';
 
 export const AGENTS_SECTION = 'agents';
 
-export const AgentsConfigSchema = z.object({
+const AgentsConfigBaseSchema = z.object({
   enabled: z.boolean().optional(),
   notify_parent: z.boolean().default(true),
   delegation: z
@@ -17,7 +17,15 @@ export const AgentsConfigSchema = z.object({
     .optional(),
 }).strict();
 
-export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;
+export const AgentsConfigSchema = z.preprocess((raw) => {
+  if (typeof raw === 'object' && raw !== null && 'notifyParent' in raw && !('notify_parent' in raw)) {
+    const { notifyParent, ...rest } = raw as Record<string, unknown>;
+    return { ...rest, notify_parent: notifyParent };
+  }
+  return raw;
+}, AgentsConfigBaseSchema);
+
+export type AgentsConfig = z.infer<typeof AgentsConfigBaseSchema>;
 
 export function isParentNotifyEnabled(config: AgentsConfig | undefined): boolean {
   return config?.notify_parent !== false;
