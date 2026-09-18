@@ -565,6 +565,7 @@ describe('CLI options parsing', () => {
         'serve',
         'seat',
         'mcp',
+        'prompt-fields',
         'agents',
         'list',
         'dispatch',

@@ -533,19 +533,19 @@ describe('l1: klient input validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('image blocks with invalid data', () => {
-  it('a data-URL image with an unaccepted mime is replaced at prompt ingestion on EVERY provider (l2)', async () => {
+  it('a data-URL image with an unaccepted mime is replaced at prompt ingestion (l2)', async () => {
     // PromptStepRequest gates image parts through gateImageFormatParts before
-    // the turn starts: image/bmp never reaches any provider's conversion
-    // layer — it becomes a text notice, the request goes out without the
-    // image, and the turn completes. This is the engine's "session
-    // poisoning" defense and is provider-independent.
+    // the turn starts: a mime the provider does not advertise never reaches
+    // the conversion layer — it becomes a text notice, the request goes out
+    // without the image, and the turn completes. Kimi advertises bmp support,
+    // so the same image passes through there unchanged.
     const cases = [
-      { label: 'bmp-openai', model: M_OPENAI, reply: OK_OPENAI },
-      { label: 'bmp-kimi', model: M_KIMI, reply: OK_OPENAI },
-      { label: 'bmp-anthropic', model: M_ANTHROPIC, reply: OK_ANTHROPIC },
-      { label: 'bmp-google', model: M_GOOGLE, reply: OK_GOOGLE },
+      { label: 'bmp-openai', model: M_OPENAI, reply: OK_OPENAI, accepted: false },
+      { label: 'bmp-kimi', model: M_KIMI, reply: OK_OPENAI, accepted: true },
+      { label: 'bmp-anthropic', model: M_ANTHROPIC, reply: OK_ANTHROPIC, accepted: false },
+      { label: 'bmp-google', model: M_GOOGLE, reply: OK_GOOGLE, accepted: false },
     ] as const;
-    for (const { label, model, reply } of cases) {
+    for (const { label, model, reply, accepted } of cases) {
       const ctx = await newCase(model, label);
       resetMock(queueScript(reply));
       await promptAndWait(ctx, [
@@ -554,8 +554,13 @@ describe('image blocks with invalid data', () => {
       ]);
       expect(requests, label).toHaveLength(1);
       const wireText = JSON.stringify(requests[0]?.json);
-      expect(wireText, label).toContain('unsupported image format image/bmp');
-      expect(wireText, label).not.toContain('image/bmp;base64');
+      if (accepted) {
+        expect(wireText, label).toContain('image/bmp;base64');
+        expect(wireText, label).not.toContain('unsupported image format');
+      } else {
+        expect(wireText, label).toContain('unsupported image format image/bmp');
+        expect(wireText, label).not.toContain('image/bmp;base64');
+      }
       expect(ctx.payloads('prompt.completed')[0]?.['reason'], label).toBe('completed');
     }
   }, 60_000);

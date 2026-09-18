@@ -1,4 +1,4 @@
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path/posix';
 import { Readable, Writable } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';

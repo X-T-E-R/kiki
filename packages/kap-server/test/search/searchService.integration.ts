@@ -940,6 +940,7 @@ describe('GlobalSearchService', () => {
     expect(first.items.length).toBe(1);
 
     await appendFile(file, `${userLine('苹果 delta', T2)}\n`, 'utf8');
+    await writeTitle(home!, s1.id, s1.title!);
     await settleSync(writer);
     const stalePage = await reader.search({ query: '苹果' });
     expect(stalePage.items.length).toBe(1);
@@ -3396,8 +3397,17 @@ describe('search lifecycle diagnostics (stage 5)', () => {
     const s1 = summary('s1', '生命周期', T1);
     await writeWire(home!, 's1', 'main', [userLine('苹果 lifecycle', T1)]);
     const service = track(makeService(home!, staticIndex([s1])));
-    await flush();
+    const booting = syncNow(service);
+    booting.catch(() => {});
+    const host = hostOf(service);
+    await vi.waitFor(
+      () => {
+        expect((host as unknown as { worker: unknown }).worker).not.toBeNull();
+      },
+      { interval: 5, timeout: 10_000 },
+    );
     expect(service.lifecycleReport().state).toBe('opening');
+    await booting;
     await settleSync(service);
     expect(service.lifecycleReport().state).toBe('ready');
     const status = await service.status();

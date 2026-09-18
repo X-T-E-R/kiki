@@ -989,7 +989,7 @@ describe('acp-server terminal reverse-RPC (clientCapabilities.terminal)', () => 
     expect(JSON.stringify(secondCall)).toContain('hello_from_terminal');
   }, 30_000);
 
-  it('rejects Bash without falling back when the client does not advertise terminal capability', async () => {
+  it('falls back to local Bash execution when the client does not advertise terminal capability', async () => {
     const c = await boot({});
     const terminals = fakeTerminalClient(c, 'should_not_be_used\n');
     scriptBashTurn('echo hello_from_bash');
@@ -997,17 +997,20 @@ describe('acp-server terminal reverse-RPC (clientCapabilities.terminal)', () => 
     const { stopReason } = await runPrompt(c);
     expect(stopReason).toBe('end_turn');
 
-    // No terminal reverse-RPC at all — behavior identical to today.
+    // No terminal reverse-RPC at all — the spawn falls back to the local
+    // host process service instead of rejecting the call.
     expect(terminals).toHaveLength(0);
     const terminalRpcs = c.received.filter(
       (m) => typeof m.method === 'string' && m.method.startsWith('terminal/'),
     );
     expect(terminalRpcs).toHaveLength(0);
 
-    // The tool card carries the textual output, exactly as before.
+    // The command ran locally: the tool card carries the textual output and
+    // the model received it in the tool result fed back on the second
+    // generate() call.
     const completed = toolCallUpdates(c).find((u) => u.status === 'completed');
     const text = completed?.content?.map((entry) => entry.content?.text ?? '').join('\n') ?? '';
-    expect(text).not.toContain('hello_from_bash');
-    expect(JSON.stringify(scripted!.callHistory()[1])).toContain('ACP terminal capability is unavailable');
+    expect(text).toContain('hello_from_bash');
+    expect(JSON.stringify(scripted!.callHistory()[1])).toContain('hello_from_bash');
   }, 30_000);
 });

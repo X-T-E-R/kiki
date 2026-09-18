@@ -31,7 +31,9 @@ describe('prompt field inspection', () => {
   it('lists every built-in field with registry metadata', () => {
     const fields = listPromptFieldDefinitions();
 
-    expect(fields.length).toBeGreaterThan(80);
+    // Anchor: 73 fields after the Tower tool retirement (11 tools x 2 fields
+    // left the registry); the count only moves when tools/system sections do.
+    expect(fields.length).toBeGreaterThanOrEqual(70);
     expect(fields.find((field) => field.id === 'system.language')).toMatchObject({
       owner: 'systemPrompt',
       consumers: ['system'],

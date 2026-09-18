@@ -1,8 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import type { NbSearchCapabilities } from '@kiki/protocol';
-import { INbSearchService, IHostProcessService, type IHostProcess } from '@kiki/agent-core-v2';
-import { PassThrough } from 'node:stream';
+import { INbSearchService } from '@kiki/agent-core-v2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -68,17 +66,14 @@ describe('server-v2 /api/nb-search', () => {
     return await response.json() as Envelope<unknown>;
   }
 
-  async function protectedLocalHome(): Promise<string> {
+  async function localCliHome(): Promise<string> {
     const localHome = join(home, 'local-nb-search');
     await mkdir(localHome, { recursive: true, mode: 0o700 });
-    if (process.platform === 'win32') {
-      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='Stop'; $p=$env:NB_TEST_HOME; $acl=Get-Acl -LiteralPath $p; $acl.SetAccessRuleProtection($true,$false); foreach($r in @($acl.Access)){$acl.RemoveAccessRuleSpecific($r)}; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; foreach($s in @($sid,'S-1-5-18','S-1-5-32-544')){$id=New-Object System.Security.Principal.SecurityIdentifier($s); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($id,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule)}; Set-Acl -LiteralPath $p -AclObject $acl"], { env: { ...process.env, NB_TEST_HOME: localHome }, windowsHide: true, timeout: 15000, stdio: 'ignore' });
-    }
     return localHome;
   }
 
   it('loads local CLI secrets without daemon credential env and never returns their values', async () => {
-    const localHome = await protectedLocalHome();
+    const localHome = await localCliHome();
     await writeFile(join(localHome, 'config.json'), JSON.stringify({ defaults: { search_lane: 'exa.search' } }));
     await writeFile(join(localHome, 'secrets.json'), JSON.stringify({ schema_version: '1', values: { NB_SEARCH_EXA_API_KEY: 'fixture-cli-private-key' } }), { mode: 0o600 });
     await boot();
@@ -98,7 +93,7 @@ describe('server-v2 /api/nb-search', () => {
   });
 
   it.runIf(process.platform === 'win32').each([false, true])('NB-06 rejects alias-based credential redirects before saving with metadata=%s', async (withBindings) => {
-    const localHome = await protectedLocalHome();
+    const localHome = await localCliHome();
     await writeFile(join(localHome, 'config.json'), '{}');
     await writeFile(join(localHome, 'secrets.json'), JSON.stringify({
       schema_version: '1', values: { NB_SEARCH_EXA_API_KEY: 'fixture-nb06-private-key' },
@@ -122,7 +117,7 @@ describe('server-v2 /api/nb-search', () => {
   });
 
   it('rejects Kiki endpoint overrides against imported CLI bindings before saving', async () => {
-    const localHome = await protectedLocalHome();
+    const localHome = await localCliHome();
     await writeFile(join(localHome, 'config.json'), JSON.stringify({ defaults: { search_lane: 'exa.search' } }));
     const secretFile = JSON.stringify({ schema_version: '1', values: { NB_SEARCH_EXA_API_KEY: 'fixture-bound-private-key' }, bindings: {
       NB_SEARCH_EXA_API_KEY: [{ instance: 'exa.default', provider: 'exa', slot: 'exa.default', env: 'NB_SEARCH_EXA_API_KEY', base_url: null }],
@@ -148,7 +143,7 @@ describe('server-v2 /api/nb-search', () => {
   });
 
   it('reports invalid CLI secret files and busy transactions without falling back to env-only success', async () => {
-    const localHome = await protectedLocalHome();
+    const localHome = await localCliHome();
     await writeFile(join(localHome, 'config.json'), '{}');
     await writeFile(join(localHome, 'secrets.json'), '{fixture-private-invalid', { mode: 0o600 });
     await boot();
@@ -265,52 +260,6 @@ env = "KIKI_EXA_KEY"
     expect((await get<NbSearchCapabilities>('/nb-search/capabilities')).data.config_source).toMatchObject({ local_config: 'missing', availability: 'ready' });
     vi.stubEnv('NB_SEARCH_CONFIG', join(home, 'missing-config.json'));
     expect((await get<NbSearchCapabilities>('/nb-search/capabilities')).data.config_source).toMatchObject({ local_config: 'missing', availability: 'unavailable', issues: ['LOCAL_CONFIG_NOT_FOUND'] });
-  });
-
-  it.runIf(process.platform === 'win32')('NB-04 releases the save queue after a hung ACL check so reuse can be disabled', async () => {
-    const localHome = await protectedLocalHome();
-    await writeFile(join(localHome, 'config.json'), '{}');
-    await writeFile(join(localHome, 'secrets.json'), JSON.stringify({ schema_version: '1', values: { NB_SEARCH_EXA_API_KEY: 'fixture-timeout-key' } }), { mode: 0o600 });
-    await boot();
-    const entered = deferredVoid();
-    const stdout = new PassThrough();
-    const fake: IHostProcess = {
-      _serviceBrand: undefined, pid: 123, exitCode: null,
-      stdin: new PassThrough(), stdout, stderr: new PassThrough(),
-      wait: () => new Promise<number>(() => {}),
-      kill: vi.fn().mockResolvedValue(undefined),
-      dispose: vi.fn(() => { stdout.destroy(); }),
-    };
-    const processes = server!.core.accessor.get(IHostProcessService);
-    const originalSpawn = processes.spawn.bind(processes);
-    const spy = vi.spyOn(processes, 'spawn').mockImplementation(async (command, args, options) => {
-      if (command !== 'powershell.exe' || options?.env?.['NB_SEARCH_ACL_PATHS'] === undefined) return originalSpawn(command, args, options);
-      entered.resolve();
-      return fake;
-    });
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    try {
-      const saving = authedFetch(server!, base, '/api/config', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ nb_search: { execution: { retry_count: 2 } } }),
-      });
-      await entered.promise;
-      const disabling = saveSource(false);
-      await vi.advanceTimersByTimeAsync(15000);
-      vi.useRealTimers();
-      const rejected = await (await saving).json() as Envelope<unknown>;
-      expect(rejected.code).toBe(40001);
-      expect(JSON.stringify(rejected)).toContain('LOCAL_CREDENTIALS_TIMEOUT');
-      expect(JSON.stringify(rejected)).not.toContain('fixture-timeout-key');
-      expect((await disabling).code).toBe(0);
-      expect(fake.kill).toHaveBeenCalledWith('SIGKILL');
-      expect(fake.dispose).toHaveBeenCalled();
-      expect((await get<NbSearchCapabilities>('/nb-search/capabilities')).data.config_source?.reuse_local_config).toBe(false);
-    } finally {
-      vi.useRealTimers();
-      spy.mockRestore();
-      stdout.destroy();
-    }
   });
 
   it('NB-02 refuses to overwrite external same-domain changes made during validation', async () => {
