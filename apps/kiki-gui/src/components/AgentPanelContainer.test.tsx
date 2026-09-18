@@ -127,3 +127,44 @@ it('shows a recoverable query error instead of silently presenting an empty capa
   expect(element.querySelector('[role="alert"]')?.textContent).toContain('fixture unavailable');
   expect(element.textContent).toContain('kept local todo');
 });
+
+it('renders cache hit rate percentage on single agent and aggregated on agent tree', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live',
+    owner: { agent_id: 'main' },
+    available: true,
+    targets: [],
+    tools: [],
+    skills: [],
+    profile: { name: 'main-agent', source: 'definition:fixture' },
+    metrics: {
+      main: {
+        ...UNKNOWN_AGENT_PANEL_METRICS,
+        inputTokens: 100,
+        cacheReadTokens: 68,
+        cacheWriteTokens: 10,
+        totalTokens: 120,
+        totalCostUsd: 0.05,
+      },
+      child: {
+        ...UNKNOWN_AGENT_PANEL_METRICS,
+        inputTokens: 200,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 20,
+        totalTokens: 250,
+        totalCostUsd: 0.10,
+      },
+    },
+  });
+
+  await render('main', 'test cache rate');
+
+  // Single agent cache rate: 68 / 100 = 68%
+  expect(element.textContent).toContain('缓存率:68%');
+
+  // Tree cache rate: (68 + 100) / (100 + 200) = 168 / 300 = 56%
+  const treeMetrics = element.querySelector('[data-tree-metrics]');
+  expect(treeMetrics).not.toBeNull();
+  expect(treeMetrics?.textContent).toContain('整树缓存率:56%');
+});
+

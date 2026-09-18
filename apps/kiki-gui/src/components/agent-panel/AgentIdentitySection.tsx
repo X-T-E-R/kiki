@@ -2,6 +2,7 @@ import { memo, useState } from 'react';
 import { useI18n } from '../../i18n';
 import type { AgentIdentity, AgentTokenUsage, AgentTreeMetrics } from './types';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
+import { agentUsageCacheHitRate } from './cacheRate';
 
 export interface AgentIdentitySectionProps {
   readonly identity: AgentIdentity;
@@ -33,6 +34,15 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [metricsDetailExpanded, setMetricsDetailExpanded] = useState(false);
+
+  const cacheRate = agentUsageCacheHitRate(usage);
+  const cacheTooltip =
+    usage?.cacheReadTokens !== undefined || usage?.cacheWriteTokens !== undefined
+      ? t('agentPanel.cacheRawTooltip', {
+          read: formatNumber(usage?.cacheReadTokens),
+          write: formatNumber(usage?.cacheWriteTokens),
+        })
+      : undefined;
 
   const statusColor = (() => {
     switch (identity.status) {
@@ -195,11 +205,12 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
             </span>
           </div>
           <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-1 pl-1">
-            <span className="text-ink-faint">{t('agentPanel.cacheReadWriteLabel')}</span>
-            <span className="font-medium text-ink">
-              {usage?.cacheReadTokens !== undefined || usage?.cacheWriteTokens !== undefined
-                ? `${formatNumber(usage?.cacheReadTokens)} / ${formatNumber(usage?.cacheWriteTokens)}`
-                : unknownLabel}
+            <span className="text-ink-faint">{t('agentPanel.cacheRateLabel')}</span>
+            <span
+              className="font-medium text-ink"
+              title={cacheTooltip}
+            >
+              {cacheRate !== null ? `${cacheRate}%` : unknownLabel}
             </span>
           </div>
         </div>
@@ -261,6 +272,24 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
             <span className="text-ink-soft">{t('agentPanel.treeCost')}</span>
             <span className="font-medium text-ink">{formatCost(treeMetrics.totalCostUsd)}</span>
           </div>
+          {treeMetrics.cacheHitRate !== null && treeMetrics.cacheHitRate !== undefined ? (
+            <div className="flex items-baseline justify-between">
+              <span className="text-ink-soft">{t('agentPanel.treeCacheRate')}</span>
+              <span
+                className="font-medium text-ink"
+                title={
+                  treeMetrics.cacheReadTokens !== undefined || treeMetrics.cacheWriteTokens !== undefined
+                    ? t('agentPanel.cacheRawTooltip', {
+                        read: formatNumber(treeMetrics.cacheReadTokens),
+                        write: formatNumber(treeMetrics.cacheWriteTokens),
+                      })
+                    : undefined
+                }
+              >
+                {`${treeMetrics.cacheHitRate}%`}
+              </span>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

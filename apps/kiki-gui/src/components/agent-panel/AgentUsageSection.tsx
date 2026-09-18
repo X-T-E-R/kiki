@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { useI18n } from '../../i18n';
 import type { AgentTokenUsage, AgentTreeMetrics } from './types';
+import { agentUsageCacheHitRate } from './cacheRate';
 
 export interface AgentUsageSectionProps {
   readonly usage?: AgentTokenUsage;
@@ -40,11 +41,21 @@ export const AgentUsageSection = memo(function AgentUsageSection({
     ? Math.min(100, Math.round((contextUsed / contextLimit) * 100))
     : null;
 
-  const contextBarTone = contextPct !== null && contextPct >= 80
-    ? 'bg-danger'
-    : contextPct !== null && contextPct >= 50
-      ? 'bg-amber-rule'
-      : 'bg-accent';
+  const contextBarTone =
+    contextPct !== null && contextPct >= 80
+      ? 'bg-danger'
+      : contextPct !== null && contextPct >= 50
+        ? 'bg-amber-rule'
+        : 'bg-accent';
+
+  const cacheRate = agentUsageCacheHitRate(usage);
+  const cacheTooltip =
+    usage?.cacheReadTokens !== undefined || usage?.cacheWriteTokens !== undefined
+      ? t('agentPanel.cacheRawTooltip', {
+          read: formatTokens(usage?.cacheReadTokens),
+          write: formatTokens(usage?.cacheWriteTokens),
+        })
+      : undefined;
 
   return (
     <div
@@ -119,10 +130,13 @@ export const AgentUsageSection = memo(function AgentUsageSection({
             </div>
 
             {/* 4. Cache Efficiency */}
-            <div className="rounded-lg border border-hairline bg-paper/50 p-2">
-              <span className="block text-[10px] text-ink-faint uppercase">{t('agentPanel.cacheReadWrite')}</span>
+            <div
+              className="rounded-lg border border-hairline bg-paper/50 p-2"
+              title={cacheTooltip}
+            >
+              <span className="block text-[10px] text-ink-faint uppercase">{t('agentPanel.cacheRate')}</span>
               <span className="font-medium text-ink">
-                {formatTokens(usage.cacheReadTokens)} / {formatTokens(usage.cacheWriteTokens)}
+                {cacheRate !== null ? `${cacheRate}%` : unknownLabel}
               </span>
             </div>
           </div>
@@ -152,6 +166,24 @@ export const AgentUsageSection = memo(function AgentUsageSection({
             <span className="text-ink-soft">{t('agentPanel.treeCost')}</span>
             <span className="font-medium text-ink">{formatCost(treeMetrics.totalCostUsd)}</span>
           </div>
+          {treeMetrics.cacheHitRate !== null && treeMetrics.cacheHitRate !== undefined ? (
+            <div className="flex items-baseline justify-between">
+              <span className="text-ink-soft">{t('agentPanel.treeCacheRate')}</span>
+              <span
+                className="font-medium text-ink"
+                title={
+                  treeMetrics.cacheReadTokens !== undefined || treeMetrics.cacheWriteTokens !== undefined
+                    ? t('agentPanel.cacheRawTooltip', {
+                        read: formatTokens(treeMetrics.cacheReadTokens),
+                        write: formatTokens(treeMetrics.cacheWriteTokens),
+                      })
+                    : undefined
+                }
+              >
+                {`${treeMetrics.cacheHitRate}%`}
+              </span>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

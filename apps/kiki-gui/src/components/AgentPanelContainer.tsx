@@ -10,6 +10,7 @@ import { AgentTodoSection } from './agent-panel/AgentTodoSection';
 import { AgentPlanSection } from './agent-panel/AgentPlanSection';
 import { AgentCapabilitiesSection } from './agent-panel/AgentCapabilitiesSection';
 import { usageSessionDeepLink } from '../lib/usageV2';
+import { aggregateTreeCacheHitRate, aggregateTreeCacheReadTokens, aggregateTreeCacheWriteTokens } from './agent-panel/cacheRate';
 
 export function AgentPanelContainer({ state, forest, agentId }: {
   state: SessionViewState;
@@ -58,7 +59,11 @@ export function AgentPanelContainer({ state, forest, agentId }: {
       configContentPreview: profile === undefined ? undefined : JSON.stringify(profile, null, 2),
       rawProfile: profile,
     }} usage={usage} treeMetrics={agentId === 'main' ? {
-      ...tree, activeSubagentsCount: Object.values(forest.byId).filter((entry) => entry.agentId !== 'main' && entry.busy).length,
+      ...tree,
+      cacheHitRate: aggregateTreeCacheHitRate(ids, metrics),
+      cacheReadTokens: aggregateTreeCacheReadTokens(ids, metrics),
+      cacheWriteTokens: aggregateTreeCacheWriteTokens(ids, metrics),
+      activeSubagentsCount: Object.values(forest.byId).filter((entry) => entry.agentId !== 'main' && entry.busy).length,
       totalSubagentsCount: ids.filter((id) => id !== 'main').length,
     } : undefined} onOpenUsageDetail={() => { void navigate(usageSessionDeepLink(state.sessionId)); }} />
     {capabilities.isPending ? <p role="status">{t('diagnostics.loading')}</p> : null}

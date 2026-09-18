@@ -51,6 +51,9 @@ export interface AgentTreeMetrics {
   readonly totalCostUsd: number | null;
   readonly activeSubagentsCount: number | null;
   readonly totalSubagentsCount: number | null;
+  readonly cacheHitRate?: number | null;
+  readonly cacheReadTokens?: number | null;
+  readonly cacheWriteTokens?: number | null;
   readonly usagePartial?: boolean;
   readonly costPartial?: boolean;
 }
