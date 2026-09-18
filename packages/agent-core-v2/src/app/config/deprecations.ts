@@ -22,7 +22,7 @@ export function collectKeyDeprecations(
           `[${snakeDomain}] '${deprecation.key}' is deprecated and no longer used; ` +
           `rename it to '${deprecation.replacement}'.` +
           (deprecation.message === undefined ? '' : ` ${deprecation.message}`) +
-          ' Run /update-config to fix it.',
+          ' Run /kiki-ops.config to fix it.',
       });
     }
   }
@@ -39,7 +39,7 @@ function removedKeyMessage(snakeDomain: string, snakeKey: string): string {
   return (
     `[${snakeDomain}] '${snakeKey}' was removed and is no longer read. ` +
     SUBAGENT_BINDING_REPLACEMENT +
-    ' Run /update-config to fix it.'
+    ' Run /kiki-ops.config to fix it.'
   );
 }
 
@@ -69,7 +69,7 @@ export function collectRemovedSectionDiagnostics(
       message:
         `[${REMOVED_SECTION_SNAKE}] was removed and is no longer read. ` +
         SUBAGENT_BINDING_REPLACEMENT +
-        ' Run /update-config to fix it.',
+        ' Run /kiki-ops.config to fix it.',
     },
   ];
 }

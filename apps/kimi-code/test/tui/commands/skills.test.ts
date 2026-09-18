@@ -64,19 +64,19 @@ describe('skill slash commands', () => {
     const built = buildSkillSlashCommands([
       skill('zeta', 'prompt', { source: 'user' }),
       skill('alpha', 'prompt', { source: 'project' }),
-      skill('update-config', 'inline', { source: 'builtin' }),
-      skill('mcp-config', 'inline', { source: 'builtin' }),
+      skill('kiki-ops', 'inline', { source: 'builtin' }),
+      skill('kiki-ops.mcp', 'inline', { source: 'builtin' }),
     ]);
 
     expect(built.commands.map((command) => command.name)).toEqual([
-      'mcp-config',
-      'update-config',
+      'kiki-ops',
+      'kiki-ops.mcp',
       'skill:alpha',
       'skill:zeta',
     ]);
     expect([...built.commandMap.entries()]).toEqual([
-      ['mcp-config', 'mcp-config'],
-      ['update-config', 'update-config'],
+      ['kiki-ops', 'kiki-ops'],
+      ['kiki-ops.mcp', 'kiki-ops.mcp'],
       ['skill:alpha', 'alpha'],
       ['skill:zeta', 'zeta'],
     ]);
@@ -84,11 +84,11 @@ describe('skill slash commands', () => {
 
   it('keeps disableModelInvocation skills slash-invocable', () => {
     const built = buildSkillSlashCommands([
-      skill('mcp-config', 'inline', { disableModelInvocation: true, source: 'builtin' }),
+      skill('kiki-ops.mcp', 'inline', { disableModelInvocation: true, source: 'builtin' }),
     ]);
 
-    expect(built.commands.map((command) => command.name)).toEqual(['mcp-config']);
-    expect(built.commandMap.get('mcp-config')).toBe('mcp-config');
+    expect(built.commands.map((command) => command.name)).toEqual(['kiki-ops.mcp']);
+    expect(built.commandMap.get('kiki-ops.mcp')).toBe('kiki-ops.mcp');
   });
 
   it('keeps sub-skills slash-invocable', () => {

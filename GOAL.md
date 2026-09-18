@@ -214,7 +214,7 @@ goal ID 不应暴露给模型，因为它只是 runtime/UI 内部标识，没有
 
 ### 辅助写 goal
 
-`write-goal` 类能力用于帮助用户把粗糙意图整理成适合 goal mode 的完成契约。好的 goal 应明确：
+`kiki-ops.goal` 类能力用于帮助用户把粗糙意图整理成适合 goal mode 的完成契约。好的 goal 应明确：
 
 - end state：什么条件必须变成真。
 - proof：用什么可观察证据证明完成。

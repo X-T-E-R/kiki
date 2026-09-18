@@ -1,11 +1,11 @@
 ---
-name: custom-theme
-description: Create or edit a kimi-code custom color theme — a JSON file under the resolved KIKI_HOME data directory that recolors the TUI. Use when the user wants their own theme, asks for a specific palette or mood, or wants to tweak an existing custom theme's colors.
+name: kiki-ops.theme
+description: Create or edit a Kiki custom color theme — a JSON file under the resolved KIKI_HOME data directory that recolors the TUI. Use when the user wants their own theme, asks for a specific palette or mood, or wants to tweak an existing custom theme's colors.
 ---
 
-# Create a kimi-code custom theme (custom-theme)
+# Create a Kiki custom theme (kiki-ops.theme)
 
-Help the user design, write, and apply a custom color theme for the kimi-code TUI. A theme is a single JSON file; the TUI ships with `dark`, `light`, and `auto`, and any file the user adds becomes selectable alongside them.
+Help the user design, write, and apply a custom color theme for the Kiki TUI. A theme is a single JSON file; the TUI ships with `dark`, `light`, and `auto`, and any file the user adds becomes selectable alongside them.
 
 ## Rules of engagement
 
@@ -16,7 +16,7 @@ Help the user design, write, and apply a custom color theme for the kimi-code TU
 
 ## Where a theme lives
 
-The kimi-code runtime resolves the data directory as `KIKI_HOME` first, falling back to `~/.kiki`. Theme files live inside the `themes/` subdirectory of that data directory.
+The Kiki runtime resolves the data directory as `KIKI_HOME` first, falling back to `~/.kiki`. Theme files live inside the `themes/` subdirectory of that data directory.
 
 Before doing anything, resolve the actual data root with Bash so you don't write to the wrong place. Check whether `KIKI_HOME` is set and fall back to `~/.kiki` when it is empty:
 
@@ -49,7 +49,7 @@ Use the first line when it is non-empty; otherwise use the second line. In the r
 
 ## Source of truth: the docs token reference
 
-Before choosing colors, use **FetchURL** to fetch the official custom-theme docs as the authoritative list of tokens and what each controls:
+Before choosing colors, use **FetchURL** to fetch the official custom theme docs as the authoritative list of tokens and what each controls:
 
 ```
 https://moonshotai.github.io/kimi-code/en/customization/themes.html

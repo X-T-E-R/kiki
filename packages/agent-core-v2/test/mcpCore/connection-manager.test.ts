@@ -641,7 +641,7 @@ describe('McpConnectionManager', () => {
       });
       const entry = cm.get('gated');
       expect(entry?.status).toBe('needs-auth');
-      expect(entry?.error).toContain('run /mcp-config login gated');
+      expect(entry?.error).toContain('run /kiki-ops.mcp login gated');
       expect(entry?.toolCount).toBe(0);
     } finally {
       await cm.shutdown();
@@ -674,7 +674,7 @@ describe('McpConnectionManager', () => {
       });
       const entry = cm.get('gated');
       expect(entry?.status).toBe('needs-auth');
-      expect(entry?.error).toContain('run /mcp-config login gated');
+      expect(entry?.error).toContain('run /kiki-ops.mcp login gated');
       expect(entry?.toolCount).toBe(0);
     } finally {
       await cm.shutdown();
@@ -732,7 +732,7 @@ describe('McpConnectionManager', () => {
       const entry = cm.get('legacy');
       expect(entry?.transport).toBe('sse');
       expect(entry?.status).toBe('needs-auth');
-      expect(entry?.error).toContain('run /mcp-config login legacy');
+      expect(entry?.error).toContain('run /kiki-ops.mcp login legacy');
       expect(entry?.toolCount).toBe(0);
     } finally {
       await cm.shutdown();
@@ -795,7 +795,7 @@ describe('McpConnectionManager', () => {
       const entry = cm.get('notion');
       expect(entry).toMatchObject({
         status: 'needs-auth',
-        error: expect.stringContaining('run /mcp-config login notion'),
+        error: expect.stringContaining('run /kiki-ops.mcp login notion'),
       });
       expect(entry?.error).not.toContain('redirectUrl must be set');
     } finally {

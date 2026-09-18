@@ -309,7 +309,7 @@ describe('server-v2 /api prompts', () => {
     const swarm = main.accessor.get(IAgentSwarmService);
     const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'plan this work' }],
-      skills: skills ? [{ name: 'update-config' }] : undefined,
+      skills: skills ? [{ name: 'kiki-ops' }] : undefined,
       plan_mode: true, swarm_mode: true,
     });
     expect(submitted.body.code, submitted.body.msg).toBe(0);
@@ -472,7 +472,7 @@ describe('server-v2 /api prompts', () => {
     });
     const submitted = await call<{ status: string }>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'blocked' }], plan_mode: true, swarm_mode: true, goal_objective: 'blocked goal',
-      skills: skills ? [{ name: 'update-config' }] : undefined,
+      skills: skills ? [{ name: 'kiki-ops' }] : undefined,
     });
     expect(submitted.body.code, submitted.body.msg).toBe(0);
     expect(submitted.body.data.status).toBe('blocked');
@@ -490,7 +490,7 @@ describe('server-v2 /api prompts', () => {
     const submitted = await call('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'failed' }], model: 'stub-alt',
       plan_mode: true, swarm_mode: true, goal_objective: 'failed goal',
-      skills: skills ? [{ name: 'update-config' }] : undefined,
+      skills: skills ? [{ name: 'kiki-ops' }] : undefined,
     });
     expect(submitted.body.code, submitted.body.msg).toBe(50001);
     expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
@@ -584,7 +584,7 @@ describe('server-v2 /api prompts', () => {
 
     const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
-      skills: [{ name: 'update-config' }, { name: 'check-kiki-docs' }],
+      skills: [{ name: 'kiki-ops' }, { name: 'kiki-ops.docs' }],
     });
     expect(submitted.body.code).toBe(0);
     expect(submitted.body.data.prompt_id).toMatch(/^msg_/);
@@ -597,7 +597,7 @@ describe('server-v2 /api prompts', () => {
     const bundled = history.find((message) => message.origin?.kind === 'user');
     expect(bundled?.origin).toMatchObject({
       kind: 'user',
-      skillActivations: [{ skillName: 'update-config' }, { skillName: 'check-kiki-docs' }],
+      skillActivations: [{ skillName: 'kiki-ops' }, { skillName: 'kiki-ops.docs' }],
     });
     const texts = bundled?.content
       .filter((part) => part.type === 'text')
@@ -618,7 +618,7 @@ describe('server-v2 /api prompts', () => {
         toolCalls: [],
         origin: {
           kind: 'user',
-          skillActivations: [{ activationId: 'a1', skillName: 'update-config' }],
+          skillActivations: [{ activationId: 'a1', skillName: 'kiki-ops' }],
         },
       },
     });
@@ -662,7 +662,7 @@ describe('server-v2 /api prompts', () => {
     const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'bundled side question' }],
       agent_id: child.id,
-      skills: [{ name: 'update-config' }],
+      skills: [{ name: 'kiki-ops' }],
     });
     expect(submitted.body.code).toBe(0);
 
@@ -758,7 +758,7 @@ describe('server-v2 /api prompts', () => {
       content: [{ type: 'text', text: 'Review this change.' }],
       permission_mode: 'yolo',
       prompt_id: 'submission-1',
-      skills: [{ name: 'update-config' }],
+      skills: [{ name: 'kiki-ops' }],
     });
     expect(submitted.body.code).toBe(40001);
 

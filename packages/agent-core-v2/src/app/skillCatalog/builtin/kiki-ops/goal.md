@@ -1,9 +1,9 @@
 ---
-name: write-goal
+name: kiki-ops.goal
 description: Help the user craft a well-specified `/goal` objective for goal mode — turn a rough intention into a completion contract with a clear finish line, proof, boundaries, and stop rule. Use when the user asks for help writing, refining, or improving a goal.
 ---
 
-# Write a good goal (write-goal)
+# Write a good goal (kiki-ops.goal)
 
 Help the user turn a rough intention into a `/goal` objective that goal mode can pursue across many turns without supervision. A goal is not a task description — it is a completion contract. It says what must become *true*, how that truth is *proven*, where the work may and may not *reach*, and when to *stop and report* instead of grinding on.
 

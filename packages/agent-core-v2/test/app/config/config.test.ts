@@ -1128,7 +1128,7 @@ describe('loopControl config section', () => {
       domain: LOOP_CONTROL_SECTION,
       severity: 'warning',
       message:
-        "[loop_control] 'max_steps_per_run' is deprecated and no longer used; rename it to 'max_steps_per_turn'. Run /update-config to fix it.",
+        "[loop_control] 'max_steps_per_run' is deprecated and no longer used; rename it to 'max_steps_per_turn'. Run /kiki-ops.config to fix it.",
     });
     await config.set(LOOP_CONTROL_SECTION, { maxStepsPerTurn: 7 });
     expect(config.get<LoopControl>(LOOP_CONTROL_SECTION).maxStepsPerTurn).toBe(7);
@@ -1243,7 +1243,7 @@ describe('config deprecations', () => {
       domain: LOOP_CONTROL_SECTION,
       severity: 'warning',
       message:
-        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /update-config to fix it.",
+        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops.config to fix it.",
     });
 
     disposables.dispose();
@@ -1260,7 +1260,7 @@ describe('config deprecations', () => {
       domain: LOOP_CONTROL_SECTION,
       severity: 'warning',
       message:
-        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /update-config to fix it.",
+        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops.config to fix it.",
     });
 
     disposables.dispose();
@@ -1361,7 +1361,7 @@ describe('config deprecations', () => {
       domain: LOOP_CONTROL_SECTION,
       severity: 'warning',
       message:
-        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /update-config to fix it.",
+        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops.config to fix it.",
     });
 
     await storage.write(
@@ -1491,7 +1491,7 @@ describe('removed config sections and keys', () => {
 
   const bindingReplacement =
     'Subagent model and effort bindings come from the agent profile (or its route or the caller ' +
-    'lease), or from an explicit model_alias and effort at dispatch. Run /update-config to fix it.';
+    'lease), or from an explicit model_alias and effort at dispatch. Run /kiki-ops.config to fix it.';
 
   it('warns about the removed secondary_model section instead of silently ignoring it', async () => {
     const { config, disposables } = await createConfig(

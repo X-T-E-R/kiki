@@ -120,12 +120,14 @@ Kiki ships with a set of built-in Skills that appear directly as `/<name>` slash
 
 | Command | Description |
 | --- | --- |
-| `/mcp-config` | Configure MCP servers and handle MCP OAuth login. See [MCP](../server/mcp.md) |
-| `/custom-theme [<text>]` | Create or edit a custom TUI color theme. See [Themes](../customization/themes.md) |
-| `/update-config` | Inspect or edit `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update) |
-| `/check-kiki-docs` | Answer Kiki product questions (CLI and GUI usage, configuration, slash commands, features, and errors) from the local docs installed with Kiki |
-| `/kiki-profile` | Create or edit agent profile files and `SYSTEM.md`. See [Agents and Sub-Agents](../customization/agents.md) |
-| `/import-from-cc-codex` | Import Claude Code and Codex instructions, skills, and MCP settings into Kiki |
+| `/kiki-ops` | One-stop entry for Kiki product usage and configuration; routes to the topic commands below |
+| `/kiki-ops.config` | Inspect or edit `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update) |
+| `/kiki-ops.theme [<text>]` | Create or edit a custom TUI color theme. See [Themes](../customization/themes.md) |
+| `/kiki-ops.mcp` | Configure MCP servers and handle MCP OAuth login. See [MCP](../server/mcp.md) |
+| `/kiki-ops.import` | Import Claude Code and Codex instructions, skills, and MCP settings into Kiki |
+| `/kiki-ops.profile` | Create or edit agent profile files and `SYSTEM.md`. See [Agents and Sub-Agents](../customization/agents.md) |
+| `/kiki-ops.goal` | Draft a well-specified `/goal` objective together with the user |
+| `/kiki-ops.docs` | Answer Kiki product questions (CLI and GUI usage, configuration, slash commands, features, and errors) from the local docs installed with Kiki |
 | `/sub-skill` | Discover and reorganize the local skill inventory into hierarchical sub-skill bundles. Includes `/sub-skill.review` (read-only proposal) and `/sub-skill.consolidate` (apply the reorganization) |
 
 All built-in Skill commands are only available in the idle state.
@@ -150,7 +152,7 @@ For example, a child Skill named `review` inside a parent Skill named `code-styl
 
 For convenience, external Skill commands also support a shorthand form that omits the `skill:` prefix — `/<name>` — as long as the name is not taken by a system slash command. That is, `/code-style` falls back to matching `/skill:code-style`.
 
-Built-in Skills shipped with Kiki appear directly as `/<name>` in the slash command panel. For example, `/mcp-config` helps configure MCP servers and handle MCP OAuth login, and `/custom-theme [extra text]` invokes the custom-theme workflow to create or edit a TUI theme.
+Built-in Skills shipped with Kiki appear directly as `/<name>` in the slash command panel. For example, `/kiki-ops` is the one-stop entry for using and configuring Kiki — it routes to topics such as `/kiki-ops.mcp` (MCP servers and OAuth login) and `/kiki-ops.theme [extra text]` (custom TUI themes).
 
 ::: info
 All Skill commands are only available in the idle state. `flow`-type Skills are also exposed via `/skill:<name>` — there is no separate `/flow:` namespace.

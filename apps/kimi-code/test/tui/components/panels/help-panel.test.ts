@@ -37,13 +37,13 @@ describe('HelpPanelComponent', () => {
         cmd('zebra', 'Z'),
         cmd('skill:bravo', 'B'),
         cmd('alpha', 'A'),
-        cmd('mcp-config', 'M'),
+        cmd('kiki-ops.mcp', 'M'),
       ],
       onClose: () => {},
     });
     const out = strip(panel.render(80).join('\n'));
     const alphaIdx = out.indexOf('/alpha');
-    const mcpConfigIdx = out.indexOf('/mcp-config');
+    const mcpConfigIdx = out.indexOf('/kiki-ops.mcp');
     const zebraIdx = out.indexOf('/zebra');
     const skillBravoIdx = out.indexOf('/skill:bravo');
     expect(alphaIdx).toBeGreaterThan(-1);

@@ -11,12 +11,14 @@ import { stubFlag } from '../flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
 
 const PRODUCT_SKILLS = [
-  'mcp-config',
-  'import-from-cc-codex',
-  'update-config',
-  'custom-theme',
-  'check-kiki-docs',
-  'kiki-profile',
+  'kiki-ops',
+  'kiki-ops.config',
+  'kiki-ops.theme',
+  'kiki-ops.mcp',
+  'kiki-ops.import',
+  'kiki-ops.profile',
+  'kiki-ops.goal',
+  'kiki-ops.docs',
 ];
 const NEUTRAL_SKILLS = BUILTIN_SKILLS.map((s) => s.name).filter(
   (name) => !PRODUCT_SKILLS.includes(name),
@@ -40,6 +42,42 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(BUILTIN_SKILLS.filter((s) => s.productSpecific === true).map((s) => s.name).toSorted())
       .toEqual([...PRODUCT_SKILLS].toSorted());
     expect(NEUTRAL_SKILLS.length).toBeGreaterThan(0);
+  });
+
+  it('bundles every product topic under one model-invocable kiki-ops entry', () => {
+    const parent = BUILTIN_SKILLS.find((s) => s.name === 'kiki-ops');
+    expect(parent?.metadata.disableModelInvocation).not.toBe(true);
+    const description = parent?.description.toLowerCase() ?? '';
+    for (const trigger of [
+      'config.toml',
+      'tui.toml',
+      'theme',
+      'mcp',
+      'claude code',
+      'codex',
+      'profile',
+      'system.md',
+      'goal',
+      'docs',
+    ]) {
+      expect(description).toContain(trigger);
+    }
+
+    const topics = BUILTIN_SKILLS.filter((s) => s.name.startsWith('kiki-ops.'));
+    expect(topics.map((s) => s.name)).toEqual([
+      'kiki-ops.config',
+      'kiki-ops.theme',
+      'kiki-ops.mcp',
+      'kiki-ops.import',
+      'kiki-ops.profile',
+      'kiki-ops.goal',
+      'kiki-ops.docs',
+    ]);
+    for (const topic of topics) {
+      expect(topic.metadata.isSubSkill).toBe(true);
+      expect(topic.metadata.disableModelInvocation).not.toBe(true);
+      expect(topic.content.length).toBeGreaterThan(0);
+    }
   });
 
   it('offers every builtin skill when the section is unset', async () => {

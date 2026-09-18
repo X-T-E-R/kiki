@@ -1,15 +1,15 @@
 ---
-name: update-config
-description: Inspect or edit kimi-code's own config — `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update). Use when the user asks what a setting does, wants to change one, or needs to fix a deprecated config key / environment variable warning.
+name: kiki-ops.config
+description: Inspect or edit Kiki's own config — `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update). Use when the user asks what a setting does, wants to change one, or needs to fix a deprecated config key / environment variable warning.
 ---
 
-# Configure kimi-code (update-config)
+# Configure Kiki (kiki-ops.config)
 
-Help the user inspect, change, and validate kimi-code's configuration files. The files are **TOML** with **snake_case** keys.
+Help the user inspect, change, and validate Kiki's configuration files. The files are **TOML** with **snake_case** keys.
 
 ## The two config files
 
-kimi-code has two TOML config files, both under `<KIKI_HOME>/`, both snake_case, but with different ownership — decide which one the user means before doing anything.
+Kiki has two TOML config files, both under `<KIKI_HOME>/`, both snake_case, but with different ownership — decide which one the user means before doing anything.
 
 The runtime resolves the data directory as `KIKI_HOME` first, falling back to `~/.kiki`. Before doing anything, resolve the actual directory with Bash so you don't write to the wrong place. Check whether `KIKI_HOME` is set and fall back to `~/.kiki` when it is empty:
 
@@ -64,7 +64,7 @@ Don't edit the target file in place, and **don't rewrite it from scratch** — i
 3. **Copy out a candidate (do not create from scratch)**: use **Bash** to copy the target verbatim — `cp config.toml config-new.toml` (same directory, `-new` suffix; for tui.toml, `cp tui.toml tui-new.toml`). **Leave the original untouched for now.**
    - Only when the target doesn't exist (nothing to copy) should you use **Write** to create a minimal skeleton candidate (e.g. just the comment line `# <KIKI_HOME>/config.toml`).
 4. **Edit the candidate**: use the **Edit** tool on the candidate to **change/add only the target key** — never rewrite the whole file. That way every existing section, entry, comment, and bit of formatting stays exactly as-is; only what should change changes. The candidate is identical to the original, so use the content you read in step 2 to locate the Edit anchor. Check the change against the official docs (key / section / value type / allowed values, snake_case).
-5. **Validate the candidate** (see Capability 3, via `kimi doctor`). **If anything fails, keep Editing the candidate and re-validate, looping until it all passes.**
+5. **Validate the candidate** (see Capability 3, via `kiki doctor`). **If anything fails, keep Editing the candidate and re-validate, looping until it all passes.**
 6. **Back up and overwrite** (only after validation fully passes):
    - **Back up the old file — always create a new timestamped backup, keep all of them, never overwrite an existing backup.** Copy this exactly with **Bash** (for config.toml): `cp config.toml "config.toml.$(date +%Y%m%d-%H%M%S).bak"`; for tui.toml: `cp tui.toml "tui.toml.$(date +%Y%m%d-%H%M%S).bak"`. Skip the backup only if the target didn't exist.
    - Overwrite with the candidate: `mv config-new.toml config.toml`.
@@ -73,14 +73,14 @@ Don't edit the target file in place, and **don't rewrite it from scratch** — i
 
 ## Capability 3: validate the candidate file (must pass before overwrite)
 
-Use **`kimi doctor`** to validate the candidate you wrote — it doesn't start the TUI and doesn't modify any file; it runs kimi's own parser + schema (syntax and schema together), so it's the authoritative check. Pick the subcommand by which file you changed, and pass the **candidate** path explicitly:
+Use **`kiki doctor`** to validate the candidate you wrote — it doesn't start the TUI and doesn't modify any file; it runs Kiki's own parser + schema (syntax and schema together), so it's the authoritative check. Pick the subcommand by which file you changed, and pass the **candidate** path explicitly:
 
-- changed `config.toml` → `kimi doctor config <config-new.toml path>`
-- changed `tui.toml` → `kimi doctor tui <tui-new.toml path>`
+- changed `config.toml` → `kiki doctor config <config-new.toml path>`
+- changed `tui.toml` → `kiki doctor tui <tui-new.toml path>`
 
 When a path is passed explicitly the file must exist (your candidate does, so that's fine). **Exit code 0 = pass (valid or skipped); non-zero = a specified file is missing or the config is invalid** — show the output verbatim, fix the candidate, and re-run, looping until it's 0.
 
-Then do two checks `kimi doctor` can't:
+Then do two checks `kiki doctor` can't:
 
 1. **Cross-check values against the official docs** (single source of truth): are the key / section / enum values as documented, and snake_case? doctor guarantees "schema-valid", but "valid yet not what the user wanted" (e.g. a misspelled model alias) needs the docs.
 2. **Completeness**: every existing entry is still present (the candidate fully replaces the target — a dropped line is a deletion).
@@ -95,11 +95,11 @@ Once local validation passes, tell the user how to make the change take effect �
 - changed **`tui.toml`** → run **`/reload-tui`** (reloads only `tui.toml`, lighter); `/reload` works too (reloads both).
 - changed both → a single **`/reload`** covers it.
 
-Note: `/reload` is available **only when idle** — if a reply is streaming, press Esc / Ctrl-C to stop first. `kimi doctor` already validated the schema before the overwrite, so reload should apply cleanly; if it still errors, follow the message to fix it or recover from the most recent timestamped backup. If you don't want to reload now, the **next new session** picks it up automatically.
+Note: `/reload` is available **only when idle** — if a reply is streaming, press Esc / Ctrl-C to stop first. `kiki doctor` already validated the schema before the overwrite, so reload should apply cleanly; if it still errors, follow the message to fix it or recover from the most recent timestamped backup. If you don't want to reload now, the **next new session** picks it up automatically.
 
 ## Capability 5: fix a deprecated key or env-var warning
 
-kimi reports configuration deprecations as warnings — in the TUI startup notices and pushed to clients as the `event.config.warning` event. There are two shapes, handled differently:
+Kiki reports configuration deprecations as warnings — in the TUI startup notices and pushed to clients as the `event.config.warning` event. There are two shapes, handled differently:
 
 - **Deprecated TOML key** — e.g. `[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'.` The old value no longer applies, so fix it promptly: follow the Capability 2 flow (copy → Edit → validate → back up → overwrite) and **rename the key in `config.toml`, keeping its value unchanged**. The warning names the exact section and replacement key — use those; never guess other renames. After `/reload`, the warning disappears.
 - **Deprecated environment variable** — e.g. `Environment variable KIMI_LOOP_MAX_RETRIES_PER_STEP is deprecated; use KIMI_LOOP_MAX_ATTEMPTS_PER_STEP instead.` The old variable still works, but this is **not** fixable by editing `config.toml`/`tui.toml` — tell the user to rename the variable where they set it (shell profile, CI environment, launcher script). Do not add anything to the config files for this.

@@ -172,7 +172,7 @@ describe('server-v2 /api skills', () => {
       const { body } = await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`);
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
-      expect(skills.some((s) => s.name === 'update-config')).toBe(true);
+      expect(skills.some((s) => s.name === 'kiki-ops')).toBe(true);
       expect(getLiveSessionById((server as RunningServer).core.accessor, id)).toBeUndefined();
     });
 
@@ -184,14 +184,14 @@ describe('server-v2 /api skills', () => {
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
 
-      const updateConfig = skills.find((s) => s.name === 'update-config');
+      const updateConfig = skills.find((s) => s.name === 'kiki-ops');
       expect(updateConfig).toBeDefined();
       expect(updateConfig).toMatchObject({ source: 'builtin' });
       expect(updateConfig).not.toHaveProperty('is_sub_skill');
       expect(updateConfig).not.toHaveProperty('isSubSkill');
     });
 
-    it('lists the check-kiki-docs builtin skill', async () => {
+    it('lists the kiki-ops.docs builtin skill', async () => {
       const id = await createSession();
       const { body } = await getJson<{ skills: SkillWire[] }>(
         `/api/sessions/${id}/skills`,
@@ -199,7 +199,7 @@ describe('server-v2 /api skills', () => {
       expect(body.code).toBe(0);
       const skills = listSkillsResponseSchema.parse(body.data).skills;
 
-      const docsSkill = skills.find((s) => s.name === 'check-kiki-docs');
+      const docsSkill = skills.find((s) => s.name === 'kiki-ops.docs');
       expect(docsSkill).toBeDefined();
       expect(docsSkill).toMatchObject({ source: 'builtin' });
       expect(docsSkill?.description.length).toBeGreaterThan(0);
@@ -212,13 +212,13 @@ describe('server-v2 /api skills', () => {
       await createMainAgent(id);
 
       const { body } = await postJson<{ activated: boolean; skill_name: string }>(
-        `/api/sessions/${id}/skills/update-config:activate`,
+        `/api/sessions/${id}/skills/kiki-ops:activate`,
         { args: '--help' },
       );
       expect(body.code).toBe(0);
       expect(activateSkillResultSchema.parse(body.data)).toEqual({
         activated: true,
-        skill_name: 'update-config',
+        skill_name: 'kiki-ops',
       });
     });
 
@@ -227,14 +227,14 @@ describe('server-v2 /api skills', () => {
       await createMainAgent(id);
 
       const activated = await postJson<{ activated: boolean; skill_name: string }>(
-        `/api/sessions/${id}/skills/update-config:activate`,
+        `/api/sessions/${id}/skills/kiki-ops:activate`,
         { args: '--help' },
       );
       expect(activated.body.code).toBe(0);
 
       const got = await getJson<{ title: string }>(`/api/sessions/${id}`);
       expect(got.body.code).toBe(0);
-      expect(got.body.data.title).toBe('/update-config --help');
+      expect(got.body.data.title).toBe('/kiki-ops --help');
     });
 
     it('returns 40415 for an unknown skill', async () => {
@@ -248,14 +248,14 @@ describe('server-v2 /api skills', () => {
     });
 
     it('returns 40401 for an unknown session', async () => {
-      const { body } = await postJson<null>('/api/sessions/nope/skills/update-config:activate');
+      const { body } = await postJson<null>('/api/sessions/nope/skills/kiki-ops:activate');
       expect(body.code).toBe(40401);
       expect(body.msg).toMatch(/does not exist/);
     });
 
     it('rejects a bare {name} (no action) with 40001', async () => {
       const id = await createSession();
-      const { body } = await postJson<null>(`/api/sessions/${id}/skills/update-config`);
+      const { body } = await postJson<null>(`/api/sessions/${id}/skills/kiki-ops`);
       expect(body.code).toBe(40001);
       expect(body.msg).toMatch(/unsupported action/);
     });
@@ -263,7 +263,7 @@ describe('server-v2 /api skills', () => {
     it('rejects an unsupported action with 40001', async () => {
       const id = await createSession();
       const { body } = await postJson<null>(
-        `/api/sessions/${id}/skills/update-config:bogus`,
+        `/api/sessions/${id}/skills/kiki-ops:bogus`,
       );
       expect(body.code).toBe(40001);
       expect(body.msg).toMatch(/unsupported action/);
@@ -285,7 +285,7 @@ describe('server-v2 /api skills', () => {
       expect(uploaded.code).toBe(0);
 
       const { body } = await postJson<{ activated: boolean; skill_name: string }>(
-        `/api/sessions/${id}/skills/update-config:activate`,
+        `/api/sessions/${id}/skills/kiki-ops:activate`,
         {
           args: '--help',
           attachments: [
@@ -300,7 +300,7 @@ describe('server-v2 /api skills', () => {
         },
       );
       expect(body.code).toBe(0);
-      expect(body.data).toEqual({ activated: true, skill_name: 'update-config' });
+      expect(body.data).toEqual({ activated: true, skill_name: 'kiki-ops' });
 
       const messages = await getJson<{
         items: Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
@@ -308,7 +308,7 @@ describe('server-v2 /api skills', () => {
       const userMsg = messages.body.data.items.find((m) => m.role === 'user');
       expect(userMsg).toBeDefined();
       expect(userMsg!.content[0]?.type).toBe('text');
-      expect(userMsg!.content[0]?.text).toContain('User activated the skill "update-config"');
+      expect(userMsg!.content[0]?.text).toContain('User activated the skill "kiki-ops"');
       const notice = userMsg!.content[1];
       expect(notice?.type).toBe('text');
       expect(notice?.text).toContain('Attached file "note.txt"');
@@ -324,7 +324,7 @@ describe('server-v2 /api skills', () => {
       await createMainAgent(id);
 
       const { body } = await postJson<null>(
-        `/api/sessions/${id}/skills/update-config:activate`,
+        `/api/sessions/${id}/skills/kiki-ops:activate`,
         {
           attachments: [
             { type: 'file', file_id: 'f_does_not_exist', name: 'x.txt', media_type: 'text/plain', size: 1 },

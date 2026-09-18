@@ -1,9 +1,9 @@
 ---
-name: check-kiki-docs
+name: kiki-ops.docs
 description: Answer Kiki product questions from the local documentation installed with Kiki — CLI and GUI usage, configuration, slash commands, features, and error behavior. Use when the user asks how Kiki works, how to configure it, or what Kiki reports mean.
 ---
 
-# Check Kiki docs (check-kiki-docs)
+# Check Kiki docs (kiki-ops.docs)
 
 Answer Kiki product questions from the documentation installed with the running Kiki version, not from memory or an upstream product website. This skill covers Kiki CLI, Kiki for VS Code, configuration, slash commands, tools, sessions, features, and error behavior; it is not for developing the Kiki repository itself.
 

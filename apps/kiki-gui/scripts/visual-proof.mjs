@@ -3546,7 +3546,7 @@ async function scenarioCapabilities() {
 
   // The builtin group starts collapsed; expand it for the density check.
   await page.locator('[data-capability-group="builtin"] > button').click();
-  await page.waitForSelector('text=write-goal', { timeout: 5000 });
+  await page.waitForSelector('text=kiki-ops', { timeout: 5000 });
   await page.waitForTimeout(300);
   await shot('capabilities-builtin-expanded');
 

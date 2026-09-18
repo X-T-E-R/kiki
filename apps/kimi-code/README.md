@@ -57,7 +57,7 @@ Take a look at this project and explain the main directories.
 - **Blazing-fast startup.** The TUI is ready in milliseconds, so opening a session never feels heavy.
 - **Polished TUI.** A carefully tuned interface designed for long, focused agent sessions.
 - **Video input.** Drop a screen recording or demo clip into the chat — let the agent watch instead of typing out what's hard to describe in words.
-- **AI-native MCP configuration.** Add, edit, and authenticate Model Context Protocol servers conversationally via `/mcp-config` — no hand-editing JSON.
+- **AI-native MCP configuration.** Add, edit, and authenticate Model Context Protocol servers conversationally via `/kiki-ops.mcp` — no hand-editing JSON.
 - **Subagents for focused, parallel work.** Dispatch built-in `coder`, `explore`, and `plan` subagents in isolated context windows; the main conversation stays clean.
 - **Lifecycle hooks.** Run local commands at key points — gate risky tool calls, audit decisions, fire desktop notifications, wire into your own automation.
 

@@ -1,11 +1,12 @@
 ---
-name: mcp-config
+name: kiki-ops.mcp
 description: Configure MCP servers and handle MCP OAuth login.
 ---
 
 # Interactive MCP server configuration
 
-The user invoked this skill through `/mcp-config` or `/skill:mcp-config`.
+The user reached this skill for MCP work — `/kiki-ops.mcp`, `/kiki-ops mcp …`,
+or a direct request to configure MCP or log in.
 Either they want to log into an MCP server that asked for OAuth, or they
 want to edit the `mcp.json` that lists MCP servers. The work is small and
 local — handle it on this turn yourself, no agents or planning todos.
@@ -13,12 +14,12 @@ local — handle it on this turn yourself, no agents or planning todos.
 Pick the flow from the user's message and your tool list:
 
 - An `mcp__<server>__authenticate` tool is in your list, the user says
-  "log in" / "auth" / "sign in", they invoke `/mcp-config login
+  "log in" / "auth" / "sign in", they invoke `/kiki-ops.mcp login
   <server>`, or they quote a `needs-auth` status → **Login**.
 - Add / edit / remove / list of an `mcp.json` entry → **Config edit**.
-- Bare `/mcp-config` with no `authenticate` tool in your list →
-  **Config edit**. If there were a pending login, the authenticate tool
-  would be in your list.
+- A bare `/kiki-ops.mcp` or `/kiki-ops mcp` with no `authenticate` tool in
+  your list → **Config edit**. If there were a pending login, the authenticate
+  tool would be in your list.
 
 ## Login
 
@@ -118,7 +119,7 @@ For changes, the flow is:
 3. **Write and tell them how to reload MCP servers.** Preserve unrelated
    entries and the `mcpServers` wrapper. MCP servers load at session
    start, so tell the user to start a new session (for example `/new`) or
-   restart `kimi-code` for the change to take effect.
+   restart `kiki` for the change to take effect.
 
 ## Secrets
 

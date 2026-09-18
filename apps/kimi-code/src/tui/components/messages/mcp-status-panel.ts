@@ -106,7 +106,7 @@ export function buildMcpStatusReportLines(options: McpStatusReportOptions): stri
   const lines: string[] = [accent('Servers')];
 
   if (servers.length === 0) {
-    lines.push(muted('  No MCP servers configured. Run /mcp-config to add one.'));
+    lines.push(muted('  No MCP servers configured. Run /kiki-ops.mcp to add one.'));
     return lines;
   }
 
@@ -144,13 +144,13 @@ export function buildMcpStatusReportLines(options: McpStatusReportOptions): stri
       lines.push(`    ${muted('error:')} ${error(formatErrorLine(server.error))}`);
     }
     if (server.status === 'needs-auth') {
-      lines.push(`    ${muted('action:')} ${value(`run /mcp-config login ${server.name}`)}`);
+      lines.push(`    ${muted('action:')} ${value(`run /kiki-ops.mcp login ${server.name}`)}`);
     }
   }
 
   lines.push('');
   lines.push(`  ${value(buildSummary(servers))}`);
-  lines.push(`  ${muted('Configure with')} ${value('/mcp-config')}`);
+  lines.push(`  ${muted('Configure with')} ${value('/kiki-ops.mcp')}`);
 
   return lines;
 }

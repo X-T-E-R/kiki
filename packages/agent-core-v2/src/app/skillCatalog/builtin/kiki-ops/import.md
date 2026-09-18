@@ -1,12 +1,11 @@
 ---
-name: import-from-cc-codex
+name: kiki-ops.import
 description: Import Claude Code and Codex instructions, skills, and MCP settings into Kiki.
-disable-model-invocation: true
 ---
 
-# Import from Claude Code and Codex
+# Import from Claude Code and Codex (kiki-ops.import)
 
-The user invoked `/import-from-cc-codex` (or `/skill:import-from-cc-codex`).
+The user invoked `/kiki-ops.import` (or `/kiki-ops import`).
 Help them migrate selected local Claude Code and Codex assets into Kiki.
 This skill is intentionally conservative: it imports only instructions, skills,
 and MCP server declarations from `.claude` / `.codex` surfaces, with a user
@@ -170,8 +169,8 @@ Do not convert `.claude/commands/*.md`. Commands are out of scope.
 #### MCP plan
 
 Do not edit `mcp.json` directly in this import skill. Prepare MCP entries for
-manual follow-up with `/mcp-config`; that built-in skill is user-invocable only,
-so you must not try to call it through the `Skill` tool.
+manual follow-up with `/kiki-ops.mcp`; this import flow never writes MCP config
+itself, so hand the user the prepared entries and the command to run.
 
 For the preview, collect MCP candidates and normalize them into Kiki's MCP shape
 when possible:
@@ -232,17 +231,17 @@ literal secrets in `env`, `headers`, or token-like fields; prefer env-var
 references.
 
 After the user confirms applying the final preview, do not write MCP config and
-do not invoke `mcp-config` programmatically. Instead, finish the non-MCP writes
+do not invoke the MCP topic programmatically. Instead, finish the non-MCP writes
 and show a copy-pasteable manual follow-up for the user, including:
 
-- the `/mcp-config` command they should run,
+- the `/kiki-ops.mcp` command they should run,
 - target scope and target path,
 - the normalized JSON entry or entries to add,
 - collision policy: keep existing Kiki entries on name conflict,
 - the reminder that unrelated entries must be preserved.
 
 Make it clear that MCP import is pending until the user manually runs
-`/mcp-config` with the prepared entries.
+`/kiki-ops.mcp` with the prepared entries.
 
 ### 4. Show the final preview and stop
 
@@ -250,7 +249,7 @@ After scanning, show a concise final preview grouped by target file/directory:
 
 - Will append instruction blocks
 - Will copy skill bundles/files
-- Will leave these MCP entries pending for a manual `/mcp-config` follow-up
+- Will leave these MCP entries pending for a manual `/kiki-ops.mcp` follow-up
 - Already present / skipped
 - Warnings and blockers
 
@@ -268,7 +267,7 @@ When the user confirms:
 - Create target directories with private permissions where possible.
 - Append instruction blocks without duplicating existing imported source blocks.
 - Copy skills without overwriting existing target entries.
-- Do not write MCP entries. Show the prepared `/mcp-config` follow-up command
+- Do not write MCP entries. Show the prepared `/kiki-ops.mcp` follow-up command
   and mark MCP import as pending user action.
 - Report exactly what changed and what was skipped.
 - Tell the user to start a new session (for example `/new`) or restart Kiki
