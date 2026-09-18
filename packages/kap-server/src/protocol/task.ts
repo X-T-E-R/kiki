@@ -31,5 +31,7 @@ export const taskSchema = z.object({
   profile: z.string().optional(),
   parent_tool_call_id: z.string().optional(),
   run_in_background: z.boolean(),
+  exit_code: z.number().int().nullable().optional(),
+  stop_reason: z.string().optional(),
 });
 export type Task = z.infer<typeof taskSchema>;

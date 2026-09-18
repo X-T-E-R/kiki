@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  cancelTaskQuerySchema,
   cancelTaskResultSchema,
   getTaskQuerySchema,
   getTaskResponseSchema,
@@ -34,9 +35,24 @@ describe('getTaskQuerySchema', () => {
     expect(getTaskQuerySchema.parse({})).toEqual({});
   });
   it('coerces with_output + output_bytes from strings (HTTP query)', () => {
-    const parsed = getTaskQuerySchema.parse({ with_output: 'true', output_bytes: '512' });
+    const parsed = getTaskQuerySchema.parse({
+      with_output: 'true',
+      output_bytes: '512',
+      agent_id: 'agent-a',
+    });
     expect(parsed.with_output).toBe(true);
     expect(parsed.output_bytes).toBe(512);
+    expect(parsed.agent_id).toBe('agent-a');
+  });
+});
+
+describe('cancelTaskQuerySchema', () => {
+  it('accepts an optional owning agent id', () => {
+    expect(cancelTaskQuerySchema.parse({})).toEqual({});
+    expect(cancelTaskQuerySchema.parse({ agent_id: 'agent-a' })).toEqual({
+      agent_id: 'agent-a',
+    });
+    expect(cancelTaskQuerySchema.safeParse({ agent_id: '' }).success).toBe(false);
   });
 });
 

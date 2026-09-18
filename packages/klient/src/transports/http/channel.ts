@@ -113,14 +113,22 @@ export class HttpChannel implements KlientChannel {
   readonly sessionCommands: SessionCommandChannel = {
     execute: (sessionId, command, input) => {
       const spec = sessionCommandContract[command];
-      const value = input as { target?: string; body?: unknown };
+      const value = input as {
+        target?: string;
+        body?: unknown;
+        query?: { agent_id?: string };
+      };
       const suffix = spec.suffix.replace('{target}', encodeURIComponent(value.target ?? ''));
-      return this.viewRequest(`/api/sessions/${encodeURIComponent(sessionId)}${suffix}`, {}, {
-        method: spec.method,
-        body: spec.method === 'GET' ? undefined : value.body ?? {},
-        okCodes: spec.okCodes,
-        timeoutMs: 'timeoutMs' in spec ? spec.timeoutMs : undefined,
-      });
+      return this.viewRequest(
+        `/api/sessions/${encodeURIComponent(sessionId)}${suffix}`,
+        { agent_id: value.query?.agent_id },
+        {
+          method: spec.method,
+          body: spec.method === 'GET' ? undefined : value.body ?? {},
+          okCodes: spec.okCodes,
+          timeoutMs: 'timeoutMs' in spec ? spec.timeoutMs : undefined,
+        },
+      );
     },
   };
 

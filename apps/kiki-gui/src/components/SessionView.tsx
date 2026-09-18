@@ -26,6 +26,7 @@ import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
+import { SubagentDetailActions } from './SubagentDetailActions';
 import { TerminalPanel } from './TerminalPanel';
 import { Transcript, useStableForest, type TranscriptRowActions } from './Transcript';
 import { MediaPreviewProvider, PreviewToggleButton } from './mediaPreview';
@@ -1032,6 +1033,28 @@ export function agentDetailPath(sessionId: string, agentId: string): string {
   return `/s/${sessionId}/agent/${encodeURIComponent(agentId)}`;
 }
 
+export function resolveRunningSubagentTask(input: {
+  agentId: string;
+  parentAgentId?: string;
+  mainTasks: SessionViewState['tasks'];
+  parentTasks: SessionViewState['tasks'];
+}): {
+  ownerAgentId: string;
+  task: SessionViewState['tasks'][number] | undefined;
+} {
+  const ownerAgentId = input.parentAgentId ?? MAIN_AGENT_ID;
+  const tasks = ownerAgentId === MAIN_AGENT_ID ? input.mainTasks : input.parentTasks;
+  return {
+    ownerAgentId,
+    task: tasks.find(
+      (task) =>
+        task.kind === 'subagent' &&
+        task.status === 'running' &&
+        task.agent_id === input.agentId,
+    ),
+  };
+}
+
 export function ResyncStatusBanner({
   resyncing,
   resyncFailed,
@@ -1461,6 +1484,26 @@ export function SessionView({
       ? controller.getAgentState(selectedAgentId)
       : emptyView,
   );
+  const selectedParentAgentId =
+    selectedAgentId === undefined
+      ? undefined
+      : (controller?.getForest() ?? sessionAgentForest(state)).byId[selectedAgentId]?.parentAgentId;
+  const subscribeParentAgent = useCallback(
+    (listener: () => void) =>
+      controller === null ||
+      selectedParentAgentId === undefined ||
+      selectedParentAgentId === MAIN_AGENT_ID
+        ? () => {}
+        : controller.subscribeAgent(selectedParentAgentId, listener),
+    [controller, selectedParentAgentId],
+  );
+  const parentAgentState = useSyncExternalStore(subscribeParentAgent, () =>
+    controller !== null &&
+    selectedParentAgentId !== undefined &&
+    selectedParentAgentId !== MAIN_AGENT_ID
+      ? controller.getAgentState(selectedParentAgentId)
+      : emptyView,
+  );
 
   // The sessions list lives in App (single owner, page-1 polling); this view
   // only merges the polled record for ITS session into the live controller.
@@ -1487,6 +1530,13 @@ export function SessionView({
     queryFn: () => client.listModels(),
     staleTime: 60_000,
   });
+  // Subagent tasks register under the dispatching (parent) agent's task
+  // service, so bulk/detail actions retain that owner scope.
+  const stopAgentTask = useCallback(
+    (ownerAgentId: string, taskId: string) =>
+      client.stopAgentTask(sessionId, ownerAgentId, taskId),
+    [client, sessionId],
+  );
   const profileWorkspaceId = sessionAgentProfileWorkspaceId(state.session);
   const profileCwd = state.session?.metadata.cwd;
   const agentProfileCatalogMode = useMemo<AgentProfileCatalogMode>(
@@ -1894,6 +1944,26 @@ export function SessionView({
     sessionId,
     t,
   ]);
+
+  const handleCancelTask = useCallback(
+    (taskId: string, ownerAgentId?: string) => {
+      if (ownerAgentId === undefined) {
+        actions?.cancelTask(taskId);
+        return;
+      }
+      void client
+        .cancelTask(sessionId, taskId, { agent_id: ownerAgentId })
+        .catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t('sv.stopTaskFailed', {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          });
+        });
+    },
+    [actions, client, sessionId, t],
+  );
 
   const actionContext: SessionActionContext = useMemo(
     () => ({
@@ -2459,6 +2529,35 @@ export function SessionView({
           : t('sv.historyUnavailable');
     const displayName = selectedNode?.label ?? selectedSubagent?.name ?? selectedAgentId;
     const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
+    // Action affordances: the tree node can lag at 'unknown' on cold open, so
+    // a known timeline-card status wins (same rule as the rail's task section).
+    const actionStatus =
+      selectedSubagent !== undefined && selectedSubagent.status !== 'unknown'
+        ? selectedSubagent.status
+        : (selectedNode?.status ?? selectedSubagent?.status ?? 'unknown');
+    const agentLive =
+      actionStatus === 'running' || actionStatus === 'background' || actionStatus === 'suspended';
+    // The child run is a task on the PARENT agent's task service; nested agents
+    // therefore need the parent's per-agent snapshot rather than the main one.
+    const { ownerAgentId, task: runningAgentTask } = resolveRunningSubagentTask({
+      agentId: selectedAgentId,
+      parentAgentId: selectedNode?.parentAgentId ?? selectedParentAgentId,
+      mainTasks: state.tasks,
+      parentTasks: parentAgentState.tasks,
+    });
+    const handleMessageAgent = async (text: string) => {
+      await client.sendAgentMessage(sessionId, selectedAgentId, text);
+    };
+    const handleTerminateAgent = async () => {
+      if (runningAgentTask === undefined) {
+        pushToast({ tone: 'info', text: t('subagent.terminateUnavailable') });
+        return;
+      }
+      await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
+    };
+    const handleChangeAgentModel = async (model: string) => {
+      await client.setAgentModel(sessionId, selectedAgentId, model);
+    };
     const displayEffort =
       agentLiveState.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
     const displayContextTokens = agentLiveState.contextTokens ?? selectedNode?.contextTokens;
@@ -2512,7 +2611,7 @@ export function SessionView({
                     <p className="truncate text-[10.5px] text-ink-faint">
                       {t('sv.subagentNote')}
                       {' · '}
-                      {t('sv.agentReadOnly')}
+                      {t('sv.agentActionsNote')}
                     </p>
                   </div>
                   {displayModel !== undefined ? (
@@ -2559,6 +2658,17 @@ export function SessionView({
                   >
                     {headerBusy ? t('sv.working') : statusLabel}
                   </span>
+                  <SubagentDetailActions
+                    agentId={selectedAgentId}
+                    name={displayName}
+                    live={agentLive}
+                    canTerminate={runningAgentTask !== undefined}
+                    currentModel={displayModel}
+                    models={modelsQuery.data?.items ?? []}
+                    onSendMessage={handleMessageAgent}
+                    onTerminate={handleTerminateAgent}
+                    onChangeModel={handleChangeAgentModel}
+                  />
                   <PreviewToggleButton />
                   <button
                     type="button"
@@ -2621,7 +2731,9 @@ export function SessionView({
                   pendingInteractionCount: agentPendingInteractionCount,
                   onJumpToSpawn: handleJumpToSpawn,
                 }}
-                onCancelTask={(taskId) => actions?.cancelTask(taskId)}
+                taskOwnerAgentId={selectedAgentId}
+                onCancelTask={handleCancelTask}
+                onStopAgentTask={stopAgentTask}
                 onOpenSubagent={openAgent}
               />,
               slots.rail,
@@ -2779,7 +2891,8 @@ export function SessionView({
               state={state}
               forest={forest}
               selectedAgentId={selectedAgentId}
-              onCancelTask={(taskId) => actions?.cancelTask(taskId)}
+              onCancelTask={handleCancelTask}
+              onStopAgentTask={stopAgentTask}
               onOpenSubagent={openAgent}
             />,
             slots.rail,

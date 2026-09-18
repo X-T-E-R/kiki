@@ -1,5 +1,5 @@
 import type {
-  ApprovalResolveRequest, ApprovalResolveResult, EditMessageRequest, ForkSessionRequest,
+  ApprovalResolveRequest, ApprovalResolveResult, CancelTaskQuery, EditMessageRequest, ForkSessionRequest,
   PromptAbortResponse, PromptReplaceRequest, PromptReplaceResult, PromptSteerResult,
   PromptSubmission, PromptSubmitResult, QuestionDismissResult, QuestionResolveRequest,
   QuestionResolveResult, RegenerateMessageRequest, Session,
@@ -20,7 +20,7 @@ export interface SessionCommandsFacade {
   approve(approvalId: string, body: ApprovalResolveRequest): Promise<ApprovalResolveResult>;
   answer(questionId: string, body: QuestionResolveRequest): Promise<QuestionResolveResult>;
   dismiss(questionId: string): Promise<QuestionDismissResult>;
-  cancelTask(taskId: string): Promise<{ cancelled: boolean }>;
+  cancelTask(taskId: string, query?: CancelTaskQuery): Promise<{ cancelled: boolean }>;
 }
 
 export function createSessionCommandsFacade(channel: SessionCommandChannel | undefined, sessionId: string, validate: boolean): SessionCommandsFacade {
@@ -49,6 +49,6 @@ export function createSessionCommandsFacade(channel: SessionCommandChannel | und
     approve: (target, body) => invoke('approve', { target, body }),
     answer: (target, body) => invoke('answer', { target, body }),
     dismiss: (target) => invoke('dismiss', { target }),
-    cancelTask: (target) => invoke('cancelTask', { target }),
+    cancelTask: (target, query = {}) => invoke('cancelTask', { target, query }),
   };
 }

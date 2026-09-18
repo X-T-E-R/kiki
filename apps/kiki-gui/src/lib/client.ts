@@ -15,6 +15,7 @@ import type {
   ApprovalResolveResult,
   ArchiveSessionResponse,
   AuthSummary,
+  CancelTaskQuery,
   CloseTerminalResponse,
   CompactSessionRequest,
   CompactSessionResponse,
@@ -22,6 +23,7 @@ import type {
   CreateTerminalRequest,
   FileMeta,
   FsSearchResponse,
+  GetTaskQuery,
   GetTerminalResponse,
   GoalSnapshot,
   ListMcpServersResponse,
@@ -846,16 +848,38 @@ export class KikiClient {
   }
 
   /** Single task; `with_output` opts into the tail-of-log preview (≤32KB default). */
-  getTask(
-    sessionId: string,
-    taskId: string,
-    query: { with_output?: boolean; output_bytes?: number } = {},
-  ): Promise<Task> {
+  getTask(sessionId: string, taskId: string, query: GetTaskQuery = {}): Promise<Task> {
     return this.run(() => this.rest.sessions.getTask(sessionId, taskId, query));
   }
 
-  cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: boolean }> {
-    return this.sessions.cancelTask(sessionId, taskId);
+  cancelTask(
+    sessionId: string,
+    taskId: string,
+    query: CancelTaskQuery = {},
+  ): Promise<{ cancelled: boolean }> {
+    return this.sessions.cancelTask(sessionId, taskId, query);
+  }
+
+  /** Stop a subagent dispatch task through the task-owning agent's facade. */
+  stopAgentTask(sessionId: string, agentId: string, taskId: string): Promise<void> {
+    return this.run(this.klient.session(sessionId).agent(agentId).stopTask({ taskId }));
+  }
+
+  /** User → subagent message; the prompt route's `agent_id` targets any live agent. */
+  sendAgentMessage(
+    sessionId: string,
+    agentId: string,
+    text: string,
+  ): Promise<PromptSubmitResult> {
+    return this.submitPrompt(sessionId, {
+      content: [{ type: 'text', text }],
+      agent_id: agentId,
+    });
+  }
+
+  /** Rebind a live agent's model (agent-scoped profile call). */
+  setAgentModel(sessionId: string, agentId: string, model: string) {
+    return this.run(this.klient.session(sessionId).agent(agentId).setModel(model));
   }
 
   /** Loopback-only PTY lifecycle, owned by the shared Klient HTTP capability. */

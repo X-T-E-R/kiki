@@ -51,6 +51,28 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('sends the owning agent id when reading task details', async () => {
+    const task = { id: 'task-1', output_preview: 'child output' };
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/sessions/session-1/tasks/task-1');
+      expect(url.searchParams.get('with_output')).toBe('true');
+      expect(url.searchParams.get('agent_id')).toBe('agent-a');
+      return envelope(task);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(
+        channel.rest.sessions.getTask('session-1', 'task-1', {
+          with_output: true,
+          agent_id: 'agent-a',
+        }),
+      ).resolves.toEqual(task);
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('sends lease ids in the REST body and returns the server lease', async () => {
     const bodies: unknown[] = [];
     const fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {

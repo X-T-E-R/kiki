@@ -1,12 +1,15 @@
 import {
+  IAgentLifecycleService,
   IAgentTaskService,
   ISessionIndex,
+  MAIN_AGENT_ID,
   getLiveSessionById,
   type AgentTaskInfo,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { ErrorCode } from '../protocol/error-codes';
 import {
+  cancelTaskQuerySchema,
   cancelTaskResultSchema,
   getTaskQuerySchema,
   getTaskResponseSchema,
@@ -37,7 +40,7 @@ interface TasksRouteHost {
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
     handler: (
-      req: { id: string; body: unknown; params: unknown },
+      req: { id: string; body: unknown; query: unknown; params: unknown },
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
@@ -72,8 +75,12 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
     async (req, reply) => {
       const { session_id } = req.params;
       const resolved = await resolveSessionTasks(core, session_id);
-      if (resolved.kind === 'not_found') {
+      if (resolved.kind === 'session_not_found') {
         reply.send(sessionNotFound(session_id, req.id));
+        return;
+      }
+      if (resolved.kind === 'agent_not_found') {
+        reply.send(agentNotFound(session_id, resolved.agentId, req.id));
         return;
       }
 
@@ -105,9 +112,18 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       const { session_id, task_id } = req.params;
-      const resolved = await resolveSessionTasks(core, session_id);
-      if (resolved.kind === 'not_found') {
+      const query = req.query as {
+        with_output?: boolean;
+        output_bytes?: number;
+        agent_id?: string;
+      };
+      const resolved = await resolveSessionTasks(core, session_id, query.agent_id);
+      if (resolved.kind === 'session_not_found') {
         reply.send(sessionNotFound(session_id, req.id));
+        return;
+      }
+      if (resolved.kind === 'agent_not_found') {
+        reply.send(agentNotFound(session_id, resolved.agentId, req.id));
         return;
       }
 
@@ -117,7 +133,6 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
         return;
       }
 
-      const query = req.query as { with_output?: boolean; output_bytes?: number };
       let output: { preview: string; bytes: number } | undefined;
       if (query.with_output === true && resolved.tasks !== undefined) {
         const tailBytes = query.output_bytes ?? DEFAULT_TASK_OUTPUT_PREVIEW_BYTES;
@@ -139,6 +154,7 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
     {
       method: 'POST',
       path: '/sessions/{session_id}/tasks/{tail}',
+      querystring: cancelTaskQuerySchema,
       success: { data: cancelTaskResultSchema },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
@@ -179,9 +195,14 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
         return;
       }
 
-      const resolved = await resolveSessionTasks(core, session_id);
-      if (resolved.kind === 'not_found') {
+      const query = req.query as { agent_id?: string };
+      const resolved = await resolveSessionTasks(core, session_id, query.agent_id);
+      if (resolved.kind === 'session_not_found') {
         reply.send(sessionNotFound(session_id, req.id));
+        return;
+      }
+      if (resolved.kind === 'agent_not_found') {
+        reply.send(agentNotFound(session_id, resolved.agentId, req.id));
         return;
       }
 
@@ -205,15 +226,25 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
 }
 
 type ResolvedTasks =
-  | { readonly kind: 'not_found' }
+  | { readonly kind: 'session_not_found' }
+  | { readonly kind: 'agent_not_found'; readonly agentId: string }
   | { readonly kind: 'resolved'; readonly tasks: IAgentTaskService | undefined };
 
-async function resolveSessionTasks(core: Scope, sid: string): Promise<ResolvedTasks> {
+async function resolveSessionTasks(
+  core: Scope,
+  sid: string,
+  agentId?: string,
+): Promise<ResolvedTasks> {
   const summary = await core.accessor.get(ISessionIndex).get(sid);
-  if (summary === undefined) return { kind: 'not_found' };
+  if (summary === undefined) return { kind: 'session_not_found' };
 
   const session = getLiveSessionById(core.accessor, sid);
   if (session === undefined) return { kind: 'resolved', tasks: undefined };
+  if (agentId !== undefined && agentId !== MAIN_AGENT_ID) {
+    const agent = session.accessor.get(IAgentLifecycleService).get(agentId);
+    if (agent === undefined) return { kind: 'agent_not_found', agentId };
+    return { kind: 'resolved', tasks: agent.accessor.get(IAgentTaskService) };
+  }
   const agent = await ensureMainAgent(session);
   const tasks = agent.accessor.get(IAgentTaskService);
   return { kind: 'resolved', tasks };
@@ -280,6 +311,12 @@ function toWireTask(
   if (info.kind === 'process' && 'command' in info && typeof info.command === 'string') {
     base.command = info.command;
   }
+  if (info.kind === 'process') {
+    base.exit_code = info.exitCode;
+  }
+  if (info.stopReason !== undefined) {
+    base.stop_reason = info.stopReason;
+  }
   if (info.kind === 'agent' && info.model !== undefined) {
     base.model = info.model;
   }
@@ -304,6 +341,14 @@ function toWireTask(
 
 function sessionNotFound(sid: string, requestId: string): unknown {
   return errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${sid} does not exist`, requestId);
+}
+
+function agentNotFound(sid: string, agentId: string, requestId: string): unknown {
+  return errEnvelope(
+    ErrorCode.SESSION_NOT_FOUND,
+    `agent ${agentId} does not exist in session ${sid}`,
+    requestId,
+  );
 }
 
 function taskNotFound(sid: string, tid: string, requestId: string): unknown {

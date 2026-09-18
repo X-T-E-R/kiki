@@ -1,6 +1,7 @@
 import type {
   ApprovalResolveRequest,
   ApprovalResolveResult,
+  CancelTaskQuery,
   ConfigResponse,
   MessageContent,
   PageResponse,
@@ -436,7 +437,11 @@ export interface SessionTransport {
     body: QuestionResolveRequest,
   ): Promise<QuestionResolveResult>;
   dismissQuestion(sessionId: string, questionId: string): Promise<QuestionDismissResult>;
-  cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: boolean }>;
+  cancelTask(
+    sessionId: string,
+    taskId: string,
+    query?: CancelTaskQuery,
+  ): Promise<{ cancelled: boolean }>;
 }
 
 export interface SessionListTransport {

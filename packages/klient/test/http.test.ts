@@ -348,7 +348,12 @@ describe('http transport', () => {
     await expect(commands.approve('approval/1', choice)).resolves.toMatchObject({ resolved: true });
     expect(String(fetchMock.mock.calls[0]![0])).toBe('http://127.0.0.1:58627/api/sessions/s1/approvals/approval%2F1');
     expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual(choice);
-    await expect(commands.cancelTask('task1')).resolves.toEqual({ cancelled: false });
+    await expect(commands.cancelTask('task1', { agent_id: 'agent-a' })).resolves.toEqual({
+      cancelled: false,
+    });
+    expect(String(fetchMock.mock.calls[1]![0])).toContain(
+      '/api/sessions/s1/tasks/task1:cancel?agent_id=agent-a',
+    );
     await expect(commands.approve('approval/1', choice)).rejects.toMatchObject({
       code: 40902, requestId: 'r-approval', data: { resolved: false },
     });

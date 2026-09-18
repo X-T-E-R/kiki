@@ -30,6 +30,6 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
     resolveApproval: (id, target, body) => run(() => commands(id).approve(target, body)),
     resolveQuestion: (id, target, body) => run(() => commands(id).answer(target, body)),
     dismissQuestion: (id, target) => run(() => commands(id).dismiss(target)),
-    cancelTask: (id, target) => run(() => commands(id).cancelTask(target)),
+    cancelTask: (id, target, query) => run(() => commands(id).cancelTask(target, query)),
   };
 }

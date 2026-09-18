@@ -28,6 +28,7 @@ import { AgentTreeView } from './AgentTreeView';
 import { Transcript } from './Transcript';
 import { ContextMeter } from './ContextMeter';
 import { RightRail } from './RightRail';
+import { SubagentDetailActions } from './SubagentDetailActions';
 
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ state }: { state: { todos: readonly { title: string }[] } }) =>
@@ -56,6 +57,7 @@ import {
   resolveControlledValue,
   resolvePlanGate,
   resolveProfileSwitchSubmission,
+  resolveRunningSubagentTask,
   sessionHasStartedConversation,
   parseSessionCreateHandoff,
   replaceQueuedPrompt,
@@ -297,10 +299,10 @@ describe('toolErrorFullText', () => {
 describe('projectUserText', () => {
   const render = (text: string) => renderToStaticMarkup(<I18nProvider>{projectUserText(text)}</I18nProvider>);
 
-  it('chips @subagent and /skill tokens while keeping the verbatim text', () => {
+  it('chips @subagent tokens but leaves slash-looking prose unchipped', () => {
     const html = render('ask @reviewer to run /lint please');
     expect(html).toContain('data-ref-chip="subagent"');
-    expect(html).toContain('data-ref-chip="skill"');
+    expect(html).not.toContain('data-ref-chip="skill"');
     expect(html).toContain('@reviewer');
     expect(html).toContain('/lint');
     expect(html).toContain('ask ');
@@ -1344,6 +1346,150 @@ describe('agent tree chrome', () => {
     expect(html).not.toContain('data-jump-to-spawn');
     expect(html).not.toContain('data-sibling-prev');
   });
+
+  it('shows the failure reason inline for a failed subagent', () => {
+    const railForest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'main' },
+        { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher' },
+      ],
+    );
+    const failedBlock: SubagentBlock = {
+      kind: 'subagent',
+      id: 'subagent-agent-1',
+      subagentId: 'agent-1',
+      parentAgentId: 'main',
+      parentToolCallId: 'call-1',
+      name: 'Researcher',
+      label: 'Researcher',
+      description: 'Research the topic',
+      model: undefined,
+      thinkingEffort: undefined,
+      status: 'failed',
+      summary: undefined,
+      error: 'model request failed: upstream timeout',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      endedAt: '2026-01-01T00:01:00.000Z',
+      toolCallCount: 0,
+      transcript: [],
+    };
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <I18nProvider>
+          <RightRail
+            state={createViewState('sess-1')}
+            forest={railForest}
+            selectedAgentId="agent-1"
+            subagent={{
+              agentId: 'agent-1',
+              block: failedBlock,
+              pendingInteractionCount: 0,
+              onJumpToSpawn: undefined,
+            }}
+            onCancelTask={() => {}}
+            onOpenSubagent={() => {}}
+          />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+    expect(html).toContain('data-agent-status="failed"');
+    expect(html).toContain('model request failed: upstream timeout');
+    expect(html).toContain('text-danger');
+  });
+
+  it('exposes a view-all entry, clickable task rows, and the bulk stop button', () => {
+    const railForest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'main' },
+        { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'running' },
+      ],
+    );
+    const state = {
+      ...createViewState('sess-1'),
+      session: {
+        id: 'sess-1',
+        metadata: { cwd: 'C:/work/example' },
+        message_count: 0,
+        updated_at: '2026-01-01T00:00:00.000Z',
+      },
+      tasks: [
+        {
+          id: 't1',
+          session_id: 'sess-1',
+          kind: 'bash',
+          description: 'dev server',
+          status: 'running',
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'sub-1',
+          session_id: 'sess-1',
+          kind: 'subagent',
+          description: 'Researcher',
+          status: 'running',
+          created_at: '2026-01-01T00:00:00.000Z',
+          agent_id: 'agent-1',
+        },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <I18nProvider>
+          <RightRail
+            state={state as never}
+            forest={railForest}
+            onCancelTask={() => {}}
+            onStopAgentTask={() => Promise.resolve()}
+            onOpenSubagent={() => {}}
+          />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+    expect(html).toContain('data-subagents-view-all');
+    expect(html).toContain('data-task-open="t1"');
+    // Subagent runs stay in the tree chapter; the task rows skip them.
+    expect(html).not.toContain('data-task-open="sub-1"');
+    expect(html).toContain('data-terminate-all-subagents');
+  });
+
+  it('hides the bulk stop button when no stopper is wired', () => {
+    const railForest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'main' },
+        { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'running' },
+      ],
+    );
+    const state = {
+      ...createViewState('sess-1'),
+      tasks: [
+        {
+          id: 'sub-1',
+          session_id: 'sess-1',
+          kind: 'subagent',
+          description: 'Researcher',
+          status: 'running',
+          created_at: '2026-01-01T00:00:00.000Z',
+          agent_id: 'agent-1',
+        },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <I18nProvider>
+          <RightRail
+            state={state as never}
+            forest={railForest}
+            onCancelTask={() => {}}
+            onOpenSubagent={() => {}}
+          />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+    expect(html).not.toContain('data-terminate-all-subagents');
+  });
 });
 
 describe('canonical SessionView product gates', () => {
@@ -1388,5 +1534,89 @@ describe('canonical SessionView product gates', () => {
     expect(html.includes('from subagent') || html.includes('子代理')).toBe(true);
     expect(html).not.toContain('data-steer');
     expect(html).toContain('data-shell');
+  });
+});
+
+describe('nested subagent task ownership', () => {
+  it('finds B in parent A task state instead of the main task snapshot', () => {
+    const forest = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'Main' },
+        { agentId: 'agent-a', parentAgentId: 'main', name: 'A', status: 'running' },
+        { agentId: 'agent-b', parentAgentId: 'agent-a', name: 'B', status: 'running' },
+      ],
+    );
+    const nestedTask = {
+      id: 'spawn-b',
+      session_id: 'sess-1',
+      kind: 'subagent' as const,
+      description: 'B',
+      status: 'running' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+      run_in_background: true,
+      agent_id: 'agent-b',
+    };
+
+    const resolved = resolveRunningSubagentTask({
+      agentId: 'agent-b',
+      parentAgentId: forest.byId['agent-b']?.parentAgentId,
+      mainTasks: [],
+      parentTasks: [nestedTask],
+    });
+
+    expect(resolved).toEqual({ ownerAgentId: 'agent-a', task: nestedTask });
+  });
+});
+
+describe('SubagentDetailActions', () => {
+  const MODELS = [
+    { provider: 'provider', model: 'provider/model-a', max_context_size: 128000 },
+    { provider: 'provider', model: 'provider/model-b', max_context_size: 64000 },
+  ];
+
+  it('renders message, model, and terminate controls for a live agent', () => {
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <SubagentDetailActions
+          agentId="agent-1"
+          name="Researcher"
+          live
+          canTerminate
+          currentModel="provider/model-a"
+          models={MODELS}
+          onSendMessage={() => Promise.resolve()}
+          onTerminate={() => Promise.resolve()}
+          onChangeModel={() => Promise.resolve()}
+        />
+      </I18nProvider>,
+    );
+    expect(html).toContain('data-subagent-actions');
+    expect(html).toContain('data-subagent-message');
+    expect(html).toContain('data-subagent-model-select');
+    expect(html).toContain('data-subagent-terminate');
+    expect(html).toContain('provider/model-a');
+  });
+
+  it('degrades for a settled agent: disabled message, no model picker, no terminate', () => {
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <SubagentDetailActions
+          agentId="agent-1"
+          name="Researcher"
+          live={false}
+          canTerminate={false}
+          currentModel="provider/model-a"
+          models={MODELS}
+          onSendMessage={() => Promise.resolve()}
+          onTerminate={() => Promise.resolve()}
+          onChangeModel={() => Promise.resolve()}
+        />
+      </I18nProvider>,
+    );
+    expect(html).toContain('data-subagent-message');
+    expect(html).toMatch(/data-subagent-message[^>]*disabled/);
+    expect(html).not.toContain('data-subagent-model-select');
+    expect(html).not.toContain('data-subagent-terminate');
   });
 });

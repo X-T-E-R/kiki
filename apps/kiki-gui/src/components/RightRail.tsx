@@ -29,9 +29,14 @@ import {
 import { useI18n } from '../i18n';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
+import { pushToast } from '../lib/toasts';
 import { AgentSubtreeView, AgentTreeView } from './AgentTreeView';
 import { AgentPanelContainer } from './AgentPanelContainer';
+import { ConfirmDialog } from './ConfirmDialog';
+import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
 import { useNow } from './RelativeTime';
+import { TaskDetailModal } from './TaskDetailModal';
+import { DANGER_GHOST_BUTTON } from './ui';
 
 /** Differentiated subagent-page rail context (G-3). */
 export interface SubagentRailContext {
@@ -88,28 +93,40 @@ function OverflowHint({ count }: { count: number }) {
 
 /**
  * Collapsible rail chapter — button + useState + aria-expanded + rotating
- * chevron (the repo's collapse idiom). Starts expanded.
+ * chevron (the repo's collapse idiom). Starts expanded. `actions` renders
+ * beside the header row (e.g. a bulk stop button), outside the toggle button.
  */
-function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
+function RailSection({
+  title,
+  actions,
+  children,
+}: {
+  title: string;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   const [open, setOpen] = useState(true);
   return (
     <section>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => { setOpen((value) => !value); }}
-        className="mb-2 flex w-full items-center gap-1.5 text-left"
-      >
-        <span
-          aria-hidden
-          className={`inline-block shrink-0 text-[8px] text-ink-faint transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+      <div className="mb-2 flex items-center gap-1.5">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => { setOpen((value) => !value); }}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
         >
-          ▶
-        </span>
-        <span className="text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          {title}
-        </span>
-      </button>
+          <span
+            aria-hidden
+            className={`inline-block shrink-0 text-[8px] text-ink-faint transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+          >
+            ▶
+          </span>
+          <span className="text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+            {title}
+          </span>
+        </button>
+        {actions}
+      </div>
       {open ? children : null}
     </section>
   );
@@ -131,11 +148,16 @@ function taskStatusTone(status: Task['status']): string {
 const TasksSection = memo(function TasksSection({
   tasks,
   sessionId,
+  ownerAgentId,
   onCancel,
+  onOpenTask,
 }: {
   tasks: readonly Task[];
   sessionId?: string;
-  onCancel: (taskId: string) => void;
+  ownerAgentId?: string;
+  onCancel: (taskId: string, ownerAgentId?: string) => void;
+  /** Opens the terminal-style detail modal for one task. */
+  onOpenTask: (task: Task) => void;
 }) {
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -150,18 +172,29 @@ const TasksSection = memo(function TasksSection({
     <div ref={scrollRef} data-tasks-scroll className="max-h-80 overflow-y-auto pr-1">
       <ul className="space-y-1.5">
         {sorted.map((task) => (
-          <li key={task.id} data-rail-item className="rounded-lg border border-hairline bg-panel px-2.5 py-1.5">
-            <div className="flex items-center gap-1.5">
-              <span className={`rounded-full px-1.5 py-px text-[10px] font-medium ${taskStatusTone(task.status)}`}>
-                {t(`rail.taskStatus.${task.status}`)}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink">
-                {task.description}
-              </span>
+          <li key={task.id} data-rail-item className="rounded-lg border border-hairline bg-panel transition-colors hover:border-accent/50">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5">
+              <button
+                type="button"
+                data-task-open={task.id}
+                title={t('rail.viewDetails')}
+                onClick={() => { onOpenTask(task); }}
+                className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+              >
+                <span className={`shrink-0 rounded-full px-1.5 py-px text-[10px] font-medium ${taskStatusTone(task.status)}`}>
+                  {t(`rail.taskStatus.${task.status}`)}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink">
+                  {task.description}
+                </span>
+              </button>
               {task.status === 'running' ? (
                 <button
                   type="button"
-                  onClick={() => { onCancel(task.id); }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCancel(task.id, ownerAgentId);
+                  }}
                   title={t('rail.stopTitle')}
                   className="shrink-0 rounded-md border border-hairline px-1.5 py-0.5 text-[10px] text-ink-soft transition-colors hover:border-danger hover:text-danger"
                 >
@@ -170,10 +203,10 @@ const TasksSection = memo(function TasksSection({
               ) : null}
             </div>
             {task.command !== undefined ? (
-              <p className="mt-1 truncate font-mono text-[10.5px] text-ink-faint">{task.command}</p>
+              <p className="mt-1 truncate px-2.5 pb-1 font-mono text-[10.5px] text-ink-faint">{task.command}</p>
             ) : null}
             {task.output_preview !== undefined && task.output_preview !== '' ? (
-              <p className="mt-1 line-clamp-2 font-mono text-[10.5px] break-all text-ink-faint">
+              <p className="mt-1 line-clamp-2 px-2.5 pb-1.5 font-mono text-[10.5px] break-all text-ink-faint">
                 {task.output_preview}
               </p>
             ) : null}
@@ -202,18 +235,30 @@ const SubagentsSection = memo(function SubagentsSection({
   forest,
   selectedAgentId,
   onOpen,
+  onViewAll,
 }: {
   forest: AgentForest;
   selectedAgentId?: string;
   onOpen: (agentId: string) => void;
+  /** Opens the full-tree dialog (the rail list clamps at max-h-80). */
+  onViewAll: () => void;
 }) {
+  const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
   const hiddenBelow = useHiddenBelow(scrollRef);
   return (
     <div ref={scrollRef} data-subagent-scroll className="max-h-80 overflow-y-auto pr-1">
       <AgentTreeView forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpen} />
-      <div className="sticky bottom-0 bg-panel">
+      <div className="sticky bottom-0 bg-panel pt-1.5 pb-0.5">
         <OverflowHint count={hiddenBelow} />
+        <button
+          type="button"
+          data-subagents-view-all
+          onClick={onViewAll}
+          className="text-[10.5px] font-medium text-accent transition-colors hover:text-accent-deep"
+        >
+          {t('tasks.viewAll')}
+        </button>
       </div>
     </div>
   );
@@ -438,7 +483,9 @@ export function RightRail({
   forest,
   selectedAgentId,
   subagent,
+  taskOwnerAgentId,
   onCancelTask,
+  onStopAgentTask,
   onOpenSubagent,
   className,
 }: {
@@ -446,17 +493,37 @@ export function RightRail({
   forest: AgentForest;
   selectedAgentId?: string;
   subagent?: SubagentRailContext;
-  onCancelTask: (taskId: string) => void;
+  taskOwnerAgentId?: string;
+  onCancelTask: (taskId: string, ownerAgentId?: string) => void;
+  /**
+   * Stops one running subagent task through its owning agent's scope
+   * (`ownerAgentId` = the agent the task is registered under). When absent
+   * the bulk-terminate affordance stays hidden.
+   */
+  onStopAgentTask?: (ownerAgentId: string, taskId: string) => Promise<void>;
   onOpenSubagent: (agentId: string) => void;
   className?: string;
 }) {
   const { t, time } = useI18n();
   useNow();
   const session = state.session;
+  const [detailTask, setDetailTask] = useState<Task | null>(null);
+  const [subagentsAllOpen, setSubagentsAllOpen] = useState(false);
+  const [terminateSnapshot, setTerminateSnapshot] = useState<readonly Task[] | null>(null);
+  const [terminatingAll, setTerminatingAll] = useState(false);
   const backgroundTasks = useMemo(
     () => state.tasks.filter((task) => task.kind !== 'subagent' && task.status === 'running'),
     [state.tasks],
   );
+  const runningSubagentTasks = useMemo(
+    () =>
+      state.tasks.filter(
+        (task) => task.kind === 'subagent' && task.status === 'running' && task.agent_id !== undefined,
+      ),
+    [state.tasks],
+  );
+  const runningSubagentTasksRef = useRef(runningSubagentTasks);
+  runningSubagentTasksRef.current = runningSubagentTasks;
   // Empty sections collapse entirely (header included). In subagent mode the
   // task and navigation chapters lead; the child shortcuts live in navigation.
   const showSubagents =
@@ -464,6 +531,56 @@ export function RightRail({
     (Object.keys(forest.byId).some((id) => id !== 'main') ||
       forest.roots.some((root) => root.agentId !== 'main'));
   const showTasks = backgroundTasks.length > 0;
+  const showTerminateAll = onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
+
+  const terminateAllSubagents = async () => {
+    const snapshot = terminateSnapshot;
+    if (onStopAgentTask === undefined || snapshot === null) return;
+    setTerminatingAll(true);
+    try {
+      const results = await Promise.allSettled(
+        snapshot.map((task) =>
+          onStopAgentTask(forest.byId[task.agent_id ?? '']?.parentAgentId ?? MAIN_AGENT_ID, task.id),
+        ),
+      );
+      const failed = results.filter((result) => result.status === 'rejected');
+      const snapshotIds = new Set(snapshot.map((task) => task.id));
+      const failedIds = new Set(
+        results.flatMap((result, index) =>
+          result.status === 'rejected' && snapshot[index] !== undefined
+            ? [snapshot[index].id]
+            : [],
+        ),
+      );
+      const remaining = runningSubagentTasksRef.current.filter(
+        (task) => !snapshotIds.has(task.id) || failedIds.has(task.id),
+      ).length;
+      if (failed.length > 0) {
+        const first = failed[0] as PromiseRejectedResult;
+        pushToast({
+          tone: 'error',
+          text: t('rail.terminateAllFailed', {
+            count: failed.length,
+            detail: first.reason instanceof Error ? first.reason.message : String(first.reason),
+            remaining,
+          }),
+        });
+      } else if (remaining > 0) {
+        pushToast({
+          tone: 'info',
+          text: t('rail.terminateAllRemaining', { count: snapshot.length, remaining }),
+        });
+      } else {
+        pushToast({
+          tone: 'success',
+          text: t('rail.terminateAllDone', { count: snapshot.length }),
+        });
+      }
+    } finally {
+      setTerminatingAll(false);
+      setTerminateSnapshot(null);
+    }
+  };
 
   const layoutPrefs = useLayoutPreferences();
   const [railWidthValue, setRailWidthValue] = useState(layoutPrefs.railWidth);
@@ -514,14 +631,39 @@ export function RightRail({
       ) : null}
 
       {showSubagents ? (
-        <RailSection title={t('rail.subagents')}>
-          <SubagentsSection forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpenSubagent} />
+        <RailSection
+          title={t('rail.subagents')}
+          actions={
+            showTerminateAll ? (
+              <button
+                type="button"
+                data-terminate-all-subagents
+                onClick={() => { setTerminateSnapshot(runningSubagentTasks); }}
+                className={`${DANGER_GHOST_BUTTON} shrink-0 px-2 py-0.5 text-[10.5px]`}
+              >
+                {t('rail.terminateAll')}
+              </button>
+            ) : undefined
+          }
+        >
+          <SubagentsSection
+            forest={forest}
+            selectedAgentId={selectedAgentId}
+            onOpen={onOpenSubagent}
+            onViewAll={() => { setSubagentsAllOpen(true); }}
+          />
         </RailSection>
       ) : null}
 
       {showTasks ? (
         <RailSection title={t('rail.tasks')}>
-          <TasksSection tasks={backgroundTasks} sessionId={session?.id} onCancel={onCancelTask} />
+          <TasksSection
+            tasks={backgroundTasks}
+            sessionId={session?.id}
+            ownerAgentId={taskOwnerAgentId}
+            onCancel={onCancelTask}
+            onOpenTask={setDetailTask}
+          />
         </RailSection>
       ) : null}
 
@@ -538,6 +680,51 @@ export function RightRail({
         </div>
       </RailSection>
       </div>
+
+      {detailTask !== null && session !== undefined ? (
+        <TaskDetailModal
+          sessionId={session.id}
+          ownerAgentId={taskOwnerAgentId}
+          task={detailTask}
+          onClose={() => { setDetailTask(null); }}
+          onCancelTask={onCancelTask}
+        />
+      ) : null}
+
+      {subagentsAllOpen ? (
+        <Dialog
+          onClose={() => { setSubagentsAllOpen(false); }}
+          ariaLabel={t('rail.subagents')}
+          overlayId="subagents-all"
+          panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} flex max-h-[80vh] flex-col`}
+        >
+          <h3 className="shrink-0 font-display text-[17px] font-semibold text-ink">
+            {t('rail.subagents')}
+          </h3>
+          <div data-subagents-all-scroll className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1">
+            <AgentTreeView
+              forest={forest}
+              selectedAgentId={selectedAgentId}
+              onOpen={(agentId) => {
+                setSubagentsAllOpen(false);
+                onOpenSubagent(agentId);
+              }}
+            />
+          </div>
+        </Dialog>
+      ) : null}
+
+      <ConfirmDialog
+        open={terminateSnapshot !== null}
+        title={t('rail.terminateAllTitle')}
+        body={t('rail.terminateAllBody', { count: terminateSnapshot?.length ?? 0 })}
+        confirmLabel={t('rail.terminateAllConfirm')}
+        tone="danger"
+        busy={terminatingAll}
+        overlayId="confirm-terminate-subagents"
+        onConfirm={() => { void terminateAllSubagents(); }}
+        onCancel={() => { setTerminateSnapshot(null); }}
+      />
     </aside>
   );
 }

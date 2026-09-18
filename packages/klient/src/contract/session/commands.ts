@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import {
   approvalResolveRequestSchema, approvalResolveResultSchema,
-  cancelTaskResultSchema, taskAlreadyFinishedDataSchema,
+  cancelTaskQuerySchema, cancelTaskResultSchema, taskAlreadyFinishedDataSchema,
   editMessageRequestSchema, regenerateMessageRequestSchema, messageActionResponseSchema,
   forkSessionRequestSchema, sessionSchema,
   promptSubmissionSchema, promptSubmitResultSchema, promptAbortResponseSchema,
@@ -26,7 +26,7 @@ export const sessionCommandContract = {
   approve: { method: 'POST', suffix: '/approvals/{target}', input: targetBodyInput(approvalResolveRequestSchema), output: approvalResolveResultSchema, okCodes: [0] },
   answer: { method: 'POST', suffix: '/questions/{target}', input: targetBodyInput(questionResolveRequestSchema), output: questionResolveResultSchema, okCodes: [0] },
   dismiss: { method: 'POST', suffix: '/questions/{target}:dismiss', input: targetInput, output: questionDismissResultSchema, okCodes: [0, 40909] },
-  cancelTask: { method: 'POST', suffix: '/tasks/{target}:cancel', input: targetInput, output: z.union([cancelTaskResultSchema, taskAlreadyFinishedDataSchema]), okCodes: [0, 40904] },
+  cancelTask: { method: 'POST', suffix: '/tasks/{target}:cancel', input: z.object({ target, query: cancelTaskQuerySchema.optional() }), output: z.union([cancelTaskResultSchema, taskAlreadyFinishedDataSchema]), okCodes: [0, 40904] },
 } as const;
 
 export type SessionCommandName = keyof typeof sessionCommandContract;

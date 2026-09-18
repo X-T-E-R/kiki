@@ -8,6 +8,7 @@ import type {
   AuthSummary,
   ConfigResponse,
   FsSearchResponse,
+  GetTaskQuery,
   GoalSnapshot,
   ListMcpServersResponse,
   ListNamedAgentProfilesQuery,
@@ -149,11 +150,7 @@ export interface HttpRestFacade {
     listApprovals(sessionId: string): Promise<ApprovalRequest[]>;
     listQuestions(sessionId: string): Promise<import('@kiki/protocol').QuestionRequest[]>;
     listTasks(sessionId: string): Promise<ListTasksResponse>;
-    getTask(
-      sessionId: string,
-      taskId: string,
-      query?: { readonly with_output?: boolean; readonly output_bytes?: number },
-    ): Promise<Task>;
+    getTask(sessionId: string, taskId: string, query?: GetTaskQuery): Promise<Task>;
     listSkills(sessionId: string): Promise<ListSkillsResponse>;
     activateSkill(
       sessionId: string,

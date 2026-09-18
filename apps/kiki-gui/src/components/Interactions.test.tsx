@@ -16,9 +16,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
-import type { ApprovalBlock } from '@kiki/session-core/session';
+import type { QuestionAnswer, QuestionItem } from '@kiki/protocol';
+import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
-import { ApprovalCard, externalPermissionFromDisplay } from './Interactions';
+import { ApprovalCard, externalPermissionFromDisplay, QuestionCard } from './Interactions';
 
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
@@ -290,5 +291,150 @@ describe('ApprovalCard plan_enter', () => {
       flushSync(() => { click(approve!); });
     });
     expect(calls).toEqual([['approved', undefined, undefined]]);
+  });
+});
+
+describe('QuestionCard', () => {
+  function questionBlock(items: QuestionItem[]): QuestionBlock {
+    return {
+      kind: 'question',
+      id: 'question-1',
+      request: {
+        question_id: 'question-1',
+        session_id: 'session_test',
+        questions: items,
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+      outcome: undefined,
+    };
+  }
+
+  const TWO_OPTIONS = [
+    { id: 'opt-a', label: 'Option A' },
+    { id: 'opt-b', label: 'Option B' },
+  ];
+
+  async function renderQuestion(
+    block: QuestionBlock,
+    onAnswer: (answers: Record<string, QuestionAnswer>) => Promise<void>,
+  ): Promise<HTMLDivElement> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    containers.push(container);
+    await act(async () => {
+      flushSync(() => {
+        root.render(
+          <MemoryRouter>
+            <I18nProvider>
+              <QuestionCard block={block} onAnswer={onAnswer} onDismiss={() => Promise.resolve()} />
+            </I18nProvider>
+          </MemoryRouter>,
+        );
+      });
+    });
+    return container;
+  }
+
+  function optionButton(container: HTMLDivElement, label: string): HTMLButtonElement {
+    return [...container.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')].find(
+      (button) => button.textContent?.includes(label),
+    )!;
+  }
+
+  function submitButton(container: HTMLDivElement): HTMLButtonElement {
+    return [...container.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === 'Submit',
+    )!;
+  }
+
+  function otherInput(container: HTMLDivElement): HTMLInputElement {
+    return container.querySelector<HTMLInputElement>('input[aria-label="Other"]')!;
+  }
+
+  function typeInto(input: HTMLInputElement, value: string): void {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  it('always renders the Other input, even without allow_other', async () => {
+    const container = await renderQuestion(
+      questionBlock([{ id: 'q1', question: 'Pick one', options: TWO_OPTIONS }]),
+      () => Promise.resolve(),
+    );
+    expect(otherInput(container)).not.toBeNull();
+  });
+
+  it('multi-selects options on a single-choice item and submits kind multi', async () => {
+    const answered: Record<string, QuestionAnswer>[] = [];
+    const container = await renderQuestion(
+      questionBlock([{ id: 'q1', question: 'Pick one', options: TWO_OPTIONS }]),
+      (answers) => { answered.push(answers); return Promise.resolve(); },
+    );
+    await act(async () => {
+      flushSync(() => { click(optionButton(container, 'Option A')); });
+    });
+    await act(async () => {
+      flushSync(() => { click(optionButton(container, 'Option B')); });
+    });
+    expect(optionButton(container, 'Option A').getAttribute('aria-pressed')).toBe('true');
+    expect(optionButton(container, 'Option B').getAttribute('aria-pressed')).toBe('true');
+    await act(async () => {
+      flushSync(() => { click(submitButton(container)); });
+    });
+    expect(answered).toEqual([{ q1: { kind: 'multi', option_ids: ['opt-a', 'opt-b'] } }]);
+  });
+
+  it('combines checked options with a note into multi_with_other', async () => {
+    const answered: Record<string, QuestionAnswer>[] = [];
+    const container = await renderQuestion(
+      questionBlock([{ id: 'q1', question: 'Pick', options: TWO_OPTIONS, multi_select: true }]),
+      (answers) => { answered.push(answers); return Promise.resolve(); },
+    );
+    await act(async () => {
+      flushSync(() => { click(optionButton(container, 'Option A')); });
+    });
+    await act(async () => {
+      flushSync(() => { typeInto(otherInput(container), '  with a twist  '); });
+    });
+    await act(async () => {
+      flushSync(() => { click(submitButton(container)); });
+    });
+    expect(answered).toEqual([
+      { q1: { kind: 'multi_with_other', option_ids: ['opt-a'], other_text: 'with a twist' } },
+    ]);
+  });
+
+  it('submits an other-only answer with zero options selected', async () => {
+    const answered: Record<string, QuestionAnswer>[] = [];
+    const container = await renderQuestion(
+      questionBlock([{ id: 'q1', question: 'Pick', options: TWO_OPTIONS }]),
+      (answers) => { answered.push(answers); return Promise.resolve(); },
+    );
+    await act(async () => {
+      flushSync(() => { typeInto(otherInput(container), 'none of these'); });
+    });
+    expect(submitButton(container).disabled).toBe(false);
+    await act(async () => {
+      flushSync(() => { click(submitButton(container)); });
+    });
+    expect(answered).toEqual([{ q1: { kind: 'other', text: 'none of these' } }]);
+  });
+
+  it('keeps submit disabled while every item is unanswered', async () => {
+    const onAnswer = vi.fn(() => Promise.resolve());
+    const container = await renderQuestion(
+      questionBlock([{ id: 'q1', question: 'Pick', options: TWO_OPTIONS }]),
+      onAnswer,
+    );
+    const submit = submitButton(container);
+    expect(submit.disabled).toBe(true);
+    expect(container.textContent).toContain('still unanswered');
+    await act(async () => {
+      flushSync(() => { click(submit); });
+    });
+    expect(onAnswer).not.toHaveBeenCalled();
   });
 });

@@ -136,7 +136,13 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
       getTask: (sessionId: string, taskId: string, query = {}) => transport.json<Task>(
         `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
-        { query: { with_output: query.with_output, output_bytes: query.output_bytes } },
+        {
+          query: {
+            with_output: query.with_output,
+            output_bytes: query.output_bytes,
+            agent_id: query.agent_id,
+          },
+        },
       ),
       listSkills: (sessionId: string) => transport.json<ListSkillsResponse>(
         `/sessions/${encodeURIComponent(sessionId)}/skills`,

@@ -566,9 +566,16 @@ function ExternalOptionButton({
 }
 
 /**
- * Question card (AskUserQuestion) — single/multi select per the schema, an
- * "Other" free-text path when allowed, submit + dismiss.
+ * Question card (AskUserQuestion) — every item behaves as a multi-select
+ * (single-choice questions simply submit one checked option), and the "Other"
+ * free-text input is always present: zero options plus a note is a valid
+ * answer, and options can be combined with a note.
  */
+
+export interface QuestionItemAnswer {
+  optionIds: string[];
+  otherText: string;
+}
 
 function QuestionItemView({
   item,
@@ -576,21 +583,17 @@ function QuestionItemView({
   onChange,
 }: {
   item: QuestionItem;
-  answer: { optionIds: string[]; otherText: string; useOther: boolean };
-  onChange: (next: { optionIds: string[]; otherText: string; useOther: boolean }) => void;
+  answer: QuestionItemAnswer;
+  onChange: (next: QuestionItemAnswer) => void;
 }) {
   const { t } = useI18n();
-  const multi = item.multi_select === true;
   const toggle = (optionId: string) => {
-    if (multi) {
-      const optionIds = answer.optionIds.includes(optionId)
-        ? answer.optionIds.filter((id) => id !== optionId)
-        : [...answer.optionIds, optionId];
-      onChange({ ...answer, optionIds });
-    } else {
-      onChange({ ...answer, optionIds: [optionId], useOther: false });
-    }
+    const optionIds = answer.optionIds.includes(optionId)
+      ? answer.optionIds.filter((id) => id !== optionId)
+      : [...answer.optionIds, optionId];
+    onChange({ ...answer, optionIds });
   };
+  const otherLabel = item.other_label ?? t('ia.other');
   return (
     <div>
       {item.header !== undefined ? (
@@ -621,9 +624,9 @@ function QuestionItemView({
             >
               <span
                 aria-hidden
-                className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center border text-[9px] ${
-                  multi ? 'rounded-[4px]' : 'rounded-full'
-                } ${selected ? 'border-accent bg-accent text-white' : 'border-hairline-strong bg-panel'}`}
+                className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border text-[9px] ${
+                  selected ? 'border-accent bg-accent text-white' : 'border-hairline-strong bg-panel'
+                }`}
               >
                 {selected ? '✓' : ''}
               </span>
@@ -636,40 +639,16 @@ function QuestionItemView({
             </button>
           );
         })}
-        {item.allow_other === true ? (
-          <div
-            className={`rounded-lg border px-2.5 py-1.5 ${
-              answer.useOther ? 'border-accent bg-accent-soft' : 'border-hairline bg-panel'
-            }`}
-          >
-            <button
-              type="button"
-              aria-pressed={answer.useOther}
-              onClick={() => { onChange({ ...answer, useOther: !answer.useOther }); }}
-              className="flex w-full items-center gap-2 text-left"
-            >
-              <span
-                aria-hidden
-                className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border text-[9px] ${
-                  answer.useOther ? 'border-accent bg-accent text-white' : 'border-hairline-strong'
-                }`}
-              >
-                {answer.useOther ? '✓' : ''}
-              </span>
-              <span className="text-[12.5px] font-medium text-ink">
-                {item.other_label ?? t('ia.other')}
-              </span>
-            </button>
-            {answer.useOther ? (
-              <input
-                className="mt-1.5 w-full rounded-md border border-hairline bg-panel px-2 py-1 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-                placeholder={item.other_description ?? t('ia.otherPlaceholder')}
-                value={answer.otherText}
-                onChange={(event) => { onChange({ ...answer, otherText: event.target.value }); }}
-              />
-            ) : null}
-          </div>
-        ) : null}
+        <div className="rounded-lg border border-hairline bg-panel px-2.5 py-1.5">
+          <span className="text-[12.5px] font-medium text-ink">{otherLabel}</span>
+          <input
+            aria-label={otherLabel}
+            className="mt-1.5 w-full rounded-md border border-hairline bg-panel px-2 py-1 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+            placeholder={item.other_description ?? t('ia.otherPlaceholder')}
+            value={answer.otherText}
+            onChange={(event) => { onChange({ ...answer, otherText: event.target.value }); }}
+          />
+        </div>
       </div>
     </div>
   );
@@ -688,9 +667,7 @@ export function QuestionCard({
   originAgentName?: string;
 }) {
   const { t, tp } = useI18n();
-  const [selections, setSelections] = useState<
-    Record<string, { optionIds: string[]; otherText: string; useOther: boolean }>
-  >({});
+  const [selections, setSelections] = useState<Record<string, QuestionItemAnswer>>({});
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [sent, setSent] = useState<null | 'answered' | 'dismissed'>(null);
@@ -717,13 +694,15 @@ export function QuestionCard({
     );
   }
 
-  const answerFor = (id: string) =>
-    selections[id] ?? { optionIds: [] as string[], otherText: '', useOther: false };
+  const answerFor = (id: string): QuestionItemAnswer =>
+    selections[id] ?? { optionIds: [] as string[], otherText: '' };
 
+  // An item counts as answered when at least one option is checked OR the
+  // always-present Other input carries text — zero options plus a note is a
+  // valid answer.
   const isItemAnswered = (item: (typeof block.request.questions)[number]): boolean => {
     const selection = answerFor(item.id);
-    if (selection.useOther) return selection.otherText.trim() !== '';
-    return selection.optionIds.length > 0;
+    return selection.optionIds.length > 0 || selection.otherText.trim() !== '';
   };
   // Gate submit: unanswered sub-questions would be silently dropped from the
   // payload (and the server rejects partial answers with 40001 anyway).
@@ -734,22 +713,20 @@ export function QuestionCard({
     const answers: Record<string, QuestionAnswer> = {};
     for (const item of block.request.questions) {
       const selection = answerFor(item.id);
-      const multi = item.multi_select === true;
-      if (selection.useOther && multi) {
+      const optionIds = selection.optionIds;
+      const other = selection.otherText.trim();
+      if (optionIds.length > 0 && other !== '') {
         answers[item.id] = {
           kind: 'multi_with_other',
-          option_ids: selection.optionIds,
-          other_text: selection.otherText,
+          option_ids: optionIds,
+          other_text: other,
         };
-      } else if (selection.useOther) {
-        answers[item.id] = { kind: 'other', text: selection.otherText };
-      } else if (multi) {
-        if (selection.optionIds.length === 0) continue;
-        answers[item.id] = { kind: 'multi', option_ids: selection.optionIds };
-      } else {
-        const first = selection.optionIds[0];
-        if (first === undefined) continue;
-        answers[item.id] = { kind: 'single', option_id: first };
+      } else if (other !== '') {
+        answers[item.id] = { kind: 'other', text: other };
+      } else if (optionIds.length === 1) {
+        answers[item.id] = { kind: 'single', option_id: optionIds[0]! };
+      } else if (optionIds.length > 1) {
+        answers[item.id] = { kind: 'multi', option_ids: optionIds };
       }
     }
     if (Object.keys(answers).length === 0) return;

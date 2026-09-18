@@ -33,6 +33,10 @@ export const taskSchema = z.object({
   agent_id: z.string().optional(),
   profile: z.string().optional(),
   run_in_background: z.boolean().optional(),
+  /** Shell tasks only: process exit code once the run settled (null = killed/unknown). */
+  exit_code: z.number().int().nullable().optional(),
+  /** Engine stop reason for failed/killed runs when one was recorded. */
+  stop_reason: z.string().optional(),
 });
 export type Task = z.infer<typeof taskSchema>;
 
