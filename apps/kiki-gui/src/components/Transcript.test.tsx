@@ -112,6 +112,11 @@ class TestResizeObserver {
       } as unknown as ResizeObserverEntry,
     ], this as unknown as ResizeObserver);
   }
+
+  triggerWithoutBorderBoxSize(target: Element): void {
+    if (!this.observed.has(target)) return;
+    this.callback([{ target } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
+  }
 }
 
 function resizeElement(target: Element, blockSize: number): void {
@@ -1601,6 +1606,24 @@ describe('virtualized transcript scrolling', () => {
     } finally {
       blockHeights.delete('returning-first');
     }
+  });
+
+  it('falls back to offsetHeight when a resize entry lacks borderBoxSize', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([
+      assistantBlock('legacy-first', 'first'),
+      assistantBlock('legacy-second', 'second'),
+    ])));
+    await settleVirtualizer();
+    const firstItem = container.querySelector<HTMLElement>('[data-block-id="legacy-first"]')!
+      .closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    const secondItem = container.querySelector<HTMLElement>('[data-block-id="legacy-second"]')!
+      .closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    act(() => {
+      elementHeights.set(firstItem, 150);
+      for (const observer of resizeObservers) observer.triggerWithoutBorderBoxSize(firstItem);
+    });
+    expect(virtualItemStart(secondItem)).toBe(virtualItemStart(firstItem) + 150 + 16);
   });
 
   it('keeps the mounted block DOM bounded for a large transcript', async () => {

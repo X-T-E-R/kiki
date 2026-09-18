@@ -1431,7 +1431,7 @@ function virtualNodeKey(node: TranscriptVirtualNode): string {
 }
 
 function measureTranscriptRow(element: HTMLDivElement, entry: ResizeObserverEntry | undefined): number {
-  return Math.round(entry?.borderBoxSize[0]?.blockSize ?? element.offsetHeight);
+  return Math.round(entry?.borderBoxSize?.[0]?.blockSize ?? element.offsetHeight);
 }
 
 function captureTranscriptAnchor(
