@@ -12,9 +12,13 @@
  *     goes out as a plain prompt — nothing invented.
  *   - `@` opens a workspace file picker fed by `fs:search`; picks become
  *     reference chips that ride the prompt text as `@path` tokens.
- *   - Pasted/dropped images become preview chips and send as real base64
- *     image content parts (the server format-gates and compresses them).
+ *   - Pasted images become preview chips and send as real base64 image
+ *     content parts (the server format-gates and compresses them).
  *     Placeholder chips cover the async reads; sending blocks until they land.
+ *   - Dropped files are a pure text gesture: each file's absolute path is
+ *     inserted at the caret (quoted when it contains spaces) — no attachment
+ *     chips, no upload. Desktop drops arrive through the host's native
+ *     drag-drop bridge; a browser drop falls back to the bare file name.
  *   - A slash-looking draft that resolves to no entry is intercepted at send
  *     time with an inline confirm, so a typo never silently ships as prompt
  *     text (disabled `reference` skills explain themselves instead).
@@ -40,6 +44,7 @@ import {
   fileToImageAttachment,
   formatBytes,
   hasMention,
+  insertDroppedPaths,
   parseMentionTrigger,
   pushInputHistory,
   readInputHistory,
@@ -914,7 +919,7 @@ export function Composer({
     }
   };
 
-  /** Drop/paste entry point: whitelisted images stay image parts; everything else uploads. */
+  /** Paste/attach-picker entry point: whitelisted images stay image parts; everything else uploads. */
   const addFiles = (files: readonly SelectedAttachmentFile[]) => {
     const images: SelectedAttachmentFile[] = [];
     const uploads: SelectedAttachmentFile[] = [];
@@ -927,10 +932,11 @@ export function Composer({
   };
 
   /**
-   * The explicit attachment path. Drag-and-drop and paste were the only ways
-   * in, which is undiscoverable; the desktop shell opens its native dialog and
-   * the browser falls back to a hidden file input. Both land in `addFiles`, so
-   * caps, error text and chip rendering are the paste path's, verbatim.
+   * The explicit attachment path. Paste was the only way in, which is
+   * undiscoverable; the desktop shell opens its native dialog and the browser
+   * falls back to a hidden file input. Both land in `addFiles`, so caps,
+   * error text and chip rendering are the paste path's, verbatim. (Dropped
+   * files are not attachments — they insert their paths as draft text.)
    */
   const fileInputRef = useRef<HTMLInputElement>(null);
   const openAttachPicker = () => {
@@ -951,6 +957,62 @@ export function Composer({
   const [dragActive, setDragActive] = useState(false);
   const dragHasFiles = (event: DragEvent) =>
     [...event.dataTransfer.types].includes('Files');
+
+  /**
+   * An HTML5 drop exposes no absolute path outside Electron-style hosts; the
+   * bare file name is the fallback there. Desktop drops carry real paths
+   * through the host bridge below.
+   */
+  const droppedFilePath = (file: File): string => {
+    const path = (file as File & { readonly path?: unknown }).path;
+    return typeof path === 'string' && path !== '' ? path : file.name;
+  };
+
+  /**
+   * Insert dropped file paths at the caret as one undoable edit (an active
+   * selection is replaced, matching native text drops). A drop position
+   * cannot resolve to a text offset inside a textarea, so the live selection
+   * is always the landing spot.
+   */
+  const insertDroppedFilePaths = (paths: readonly string[]) => {
+    const node = textareaRef.current;
+    const selection =
+      node !== null
+        ? { start: node.selectionStart, end: node.selectionEnd }
+        : { start: lastCursorRef.current, end: lastCursorRef.current };
+    const next = insertDroppedPaths(text, selection, paths);
+    if (next.text === text) return;
+    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+    historyIndexRef.current = null;
+    applyTextChange(next.text, next.cursor);
+  };
+
+  // The native bridge binds once per host while the inserter closes over a
+  // fresh `text` every render — the ref keeps the delivered callback current.
+  const insertDroppedFilePathsRef = useRef(insertDroppedFilePaths);
+  insertDroppedFilePathsRef.current = insertDroppedFilePaths;
+
+  // Desktop file drops: Tauri intercepts HTML5 drag-and-drop, so real drops
+  // arrive through the host bridge carrying absolute paths. Only drops that
+  // land on the composer card insert; drops elsewhere stay inert.
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (host.onFileDrop === undefined) return;
+    return host.onFileDrop((drop) => {
+      const card = cardRef.current;
+      if (card === null || drop.paths.length === 0) return;
+      if (drop.position !== undefined) {
+        const rect = card.getBoundingClientRect();
+        const inside =
+          drop.position.x >= rect.left &&
+          drop.position.x <= rect.right &&
+          drop.position.y >= rect.top &&
+          drop.position.y <= rect.bottom;
+        if (!inside) return;
+      }
+      insertDroppedFilePathsRef.current(drop.paths);
+    });
+  }, [host]);
 
   const send = () => {
     if (!canSend) return;
@@ -1212,6 +1274,7 @@ export function Composer({
           {invalidEffort ? <button type="button" className="underline" onClick={() => { onChangeEffort(resolveSelectedEffort(selectedModel?.support_efforts, undefined, selectedModel?.default_effort)); }}>{t('selection.resetEffort')}</button> : null}
         </div> : null}
         <div
+          ref={cardRef}
           className={`relative rounded-2xl border bg-panel shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)] transition-[border-color,box-shadow] ${
             dragActive ? 'border-accent ring-2 ring-accent/40' : 'border-hairline'
           }`}
@@ -1233,16 +1296,13 @@ export function Composer({
             dragDepthRef.current = 0;
             setDragActive(false);
             const files = [...event.dataTransfer.files];
-            if (files.length > 0) {
-              event.preventDefault();
-              addFiles(readyAttachmentFiles(files));
-            }
+            if (files.length === 0) return;
+            event.preventDefault();
+            insertDroppedFilePaths(files.map(droppedFilePath));
           }}
         >
           {dragActive ? (
-            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent/60 bg-panel/85">
-              <span className="text-[12px] font-medium text-accent">{t('composer.dropFiles')}</span>
-            </div>
+            <div className="pointer-events-none absolute inset-0 z-20 rounded-2xl border-2 border-dashed border-accent/60 bg-panel/85" />
           ) : null}
           {/* Chips ride above the input; the toolbar lives below it. The
               wrapper only renders when at least one chip/banner exists so the

@@ -14,6 +14,22 @@ export interface HostSelectedFile {
   read(): Promise<File>;
 }
 
+/**
+ * One native OS file drop. Desktop shells that intercept HTML5 drag-and-drop
+ * (Tauri does by default) deliver drops through this channel instead, with the
+ * absolute paths the DOM File API cannot expose.
+ */
+export interface HostFileDrop {
+  /** Absolute paths of the dropped files, in the OS's drop order. */
+  readonly paths: readonly string[];
+  /**
+   * Drop position in CSS pixels relative to the window, when the runtime
+   * reports one; subscribers use it to route the drop to the element under
+   * the cursor. Undefined means "somewhere in the window".
+   */
+  readonly position?: { readonly x: number; readonly y: number };
+}
+
 export interface DesktopUpdate {
   readonly currentVersion: string;
   readonly version: string;
@@ -86,6 +102,11 @@ interface HostCapabilities {
   isWindowVisibleAndFocused?: () => Promise<boolean>;
   saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
   pickFiles?: () => Promise<HostSelectedFile[] | null>;
+  /**
+   * Subscribe to native OS file drops. Present only where the shell owns
+   * drag-and-drop (the desktop runtime); the returned function unsubscribes.
+   */
+  onFileDrop?: (callback: (drop: HostFileDrop) => void) => () => void;
   pickDirectory?: () => Promise<string | null>;
   pickDirectories?: () => Promise<readonly string[] | null>;
   revealPath?: (path: string) => Promise<void>;

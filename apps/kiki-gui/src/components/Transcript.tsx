@@ -138,22 +138,28 @@ export function splitPrefixSegments(prefix: string): string[] {
 }
 
 /**
- * Decorate `@subagent` / `/skill` tokens in user prose as accent chips
+ * Decorate `@subagent` tokens in user prose as accent chips
  * (deepseek-harness's projectUserText, MIT — token shape only, no
  * lexicon). Presentation-only: every slice comes from the original string at
  * exact offsets, so selection/copy keeps the verbatim text.
+ *
+ * Slash-looking tokens are deliberately NOT chipped: a leading `/` is plain
+ * prose unless the submit-time command resolution matched a registered
+ * skill/command (that path renders from the activation record as a SkillBlock
+ * instead), so text shape alone is never sufficient evidence for a skill
+ * label.
  */
 export function projectUserText(text: string): ReactNode {
   const parts: ReactNode[] = [];
   let cursor = 0;
-  for (const match of text.matchAll(/(^|\s)([/@][\w-]+)(?=\s|$)/g)) {
+  for (const match of text.matchAll(/(^|\s)(@[\w-]+)(?=\s|$)/g)) {
     const tokenStart = match.index + (match[1]?.length ?? 0);
     const label = match[2] ?? '';
     if (tokenStart > cursor) parts.push(text.slice(cursor, tokenStart));
     parts.push(
       <span
         key={tokenStart}
-        data-ref-chip={label.startsWith('@') ? 'subagent' : 'skill'}
+        data-ref-chip="subagent"
         className="rounded-md border border-accent/30 bg-accent-soft px-1 py-px font-mono text-[11.5px] text-accent"
       >
         {label}

@@ -639,6 +639,34 @@ function click(element: Element): void {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 }
 
+describe('user message token projection', () => {
+  it('keeps slash-prefixed plain messages as verbatim user text', async () => {
+    const container = await renderTranscript([
+      userBlock({ id: 'user-slash', text: '/lint please' }),
+      userBlock({ id: 'user-session-path', text: '/s/session_example' }),
+    ]);
+
+    expect(container.querySelector('[data-block-id="user-slash"]')?.textContent).toContain(
+      '/lint please',
+    );
+    expect(container.querySelector('[data-block-id="user-session-path"]')?.textContent).toContain(
+      '/s/session_example',
+    );
+    expect(container.querySelector('[data-ref-chip="skill"]')).toBeNull();
+    expect(container.querySelector('[data-skill]')).toBeNull();
+  });
+
+  it('still decorates subagent references without promoting slash prose to a skill', async () => {
+    const container = await renderTranscript([
+      userBlock({ id: 'user-mixed-reference', text: 'ask @reviewer to inspect /plan' }),
+    ]);
+
+    expect(container.querySelector('[data-ref-chip="subagent"]')?.textContent).toBe('@reviewer');
+    expect(container.querySelector('[data-ref-chip="skill"]')).toBeNull();
+    expect(container.textContent).toContain('/plan');
+  });
+});
+
 describe('live and event chrome', () => {
   it('shows a working status instead of the blank-state screen before live blocks arrive', async () => {
     const { root, container } = makeRoot();

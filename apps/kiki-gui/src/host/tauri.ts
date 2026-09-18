@@ -11,6 +11,7 @@ import type {
   CompatibilityMigrationResult,
   DesktopUpdate,
   TauriHostAdapter,
+  HostFileDrop,
   HostSelectedFile,
   KimiConfigImportResult,
   KimiHomePaths,
@@ -47,6 +48,43 @@ function onTrayNewSession(callback: () => void): () => void {
   }, () => undefined);
   return () => {
     unsubscribed = true;
+    unlisten?.();
+  };
+}
+
+/**
+ * Tauri intercepts HTML5 drag-and-drop by default, so OS file drops arrive as
+ * native window events with absolute paths. Only the `drop` phase carries
+ * files; the position converts from physical to CSS pixels before delivery.
+ */
+function onFileDrop(callback: (drop: HostFileDrop) => void): () => void {
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
+  const currentWindow = getCurrentWindow();
+  const deliver = async (
+    paths: readonly string[],
+    position: { readonly x: number; readonly y: number },
+  ): Promise<void> => {
+    try {
+      const factor = await currentWindow.scaleFactor();
+      if (!disposed) {
+        callback({ paths, position: { x: position.x / factor, y: position.y / factor } });
+      }
+    } catch {
+      if (!disposed) callback({ paths });
+    }
+  };
+  void currentWindow
+    .onDragDropEvent((event) => {
+      if (disposed || event.payload.type !== 'drop') return;
+      void deliver(event.payload.paths, event.payload.position);
+    })
+    .then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }, () => undefined);
+  return () => {
+    disposed = true;
     unlisten?.();
   };
 }
@@ -195,6 +233,7 @@ export const tauriHost: TauriHostAdapter = {
     return result;
   },
   onTrayNewSession,
+  onFileDrop,
   async setTheme(resolved) {
     try {
       await getCurrentWindow().setTheme(resolved);

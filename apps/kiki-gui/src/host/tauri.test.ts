@@ -9,13 +9,15 @@ const {
   executeSessionsMigration: executeNativeSessionsMigration,
   importKimiConfig: importNativeKimiConfig,
   migrateCompatibilityCategory: migrateNativeCompatibilityCategory,
+  onFileDrop,
   onTrayNewSession,
   pickDirectories: selectDirectoriesNative,
   pickDirectory: selectDirectoryNative,
   pickFiles: selectFilesNative,
 } = tauriHost;
 
-const { invoke, listen, open, readFile, stat } = vi.hoisted(() => ({
+const { getCurrentWindow, invoke, listen, open, readFile, stat } = vi.hoisted(() => ({
+  getCurrentWindow: vi.fn(),
   invoke: vi.fn(),
   listen: vi.fn(),
   open: vi.fn(),
@@ -25,7 +27,7 @@ const { invoke, listen, open, readFile, stat } = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
-vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: vi.fn() }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readFile, stat }));
 vi.mock('@tauri-apps/plugin-notification', () => ({
@@ -36,6 +38,7 @@ vi.mock('@tauri-apps/plugin-notification', () => ({
 
 describe('native desktop bridge', () => {
   beforeEach(() => {
+    getCurrentWindow.mockReset();
     invoke.mockReset();
     listen.mockReset();
     open.mockReset();
@@ -209,6 +212,50 @@ describe('native desktop bridge', () => {
     await selected?.[1]?.read();
     expect(readFile).toHaveBeenCalledOnce();
     expect(readFile).toHaveBeenCalledWith('C:/small.txt');
+  });
+
+  it('delivers native file drops in CSS pixels and unregisters the listener', async () => {
+    type DragDropProbeEvent =
+      | { payload: { type: 'over'; position: { x: number; y: number } } }
+      | {
+          payload: {
+            type: 'drop';
+            paths: string[];
+            position: { x: number; y: number };
+          };
+        };
+    let emit!: (event: DragDropProbeEvent) => void;
+    const unlisten = vi.fn();
+    const onDragDropEvent = vi.fn((callback: (event: DragDropProbeEvent) => void) => {
+      emit = callback;
+      return Promise.resolve(unlisten);
+    });
+    const scaleFactor = vi.fn().mockResolvedValue(2);
+    getCurrentWindow.mockReturnValue({ onDragDropEvent, scaleFactor });
+    const receive = vi.fn();
+
+    const stop = onFileDrop(receive);
+    await Promise.resolve();
+    emit({ payload: { type: 'over', position: { x: 200, y: 80 } } });
+    expect(receive).not.toHaveBeenCalled();
+
+    emit({
+      payload: {
+        type: 'drop',
+        paths: ['C:\\work\\alpha.txt', 'D:\\my dir\\beta.txt'],
+        position: { x: 200, y: 80 },
+      },
+    });
+    await Promise.resolve();
+
+    expect(scaleFactor).toHaveBeenCalledOnce();
+    expect(receive).toHaveBeenCalledExactlyOnceWith({
+      paths: ['C:\\work\\alpha.txt', 'D:\\my dir\\beta.txt'],
+      position: { x: 100, y: 40 },
+    });
+
+    stop();
+    expect(unlisten).toHaveBeenCalledOnce();
   });
 
   it('unregisters a tray listener that resolves after its owner is disposed', async () => {

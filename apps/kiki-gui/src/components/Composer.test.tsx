@@ -7,13 +7,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '@kiki/session-core/composer';
+import type { HostFileDrop } from '../host';
 import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { Composer } from './Composer';
 
-const { selectFilesNative, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
+const { selectFilesNative, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   selectFilesNative: vi.fn(),
+  onFileDrop: vi.fn(),
   desktopRuntime: { value: false },
   vscodeRuntime: { value: false },
   preparePrompt: vi.fn(async (content: string, _conversationId?: string) => content),
@@ -38,7 +40,7 @@ vi.mock('../state/connection', () => ({
 vi.mock('../host', () => ({
   useHost: () =>
     desktopRuntime.value
-      ? { kind: 'tauri', pickFiles: selectFilesNative }
+      ? { kind: 'tauri', pickFiles: selectFilesNative, onFileDrop }
       : { kind: 'browser' },
 }));
 vi.mock('../host/vscode', () => ({
@@ -64,6 +66,7 @@ beforeEach(() => {
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
   selectFilesNative.mockReset();
+  onFileDrop.mockReset().mockImplementation((_callback: (drop: HostFileDrop) => void) => () => {});
   desktopRuntime.value = false;
   vscodeRuntime.value = false;
   preparePrompt.mockReset().mockImplementation(async (content: string, _conversationId?: string) => content);
@@ -918,7 +921,7 @@ describe('Composer model chip', () => {
 });
 
 describe('Composer attachment button', () => {
-  it('routes the browser file input into the paste/drop attachment path', async () => {
+  it('routes the browser file input into the attachment pipeline', async () => {
     const onChangeAttachments = vi.fn();
     const { container } = await renderComposer({ onChangeAttachments });
     const button = container.querySelector<HTMLButtonElement>('[data-attach-button]')!;
@@ -933,7 +936,7 @@ describe('Composer attachment button', () => {
     await act(async () => {
       input.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    // An upload stub lands immediately — the same reservation paste makes.
+    // An upload stub lands immediately, matching the paste reservation path.
     expect(onChangeAttachments).toHaveBeenCalled();
   });
 
@@ -975,6 +978,99 @@ describe('Composer attachment button', () => {
     expect(read).not.toHaveBeenCalled();
     expect(uploadFile).not.toHaveBeenCalled();
     expect(container.textContent).toContain('At most 8 attachments per message.');
+  });
+});
+
+function droppedFile(name: string, path?: string): File {
+  const file = new File(['fixture'], name, { type: 'text/plain' });
+  if (path !== undefined) Object.defineProperty(file, 'path', { value: path });
+  return file;
+}
+
+async function dispatchFileDrop(target: Element, files: readonly File[]): Promise<Event> {
+  const event = new Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', {
+    value: { files, types: ['Files'] },
+  });
+  await act(async () => {
+    target.dispatchEvent(event);
+  });
+  return event;
+}
+
+describe('Composer file drops', () => {
+  it('inserts an absolute path at the live caret without creating an attachment', async () => {
+    const onChange = vi.fn();
+    const onChangeAttachments = vi.fn();
+    const { container } = await renderComposer({
+      value: 'fix this',
+      onChange,
+      onChangeAttachments,
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    textarea.setSelectionRange(4, 4);
+
+    const event = await dispatchFileDrop(
+      textarea,
+      [droppedFile('note.txt', 'C:\\work\\note.txt')],
+    );
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onChange).toHaveBeenCalledExactlyOnceWith('fix C:\\work\\note.txt this');
+    expect(uploadFile).not.toHaveBeenCalled();
+    expect(onChangeAttachments).not.toHaveBeenCalled();
+  });
+
+  it('quotes whitespace paths, preserves drop order, and falls back to a browser file name', async () => {
+    const onChange = vi.fn();
+    const { container } = await renderComposer({ value: '', onChange });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    await dispatchFileDrop(textarea, [
+      droppedFile('alpha.txt', 'C:\\my dir\\alpha.txt'),
+      droppedFile('build.sh', '/home/example/build.sh'),
+      droppedFile('browser-only.txt'),
+    ]);
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(
+      '"C:\\my dir\\alpha.txt" /home/example/build.sh browser-only.txt',
+    );
+  });
+
+  it('accepts native desktop drops only when their CSS position lands on the composer', async () => {
+    desktopRuntime.value = true;
+    let deliver: ((drop: HostFileDrop) => void) | undefined;
+    onFileDrop.mockImplementation((callback: (drop: HostFileDrop) => void) => {
+      deliver = callback;
+      return () => {};
+    });
+    const onChange = vi.fn();
+    const { container } = await renderComposer({ value: '', onChange });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const card = textarea.closest<HTMLDivElement>('div.relative.rounded-2xl')!;
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
+      x: 20,
+      y: 30,
+      left: 20,
+      top: 30,
+      right: 320,
+      bottom: 230,
+      width: 300,
+      height: 200,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    expect(deliver).toBeDefined();
+    await act(async () => {
+      deliver?.({ paths: ['C:\\outside.txt'], position: { x: 10, y: 10 } });
+    });
+    expect(onChange).not.toHaveBeenCalled();
+
+    textarea.setSelectionRange(0, 0);
+    await act(async () => {
+      deliver?.({ paths: ['C:\\my dir\\inside.txt'], position: { x: 100, y: 100 } });
+    });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith('"C:\\my dir\\inside.txt"');
   });
 });
 
