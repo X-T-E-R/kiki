@@ -6,6 +6,7 @@ import { IFlagService } from '#/app/flag/flag';
 import { BUILTIN_SKILLS, visibleBuiltinSkills } from '#/app/skillCatalog/builtin/builtin';
 import { BuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
 import { BUILTIN_PRODUCT_SKILLS_SECTION } from '#/app/skillCatalog/configSection';
+import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 
 import { stubFlag } from '../flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
@@ -17,8 +18,19 @@ const PRODUCT_SKILLS = [
   'kiki-ops.mcp',
   'kiki-ops.import',
   'kiki-ops.profile',
-  'kiki-ops.goal',
   'kiki-ops.docs',
+];
+const KIKI_OPS_TRIGGERS = [
+  'config.toml',
+  'tui.toml',
+  'theme',
+  'mcp',
+  'claude code',
+  'codex',
+  'profile',
+  'system.md',
+  'goal',
+  'docs',
 ];
 const NEUTRAL_SKILLS = BUILTIN_SKILLS.map((s) => s.name).filter(
   (name) => !PRODUCT_SKILLS.includes(name),
@@ -48,18 +60,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
     const parent = BUILTIN_SKILLS.find((s) => s.name === 'kiki-ops');
     expect(parent?.metadata.disableModelInvocation).not.toBe(true);
     const description = parent?.description.toLowerCase() ?? '';
-    for (const trigger of [
-      'config.toml',
-      'tui.toml',
-      'theme',
-      'mcp',
-      'claude code',
-      'codex',
-      'profile',
-      'system.md',
-      'goal',
-      'docs',
-    ]) {
+    for (const trigger of KIKI_OPS_TRIGGERS) {
       expect(description).toContain(trigger);
     }
 
@@ -77,6 +78,17 @@ describe('BuiltinSkillSource product-skill switch', () => {
       expect(topic.metadata.isSubSkill).toBe(true);
       expect(topic.metadata.disableModelInvocation).not.toBe(true);
       expect(topic.content.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps every topic trigger visible in the rendered model listing', () => {
+    const catalog = new InMemorySkillCatalog();
+    const parent = BUILTIN_SKILLS.find((s) => s.name === 'kiki-ops');
+    expect(parent).toBeDefined();
+    catalog.registerBuiltinSkill(parent!);
+    const listing = catalog.getModelSkillListing().toLowerCase();
+    for (const trigger of KIKI_OPS_TRIGGERS) {
+      expect(listing).toContain(trigger);
     }
   });
 

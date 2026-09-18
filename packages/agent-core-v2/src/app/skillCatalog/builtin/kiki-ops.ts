@@ -15,6 +15,7 @@ function makeKikiOpsSkill(
   skillMdPath: string,
   pseudoPath: string,
   extraMetadata: Record<string, unknown> = {},
+  productSpecific = true,
 ): SkillDefinition {
   const parsed = parseSkillText({
     skillMdPath,
@@ -32,7 +33,7 @@ function makeKikiOpsSkill(
       type: parsed.metadata.type ?? 'inline',
       ...extraMetadata,
     },
-    productSpecific: true,
+    productSpecific,
   };
 }
 
@@ -89,6 +90,7 @@ export const KIKI_OPS_GOAL_SKILL = makeKikiOpsSkill(
   '/builtin/skills/kiki-ops/goal.md',
   'builtin://kiki-ops/goal',
   { isSubSkill: true },
+  false,
 );
 
 export const KIKI_OPS_DOCS_SKILL = makeKikiOpsSkill(

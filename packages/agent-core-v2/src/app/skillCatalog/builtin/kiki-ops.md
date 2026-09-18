@@ -1,6 +1,6 @@
 ---
 name: kiki-ops
-description: Kiki product usage and configuration operations — answer how Kiki works from the local docs (查文档/怎么用 Kiki), inspect or edit config.toml / tui.toml settings (配置), create or edit a custom TUI color theme (主题/theme), configure MCP servers and complete MCP OAuth login, import instructions, skills, and MCP settings from Claude Code and Codex (导入), author or repair agent profiles and SYSTEM.md (profile/主智能体档案), and write a well-specified /goal objective (goal/目标). Use when the user asks about Kiki product behavior or configuration, or asks for any of these tasks.
+description: Kiki product operations — answer Kiki usage questions from local docs, edit config.toml/tui.toml, create TUI themes, configure MCP servers + OAuth, import from Claude Code/Codex, author agent profiles and SYSTEM.md, write /goal objectives.
 has-sub-skill: true
 ---
 
