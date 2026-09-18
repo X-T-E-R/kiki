@@ -2,45 +2,40 @@ import {
   IConfigService,
   IKosongConfigService,
   IModelCatalog,
+  IModelCatalogMutationService,
   IOAuthService,
   IProviderDiscoveryService,
   IModelsDevImportService,
   isError2,
   ModelsDevImportErrors,
-  type ModelRecord,
-  type ModelsSection,
-  type ProviderConfig,
-  type ProvidersSection,
+  type ProviderEntity,
   type Scope,
 } from '@kiki/agent-core-v2';
-import { setDefaultModelResponseSchema } from '@kiki/agent-core-v2/kosong/model/catalog';
-import { requestIdentityFromWire } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { refreshProviderModelsResponseSchema } from '@kiki/agent-core-v2/app/kosongConfig/discovery';
-import {
-  DEFAULT_MODEL_SECTION,
-  DEFAULT_PROVIDER_SECTION,
-  MODELS_SECTION,
-  PROVIDERS_SECTION,
-} from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
+  createModelRequestSchema,
+  createModelResponseSchema,
   createProviderRequestSchema,
   createProviderResponseSchema,
   getCatalogProviderResponseSchema,
+  getModelResponseSchema,
   getProviderResponseSchema,
   importCatalogProviderResponseSchema,
   importCustomRegistryResponseSchema,
   listCatalogProvidersResponseSchema,
   listModelsResponseSchema,
   listProvidersResponseSchema,
+  patchModelRequestSchema,
+  patchProviderRequestSchema,
+  patchProviderResponseSchema,
   providerCollectionActionBodySchema,
-  providerIdSchema,
-  replaceProviderRequestSchema,
-  replaceProviderResponseSchema,
+  refreshProviderModelsResponseSchema,
+  revisionConflictDetailsSchema,
+  setDefaultModelResponseSchema,
   type ProviderCollectionActionBody,
 } from '../protocol/rest-modelCatalog';
 import { parseActionSuffix } from './action-suffix';
@@ -62,7 +57,7 @@ interface ModelCatalogRouteHost {
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
-  put(
+  patch(
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
     handler: (
@@ -89,6 +84,10 @@ const providerIdParamSchema = z.object({
   provider_id: z.string().min(1),
 });
 
+const modelIdParamSchema = z.object({
+  model_id: z.string().min(1),
+});
+
 const modelActionTailParamSchema = z.object({
   tail: z.string().min(1),
 });
@@ -105,10 +104,20 @@ const catalogIdParamSchema = z.object({
   catalog_id: z.string().min(1),
 });
 
+const revisionConflictErrors = {
+  [ErrorCode.CONFIG_REVISION_CONFLICT]: { detailsSchema: revisionConflictDetailsSchema },
+} as const;
+
 async function loadCatalog(core: Scope): Promise<IModelCatalog> {
   await core.accessor.get(IConfigService).ready;
   await core.accessor.get(IKosongConfigService).ready;
   return core.accessor.get(IModelCatalog);
+}
+
+async function loadMutation(core: Scope): Promise<IModelCatalogMutationService> {
+  await core.accessor.get(IConfigService).ready;
+  await core.accessor.get(IKosongConfigService).ready;
+  return core.accessor.get(IModelCatalogMutationService);
 }
 
 async function loadConfig(core: Scope): Promise<IConfigService> {
@@ -128,30 +137,14 @@ async function loadOAuth(core: Scope): Promise<IOAuthService> {
   return core.accessor.get(IOAuthService);
 }
 
-let providerWriteChain: Promise<unknown> = Promise.resolve();
-
-function enqueueProviderWrite<T>(task: () => Promise<T>): Promise<T> {
-  const run = providerWriteChain.then(task, task);
-  providerWriteChain = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
-
-async function seedDefaultModelWhenUnset(config: IConfigService, alias: string): Promise<void> {
-  const current = config.inspect<string>(DEFAULT_MODEL_SECTION).userValue;
-  if (current !== undefined && current.trim() !== '') return;
-  await config.replace(DEFAULT_MODEL_SECTION, alias);
-}
-
 export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Scope): void {
   const listModelsRoute = defineRoute(
     {
       method: 'GET',
       path: '/models',
       success: { data: listModelsResponseSchema },
-      description: 'List configured model aliases',
+      description:
+        'List configured models. `id` is the local alias, `remote_id` the exact model name sent upstream and `provider_id` the routed connection; the list is a read projection, never an edit carrier.',
       tags: ['models'],
     },
     async (req, reply) => {
@@ -163,6 +156,143 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
     listModelsRoute.path,
     listModelsRoute.options,
     listModelsRoute.handler as Parameters<ModelCatalogRouteHost['get']>[2],
+  );
+
+  const getModelRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/models/{model_id}',
+      params: modelIdParamSchema,
+      success: { data: getModelResponseSchema },
+      errors: {
+        [ErrorCode.MODEL_NOT_FOUND]: {},
+      },
+      description:
+        'Get one configured model by its local alias: identity (local id, resolved provider, exact remote id), stored metadata and parameters, `revision` for the next PATCH, and any `issues` preventing it from running.',
+      tags: ['models'],
+      operationId: 'getModel',
+    },
+    async (req, reply) => {
+      try {
+        const model = await (await loadMutation(core)).readModel(req.params.model_id);
+        reply.send(okEnvelope(model, req.id));
+      } catch (err) {
+        if (sendMappedError(reply, req.id, err)) return;
+        throw err;
+      }
+    },
+  );
+  app.get(
+    getModelRoute.path,
+    getModelRoute.options,
+    getModelRoute.handler as Parameters<ModelCatalogRouteHost['get']>[2],
+  );
+
+  const createModelRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/models',
+      body: createModelRequestSchema,
+      success: { data: createModelResponseSchema },
+      errors: {
+        [ErrorCode.VALIDATION_FAILED]: {},
+        [ErrorCode.PROVIDER_NOT_FOUND]: {},
+        [ErrorCode.MODEL_ALREADY_EXISTS]: {},
+      },
+      description:
+        'Create one local model bound to a provider. `id` is the local alias and defaults to the `provider_id/remote_id` naming suggestion; `remote_id` is the exact upstream model name. Creating never overwrites an existing model. Answers 201 with the new entity.',
+      tags: ['models'],
+      operationId: 'createModel',
+    },
+    async (req, reply) => {
+      await enqueueWrite(async () => {
+        try {
+          const model = await (await loadMutation(core)).createModel(req.body);
+          (reply as unknown as StatusReply).code(201).send(okEnvelope(model, req.id));
+        } catch (err) {
+          if (sendMappedError(reply, req.id, err)) return;
+          throw err;
+        }
+      });
+    },
+  );
+  app.post(
+    createModelRoute.path,
+    createModelRoute.options,
+    createModelRoute.handler as Parameters<ModelCatalogRouteHost['post']>[2],
+  );
+
+  const patchModelRoute = defineRoute(
+    {
+      method: 'PATCH',
+      path: '/models/{model_id}',
+      params: modelIdParamSchema,
+      body: patchModelRequestSchema,
+      success: { data: getModelResponseSchema },
+      errors: {
+        [ErrorCode.VALIDATION_FAILED]: {},
+        [ErrorCode.MODEL_NOT_FOUND]: {},
+        ...revisionConflictErrors,
+      },
+      description:
+        'Partially update one model: only the listed fields change, every other stored field (including ones this client does not know) is preserved. `null` clears a field. Send `base_revision` from a previous read to get a structured 40941 conflict instead of overwriting a concurrent edit.',
+      tags: ['models'],
+      operationId: 'patchModel',
+    },
+    async (req, reply) => {
+      await enqueueWrite(async () => {
+        try {
+          const model = await (await loadMutation(core)).updateModel(
+            req.params.model_id,
+            req.body,
+          );
+          reply.send(okEnvelope(model, req.id));
+        } catch (err) {
+          if (sendMappedError(reply, req.id, err)) return;
+          throw err;
+        }
+      });
+    },
+  );
+  app.patch(
+    patchModelRoute.path,
+    patchModelRoute.options,
+    patchModelRoute.handler as Parameters<ModelCatalogRouteHost['patch']>[2],
+  );
+
+  const deleteModelRoute = defineRoute(
+    {
+      method: 'DELETE',
+      path: '/models/{model_id}',
+      params: modelIdParamSchema,
+      errors: {
+        [ErrorCode.MODEL_NOT_FOUND]: {},
+        ...revisionConflictErrors,
+      },
+      rawResponse: {
+        204: { description: 'Model deleted.' },
+      },
+      description:
+        'Delete one local model alias (204, no body). Other aliases — including other aliases of the same remote model — and the global pointers are left untouched.',
+      tags: ['models'],
+      operationId: 'deleteModel',
+    },
+    async (req, reply) => {
+      await enqueueWrite(async () => {
+        try {
+          await (await loadMutation(core)).deleteModel(req.params.model_id);
+          (reply as unknown as StatusReply).code(204).send();
+        } catch (err) {
+          if (sendMappedError(reply, req.id, err)) return;
+          throw err;
+        }
+      });
+    },
+  );
+  app.delete(
+    deleteModelRoute.path,
+    deleteModelRoute.options,
+    deleteModelRoute.handler as Parameters<ModelCatalogRouteHost['delete']>[2],
   );
 
   const setDefaultModelRoute = defineRoute(
@@ -212,7 +342,8 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       method: 'GET',
       path: '/providers',
       success: { data: listProvidersResponseSchema },
-      description: 'List configured providers',
+      description:
+        'List configured providers. No route on this surface ever returns a stored secret: authentication state is reported as `has_api_key`/`status`.',
       tags: ['providers'],
     },
     async (req, reply) => {
@@ -237,67 +368,19 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.PROVIDER_ALREADY_EXISTS]: {},
       },
       description:
-        'Create a provider manually (type + credentials + model list). When no global default_model is configured (fresh setup), it is seeded with the new provider default (or first) model; an existing default is never modified.',
+        'Create a provider (type + credentials + optional initial models). A connection may be saved with zero models. `default_model` is the model half of this provider\'s default (stored as the `id/default_model` alias). When no global default_model is configured (fresh setup), it is seeded with the new provider default (or first) model; an existing default is never modified.',
       tags: ['providers'],
       operationId: 'createProvider',
     },
     async (req, reply) => {
-      await enqueueProviderWrite(async () => {
-        const config = await loadConfig(core);
-        const { id } = req.body;
-        const providers = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue ?? {};
-        if (providers[id] !== undefined) {
-          reply.send(
-            errEnvelope(
-              ErrorCode.PROVIDER_ALREADY_EXISTS,
-              `provider ${id} already exists`,
-              req.id,
-            ),
-          );
-          return;
+      await enqueueWrite(async () => {
+        try {
+          const provider = await (await loadMutation(core)).createProvider(req.body);
+          (reply as unknown as StatusReply).code(201).send(okEnvelope(provider, req.id));
+        } catch (err) {
+          if (sendMappedError(reply, req.id, err)) return;
+          throw err;
         }
-
-        const provider: ProviderConfig = { type: req.body.type };
-        if (req.body.api_key !== undefined) provider.apiKey = req.body.api_key;
-        if (req.body.base_url !== undefined) provider.baseUrl = req.body.base_url;
-        if (req.body.request_identity !== undefined) {
-          provider.requestIdentity = requestIdentityFromWire(req.body.request_identity);
-        }
-        if (req.body.default_model !== undefined) {
-          provider.defaultModel = `${id}/${req.body.default_model}`;
-        }
-        await config.set(PROVIDERS_SECTION, { [id]: provider });
-
-        const aliases: Record<string, ModelRecord> = {};
-        for (const entry of req.body.models) {
-          const alias: ModelRecord = {
-            provider: id,
-            model: entry.model,
-            maxContextSize: entry.max_context_size,
-          };
-          if (entry.display_name !== undefined) alias.displayName = entry.display_name;
-          if (entry.capabilities !== undefined) alias.capabilities = [...entry.capabilities];
-          if (entry.max_output_size !== undefined) alias.maxOutputSize = entry.max_output_size;
-          if (entry.support_efforts !== undefined)
-            alias.supportEfforts = [...entry.support_efforts];
-          if (entry.adaptive_thinking !== undefined)
-            alias.adaptiveThinking = entry.adaptive_thinking;
-          if (entry.request_identity !== undefined)
-            alias.requestIdentity = requestIdentityFromWire(entry.request_identity);
-          aliases[`${id}/${entry.model}`] = alias;
-        }
-        await config.set(MODELS_SECTION, aliases);
-
-        const firstModel = req.body.models[0];
-        if (firstModel !== undefined) {
-          await seedDefaultModelWhenUnset(
-            config,
-            provider.defaultModel ?? `${id}/${firstModel.model}`,
-          );
-        }
-
-        const created = await core.accessor.get(IModelCatalog).getProvider(id);
-        (reply as unknown as StatusReply).code(201).send(okEnvelope(created, req.id));
       });
     },
   );
@@ -307,186 +390,45 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
     createProviderRoute.handler as Parameters<ModelCatalogRouteHost['post']>[2],
   );
 
-  const replaceProviderRoute = defineRoute(
+  const patchProviderRoute = defineRoute(
     {
-      method: 'PUT',
+      method: 'PATCH',
       path: '/providers/{provider_id}',
       params: providerIdParamSchema,
-      body: replaceProviderRequestSchema,
-      success: { data: replaceProviderResponseSchema },
+      body: patchProviderRequestSchema,
+      success: { data: patchProviderResponseSchema },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.PROVIDER_OAUTH_MANAGED]: {},
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
-        [ErrorCode.PROVIDER_ALREADY_EXISTS]: {},
+        ...revisionConflictErrors,
       },
       description:
-        'Replace a provider in one save (type + base_url + model list), optionally renaming it via `new_id` (the providers key, model aliases, default_provider and a default_model pointing at an old alias all migrate). `api_key` is tri-state: omitted keeps the stored key, "" clears it, any other value replaces it. The provider\'s model aliases are rebuilt from `models` — aliases no longer listed disappear from config.toml, other providers\' aliases are untouched. Beyond the rename migration, the global default pointers are never modified. Answers 200 with `{provider}`. OAuth-managed providers may update base_url, default_model, models and request_identity only when the id and type stay unchanged and `api_key` is omitted; their OAuth and stored credential fields are preserved. Rename, type and api_key changes are rejected: log out via /oauth/logout instead.',
+        'Partially update one provider connection. The body never carries a model list: models are their own entities, so saving a connection field can no longer rebuild or drop them. `base_url`/`default_model`/`request_identity` accept `null` to clear; `api_key` is tri-state (omitted keeps the stored key, "" clears it, any other value replaces it) and is never echoed back. The path id is the identity — connections are not renamed in place. OAuth-managed providers may update base_url/default_model/request_identity only; type and credential changes are rejected. Answers 200 with `{provider, revision}`.',
       tags: ['providers'],
-      operationId: 'replaceProvider',
+      operationId: 'patchProvider',
     },
     async (req, reply) => {
-      await enqueueProviderWrite(async () => {
-        const config = await loadConfig(core);
-        const { provider_id } = req.params;
-        const providers = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue ?? {};
-        const target = providers[provider_id];
-        if (target === undefined) {
-          reply.send(
-            errEnvelope(
-              ErrorCode.PROVIDER_NOT_FOUND,
-              `provider ${provider_id} does not exist`,
-              req.id,
-            ),
+      await enqueueWrite(async () => {
+        try {
+          const provider = await (await loadMutation(core)).updateProvider(
+            req.params.provider_id,
+            req.body,
           );
-          return;
-        }
-        const newId = req.body.new_id ?? provider_id;
-        if (
-          target.oauth !== undefined &&
-          (newId !== provider_id ||
-            req.body.type !== target.type ||
-            req.body.api_key !== undefined)
-        ) {
           reply.send(
-            errEnvelope(
-              ErrorCode.PROVIDER_OAUTH_MANAGED,
-              `provider ${provider_id} is managed by OAuth login; use POST /oauth/logout instead`,
-              req.id,
-            ),
+            okEnvelope({ provider: stripRevision(provider), revision: provider.revision }, req.id),
           );
-          return;
+        } catch (err) {
+          if (sendMappedError(reply, req.id, err)) return;
+          throw err;
         }
-        if (newId !== provider_id) {
-          const parsedNewId = providerIdSchema.safeParse(newId);
-          if (!parsedNewId.success) {
-            reply.send(
-              errEnvelope(
-                ErrorCode.VALIDATION_FAILED,
-                `new_id: ${parsedNewId.error.issues[0]?.message ?? 'invalid provider id'}`,
-                req.id,
-              ),
-            );
-            return;
-          }
-        }
-
-        if (newId !== provider_id && providers[newId] !== undefined) {
-          reply.send(
-            errEnvelope(
-              ErrorCode.PROVIDER_ALREADY_EXISTS,
-              `provider ${newId} already exists`,
-              req.id,
-            ),
-          );
-          return;
-        }
-
-        const provider: ProviderConfig = { ...target, type: req.body.type };
-        if (req.body.api_key !== undefined) provider.apiKey = req.body.api_key;
-        provider.baseUrl = req.body.base_url;
-        if (req.body.request_identity !== undefined) {
-          if (req.body.request_identity === null) {
-            provider.requestIdentity = undefined;
-          } else {
-            provider.requestIdentity = requestIdentityFromWire(req.body.request_identity);
-          }
-        }
-        provider.defaultModel =
-          req.body.default_model !== undefined
-            ?
-              `${newId}/${req.body.default_model}`
-            : undefined;
-        const nextProviders = Object.fromEntries(
-          Object.entries(providers).map(([key, value]) => [
-            key === provider_id ? newId : key,
-            value,
-          ]),
-        );
-        nextProviders[newId] = provider;
-
-        const models = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
-        const newAliasKeys = new Set(req.body.models.map((entry) => `${newId}/${entry.model}`));
-        const colliding = Object.entries(models)
-          .filter(([, record]) => record.provider !== provider_id)
-          .map(([aliasId]) => aliasId)
-          .filter((aliasId) => newAliasKeys.has(aliasId));
-        if (colliding.length > 0) {
-          reply.send(
-            errEnvelope(
-              ErrorCode.VALIDATION_FAILED,
-              `model alias key already owned by another provider: ${colliding.join(', ')}`,
-              req.id,
-            ),
-          );
-          return;
-        }
-
-        await config.replace(PROVIDERS_SECTION, nextProviders);
-
-        const previousAliasIds = new Set(
-          Object.entries(models)
-            .filter(([, record]) => record.provider === provider_id)
-            .map(([aliasId]) => aliasId),
-        );
-        const nextModels = Object.fromEntries(
-          Object.entries(models).filter(([, record]) => record.provider !== provider_id),
-        );
-        const previousByModel = new Map(
-          Object.values(models)
-            .filter((record) => record.provider === provider_id && record.model !== undefined)
-            .map((record) => [record.model as string, record] as const),
-        );
-        for (const entry of req.body.models) {
-          const alias: ModelRecord = {
-            ...previousByModel.get(entry.model),
-            provider: newId,
-            model: entry.model,
-            maxContextSize: entry.max_context_size,
-          };
-          alias.displayName = entry.display_name !== undefined ? entry.display_name : undefined;
-          alias.capabilities =
-            entry.capabilities !== undefined ? [...entry.capabilities] : undefined;
-          alias.maxOutputSize = entry.max_output_size !== undefined ? entry.max_output_size : undefined;
-          alias.supportEfforts =
-            entry.support_efforts !== undefined ? [...entry.support_efforts] : undefined;
-          alias.adaptiveThinking =
-            entry.adaptive_thinking !== undefined ? entry.adaptive_thinking : undefined;
-          if (entry.request_identity !== undefined) {
-            if (entry.request_identity === null) {
-              alias.requestIdentity = undefined;
-            } else {
-              alias.requestIdentity = requestIdentityFromWire(entry.request_identity);
-            }
-          }
-          nextModels[`${newId}/${entry.model}`] = alias;
-        }
-        await config.replace(MODELS_SECTION, nextModels);
-
-        if (newId !== provider_id) {
-          const defaultProvider = config.inspect<string>(DEFAULT_PROVIDER_SECTION).userValue;
-          if (defaultProvider === provider_id) {
-            await config.replace(DEFAULT_PROVIDER_SECTION, newId);
-          }
-          const defaultModel = config.inspect<string>(DEFAULT_MODEL_SECTION).userValue;
-          if (defaultModel !== undefined && previousAliasIds.has(defaultModel)) {
-            const renamedModel = models[defaultModel]?.model;
-            const renamedAlias = renamedModel !== undefined ? `${newId}/${renamedModel}` : undefined;
-            if (renamedAlias !== undefined && nextModels[renamedAlias] !== undefined) {
-              await config.replace(DEFAULT_MODEL_SECTION, renamedAlias);
-            }
-          }
-        }
-
-        const saved = await core.accessor.get(IModelCatalog).getProvider(newId);
-        reply.send(okEnvelope({ provider: saved }, req.id));
       });
     },
   );
-  app.put(
-    replaceProviderRoute.path,
-    replaceProviderRoute.options,
-    replaceProviderRoute.handler as Parameters<ModelCatalogRouteHost['put']>[2],
+  app.patch(
+    patchProviderRoute.path,
+    patchProviderRoute.options,
+    patchProviderRoute.handler as Parameters<ModelCatalogRouteHost['patch']>[2],
   );
 
   const refreshProvidersRoute = defineRoute(
@@ -529,11 +471,11 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         return;
       }
       if (action === 'import_catalog') {
-        await enqueueProviderWrite(() => handleImportCatalog(req, reply, core));
+        await enqueueWrite(() => handleImportCatalog(req, reply, core));
         return;
       }
       if (action === 'import_registry') {
-        await enqueueProviderWrite(() => handleImportRegistry(req, reply, core));
+        await enqueueWrite(() => handleImportRegistry(req, reply, core));
         return;
       }
       reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, `unsupported action: ${raw}`, req.id));
@@ -600,22 +542,15 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
       },
       description:
-        'Get a configured provider by ID. Unlike the list route, the response reveals the stored `api_key` when one is set, so local clients can prefill an edit form.',
+        'Get one configured provider with the `revision` its next PATCH must carry. The stored `api_key` is never returned.',
       tags: ['providers'],
+      operationId: 'getProvider',
     },
     async (req, reply) => {
       try {
         const { provider_id } = req.params;
-        const provider = await (await loadCatalog(core)).getProvider(provider_id);
-        const config = await loadConfig(core);
-        const stored = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue?.[provider_id];
-        const apiKey = stored?.apiKey;
-        reply.send(
-          okEnvelope(
-            apiKey !== undefined && apiKey !== '' ? { ...provider, api_key: apiKey } : provider,
-            req.id,
-          ),
-        );
+        const provider = await (await loadMutation(core)).readProvider(provider_id);
+        reply.send(okEnvelope(provider, req.id));
       } catch (err) {
         if (sendMappedError(reply, req.id, err)) return;
         throw err;
@@ -647,43 +582,14 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       operationId: 'deleteProvider',
     },
     async (req, reply) => {
-      await enqueueProviderWrite(async () => {
-        const config = await loadConfig(core);
-        const { provider_id } = req.params;
-        const providers = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue ?? {};
-        const target = providers[provider_id];
-        if (target === undefined) {
-          reply.send(
-            errEnvelope(
-              ErrorCode.PROVIDER_NOT_FOUND,
-              `provider ${provider_id} does not exist`,
-              req.id,
-            ),
-          );
-          return;
+      await enqueueWrite(async () => {
+        try {
+          await (await loadMutation(core)).deleteProvider(req.params.provider_id);
+          (reply as unknown as StatusReply).code(204).send();
+        } catch (err) {
+          if (sendMappedError(reply, req.id, err)) return;
+          throw err;
         }
-        if (target.oauth !== undefined) {
-          reply.send(
-            errEnvelope(
-              ErrorCode.PROVIDER_OAUTH_MANAGED,
-              `provider ${provider_id} is managed by OAuth login; use POST /oauth/logout instead`,
-              req.id,
-            ),
-          );
-          return;
-        }
-
-        const models = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
-        const restProviders = { ...providers };
-        delete restProviders[provider_id];
-        await config.replace(PROVIDERS_SECTION, restProviders);
-        const restModels = Object.fromEntries(
-          Object.entries(models).filter(([, record]) => record.provider !== provider_id),
-        );
-        if (Object.keys(restModels).length !== Object.keys(models).length) {
-          await config.replace(MODELS_SECTION, restModels);
-        }
-        (reply as unknown as StatusReply).code(204).send();
       });
     },
   );
@@ -752,22 +658,39 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
   );
 }
 
+function stripRevision(provider: ProviderEntity): Record<string, unknown> {
+  const { revision: _revision, ...rest } = provider;
+  return rest;
+}
+
 function sendMappedError(
   reply: { send(payload: unknown): unknown },
   requestId: string,
   err: unknown,
 ): boolean {
   if (!isError2(err)) return false;
-  if (err.code === 'provider.not_found') {
-    reply.send(errEnvelope(ErrorCode.PROVIDER_NOT_FOUND, err.message, requestId, err.stack));
-    return true;
-  }
-  if (err.code === 'model.not_found') {
-    reply.send(errEnvelope(ErrorCode.MODEL_NOT_FOUND, err.message, requestId, err.stack));
-    return true;
-  }
-  return false;
+  const mapped = ENGINE_ERROR_CODES[err.code];
+  if (mapped === undefined) return false;
+  reply.send({
+    code: mapped,
+    msg: err.message,
+    data: null,
+    request_id: requestId,
+    details: err.details,
+    stack: err.stack,
+  });
+  return true;
 }
+
+const ENGINE_ERROR_CODES: Readonly<Record<string, number>> = {
+  'provider.not_found': ErrorCode.PROVIDER_NOT_FOUND,
+  'model.not_found': ErrorCode.MODEL_NOT_FOUND,
+  'provider.already_exists': ErrorCode.PROVIDER_ALREADY_EXISTS,
+  'model.already_exists': ErrorCode.MODEL_ALREADY_EXISTS,
+  'model_catalog.revision_conflict': ErrorCode.CONFIG_REVISION_CONFLICT,
+  'provider.oauth_managed': ErrorCode.PROVIDER_OAUTH_MANAGED,
+  'config.invalid': ErrorCode.VALIDATION_FAILED,
+};
 
 const MODELS_DEV_IMPORT_ERROR_CODES: Record<string, number> = {
   [ModelsDevImportErrors.codes.CATALOG_UNAVAILABLE]: ErrorCode.CATALOG_UNAVAILABLE,
@@ -856,4 +779,15 @@ async function handleImportRegistry(
     if (sendModelsDevImportError(reply, req.id, err)) return;
     throw err;
   }
+}
+
+let writeChain: Promise<unknown> = Promise.resolve();
+
+function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
+  const run = writeChain.then(task, task);
+  writeChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }

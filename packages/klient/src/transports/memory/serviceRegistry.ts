@@ -14,6 +14,7 @@ import { IConfigService } from '@kiki/agent-core-v2/app/config/config';
 import { IModelService } from '@kiki/agent-core-v2/kosong/model/model';
 import { IModelCatalog } from '@kiki/agent-core-v2/kosong/model/catalog';
 import { IProviderDiscoveryService } from '@kiki/agent-core-v2/app/kosongConfig/discovery';
+import { IModelCatalogMutationService } from '@kiki/agent-core-v2/app/kosongConfig/modelCatalogMutation';
 import { IProviderService } from '@kiki/agent-core-v2/kosong/provider/provider';
 import {
   IAuthSummaryService,
@@ -81,6 +82,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   configService: IConfigService,
   modelService: IModelService,
   modelResolver: IModelCatalog,
+  modelCatalogMutation: IModelCatalogMutationService,
   providerDiscovery: IProviderDiscoveryService,
   providerService: IProviderService,
   oauthService: IOAuthService,

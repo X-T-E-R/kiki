@@ -205,9 +205,11 @@ describe('useNewSessionDraft agent profile scope', () => {
     disabled: false,
     routes: [],
   });
-  const model = (name: string, effort: string) => ({
-    model: name,
-    provider: 'fixture',
+  const model = (id: string, effort: string) => ({
+    id,
+    provider_id: 'fixture',
+    remote_id: id.slice(id.lastIndexOf('/') + 1),
+    max_context_size: 128000,
     support_efforts: [effort],
     default_effort: effort,
   });

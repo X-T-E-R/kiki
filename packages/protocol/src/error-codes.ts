@@ -162,6 +162,10 @@ export const ErrorCode = {
   SESSION_INDEX_BUILDING: 40939,
   /** MCP OAuth flow failed, expired, or was cancelled */
   MCP_OAUTH_FAILED: 40940,
+  /** provider/model 局部写入的 base revision 与当前配置不一致 */
+  CONFIG_REVISION_CONFLICT: 40941,
+  /** 本地 model 别名已存在（创建不会覆盖既有实体） */
+  MODEL_ALREADY_EXISTS: 40942,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -296,6 +300,8 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.PROMPT_ID_CONFLICT]: 'prompt.id_conflict',
   [ErrorCode.SESSION_INDEX_BUILDING]: 'session.index_building',
   [ErrorCode.MCP_OAUTH_FAILED]: 'mcp.oauth_failed',
+  [ErrorCode.CONFIG_REVISION_CONFLICT]: 'model_catalog.revision_conflict',
+  [ErrorCode.MODEL_ALREADY_EXISTS]: 'model.already_exists',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',

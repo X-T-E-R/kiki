@@ -36,6 +36,21 @@ function catchUp(session, agentId, since) {
   return { ...result, complete, batches: complete ? result.batches : [] };
 }
 
+function revisionOf(value) {
+  const canonical = (entry) => {
+    if (Array.isArray(entry)) return `[${entry.map(canonical).join(',')}]`;
+    if (entry !== null && typeof entry === 'object') {
+      return `{${Object.entries(entry)
+        .filter(([, item]) => item !== undefined)
+        .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
+        .sort()
+        .join(',')}}`;
+    }
+    return JSON.stringify(entry) ?? 'null';
+  };
+  return canonical(value);
+}
+
 export class FixtureKlient {
   constructor(server) { this.server = server; this.connections = new Map(); }
 
@@ -100,8 +115,8 @@ export class FixtureKlient {
     const server = this.server;
     const args = Array.isArray(input) ? input : [];
     const modelItems = () => structuredClone(server.models.length > 0 || server.modelsDeclared ? server.models : [
-      { provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
-      { provider: 'fixture', model: 'fixture/kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 },
+      { id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
+      { id: 'fixture/kiki-lite', provider_id: 'fixture', remote_id: 'kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 },
     ]);
     const providerItems = () => structuredClone(server.providers);
     const timestamp = (value) => {
@@ -142,11 +157,120 @@ export class FixtureKlient {
       }
       case 'modelResolver.setDefaultModel': {
         const [modelId] = args;
-        const model = modelItems().find((entry) => entry.model === modelId);
+        const model = modelItems().find((entry) => entry.id === modelId);
         if (model === undefined) throw invalid('model.not_found', 40412);
         server.config.default_model = modelId;
         if (server.auth !== null) server.auth.default_model = modelId;
         return { default_model: modelId, model };
+      }
+      case 'modelCatalogMutation.readModel': {
+        const [modelId] = args;
+        const item = modelItems().find((entry) => entry.id === modelId);
+        if (item === undefined) throw invalid('model.not_found', 40413);
+        return { ...item, max_input_size: item.max_input_size, issues: [], revision: revisionOf(item), provider_source: 'provider' };
+      }
+      case 'modelCatalogMutation.updateModel': {
+        const [modelId, patch] = args;
+        const items = modelItems();
+        const index = items.findIndex((entry) => entry.id === modelId);
+        if (index === -1) throw invalid('model.not_found', 40413);
+        const current = items[index];
+        if (patch.base_revision !== undefined && patch.base_revision !== revisionOf(current)) {
+          throw invalid('model_catalog.revision_conflict', 40941);
+        }
+        const next = { ...current };
+        if (patch.remote_id !== undefined) next.remote_id = patch.remote_id;
+        if (patch.display_name !== undefined) next.display_name = patch.display_name ?? undefined;
+        if (patch.max_context_size !== undefined) next.max_context_size = patch.max_context_size ?? 0;
+        if (patch.capabilities !== undefined) next.capabilities = patch.capabilities ?? undefined;
+        if (patch.support_efforts !== undefined) next.support_efforts = patch.support_efforts ?? undefined;
+        items[index] = next;
+        server.models = items;
+        server.modelsDeclared = true;
+        return { ...next, issues: [], revision: revisionOf(next), provider_source: 'provider' };
+      }
+      case 'modelCatalogMutation.createModel': {
+        const [input] = args;
+        const id = input.id ?? `${input.provider_id}/${input.remote_id}`;
+        const items = modelItems();
+        if (items.some((entry) => entry.id === id)) throw invalid('model.already_exists', 40942);
+        const created = {
+          id,
+          provider_id: input.provider_id,
+          remote_id: input.remote_id,
+          display_name: input.display_name,
+          max_context_size: input.max_context_size ?? 0,
+          capabilities: input.capabilities,
+          support_efforts: input.support_efforts,
+        };
+        server.models = [...items, created];
+        server.modelsDeclared = true;
+        return { ...created, issues: [], revision: revisionOf(created), provider_source: 'provider' };
+      }
+      case 'modelCatalogMutation.deleteModel': {
+        const [modelId] = args;
+        server.models = modelItems().filter((entry) => entry.id !== modelId);
+        server.modelsDeclared = true;
+        return undefined;
+      }
+      case 'modelCatalogMutation.readProvider': {
+        const [providerId] = args;
+        const provider = providerItems().find((entry) => entry.id === providerId);
+        if (provider === undefined) throw invalid('provider.not_found', 40412);
+        return { ...provider, revision: revisionOf(provider) };
+      }
+      case 'modelCatalogMutation.updateProvider': {
+        const [providerId, patch] = args;
+        const index = server.providers.findIndex((entry) => entry.id === providerId);
+        if (index === -1) throw invalid('provider.not_found', 40412);
+        const current = server.providers[index];
+        if (patch.base_revision !== undefined && patch.base_revision !== revisionOf(current)) {
+          throw invalid('model_catalog.revision_conflict', 40941);
+        }
+        const next = { ...current };
+        if (patch.type !== undefined) next.type = patch.type;
+        if (patch.base_url !== undefined) next.base_url = patch.base_url ?? undefined;
+        if (patch.default_model !== undefined) next.default_model = patch.default_model ?? undefined;
+        if (patch.api_key !== undefined) next.has_api_key = patch.api_key !== '';
+        server.providers[index] = next;
+        return { ...next, revision: revisionOf(next) };
+      }
+      case 'modelCatalogMutation.createProvider': {
+        const [input] = args;
+        if (server.providers.some((entry) => entry.id === input.id)) throw invalid('provider.already_exists', 40921);
+        const provider = {
+          id: input.id,
+          type: input.type,
+          base_url: input.base_url,
+          default_model: input.default_model === undefined ? undefined : `${input.id}/${input.default_model}`,
+          has_api_key: input.api_key !== undefined && input.api_key !== '',
+          status: 'connected',
+          models: (input.models ?? []).map((entry) => `${input.id}/${entry.remote_id}`),
+        };
+        server.providers.push(provider);
+        if ((input.models ?? []).length > 0) {
+          server.models = [
+            ...modelItems(),
+            ...input.models.map((entry) => ({
+              id: `${input.id}/${entry.remote_id}`,
+              provider_id: input.id,
+              remote_id: entry.remote_id,
+              display_name: entry.display_name,
+              max_context_size: entry.max_context_size ?? 0,
+              capabilities: entry.capabilities,
+              support_efforts: entry.support_efforts,
+            })),
+          ];
+          server.modelsDeclared = true;
+        }
+        return { ...provider, revision: revisionOf(provider) };
+      }
+      case 'modelCatalogMutation.deleteProvider': {
+        const [providerId] = args;
+        server.providers = server.providers.filter((entry) => entry.id !== providerId);
+        server.models = modelItems().filter((entry) => entry.provider_id !== providerId);
+        server.modelsDeclared = true;
+        return undefined;
       }
       case 'providerDiscovery.refreshProviderModels': {
         const [options] = args;

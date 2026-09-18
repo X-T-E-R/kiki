@@ -72,10 +72,11 @@ export interface ModelPingResult {
 }
 
 export const modelCatalogItemSchema = z.object({
-  provider: z.string().min(1),
-  model: z.string().min(1),
+  id: z.string().min(1),
+  provider_id: z.string(),
+  remote_id: z.string().min(1),
   display_name: z.string().min(1).optional(),
-  max_context_size: z.number().int().min(1),
+  max_context_size: z.number().int().min(0),
   capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
@@ -120,8 +121,9 @@ export function toProtocolModel(
   providerType?: string,
 ): ModelCatalogItem {
   return {
-    provider: model.providerName,
-    model: model.id,
+    id: model.id,
+    provider_id: model.providerName,
+    remote_id: model.name ?? model.id,
     display_name: model.displayName ?? model.name ?? model.id,
     max_context_size: model.maxContextSize,
     capabilities: effectiveModelConfig(record, providerType ?? model.providerType).capabilities,
@@ -138,10 +140,12 @@ export function toProtocolModelFallback(
   providerType?: string,
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType);
+  const remoteId = effective.name ?? effective.model ?? modelId;
   return {
-    provider: effective.provider ?? '',
-    model: modelId,
-    display_name: effective.displayName ?? effective.model ?? modelId,
+    id: modelId,
+    provider_id: effective.provider ?? effective.providerId ?? '',
+    remote_id: remoteId,
+    display_name: effective.displayName ?? remoteId,
     max_context_size: effective.maxContextSize ?? 0,
     capabilities: effective.capabilities,
     support_efforts: effective.supportEfforts,

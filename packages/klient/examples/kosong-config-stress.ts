@@ -195,7 +195,7 @@ async function main(): Promise<void> {
           cfg_model: { provider: 'cfg_only', model: 'cfg-model', maxContextSize: 4096 },
         },
       });
-      const modelIds = (await kosong.listModels()).map((m) => m.model);
+      const modelIds = (await kosong.listModels()).map((m) => m.id);
       assert(modelIds.includes('cfg_model'), 'config.replace(models) visible to kosong.listModels');
 
       await config.set({ domain: 'providers', patch: { cfg_only: { apiKey: 'sk-cfg-updated' } } });

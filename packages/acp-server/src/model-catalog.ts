@@ -47,9 +47,9 @@ const TOGGLEABLE_THINKING_MODELS = new Set(['kimi-for-coding', 'kimi-code']);
 export function deriveThinkingSupported(item: ModelCatalogItem): boolean {
   const capabilities = item.capabilities ?? [];
   if (capabilities.includes('thinking') || capabilities.includes('always_thinking')) return true;
-  const lower = item.model.toLowerCase();
+  const lower = item.remote_id.toLowerCase();
   if (lower.includes('thinking') || lower.includes('reason')) return true;
-  if (TOGGLEABLE_THINKING_MODELS.has(item.model)) return true;
+  if (TOGGLEABLE_THINKING_MODELS.has(item.remote_id)) return true;
   return false;
 }
 
@@ -75,16 +75,16 @@ export function deriveDefaultThinkingEffort(item: ModelCatalogItem): string {
 
 /**
  * Project the engine's model catalog into a flat ACP catalog. Returns an empty
- * array when no models are configured. The catalog item's `model` field is the
- * model-registry id — the value `agent.setModel()` takes — so it doubles as
- * the ACP picker value.
+ * array when no models are configured. The catalog item's `id` is the local
+ * alias — the value `agent.setModel()` takes — so it doubles as the ACP picker
+ * value, while name-based capability heuristics read the remote model id.
  */
 export function projectModelCatalog(
   items: readonly ModelCatalogItem[],
 ): readonly AcpModelEntry[] {
   return items.map((item) => ({
-    id: item.model,
-    name: item.display_name ?? item.model,
+    id: item.id,
+    name: item.display_name ?? item.id,
     thinkingSupported: deriveThinkingSupported(item),
     alwaysThinking: deriveAlwaysThinking(item),
     defaultThinkingEffort: deriveDefaultThinkingEffort(item),

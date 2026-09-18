@@ -1,259 +1,59 @@
-import { z } from 'zod';
-
-import { PROVIDER_ID_PATTERN } from '@kiki/agent-core-v2';
-import {
+export {
+  catalogModelItemSchema,
+  catalogProviderItemSchema,
+  createModelRequestSchema,
+  createModelResponseSchema,
+  createProviderModelSchema,
+  createProviderRequestSchema,
+  createProviderResponseSchema,
+  getCatalogProviderResponseSchema,
+  getModelResponseSchema,
+  getProviderResponseSchema,
+  importCatalogProviderResponseSchema,
+  importCustomRegistryResponseSchema,
+  listCatalogProvidersResponseSchema,
+  listModelsResponseSchema,
+  listProvidersResponseSchema,
   modelCatalogItemSchema,
+  modelEntitySchema,
+  modelIssueSchema,
+  patchModelRequestSchema,
+  patchProviderRequestSchema,
+  patchProviderResponseSchema,
   providerCatalogItemSchema,
-} from '@kiki/agent-core-v2/kosong/model/catalog';
-import {
-  RequestIdentityPolicyWireSchema,
-  requestIdentityFromWire,
-  resolveProviderRequestIdentity,
-  type RequestIdentityPolicyWire,
-} from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+  providerCatalogStatusSchema,
+  providerCollectionActionBodySchema,
+  providerIdSchema,
+  providerWireTypeSchema,
+  refreshOAuthProviderModelsResponseSchema,
+  refreshProviderModelsResponseSchema,
+  revisionConflictDetailsSchema,
+  serviceTierSchema,
+  setDefaultModelResponseSchema,
+} from '@kiki/protocol';
 
-export const listModelsResponseSchema = z.object({
-  items: z.array(modelCatalogItemSchema),
-});
-export type ListModelsResponse = z.infer<typeof listModelsResponseSchema>;
-
-export const listProvidersResponseSchema = z.object({
-  items: z.array(providerCatalogItemSchema),
-});
-export type ListProvidersResponse = z.infer<typeof listProvidersResponseSchema>;
-
-export const getProviderResponseSchema = providerCatalogItemSchema.extend({
-  api_key: z.string().optional(),
-});
-export type GetProviderResponse = z.infer<typeof getProviderResponseSchema>;
-
-/**
- * The six wire protocols the core config schema accepts as a provider `type`.
- * (`vertexai` resolves through the google-genai base's vertex mode at runtime.)
- */
-export const providerWireTypeSchema = z.enum([
-  'kimi',
-  'openai',
-  'openai_responses',
-  'anthropic',
-  'google-genai',
-  'vertexai',
-]);
-export type ProviderWireType = z.infer<typeof providerWireTypeSchema>;
-
-const providerModelSchema = z.object({
-  model: z.string().min(1),
-  max_context_size: z.number().int().min(1),
-  display_name: z.string().min(1).optional(),
-  capabilities: z.array(z.string()).optional(),
-  max_output_size: z.number().int().min(1).optional(),
-  support_efforts: z.array(z.string().min(1)).optional(),
-  adaptive_thinking: z.boolean().optional(),
-});
-
-export const createProviderModelSchema = providerModelSchema.extend({
-  request_identity: RequestIdentityPolicyWireSchema.optional(),
-});
-export type CreateProviderModel = z.infer<typeof createProviderModelSchema>;
-
-export const replaceProviderModelSchema = providerModelSchema.extend({
-  request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
-});
-
-function refineProviderForm(
-  value: {
-    type?: string;
-    base_url?: string | undefined;
-    models: Array<{ model: string }>;
-    request_identity?: RequestIdentityPolicyWire | null;
-  },
-  ctx: z.RefinementCtx,
-): void {
-  if (value.base_url !== undefined && value.base_url.includes('${')) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'base_url must not contain an environment variable placeholder',
-      path: ['base_url'],
-    });
-  }
-  if (value.request_identity !== undefined && value.request_identity !== null) {
-    try {
-      resolveProviderRequestIdentity({
-        requestIdentity: requestIdentityFromWire(value.request_identity),
-      });
-    } catch (error) {
-      ctx.addIssue({
-        code: 'custom',
-        message: error instanceof Error ? error.message : String(error),
-        path: ['request_identity'],
-      });
-    }
-  }
-  const seen = new Set<string>();
-  for (const entry of value.models) {
-    if (seen.has(entry.model)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `duplicate model: ${entry.model}`,
-        path: ['models'],
-      });
-      return;
-    }
-    seen.add(entry.model);
-  }
-}
-
-/** The provider id shape accepted by the create/replace routes. */
-export const providerIdSchema = z
-  .string()
-  .regex(
-    PROVIDER_ID_PATTERN,
-    'id must start with a letter or digit and may only contain letters, digits, "-", "_" and spaces',
-  );
-
-export const createProviderRequestSchema = z
-  .object({
-    id: providerIdSchema,
-    type: providerWireTypeSchema,
-    api_key: z.string().optional(),
-    base_url: z.string().trim().optional(),
-    default_model: z.string().min(1).optional(),
-    request_identity: RequestIdentityPolicyWireSchema.optional(),
-    models: z.array(createProviderModelSchema).min(1),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    refineProviderForm(value, ctx);
-    if (
-      value.default_model !== undefined &&
-      !value.models.some((entry) => entry.model === value.default_model)
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'default_model must be one of models[].model',
-        path: ['default_model'],
-      });
-    }
-  });
-export type CreateProviderRequest = z.infer<typeof createProviderRequestSchema>;
-
-export const createProviderResponseSchema = providerCatalogItemSchema;
-export type CreateProviderResponse = z.infer<typeof createProviderResponseSchema>;
-
-/**
- * The desktop "edit & save" payload: the whole provider form. `new_id`
- * renames the provider (the id in the path is the current identity) — the
- * providers key, all model aliases, default_provider and a default_model
- * pointing at an old alias are migrated to the new id. A `new_id` equal to
- * the path identity is also accepted for existing ids outside the create-time
- * id pattern; only an actual rename must match `providerIdSchema`. `api_key`
- * is tri-state so the edit form can leave the stored key untouched — absent
- * keeps it, `""` clears it, anything else replaces it.
- */
-export const replaceProviderRequestSchema = z
-  .object({
-    new_id: z.string().min(1).optional(),
-    type: providerWireTypeSchema,
-    api_key: z.string().optional(),
-    base_url: z.string().trim().optional(),
-    default_model: z.string().min(1).optional(),
-    request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
-    models: z.array(replaceProviderModelSchema).min(1),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    refineProviderForm(value, ctx);
-    if (
-      value.default_model !== undefined &&
-      !value.models.some((entry) => entry.model === value.default_model)
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'default_model must be one of models[].model',
-        path: ['default_model'],
-      });
-    }
-  });
-export type ReplaceProviderRequest = z.infer<typeof replaceProviderRequestSchema>;
-
-export const replaceProviderResponseSchema = z.object({
-  provider: providerCatalogItemSchema,
-});
-export type ReplaceProviderResponse = z.infer<typeof replaceProviderResponseSchema>;
-
-/** Pruned catalog model shape — enough for the import preview, nothing more. */
-export const catalogModelItemSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().optional(),
-  max_context_size: z.number().int().min(1),
-  capabilities: z.array(z.string()).optional(),
-  reasoning: z.boolean(),
-});
-export type CatalogModelItem = z.infer<typeof catalogModelItemSchema>;
-
-/**
- * One browsable models.dev entry. `rejected: true` means this client version
- * cannot import it at all (greyed out, `reject_reason` explains);
- * `needs_base_url: true` means the import form must collect a base URL.
- */
-export const catalogProviderItemSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  wire_type: providerWireTypeSchema.nullable(),
-  guessed: z.boolean(),
-  needs_base_url: z.boolean(),
-  rejected: z.boolean(),
-  reject_reason: z.string().nullable(),
-  env_key: z.string().nullable(),
-  models: z.array(catalogModelItemSchema),
-});
-export type CatalogProviderItem = z.infer<typeof catalogProviderItemSchema>;
-
-export const listCatalogProvidersResponseSchema = z.object({
-  items: z.array(catalogProviderItemSchema),
-});
-export type ListCatalogProvidersResponse = z.infer<typeof listCatalogProvidersResponseSchema>;
-
-export const getCatalogProviderResponseSchema = catalogProviderItemSchema;
-export type GetCatalogProviderResponse = z.infer<typeof getCatalogProviderResponseSchema>;
-
-/**
- * Body of the `/providers:action` collection route. Every field is optional
- * so the bodyless `:refresh` actions (and their legacy `{}` bodies) still
- * validate; the `:import_catalog` handler enforces `catalog_id` and the
- * `:import_registry` handler enforces `url` themselves.
- *
- * `:import_catalog` semantics: import a models.dev entry as a configured
- * provider; `id` overrides the catalog id as the local provider id, and
- * importing an id that already exists is a refresh (the provider and its
- * aliases are rewritten from the catalog — the same re-import semantics as
- * the TUI). The global default_provider/default_model pointers are never
- * modified.
- */
-export const providerCollectionActionBodySchema = z.object({
-  catalog_id: z.string().min(1).optional(),
-  api_key: z.string().optional(),
-  base_url: z.string().optional(),
-  id: providerIdSchema.optional(),
-  url: z.string().min(1).optional(),
-});
-export type ProviderCollectionActionBody = z.infer<typeof providerCollectionActionBodySchema>;
-
-export const importCatalogProviderResponseSchema = z.object({
-  provider: providerCatalogItemSchema,
-  models_imported: z.number().int().min(0),
-});
-export type ImportCatalogProviderResponse = z.infer<typeof importCatalogProviderResponseSchema>;
-
-/**
- * Import a models.dev-shaped private registry (api.json URL + optional Bearer
- * key) as configured providers. Re-import semantics: providers previously
- * imported from the same URL but no longer listed are removed (the URL is the
- * stable registry identity; the key commonly rotates). The global
- * default_provider/default_model pointers are never modified.
- */
-export const importCustomRegistryResponseSchema = z.object({
-  providers: z.array(providerCatalogItemSchema),
-  models_imported: z.number().int().min(0),
-});
-export type ImportCustomRegistryResponse = z.infer<typeof importCustomRegistryResponseSchema>;
+export type {
+  CatalogModelItem,
+  CatalogProviderItem,
+  CreateModelRequest,
+  CreateProviderModel,
+  CreateProviderRequest,
+  GetModelResponse,
+  GetProviderResponse,
+  ListCatalogProvidersResponse,
+  ListModelsResponse,
+  ListProvidersResponse,
+  ModelCatalogItem,
+  ModelEntity,
+  ModelIssue,
+  ModelProviderSource,
+  PatchModelRequest,
+  PatchProviderRequest,
+  PatchProviderResponse,
+  ProviderCatalogItem,
+  ProviderCatalogStatus,
+  ProviderCollectionActionBody,
+  ProviderWireType,
+  RevisionConflictDetails,
+  SetDefaultModelResponse,
+} from '@kiki/protocol';

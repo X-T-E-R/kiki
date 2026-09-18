@@ -476,25 +476,25 @@ describe('composerDefaultsForProfile', () => {
 
 describe('resolveCatalogModel', () => {
   const catalog = [
-    { provider: 'alpha', model: 'alpha/k3-256k' },
-    { provider: 'beta', model: 'beta/k3-256k' },
-    { provider: 'fixture', model: 'fixture/kiki-pro' },
-    { provider: 'openai', model: 'fast-model' },
-    { provider: 'managed:kimi-code', model: 'k3-review' },
+    { provider_id: 'alpha', id: 'alpha/k3-256k', remote_id: 'k3-256k' },
+    { provider_id: 'beta', id: 'beta/k3-256k', remote_id: 'k3-256k' },
+    { provider_id: 'fixture', id: 'fixture/kiki-pro', remote_id: 'kiki-pro' },
+    { provider_id: 'openai', id: 'fast-model', remote_id: 'fast-model' },
+    { provider_id: 'managed:kimi-code', id: 'k3-review', remote_id: 'k3-review' },
   ];
 
   it('prefers an exact catalog key', () => {
-    expect(resolveCatalogModel(catalog, 'fixture/kiki-pro')?.provider).toBe('fixture');
-    expect(resolveCatalogModel(catalog, 'fast-model')?.provider).toBe('openai');
+    expect(resolveCatalogModel(catalog, 'fixture/kiki-pro')?.provider_id).toBe('fixture');
+    expect(resolveCatalogModel(catalog, 'fast-model')?.provider_id).toBe('openai');
   });
 
   it('resolves an ambiguous bare id to the first catalog row in server order', () => {
-    expect(resolveCatalogModel(catalog, 'k3-256k')?.model).toBe('alpha/k3-256k');
+    expect(resolveCatalogModel(catalog, 'k3-256k')?.id).toBe('alpha/k3-256k');
   });
 
   it('resolves a provider-qualified id to the matching bare key', () => {
-    expect(resolveCatalogModel(catalog, 'openai/fast-model')?.model).toBe('fast-model');
-    expect(resolveCatalogModel(catalog, 'kimi-code/k3-review')?.model).toBe('k3-review');
+    expect(resolveCatalogModel(catalog, 'openai/fast-model')?.id).toBe('fast-model');
+    expect(resolveCatalogModel(catalog, 'kimi-code/k3-review')?.id).toBe('k3-review');
     expect(resolveCatalogModel(catalog, 'anthropic/fast-model')).toBeUndefined();
   });
 

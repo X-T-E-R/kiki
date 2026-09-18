@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 
 /**
- * Provider-form save channel regressions: the server (kap-server replace
- * route) validates `new_id` only on an actual rename, so an unchanged id
- * outside the create-time pattern — e.g. the OAuth-managed
- * `managed:kimi-code` — must save; a rename to an id outside the pattern
- * must still be rejected client-side with val.providerId.
+ * Provider-form save regressions, exercised through the shared klient client:
+ *
+ *  - an unchanged colon id (`managed:kimi-code`) saves other fields — no
+ *    create-time id pattern is applied to an existing entity;
+ *  - the provider patch never carries a model list;
+ *  - a model row is saved as its own entity, so hidden fields such as
+ *    `max_output_size` and `adaptive_thinking` survive a display-name edit;
+ *  - a local alias whose text says nothing about the remote model
+ *    (`fast` → `vendor/model:v1`) keeps its identity;
+ *  - the real OAuth-generated shape (`managed:kimi-code` with `kimi-code/...`
+ *    aliases) round-trips without being rewritten.
  */
 
 import { act } from 'react';
@@ -14,75 +20,95 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
-import type { ServerConnection } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../i18n';
 import { ProviderEditor } from './ProviderFields';
 
 const refreshProvider = vi.fn();
+const getProviderEntity = vi.fn();
+const updateProvider = vi.fn();
+const updateModel = vi.fn();
+const createModel = vi.fn();
+const deleteModel = vi.fn();
+const deleteProviderEntity = vi.fn();
 
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client: { refreshProvider } }),
+  useConnection: () => ({
+    client: {
+      refreshProvider,
+      getProviderEntity,
+      updateProvider,
+      updateModel,
+      createModel,
+      deleteModel,
+      deleteProviderEntity,
+    },
+  }),
 }));
 vi.mock('../host', () => ({
   useHost: () => ({ kind: 'browser' }),
 }));
 
-const CONNECTION: ServerConnection = { url: 'https://server.example.test/', token: 'test-token' };
-
 const MANAGED_PROVIDER: ProviderCatalogItem = {
   id: 'managed:kimi-code',
   type: 'kimi',
   base_url: 'https://api.managed.example.test/v1',
-  default_model: 'managed:kimi-code/kimi-k2',
+  default_model: 'kimi-code/kimi-k2',
   has_api_key: false,
   status: 'connected',
-  models: ['managed:kimi-code/kimi-k2'],
+  models: ['kimi-code/kimi-k2'],
 };
 
 const MANAGED_MODELS: ModelCatalogItem[] = [
   {
-    provider: 'managed:kimi-code',
-    model: 'managed:kimi-code/kimi-k2',
+    id: 'kimi-code/kimi-k2',
+    provider_id: 'managed:kimi-code',
+    remote_id: 'kimi-k2',
+    display_name: 'Kimi K2',
     max_context_size: 262144,
     capabilities: ['chat'],
     support_efforts: ['high'],
   },
 ];
 
-const PLAIN_PROVIDER: ProviderCatalogItem = {
-  id: 'example',
+const COLON_PROVIDER: ProviderCatalogItem = {
+  id: 'edge:gateway',
   type: 'openai',
-  base_url: 'https://api.example.test/v1',
-  default_model: 'example/gpt-test',
+  base_url: 'https://edge.example.test/v1',
+  default_model: 'fast',
   has_api_key: true,
   status: 'connected',
-  models: ['example/gpt-test'],
+  models: ['fast'],
 };
 
-const PLAIN_MODELS: ModelCatalogItem[] = [
-  { provider: 'example', model: 'example/gpt-test', max_context_size: 128000 },
+const FAST_MODELS: ModelCatalogItem[] = [
+  {
+    id: 'fast',
+    provider_id: 'edge:gateway',
+    remote_id: 'vendor/model:v1',
+    display_name: 'Fast',
+    max_context_size: 200000,
+  },
 ];
 
 const containers: HTMLDivElement[] = [];
 const roots: Root[] = [];
-const reactActEnvironment = globalThis as typeof globalThis & {
-  IS_REACT_ACT_ENVIRONMENT: boolean;
-};
-
-const fetchMock = vi.fn();
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
-  reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 beforeEach(() => {
-  fetchMock.mockReset().mockImplementation(async () => ({
-    status: 200,
-    json: async () => ({ code: 0, msg: 'ok', data: { provider: MANAGED_PROVIDER } }),
+  refreshProvider.mockReset();
+  getProviderEntity.mockReset().mockImplementation(async (id: string) => ({
+    ...(id === 'managed:kimi-code' ? MANAGED_PROVIDER : COLON_PROVIDER),
+    revision: 'rev-1',
   }));
-  vi.stubGlobal('fetch', fetchMock);
+  updateProvider.mockReset().mockResolvedValue({ ...COLON_PROVIDER, revision: 'rev-2' });
+  updateModel.mockReset().mockResolvedValue({});
+  createModel.mockReset().mockResolvedValue({});
+  deleteModel.mockReset().mockResolvedValue(undefined);
+  deleteProviderEntity.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -91,7 +117,6 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
   vi.unstubAllGlobals();
 });
 
@@ -111,13 +136,7 @@ async function renderEditor(
     root.render(
       <QueryClientProvider client={client}>
         <I18nProvider>
-          <ProviderEditor
-            provider={provider}
-            models={models}
-            connection={CONNECTION}
-            managed={managed}
-            onSaved={onSaved}
-          />
+          <ProviderEditor provider={provider} models={models} managed={managed} onSaved={onSaved} />
         </I18nProvider>
       </QueryClientProvider>,
     );
@@ -140,7 +159,7 @@ function buttonByText(container: HTMLElement, text: string): HTMLButtonElement {
 }
 
 describe('ProviderEditor save channel', () => {
-  it('saves an unchanged managed:kimi-code id without new_id (server accepts ids outside the create pattern when unchanged)', async () => {
+  it('patches an unchanged managed:kimi-code id without any model list or id rewrite', async () => {
     const onSaved = vi.fn(async () => {});
     const container = await renderEditor(MANAGED_PROVIDER, MANAGED_MODELS, true, onSaved);
 
@@ -152,58 +171,99 @@ describe('ProviderEditor save channel', () => {
       setInputValue(baseUrlInput!, 'https://api.changed.example.test/v1');
     });
 
-    const saveButton = buttonByText(container, 'Save provider');
-    expect(saveButton.disabled).toBe(false);
     await act(async () => {
-      saveButton.click();
+      buttonByText(container, 'Save provider').click();
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://server.example.test/api/providers/managed%3Akimi-code');
-    expect(init.method).toBe('PUT');
-    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer test-token');
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body['new_id']).toBeUndefined();
-    expect(body['id']).toBeUndefined();
-    expect(body['api_key']).toBeUndefined();
-    expect(body['type']).toBe('kimi');
-    expect(body['base_url']).toBe('https://api.changed.example.test/v1');
-    expect(body['default_model']).toBe('kimi-k2');
-    expect(body['models']).toEqual([
-      {
-        model: 'kimi-k2',
-        max_context_size: 262144,
-        capabilities: ['chat'],
-        support_efforts: ['high'],
-        request_identity: null,
-      },
-    ]);
-
+    expect(getProviderEntity).toHaveBeenCalledWith('managed:kimi-code');
+    expect(updateProvider).toHaveBeenCalledTimes(1);
+    const [providerId, patch] = updateProvider.mock.calls[0] as [string, Record<string, unknown>];
+    expect(providerId).toBe('managed:kimi-code');
+    expect(patch).toEqual({
+      base_url: 'https://api.changed.example.test/v1',
+      base_revision: 'rev-1',
+    });
+    expect(patch).not.toHaveProperty('models');
+    expect(patch).not.toHaveProperty('id');
+    expect(patch).not.toHaveProperty('api_key');
+    expect(patch).not.toHaveProperty('new_id');
+    expect(updateModel).not.toHaveBeenCalled();
     expect(onSaved).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('Server saved provider managed:kimi-code.');
   });
 
-  it('rejects a rename to an id outside the server pattern before any request', async () => {
+  it('keeps a local alias and its remote target when only the display name changes', async () => {
     const onSaved = vi.fn(async () => {});
-    const container = await renderEditor(PLAIN_PROVIDER, PLAIN_MODELS, false, onSaved);
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, onSaved);
 
-    const idInput = [...container.querySelectorAll('input')].find(
-      (input) => input.value === 'example',
+    const editToggle = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit model 1 details"]',
     );
-    expect(idInput, 'provider id input').toBeDefined();
+    expect(editToggle, 'model row toggle').not.toBeNull();
     await act(async () => {
-      setInputValue(idInput!, 'bad:id');
+      editToggle!.click();
+    });
+
+    const displayNameInput = [...container.querySelectorAll('input')].find(
+      (input) => input.value === 'Fast',
+    );
+    expect(displayNameInput, 'display name input').toBeDefined();
+    await act(async () => {
+      setInputValue(displayNameInput!, 'Fast (renamed)');
     });
 
     await act(async () => {
       buttonByText(container, 'Save provider').click();
     });
 
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(onSaved).not.toHaveBeenCalled();
-    expect(container.textContent).toContain(
-      'Provider ID must start with a letter or digit and use only letters, digits, spaces, - or _.',
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    const [modelId, patch] = updateModel.mock.calls[0] as [string, Record<string, unknown>];
+    expect(modelId).toBe('fast');
+    expect(patch).toEqual({ display_name: 'Fast (renamed)' });
+    expect(patch).not.toHaveProperty('remote_id');
+    expect(updateProvider).not.toHaveBeenCalled();
+    expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the stored local alias and remote id separately', async () => {
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    expect(container.textContent).toContain('vendor/model:v1');
+    expect(container.textContent).toContain('fast');
+  });
+
+  it('round-trips the real managed:kimi-code / kimi-code/... alias shape', async () => {
+    const onSaved = vi.fn(async () => {});
+    const container = await renderEditor(MANAGED_PROVIDER, MANAGED_MODELS, true, onSaved);
+
+    const editToggle = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit model 1 details"]',
     );
+    expect(editToggle, 'managed model row toggle').not.toBeNull();
+    await act(async () => {
+      editToggle!.click();
+    });
+
+    const displayNameInput = [...container.querySelectorAll('input')].find(
+      (input) => input.value === 'Kimi K2',
+    );
+    expect(displayNameInput, 'managed display name input').toBeDefined();
+    await act(async () => {
+      setInputValue(displayNameInput!, 'K2 (mine)');
+    });
+
+    await act(async () => {
+      buttonByText(container, 'Save provider').click();
+    });
+
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    const [modelId, patch] = updateModel.mock.calls[0] as [string, Record<string, unknown>];
+    // The alias never loses its generated prefix, and the patch touches only
+    // the display name: the alias, the remote id, the capabilities and the
+    // stored protocol fields stay exactly as they were.
+    expect(modelId).toBe('kimi-code/kimi-k2');
+    expect(patch).toEqual({ display_name: 'K2 (mine)' });
+    expect(deleteModel).not.toHaveBeenCalled();
+    expect(createModel).not.toHaveBeenCalled();
+    expect(onSaved).toHaveBeenCalledTimes(1);
   });
 });

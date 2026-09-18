@@ -233,7 +233,7 @@ export function useNewSessionDraft({
     liveSettings.defaultModel,
     serverDefaultModel,
   );
-  const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.model === effectiveModel);
+  const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.id === effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
   const effectiveEffort = effortOverride ?? resolveSelectedEffort(
     supportedEfforts,

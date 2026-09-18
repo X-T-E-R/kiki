@@ -127,7 +127,7 @@ describe('Model assembly (pure data)', () => {
       expect(catalog.inspect('tiered').resolved.serviceTier).toBe('priority');
       expect(catalog.inspect('tiered').sources['resolved.serviceTier']).toMatchObject({ kind: 'config' });
       expect(toProtocolModelFallback('tiered', record).service_tier).toBe('priority');
-      expect(await catalog.listModels()).toContainEqual(expect.objectContaining({ model: 'tiered', service_tier: 'priority' }));
+      expect(await catalog.listModels()).toContainEqual(expect.objectContaining({ id: 'tiered', service_tier: 'priority' }));
     } finally {
       host.dispose();
     }
@@ -1016,8 +1016,9 @@ describe('wire projection (pure)', () => {
     try {
       const record = (catalogSections['models'] as Record<string, ModelRecord>)['k2']!;
       expect(toProtocolModel(catalog.get('k2'), record, 'kimi')).toEqual({
-        provider: 'kimi',
-        model: 'k2',
+        id: 'k2',
+        provider_id: 'kimi',
+        remote_id: 'kimi-k2',
         display_name: 'Kimi K2',
         max_context_size: 131072,
         capabilities: ['thinking'],
@@ -1039,8 +1040,9 @@ describe('wire projection (pure)', () => {
       capabilities: ['thinking'],
     };
     expect(toProtocolModelFallback('k2', record, 'kimi')).toEqual({
-      provider: 'kimi',
-      model: 'k2',
+      id: 'k2',
+      provider_id: 'kimi',
+      remote_id: 'kimi-k2',
       display_name: 'Kimi K2',
       max_context_size: 131072,
       capabilities: ['thinking'],
@@ -1109,14 +1111,27 @@ describe('ModelCatalog enumeration', () => {
     try {
       await expect(catalog.listModels()).resolves.toEqual([
         {
-          provider: 'kimi',
-          model: 'k2',
+          id: 'k2',
+          provider_id: 'kimi',
+          remote_id: 'kimi-k2',
           display_name: 'Kimi K2',
           max_context_size: 131072,
           capabilities: ['thinking'],
         },
-        { provider: 'kimi', model: 'turbo', display_name: 'Kimi Turbo', max_context_size: 32768 },
-        { provider: 'openai', model: 'gpt4o', display_name: 'gpt-4o', max_context_size: 128000 },
+        {
+          id: 'turbo',
+          provider_id: 'kimi',
+          remote_id: 'kimi-turbo',
+          display_name: 'Kimi Turbo',
+          max_context_size: 32768,
+        },
+        {
+          id: 'gpt4o',
+          provider_id: 'openai',
+          remote_id: 'gpt-4o',
+          display_name: 'gpt-4o',
+          max_context_size: 128000,
+        },
       ]);
     } finally {
       host.dispose();
@@ -1166,18 +1181,21 @@ describe('ModelCatalog enumeration', () => {
     try {
       await expect(catalog.listModels()).resolves.toEqual([
         expect.objectContaining({
-          provider: 'managed:kimi-code',
-          model: 'kimi-code/kimi-k2',
+          id: 'kimi-code/kimi-k2',
+          provider_id: 'managed:kimi-code',
+          remote_id: 'kimi-k2',
           display_name: 'Kimi K2',
         }),
         expect.objectContaining({
-          provider: 'managed:kimi-code',
-          model: 'managed-kimi-alt/kimi-k2',
+          id: 'managed-kimi-alt/kimi-k2',
+          provider_id: 'managed:kimi-code',
+          remote_id: 'kimi-k2',
           display_name: 'Kimi K2',
         }),
         expect.objectContaining({
-          provider: 'moonshot',
-          model: 'moonshot/kimi-k2',
+          id: 'moonshot/kimi-k2',
+          provider_id: 'moonshot',
+          remote_id: 'kimi-k2',
           display_name: 'Kimi K2',
         }),
       ]);
@@ -1212,7 +1230,7 @@ describe('ModelCatalog enumeration', () => {
     const { host, catalog } = createHost(sections);
     try {
       await expect(catalog.listModels()).resolves.toEqual([
-        expect.objectContaining({ model: 'managed:kimi-code/kimi-k2' }),
+        expect.objectContaining({ id: 'managed:kimi-code/kimi-k2' }),
       ]);
     } finally {
       host.dispose();
@@ -1230,7 +1248,7 @@ describe('ModelCatalog enumeration', () => {
     try {
       const [k2] = await catalog.listModels();
       expect(k2).toMatchObject({
-        model: 'k2',
+        id: 'k2',
         support_efforts: ['low', 'high', 'max'],
         default_effort: 'max',
       });
@@ -1249,7 +1267,7 @@ describe('ModelCatalog enumeration', () => {
     };
     const { host, catalog } = createHost(sections);
     try {
-      const opus = (await catalog.listModels()).find((model) => model.model === 'opus');
+      const opus = (await catalog.listModels()).find((model) => model.id === 'opus');
       expect(opus).toMatchObject({
         capabilities: ['thinking'],
         support_efforts: ['low', 'medium', 'high', 'max'],
@@ -1270,7 +1288,7 @@ describe('ModelCatalog enumeration', () => {
     };
     const { host, catalog } = createHost(sections);
     try {
-      const compatible = (await catalog.listModels()).find((model) => model.model === 'compatible');
+      const compatible = (await catalog.listModels()).find((model) => model.id === 'compatible');
       expect(compatible).toMatchObject({
         capabilities: ['thinking'],
         support_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -1291,7 +1309,7 @@ describe('ModelCatalog enumeration', () => {
     };
     const { host, catalog } = createHost(sections);
     try {
-      const compatible = (await catalog.listModels()).find((model) => model.model === 'compatible');
+      const compatible = (await catalog.listModels()).find((model) => model.id === 'compatible');
       expect(compatible?.capabilities).toBeUndefined();
       expect(compatible?.support_efforts).toBeUndefined();
       expect(compatible?.default_effort).toBeUndefined();
@@ -1313,7 +1331,7 @@ describe('ModelCatalog enumeration', () => {
       },
     });
     try {
-      const compatible = (await catalog.listModels()).find((model) => model.model === 'compatible');
+      const compatible = (await catalog.listModels()).find((model) => model.id === 'compatible');
       expect(compatible).toMatchObject({
         capabilities: ['thinking'],
         support_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -1337,7 +1355,7 @@ describe('ModelCatalog enumeration', () => {
       },
     });
     try {
-      const compatible = (await catalog.listModels()).find((model) => model.model === 'compatible');
+      const compatible = (await catalog.listModels()).find((model) => model.id === 'compatible');
       expect(compatible?.capabilities).toBeUndefined();
       expect(compatible?.support_efforts).toBeUndefined();
       expect(compatible?.default_effort).toBeUndefined();
@@ -1356,8 +1374,8 @@ describe('ModelCatalog enumeration', () => {
     };
     const { host, catalog } = createHost(sections);
     try {
-      const compatible = (await catalog.listModels()).find((model) => model.model === 'compatible');
-      expect(compatible).toMatchObject({ provider: 'kimi', model: 'compatible' });
+      const compatible = (await catalog.listModels()).find((model) => model.id === 'compatible');
+      expect(compatible).toMatchObject({ id: 'compatible', provider_id: 'kimi', remote_id: 'compatible-model' });
       expect(compatible?.capabilities).toBeUndefined();
       expect(compatible?.support_efforts).toBeUndefined();
       expect(compatible?.default_effort).toBeUndefined();
@@ -1402,7 +1420,7 @@ describe('ModelCatalog enumeration', () => {
     });
     try {
       await expect(catalog.listModels()).resolves.toEqual([
-        { provider: '', model: 'bad', display_name: 'Bad', max_context_size: 1000 },
+        { id: 'bad', provider_id: '', remote_id: 'bad-model', display_name: 'Bad', max_context_size: 1000 },
       ]);
     } finally {
       host.dispose();
@@ -1497,8 +1515,9 @@ describe('ModelCatalog setDefaultModel', () => {
       await expect(catalog.setDefaultModel('turbo')).resolves.toEqual({
         default_model: 'turbo',
         model: {
-          provider: 'kimi',
-          model: 'turbo',
+          id: 'turbo',
+          provider_id: 'kimi',
+          remote_id: 'kimi-turbo',
           display_name: 'Kimi Turbo',
           max_context_size: 32768,
         },

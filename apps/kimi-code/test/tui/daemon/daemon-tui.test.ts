@@ -232,8 +232,9 @@ function driver(
   internal.client.listModels = vi.fn(async () => ({
     items: [
       {
-        provider: 'example',
-        model: 'model-b',
+        id: 'model-b',
+        provider_id: 'example',
+        remote_id: 'model-b',
         display_name: 'Model B',
         max_context_size: 128_000,
       },

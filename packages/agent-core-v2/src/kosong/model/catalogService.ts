@@ -279,23 +279,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     models: Readonly<Record<string, ModelRecord>>,
     globalDefaultModel: string | undefined,
   ): Promise<ProviderCatalogItem> {
-    const credential = await this.resolveCredential(providerId, provider);
+    const credential = await resolveProviderCredentialState(providerId, provider, this.oauth);
     return toProtocolProvider(providerId, provider, models, globalDefaultModel, credential);
-  }
-
-  private async resolveCredential(
-    providerId: string,
-    provider: ProviderConfig,
-  ): Promise<ProviderCredentialState> {
-    return {
-      hasApiKey: hasConfiguredApiKey(provider),
-      hasOAuthToken: await this.hasCachedToken(providerId, provider),
-    };
-  }
-
-  private async hasCachedToken(providerId: string, provider: ProviderConfig): Promise<boolean> {
-    if (provider.oauth === undefined) return false;
-    return this.oauth.hasCachedAccessToken(providerId, provider.oauth);
   }
 
   private providerTypeOf(record: ModelRecord): string | undefined {
@@ -579,6 +564,26 @@ export function resolveOutboundHeaders(
     getProviderDefinition(providerType)?.hostHeaders === 'full';
   const hostLayer = forwardsAll ? host.headers : host.thirdPartyHeaders;
   return { ...parseKimiCodeCustomHeaders(), ...hostLayer, ...customHeaders };
+}
+
+/**
+ * The credential summary a provider projection reports instead of a secret:
+ * a configured api key (config or the type's env bag) and a cached OAuth
+ * token. Shared by the catalog read and the config mutation service so both
+ * describe the same connection state.
+ */
+export async function resolveProviderCredentialState(
+  providerId: string,
+  provider: ProviderConfig,
+  oauth: Pick<IModelOAuthTokens, 'hasCachedAccessToken'>,
+): Promise<ProviderCredentialState> {
+  return {
+    hasApiKey: hasConfiguredApiKey(provider),
+    hasOAuthToken:
+      provider.oauth === undefined
+        ? false
+        : await oauth.hasCachedAccessToken(providerId, provider.oauth),
+  };
 }
 
 function resolveModelCapabilities(

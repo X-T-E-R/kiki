@@ -500,7 +500,7 @@ export function defineKlientConformance(
           auth: { method: 'api-key', apiKey: 'conf-key' },
           requestIdentity: { overrides: { request: { logicalId: 'none' } } },
         });
-        expect((await kosong.listModels()).find((model) => model.model === id)?.request_identity)
+        expect((await kosong.listModels()).find((model) => model.id === id)?.request_identity)
           .toEqual({ overrides: { request: { logical_id: 'none' } } });
 
         await waitFor(

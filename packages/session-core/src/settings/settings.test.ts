@@ -7,8 +7,9 @@ import {
   aiTabForCard,
   buildSettingsSearchIndex,
   clearRestartRequirement,
-  communicationPatch,
-  createProvider,
+  threadCommunicationPatch,
+  tokenCountingPatch,
+  agentNotifyParentPatch,
   fetchRemoteModels,
   humanizeMs,
   acknowledgeRestartRequirement,
@@ -24,6 +25,11 @@ import {
   parseHooksJson,
   parseRemoteModels,
   providerDraftFromCatalog,
+  providerDefaultRow,
+  providerCreateBody,
+  providerPatchBody,
+  modelPatchBody,
+  modelCreateBody,
   providerTemplateFor,
   isComposerSendKey,
   readDesktopPrefs,
@@ -35,7 +41,6 @@ import {
   sessionTitleModelPatch,
   remoteModelsHeaders,
   remoteModelsUrl,
-  replaceProvider,
   resolveEffectiveModel,
   resolveModelSource,
   resolveSessionModelOverride,
@@ -85,14 +90,15 @@ const providerDraft = (patch: Partial<ProviderDraft> = {}): ProviderDraft => ({
   id: 'example',
   type: 'openai',
   baseUrl: 'https://api.example.test/v1',
-  defaultModel: 'chat',
+  defaultModel: 'example/chat',
   apiKey: '',
   clearApiKey: false,
   requestIdentityChoice: 'inherit',
   requestIdentityOverridesJson: '',
   models: [
     {
-      model: 'chat',
+      id: 'example/chat',
+      remoteId: 'chat',
       maxContextSize: 128000,
       displayName: 'Example Chat',
       capabilities: ['reasoning'],
@@ -285,10 +291,19 @@ describe('settings persistence and validation', () => {
     expect(resourcePatch.image).toEqual({ max_edge_px: 2048, read_byte_budget: 4_000_000 });
     expect(resourcePatch.replace_domains).toEqual(['workspace_instance', 'image']);
 
-    const commPatch = communicationPatch(draft);
-    expect(commPatch.thread_communication).toEqual({ enabled: true });
-    expect(commPatch.token_counting).toEqual({ strategy: 'measured' });
-    expect(commPatch.replace_domains).toEqual(['thread_communication', 'token_counting']);
+    expect(threadCommunicationPatch(true)).toEqual({
+      thread_communication: { enabled: true },
+      replace_domains: ['thread_communication'],
+    });
+    expect(tokenCountingPatch('estimated')).toEqual({
+      token_counting: { strategy: 'estimated' },
+      replace_domains: ['token_counting'],
+    });
+    // The notify-parent toggle shares the agents domain with the subagents
+    // leaf's enabled flag, so it merges without replace_domains.
+    expect(agentNotifyParentPatch(false)).toEqual({
+      agents: { notify_parent: false },
+    });
 
     const identityPatch = agentIdentityPatch(draft);
     expect(identityPatch.identity).toEqual({ name: 'Example Agent', slug: 'example-agent' });
@@ -298,13 +313,18 @@ describe('settings persistence and validation', () => {
 
     // mcp and tools belong to other leaves — none of the split patches sends
     // or replaces them, so a stale draft can never roll them back.
-    for (const patch of [taskPatch, resourcePatch, commPatch, identityPatch]) {
+    const commPatches = [
+      threadCommunicationPatch(draft.threadCommunicationEnabled),
+      tokenCountingPatch(draft.tokenCountingStrategy),
+      agentNotifyParentPatch(draft.agentsNotifyParent),
+    ];
+    for (const patch of [taskPatch, resourcePatch, ...commPatches, identityPatch]) {
       expect(patch.cron).toBeUndefined();
       expect(patch.mcp).toBeUndefined();
       expect(patch.tools).toBeUndefined();
-      expect(patch.replace_domains).not.toContain('cron');
-      expect(patch.replace_domains).not.toContain('mcp');
-      expect(patch.replace_domains).not.toContain('tools');
+      expect(patch.replace_domains ?? []).not.toContain('cron');
+      expect(patch.replace_domains ?? []).not.toContain('mcp');
+      expect(patch.replace_domains ?? []).not.toContain('tools');
     }
   });
 
@@ -394,8 +414,9 @@ describe('settings persistence and validation', () => {
         models: ['example/chat'],
       },
       [{
-        provider: 'example',
-        model: 'example/chat',
+        id: 'example/chat',
+        provider_id: 'example',
+        remote_id: 'chat',
         display_name: 'Example Chat',
         max_context_size: 128000,
         capabilities: ['reasoning'],
@@ -404,13 +425,61 @@ describe('settings persistence and validation', () => {
       }],
     );
     expect(draft?.apiKey).toBe('');
-    expect(draft?.defaultModel).toBe('chat');
-    expect(draft?.models[0]?.model).toBe('chat');
+    expect(draft?.defaultModel).toBe('example/chat');
+    expect(draft?.models[0]?.id).toBe('example/chat');
+    expect(draft?.models[0]?.remoteId).toBe('chat');
     expect(draft?.requestIdentityChoice).toBe('kimi_code');
     expect(draft?.models[0]?.requestIdentityChoice).toBe('custom_overrides');
   });
 
-  it('round-trips authored request identity presets and advanced overrides', async () => {
+  it('keeps a local alias whose text says nothing about the remote model', () => {
+    const draft = providerDraftFromCatalog(
+      {
+        id: 'edge',
+        type: 'openai',
+        default_model: 'fast',
+        has_api_key: true,
+        status: 'connected',
+        models: ['fast'],
+      },
+      [{
+        id: 'fast',
+        provider_id: 'edge',
+        remote_id: 'vendor/model:v1',
+        max_context_size: 200000,
+      }],
+    );
+    expect(draft?.models[0]).toMatchObject({
+      id: 'fast',
+      remoteId: 'vendor/model:v1',
+      displayName: '',
+    });
+    expect(draft?.defaultModel).toBe('fast');
+    expect(providerDefaultRow(draft!)?.remoteId).toBe('vendor/model:v1');
+  });
+
+  it('keeps a connection with zero models editable', () => {
+    const draft = providerDraftFromCatalog(
+      {
+        id: 'managed:kimi-code',
+        type: 'kimi',
+        has_api_key: false,
+        status: 'connected',
+        models: [],
+      },
+      [],
+    );
+    expect(draft).toMatchObject({ id: 'managed:kimi-code', models: [] });
+    expect(validateProviderDraft(draft!)).toBeNull();
+    expect(
+      providerDraftFromCatalog(
+        { id: 'mystery', type: 'mystery', has_api_key: false, status: 'unconfigured' },
+        [],
+      ),
+    ).toBeNull();
+  });
+
+  it('maps authored request identity layers to the wire without inventing presets', () => {
     const draft = providerDraftFromCatalog(
       {
         id: 'example',
@@ -424,8 +493,9 @@ describe('settings persistence and validation', () => {
         models: ['example/chat'],
       },
       [{
-        provider: 'example',
-        model: 'example/chat',
+        id: 'example/chat',
+        provider_id: 'example',
+        remote_id: 'chat',
         max_context_size: 128000,
         request_identity: { overrides: { request: { logical_id: 'turn' } } },
       }],
@@ -436,26 +506,14 @@ describe('settings persistence and validation', () => {
       client: { user_agent: 'codex' },
     });
 
-    let body: Record<string, unknown> | undefined;
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      body = JSON.parse(init?.body as string) as Record<string, unknown>;
-      return new Response(JSON.stringify({
-        code: 0,
-        msg: 'success',
-        data: { provider: { id: 'example', type: 'openai_responses', has_api_key: true, status: 'connected' } },
-      }));
-    }));
-    await replaceProvider(
-      { url: 'http://127.0.0.1:8080', token: 'token' },
-      'example',
-      draft!,
-    );
-    expect(body?.['request_identity']).toEqual({
+    const body = providerCreateBody(draft!);
+    expect(body.request_identity).toEqual({
       preset: 'codex_compatible',
       overrides: { client: { user_agent: 'codex' } },
     });
-    expect(body?.['models']).toEqual([
+    expect(body.models).toEqual([
       expect.objectContaining({
+        remote_id: 'chat',
         request_identity: { overrides: { request: { logical_id: 'turn' } } },
       }),
     ]);
@@ -480,149 +538,76 @@ describe('settings persistence and validation', () => {
     }))?.key).toBe('val.requestIdentityOverridesInvalid');
   });
 
-  it('uses the provider PUT wire and omits a blank write-once secret', async () => {
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      // The client always sends a JSON string body; JSON.parse stringifies its
-      // argument anyway, so dropping String() is behavior-identical here.
-      const body = JSON.parse(init?.body as string) as Record<string, unknown>;
-      expect(init?.method).toBe('PUT');
-      expect(body['api_key']).toBeUndefined();
-      expect(body['models']).toEqual([
-        expect.objectContaining({
-          model: 'chat',
-          max_context_size: 128000,
-          request_identity: null,
-        }),
-      ]);
-      return new Response(JSON.stringify({
-        code: 0,
-        msg: 'success',
-        data: {
-          provider: {
-            id: 'example',
-            type: 'openai',
-            has_api_key: true,
-            status: 'connected',
-            models: ['example/chat'],
-          },
-        },
-      }), { status: 200, headers: { 'content-type': 'application/json' } });
+  it('builds a sparse connection patch that never carries a model list', () => {
+    const baseline = providerDraft();
+    const edited = providerDraft({ baseUrl: 'https://api.example.test/v2' });
+    expect(providerPatchBody(edited, baseline)).toEqual({
+      base_url: 'https://api.example.test/v2',
     });
-    vi.stubGlobal('fetch', fetchMock);
-    const saved = await replaceProvider(
-      { url: 'http://127.0.0.1:8080', token: 'token' },
-      'example',
-      providerDraft(),
+    expect(providerPatchBody(baseline, baseline)).toBeNull();
+
+    const cleared = providerPatchBody(
+      providerDraft({ baseUrl: '', defaultModel: '' }),
+      baseline,
     );
-    expect(saved.id).toBe('example');
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(cleared).toMatchObject({ base_url: null, default_model: null });
+
+    expect(
+      providerPatchBody(providerDraft({ defaultModel: 'example/chat' }), providerDraft({ defaultModel: '' }))?.[
+        'default_model'
+      ],
+    ).toBe('example/chat');
+
+    expect(providerPatchBody(providerDraft({ apiKey: 'sk-new' }), baseline)?.['api_key'])
+      .toBe('sk-new');
+    expect(providerPatchBody(providerDraft({ clearApiKey: true }), baseline)?.['api_key'])
+      .toBe('');
   });
 
-  it('managed-style save: id/type unchanged, secret untouched, non-credential fields on the wire', async () => {
-    let body: Record<string, unknown> | undefined;
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      body = JSON.parse(init?.body as string) as Record<string, unknown>;
-      return new Response(JSON.stringify({
-        code: 0,
-        msg: 'success',
-        data: { provider: { id: 'example', type: 'openai', has_api_key: true, status: 'connected' } },
-      }));
-    }));
-    // The managed editor locks id/protocol and hides the credential surface,
-    // so the draft it saves always has the unchanged id and a blank key.
-    await replaceProvider(
-      { url: 'http://127.0.0.1:8080', token: 'token' },
-      'example',
-      providerDraft({
-        id: 'example',
-        baseUrl: 'https://api.example.test/v2',
-        requestIdentityChoice: 'none',
-      }),
-    );
-    expect(body?.['new_id']).toBeUndefined();
-    expect(body?.['api_key']).toBeUndefined();
-    expect(body?.['type']).toBe('openai');
-    expect(body?.['base_url']).toBe('https://api.example.test/v2');
-    expect(body?.['request_identity']).toEqual({ preset: 'none' });
+  it('builds a sparse model patch that leaves unlisted fields alone', () => {
+    const baseline = providerDraft().models[0]!;
+    expect(modelPatchBody(baseline, baseline)).toBeNull();
+    expect(modelPatchBody({ ...baseline, displayName: 'Renamed' }, baseline)).toEqual({
+      display_name: 'Renamed',
+    });
+    expect(modelPatchBody({ ...baseline, maxContextSize: 0 }, baseline)).toEqual({
+      max_context_size: null,
+    });
+    expect(modelPatchBody({ ...baseline, remoteId: 'vendor/model:v2' }, baseline)).toEqual({
+      remote_id: 'vendor/model:v2',
+    });
+    expect(modelPatchBody({ ...baseline, capabilities: [] }, baseline)).toEqual({
+      capabilities: [],
+    });
+    expect(
+      modelPatchBody({ ...baseline, requestIdentityChoice: 'none' }, baseline),
+    ).toEqual({ request_identity: { preset: 'none' } });
+    expect(modelPatchBody({ ...baseline, remoteId: '' }, baseline)).toBeNull();
   });
 
-  it('sends an explicit empty API key only when the user chooses clear', async () => {
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = JSON.parse(init?.body as string) as Record<string, unknown>;
-      expect(body['api_key']).toBe('');
-      return new Response(JSON.stringify({
-        code: 0,
-        msg: 'success',
-        data: { provider: { id: 'example', type: 'openai', has_api_key: false, status: 'unconfigured' } },
-      }));
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    await replaceProvider(
-      { url: 'http://127.0.0.1:8080', token: 'token' },
-      'example',
-      providerDraft({ clearApiKey: true }),
-    );
-  });
-
-  it('serializes provider and model authored layers without inventing presets', async () => {
-    const bodies: Record<string, unknown>[] = [];
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      bodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
-      return new Response(JSON.stringify({
-        code: 0,
-        msg: 'success',
-        data: { provider: { id: 'example', type: 'openai', has_api_key: false, status: 'unconfigured' } },
-      }));
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const connection = { url: 'http://127.0.0.1:8080', token: 'token' };
-    const custom = providerDraft({
-      requestIdentityChoice: 'custom_overrides',
-      requestIdentityOverridesJson: '{"client":{"user_agent":"host"}}',
-    });
-    custom.models[0] = {
-      ...custom.models[0]!,
-      requestIdentityChoice: 'none',
-      requestIdentityOverridesJson: '{"request":{"logical_id":"turn"}}',
-    };
-    await replaceProvider(connection, 'example', custom);
-    await replaceProvider(connection, 'example', providerDraft());
-
-    expect(bodies[0]?.['request_identity']).toEqual({
-      overrides: { client: { user_agent: 'host' } },
-    });
-    expect(bodies[0]?.['models']).toEqual([
-      expect.objectContaining({
-        request_identity: {
-          preset: 'none',
-          overrides: { request: { logical_id: 'turn' } },
-        },
-      }),
-    ]);
-    expect(bodies[1]?.['request_identity']).toBeNull();
-    expect(bodies[1]?.['models']).toEqual([
-      expect.objectContaining({ request_identity: null }),
-    ]);
-  });
-
-  it('omits inherited provider and model layers when creating', async () => {
-    let body: Record<string, unknown> | undefined;
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      body = JSON.parse(init?.body as string) as Record<string, unknown>;
-      return new Response(JSON.stringify({
-        code: 0,
-        msg: 'success',
-        data: { id: 'example', type: 'openai', has_api_key: false, status: 'unconfigured' },
-      }));
-    }));
-    await createProvider(
-      { url: 'http://127.0.0.1:8080', token: 'token' },
-      providerDraft(),
-    );
-    expect(body?.['request_identity']).toBeUndefined();
-    expect(body?.['models']).toEqual([
+  it('omits inherited provider and model layers when creating', () => {
+    const body = providerCreateBody(providerDraft());
+    expect(body.request_identity).toBeUndefined();
+    expect(body.models).toEqual([
       expect.not.objectContaining({ request_identity: expect.anything() }),
     ]);
+    expect(body.default_model).toBe('chat');
+    expect(body.models?.[0]).toMatchObject({ remote_id: 'chat', max_context_size: 128000 });
+  });
+
+  it('creates a model row with the suggested alias only when the name differs', () => {
+    const row = providerDraft().models[0]!;
+    expect(modelCreateBody('example', row)).toMatchObject({
+      provider_id: 'example',
+      remote_id: 'chat',
+      id: undefined,
+    });
+    expect(modelCreateBody('example', { ...row, id: 'example/daily' })).toMatchObject({
+      id: 'example/daily',
+    });
+    expect(modelCreateBody('example', { ...row, id: 'example/chat' })).toMatchObject({
+      id: undefined,
+    });
   });
 
   it('maps global authored layers and rejects empty override-only layers', () => {
@@ -719,8 +704,9 @@ describe('remote /models probe', () => {
       return new Response(JSON.stringify({ data: [{ id: 'claude-a' }, { id: 'claude-b' }] }), { status: 200 });
     }));
     const models = await fetchRemoteModels({ type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'key-9' });
-    expect(models.map((model) => model.model)).toEqual(['claude-a', 'claude-b']);
+    expect(models.map((model) => model.remoteId)).toEqual(['claude-a', 'claude-b']);
     expect(models[0]?.maxContextSize).toBe(200000);
+    expect(models[0]?.id).toBe('');
     expect(models[0]?.capabilities).toEqual([]);
   });
 
@@ -984,11 +970,13 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-task-policy', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-runtime'))
       .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-task-policy', tab: undefined });
-    // Cards that moved out of the runtime page resolve to their new owners.
+    // Cards that moved out of the runtime page resolve to their new owners;
+    // the dissolved st-card-communication hash follows its hand-written alias
+    // to the communication leaf's thread card.
     expect(resolveSettingsRoute('runtime', '#st-card-cron'))
       .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-cron', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
-      .toEqual({ status: 'ok', section: 'advanced', cardId: 'st-card-communication', tab: undefined });
+      .toEqual({ status: 'ok', section: 'communication', cardId: 'st-card-thread-communication', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))
       .toEqual({ status: 'ok', section: 'advanced', cardId: 'st-card-resource-limits', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-agent-runtime'))
@@ -1082,17 +1070,21 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
     const engineDraft = runtimeConfigDraftFromConfig({ providers: {} });
     const taskPatch = taskRuntimePatch(engineDraft.task);
     const resourcePatch = resourceLimitPatch(engineDraft);
-    const commPatch = communicationPatch(engineDraft);
+    const threadPatch = threadCommunicationPatch(engineDraft.threadCommunicationEnabled);
+    const tokenPatch = tokenCountingPatch(engineDraft.tokenCountingStrategy);
+    const notifyPatch = agentNotifyParentPatch(engineDraft.agentsNotifyParent);
     const identityPatch = agentIdentityPatch(engineDraft);
     const toolsPatch = toolPolicyPatch({ toolsEnabled: [], toolsDisabled: [] });
     const mcpPatch = mcpTimeoutsPatch('60000', '');
-    for (const patch of [taskPatch, resourcePatch, commPatch, identityPatch]) {
+    for (const patch of [taskPatch, resourcePatch, threadPatch, tokenPatch, notifyPatch, identityPatch]) {
       expect(Object.keys(patch)).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
       expect(patch.replace_domains).not.toEqual(expect.arrayContaining(['mcp', 'tools']));
     }
     expect(Object.keys(taskPatch).toSorted()).toEqual(['replace_domains', 'task']);
     expect(Object.keys(resourcePatch).toSorted()).toEqual(['image', 'replace_domains', 'workspace_instance']);
-    expect(Object.keys(commPatch).toSorted()).toEqual(['replace_domains', 'thread_communication', 'token_counting']);
+    expect(Object.keys(threadPatch).toSorted()).toEqual(['replace_domains', 'thread_communication']);
+    expect(Object.keys(tokenPatch).toSorted()).toEqual(['replace_domains', 'token_counting']);
+    expect(Object.keys(notifyPatch).toSorted()).toEqual(['agents']);
     expect(Object.keys(identityPatch).toSorted()).toEqual(['disabled_builtin_profiles', 'extra_agent_dirs', 'identity', 'replace_domains']);
     expect(Object.keys(toolsPatch).toSorted()).toEqual(['replace_domains', 'tools']);
     expect(Object.keys(mcpPatch).toSorted()).toEqual(['mcp', 'replace_domains']);

@@ -1,47 +1,27 @@
 /**
  * `modelResolver` — the engine's `IModelCatalog`: materialized model lookup
  * plus the read-only catalog enumeration over configured providers and model
- * aliases, and the global default-model selection. Mirrors
- * `agent-core-v2/kosong/model/catalog.ts`; wire shapes mirror
- * `protocol/src/modelCatalog.ts` and `protocol/src/rest/modelCatalog.ts`
- * (snake_case fields).
+ * aliases, and the global default-model selection. The wire shapes are the
+ * public ones owned by `@kiki/protocol` (`src/modelCatalog.ts`,
+ * `src/rest/modelCatalog.ts`): a model's local `id`, its `provider_id` and the
+ * exact `remote_id` sent upstream are three independent fields.
  */
 
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import {
+  modelCatalogItemSchema,
+  providerCatalogItemSchema,
+  setDefaultModelResponseSchema,
+} from '@kiki/protocol';
 import { z } from 'zod';
 
 import type { ServiceContract, StreamingProcedureContract } from '../types.js';
 
 export const requestIdentityPolicySchema = RequestIdentityPolicyWireSchema;
 
-export const modelCatalogItemSchema = z.object({
-  provider: z.string(),
-  model: z.string(),
-  display_name: z.string().optional(),
-  max_context_size: z.number(),
-  capabilities: z.array(z.string()).optional(),
-  support_efforts: z.array(z.string()).optional(),
-  default_effort: z.string().optional(),
-  request_identity: requestIdentityPolicySchema.optional(),
-});
+export { modelCatalogItemSchema, providerCatalogItemSchema, setDefaultModelResponseSchema };
 
 export const providerCatalogStatusSchema = z.enum(['connected', 'error', 'unconfigured']);
-
-export const providerCatalogItemSchema = z.object({
-  id: z.string(),
-  type: z.string(),
-  base_url: z.string().optional(),
-  default_model: z.string().optional(),
-  request_identity: requestIdentityPolicySchema.optional(),
-  has_api_key: z.boolean(),
-  status: providerCatalogStatusSchema,
-  models: z.array(z.string()).optional(),
-});
-
-export const setDefaultModelResponseSchema = z.object({
-  default_model: z.string(),
-  model: modelCatalogItemSchema,
-});
 
 const generateInputSchema = z.object({
   systemPrompt: z.string(),

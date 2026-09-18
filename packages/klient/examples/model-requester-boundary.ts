@@ -101,24 +101,24 @@ async function probeRealConfig(): Promise<void> {
 
     const models = await catalog.listModels();
     const filter = process.env['KIMI_BOUNDARY_MODELS']?.split(',').map((s) => s.trim());
-    const targets = models.filter((m) => filter === undefined || filter.includes(m.model));
+    const targets = models.filter((m) => filter === undefined || filter.includes(m.id));
     assert(targets.length > 0, 'at least one configured model to ping');
 
     for (const m of targets) {
       const startedAt = Date.now();
       const result = await Promise.race([
-        catalog.ping(m.model),
+        catalog.ping(m.id),
         tick(45_000).then(() => ({ ok: false as const, durationMs: 45_000, error: 'ping timed out after 45s' })),
       ]);
       if (result.ok) {
         console.log(
-          `[ping ok]   ${m.model} (${m.provider})  ${String(Date.now() - startedAt)}ms  ` +
+          `[ping ok]   ${m.id} (${m.provider_id})  ${String(Date.now() - startedAt)}ms  ` +
             `text=${JSON.stringify(result.text ?? '')}  finish=${String(result.finishReason)}  ` +
             `usage=${JSON.stringify(result.usage ?? null)}`,
         );
       } else {
         const firstLine = (result.error ?? 'unknown error').split('\n')[0];
-        console.log(`[ping fail] ${m.model} (${m.provider})  ${firstLine}`);
+        console.log(`[ping fail] ${m.id} (${m.provider_id})  ${firstLine}`);
       }
     }
   } finally {

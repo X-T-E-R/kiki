@@ -34,14 +34,13 @@ export function resolveSelectedEffort(
  * is not an error — the first catalog row in server order resolves it, which
  * is the candidate the engine picks as well.
  */
-export function resolveCatalogModel<T extends { readonly model: string; readonly provider: string }>(
-  items: readonly T[],
-  id: string,
-): T | undefined {
-  const exact = items.find((item) => item.model === id);
+export function resolveCatalogModel<
+  T extends { readonly id: string; readonly remote_id: string; readonly provider_id: string },
+>(items: readonly T[], id: string): T | undefined {
+  const exact = items.find((item) => item.id === id);
   if (exact !== undefined) return exact;
   if (!id.includes('/')) {
-    return items.find((item) => item.model.endsWith(`/${id}`));
+    return items.find((item) => item.id.endsWith(`/${id}`));
   }
   const slash = id.lastIndexOf('/');
   const prefix = id.slice(0, slash);
@@ -49,8 +48,8 @@ export function resolveCatalogModel<T extends { readonly model: string; readonly
   if (tail === '') return undefined;
   return items.find(
     (item) =>
-      item.model === tail &&
-      (item.provider === prefix || item.provider.endsWith(`:${prefix}`)),
+      item.id === tail &&
+      (item.provider_id === prefix || item.provider_id.endsWith(`:${prefix}`)),
   );
 }
 

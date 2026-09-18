@@ -930,7 +930,7 @@ export class AcpSession {
   private async emitUsageUpdate(): Promise<void> {
     try {
       const size = (await this.klient.global.kosong.listModels()).find(
-        (item) => item.model === this.currentModelId,
+        (item) => item.id === this.currentModelId,
       )?.max_context_size;
       if (size === undefined) return;
       const context = await this.agent.getContext();

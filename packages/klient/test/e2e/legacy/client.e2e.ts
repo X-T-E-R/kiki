@@ -430,8 +430,8 @@ describe('DaemonClient session action helpers', () => {
   it('model catalog helpers call the catalog and action-suffix routes', async () => {
     const log = createCaseLogger('client helper: model catalog');
     const calls: FetchCall[] = [];
-    const model = testModel({ model: 'kimi-code/kimi-for-coding' });
-    const provider = testProvider({ id: 'kimi', models: [model.model] });
+    const model = testModel({ id: 'kimi-code/kimi-for-coding', remote_id: 'kimi-for-coding' });
+    const provider = testProvider({ id: 'kimi', models: [model.id] });
     const client = new DaemonClient({
       baseUrl: 'http://server.example.test',
       fetchImpl: recordingFetchSequence(
@@ -439,11 +439,11 @@ describe('DaemonClient session action helpers', () => {
           okEnvelope({
             ready: true,
             providers_count: 1,
-            default_model: model.model,
+            default_model: model.id,
             managed_provider: null,
           }),
           okEnvelope({ items: [model] }),
-          okEnvelope({ default_model: model.model, model }),
+          okEnvelope({ default_model: model.id, model }),
           okEnvelope({ items: [provider] }),
           okEnvelope(provider),
         ],
@@ -451,10 +451,10 @@ describe('DaemonClient session action helpers', () => {
       ),
     });
 
-    await expect(client.getAuth()).resolves.toMatchObject({ default_model: model.model });
+    await expect(client.getAuth()).resolves.toMatchObject({ default_model: model.id });
     await expect(client.listModels()).resolves.toEqual({ items: [model] });
-    await expect(client.setDefaultModel(model.model)).resolves.toEqual({
-      default_model: model.model,
+    await expect(client.setDefaultModel(model.id)).resolves.toEqual({
+      default_model: model.id,
       model,
     });
     await expect(client.listProviders()).resolves.toEqual({ items: [provider] });
@@ -661,8 +661,9 @@ function testSession(overrides: Partial<Session> = {}): Session {
 
 function testModel(overrides: Partial<ModelCatalogItem> = {}): ModelCatalogItem {
   return {
-    provider: 'kimi',
-    model: 'k2',
+    id: 'k2',
+    provider_id: 'kimi',
+    remote_id: 'k2',
     display_name: 'Kimi K2',
     max_context_size: 131_072,
     ...overrides,

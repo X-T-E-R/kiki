@@ -20,6 +20,8 @@ import type {
   CompactSessionRequest,
   CompactSessionResponse,
   ConfigResponse,
+  CreateModelRequest,
+  CreateProviderRequest,
   CreateTerminalRequest,
   FileMeta,
   FsSearchResponse,
@@ -38,6 +40,10 @@ import type {
   Message,
   MessageContent,
   MetaResponse,
+  ModelEntity,
+  PatchModelRequest,
+  PatchProviderRequest,
+  ProviderEntity,
   ListNamedAgentProfilesResponse as ProtocolListNamedAgentProfilesResponse,
   NamedAgentModelProfile as ProtocolNamedAgentModelProfile,
   NamedAgentProfile as ProtocolNamedAgentProfile,
@@ -59,6 +65,8 @@ import type {
   PromptPlanGate,
   RequestIdentityPolicyWire,
   PromptListResponse,
+  PromptMoveRequest,
+  PromptMoveResult,
   PromptReplaceRequest,
   PromptReplaceResult,
   PromptSteerResult,
@@ -225,6 +233,7 @@ export interface RuntimeConfigProjection {
   readonly mcp?: { readonly startupTimeoutMs?: number; readonly toolTimeoutMs?: number };
   readonly plugins?: { readonly marketplaceUrl?: string };
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
+  readonly agents?: { readonly enabled?: boolean; readonly notify_parent?: boolean };
 }
 
 export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & RuntimeConfigProjection & {
@@ -328,6 +337,7 @@ export interface RuntimeConfigPatch {
   readonly mcp?: { readonly startup_timeout_ms?: number; readonly tool_timeout_ms?: number };
   readonly plugins?: { readonly marketplace_url?: string };
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
+  readonly agents?: { readonly enabled?: boolean; readonly notify_parent?: boolean };
 }
 
 export type KikiConfigPatch = Omit<
@@ -797,6 +807,10 @@ export class KikiClient {
     return this.sessions.replacePrompt(sessionId, promptId, body);
   }
 
+  movePrompt(sessionId: string, promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult> {
+    return this.sessions.movePrompt(sessionId, promptId, body);
+  }
+
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse> {
     return this.sessions.abortPrompt(sessionId, promptId);
   }
@@ -989,6 +1003,42 @@ export class KikiClient {
 
   setDefaultModel(modelId: string): Promise<SetDefaultModelResponse> {
     return this.run(this.klient.global.kosong.setDefaultModel(modelId));
+  }
+
+  /** One configured model: local alias, exact remote id, revision, issues. */
+  getModel(modelId: string): Promise<ModelEntity> {
+    return this.run(this.klient.global.kosong.readModel(modelId));
+  }
+
+  createModel(input: CreateModelRequest): Promise<ModelEntity> {
+    return this.run(this.klient.global.kosong.createModel(input));
+  }
+
+  /** Sparse patch: unlisted fields (even unknown ones) stay untouched. */
+  updateModel(modelId: string, patch: PatchModelRequest): Promise<ModelEntity> {
+    return this.run(this.klient.global.kosong.updateModel(modelId, patch));
+  }
+
+  deleteModel(modelId: string, options?: { readonly baseRevision?: string }): Promise<void> {
+    return this.run(this.klient.global.kosong.deleteModel(modelId, options));
+  }
+
+  /** One connection plus the revision its next patch must carry. */
+  getProviderEntity(providerId: string): Promise<ProviderEntity> {
+    return this.run(this.klient.global.kosong.readProviderEntity(providerId));
+  }
+
+  createProvider(input: CreateProviderRequest): Promise<ProviderEntity> {
+    return this.run(this.klient.global.kosong.createProvider(input));
+  }
+
+  /** Sparse connection patch; it never carries a model list. */
+  updateProvider(providerId: string, patch: PatchProviderRequest): Promise<ProviderEntity> {
+    return this.run(this.klient.global.kosong.updateProvider(providerId, patch));
+  }
+
+  deleteProviderEntity(providerId: string): Promise<void> {
+    return this.run(this.klient.global.kosong.deleteProviderEntity(providerId));
   }
 
   getOAuthStatus(query: OAuthLoginQuery = {}): Promise<OAuthFlowSnapshot | null> {

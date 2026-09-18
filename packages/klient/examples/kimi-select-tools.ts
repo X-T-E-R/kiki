@@ -528,9 +528,9 @@ async function probeLiveKimiProviders(): Promise<void> {
     const filter = process.env['KIMI_SELECT_TOOLS_MODELS']?.split(',').map((s) => s.trim());
     const models = await catalog.listModels();
     const targets = models.filter((m) => {
-      if (filter !== undefined && !filter.includes(m.model)) return false;
+      if (filter !== undefined && !filter.includes(m.id)) return false;
       try {
-        return catalog.get(m.model).providerType === 'kimi';
+        return catalog.get(m.id).providerType === 'kimi';
       } catch {
         return false;
       }
@@ -539,9 +539,9 @@ async function probeLiveKimiProviders(): Promise<void> {
 
     const summary: string[] = [];
     for (const m of targets) {
-      const model = catalog.get(m.model);
+      const model = catalog.get(m.id);
       const declared = model.capabilities.dynamically_loaded_tools === true;
-      const requester = catalog.getRequester(m.model);
+      const requester = catalog.getRequester(m.id);
 
       for (const scenario of SCENARIOS) {
         const startedAt = Date.now();
@@ -557,15 +557,15 @@ async function probeLiveKimiProviders(): Promise<void> {
           } else {
             row = `PARTIAL  select=[${step1.names.join(', ')}] but step2 error: ${step2.message}`;
           }
-          console.log(`[${m.model}] ${scenario.expectTool}  ${elapsed}  declared=${String(declared)}  ${row}`);
+          console.log(`[${m.id}] ${scenario.expectTool}  ${elapsed}  declared=${String(declared)}  ${row}`);
         } else if (step1.kind === 'no-call') {
           row = `FAIL  no SelectTools call: ${step1.text}`;
-          console.log(`[${m.model}] ${scenario.expectTool}  ${String(Date.now() - startedAt)}ms  declared=${String(declared)}  ${row}`);
+          console.log(`[${m.id}] ${scenario.expectTool}  ${String(Date.now() - startedAt)}ms  declared=${String(declared)}  ${row}`);
         } else {
           row = `ERROR  ${step1.message}`;
-          console.log(`[${m.model}] ${scenario.expectTool}  ${String(Date.now() - startedAt)}ms  declared=${String(declared)}  ${row}`);
+          console.log(`[${m.id}] ${scenario.expectTool}  ${String(Date.now() - startedAt)}ms  declared=${String(declared)}  ${row}`);
         }
-        summary.push(`${m.model.padEnd(40)} ${scenario.expectTool.padEnd(22)} ${row}`);
+        summary.push(`${m.id.padEnd(40)} ${scenario.expectTool.padEnd(22)} ${row}`);
       }
     }
 
@@ -637,9 +637,9 @@ async function probeTappedContext(): Promise<void> {
     const filter = process.env['KIMI_SELECT_TOOLS_MODELS']?.split(',').map((s) => s.trim());
     const models = await catalog.listModels();
     const targets = models.filter((m) => {
-      if (filter !== undefined && !filter.includes(m.model)) return false;
+      if (filter !== undefined && !filter.includes(m.id)) return false;
       try {
-        return catalog.get(m.model).providerType === 'kimi';
+        return catalog.get(m.id).providerType === 'kimi';
       } catch {
         return false;
       }
@@ -647,9 +647,9 @@ async function probeTappedContext(): Promise<void> {
     assert(targets.length > 0, 'at least one kimi-type model configured');
 
     for (const m of targets) {
-      const model = catalog.get(m.model);
+      const model = catalog.get(m.id);
       if (model.baseUrl === undefined) {
-        console.log(`[${m.model}] skip tap: model has no resolved baseUrl`);
+        console.log(`[${m.id}] skip tap: model has no resolved baseUrl`);
         continue;
       }
       const upstream = model.baseUrl;
@@ -661,7 +661,7 @@ async function probeTappedContext(): Promise<void> {
           void (async () => {
             const raw = Buffer.concat(chunks);
             tapCount += 1;
-            console.log(`\n[${m.model}] ── request #${String(tapCount)} → ${upstream}${req.url ?? ''}`);
+            console.log(`\n[${m.id}] ── request #${String(tapCount)} → ${upstream}${req.url ?? ''}`);
             for (const line of describeWireBody(raw)) console.log(line);
             const headers = { ...(req.headers as Record<string, string>) };
             delete headers['host'];
@@ -702,10 +702,10 @@ async function probeTappedContext(): Promise<void> {
         if (step1.kind === 'selected') {
           const step2 = await step2UseLoadedTool(tapped, step1, scenario);
           console.log(
-            `\n[${m.model}] outcome: select=[${step1.names.join(', ')}] -> ${step2.kind === 'called' ? `called ${step2.name}(${step2.argumentsJson ?? ''})` : JSON.stringify(step2)}`,
+            `\n[${m.id}] outcome: select=[${step1.names.join(', ')}] -> ${step2.kind === 'called' ? `called ${step2.name}(${step2.argumentsJson ?? ''})` : JSON.stringify(step2)}`,
           );
         } else {
-          console.log(`\n[${m.model}] step1 outcome: ${JSON.stringify(step1)}`);
+          console.log(`\n[${m.id}] step1 outcome: ${JSON.stringify(step1)}`);
         }
       } finally {
         server.closeAllConnections();

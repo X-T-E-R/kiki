@@ -1435,7 +1435,7 @@ export class DaemonTUI {
 
   private async applyModel(model: string): Promise<void> {
     const models = await this.client.listModels();
-    if (!models.items.some((item) => item.model === model)) {
+    if (!models.items.some((item) => item.id === model)) {
       throw new Error(`Model "${model}" was not found.`);
     }
     const controller = await this.ensureSession();
@@ -1876,7 +1876,7 @@ export class DaemonTUI {
 
   private async showThinkingPicker(): Promise<void> {
     const models = await this.client.listModels();
-    const model = models.items.find((item) => item.model === this.state.appState.model);
+    const model = models.items.find((item) => item.id === this.state.appState.model);
     if (model === undefined) throw new Error('Select a model before choosing thinking effort.');
     const supported = model.support_efforts ?? [];
     const efforts = [
@@ -1912,9 +1912,9 @@ export class DaemonTUI {
     const picker = new ChoicePickerComponent({
       title: 'Switch LLM model',
       options: models.items.map((item) => ({
-        value: item.model,
-        label: item.display_name ?? item.model,
-        description: item.provider,
+        value: item.id,
+        label: item.display_name ?? item.id,
+        description: item.provider_id,
       })),
       currentValue: this.state.appState.model,
       searchable: true,

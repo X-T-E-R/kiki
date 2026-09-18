@@ -175,7 +175,6 @@ export function ConnectionsTab() {
               key={provider.id}
               provider={provider}
               models={modelsQuery.data?.items ?? []}
-              connection={connection}
               managed={provider.id === authQuery.data?.managed_provider?.name}
               onSaved={refreshProviderData}
             />
@@ -192,7 +191,7 @@ export function ConnectionsTab() {
       </SectionCard>
 
       <SectionCard id="st-card-providers-add" title={t('st.providers.addTitle')} aside={t('st.providers.addAside')}>
-        <NewProviderWizard connection={connection} onSaved={refreshProviderData} />
+        <NewProviderWizard onSaved={refreshProviderData} />
       </SectionCard>
 
       {providerItems.length > 0 ? (

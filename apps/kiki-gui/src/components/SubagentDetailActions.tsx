@@ -131,8 +131,8 @@ export function SubagentDetailActions({
             </option>
           ) : null}
           {models.map((item) => (
-            <option key={item.model} value={item.model}>
-              {item.display_name ?? item.model}
+            <option key={item.id} value={item.id}>
+              {item.display_name ?? item.id}
             </option>
           ))}
         </select>

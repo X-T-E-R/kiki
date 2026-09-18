@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
+import type { GetModelResponse, ModelCatalogItem, PatchModelRequest, ProviderCatalogItem } from '@kiki/protocol';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
@@ -27,12 +27,7 @@ import { useConnection } from '../../state/connection';
 import { ChipSelect } from '../ChipSelect';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
-import {
-  ContextStepper,
-  MsUnitInput,
-  saveProviderForm,
-  validateProviderFormDraft,
-} from '../ProviderFields';
+import { ContextStepper, MsUnitInput } from '../ProviderFields';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { useRestartRequirement } from '../RestartBanner';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
@@ -107,11 +102,6 @@ export function GlobalRequestIdentityCard() {
   );
 }
 
-/** Alias ids look like `fixture/kiki-pro`; show just the model half in chips. */
-function shortModelId(alias: string, providerId: string): string {
-  return alias.startsWith(`${providerId}/`) ? alias.slice(providerId.length + 1) : alias;
-}
-
 /**
  * Tab 2 of the merged entry (redesign §3.3): the cross-provider model
  * catalog — search everything, grouped by provider, metadata per row. The
@@ -143,7 +133,7 @@ export function ModelCatalogCard() {
   const defaultModel = configQuery.data?.default_model;
   const defaultProvider = configQuery.data?.default_provider ?? '';
 
-  // Row edits save through the provider form; every dependent read refreshes.
+  // Row edits write one model entity each; every dependent read refreshes.
   const refreshCatalog = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['models'] }),
@@ -159,22 +149,23 @@ export function ModelCatalogCard() {
     const matched = needle === ''
       ? items
       : items.filter((item) =>
-          item.model.toLowerCase().includes(needle)
+          item.id.toLowerCase().includes(needle)
+          || item.remote_id.toLowerCase().includes(needle)
           || (item.display_name ?? '').toLowerCase().includes(needle)
-          || item.provider.toLowerCase().includes(needle)
+          || item.provider_id.toLowerCase().includes(needle)
           || (item.capabilities ?? []).some((capability) => capability.toLowerCase().includes(needle)));
     const byProvider = new Map<string, ModelCatalogItem[]>();
     for (const item of matched) {
-      const list = byProvider.get(item.provider) ?? [];
+      const list = byProvider.get(item.provider_id) ?? [];
       list.push(item);
-      byProvider.set(item.provider, list);
+      byProvider.set(item.provider_id, list);
     }
     return [...byProvider.entries()]
       .map(([provider, models]) => ({
         provider,
         models: models.toSorted((a, b) =>
-          Number(b.model === defaultModel) - Number(a.model === defaultModel)
-          || (a.display_name ?? a.model).localeCompare(b.display_name ?? b.model)),
+          Number(b.id === defaultModel) - Number(a.id === defaultModel)
+          || (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id)),
       }))
       .toSorted((a, b) =>
         Number(b.provider === defaultProvider) - Number(a.provider === defaultProvider)
@@ -186,14 +177,14 @@ export function ModelCatalogCard() {
     setBusy(true);
     setFeedback(null);
     try {
-      const echoed = await client.setDefaultModel(item.model);
+      const echoed = await client.setDefaultModel(item.id);
       queryClient.setQueryData(['config'], (current: Record<string, unknown> | undefined) => ({
         ...current,
         default_model: echoed.default_model,
       }));
       writeSettings({ defaultModel: echoed.default_model });
-      if (item.provider !== defaultProvider) {
-        const echoedConfig = await client.patchConfig({ default_provider: item.provider });
+      if (item.provider_id !== defaultProvider) {
+        const echoedConfig = await client.patchConfig({ default_provider: item.provider_id });
         queryClient.setQueryData(['config'], echoedConfig);
       }
       ping();
@@ -242,19 +233,17 @@ export function ModelCatalogCard() {
                       className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] font-medium text-ink-faint"
                       title={t('st.models.providerDefaultHint')}
                     >
-                      {t('st.models.providerDefault')} · {shortModelId(providerDefault, group.provider)}
+                      {t('st.models.providerDefault')} · {providerDefault}
                     </span>
                   ) : null}
                 </div>
                 <div className="space-y-1.5">
                   {group.models.map((item) => (
                     <ModelRow
-                      key={item.model}
+                      key={item.id}
                       item={item}
                       provider={editable ? provider : undefined}
-                      models={items}
-                      connection={connection}
-                      isDefault={item.model === defaultModel}
+                      isDefault={item.id === defaultModel}
                       busy={busy}
                       onSetDefault={() => void selectDefaultModel(item)}
                       onSaved={refreshCatalog}
@@ -373,7 +362,7 @@ export function ThinkingCard() {
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const defaultModel = configQuery.data?.default_model;
-  const defaultItem = (modelsQuery.data?.items ?? []).find((item) => item.model === defaultModel);
+  const defaultItem = (modelsQuery.data?.items ?? []).find((item) => item.id === defaultModel);
   const thinking = asRecord(configQuery.data?.thinking);
 
   const syncThinking = useCallback(() => {
@@ -575,8 +564,6 @@ export function DefaultsTab() {
 function ModelRow({
   item,
   provider,
-  models,
-  connection,
   isDefault,
   busy,
   onSetDefault,
@@ -585,8 +572,6 @@ function ModelRow({
   item: ModelCatalogItem;
   /** Undefined when this provider cannot round-trip through the provider form. */
   provider: ProviderCatalogItem | undefined;
-  models: readonly ModelCatalogItem[];
-  connection: ServerConnection;
   isDefault: boolean;
   busy: boolean;
   onSetDefault: () => void;
@@ -601,7 +586,7 @@ function ModelRow({
           type="button"
           onClick={onSetDefault}
           disabled={busy || isDefault}
-          aria-label={t('st.models.starAria', { model: item.model })}
+          aria-label={t('st.models.starAria', { model: item.id })}
           title={isDefault ? t('st.models.starredTitle') : t('st.models.unstarredTitle')}
           className={`shrink-0 text-[15px] leading-none transition-colors disabled:cursor-default ${
             isDefault ? 'text-accent' : 'text-hairline-strong hover:text-accent'
@@ -611,14 +596,17 @@ function ModelRow({
         </button>
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] font-medium text-ink">
-            {item.display_name ?? item.model}
+            {item.display_name ?? item.id}
             {isDefault ? (
-              <span className="ml-2 rounded-full border border-success/30 bg-success/10 px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-success">{t('st.models.default')}</span>
+              <span className="ml-2 rounded-full border border-success/30 bg-success/10 px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-success">
+                {t('st.models.default')}
+              </span>
             ) : null}
           </p>
           <p className="truncate font-mono text-[10.5px] text-ink-faint">
-            {item.model} · {formatTokens(item.max_context_size)} {t('st.models.context')}
+            {item.remote_id} · {formatTokens(item.max_context_size)} {t('st.models.context')}
           </p>
+          <p className="truncate font-mono text-[10px] text-ink-faint">{item.id}</p>
         </div>
         {item.capabilities !== undefined && item.capabilities.length > 0 ? (
           <div className="hidden shrink-0 flex-wrap justify-end gap-1 sm:flex">
@@ -630,7 +618,7 @@ function ModelRow({
         {provider !== undefined ? (
           <button
             type="button"
-            aria-label={t('st.models.editAria', { model: item.model })}
+            aria-label={t('st.models.editAria', { model: item.id })}
             aria-expanded={editing}
             title={t('st.models.editTitle')}
             onClick={() => { setEditing((value) => !value); }}
@@ -641,116 +629,67 @@ function ModelRow({
         ) : null}
       </div>
       {editing && provider !== undefined ? (
-        <ModelCatalogRowEditor
-          item={item}
-          provider={provider}
-          models={models}
-          connection={connection}
-          onSaved={onSaved}
-        />
+        <ModelCatalogRowEditor item={item} onSaved={onSaved} />
       ) : null}
     </div>
   );
 }
 
-type CatalogModelDraft = Pick<
-  ProviderModelDraft,
-  | 'displayName'
-  | 'maxContextSize'
-  | 'capabilities'
-  | 'supportEfforts'
-  | 'requestIdentityChoice'
-  | 'requestIdentityOverridesJson'
->;
-
-function catalogModelDraftFrom(model: ProviderModelDraft): CatalogModelDraft {
-  return {
-    displayName: model.displayName,
-    maxContextSize: model.maxContextSize,
-    capabilities: [...model.capabilities],
-    supportEfforts: [...model.supportEfforts],
-    requestIdentityChoice: model.requestIdentityChoice,
-    requestIdentityOverridesJson: model.requestIdentityOverridesJson,
-  };
-}
-
-function catalogModelDraftsEqual(a: CatalogModelDraft, b: CatalogModelDraft): boolean {
-  return a.displayName === b.displayName
-    && a.maxContextSize === b.maxContextSize
-    && a.requestIdentityChoice === b.requestIdentityChoice
-    && a.requestIdentityOverridesJson === b.requestIdentityOverridesJson
-    && a.capabilities.length === b.capabilities.length
-    && a.capabilities.every((value, index) => value === b.capabilities[index])
-    && a.supportEfforts.length === b.supportEfforts.length
-    && a.supportEfforts.every((value, index) => value === b.supportEfforts[index]);
-}
-
 /**
- * In-place parameter editor for one catalog row: display name, context size,
- * capabilities, effort levels and request identity — the same parameter set
- * the provider editor's model rows expose (the model id itself stays an
- * identity, renamed only from the provider editor). Saves through the SAME
- * channel as the provider editor: the provider form is rebuilt from the
- * catalog with just this row patched, validated by validateProviderFormDraft
- * and written by saveProviderForm — no second data flow.
+ * In-place editor for one catalog row. Opening the row reads the model entity
+ * (`GET /models/{id}`), so the editor works from the stored record — its local
+ * alias, its exact remote id, its revision and its issues — instead of
+ * rebuilding anything from the list projection. Saving sends only the fields
+ * the user changed together with the revision that read returned, so a
+ * concurrent edit surfaces as a conflict instead of a silent overwrite.
  */
 function ModelCatalogRowEditor({
   item,
-  provider,
-  models,
-  connection,
   onSaved,
 }: {
   item: ModelCatalogItem;
-  provider: ProviderCatalogItem;
-  models: readonly ModelCatalogItem[];
-  connection: ServerConnection;
   onSaved: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
-  const shortId = shortModelId(item.model, provider.id);
-  const base = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
-  const baseModel = base?.models.find((model) => model.model === shortId);
-  const [draft, setDraft] = useState<CatalogModelDraft | null>(() =>
-    baseModel === undefined ? null : catalogModelDraftFrom(baseModel));
-  const [baseline, setBaseline] = useState<CatalogModelDraft | null>(draft);
+  const { client } = useConnection();
+  const entityQuery = useQuery({
+    queryKey: ['model-entity', item.id],
+    queryFn: () => client.getModel(item.id),
+  });
+  const entity = entityQuery.data;
+  const [draft, setDraft] = useState<ModelEntityDraft | null>(null);
+  const [baseline, setBaseline] = useState<ModelEntityDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
 
-  // Refetches re-sync a clean editor; a dirty draft is left untouched.
   useEffect(() => {
-    if (baseModel === undefined) return;
-    if (draft !== null && baseline !== null && !catalogModelDraftsEqual(draft, baseline)) return;
-    const next = catalogModelDraftFrom(baseModel);
-    if (draft !== null && catalogModelDraftsEqual(draft, next)) return;
+    if (entity === undefined) return;
+    if (draft !== null && baseline !== null && !modelEntityDraftsEqual(draft, baseline)) return;
+    const next = modelEntityDraftFrom(entity);
+    if (draft !== null && modelEntityDraftsEqual(draft, next)) return;
     setDraft(next);
     setBaseline(next);
-  }, [baseModel, draft, baseline]);
+  }, [entity, draft, baseline]);
 
-  const dirty = draft !== null && baseline !== null && !catalogModelDraftsEqual(draft, baseline);
-  useDirtyReporter(`catalog-model:${item.model}`, dirty);
+  const dirty = draft !== null && baseline !== null && !modelEntityDraftsEqual(draft, baseline);
+  useDirtyReporter(`catalog-model:${item.id}`, dirty);
 
-  if (base === null || baseModel === undefined || draft === null) {
-    return <Hint>{t('st.providers.cannotRewrite')}</Hint>;
+  if (entityQuery.isError) return <InlineError error={entityQuery.error} />;
+  if (entity === undefined || draft === null || baseline === null) {
+    return <Hint>{t('st.models.loading')}</Hint>;
   }
 
   const save = async () => {
-    const next: ProviderDraft = {
-      ...base,
-      models: base.models.map((model) => (model.model === shortId ? { ...model, ...draft } : model)),
-    };
-    const validation = validateProviderFormDraft(next, provider.id);
-    if (validation !== null) {
-      setFeedback({ tone: 'error', text: issueText(locale, validation) });
-      return;
-    }
+    const patch = modelEntityPatch(draft, baseline);
+    if (patch === null) return;
     setSaving(true);
     setFeedback(null);
     try {
-      await saveProviderForm(connection, provider.id, next);
+      await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
       await onSaved();
+      await entityQuery.refetch();
       setBaseline(draft);
-      setFeedback({ tone: 'success', text: t('st.models.paramsSaved', { model: item.model }) });
+      setFeedback({ tone: 'success', text: t('st.models.paramsSaved', { model: entity.id }) });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -760,10 +699,18 @@ function ModelCatalogRowEditor({
 
   return (
     <div className="mt-2 space-y-2.5 border-t border-hairline pt-3">
+      <p className="truncate font-mono text-[10px] text-ink-faint">
+        {entity.id} → {entity.remote_id}
+      </p>
+      {entity.issues.length > 0 ? (
+        <p className="text-[10.5px] text-amber-ink">
+          {entity.issues.map((issue) => `${issue.path}: ${issue.message}`).join(' · ')}
+        </p>
+      ) : null}
       <div className="grid items-center gap-2 sm:grid-cols-2">
         <input
           className={INPUT}
-          aria-label={t('st.models.displayNameAria', { model: shortId })}
+          aria-label={t('st.models.displayNameAria', { model: entity.id })}
           value={draft.displayName}
           onChange={(event) => { setDraft({ ...draft, displayName: event.target.value }); }}
           placeholder={t('st.providers.displayNamePlaceholder')}
@@ -771,27 +718,31 @@ function ModelCatalogRowEditor({
         <ContextStepper
           value={draft.maxContextSize}
           onChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
-          ariaLabel={t('st.models.contextAria', { model: shortId })}
+          ariaLabel={t('st.models.contextAria', { model: entity.id })}
         />
       </div>
       <div className="space-y-1">
-        <p className="text-[10.5px] font-medium text-ink-faint">{t('st.chips.capabilities')}</p>
+        <p className="text-[10.5px] font-medium text-ink-faint">
+          {t('st.chips.capabilities')}
+        </p>
         <ChipSelect
           values={draft.capabilities}
           knownOptions={KNOWN_CAPABILITIES}
           onChange={(capabilities) => { setDraft({ ...draft, capabilities }); }}
-          ariaLabel={t('st.models.capsAria', { model: shortId })}
+          ariaLabel={t('st.models.capsAria', { model: entity.id })}
           addPlaceholder={t('st.chips.addPlaceholder')}
           removeLabel={(value) => t('st.chips.removeAria', { value })}
         />
       </div>
       <div className="space-y-1">
-        <p className="text-[10.5px] font-medium text-ink-faint">{t('st.chips.efforts')}</p>
+        <p className="text-[10.5px] font-medium text-ink-faint">
+          {t('st.chips.efforts')}
+        </p>
         <ChipSelect
           values={draft.supportEfforts}
           knownOptions={KNOWN_EFFORTS}
           onChange={(supportEfforts) => { setDraft({ ...draft, supportEfforts }); }}
-          ariaLabel={t('st.models.effortsAria', { model: shortId })}
+          ariaLabel={t('st.models.effortsAria', { model: entity.id })}
           addPlaceholder={t('st.chips.addPlaceholder')}
           removeLabel={(value) => t('st.chips.removeAria', { value })}
         />
@@ -809,13 +760,73 @@ function ModelCatalogRowEditor({
         <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
           {saving ? t('common.saving') : t('common.save')}
         </button>
-        {dirty ? <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+        {dirty ? (
+          <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span>
+        ) : null}
       </div>
       <FeedbackLine feedback={feedback} />
     </div>
   );
 }
 
+type ModelEntityDraft = Pick<
+  ProviderModelDraft,
+  | 'displayName'
+  | 'maxContextSize'
+  | 'capabilities'
+  | 'supportEfforts'
+  | 'requestIdentityChoice'
+  | 'requestIdentityOverridesJson'
+>;
+
+function modelEntityDraftFrom(entity: GetModelResponse): ModelEntityDraft {
+  return {
+    displayName: entity.display_name ?? '',
+    maxContextSize: entity.max_context_size ?? 0,
+    capabilities: [...(entity.capabilities ?? [])],
+    supportEfforts: [...(entity.support_efforts ?? [])],
+    ...requestIdentityLayerDraftFromPolicy(entity.request_identity),
+  };
+}
+
+function modelEntityDraftsEqual(a: ModelEntityDraft, b: ModelEntityDraft): boolean {
+  return a.displayName === b.displayName
+    && a.maxContextSize === b.maxContextSize
+    && a.requestIdentityChoice === b.requestIdentityChoice
+    && a.requestIdentityOverridesJson === b.requestIdentityOverridesJson
+    && stringListEquals(a.capabilities, b.capabilities)
+    && stringListEquals(a.supportEfforts, b.supportEfforts);
+}
+
+function modelEntityPatch(
+  draft: ModelEntityDraft,
+  baseline: ModelEntityDraft,
+): PatchModelRequest | null {
+  const patch: PatchModelRequest = {};
+  if (draft.displayName !== baseline.displayName) {
+    patch.display_name = draft.displayName.trim() || null;
+  }
+  if (draft.maxContextSize !== baseline.maxContextSize) {
+    patch.max_context_size = draft.maxContextSize > 0 ? draft.maxContextSize : null;
+  }
+  if (!stringListEquals(draft.capabilities, baseline.capabilities)) {
+    patch.capabilities = [...draft.capabilities];
+  }
+  if (!stringListEquals(draft.supportEfforts, baseline.supportEfforts)) {
+    patch.support_efforts = [...draft.supportEfforts];
+  }
+  if (
+    draft.requestIdentityChoice !== baseline.requestIdentityChoice
+    || draft.requestIdentityOverridesJson !== baseline.requestIdentityOverridesJson
+  ) {
+    patch.request_identity = requestIdentityPolicyFromDraft(draft) ?? null;
+  }
+  return Object.keys(patch).length === 0 ? null : patch;
+}
+
+function stringListEquals(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }

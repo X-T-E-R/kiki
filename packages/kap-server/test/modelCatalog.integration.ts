@@ -171,7 +171,7 @@ describe('server-v2 /api model/provider catalog', () => {
         handlers.set(`GET ${path}`, handler);
       },
       post(): void {},
-      put(): void {},
+      patch(): void {},
       delete(): void {},
     };
     registerModelCatalogRoutes(app, core as never);
@@ -226,22 +226,25 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(body.code).toBe(0);
     expect(body.data.items).toEqual([
       {
-        provider: 'kimi',
-        model: 'k2',
+        id: 'k2',
+        provider_id: 'kimi',
+        remote_id: 'kimi-k2',
         display_name: 'Kimi K2',
         max_context_size: 131072,
         capabilities: ['thinking'],
         request_identity: { overrides: { request: { logical_id: 'none' } } },
       },
       {
-        provider: 'kimi',
-        model: 'turbo',
+        id: 'turbo',
+        provider_id: 'kimi',
+        remote_id: 'kimi-turbo',
         display_name: 'Kimi Turbo',
         max_context_size: 32768,
       },
       {
-        provider: 'openai',
-        model: 'gpt4o',
+        id: 'gpt4o',
+        provider_id: 'openai',
+        remote_id: 'gpt-4o',
         display_name: 'gpt-4o',
         max_context_size: 128000,
       },
@@ -291,9 +294,9 @@ describe('server-v2 /api model/provider catalog', () => {
       },
     ]);
 
-    const single = await getJson<unknown>('/api/providers/kimi');
+    const single = await getJson<Record<string, unknown>>('/api/providers/kimi');
     expect(single.body.code).toBe(0);
-    expect(single.body.data).toEqual({
+    expect(single.body.data).toMatchObject({
       id: 'kimi',
       type: 'kimi',
       base_url: 'https://api.example.test/v1',
@@ -302,8 +305,9 @@ describe('server-v2 /api model/provider catalog', () => {
       has_api_key: true,
       status: 'connected',
       models: ['k2', 'turbo'],
-      api_key: 'sk-test',
     });
+    expect(typeof single.body.data?.['revision']).toBe('string');
+    expect(single.body.data).not.toHaveProperty('api_key');
 
     const noKey = await getJson<Record<string, unknown>>('/api/providers/openai');
     expect(noKey.body.code).toBe(0);
@@ -317,8 +321,9 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(body.data).toEqual({
       default_model: 'turbo',
       model: {
-        provider: 'kimi',
-        model: 'turbo',
+        id: 'turbo',
+        provider_id: 'kimi',
+        remote_id: 'kimi-turbo',
         display_name: 'Kimi Turbo',
         max_context_size: 32768,
       },

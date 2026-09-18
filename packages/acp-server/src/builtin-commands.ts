@@ -90,7 +90,7 @@ export async function runBuiltinSlashCommand(
       return usageText(
         await deps.agent.getUsage(),
         await deps.agent.getContext(),
-        (await deps.klient.global.kosong.listModels()).find((item) => item.model === deps.modelId)
+        (await deps.klient.global.kosong.listModels()).find((item) => item.id === deps.modelId)
           ?.max_context_size,
       );
     case 'tasks':

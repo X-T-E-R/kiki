@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   configResponseSchema,
+  createProviderRequestSchema,
   getProviderResponseSchema,
   listModelsResponseSchema,
   patchConfigRequestSchema,
   listProvidersResponseSchema,
   modelCatalogItemSchema,
+  patchModelRequestSchema,
+  patchProviderRequestSchema,
   providerCatalogItemSchema,
   providerCatalogStatusSchema,
   requestIdentityPolicySchema,
@@ -17,8 +20,9 @@ import {
 
 describe('model catalog schemas', () => {
   const model: ModelCatalogItem = {
-    provider: 'kimi',
-    model: 'k2',
+    id: 'fast',
+    provider_id: 'edge',
+    remote_id: 'vendor/model:v1',
     display_name: 'Kimi K2',
     max_context_size: 131072,
     capabilities: ['thinking'],
@@ -43,9 +47,56 @@ describe('model catalog schemas', () => {
     expect(modelCatalogItemSchema.parse(model)).toEqual(model);
   });
 
-  it('rejects invalid model context sizes', () => {
+  it('keeps the local alias and the remote id independent', () => {
+    const item = modelCatalogItemSchema.parse(model);
+    expect(item.id).toBe('fast');
+    expect(item.remote_id).toBe('vendor/model:v1');
+    expect(item.provider_id).toBe('edge');
+    expect(modelCatalogItemSchema.safeParse({ ...model, remote_id: undefined }).success).toBe(false);
+    expect(modelCatalogItemSchema.safeParse({ ...model, id: '' }).success).toBe(false);
+    // An unresolved flat model reports an empty provider id instead of a
+    // fabricated one; the model still names a local alias and a remote id.
     expect(
-      modelCatalogItemSchema.safeParse({ ...model, max_context_size: 0 }).success,
+      modelCatalogItemSchema.safeParse({ ...model, provider_id: '' }).success,
+    ).toBe(true);
+  });
+
+  it('rejects invalid model context sizes', () => {
+    expect(modelCatalogItemSchema.safeParse({ ...model, max_context_size: -1 }).success).toBe(false);
+  });
+
+  it('accepts a sparse model patch and rejects unknown fields', () => {
+    expect(patchModelRequestSchema.parse({ display_name: 'Fast' })).toEqual({
+      display_name: 'Fast',
+    });
+    expect(patchModelRequestSchema.parse({ adaptive_thinking: null })).toEqual({
+      adaptive_thinking: null,
+    });
+    expect(patchModelRequestSchema.safeParse({ max_output_size: 0 }).success).toBe(false);
+    expect(patchModelRequestSchema.safeParse({ models: [] }).success).toBe(false);
+  });
+
+  it('never accepts a model list inside a provider patch', () => {
+    expect(patchProviderRequestSchema.parse({ base_url: null })).toEqual({ base_url: null });
+    expect(
+      patchProviderRequestSchema.safeParse({ models: [{ remote_id: 'k2' }] }).success,
+    ).toBe(false);
+  });
+
+  it('allows creating a connection with zero models', () => {
+    const created = createProviderRequestSchema.parse({
+      id: 'edge',
+      type: 'openai',
+      base_url: 'https://api.example.test/v1',
+    });
+    expect(created.models).toBeUndefined();
+    expect(
+      createProviderRequestSchema.safeParse({
+        id: 'edge',
+        type: 'openai',
+        default_model: 'k2',
+        models: [{ remote_id: 'other' }],
+      }).success,
     ).toBe(false);
   });
 
@@ -58,7 +109,10 @@ describe('model catalog schemas', () => {
 
   it('round-trips a provider catalog item', () => {
     expect(providerCatalogItemSchema.parse(provider)).toEqual(provider);
-    expect(getProviderResponseSchema.parse(provider)).toEqual(provider);
+    expect(getProviderResponseSchema.parse({ ...provider, revision: 'rev-1' })).toEqual({
+      ...provider,
+      revision: 'rev-1',
+    });
   });
 
   it('rejects unknown request-identity fields recursively', () => {

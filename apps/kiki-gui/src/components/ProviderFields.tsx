@@ -3,19 +3,22 @@
  * collapsible editor for configured ones, and their shared field set:
  * protocol/baseUrl/key, the remote /models probe, collapsible model rows
  * (unit-ed context stepper, chip multi-selects, inline default star), and
- * the millisecond unit input reused by the sidecar card. Also owns the
- * server-aligned provider-form validation and save channel
- * (validateProviderFormDraft / saveProviderForm) shared with the model
- * catalog's row editor.
+ * the millisecond unit input reused by the sidecar card.
+ *
+ * Every save goes through the shared klient client as a sparse entity write:
+ * `updateProvider` touches only the connection fields the user changed (never
+ * a model list), and each model row is its own entity — created, patched or
+ * deleted on its own. The draft→wire mapping itself lives in session-core
+ * (`providerCreateBody` / `providerPatchBody` / `modelCreateBody` /
+ * `modelPatchBody`), so the GUI owns no second copy of the wire contract.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 
 import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 
-import { errorText, issueText, LocalizedError, type ValidationIssue } from '@kiki/session-core/i18n';
+import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
-  deleteProvider,
   fetchRemoteModels,
   humanizeMs,
   isProviderDraftDirty,
@@ -23,16 +26,19 @@ import {
   KNOWN_EFFORTS,
   MS_UNIT_FACTORS,
   msUnitFor,
+  modelCreateBody,
+  modelPatchBody,
   PROVIDER_TEMPLATES,
   PROVIDER_WIRE_TYPES,
+  providerCreateBody,
+  providerDefaultRow,
   providerDraftFromCatalog,
-  requestIdentityPolicyFromDraft,
+  providerPatchBody,
   validateProviderDraft,
   type MsUnit,
   type ProviderDraft,
   type ProviderModelDraft,
   type ProviderTemplate,
-  type ServerConnection,
 } from '@kiki/session-core/settings';
 import { formatTokens } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
@@ -60,7 +66,8 @@ export function blankProviderDraft(): ProviderDraft {
 
 function blankModel(): ProviderModelDraft {
   return {
-    model: '',
+    id: '',
+    remoteId: '',
     maxContextSize: 128000,
     displayName: '',
     capabilities: [],
@@ -68,127 +75,6 @@ function blankModel(): ProviderModelDraft {
     requestIdentityChoice: 'inherit',
     requestIdentityOverridesJson: '',
   };
-}
-
-// ---- provider-id validation & save channel aligned with the server ----
-
-/**
- * The provider-id truth lives in kap-server, not in this form: create and
- * rename must match `PROVIDER_ID_PATTERN`
- * (agent-core-v2 src/app/kosongConfig/modelsDevImport.ts, surfaced as
- * `providerIdSchema` in kap-server src/protocol/rest-modelCatalog.ts), while
- * a replace whose id is unchanged bypasses the pattern entirely — kap-server
- * src/routes/modelCatalog.ts validates `new_id` only when it differs from the
- * path identity. That is how OAuth-managed ids such as `managed:kimi-code`
- * stay editable. The shared `validateProviderDraft` applies the create-time
- * pattern unconditionally (and ASCII-only), so the id rule is checked here
- * against the server pattern and every other rule is delegated to it with a
- * stand-in id.
- */
-export const PROVIDER_ID_WIRE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}\-_ ]*$/u;
-
-/**
- * Server-aligned validation for the provider form. `currentId` is the id the
- * provider is stored under (null on create): an unchanged id is always
- * accepted, a create or rename must match `PROVIDER_ID_WIRE_PATTERN`.
- */
-export function validateProviderFormDraft(
-  draft: ProviderDraft,
-  currentId: string | null,
-): ValidationIssue | null {
-  const createOrRename = currentId === null || draft.id !== currentId;
-  if (createOrRename && !PROVIDER_ID_WIRE_PATTERN.test(draft.id)) {
-    return { key: 'val.providerId' };
-  }
-  return validateProviderDraft({ ...draft, id: 'provider' });
-}
-
-/**
- * The single save channel for every provider-form surface (the Connections
- * editor, the add-provider wizard, and the model-catalog row editor). It
- * mirrors the wire contract of session-core's `createProvider` /
- * `replaceProvider`, which this module no longer calls: they re-apply the
- * create-time id pattern even to unchanged ids, rejecting OAuth-managed ids
- * such as `managed:kimi-code` that the server explicitly accepts (see
- * validateProviderFormDraft). `currentId` null creates; otherwise the
- * provider stored under `currentId` is replaced, renaming to `draft.id` when
- * it differs.
- */
-export async function saveProviderForm(
-  connection: ServerConnection,
-  currentId: string | null,
-  draft: ProviderDraft,
-): Promise<ProviderCatalogItem> {
-  const validation = validateProviderFormDraft(draft, currentId);
-  if (validation !== null) throw new LocalizedError(validation);
-  if (currentId === null) {
-    return providerFormRequest<ProviderCatalogItem>(
-      connection,
-      'POST',
-      '/providers',
-      providerFormBody(draft, true),
-    );
-  }
-  const result = await providerFormRequest<{ provider: ProviderCatalogItem }>(
-    connection,
-    'PUT',
-    `/providers/${encodeURIComponent(currentId)}`,
-    {
-      ...providerFormBody(draft, false),
-      new_id: draft.id === currentId ? undefined : draft.id,
-    },
-  );
-  return result.provider;
-}
-
-/** Wire body of POST/PUT /providers — same mapping as session-core's providerBody. */
-function providerFormBody(draft: ProviderDraft, includeId: boolean): Record<string, unknown> {
-  const requestIdentity = requestIdentityPolicyFromDraft(draft);
-  return {
-    id: includeId ? draft.id : undefined,
-    type: draft.type,
-    api_key: draft.clearApiKey ? '' : draft.apiKey || undefined,
-    base_url: draft.baseUrl || undefined,
-    default_model: draft.defaultModel,
-    request_identity: requestIdentity ?? (includeId ? undefined : null),
-    models: draft.models.map((model) => {
-      const modelRequestIdentity = requestIdentityPolicyFromDraft(model);
-      return {
-        model: model.model,
-        max_context_size: model.maxContextSize,
-        display_name: model.displayName || undefined,
-        capabilities: model.capabilities.length > 0 ? model.capabilities : undefined,
-        support_efforts: model.supportEfforts.length > 0 ? model.supportEfforts : undefined,
-        request_identity: modelRequestIdentity ?? (includeId ? undefined : null),
-      };
-    }),
-  };
-}
-
-/** Envelope fetch against the server's /api surface — same contract as session-core's serverRequest. */
-async function providerFormRequest<T>(
-  connection: ServerConnection,
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<T> {
-  const base = connection.url.trim().replace(/\/+$/, '');
-  const headers: Record<string, string> = { Accept: 'application/json' };
-  if (connection.token.trim() !== '') headers['Authorization'] = `Bearer ${connection.token.trim()}`;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const response = await fetch(`${base}/api${path}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (response.status === 204) return undefined as T;
-  const envelope = (await response.json()) as {
-    code: number;
-    msg: string;
-    data: T;
-  };
-  if (envelope.code !== 0) throw new Error(`${envelope.msg} (code ${envelope.code})`);
-  return envelope.data;
 }
 
 // ---- unit-ed numeric inputs ----
@@ -361,19 +247,20 @@ function ModelDraftRow({
   onSetDefault: () => void;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(model.model === '');
+  const [open, setOpen] = useState(model.remoteId === '');
   const n = index + 1;
   const requestIdentitySummary = model.requestIdentityChoice === 'inherit'
     ? 'inherit'
     : model.requestIdentityChoice;
+  const rowLabel = model.id || model.remoteId;
   return (
     <div className="rounded-lg border border-hairline bg-panel p-3">
       <div className="flex items-center gap-2">
         <button
           type="button"
-          aria-label={t('st.providers.defaultStarAria', { model: model.model || '…' })}
+          aria-label={t('st.providers.defaultStarAria', { model: rowLabel || '…' })}
           title={t('st.providers.defaultStarTitle')}
-          disabled={model.model === ''}
+          disabled={model.remoteId === ''}
           onClick={onSetDefault}
           className={`shrink-0 text-[15px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-30 ${
             isDefault ? 'text-accent' : 'text-hairline-strong hover:text-accent'
@@ -388,9 +275,14 @@ function ModelDraftRow({
           onClick={() => { setOpen((value) => !value); }}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
-          <span className={`truncate font-mono text-[12px] ${model.model === '' ? 'text-ink-faint' : 'text-ink'}`}>
-            {model.model === '' ? 'model-id' : model.model}
+          <span className={`truncate font-mono text-[12px] ${model.remoteId === '' ? 'text-ink-faint' : 'text-ink'}`}>
+            {model.remoteId === '' ? 'model-id' : model.remoteId}
           </span>
+          {model.id !== '' ? (
+            <span className="hidden shrink-0 truncate font-mono text-[10px] text-ink-faint sm:inline">
+              {model.id}
+            </span>
+          ) : null}
           <span className="shrink-0 font-mono text-[10px] text-ink-faint">{formatTokens(model.maxContextSize)}</span>
           {model.capabilities.slice(0, 3).map((capability) => (
             <span key={capability} className="hidden shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px text-[9.5px] text-ink-faint sm:inline">
@@ -413,12 +305,15 @@ function ModelDraftRow({
       </div>
       {open ? (
         <div className="mt-3 space-y-2.5 border-t border-hairline pt-3">
+          {model.id !== '' ? (
+            <p className="truncate font-mono text-[10px] text-ink-faint">{model.id}</p>
+          ) : null}
           <div className="grid gap-2 sm:grid-cols-2">
             <input
               className={INPUT}
               aria-label={t('st.providers.modelIdAria', { n })}
-              value={model.model}
-              onChange={(event) => { onChange({ model: event.target.value }); }}
+              value={model.remoteId}
+              onChange={(event) => { onChange({ remoteId: event.target.value }); }}
               placeholder="model-id"
             />
             <input
@@ -478,6 +373,7 @@ export function ProviderFields({
   onChange,
   hasStoredKey,
   managed = false,
+  idLocked = false,
   refreshProviderId,
   onRefreshed,
 }: {
@@ -486,6 +382,12 @@ export function ProviderFields({
   hasStoredKey: boolean;
   /** OAuth-managed providers have no usable API-key save/clear/delete surface. */
   managed?: boolean;
+  /**
+   * A stored connection keeps its technical id: profile pins, sessions and the
+   * model aliases reference it, so this form edits the display-name-level
+   * fields only (in-place renaming is not part of this slice).
+   */
+  idLocked?: boolean;
   /** When set, Test connection uses `POST /providers/{id}:refresh` instead of a browser-direct probe. */
   refreshProviderId?: string;
   onRefreshed?: () => Promise<void>;
@@ -529,9 +431,9 @@ export function ProviderFields({
       onChange({
         ...draft,
         models,
-        defaultModel: models.some((model) => model.model === draft.defaultModel)
+        defaultModel: models.some((model) => model.remoteId === draft.defaultModel)
           ? draft.defaultModel
-          : (models[0]?.model ?? ''),
+          : (models[0]?.remoteId ?? ''),
       });
       setProbeFeedback({ tone: 'success', text: t('st.fetchModels.success', { count: models.length }) });
     } catch (error) {
@@ -556,7 +458,7 @@ export function ProviderFields({
           <input
             className={`${INPUT} mt-1 disabled:cursor-not-allowed disabled:opacity-60`}
             value={draft.id}
-            disabled={managed}
+            disabled={managed || idLocked}
             onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
           />
         </label>
@@ -612,10 +514,13 @@ export function ProviderFields({
         </div>
         {draft.models.map((model, index) => (
           <ModelDraftRow
-            key={`${index}-${model.model}`}
+            key={`${index}-${model.id}-${model.remoteId}`}
             model={model}
             index={index}
-            isDefault={model.model !== '' && model.model === draft.defaultModel}
+            isDefault={
+              model.remoteId !== ''
+              && (model.id === draft.defaultModel || model.remoteId === draft.defaultModel)
+            }
             canRemove={draft.models.length > 1}
             onChange={(patch) => { updateModel(index, patch); }}
             onRemove={() => {
@@ -623,10 +528,13 @@ export function ProviderFields({
               onChange({
                 ...draft,
                 models,
-                defaultModel: model.model === draft.defaultModel ? (models[0]?.model ?? '') : draft.defaultModel,
+                defaultModel:
+                  model.id === draft.defaultModel || model.remoteId === draft.defaultModel
+                    ? (models[0]?.id ?? models[0]?.remoteId ?? '')
+                    : draft.defaultModel,
               });
             }}
-            onSetDefault={() => { onChange({ ...draft, defaultModel: model.model }); }}
+            onSetDefault={() => { onChange({ ...draft, defaultModel: model.id || model.remoteId }); }}
           />
         ))}
       </div>
@@ -639,17 +547,17 @@ export function ProviderFields({
 export function ProviderEditor({
   provider,
   models,
-  connection,
   managed = false,
   onSaved,
 }: {
   provider: ProviderCatalogItem;
   models: readonly ModelCatalogItem[];
-  connection: ServerConnection;
+  /** OAuth-managed providers keep the editable fields but no credential surface. */
   managed?: boolean;
   onSaved: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
+  const { client } = useConnection();
   const initial = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
   const [draft, setDraft] = useState(initial);
   const [saving, setSaving] = useState(false);
@@ -672,7 +580,7 @@ export function ProviderEditor({
 
   const save = async (override?: Partial<ProviderDraft>) => {
     const next = { ...draft, ...override };
-    const validation = validateProviderFormDraft(next, provider.id);
+    const validation = validateProviderDraft(next);
     if (validation !== null) {
       setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
@@ -680,10 +588,43 @@ export function ProviderEditor({
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await saveProviderForm(connection, provider.id, next);
+      const entity = await client.getProviderEntity(provider.id);
+      // Model entities first: a row the user just added gets its alias from the
+      // server, and the connection patch last can then point its default at it.
+      const createdIds = new Map<number, string>();
+      for (const [index, row] of next.models.entries()) {
+        if (row.id !== '') continue;
+        const created = await client.createModel(modelCreateBody(provider.id, row));
+        createdIds.set(index, created.id);
+      }
+      for (const row of next.models) {
+        if (row.id === '') continue;
+        const baseline = initial!.models.find((model) => model.id === row.id);
+        if (baseline === undefined) continue;
+        const rowPatch = modelPatchBody(row, baseline);
+        if (rowPatch !== null) await client.updateModel(row.id, rowPatch);
+      }
+      for (const row of initial!.models) {
+        const kept = next.models.some((model) => model.id === row.id);
+        if (!kept && row.id !== '') await client.deleteModel(row.id);
+      }
+      const normalized: ProviderDraft = {
+        ...next,
+        models: next.models.map((row, index) => {
+          const createdId = createdIds.get(index);
+          return row.id === '' && createdId !== undefined ? { ...row, id: createdId } : row;
+        }),
+      };
+      const connectionPatch = providerPatchBody(normalized, initial!);
+      if (connectionPatch !== null) {
+        await client.updateProvider(provider.id, {
+          ...connectionPatch,
+          base_revision: entity.revision,
+        });
+      }
       setDraft({ ...next, apiKey: '', clearApiKey: false });
       await onSaved();
-      setFeedback({ tone: 'success', text: t('st.providers.savedEcho', { id: echoed.id }) });
+      setFeedback({ tone: 'success', text: t('st.providers.savedEcho', { id: provider.id }) });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -695,7 +636,7 @@ export function ProviderEditor({
     setSaving(true);
     setFeedback(null);
     try {
-      await deleteProvider(connection, provider.id);
+      await client.deleteProviderEntity(provider.id);
       await onSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -743,6 +684,7 @@ export function ProviderEditor({
           onChange={setDraft}
           hasStoredKey={provider.has_api_key}
           managed={managed}
+          idLocked
           refreshProviderId={provider.id}
           onRefreshed={onSaved}
         />
@@ -805,13 +747,12 @@ export function ProviderEditor({
 // ---- new-provider template wizard ----
 
 export function NewProviderWizard({
-  connection,
   onSaved,
 }: {
-  connection: ServerConnection;
   onSaved: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
+  const { client } = useConnection();
   const blank = useMemo(blankProviderDraft, []);
   const [step, setStep] = useState<'template' | 'form'>('template');
   const [draft, setDraft] = useState(blank);
@@ -835,9 +776,11 @@ export function NewProviderWizard({
   const save = async () => {
     const normalized = {
       ...draft,
-      defaultModel: draft.defaultModel || (draft.models[0]?.model ?? ''),
+      defaultModel:
+        draft.defaultModel
+        || (draft.models[0]?.id ?? draft.models[0]?.remoteId ?? ''),
     };
-    const validation = validateProviderFormDraft(normalized, null);
+    const validation = validateProviderDraft(normalized);
     if (validation !== null) {
       setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
@@ -845,11 +788,11 @@ export function NewProviderWizard({
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await saveProviderForm(connection, null, normalized);
+      const created = await client.createProvider(providerCreateBody(normalized));
       setDraft(blank);
       setStep('template');
       await onSaved();
-      setFeedback({ tone: 'success', text: t('st.providers.createdEcho', { id: echoed.id }) });
+      setFeedback({ tone: 'success', text: t('st.providers.createdEcho', { id: created.id }) });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {

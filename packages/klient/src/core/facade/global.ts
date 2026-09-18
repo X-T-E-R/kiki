@@ -38,6 +38,15 @@ import type { FileMeta } from '@kiki/agent-core-v2/app/file/fileService';
 import type { ModelRecord } from '@kiki/agent-core-v2/kosong/model/model';
 import type { IModelCatalog } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@kiki/agent-core-v2/app/kosongConfig/discovery';
+import type { IModelCatalogMutationService } from '@kiki/agent-core-v2/app/kosongConfig/modelCatalogMutation';
+import type {
+  CreateModelRequest,
+  CreateProviderRequest,
+  ModelEntity,
+  PatchModelRequest,
+  PatchProviderRequest,
+  ProviderEntity,
+} from '@kiki/protocol';
 
 import type { McpServerConfig } from '../../contract/mcp.js';
 import { decodeBase64, encodeBase64 } from '../base64.js';
@@ -215,6 +224,23 @@ export interface GlobalKosongFacade {
   // -- Model ------------------------------------------------------------
   listModels(): Promise<readonly ModelCatalogItem[]>;
   setDefaultModel(id: string): Promise<SetDefaultModelResponse>;
+
+  // -- Entity editing (the single write path for providers/models) -------
+  /** One configured model: local alias, resolved provider, exact remote id, revision and issues. */
+  readModel(id: string): Promise<ModelEntity>;
+  /** Create one local model; `id` defaults to the `provider_id/remote_id` naming suggestion. */
+  createModel(input: CreateModelRequest): Promise<ModelEntity>;
+  /** Sparse local-model patch — unlisted fields, including unknown ones, are preserved. */
+  updateModel(id: string, patch: PatchModelRequest): Promise<ModelEntity>;
+  deleteModel(id: string, options?: { readonly baseRevision?: string }): Promise<void>;
+  /** One connection plus the revision the next patch must carry. Never reveals a stored secret. */
+  readProviderEntity(id: string): Promise<ProviderEntity>;
+  /** Create a connection; it may carry zero models. */
+  createProvider(input: CreateProviderRequest): Promise<ProviderEntity>;
+  /** Sparse connection patch — never carries a model list. */
+  updateProvider(id: string, patch: PatchProviderRequest): Promise<ProviderEntity>;
+  /** Delete a connection together with its own model aliases. */
+  deleteProviderEntity(id: string): Promise<void>;
 
   // -- Generate (streaming) -----------------------------------------------
   generate(
@@ -582,6 +608,22 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         call('modelResolver', 'listModels', []) as Promise<readonly ModelCatalogItem[]>,
       setDefaultModel: (id) =>
         call('modelResolver', 'setDefaultModel', [id]) as Promise<SetDefaultModelResponse>,
+
+      readModel: (id) => call('modelCatalogMutation', 'readModel', [id]) as Promise<ModelEntity>,
+      createModel: (input) =>
+        call('modelCatalogMutation', 'createModel', [input]) as Promise<ModelEntity>,
+      updateModel: (id, patch) =>
+        call('modelCatalogMutation', 'updateModel', [id, patch]) as Promise<ModelEntity>,
+      deleteModel: (id, options) =>
+        call('modelCatalogMutation', 'deleteModel', [id, options]) as Promise<void>,
+      readProviderEntity: (id) =>
+        call('modelCatalogMutation', 'readProvider', [id]) as Promise<ProviderEntity>,
+      createProvider: (input) =>
+        call('modelCatalogMutation', 'createProvider', [input]) as Promise<ProviderEntity>,
+      updateProvider: (id, patch) =>
+        call('modelCatalogMutation', 'updateProvider', [id, patch]) as Promise<ProviderEntity>,
+      deleteProviderEntity: (id) =>
+        call('modelCatalogMutation', 'deleteProvider', [id]) as Promise<void>,
 
       generate: (modelId, input, params) =>
         streamCall('modelResolver', 'generate', [modelId, input, params]) as AsyncIterable<GenerateEvent>,

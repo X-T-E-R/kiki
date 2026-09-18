@@ -45,6 +45,7 @@ import { filesContract } from './global/files.js';
 import { flagsContract } from './global/flags.js';
 import { hostFsContract } from './global/hostFs.js';
 import { modelsContract } from './global/models.js';
+import { modelCatalogMutationContract } from './global/modelCatalogMutation.js';
 import { mcpManagementContract } from './global/mcpManagement.js';
 import { pluginsContract } from './global/plugins.js';
 import { providersContract } from './global/providers.js';
@@ -79,6 +80,7 @@ export const globalContract: KlientContract = {
   providerService: providersContract,
   modelService: modelsContract,
   modelResolver: catalogContract,
+  modelCatalogMutation: modelCatalogMutationContract,
   providerDiscovery: providerDiscoveryContract,
   oauthService: authContract,
   authSummaryService: authSummaryContract,

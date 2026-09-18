@@ -34,6 +34,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/models/{model_id}",
+    ],
+    [
+      "DELETE",
       "/api/oauth/login",
     ],
     [
@@ -91,6 +95,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/debug/channels",
+    ],
+    [
+      "GET",
+      "/api/debug/memory",
     ],
     [
       "GET",
@@ -183,6 +191,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/models",
+    ],
+    [
+      "GET",
+      "/api/models/{model_id}",
     ],
     [
       "GET",
@@ -374,6 +386,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PATCH",
+      "/api/models/{model_id}",
+    ],
+    [
+      "PATCH",
+      "/api/providers/{provider_id}",
+    ],
+    [
+      "PATCH",
       "/api/workspaces/{workspace_id}",
     ],
     [
@@ -459,6 +479,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/mcp/servers:test",
+    ],
+    [
+      "POST",
+      "/api/models",
     ],
     [
       "POST",
@@ -667,10 +691,6 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/mcp/servers/{name}",
-    ],
-    [
-      "PUT",
-      "/api/providers/{provider_id}",
     ],
     [
       "PUT",
