@@ -113,12 +113,13 @@ timeout = 5
 | `tools` | `table` | — | 全局工具开关 → [`tools`](#tools) |
 | `image` | `table` | — | 图片压缩参数 → [`image`](#image) |
 | `services` | `table` | — | 内置外部服务配置 → [`services`](#services) |
+| `nb_search` | `table` | — | `WebSearch` 与 `FetchURL` 背后的内置搜索与抓取模块 → [`nb_search`](#nb-search) |
 | `permission` | `table` | — | 初始权限规则 → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`agents`、`thread_communication`、`image`、`services`、`permission`、`prompt` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`agents`、`thread_communication`、`image`、`services`、`nb_search`、`permission`、`prompt` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -483,7 +484,9 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 ## `nb_search`
 
-`nb_search` 配置内置 `WebSearch` 和 `FetchURL` 工具使用的 nb-search 运行时。字段名与合并行为遵循 `@nb-corp/nb-search` 的 canonical 配置 contract。
+`nb_search` 配置 Kiki 内置的搜索与抓取模块，也就是 `WebSearch` 和 `FetchURL` 工具背后的能力。该模块是 Kiki 的一部分：随产品一起安装，不需要额外的安装步骤；其中的 provider 实例、凭证槽、lane 和默认 fetch chain 都已经内置。
+
+在这些内置默认值之上，你只需提供所选 provider 的凭证（通过其凭证槽中指定的环境变量），并配置一个默认搜索 lane，让 `WebSearch` 在没有显式 lane 参数时也能运行。字段名与合并行为遵循该模块的 canonical 配置 contract（`@nb-corp/nb-search`），与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -491,12 +494,12 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | `credential_slots` | `table` | 否 | 命名凭据槽，只包含 `provider_id` 和 `env` 中的环境变量名 |
 | `lanes` | `table` | 否 | 命名 operation lane，包含 `provider_instance_id`、`operation_id`、`latency`、`cost` 和可选 `evidence_groups` |
 | `defaults.search_lane` | `string` | 否 | `WebSearch` 使用的默认 lane；未配置时网页搜索 fail-closed |
-| `defaults.fetch_chain` | `array<table>` | 否 | 按输入类型和 representation 配置 fetch pipeline chain；URL 的 SDK 默认值为 `direct.fetch`，随后尝试 `jina.reader` |
+| `defaults.fetch_chain` | `array<table>` | 否 | 按输入类型和 representation 配置 fetch pipeline chain；URL 的内置默认值为 `direct.fetch`，随后尝试 `jina.reader` |
 | `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 
-凭据值不会写入 `config.toml`。请在凭据槽的 `env` 字段中填写环境变量名。Kiki 服务器进程中的环境变量优先，包括显式设置的空值。开启本机复用后，Kiki 可以从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 nb-search `secrets.json` 补充缺少的变量，只导入匹配凭证槽的变量，并在使用前校验提供商、地址、凭证槽及文件保护。会重定向已导入凭证的配置变更将被拒绝，不会静默重新绑定。运行时不读取其他终端的变量，也不会自动加载独立的 `.env` 文件。密钥值与凭证文件均不会发送到 GUI。
+凭据值不会写入 `config.toml`。请在凭据槽的 `env` 字段中填写环境变量名。Kiki 服务器进程中的环境变量优先，包括显式设置的空值。开启本机复用后，Kiki 可以从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的本机 nb-search `secrets.json` 补充缺少的变量，只导入匹配凭证槽的变量，并在使用前校验提供商、地址、凭证槽及文件保护。会重定向已导入凭证的配置变更将被拒绝，不会静默重新绑定。该模块不读取其他终端的变量，也不会自动加载独立的 `.env` 文件。密钥值与凭证文件均不会发送到 GUI。
 
-默认按以下顺序合并设置：nb-search 默认值、服务器本机的 nb-search 配置、服务器环境变量、Kiki 的 `nb_search` 覆盖项。本机文件由 `NB_SEARCH_CONFIG` 指定；未指定时，使用 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 `config.json`。默认文件不存在时仍可使用其他配置层；显式路径不存在或文件不可读时，该来源会显示不可用。
+默认按以下顺序合并设置：该模块的内置默认值、服务器本机的 nb-search 配置、服务器环境变量、Kiki 的 `[nb_search]` 覆盖项。本机文件由 `NB_SEARCH_CONFIG` 指定；未指定时，使用 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 `config.json`。默认文件不存在时仍可使用其他配置层；显式路径不存在或文件不可读时，该来源会显示不可用。
 
 在「设置 → 搜索与抓取 → 概览与配置来源」中查看来源并控制复用，也可以设置独立的宿主选项：
 
@@ -505,7 +508,7 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 reuse_local_config = false
 ```
 
-`reuse_local_config` 默认为 `true`。设为 `false` 后会跳过服务器本机的 nb-search 配置与凭证文件，不修改原文件，也不删除 Kiki 已保存的配置或凭证环境变量。隔离模式的默认搜索存储位于 Kiki 缓存目录下，显式设置的 `nb_search.home` 和 `nb_search.jobs_root` 仍优先生效。修改无需重启，下次运行时请求即使用新配置。来源选择保存成功不代表搜索 Lane 已就绪，需要分别查看配置来源与工具的就绪状态。连接远程 Kiki 服务器时，这些文件和环境变量属于服务器，而非浏览器所在机器。
+`reuse_local_config` 默认为 `true`。设为 `false` 后会跳过服务器本机的 nb-search 配置与凭证文件——内置模块改用 Kiki 自身的配置与内置默认值继续工作——既不修改被跳过的文件，也不删除 Kiki 已保存的配置或凭证环境变量。隔离模式的默认搜索存储位于 Kiki 缓存目录下，显式设置的 `nb_search.home` 和 `nb_search.jobs_root` 仍优先生效。修改无需重启，下次运行时请求即使用新配置。来源选择保存成功不代表搜索 Lane 已就绪，需要分别查看配置来源与工具的就绪状态。连接远程 Kiki 服务器时，这些文件和环境变量属于服务器，而非浏览器所在机器。
 
 ```toml
 [nb_search.credential_slots."exa.default"]

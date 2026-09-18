@@ -113,12 +113,13 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `tools` | `table` | — | Global tool switch → [`tools`](#tools) |
 | `image` | `table` | — | Image compression parameters → [`image`](#image) |
 | `services` | `table` | — | Built-in external service configuration → [`services`](#services) |
+| `nb_search` | `table` | — | Built-in search and retrieval module behind `WebSearch` and `FetchURL` → [`nb_search`](#nb-search) |
 | `permission` | `table` | — | Initial permission rules → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `agents`, `thread_communication`, `tools`, `image`, `services`, `permission`, and `prompt`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `agents`, `thread_communication`, `tools`, `image`, `services`, `nb_search`, `permission`, and `prompt`.
 
 ## `providers`
 
@@ -487,7 +488,9 @@ Automatic title generation is on by default. Turn it off in the GUI, with `auto_
 
 ## `nb_search`
 
-`nb_search` configures the nb-search runtime used by the built-in `WebSearch` and `FetchURL` tools. The field names and merge behavior follow the canonical `@nb-corp/nb-search` configuration contract.
+`nb_search` configures Kiki's built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools. The module is part of the product: it ships with Kiki and needs no separate installation, and its provider instances, credential slots, lanes, and default fetch chain are built in.
+
+Beyond those built-in defaults you supply the credential for the provider you choose, through the environment variable named in its credential slot, and name a default search lane so `WebSearch` runs without an explicit lane argument. Field names and merge behavior follow the module's canonical configuration contract (`@nb-corp/nb-search`), shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -495,12 +498,12 @@ Automatic title generation is on by default. Turn it off in the GUI, with `auto_
 | `credential_slots` | `table` | No | Named credential slots containing only `provider_id` and the environment-variable name in `env` |
 | `lanes` | `table` | No | Named operation lanes with `provider_instance_id`, `operation_id`, `latency`, `cost`, and optional `evidence_groups` |
 | `defaults.search_lane` | `string` | No | Default lane selected by `WebSearch`; without it, web search fails closed |
-| `defaults.fetch_chain` | `array<table>` | No | Fetch pipeline chain by input kind and representation; the SDK default for URLs is `direct.fetch` followed by `jina.reader` |
+| `defaults.fetch_chain` | `array<table>` | No | Fetch pipeline chain by input kind and representation; the built-in default for URLs is `direct.fetch` followed by `jina.reader` |
 | `execution` | `table` | No | Provider-call, concurrency, retry, timeout, inline-output, response-size, redirect, content-size, and quality budgets |
 
-Credential values are never stored in `config.toml`. Put the environment-variable name in a credential slot's `env` field. The Kiki server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki can fill missing variables from nb-search's `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It only imports variables for matching credential slots and checks the provider, endpoint, slot, and file protection before use. Changes that redirect imported credentials are rejected rather than silently rebinding them. The runtime does not read variables from another terminal or automatically load separate `.env` files. Neither secret values nor the credential file are sent to the GUI.
+Credential values are never stored in `config.toml`. Put the environment-variable name in a credential slot's `env` field. The Kiki server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki can fill missing variables from the local nb-search `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It only imports variables for matching credential slots and checks the provider, endpoint, slot, and file protection before use. Changes that redirect imported credentials are rejected rather than silently rebinding them. The module does not read variables from another terminal or automatically load separate `.env` files. Neither secret values nor the credential file are sent to the GUI.
 
-By default, settings are layered in this order: nb-search defaults, the server's local nb-search configuration, the server environment, then Kiki's `nb_search` overrides. The local file is selected by `NB_SEARCH_CONFIG`, or by `config.json` under `NB_SEARCH_HOME` (default: `~/.nb-search`). A missing default file is allowed; an explicit path that is missing or unreadable makes that source unavailable.
+By default, settings are layered in this order: the module's built-in defaults, the server's local nb-search configuration, the server environment, then Kiki's `[nb_search]` overrides. The local file is selected by `NB_SEARCH_CONFIG`, or by `config.json` under `NB_SEARCH_HOME` (default: `~/.nb-search`). A missing default file is allowed; an explicit path that is missing or unreadable makes that source unavailable.
 
 Use **Settings → Search & retrieval → Overview & source** to inspect the source and control reuse, or set the separate host option:
 
@@ -509,7 +512,7 @@ Use **Settings → Search & retrieval → Overview & source** to inspect the sou
 reuse_local_config = false
 ```
 
-`reuse_local_config` defaults to `true`. Setting it to `false` skips the server's local nb-search configuration and credential files without editing them or removing Kiki's saved settings and credential environment. Isolated default search storage lives under Kiki's cache; explicit `nb_search.home` and `nb_search.jobs_root` settings still take precedence. Changes apply on the next runtime request without a restart. Saving the source selection does not guarantee that a search lane is ready; check the reported source and tool readiness separately. When connected to a remote Kiki server, these files and environment variables belong to that server, not the browser's machine.
+`reuse_local_config` defaults to `true`. Setting it to `false` skips the server's local nb-search configuration and credential files — the built-in module keeps running on Kiki's own settings and built-in defaults — without editing the skipped files or removing Kiki's saved settings and credential environment. Isolated default search storage lives under Kiki's cache; explicit `nb_search.home` and `nb_search.jobs_root` settings still take precedence. Changes apply on the next runtime request without a restart. Saving the source selection does not guarantee that a search lane is ready; check the reported source and tool readiness separately. When connected to a remote Kiki server, these files and environment variables belong to that server, not the browser's machine.
 
 ```toml
 [nb_search.credential_slots."exa.default"]

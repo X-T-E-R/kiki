@@ -12,7 +12,7 @@ The Kiki desktop app exposes settings in a **Settings** dialog. This page tours 
 
 ## Search & retrieval
 
-**Settings → Search & retrieval → Overview & source** inspects the web-search source and controls reuse. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
+**Settings → Search & retrieval → Overview & source** inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses its local nb-search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
 
 ## Composer
 

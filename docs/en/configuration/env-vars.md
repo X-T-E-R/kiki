@@ -108,7 +108,7 @@ If `KIMI_MODEL_NAME` is set but a required variable is missing, startup fails im
 
 ## Runtime switches
 
-Switches that control the behavior of subsystems such as background tasks and the plugin marketplace:
+Switches that control the behavior of subsystems such as background tasks, the built-in search and retrieval module, and the plugin marketplace:
 
 | Variable | Purpose | Valid values |
 | --- | --- | --- |
@@ -133,10 +133,10 @@ Switches that control the behavior of subsystems such as background tasks and th
 | `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` | Maximum total attempts for a failing step (including the initial attempt); takes higher priority than `[loop_control] max_attempts_per_step` in `config.toml` (default `10`). The deprecated `KIMI_LOOP_MAX_RETRIES_PER_STEP` is still honored with a warning when this variable is unset | Non-negative integer; invalid values are ignored |
 | `KIKI_INFINITE_RETRY` | Retry every failed LLM request indefinitely — turn steps and background operations such as compaction alike — instead of failing the task; waits use exponential backoff (capped at 32 s) and honor the server's `Retry-After` header, and aborting still cancels immediately. Intended for long-running unattended evaluations against endpoints that may fail temporarily | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIMI_TOKEN_COUNTING_STRATEGY` | Which context token count is reported externally (the context-size display); takes higher priority than `[token_counting] strategy` in `config.toml` (default `measured+estimated`) | `measured+estimated`, `measured`, `estimated` (case-insensitive); invalid values are ignored |
-| `NB_SEARCH_CONFIG` | Path to an nb-search canonical JSON config loaded before Kiki's `[nb_search]` patch | File path |
-| `NB_SEARCH_HOME` | nb-search runtime data directory | Directory path |
-| `NB_SEARCH_JOBS_ROOT` | Durable nb-search job directory | Directory path |
-| `NB_SEARCH_LOG_LEVEL` | nb-search runtime log level | `error`, `warn`, `info`, or `debug` |
+| `NB_SEARCH_CONFIG` | Path to a canonical JSON configuration for the built-in search and retrieval module, loaded before Kiki's `[nb_search]` patch | File path |
+| `NB_SEARCH_HOME` | Data directory for the built-in search and retrieval module | Directory path |
+| `NB_SEARCH_JOBS_ROOT` | Durable job directory for the built-in search and retrieval module | Directory path |
+| `NB_SEARCH_LOG_LEVEL` | Log level for the built-in search and retrieval module | `error`, `warn`, `info`, or `debug` |
 | `NB_SEARCH_RETENTION_HOURS` | Retention period for durable search and fetch job results | Positive integer |
 | `NB_SEARCH_EXA_API_KEY` | Credential used by the built-in `exa.default` provider instance | Non-blank string |
 | `NB_SEARCH_TAVILY_API_KEY` | Credential used by the built-in `tavily.default` provider instance | Non-blank string |

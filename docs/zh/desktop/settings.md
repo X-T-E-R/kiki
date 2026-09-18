@@ -12,7 +12,7 @@ Kiki 桌面版在 **Settings** 对话框中集中展示设置。本页导览各�
 
 ## Search & retrieval
 
-**Settings → Search & retrieval → Overview & source** 查看网页搜索来源并控制复用。对应的配置位于 `config.toml` —— 见[配置文件](../configuration/config-files.md#nb-search)。
+**Settings → Search & retrieval → Overview & source** 查看内置搜索与抓取模块（`WebSearch` 和 `FetchURL` 背后的能力）当前生效的配置来源，并控制服务器是否复用本机 nb-search 配置。对应的配置位于 `config.toml` —— 见[配置文件](../configuration/config-files.md#nb-search)。
 
 ## Composer
 

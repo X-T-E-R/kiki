@@ -50,6 +50,8 @@ Foreground mode blocks the current turn until the command completes or times out
 
 ## Web Tools
 
+Both web tools are backed by Kiki's built-in search and retrieval module, which ships with the product — there is nothing to install. The module's provider instances, credential slots, lanes, and default fetch chain are built in, so web search works as soon as a usable lane is configured and fetch runs on the built-in default chain; see [`nb_search`](../configuration/config-files.md#nb-search) for the configuration surface.
+
 | Tool | Default Approval | Description |
 | --- | --- | --- |
 | `WebSearch` | Auto-allow | Web search |
@@ -57,7 +59,7 @@ Foreground mode blocks the current turn until the command completes or times out
 
 ### `WebSearch`
 
-Search the web through the configured nb-search provider. The minimal call is `{ "query": "search terms" }`, which selects `action: "run"` and lets everything else fall back to your `[nb_search]` defaults. `query` may be a single string or an array of strings.
+Search the web through Kiki's built-in search and retrieval module (`nb-search`). The minimal call is `{ "query": "search terms" }`, which selects `action: "run"` and lets everything else fall back to your `[nb_search]` defaults. `query` may be a single string or an array of strings.
 
 If no default `search_lane` is configured under `[nb_search.defaults]` and no `lane`, `lanes`, or `preset` is named in the call, the tool reports that no search lane is available and the search cannot run — name an available lane or preset explicitly to proceed. An explicit lane, an explicit `lanes` list, or a preset overrides the configured default; an invalid or unavailable selection fails the call rather than silently swapping in a different provider.
 
@@ -80,7 +82,7 @@ Results are either ranked source links with snippets or typed research or docume
 
 ### `FetchURL`
 
-Fetch or extract content from a URL through the configured nb-search provider. The minimal call is `{ "url": "https://example.com" }`, the URL shorthand for `action: "run"`; do not mix shorthand `url` with the `source` form. The default fetch chain returns Markdown; HTML responses are extracted to body text, and plain text or Markdown pages are passed through.
+Fetch or extract content from a URL through Kiki's built-in search and retrieval module (`nb-search`). The minimal call is `{ "url": "https://example.com" }`, the URL shorthand for `action: "run"`; do not mix shorthand `url` with the `source` form. The default fetch chain returns Markdown; HTML responses are extracted to body text, and plain text or Markdown pages are passed through.
 
 `run` accepts these parameter groups that actually change behavior:
 

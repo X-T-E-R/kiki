@@ -50,6 +50,8 @@
 
 ## 网络类
 
+两个工具都由 Kiki 内置的搜索与抓取模块支撑，该模块随产品一起安装，不需要额外的安装步骤。模块的 provider 实例、凭证槽、lane 和默认 fetch chain 都已内置：网页搜索只要配置好可用的 lane 即可工作，抓取则直接使用内置默认链。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。
+
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
 | `WebSearch` | 自动放行 | 网络搜索 |
@@ -57,7 +59,7 @@
 
 ### `WebSearch`
 
-通过已配置的 nb-search provider 进行搜索。最小调用为 `{ "query": "搜索词" }`，对应 `action: "run"`，其余字段沿用 `[nb_search]` 默认值。`query` 可以是单个字符串或字符串数组。
+通过 Kiki 内置的 `nb-search` 模块进行搜索。最小调用为 `{ "query": "搜索词" }`，对应 `action: "run"`，其余字段沿用 `[nb_search]` 默认值。`query` 可以是单个字符串或字符串数组。
 
 若 `[nb_search.defaults]` 中没有配置默认 `search_lane`，且调用里也未通过 `lane`、`lanes` 或 `preset` 显式选择，工具会提示当前没有可用的搜索 lane，需要明确指定已配置的 lane 或 preset 才能继续执行。显式的 lane、`lanes` 列表或 preset 会覆盖配置默认值；选择无效或不可用时直接报错，不会悄悄换成其他 provider。
 
@@ -80,7 +82,7 @@
 
 ### `FetchURL`
 
-通过已配置的 nb-search provider 抓取或抽取内容。最小调用为 `{ "url": "https://example.com" }`，对应 `action: "run"` 的 URL 简写；不要把简写 `url` 与 `source` 形式混用。默认 fetch chain 返回 Markdown；HTML 响应被抽取为正文文本，纯文本或 Markdown 页面则直接透传。
+通过 Kiki 内置的 `nb-search` 模块抓取或抽取内容。最小调用为 `{ "url": "https://example.com" }`，对应 `action: "run"` 的 URL 简写；不要把简写 `url` 与 `source` 形式混用。默认 fetch chain 返回 Markdown；HTML 响应被抽取为正文文本，纯文本或 Markdown 页面则直接透传。
 
 `run` 接受以下几组真正影响行为的参数：
 
