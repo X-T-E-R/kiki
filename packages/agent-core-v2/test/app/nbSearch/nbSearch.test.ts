@@ -2,7 +2,6 @@ import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { Readable, Writable } from 'node:stream';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 
 import {
@@ -43,9 +42,8 @@ import { parseNativeFetchInput, parseNativeSearchInput, type NativeFetchInput, t
 import { NbSearchService } from '#/app/nbSearch/nbSearchService';
 import { INbSearchSourceStore, NbSearchSourceStore } from '#/app/nbSearch/sourceStore';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
-import { IHostProcessService } from '#/os/interface/hostProcess';
 import { applyLocalCredentials } from '#/app/nbSearch/localCredentials';
-import { NbSearchCredentialFileStore, windowsPowerShellModulePath } from '#/app/nbSearch/credentialFileStore';
+import { NbSearchCredentialFileStore } from '#/app/nbSearch/credentialFileStore';
 import { resolveNbSearchConfig, nbSearchConfigRevision } from '#/app/nbSearch/donorConfig';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
@@ -529,7 +527,6 @@ describe('NbSearchSourceStore', () => {
       additionalServices: (reg) => {
         reg.definePartialInstance(IHostFileSystem, { stat });
         reg.definePartialInstance(IFileSystemStorageService, { pathFor: () => undefined, write });
-        reg.definePartialInstance(IHostProcessService, {});
         reg.define(INbSearchSourceStore, NbSearchSourceStore);
       },
     });
@@ -572,8 +569,8 @@ describe('NbSearchSourceStore', () => {
     const fixture = await mkdtemp(join(root, 'nb-search-source-concurrency-'));
     const firstStorage = new FileStorageService(fixture);
     const secondStorage = new FileStorageService(fixture);
-    const first = new NbSearchSourceStore(firstStorage, {} as IHostFileSystem, {} as IHostProcessService);
-    const second = new NbSearchSourceStore(secondStorage, {} as IHostFileSystem, {} as IHostProcessService);
+    const first = new NbSearchSourceStore(firstStorage, {} as IHostFileSystem);
+    const second = new NbSearchSourceStore(secondStorage, {} as IHostFileSystem);
     try {
       const sources = await Promise.all(Array.from({ length: 20 }, (_, index) => (index % 2 === 0 ? first : second)
         .withSource(false, undefined, (value) => value)));
@@ -663,7 +660,7 @@ describe('NbSearchSourceStore', () => {
     }
   });
 
-  it('rejects credential symlinks before reading their bytes', async () => {
+  it('reads symlinked credential files without ACL or link inspection', async () => {
     stat.mockResolvedValue({ isFile: true, isDirectory: false, size: 2 });
     const fs = ix.get(IHostFileSystem);
     fs.lstat = vi.fn(async (path) => {
@@ -672,8 +669,8 @@ describe('NbSearchSourceStore', () => {
     });
     fs.readBytes = vi.fn();
     const status = await ix.get(INbSearchSourceStore).withSource(true, undefined, (value) => value.status);
-    expect(status).toMatchObject({ availability: 'unavailable', issues: ['LOCAL_CREDENTIALS_UNSAFE'] });
-    expect(fs.readBytes).not.toHaveBeenCalled();
+    expect(status.issues ?? []).not.toContain('LOCAL_CREDENTIALS_UNSAFE');
+    expect(fs.readBytes).toHaveBeenCalled();
   });
 
   it('does not treat a permission-denied local base as a missing optional file', async () => {
@@ -685,33 +682,15 @@ describe('NbSearchSourceStore', () => {
 });
 
 describe('NbSearchCredentialFileStore', () => {
-  it.runIf(process.platform === 'win32')('insulates the ACL inspection process from a poisoned PSModulePath', async () => {
-    vi.stubEnv('PSModulePath', 'C:\\poisoned\\codex-runtimes\\Modules');
-    const entry = { isFile: true, isDirectory: false, isSymbolicLink: false, size: 2, ino: 1, mtimeMs: 1 };
+  it('reads files without ACL or symlink inspection', async () => {
+    const entry = { isFile: true, isDirectory: false, isSymbolicLink: true, size: 2, ino: 1, mtimeMs: 1 };
     const fs = {
       lstat: vi.fn(async () => entry),
       readBytes: vi.fn(async () => new TextEncoder().encode('{}')),
     } as unknown as IHostFileSystem;
-    let spawnedEnv: Record<string, string> | undefined;
-    const processes = {
-      spawn: vi.fn(async (_command: string, _args: readonly string[], options?: { env?: Record<string, string> }) => {
-        spawnedEnv = options?.env;
-        return {
-          pid: 1,
-          exitCode: null,
-          stdout: Readable.from(['ok']),
-          stderr: Readable.from([]),
-          stdin: new Writable({ write: (_chunk, _encoding, callback) => callback() }),
-          wait: async () => 0,
-          kill: async () => {},
-          dispose: () => {},
-        };
-      }),
-    } as unknown as IHostProcessService;
-    const store = new NbSearchCredentialFileStore(fs, processes);
-    await expect(store.read('C:\\fixture\\secrets.json', true)).resolves.toBe('{}');
-    expect(spawnedEnv?.['PSModulePath']).toBe(windowsPowerShellModulePath(process.env));
-    expect(spawnedEnv?.['PSModulePath']).not.toContain('codex-runtimes');
+    const store = new NbSearchCredentialFileStore(fs);
+    await expect(store.read('C:\\fixture\\secrets.json')).resolves.toBe('{}');
+    expect(fs.readBytes).toHaveBeenCalled();
   });
 });
 

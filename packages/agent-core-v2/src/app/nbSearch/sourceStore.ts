@@ -5,7 +5,6 @@ import type { NbSearchConfigSourceStatus } from '@kiki/protocol';
 import { parseConfigPatch, type CanonicalConfigPatch } from '@nb-corp/nb-search';
 
 import { NbSearchCredentialFileStore, NbSearchLocalFileError } from './credentialFileStore';
-import { IHostProcessService } from '#/os/interface/hostProcess';
 import { Error2, ErrorCodes } from '#/errors';
 import { nbSearchConfigIssues, nbSearchConfigRevision, nbSearchPaths, pinnedNbSearchConfig, resolveNbSearchConfig } from './donorConfig';
 import { applyLocalCredentials, LocalCredentialError, localSecretSchema } from './localCredentials';
@@ -51,9 +50,8 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
   constructor(
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
-    @IHostProcessService processes: IHostProcessService,
   ) {
-    this.#credentialFiles = new NbSearchCredentialFileStore(fs, processes);
+    this.#credentialFiles = new NbSearchCredentialFileStore(fs);
   }
 
   async withSource<T>(reuseLocalConfig: boolean, config: CanonicalConfigPatch | undefined, use: (source: NbSearchSource) => T | Promise<T>): Promise<T> {
@@ -102,8 +100,8 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
     const paths = nbSearchPaths(env);
     try {
       await this.#credentialFiles.assertUnlocked(paths.home);
-      const raw = await this.#credentialFiles.read(paths.secrets, true);
-      const canonicalRaw = await this.#credentialFiles.read(paths.canonical, false);
+      const raw = await this.#credentialFiles.read(paths.secrets);
+      const canonicalRaw = await this.#credentialFiles.read(paths.canonical);
       if (canonicalRaw === undefined && status.local_config === 'present') return this.unavailable(env, status, 'LOCAL_CONFIG_CHANGED');
       let canonical: CanonicalConfigPatch | undefined;
       try {
@@ -134,8 +132,8 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
       if (Object.values(prepared.config.credential_slots).some((slot) => nbSearchEnvironmentName(prepared.env, slot.env) === nbSearchEnvironmentName(prepared.env, 'NB_SEARCH_CONFIG'))) {
         return this.unavailable(env, status, 'LOCAL_CREDENTIAL_CONFIG_OVERRIDE');
       }
-      if (await this.#credentialFiles.read(paths.secrets, true) !== raw
-        || await this.#credentialFiles.read(paths.canonical, false) !== canonicalRaw) {
+      if (await this.#credentialFiles.read(paths.secrets) !== raw
+        || await this.#credentialFiles.read(paths.canonical) !== canonicalRaw) {
         return this.unavailable(env, status, 'LOCAL_CONFIG_CHANGED');
       }
       await this.#credentialFiles.assertUnlocked(paths.home);
