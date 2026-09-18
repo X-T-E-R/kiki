@@ -2965,8 +2965,15 @@ export interface AgentStateSnapshot {
   'toolSelect.pendingLoaded': Set<string>;
   // src/agent/usage/panelAccounting.ts
   // replayable · durable — folds: UsageRecord, FullCompactionComplete
-  'usage.panelAccounting': {
+  'usage.panelAccounting': /* PanelAccountingState — packages/agent-core-v2/src/agent/usage/panelAccounting.ts */ {
     records: number;
+    knownRecords: number;
+    knownByModel: Record<string, /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
+      inputOther: number;
+      output: number;
+      inputCacheRead: number;
+      inputCacheCreation: number;
+    }>;
     incomplete: boolean;
     successfulCompactions: number;
   };
