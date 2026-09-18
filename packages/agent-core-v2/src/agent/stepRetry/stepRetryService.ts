@@ -12,7 +12,6 @@ import {
   retryErrorFields,
   sleepForRetry,
 } from '#/_base/utils/retry';
-import { isRetryableGenerateError } from '#/kosong/contract/errors';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { Event2, registerEvent2Class } from '#/app/event/event2';
@@ -26,6 +25,8 @@ import { TurnStarted } from '#/agent/loop/turnEvents';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
+import { RETRY_SECTION, type RetryConfig } from './configSection';
+import { resolveRetryPolicy } from './retryPolicy';
 import { IAgentStepRetryService } from './stepRetry';
 
 export interface TurnStepRetryingPayload {
@@ -88,7 +89,7 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     this._register(
       this.loopService.registerLoopErrorHandler({
         id: 'step-retry',
-        match: (context) => isRetryableGenerateError(unwrapErrorCause(context.error)),
+        match: (context) => this.shouldRetry(context.error),
         handle: (context) => this.recover(context),
       }),
     );
@@ -122,6 +123,14 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     this.failedAttempts = 0;
   }
 
+  private retryConfig(): RetryConfig | undefined {
+    return this.config.get<RetryConfig | undefined>(RETRY_SECTION);
+  }
+
+  private shouldRetry(error: unknown): boolean {
+    return resolveRetryPolicy(this.retryConfig(), unwrapErrorCause(error)).retry;
+  }
+
   private async recover(context: LoopErrorContext): Promise<boolean> {
     const driver = context.failedDriver;
     if (driver === undefined || context.step === undefined) return false;
@@ -132,8 +141,13 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     }
     this.failedAttempts += 1;
 
+    const error = unwrapErrorCause(context.error);
+    const retryConfig = this.retryConfig();
+    const decision = resolveRetryPolicy(retryConfig, error);
     const maxAttempts = Math.max(
-      this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ??
+      decision.maxAttempts ??
+        retryConfig?.maxAttempts ??
+        this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ??
         DEFAULT_MAX_RETRY_ATTEMPTS,
       1,
     );
@@ -142,9 +156,11 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
       return false;
     }
 
-    const error = unwrapErrorCause(context.error);
     const delayMs =
-      readRetryAfterMs(error) ?? retryBackoffDelays(maxAttempts)[this.failedAttempts - 1] ?? 0;
+      readRetryAfterMs(error) ??
+      decision.backoffMs ??
+      retryBackoffDelays(maxAttempts)[this.failedAttempts - 1] ??
+      0;
     void this.dispatcher.dispatch(
       new TurnStepRetrying({
         turnId: context.turnId,

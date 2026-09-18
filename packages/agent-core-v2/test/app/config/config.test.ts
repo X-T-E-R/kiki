@@ -67,6 +67,7 @@ import {
   LOOP_MAX_STEPS_PER_TURN_ENV,
   type LoopControl,
 } from '#/agent/loop/configSection';
+import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
 import {
   DEFAULT_MODEL_SECTION,
   MODELS_SECTION,
@@ -1128,7 +1129,7 @@ describe('loopControl config section', () => {
       domain: LOOP_CONTROL_SECTION,
       severity: 'warning',
       message:
-        "[loop_control] 'max_steps_per_run' is deprecated and no longer used; rename it to 'max_steps_per_turn'. Run /kiki-ops.config to fix it.",
+        "[loop_control] 'max_steps_per_run' is deprecated and no longer used; rename it to 'max_steps_per_turn'. Run /kiki-ops fix this configuration warning.",
     });
     await config.set(LOOP_CONTROL_SECTION, { maxStepsPerTurn: 7 });
     expect(config.get<LoopControl>(LOOP_CONTROL_SECTION).maxStepsPerTurn).toBe(7);
@@ -1243,7 +1244,7 @@ describe('config deprecations', () => {
       domain: LOOP_CONTROL_SECTION,
       severity: 'warning',
       message:
-        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops.config to fix it.",
+        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops fix this configuration warning.",
     });
 
     disposables.dispose();
@@ -1260,7 +1261,7 @@ describe('config deprecations', () => {
       domain: LOOP_CONTROL_SECTION,
       severity: 'warning',
       message:
-        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops.config to fix it.",
+        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops fix this configuration warning.",
     });
 
     disposables.dispose();
@@ -1361,7 +1362,7 @@ describe('config deprecations', () => {
       domain: LOOP_CONTROL_SECTION,
       severity: 'warning',
       message:
-        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops.config to fix it.",
+        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops fix this configuration warning.",
     });
 
     await storage.write(
@@ -1472,6 +1473,125 @@ describe('malformed models config entries', () => {
   });
 });
 
+describe('retry config section', () => {
+  async function createConfig(toml: string) {
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    await storage.write('', 'config.toml', new TextEncoder().encode(toml));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', {}));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+    const readText = async (): Promise<string> => {
+      const bytes = await storage.read('', 'config.toml');
+      if (bytes === undefined) throw new Error('config.toml missing');
+      return new TextDecoder().decode(bytes);
+    };
+    return { config, disposables, readText };
+  }
+
+  it('loads policy entries written with snake_case keys', async () => {
+    const { config, disposables } = await createConfig(
+      '[retry]\nmax_attempts = 3\n\n[[retry.policies]]\nmatch = "provider.rate_limit"\n' +
+        'max_attempts = 2\nbackoff = 1500\nretry = false\n',
+    );
+
+    expect(config.get<RetryConfig>(RETRY_SECTION)).toEqual({
+      maxAttempts: 3,
+      policies: [{ match: 'provider.rate_limit', maxAttempts: 2, backoff: 1500, retry: false }],
+    });
+    expect(config.diagnostics()).toEqual([]);
+
+    disposables.dispose();
+  });
+
+  it.each([
+    ['section', '[retry]\nmax_attempt = 3\n'],
+    [
+      'policy',
+      '[[retry.policies]]\nmatch = "APIConnectionError"\nmax_attempt = 2\n',
+    ],
+  ])('rejects unknown keys in the retry %s loaded from TOML', async (_scope, toml) => {
+    const { config, disposables } = await createConfig(toml);
+
+    expect(config.get<RetryConfig>(RETRY_SECTION)).toBeUndefined();
+    expect(config.diagnostics()).toContainEqual(
+      expect.objectContaining({
+        domain: RETRY_SECTION,
+        severity: 'warning',
+        message: expect.stringContaining("Ignored invalid config section 'retry'"),
+      }),
+    );
+
+    disposables.dispose();
+  });
+
+  it('defaults a policy without an explicit retry flag to retrying', async () => {
+    const { config, disposables } = await createConfig(
+      '[[retry.policies]]\nmatch = "APIConnectionError"\n',
+    );
+
+    expect(config.get<RetryConfig>(RETRY_SECTION)).toEqual({
+      policies: [{ match: 'APIConnectionError', retry: true }],
+    });
+
+    disposables.dispose();
+  });
+
+  it('accepts a single [retry.policies] table as one policy', async () => {
+    const { config, disposables } = await createConfig(
+      '[retry.policies]\nmatch = "APIConnectionError"\nmax_attempts = 2\n',
+    );
+
+    expect(config.get<RetryConfig>(RETRY_SECTION)).toEqual({
+      policies: [{ match: 'APIConnectionError', maxAttempts: 2, retry: true }],
+    });
+
+    disposables.dispose();
+  });
+
+  it('warns at load time about a policy with an invalid match and keeps the other entries', async () => {
+    const { config, disposables } = await createConfig(
+      '[[retry.policies]]\nmatch = "("\nretry = false\n\n' +
+        '[[retry.policies]]\nmatch = "APIConnectionError"\n',
+    );
+
+    expect(config.diagnostics()).toContainEqual({
+      domain: RETRY_SECTION,
+      severity: 'warning',
+      message:
+        '[retry] policies[0].match "(" is not a valid regular expression; that policy is ignored.',
+    });
+    expect(config.get<RetryConfig>(RETRY_SECTION)).toEqual({
+      policies: [{ match: '(', retry: false }, { match: 'APIConnectionError', retry: true }],
+    });
+
+    disposables.dispose();
+  });
+
+  it('writes policy entries back to config.toml in snake_case', async () => {
+    const { config, disposables, readText } = await createConfig('[retry]\nmax_attempts = 2\n');
+
+    await config.set(RETRY_SECTION, {
+      policies: [{ match: 'APIConnectionError', maxAttempts: 3, backoff: 200 }],
+    });
+
+    const onDisk = await readText();
+    expect(onDisk).toContain('max_attempts = 2');
+    expect(onDisk).toContain('[[retry.policies]]');
+    expect(onDisk).toContain('max_attempts = 3');
+    expect(onDisk).toContain('backoff = 200');
+    expect(onDisk).not.toContain('maxAttempts');
+
+    disposables.dispose();
+  });
+});
+
 describe('removed config sections and keys', () => {
   async function createConfig(toml: string) {
     const disposables = new DisposableStore();
@@ -1491,7 +1611,7 @@ describe('removed config sections and keys', () => {
 
   const bindingReplacement =
     'Subagent model and effort bindings come from the agent profile (or its route or the caller ' +
-    'lease), or from an explicit model_alias and effort at dispatch. Run /kiki-ops.config to fix it.';
+    'lease), or from an explicit model_alias and effort at dispatch. Run /kiki-ops fix this configuration warning.';
 
   it('warns about the removed secondary_model section instead of silently ignoring it', async () => {
     const { config, disposables } = await createConfig(

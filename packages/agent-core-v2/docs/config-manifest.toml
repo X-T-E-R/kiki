@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (36 sections · 1 overlay(s))
+# Index (38 sections · 1 overlay(s))
 #   agentExecutors           src/app/agentExecutor/configSection.ts
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
@@ -37,6 +37,8 @@
 #   prompt                   src/app/prompt/configSection.ts
 #   providers                src/app/kosongConfig/configSection.ts
 #   requestIdentity          src/app/kosongConfig/configSection.ts
+#   retry                    src/agent/stepRetry/configSection.ts
+#   sessionResidency         src/app/sessionManager/configSection.ts
 #   sessionTitle             src/session/sessionTitle/configSection.ts
 #   subagent                 src/session/subagent/configSection.ts
 #   task                     src/agent/task/configSection.ts
@@ -540,6 +542,35 @@ enter_approval_timeout_ms = 60000
     # responses: "prompt_cache_key" | "none"
     # messages: "metadata_user_id" | "none"
   # responses_metadata: "codex" | "none"
+
+# ##########################################################################
+# retry
+#   owner: src/agent/stepRetry/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[retry]
+# max_attempts: integer
+# policies: object[] — one entry per item:
+  # match: string
+  # max_attempts: integer
+  # backoff: integer
+  # retry: boolean (default: true)
+
+# ##########################################################################
+# sessionResidency (config.toml: session_residency)
+#   owner: src/app/sessionManager/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[session_residency]
+idle_ttl_ms = 600000
+max_live_sessions = 8
+min_idle_ms = 60000
+sweep_interval_ms = 30000
+max_concurrent_restores = 1
+max_queued_restores = 8
 
 # ##########################################################################
 # sessionTitle (config.toml: session_title)

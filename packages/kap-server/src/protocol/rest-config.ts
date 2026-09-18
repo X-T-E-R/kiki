@@ -90,6 +90,7 @@ const replaceableConfigDomainSchema = z.enum([
   'plugins',
   'tools',
   'prompt',
+  'retry',
 ]);
 
 export const providerConfigResponseSchema = z.object({
@@ -104,6 +105,7 @@ export const subagentConfigResponseSchema = SubagentConfigSchema;
 
 export const agentsConfigResponseSchema = z.object({
   enabled: z.boolean().optional(),
+  notify_parent: z.boolean().optional(),
 });
 
 export const modelCatalogConfigResponseSchema = z.object({
@@ -152,6 +154,7 @@ export const configResponseSchema = z.object({
   tools: ToolsConfigSchema.optional(),
   prompt: PromptConfigSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
+  retry: z.unknown().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
@@ -183,6 +186,7 @@ export const patchConfigRequestSchema = z.object({
   }).strict().optional(),
   agents: z.object({
     enabled: z.boolean().optional(),
+    notify_parent: z.boolean().optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
   model_catalog: z.object({
@@ -206,6 +210,7 @@ export const patchConfigRequestSchema = z.object({
   tools: ToolsConfigSchema.optional(),
   prompt: PromptConfigPatchSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
+  retry: z.unknown().optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
 }).strict();
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

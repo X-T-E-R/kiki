@@ -102,11 +102,12 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |
 | `extra_agent_dirs` | `array<string>` | — | Extra custom agent search directories, layered on top of the default directories |
 | `disabled_builtin_profiles` | `array<string>` | `[]` | Built-in profile names to remove from subagent discovery and dispatch: `agent`, `coder`, `explore`, or `plan`. Dispatching a disabled profile fails as an unknown role. Disabling `agent` leaves the main agent's default binding available; a same-name file profile no longer needs `override: true` when its built-in is disabled |
-| `builtin_product_skills` | `boolean` | `true` | Whether the built-in skills that document Kiki itself are offered to the model: the `kiki-ops` entry and its topics (`kiki-ops.config`, `kiki-ops.theme`, `kiki-ops.mcp`, `kiki-ops.import`, `kiki-ops.profile`, and `kiki-ops.docs`). Turning them off trims their names and descriptions from the system prompt, at the cost of the guided flows for those tasks |
+| `builtin_product_skills` | `boolean` | `true` | Whether Kiki's product skills are offered to the model: `kiki-ops` for product usage and configuration, and `kiki-profile` for agent profile authoring. Turning them off removes both names and descriptions from the system prompt, at the cost of those guided workflows |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop-control) |
+| `retry` | `table` | — | Error-specific step retry policies → [`retry`](#retry) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
 | `agents` | `table` | — | Delegation-notice defaults → [`agents`](#agents) |
 | `thread_communication` | `table` | `{ enabled = false }` | Local peer-thread communication → [`thread_communication`](#thread-communication) |
@@ -119,7 +120,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `agents`, `thread_communication`, `tools`, `image`, `services`, `nb_search`, `permission`, and `prompt`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `retry`, `background`, `agents`, `thread_communication`, `tools`, `image`, `services`, `nb_search`, `permission`, and `prompt`.
 
 ## `providers`
 
@@ -331,6 +332,40 @@ the global [`[thinking]`](#thinking) config.
 `max_steps_per_turn` can be overridden by the `KIMI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file. The former `KIMI_LOOP_MAX_RETRIES_PER_STEP` variable is deprecated but still honored (with a startup warning) when the new one is unset.
 
 Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and 5xx server errors. A 429 caused by an exhausted quota or insufficient account balance is not retried and fails immediately, since it cannot succeed until the account is recharged.
+
+## `retry`
+
+`retry` customizes the total attempt budget and fixed backoff for selected step errors. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `max_attempts` | `integer` | — | Maximum total attempts for a failing step, including the initial attempt; overrides `loop_control.max_attempts_per_step` |
+| `policies` | `array<table>` | — | Ordered per-error policies written as `[[retry.policies]]`; the first matching policy applies |
+
+Each `[[retry.policies]]` entry has these fields:
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `match` | `string` | Yes | Regular expression matched against the error code and error name |
+| `max_attempts` | `integer` | No | Total attempts for matching errors, including the initial attempt; overrides the section-level budget |
+| `backoff` | `integer` | No | Fixed delay in milliseconds before each retry; a provider retry-after hint still takes precedence |
+| `retry` | `boolean` | No | Defaults to `true`. `false` can suppress an error that Kiki normally considers retryable; `true` cannot force retries for an error classified as non-retryable |
+
+Policies are checked from top to bottom, so put specific regular expressions before broader ones:
+
+```toml
+[retry]
+max_attempts = 4
+
+[[retry.policies]]
+match = '^provider\.rate_limit$'
+max_attempts = 6
+backoff = 1000
+
+[[retry.policies]]
+match = '^provider\.'
+retry = false
+```
 
 ## `token_counting`
 
@@ -586,7 +621,7 @@ dangerous_bash = "default"
 ```
 
 ::: tip
-MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`. The interactive configuration entry point is `/kiki-ops.mcp`; see [Model Context Protocol](../server/mcp.md).
+MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`. The interactive configuration entry point is `/kiki-ops help me configure MCP`; see [Model Context Protocol](../server/mcp.md).
 :::
 
 ## `prompt`

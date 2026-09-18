@@ -401,6 +401,240 @@ describe('stepRetry plugin', () => {
     expect(result.type).toBe('cancelled');
     expect(calls).toBe(1);
   });
+
+  it('keeps the default attempt budget when no retry policy matches the error', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIConnectionError('terminated');
+      }),
+      { initialConfig: { retry: { policies: [{ match: 'SomeOtherError' }] } } },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(10);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(9);
+    expect(rpcEvents('turn.step.retrying')[0]).toEqual(
+      expect.objectContaining({
+        args: expect.objectContaining({ failedAttempt: 1, maxAttempts: 10 }),
+      }),
+    );
+  });
+
+  it('applies a matched policy attempt budget and flat backoff', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1) throw new APIConnectionError('terminated');
+        return {
+          id: 'policy-retry-response',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'recovered' }],
+            toolCalls: [],
+          },
+          usage: emptyUsage(),
+          finishReason: 'completed',
+          rawFinishReason: 'stop',
+        };
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [{ match: 'APIConnectionError', maxAttempts: 2, backoff: 1_234 }],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result).toEqual({ type: 'completed', steps: 2, truncated: false });
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({
+        args: expect.objectContaining({
+          failedAttempt: 1,
+          nextAttempt: 2,
+          maxAttempts: 2,
+          delayMs: 1_234,
+          errorName: 'APIConnectionError',
+        }),
+      }),
+    ]);
+  });
+
+  it('honors the retry section attempt budget when no policy matches', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIConnectionError('terminated');
+      }),
+      { initialConfig: { retry: { maxAttempts: 3 } } },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(3);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(2);
+    expect(rpcEvents('turn.step.retrying')[1]).toEqual(
+      expect.objectContaining({
+        args: expect.objectContaining({ failedAttempt: 2, maxAttempts: 3 }),
+      }),
+    );
+  });
+
+  it('lets a matched policy override the retry section attempt budget', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIConnectionError('terminated');
+      }),
+      {
+        initialConfig: {
+          retry: {
+            maxAttempts: 4,
+            policies: [{ match: 'APIConnectionError', maxAttempts: 2, backoff: 10 }],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 2, delayMs: 10 }) }),
+    ]);
+  });
+
+  it('does not retry when a policy matches the error code with retry = false', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIStatusError(429, 'slow down');
+      }),
+      { initialConfig: { retry: { policies: [{ match: 'provider\\.rate_limit', retry: false }] } } },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+  });
+
+  it('does not retry when a policy matches the error name with retry = false', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIConnectionError('terminated');
+      }),
+      { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', retry: false }] } } },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+  });
+
+  it('keeps the provider retry-after delay ahead of a policy backoff', async () => {
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1) throw new APIProviderRateLimitError('slow down', null, 1);
+        return {
+          id: 'policy-retry-after-response',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'recovered' }],
+            toolCalls: [],
+          },
+          usage: emptyUsage(),
+          finishReason: 'completed',
+          rawFinishReason: 'stop',
+        };
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [{ match: 'provider\\.rate_limit', maxAttempts: 2, backoff: 250 }],
+          },
+        },
+      },
+    );
+
+    void ctx.dispatcher.dispatch(new TurnStarted({ turnId: 1, origin: { kind: 'user' } }));
+    const loop = ctx.get(IAgentLoopService);
+    loop.enqueue(new ContinuationStepRequest());
+    const result = await loop.run({ turnId: 1 });
+
+    expect(result.type).toBe('completed');
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({
+        args: expect.objectContaining({ maxAttempts: 2, delayMs: 1 }),
+      }),
+    ]);
+  });
+
+  it('skips a policy whose match is not a valid regular expression', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1) throw new APIConnectionError('terminated');
+        return {
+          id: 'invalid-pattern-response',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'recovered' }],
+            toolCalls: [],
+          },
+          usage: emptyUsage(),
+          finishReason: 'completed',
+          rawFinishReason: 'stop',
+        };
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [
+              { match: '(', retry: false },
+              { match: 'APIConnectionError', maxAttempts: 2 },
+            ],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result).toEqual({ type: 'completed', steps: 2, truncated: false });
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 2 }) }),
+    ]);
+  });
 });
 
 describe('retryBackoffDelays', () => {

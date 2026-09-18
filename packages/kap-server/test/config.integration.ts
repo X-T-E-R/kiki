@@ -319,7 +319,7 @@ describe('server-v2 /api/config', () => {
     });
 
     expect(cfg.subagent).toEqual({ timeoutMs: 60_000, denyModels: ['example/blocked'] });
-    expect(cfg.agents).toEqual({ enabled: false });
+    expect(cfg.agents).toEqual({ enabled: false, notify_parent: true });
     expect(cfg.builtin_product_skills).toBe(false);
     expect(cfg.model_catalog).toEqual({ refreshIntervalMs: 300_000, refreshOnStart: true });
 
@@ -517,6 +517,24 @@ describe('server-v2 /api/config', () => {
     expect(persisted).not.toContain('"explore"');
   });
 
+  it('rejects unknown retry keys without persisting them', async () => {
+    await boot('[retry]\nmax_attempts = 2\n');
+    const configPath = join(home as string, 'config.toml');
+    const before = await readFile(configPath, 'utf-8');
+
+    const res = await authedFetch(server as RunningServer, base, '/api/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ retry: { max_attempt: 3 } }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Envelope<null>;
+    expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(await readFile(configPath, 'utf-8')).toBe(before);
+    expect((await getConfig()).retry).toEqual({ maxAttempts: 2 });
+  });
+
   it('validates every runtime domain with the core schemas and rejects unknown top-level fields', async () => {
     await boot();
 
@@ -585,7 +603,7 @@ describe('server-v2 /api/config', () => {
     ]);
 
     const after = await getConfig();
-    expect(after.agents).toEqual({ enabled: false });
+    expect(after.agents).toEqual({ enabled: false, notify_parent: true });
     expect(after.subagent?.denyModels).toEqual(['provider/blocked']);
     expect(after.model_catalog?.refreshOnStart).toBe(true);
   });

@@ -102,11 +102,12 @@ timeout = 5
 | `extra_skill_dirs` | `array<string>` | — | 额外 Skill 搜索目录，叠加到默认目录之上 |
 | `extra_agent_dirs` | `array<string>` | — | 额外自定义 Agent 搜索目录，叠加到默认目录之上 |
 | `disabled_builtin_profiles` | `array<string>` | `[]` | 从 subagent 发现与派发列表中移除的内置 profile 名称：`agent`、`coder`、`explore` 或 `plan`。派发已禁用 profile 时按未知角色报错。禁用 `agent` 不影响 main agent 的默认绑定；文件 profile 与已禁用内置 profile 同名时不再需要 `override: true` |
-| `builtin_product_skills` | `boolean` | `true` | 是否向模型提供介绍 Kiki 自身的内置 Skills：`kiki-ops` 入口及其主题（`kiki-ops.config`、`kiki-ops.theme`、`kiki-ops.mcp`、`kiki-ops.import`、`kiki-ops.profile`、`kiki-ops.docs`）。关闭后它们的名称和描述不再进入系统提示词，代价是失去这些任务的引导流程 |
+| `builtin_product_skills` | `boolean` | `true` | 是否向模型提供 Kiki 产品 Skills：`kiki-ops` 负责产品使用与配置，`kiki-profile` 负责创建和修改 agent profile。关闭后两者的名称和描述都不再进入系统提示词，代价是失去这些任务的引导流程 |
 | `providers` | `table` | `{}` | API 供应商表 → [`providers`](#providers) |
 | `models` | `table` | — | 模型别名表 → [`models`](#models) |
 | `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop-control) |
+| `retry` | `table` | — | 按错误定制的单步重试策略 → [`retry`](#retry) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `agents` | `table` | — | 委派说明默认值 → [`agents`](#agents) |
 | `thread_communication` | `table` | `{ enabled = false }` | 本地 peer thread 通信 → [`thread_communication`](#thread-communication) |
@@ -119,7 +120,7 @@ timeout = 5
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`agents`、`thread_communication`、`image`、`services`、`nb_search`、`permission`、`prompt` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`thinking`、`loop_control`、`retry`、`background`、`agents`、`thread_communication`、`image`、`services`、`nb_search`、`permission`、`prompt` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -327,6 +328,40 @@ thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析�
 `max_steps_per_turn` 可被环境变量 `KIMI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。旧的 `KIMI_LOOP_MAX_RETRIES_PER_STEP` 已废弃，但在新变量未设置时仍生效（启动时会给出警告）。
 
 重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流和 5xx 服务端错误。账户额度耗尽或余额不足导致的 429 不会重试，会立即失败：在充值之前重试不可能成功。
+
+## `retry`
+
+`retry` 可为指定的单步错误定制总尝试次数与固定退避时间。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `max_attempts` | `integer` | — | 单步失败后的最大总尝试次数（含首次尝试）；优先于 `loop_control.max_attempts_per_step` |
+| `policies` | `array<table>` | — | 用 `[[retry.policies]]` 编写的有序逐错误策略；首个命中的策略生效 |
+
+每条 `[[retry.policies]]` 包含以下字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `match` | `string` | 是 | 与错误码和错误名称匹配的正则表达式（按模式匹配文本的规则） |
+| `max_attempts` | `integer` | 否 | 命中错误的最大总尝试次数（含首次尝试）；优先于本节的总预算 |
+| `backoff` | `integer` | 否 | 每次重试前固定等待的毫秒数；provider 返回的 retry-after 提示仍优先 |
+| `retry` | `boolean` | 否 | 默认为 `true`。`false` 可抑制 Kiki 内建判定原本会重试的错误；`true` 不能强制重试被判定为不可重试的错误 |
+
+策略从上到下检查，因此应把更具体的正则表达式放在更宽泛的规则之前：
+
+```toml
+[retry]
+max_attempts = 4
+
+[[retry.policies]]
+match = '^provider\.rate_limit$'
+max_attempts = 6
+backoff = 1000
+
+[[retry.policies]]
+match = '^provider\.'
+retry = false
+```
 
 ## `token_counting`
 
@@ -582,7 +617,7 @@ dangerous_bash = "default"
 ```
 
 ::: tip
-MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径只作为迁移来源；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。交互式配置入口是 `/kiki-ops.mcp`，详见 [Model Context Protocol](../server/mcp.md)。
+MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径只作为迁移来源；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。交互式配置入口是 `/kiki-ops 帮我配置 MCP`，详见 [Model Context Protocol](../server/mcp.md)。
 :::
 
 ## `prompt`

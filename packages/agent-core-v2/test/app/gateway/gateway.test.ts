@@ -77,6 +77,7 @@ describe('RestGateway', () => {
       steer: () => Promise.resolve([]),
       list: () => ({ active: undefined, pending: [] }),
       replace: () => { throw new Error('unexpected prompt replacement'); },
+      move: () => { throw new Error('unexpected prompt move'); },
       abort: () => true,
       drain: () => Promise.resolve(),
       inject: () => Promise.resolve(undefined),

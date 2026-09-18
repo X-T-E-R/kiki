@@ -34,6 +34,7 @@ export const subagentConfigResponseSchema = z.object({
 
 export const agentsConfigResponseSchema = z.object({
   enabled: z.boolean().optional(),
+  notify_parent: z.boolean().optional(),
 });
 
 export const modelCatalogConfigResponseSchema = z.object({
@@ -87,6 +88,7 @@ export const configResponseSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   disabled_builtin_profiles: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
+  retry: z.unknown().optional(),
   plugins: z.object({ marketplaceUrl: z.string().optional() }).passthrough().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
@@ -122,6 +124,7 @@ export const patchConfigRequestSchema = z.object({
   }).optional(),
   agents: z.object({
     enabled: z.boolean().optional(),
+    notify_parent: z.boolean().optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
   model_catalog: z.object({
@@ -134,6 +137,7 @@ export const patchConfigRequestSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   disabled_builtin_profiles: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
+  retry: z.unknown().optional(),
   plugins: z.object({ marketplace_url: z.string().optional() }).optional(),
 });
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;
