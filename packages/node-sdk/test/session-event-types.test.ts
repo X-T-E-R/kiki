@@ -127,6 +127,7 @@ describe('Event public types', () => {
         case 'prompt.timing_changed':
         case 'prompt.launch_committed':
         case 'prompt.moved':
+        case 'prompt.queue_hold_changed':
         case 'agent.disposed':
         case 'event.session.history_rewritten':
           return;
