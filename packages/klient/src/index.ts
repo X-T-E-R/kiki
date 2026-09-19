@@ -17,6 +17,8 @@ export type { TerminalFacade, TerminalSignal, TerminalAttachResult, TerminalConn
 export type {
   HttpRestBinaryFile,
   HttpRestConfigPatch,
+  HttpRestCronTask,
+  HttpRestCronTaskQuery,
   HttpRestFacade,
   HttpRestListSessionsQuery,
   HttpRestPluginMarketplaceEntry,

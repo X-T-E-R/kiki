@@ -349,6 +349,14 @@ body {
   margin: -1.25rem -1rem -1rem;
 }
 
+/* Stacked directly beneath the board launcher: the rail's 1.25rem flex gap
+ * minus the board bar's -1rem bottom margin leaves a 0.25rem sliver, which
+ * this top margin cancels so the two bars read as one segmented footer with
+ * the cron bar flush to the rail's bottom edge. */
+.app-rail__cron-launcher {
+  margin: -0.25rem -1rem -1rem;
+}
+
 /* Scroll chaining containment for the page-level scrollers: when the
  * transcript, a settings pane, a sidebar list, or a rail reaches its end, the
  * gesture must not leak to the scroller behind it (the "scrolls past the

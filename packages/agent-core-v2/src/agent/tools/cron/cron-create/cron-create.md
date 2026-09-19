@@ -9,7 +9,7 @@ Pin minute/hour/day-of-month/month to specific values:
   "remind me at 2:30pm today to check the deploy" → cron: "30 14 <today_dom> <today_month> *", recurring: false
   "tomorrow morning, run the smoke test" → cron: "57 8 <tomorrow_dom> <tomorrow_month> *", recurring: false
 
-One-shots are best for near-term reminders. A task only fires while its session is still alive (see Session lifetime below), so favor near times — within hours or a few days — rather than scheduling weeks or months ahead.
+One-shots fire even when their owning session is not currently loaded: the scheduler restores a cold session at delivery time, injects the prompt, and auto-deletes the task.
 
 ## Recurring jobs (recurring: true, the default)
 
@@ -22,7 +22,7 @@ When the request is approximate, choose a minute other than 0 or 30. Use minute 
 
 ## Coalesce semantics
 
-Fires are delivered only while the session is idle: a fire that comes due during an active turn is held and delivered at the next idle moment, never injected mid-turn.
+A due fire is enqueued even while the session is cold or running an active turn. Cold sessions are restored first; active-turn delivery uses the normal prompt queue and never splices content into a step already in progress.
 
 If the scheduler slept past multiple ideal fire times (laptop closed, long-running turn, etc.), only **one** fire is delivered when it wakes up. The origin carries `coalescedCount` showing how many ideal fires were collapsed into this single delivery. You should treat `coalescedCount > 1` as "I missed some checks; only the latest state matters" rather than running the prompt that many times.
 
@@ -61,15 +61,9 @@ Use `recurring: false` for "remind me at X" style requests, single deadlines, "i
 
 ## Session lifetime
 
-Cron tasks live in the current session. When you exit, they
-are persisted under the session homedir; resuming the same session
-reloads them and the scheduler resumes from each task's `createdAt`. Fire times that fell during the offline window are
-collapsed into a single delivery via `coalescedCount` (and recurring
-tasks past their 7-day window arrive with `stale: true` as their final
-delivery).
+Cron tasks are persisted and remain scheduled independently of whether the owning session is currently loaded. Closing the UI or idle eviction does not cancel them: when a task becomes due, the scheduler restores a cold session and injects the fire through its normal prompt path. Multiple fire times missed while the scheduler process was unavailable are collapsed into one delivery via `coalescedCount`; recurring tasks past their 7-day window arrive with `stale: true` as their final delivery.
 
-Tasks do **not** carry over into a brand-new session — they are scoped
-to the resumed session id, not to the working directory.
+Tasks do **not** carry over into a brand-new session — they remain scoped to the original session id, not to the working directory.
 
 ## Limits
 

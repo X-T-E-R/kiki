@@ -17,6 +17,7 @@ import { registerAuthRoute } from './auth';
 import { registerCapabilitiesRoutes } from './capabilities';
 import { registerConfigRoutes } from './config';
 import { registerConnectionsRoutes } from './connections';
+import { registerCronRoutes } from './cron';
 import { registerFilesRoutes } from './files';
 import { registerFsRoutes } from './fs';
 import { registerGuiStoreRoutes } from './guiStore';
@@ -187,6 +188,7 @@ export async function registerApiV1Routes(
         },
       );
       registerSearchRoutes(apiV1 as unknown as Parameters<typeof registerSearchRoutes>[0], core);
+      registerCronRoutes(apiV1 as unknown as Parameters<typeof registerCronRoutes>[0], core);
       registerTasksRoutes(apiV1 as unknown as Parameters<typeof registerTasksRoutes>[0], core);
       registerApprovalsRoutes(
         apiV1 as unknown as Parameters<typeof registerApprovalsRoutes>[0],

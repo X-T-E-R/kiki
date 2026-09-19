@@ -15,7 +15,7 @@ export function relativeTime(iso: string, locale: Locale = 'en'): string {
   const days = Math.floor(hours / 24);
   if (days < 7) return translate(locale, 'time.daysAgo', { n: days });
   const date = new Date(then);
-  return date.toLocaleDateString(locale === 'zh' ? 'zh-CN' : undefined, {
+  return date.toLocaleDateString(locale === 'zh' ? 'zh-CN' : 'en-US', {
     month: 'short',
     day: 'numeric',
   });

@@ -340,6 +340,8 @@ describe('agent skill routing', () => {
       prompt_id: 'p1',
       created_at: '2026-01-01T00:00:00.000Z',
       state: 'running',
+      append_timing: 'agent_idle',
+      revision: 0,
     };
     await expect(
       agent.promptWithSkills({
@@ -351,6 +353,8 @@ describe('agent skill routing', () => {
       prompt_id: 'p1',
       created_at: '2026-01-01T00:00:00.000Z',
       state: 'running',
+      append_timing: 'agent_idle',
+      revision: 0,
     });
     expect(channel.calls[0]).toEqual({
       scope: { sessionId: 's1', agentId: 'main' },

@@ -51,6 +51,43 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('routes cron list and task actions through /api/cron with the disambiguating session query', async () => {
+    const seen: { pathname: string; method: string; sessionId: string | null }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      seen.push({
+        pathname: url.pathname,
+        method: init?.method ?? 'GET',
+        sessionId: url.searchParams.get('session_id'),
+      });
+      if (url.pathname === '/api/cron') return envelope({ items: [] });
+      if (url.pathname.endsWith(':pause') || url.pathname.endsWith(':resume')) {
+        return envelope({ task: { id: 'task-1' } });
+      }
+      if (url.pathname.endsWith(':run')) return envelope({ triggered: true });
+      return envelope({ deleted: true });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.cron.list()).resolves.toEqual({ items: [] });
+      await expect(channel.rest.cron.list({ session_id: 'session-1' })).resolves.toEqual({ items: [] });
+      await channel.rest.cron.pause('task-1', { session_id: 'session-1' });
+      await channel.rest.cron.resume('task-1');
+      await channel.rest.cron.run('task-1', { session_id: 'session-1' });
+      await channel.rest.cron.remove('task-1', { session_id: 'session-1' });
+      expect(seen).toEqual([
+        { pathname: '/api/cron', method: 'GET', sessionId: null },
+        { pathname: '/api/cron', method: 'GET', sessionId: 'session-1' },
+        { pathname: '/api/cron/task-1:pause', method: 'POST', sessionId: 'session-1' },
+        { pathname: '/api/cron/task-1:resume', method: 'POST', sessionId: null },
+        { pathname: '/api/cron/task-1:run', method: 'POST', sessionId: 'session-1' },
+        { pathname: '/api/cron/task-1', method: 'DELETE', sessionId: 'session-1' },
+      ]);
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('sends the owning agent id when reading task details', async () => {
     const task = { id: 'task-1', output_preview: 'child output' };
     const fetchMock = vi.fn(async (input: string | URL) => {

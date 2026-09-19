@@ -11,6 +11,7 @@ export interface ICronTaskPersistence {
 
   get(workspaceId: string, taskId: string): Promise<CronTask | undefined>;
   list(query: CronTaskQuery): Promise<readonly CronTask[]>;
+  listWorkspaceIds(): Promise<readonly string[]>;
   save(workspaceId: string, task: CronTask): Promise<void>;
   delete(workspaceId: string, taskId: string): Promise<void>;
 }

@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 103 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 105 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -87,6 +87,7 @@
 //     goal.goalOutcomeContinuationTurns               src/agent/goal/goalService.ts
 //     goal.goalOutcomeToolResultTurns                 src/agent/goal/goalService.ts
 //     goal.goalStarterTurns                           src/agent/goal/goalService.ts
+//     goal.goalTurnRevisions                          src/agent/goal/goalService.ts
 //     goal.goalTurnTargets                            src/agent/goal/goalService.ts
 //     goal.liveTurnId                                 src/agent/goal/goalService.ts
 //     goal.liveWallClockStartedAt                     src/agent/goal/goalService.ts
@@ -124,6 +125,7 @@
 //     profile.emittedThinkingEffortWarnings           src/agent/profile/profileService.ts
 //     profile.emittedToolPatternWarnings              src/agent/profile/profileService.ts
 //     prompt.launching                                src/agent/prompt/promptService.ts
+//     prompt.queue                                    src/agent/prompt/promptService.ts
 //     promptAdmission                                 src/agent/prompt/promptOps.ts
 //     promptResolution                                src/agent/prompt/promptService.ts
 //     runtime.binding                                 src/agent/runtimeBinding/runtimeBindingService.ts
@@ -472,6 +474,7 @@ export interface SessionStateSnapshot {
     readonly prompt: string;
     readonly createdAt: number;
     readonly recurring?: boolean;
+    readonly paused?: boolean;
     readonly lastFiredAt?: number;
     readonly tags?: Readonly<Record<string, string>>;
   }>;
@@ -1345,6 +1348,8 @@ export interface AgentStateSnapshot {
     readonly objective: string;
     readonly completionCriterion?: string;
     readonly status: /* GoalStatus — packages/agent-core-v2/src/agent/goal/types.ts */ 'blocked' | 'active' | 'paused' | 'complete';
+    readonly followUpTiming: /* GoalFollowUpTiming — packages/agent-core-v2/src/agent/goal/types.ts */ 'subagents_done' | 'tasks_done';
+    readonly controlRevision: number;
     readonly turnsUsed: number;
     readonly tokensUsed: number;
     readonly wallClockMs: number;
@@ -1364,6 +1369,7 @@ export interface AgentStateSnapshot {
   'goal.goalOutcomeContinuationTurns': Set<number>;
   'goal.goalOutcomeToolResultTurns': Map<number, string>;
   'goal.goalStarterTurns': Set<number>;
+  'goal.goalTurnRevisions': Map<number, number>;
   'goal.goalTurnTargets': Map<number, string>;
   'goal.liveTurnId': number | undefined;
   'goal.liveWallClockStartedAt': number | undefined;
@@ -1492,6 +1498,10 @@ export interface AgentStateSnapshot {
           };
           responsesMetadata?: 'none' | 'codex';
         };
+      };
+      images?: /* ImagePolicyConfig — packages/agent-core-v2/src/kosong/provider/providerImagePolicy.ts */ {
+        acceptedTypes?: ('image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/bmp' | 'image/heic' | 'image/heif' | 'image/avif' | 'image/tiff' | 'image/x-icon')[];
+        convertUnsupported?: 'off' | 'auto' | 'png' | 'jpeg';
       };
       type?: string;
       apiKey?: string;
@@ -2820,6 +2830,11 @@ export interface AgentStateSnapshot {
   'promptAdmission': Map<string, true>;
   // src/agent/prompt/promptService.ts
   'prompt.launching': boolean;
+  // replayable · durable — folds: PromptEnqueued, PromptReplaced, PromptTimingChanged, PromptMoved, PromptLaunchCommitted, PromptAborted, PromptCompleted, PromptSteered
+  'prompt.queue': /* PersistedPromptQueueState — packages/agent-core-v2/src/agent/prompt/promptService.ts */ {
+    readonly entries: Map<string, unknown>;
+    readonly order: string[];
+  };
   // replayable · durable — folds: PromptCompleted, PromptAborted, PromptSteered
   'promptResolution': Map<string, true>;
   // src/agent/runtimeBinding/runtimeBindingOps.ts
@@ -2861,6 +2876,10 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
+    readonly lifetime?: 'finite' | 'service';
+    readonly ownerAgentId?: string;
+    readonly ownerTurnId?: number;
+    readonly goalId?: string;
   } | /* QuestionTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'question';
     readonly questionCount: number;
@@ -2874,6 +2893,10 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
+    readonly lifetime?: 'finite' | 'service';
+    readonly ownerAgentId?: string;
+    readonly ownerTurnId?: number;
+    readonly goalId?: string;
   } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'process';
     readonly command: string;
@@ -2888,6 +2911,10 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
+    readonly lifetime?: 'finite' | 'service';
+    readonly ownerAgentId?: string;
+    readonly ownerTurnId?: number;
+    readonly goalId?: string;
   }>;
   // src/agent/task/taskService.ts
   'task.activeTaskReminderPending': boolean;
@@ -2910,6 +2937,10 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
+    readonly lifetime?: 'finite' | 'service';
+    readonly ownerAgentId?: string;
+    readonly ownerTurnId?: number;
+    readonly goalId?: string;
   } | /* QuestionTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'question';
     readonly questionCount: number;
@@ -2923,6 +2954,10 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
+    readonly lifetime?: 'finite' | 'service';
+    readonly ownerAgentId?: string;
+    readonly ownerTurnId?: number;
+    readonly goalId?: string;
   } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'process';
     readonly command: string;
@@ -2937,6 +2972,10 @@ export interface AgentStateSnapshot {
     readonly stopReason?: string;
     readonly terminalNotificationSuppressed?: boolean;
     readonly timeoutMs?: number;
+    readonly lifetime?: 'finite' | 'service';
+    readonly ownerAgentId?: string;
+    readonly ownerTurnId?: number;
+    readonly goalId?: string;
   }>;
   // replayable · durable · undoable — folds: ContextAppendMessage, TaskWaitDelivered
   'task.notificationDelivery': readonly string[];
@@ -3041,6 +3080,7 @@ export interface AgentStateSnapshot {
     readonly prompt: string;
     readonly createdAt: number;
     readonly recurring?: boolean;
+    readonly paused?: boolean;
     readonly lastFiredAt?: number;
     readonly tags?: Readonly<Record<string, string>>;
   }>;

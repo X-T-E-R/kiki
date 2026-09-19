@@ -4,6 +4,7 @@ export interface CronTask {
   readonly prompt: string;
   readonly createdAt: number;
   readonly recurring?: boolean;
+  readonly paused?: boolean;
   readonly lastFiredAt?: number;
   readonly tags?: Readonly<Record<string, string>>;
 }

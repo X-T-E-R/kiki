@@ -115,6 +115,32 @@ export interface HttpRestSessionArchive {
   readonly filename: string;
 }
 
+/**
+ * Aggregated cron task wire shape from `GET /api/cron` (kap-server
+ * `src/protocol/rest-cron.ts`; snake_case, not re-exported by `@kiki/protocol`).
+ * Paused tasks carry `next_fire_at: null` and sort after live ones.
+ */
+export interface HttpRestCronTask {
+  readonly id: string;
+  readonly session_id: string | null;
+  readonly workspace_id: string;
+  readonly cron: string;
+  readonly human_schedule: string;
+  readonly prompt_preview: string;
+  readonly next_fire_at: string | null;
+  readonly recurring: boolean;
+  readonly paused: boolean;
+  readonly age_days: number;
+  readonly stale: boolean;
+  readonly created_at: string;
+  readonly last_fired_at: string | null;
+}
+
+/** `session_id` disambiguates a task id that exists in several sessions. */
+export interface HttpRestCronTaskQuery {
+  readonly session_id?: string;
+}
+
 export type HttpRestConfigPatch = PatchConfigRequest & {
   readonly [key: string]: unknown;
 };
@@ -204,6 +230,28 @@ export interface HttpRestFacade {
       body: HttpRestSearchMessagesBody,
       options?: HttpRestRequestOptions,
     ): Promise<HttpRestSearchMessagesResponse>;
+  };
+
+  /** Cross-workspace cron aggregate: `GET /api/cron` plus per-task actions. */
+  readonly cron: {
+    list(query?: HttpRestCronTaskQuery): Promise<{ readonly items: readonly HttpRestCronTask[] }>;
+    pause(
+      taskId: string,
+      query?: HttpRestCronTaskQuery,
+    ): Promise<{ readonly task: HttpRestCronTask }>;
+    resume(
+      taskId: string,
+      query?: HttpRestCronTaskQuery,
+    ): Promise<{ readonly task: HttpRestCronTask }>;
+    /** Fire the task once right now; the schedule itself is untouched. */
+    run(
+      taskId: string,
+      query?: HttpRestCronTaskQuery,
+    ): Promise<{ readonly triggered: true }>;
+    remove(
+      taskId: string,
+      query?: HttpRestCronTaskQuery,
+    ): Promise<{ readonly deleted: true }>;
   };
 
   readonly runtime: {

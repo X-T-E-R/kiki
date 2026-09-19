@@ -540,8 +540,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (activity.busy || activity.pendingInteraction !== 'none') return false;
     const agents = handle.accessor.get(IAgentLifecycleService);
     if (agents.countPendingBackgroundTasks() > 0) return false;
-    const cronTasks = await this.cronStore.list({ workspaceId: this.workspaceId });
-    if (cronTasks.some((task) => task.tags?.[CRON_SESSION_TAG] === sessionId)) return false;
     const externalRoot = await this.docs.get(
       join(sessionScopeOf(this.handlerScope, sessionId), 'external-delegation'),
       'root',

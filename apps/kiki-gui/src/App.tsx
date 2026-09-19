@@ -32,6 +32,7 @@ import {
 } from 'react-router-dom';
 
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { GlobalCronPanel } from './components/GlobalCronPanel';
 import { GlobalTaskBoard } from './components/GlobalTaskBoard';
 import { DirtyGuardContext, shouldGuardNavigation } from './components/dirtyGuard';
 import { NewSessionPage } from './components/NewSessionPage';
@@ -511,6 +512,11 @@ export function App() {
         sessions={sessions}
         workspaceOptions={workspaceOptions}
         workspacesLoading={workspacesQuery.isPending}
+        onNavigate={navigate}
+      />
+      <GlobalCronPanel
+        sessions={sessions}
+        workspaceOptions={workspaceOptions}
         onNavigate={navigate}
       />
 

@@ -33,7 +33,8 @@ Guidelines:
   cancel or modify a schedule, route the request through the model
   (i.e. call `CronDelete` or `CronCreate` on their behalf).
 - The empty case returns `cron_jobs: 0\nNo cron jobs scheduled.`. Cron
-  tasks survive a resume of the same session but do not bleed into new
+  tasks keep running while their owning session is unloaded; the scheduler
+  restores a cold session when delivery is due. Tasks do not bleed into new
   sessions.
 - After a context compaction, or whenever you are unsure which cron
   jobs are live, call this tool to re-enumerate them rather than

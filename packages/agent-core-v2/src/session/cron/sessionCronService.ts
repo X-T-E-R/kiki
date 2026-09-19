@@ -16,6 +16,8 @@ export interface ISessionCronService {
   isDisabled(): boolean;
   addTask(init: CronTaskInit): CronTask;
   removeTasks(ids: readonly string[]): readonly string[];
+  setTaskPaused(id: string, paused: boolean): Promise<CronTask | undefined>;
+  fireTaskNow(id: string): Promise<boolean>;
   getTask(id: string): CronTask | undefined;
   list(): readonly CronTask[];
   now(): number;

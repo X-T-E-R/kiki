@@ -1,5 +1,7 @@
 import type {
   HttpRestConfigPatch,
+  HttpRestCronTask,
+  HttpRestCronTaskQuery,
   HttpRestFacade,
   HttpRestListSessionsQuery,
   HttpRestRequestOptions,
@@ -240,6 +242,29 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         signal: options?.signal,
         timeoutMs: options?.timeoutMs,
       }),
+    },
+
+    cron: {
+      list: (query: HttpRestCronTaskQuery = {}) => transport.json<{ readonly items: readonly HttpRestCronTask[] }>(
+        '/cron',
+        { query: { session_id: query.session_id } },
+      ),
+      pause: (taskId, query: HttpRestCronTaskQuery = {}) => transport.json<{ readonly task: HttpRestCronTask }>(
+        `/cron/${encodeURIComponent(taskId)}:pause`,
+        { method: 'POST', body: {}, query: { session_id: query.session_id } },
+      ),
+      resume: (taskId, query: HttpRestCronTaskQuery = {}) => transport.json<{ readonly task: HttpRestCronTask }>(
+        `/cron/${encodeURIComponent(taskId)}:resume`,
+        { method: 'POST', body: {}, query: { session_id: query.session_id } },
+      ),
+      run: (taskId, query: HttpRestCronTaskQuery = {}) => transport.json<{ readonly triggered: true }>(
+        `/cron/${encodeURIComponent(taskId)}:run`,
+        { method: 'POST', body: {}, query: { session_id: query.session_id } },
+      ),
+      remove: (taskId, query: HttpRestCronTaskQuery = {}) => transport.json<{ readonly deleted: true }>(
+        `/cron/${encodeURIComponent(taskId)}`,
+        { method: 'DELETE', query: { session_id: query.session_id } },
+      ),
     },
 
     runtime: {

@@ -7,7 +7,6 @@ import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { type IAgentScopeHandle, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
-import { IntervalTimer } from '#/_base/utils/timer';
 
 import { IConfigService } from '#/app/config/config';
 import type { CronDeletedEvent, CronScheduledEvent } from '#/app/telemetry/events';
@@ -53,7 +52,6 @@ export const cronInFlightKey = defineState<Set<string>>('cron.inFlight', () => n
 export const cronStartedKey = defineState<boolean>('cron.started', () => false);
 
 const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
-const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const MAX_COALESCE_ITERATIONS = 10_000;
 const CRON_ID_REGEX: RegExp = /^(?:[0-9a-f]{8}|[0-9A-HJKMNP-TV-Z]{26})$/i;
 const MAX_ID_ATTEMPTS = 8;
@@ -61,13 +59,10 @@ const MAX_ID_ATTEMPTS = 8;
 export class SessionCronServiceImpl extends Disposable implements ISessionCronService {
   declare readonly _serviceBrand: undefined;
 
-  private readonly timer = this._register(new IntervalTimer({ unref: true }));
   private readonly persistQueues = new Map<string, Promise<void>>();
 
   private clocks: ClockSources = SYSTEM_CLOCKS;
   readonly isEnabled: boolean = true;
-
-  private sigusr1Handler: NodeJS.SignalsListener | null = null;
 
   constructor(
     @ISessionStateService private readonly states: ISessionStateService,
@@ -195,7 +190,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     };
     this.tasks.set(task.id, task);
     this.dispatchCron(new CronAdd({ task }));
-    this.persistEnqueue(task.id, () =>
+    void this.persistEnqueue(task.id, () =>
       this.store.save(this.ctx.workspaceId, task),
     );
     return task;
@@ -207,11 +202,32 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
 
     this.dispatchCron(new CronDelete({ ids: removed }));
     for (const id of removed) {
-      this.persistEnqueue(id, () =>
+      void this.persistEnqueue(id, () =>
         this.store.delete(this.ctx.workspaceId, id),
       );
     }
     return removed;
+  }
+
+  async setTaskPaused(id: string, paused: boolean): Promise<CronTask | undefined> {
+    const existing = this.tasks.get(id);
+    if (existing === undefined) return undefined;
+    const updated: CronTask = { ...existing, paused };
+    this.tasks.set(id, updated);
+    this.dispatchCron(new CronAdd({ task: updated }));
+    await this.persistEnqueue(id, () => this.store.save(this.ctx.workspaceId, updated));
+    return updated;
+  }
+
+  async fireTaskNow(id: string): Promise<boolean> {
+    const task = this.tasks.get(id);
+    if (task === undefined || this.inFlight.has(id)) return false;
+    this.inFlight.add(id);
+    try {
+      return await this.deliverFire(task, { coalescedCount: 1, firedAt: this.clocks.wallNow() });
+    } finally {
+      this.inFlight.delete(id);
+    }
   }
 
   getTask(id: string): CronTask | undefined {
@@ -257,7 +273,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
           tags: { ...task.tags, [CRON_SESSION_TAG]: this.ctx.sessionId },
         };
         this.adopt(claimed);
-        this.persistEnqueue(claimed.id, () =>
+        void this.persistEnqueue(claimed.id, () =>
           this.store.save(this.ctx.workspaceId, claimed),
         );
         continue;
@@ -268,21 +284,11 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
 
   async start(): Promise<void> {
     if (this.started) return;
-    this.started = true;
-
     await this.config.ready;
-    const cfg = this.getCronConfig();
-    const poll = cfg.manualTick ? null : cfg.pollIntervalMs;
-    const interval = poll === undefined ? DEFAULT_POLL_INTERVAL_MS : poll;
-    if (interval !== null && interval !== 0) {
-      this.timer.cancelAndSet(() => { void this.tick(); }, interval);
-    }
-    this.bindSigusr1();
+    this.started = true;
   }
 
   async stop(): Promise<void> {
-    this.unbindSigusr1();
-    this.timer.cancel();
     this.inFlight.clear();
     this.lastSeenAt.clear();
     this.seededFromStore.clear();
@@ -299,9 +305,6 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     const mainHandle = this.agentLifecycle.get('main');
     if (!mainHandle) return;
 
-    const loop = mainHandle.accessor.get(IAgentLoopService);
-    if (loop.status().state === 'running') return;
-
     const now = this.clocks.wallNow();
 
     const work: Promise<void>[] = [];
@@ -312,7 +315,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   }
 
   private async processDue(task: CronTask, now: number): Promise<void> {
-    if (this.inFlight.has(task.id)) return;
+    if (task.paused === true || this.inFlight.has(task.id)) return;
 
     let parsed: ParsedCronExpression;
     try {
@@ -504,7 +507,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     if (updated === undefined) return;
 
     this.dispatchCron(new CronCursor({ id, lastFiredAt }));
-    this.persistEnqueue(id, () =>
+    void this.persistEnqueue(id, () =>
       this.store.save(this.ctx.workspaceId, updated),
     );
   }
@@ -580,6 +583,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   }
 
   private nextFireFor(task: CronTask): number | null {
+    if (task.paused === true) return null;
     try {
       const parsed = this.getParsed(task.cron);
       const seen = this.lastSeenAt.get(task.id);
@@ -654,7 +658,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     return Number.isFinite(age) && age >= STALE_THRESHOLD_MS;
   }
 
-  private persistEnqueue(id: string, work: () => Promise<void>): void {
+  private persistEnqueue(id: string, work: () => Promise<void>): Promise<void> {
     const prev = this.persistQueues.get(id) ?? Promise.resolve();
     const next = prev
       .catch(() => {})
@@ -666,30 +670,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
         }
       });
     this.persistQueues.set(id, next);
-  }
-
-  private bindSigusr1(): void {
-    if (process.platform === 'win32') return;
-    if (!this.getCronConfig().manualTick) return;
-    if (this.sigusr1Handler !== null) return;
-    const handler: NodeJS.SignalsListener = () => {
-      try {
-        void this.tick();
-      } catch (error) {
-        if (this.getCronConfig().debug) {
-          const msg = error instanceof Error ? error.message : String(error);
-          process.stderr.write(`[cron/session] SIGUSR1 tick threw: ${msg}\n`);
-        }
-      }
-    };
-    this.sigusr1Handler = handler;
-    process.on('SIGUSR1', handler);
-  }
-
-  private unbindSigusr1(): void {
-    if (this.sigusr1Handler === null) return;
-    process.off('SIGUSR1', this.sigusr1Handler);
-    this.sigusr1Handler = null;
+    return next;
   }
 }
 

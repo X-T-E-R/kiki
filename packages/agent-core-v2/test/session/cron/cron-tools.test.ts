@@ -95,6 +95,14 @@ function createToolHarness(options: {
     getTask: (id) => tasks.get(id),
     addTask: (init) => store.add(init, now),
     removeTasks: (ids) => ids.filter((id) => tasks.delete(id)),
+    setTaskPaused: async (id, paused) => {
+      const task = tasks.get(id);
+      if (task === undefined) return undefined;
+      const updated = { ...task, paused };
+      tasks.set(id, updated);
+      return updated;
+    },
+    fireTaskNow: async (id) => tasks.has(id),
     isStale(task) {
       const age = now - task.createdAt;
       return task.recurring !== false && Number.isFinite(age) && age >= 7 * MS_PER_DAY;

@@ -13,6 +13,7 @@ import { mcpServerAuthFlowHandleSchema } from '../src/contract/global/mcpManagem
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
 import { promptPayloadSchema } from '../src/contract/agent/schemas.js';
 import { agentEvents } from '../src/contract/agent/events.js';
+import { sessionCommandContract } from '../src/contract/session/commands.js';
 import {
   providerConfigSchema,
   requestIdentityPolicySchema as providerRequestIdentityPolicySchema,
@@ -129,6 +130,7 @@ describe('prompt lifecycle events', () => {
     'prompt.started',
     'prompt.replaced',
     'prompt.moved',
+    'prompt.timing_changed',
     'prompt.steered',
     'prompt.completed',
     'prompt.aborted',
@@ -145,6 +147,55 @@ describe('prompt lifecycle events', () => {
         queueLength: 1,
       }),
     ).toMatchObject({ type: 'prompt.queued', promptId: 'prompt_1', queueLength: 1 });
+  });
+
+  it('parses deferred-append timing and revision on the queue events', () => {
+    expect(
+      agentEvents['prompt.submitted'].schema.parse({
+        type: 'prompt.submitted',
+        promptId: 'prompt_1',
+        userMessageId: 'msg_1',
+        status: 'queued',
+        content: [{ type: 'text', text: 'later' }],
+        createdAt: '2026-06-09T00:00:00.000Z',
+        appendTiming: 'tasks_done',
+        revision: 4,
+      }),
+    ).toMatchObject({ appendTiming: 'tasks_done', revision: 4 });
+
+    expect(
+      agentEvents['prompt.timing_changed'].schema.parse({
+        type: 'prompt.timing_changed',
+        promptId: 'prompt_1',
+        appendTiming: 'subagents_done',
+        revision: 5,
+        changedAt: '2026-06-09T00:00:01.000Z',
+      }),
+    ).toMatchObject({ appendTiming: 'subagents_done', revision: 5 });
+  });
+});
+
+describe('session prompt command contract', () => {
+  it('exposes the timing command with its own body and PromptItem result', () => {
+    const timing = sessionCommandContract.timing;
+    expect(timing.method).toBe('POST');
+    expect(timing.suffix).toBe('/prompts/{target}:timing');
+    expect(timing.input.parse({ target: 'p1', body: { append_timing: 'tasks_done' } })).toEqual({
+      target: 'p1',
+      body: { append_timing: 'tasks_done' },
+    });
+    expect(
+      timing.output.parse({
+        prompt_id: 'p1',
+        user_message_id: 'm1',
+        status: 'queued',
+        content: [{ type: 'text', text: 'later' }],
+        created_at: '2026-06-09T00:00:00.000Z',
+        append_timing: 'tasks_done',
+        revision: 2,
+      }),
+    ).toMatchObject({ append_timing: 'tasks_done', revision: 2 });
+    expect(timing.input.safeParse({ target: 'p1', body: {} }).success).toBe(false);
   });
 });
 

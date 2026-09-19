@@ -18,6 +18,7 @@ export function isValidCronTask(obj: unknown): obj is CronTask {
   if (typeof o['prompt'] !== 'string') return false;
   if (typeof o['createdAt'] !== 'number') return false;
   if (o['recurring'] !== undefined && typeof o['recurring'] !== 'boolean') return false;
+  if (o['paused'] !== undefined && typeof o['paused'] !== 'boolean') return false;
   if (
     o['lastFiredAt'] !== undefined &&
     (typeof o['lastFiredAt'] !== 'number' || !Number.isFinite(o['lastFiredAt']))
@@ -70,6 +71,10 @@ export class CronTaskPersistenceService extends Disposable implements ICronTaskP
       tasks.push(value);
     }
     return tasks;
+  }
+
+  async listWorkspaceIds(): Promise<readonly string[]> {
+    return this.atomicDocs.list(this.cronScope);
   }
 
   async save(workspaceId: string, task: CronTask): Promise<void> {
