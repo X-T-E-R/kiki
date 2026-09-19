@@ -5,7 +5,6 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { IBashParserService } from '#/app/bashParser/bashParser';
-import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventBus } from '#/app/event/eventBus';
 import type { AgentsMdReminderShownEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -20,7 +19,6 @@ import { normalizeUserPath } from '#/tool/path-access';
 import {
   AGENTS_MD_PLAIN_NAMES,
   extractAgentsMdPathsFromSystemPrompt,
-  loadAgentsMdDetailed,
 } from '#/agent/profile/context';
 import { profileKey } from '#/agent/profile/profileOps';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -75,7 +73,6 @@ export class AgentAgentsMdReminderService
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @IAgentsMdDiscoveryService private readonly discovery: IAgentsMdDiscoveryService,
-    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IBashParserService private readonly bashParser: IBashParserService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -88,8 +85,7 @@ export class AgentAgentsMdReminderService
     this._register(
       this.dispatcher.hooks.onDidRestore.register('agentsMdReminder', async (_ctx, next) => {
         const profile = this.agentState.get(profileKey);
-        const paths =
-          profile.agentsMdPaths ?? extractAgentsMdPathsFromSystemPrompt(profile.systemPrompt);
+        const paths = extractAgentsMdPathsFromSystemPrompt(profile.systemPrompt);
         this.seedInjected(paths, this.sessionContext.cwd);
         await next();
       }),
@@ -150,17 +146,7 @@ export class AgentAgentsMdReminderService
 
   private async ensureSeeded(): Promise<void> {
     if (this.states.get(agentsMdReminderSeededKey)) return;
-    const lease = this.runtime.acquire(['fs']);
-    try {
-      const { paths } = await loadAgentsMdDetailed(
-        { fs: lease.runtime.fs!, homeDir: lease.runtime.environment.homeDir },
-        this.agentCwd,
-        this.bootstrap.homeDir,
-      );
-      this.seedInjected(paths, this.agentCwd);
-    } finally {
-      lease.dispose();
-    }
+    this.seedInjected([], this.agentCwd);
   }
 
   private async probeAndRemind(ctx: ToolDidExecuteContext): Promise<void> {

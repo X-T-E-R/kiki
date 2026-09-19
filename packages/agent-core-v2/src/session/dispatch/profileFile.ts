@@ -6,7 +6,11 @@ import { agentProfilesHostFs } from '#/workspace/workspaceAgentProfileLoader/int
 import { resolvePathAccessPath } from '#/tool/path-access';
 import { Error2, ErrorCodes } from '#/errors';
 import type { ProfileData } from '#/agent/profile/profile';
-import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type {
+  AgentProfile,
+  AgentProfileContext,
+  SystemPromptRenderResult,
+} from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { AgentProfileCatalogSnapshot, AgentProfileDiagnostic } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import type { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import type { Runtime, RuntimeWorkspaceRoots } from '#/runtime/runtime';
@@ -21,19 +25,26 @@ export interface FrozenProfileFileSources {
   readonly diagnostics: readonly AgentProfileDiagnostic[];
 }
 
-export function restoreProfileFileSources(sources: FrozenProfileFileSources, defaults: AgentProfile, definitionId?: string): AgentProfile | undefined {
-  const restored = materializeSources(sources, defaults);
+export function restoreProfileFileSources(
+  sources: FrozenProfileFileSources,
+  basePrompt: (context: AgentProfileContext) => SystemPromptRenderResult,
+  definitionId?: string,
+): AgentProfile | undefined {
+  const restored = materializeSources(sources, basePrompt);
   return definitionId === undefined || restored.root.definitionId === definitionId ? restored.root : restored.sourceDefinitions.get(definitionId);
 }
 
-function materializeSources(sources: FrozenProfileFileSources, defaults: AgentProfile) {
+function materializeSources(
+  sources: FrozenProfileFileSources,
+  basePrompt: (context: AgentProfileContext) => SystemPromptRenderResult,
+) {
   const contribution = profilesFromDiscovery({
     agents: [sources.root], routes: [], skipped: [], scannedRoots: [sources.root.contributionRoot],
     scopedBindings: new Map(Object.entries(sources.scopedBindings).map(([id, entries]) => [id, new Map(Object.entries(entries))])),
     sourceDefinitions: new Map(Object.entries(sources.sourceDefinitions)),
     dependencyIndex: new Map(Object.entries(sources.dependencyIndex)),
     diagnostics: [...sources.diagnostics],
-  }, (context) => defaults.renderSystemPrompt(context));
+  }, basePrompt);
   const attach = (profile: AgentProfile) => ({ ...profile, fileSources: sources });
   return {
     root: attach(contribution.profiles[0]!),
@@ -53,7 +64,7 @@ export function inheritProfileFileSources(
   if (sources === undefined) return snapshot;
   const base = snapshot ?? catalog.snapshot?.();
   const defaults = base?.defaultProfile ?? catalog.getDefault();
-  const materialized = materializeSources(sources, defaults);
+  const materialized = materializeSources(sources, (context) => defaults.renderSystemPrompt(context));
   return {
     publicProfiles: base?.publicProfiles ?? new Map(catalog.list().map((profile) => [profile.name, profile])),
     resolvableProfiles: base?.resolvableProfiles,
@@ -101,7 +112,10 @@ export async function loadDispatchProfileFile(
     sourceDefinitions: Object.fromEntries(graph.sourceDefinitions), dependencyIndex: Object.fromEntries(graph.dependencyIndex), diagnostics: graph.diagnostics,
   };
   const defaults = snapshot?.defaultProfile ?? catalog.getDefault();
-  const { root: parsed, scopedBindings: loadedBindings, sourceDefinitions } = materializeSources(sources, defaults);
+  const { root: parsed, scopedBindings: loadedBindings, sourceDefinitions } = materializeSources(
+    sources,
+    (context) => defaults.renderSystemPrompt(context),
+  );
   const profile = {
     ...parsed,
     toolAllowPolicies: [...(parsed.toolAllowPolicies ?? []), ...(caller.toolAllowPolicies ?? []), ...(caller.activeToolNames === undefined ? [] : [caller.activeToolNames])],

@@ -149,7 +149,8 @@ function isSameSection(
     existing.toToml === options.toToml &&
     deepEqual(existing.defaultValue, options.defaultValue) &&
     deepEqual(existing.deprecations, options.deprecations) &&
-    existing.collectDiagnostics === options.collectDiagnostics
+    existing.collectDiagnostics === options.collectDiagnostics &&
+    existing.entryKeyed === options.entryKeyed
   );
 }
 
@@ -248,6 +249,7 @@ export class ConfigRegistry extends Disposable implements IConfigRegistry {
       toToml: options.toToml,
       deprecations: options.deprecations,
       collectDiagnostics: options.collectDiagnostics,
+      entryKeyed: options.entryKeyed,
     });
     this._onDidRegisterSection.fire({ domain });
   }
@@ -608,7 +610,7 @@ export class ConfigService extends Disposable implements IConfigService {
       this.pushDiagnostic(diagnostic);
     }
     if (source !== 'load' && JSON.stringify(nextRawSnake) === JSON.stringify(this.rawSnake)) {
-      const scratch = { ...this.validated };
+      const scratch = this.buildValidated(this.raw);
       this.applySectionEnvBindings(scratch, true);
       this.applyEnvOverlay(scratch);
       this.emitDiagnosticsIfChanged();
@@ -660,16 +662,20 @@ export class ConfigService extends Disposable implements IConfigService {
   }
 
   private buildValidated(raw: ResolvedConfig): ResolvedConfig {
+    const previous = this.validated;
     const validated: ResolvedConfig = {};
     for (const [domain, value] of Object.entries(raw)) {
       try {
-        validated[domain] = this.registry.validate(domain, value);
+        validated[domain] = this.validateSection(domain, value, true, previous[domain]);
       } catch (error) {
         this.pushDiagnostic({
           domain,
           severity: 'warning',
           message: `Ignored invalid config section '${domain}': ${describeUnknownError(error)}`,
         });
+        if (Object.prototype.hasOwnProperty.call(previous, domain)) {
+          validated[domain] = previous[domain];
+        }
       }
     }
     for (const section of this.registry.listSections()) {
@@ -678,6 +684,36 @@ export class ConfigService extends Disposable implements IConfigService {
       }
     }
     return validated;
+  }
+
+  private validateSection(
+    domain: string,
+    value: unknown,
+    reportErrors: boolean,
+    previous?: unknown,
+  ): unknown {
+    const entryKeyed = this.registry.getSection(domain)?.entryKeyed;
+    if (entryKeyed === undefined || !isPlainObject(value)) {
+      return this.registry.validate(domain, value);
+    }
+    const previousEntries = isPlainObject(previous) ? previous : {};
+    const salvaged: Record<string, unknown> = {};
+    for (const [entryKey, entry] of Object.entries(value)) {
+      try {
+        salvaged[entryKey] = entryKeyed.parse(entry);
+      } catch (error) {
+        const retained = Object.prototype.hasOwnProperty.call(previousEntries, entryKey);
+        if (retained) salvaged[entryKey] = previousEntries[entryKey];
+        if (reportErrors) {
+          this.pushDiagnostic({
+            domain,
+            severity: 'warning',
+            message: `${retained ? 'Rejected' : 'Ignored'} invalid [${domain}] entry '${entryKey}'${retained ? ' and retained its last valid value' : ''}: ${describeUnknownError(error)}`,
+          });
+        }
+      }
+    }
+    return salvaged;
   }
 
   private applySectionEnvBindings(
@@ -699,7 +735,12 @@ export class ConfigService extends Disposable implements IConfigService {
             }
           : undefined;
         const next = applySectionEnv(base, section.env, getEnv, onDeprecatedEnv);
-        effective[section.domain] = this.registry.validate(section.domain, next);
+        effective[section.domain] = this.validateSection(
+          section.domain,
+          next,
+          reportErrors,
+          base,
+        );
       } catch (error) {
         if (reportErrors) {
           this.pushDiagnostic({
@@ -759,7 +800,12 @@ export class ConfigService extends Disposable implements IConfigService {
 
     if (this.raw[domain] !== undefined) {
       try {
-        const validatedValue = this.registry.validate(domain, this.raw[domain]);
+        const validatedValue = this.validateSection(
+          domain,
+          this.raw[domain],
+          true,
+          this.validated[domain],
+        );
         this.validated[domain] = validatedValue;
         this.effective[domain] = validatedValue;
       } catch {
@@ -783,8 +829,9 @@ export class ConfigService extends Disposable implements IConfigService {
             message: `Environment variable ${oldName} is deprecated; use ${newName} instead.`,
           });
         };
-        const next = applySectionEnv(this.effective[domain], section.env, getEnv, onDeprecatedEnv);
-        this.effective[domain] = this.registry.validate(domain, next);
+        const base = this.effective[domain];
+        const next = applySectionEnv(base, section.env, getEnv, onDeprecatedEnv);
+        this.effective[domain] = this.validateSection(domain, next, true, base);
       } catch (error) {
         this.pushDiagnostic({
           domain,

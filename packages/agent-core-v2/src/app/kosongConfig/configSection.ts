@@ -213,6 +213,7 @@ registerConfigSection(PROVIDERS_SECTION, ProvidersSectionSchema, {
   stripEnv: stripProvidersEnv,
   fromToml: providersFromToml,
   toToml: providersToToml,
+  entryKeyed: ProviderConfigSchema,
 });
 
 export const REQUEST_IDENTITY_SECTION = 'requestIdentity';
@@ -452,6 +453,7 @@ registerConfigSection(MODELS_SECTION, ModelsSectionSchema, {
   fromToml: modelsFromToml,
   toToml: modelsToToml,
   collectDiagnostics: collectMalformedModelEntries,
+  entryKeyed: ModelRecordSchema,
 });
 
 export const THINKING_SECTION = 'thinking';

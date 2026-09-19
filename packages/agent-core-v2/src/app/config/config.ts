@@ -108,6 +108,7 @@ export interface ConfigSection<T = unknown> {
   readonly toToml?: ConfigToToml;
   readonly deprecations?: readonly ConfigKeyDeprecation[];
   readonly collectDiagnostics?: ConfigCollectDiagnostics;
+  readonly entryKeyed?: ConfigSchema<unknown>;
 }
 
 export interface RegisterSectionOptions<T> {
@@ -120,6 +121,7 @@ export interface RegisterSectionOptions<T> {
   readonly toToml?: ConfigToToml;
   readonly deprecations?: readonly ConfigKeyDeprecation[];
   readonly collectDiagnostics?: ConfigCollectDiagnostics;
+  readonly entryKeyed?: ConfigSchema<unknown>;
 }
 
 export interface ConfigEffectiveOverlay {

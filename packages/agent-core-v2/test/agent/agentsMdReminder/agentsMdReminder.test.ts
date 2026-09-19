@@ -741,7 +741,7 @@ describe('agentsMdReminder duplicate calls', () => {
 });
 
 describe('agentsMdReminder lazy seeding after a restore', () => {
-  it('self-seeds the injected chain on the first touch when no seed point ever fired', async () => {
+  it('keeps discovered paths eligible when no rendered-disclosure seed point fired', async () => {
     const h = createHarness();
     const rootAgentsMd = await writeAgentsMd(workDir, 'root instructions');
     const subAgentsMd = await writeAgentsMd(join(workDir, 'packages', 'kap-server'));
@@ -754,12 +754,18 @@ describe('agentsMdReminder lazy seeding after a restore', () => {
     expect(outputText(result)).toBe('original result');
     const text = reminderText(h);
     expect(text).toContain(subAgentsMd);
-    expect(text).not.toContain(rootAgentsMd);
+    expect(text).toContain(rootAgentsMd);
   });
 
   it('treats the brand-home AGENTS.md as injected after a restore', async () => {
-    const h = createHarness();
-    await writeAgentsMd(homeDir, 'brand instructions');
+    const agentsMd = await writeAgentsMd(homeDir, 'brand instructions');
+    const h = createHarness({
+      restoredProfile: {
+        systemPrompt: `<!-- From: ${agentsMd} -->\nbrand instructions`,
+        agentsMdPaths: [agentsMd],
+      },
+    });
+    await h.dispatcher.hooks.onDidRestore.run({});
 
     const result = await fire(h, didCtx('Read', { path: join(homeDir, 'notes.txt') }));
 
@@ -801,6 +807,22 @@ describe('agentsMdReminder persisted restore provenance', () => {
 
     expect(outputText(result)).toBe('original result');
     expect(h.reminders).toHaveLength(0);
+  });
+
+  it('does not trust persisted discovered paths that were absent from the restored prompt', async () => {
+    const rootAgentsMd = await writeAgentsMd(workDir, 'root instructions');
+    const h = createHarness({
+      restoredProfile: {
+        systemPrompt: 'Custom role only',
+        agentsMdPaths: [rootAgentsMd],
+      },
+    });
+
+    await h.dispatcher.hooks.onDidRestore.run({});
+    const result = await fire(h, didCtx('Read', { path: join(workDir, 'index.ts') }));
+
+    expect(outputText(result)).toBe('original result');
+    expect(reminderText(h)).toContain(rootAgentsMd);
   });
 });
 

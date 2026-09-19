@@ -36,6 +36,7 @@ import {
 import { MODELS_SECTION, THINKING_SECTION } from '#/app/kosongConfig/configSection';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
+  type AgentProfileContext,
   type EnvironmentDisclosureSnapshot,
   type ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -379,8 +380,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.promptConfigurationSignature = undefined;
     this.activeProfileDefinitionId = snapshot.profileDefinitionId;
     this.activeToolNamesOverlay = undefined;
-    const agentsMdPaths =
-      snapshot.agentsMdPaths ?? extractAgentsMdPathsFromSystemPrompt(snapshot.systemPrompt);
+    const agentsMdPaths = extractAgentsMdPathsFromSystemPrompt(snapshot.systemPrompt);
     void this.dispatcher.dispatch(
       new ProfileBind({
         executionRestriction,
@@ -649,7 +649,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         profile.requestParams === undefined ? undefined : { ...profile.requestParams },
       systemPrompt,
       environmentDisclosure: assembled.environment,
-      agentsMdPaths: context.agentsMdPaths ?? [],
+      agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(systemPrompt),
       activeToolNames: profile.tools,
       toolAllowPolicies: profile.toolAllowPolicies,
       disallowedTools: profile.disallowedTools ?? [],
@@ -667,7 +667,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       systemPrompt,
       disallowedTools: profile.disallowedTools ?? [],
     });
-    this.seedAgentsMdReminder(context);
+    this.seedAgentsMdReminder(systemPrompt, context);
 
     this.publishAgentsMdWarning();
     this.publishToolPatternWarnings();
@@ -791,7 +791,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       thinkingEffort: thinkingLevel,
       systemPrompt: assembled.text,
       environmentDisclosure: assembled.environment,
-      agentsMdPaths: context.agentsMdPaths ?? [],
+      agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text),
       activeToolNames: [],
       toolAllowPolicies: undefined,
       disallowedTools: [],
@@ -808,7 +808,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       systemPrompt: assembled.text,
       disallowedTools: [],
     });
-    this.seedAgentsMdReminder(context);
+    this.seedAgentsMdReminder(assembled.text, context);
     this.cacheAgentsMdWarning(context);
     this.publishAgentsMdWarning();
     this.publishToolPatternWarnings();
@@ -1058,11 +1058,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       ...context,
       promptVariables: this.config.get<PromptConfig>(PROMPT_SECTION)?.variables,
     });
+    const systemPrompt = injectDelegationContext(rendered.text, undefined);
     this.update({
       profileName: profile.name,
-      systemPrompt: injectDelegationContext(rendered.text, undefined),
+      systemPrompt,
       environmentDisclosure: rendered.environment,
-      agentsMdPaths: context.agentsMdPaths ?? [],
+      agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(systemPrompt),
       disallowedTools: profile.disallowedTools ?? [],
       disabledToolGroups: profile.disabledToolGroups,
     });
@@ -1085,12 +1086,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profileName: profile.name,
       systemPrompt: assembled.text,
       environmentDisclosure: assembled.environment,
-      agentsMdPaths: context.agentsMdPaths ?? [],
+      agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text),
       disallowedTools: profile.disallowedTools ?? [],
       disabledToolGroups: profile.disabledToolGroups,
     });
     this.setActiveTools(profile.tools);
-    this.seedAgentsMdReminder(context);
+    this.seedAgentsMdReminder(assembled.text, context);
     this.cacheAgentsMdWarning(context);
     this.publishAgentsMdWarning();
     this.publishToolPatternWarnings();
@@ -1141,9 +1142,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         systemPrompt: assembled.text,
         promptBase: assembled.promptBase,
         environmentDisclosure: assembled.environment,
-        agentsMdPaths: context.agentsMdPaths ?? [],
+        agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text),
       });
-      this.seedAgentsMdReminder(context);
+      this.seedAgentsMdReminder(assembled.text, context);
       this.cacheAgentsMdWarning(context);
       this.publishAgentsMdWarning();
     } catch (error) {
@@ -1315,9 +1316,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
   }
 
-  private seedAgentsMdReminder(context: SystemPromptContext): void {
+  private seedAgentsMdReminder(
+    systemPrompt: string,
+    context: Pick<SystemPromptContext, 'cwd'>,
+  ): void {
     this.agentsMdReminder.seedInjected(
-      context.agentsMdPaths ?? [],
+      extractAgentsMdPathsFromSystemPrompt(systemPrompt),
       context.cwd ?? this.sessionContext.cwd,
     );
   }
@@ -1814,11 +1818,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.activeProfile !== undefined) return this.activeProfile;
     const bound = this.profileState.boundProfile;
     if (bound !== undefined) {
-      const defaults = this.catalog.getDefault();
+      const basePrompt = (context: AgentProfileContext) =>
+        this.catalog.getDefault().renderSystemPrompt(context);
       const restored = bound.fileSources !== undefined
-        ? restoreProfileFileSources(bound.fileSources, defaults, bound.definitionId)
+        ? restoreProfileFileSources(bound.fileSources, basePrompt, bound.definitionId)
         : bound.fileDefinition !== undefined
-          ? agentProfileFromFile(bound.fileDefinition, (context) => defaults.renderSystemPrompt(context))
+          ? agentProfileFromFile(bound.fileDefinition, basePrompt)
           : bound.routeDefinition !== undefined ? this.catalog.get(bound.routeDefinition.profile) : undefined;
       if (restored !== undefined) {
         const rendered = bound.routeDefinition === undefined ? restored : resolveAgentProfileRoute(bound.routeDefinition, restored).effectiveProfile;

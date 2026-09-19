@@ -1478,6 +1478,187 @@ describe('malformed models config entries', () => {
   });
 });
 
+describe('entry-keyed section salvage', () => {
+  async function createConfig(toml: string) {
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    await storage.write('', 'config.toml', new TextEncoder().encode(toml));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg-entry-salvage', {}));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+    const readText = async (): Promise<string> => {
+      const bytes = await storage.read('', 'config.toml');
+      if (bytes === undefined) throw new Error('config.toml missing');
+      return new TextDecoder().decode(bytes);
+    };
+    return { config, disposables, storage, readText };
+  }
+
+  it('keeps the usable providers entries and names the invalid entry', async () => {
+    const { config, disposables } = await createConfig(
+      '[providers.acme]\ntype = "openai"\napi_key = "sk-acme"\n\n[providers.bad]\ntype = 123\n',
+    );
+
+    expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
+      acme: { type: 'openai', apiKey: 'sk-acme' },
+    });
+    expect(config.diagnostics()).toContainEqual({
+      domain: PROVIDERS_SECTION,
+      severity: 'warning',
+      message: expect.stringContaining("Ignored invalid [providers] entry 'bad'"),
+    });
+    expect(
+      config
+        .diagnostics()
+        .some((d) => d.message.includes("Ignored invalid config section 'providers'")),
+    ).toBe(false);
+    expect(config.inspect<Record<string, unknown>>(PROVIDERS_SECTION).userValue).toEqual({
+      acme: { type: 'openai', apiKey: 'sk-acme' },
+      bad: { type: 123 },
+    });
+    expect(config.inspect<Record<string, unknown>>(PROVIDERS_SECTION).value).toEqual({
+      acme: { type: 'openai', apiKey: 'sk-acme' },
+    });
+
+    disposables.dispose();
+  });
+
+  it('keeps the usable models entries on reload and clears the warning once the entry is fixed', async () => {
+    const { config, disposables, storage } = await createConfig(
+      '[models."acme/m1"]\nprovider = "acme"\nmodel = "m1"\n\n' +
+        '[models.bad]\nmodel = "m1"\nmax_context_size = "big"\n',
+    );
+
+    expect(config.get<Record<string, unknown>>(MODELS_SECTION)).toEqual({
+      'acme/m1': { provider: 'acme', model: 'm1' },
+    });
+    expect(config.diagnostics()).toContainEqual({
+      domain: MODELS_SECTION,
+      severity: 'warning',
+      message: expect.stringContaining("Ignored invalid [models] entry 'bad'"),
+    });
+    expect(config.inspect<Record<string, unknown>>(MODELS_SECTION).userValue).toEqual({
+      'acme/m1': { provider: 'acme', model: 'm1' },
+      bad: { model: 'm1', maxContextSize: 'big' },
+    });
+
+    await storage.write(
+      '',
+      'config.toml',
+      new TextEncoder().encode(
+        '[models."acme/m1"]\nprovider = "acme"\nmodel = "m1"\n\n' +
+          '[models.bad]\nmodel = "m1"\nmax_context_size = 2000\n',
+      ),
+    );
+    await config.reload();
+
+    expect(config.diagnostics()).toEqual([]);
+    expect(config.get<Record<string, unknown>>(MODELS_SECTION)).toEqual({
+      'acme/m1': { provider: 'acme', model: 'm1' },
+      bad: { model: 'm1', maxContextSize: 2000 },
+    });
+
+    disposables.dispose();
+  });
+
+  it('retains each last-good provider and model entry while applying valid sibling updates', async () => {
+    const { config, disposables, storage } = await createConfig(
+      '[providers.acme]\ntype = "openai"\nbase_url = "https://old.example.test"\n\n' +
+        '[models."acme/m1"]\nprovider = "acme"\nmodel = "m1"\nmax_context_size = 1000\n',
+    );
+
+    await storage.write(
+      '',
+      'config.toml',
+      new TextEncoder().encode(
+        '[providers.acme]\ntype = 123\n\n[providers.next]\ntype = "openai"\n\n' +
+          '[models."acme/m1"]\nprovider = "acme"\nmodel = "m1"\nmax_context_size = "bad"\n\n' +
+          '[models."acme/m2"]\nprovider = "acme"\nmodel = "m2"\n',
+      ),
+    );
+    await config.reload();
+
+    expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
+      acme: { type: 'openai', baseUrl: 'https://old.example.test' },
+      next: { type: 'openai' },
+    });
+    expect(config.get<Record<string, unknown>>(MODELS_SECTION)).toEqual({
+      'acme/m1': { provider: 'acme', model: 'm1', maxContextSize: 1000 },
+      'acme/m2': { provider: 'acme', model: 'm2' },
+    });
+    expect(config.diagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          domain: PROVIDERS_SECTION,
+          message: expect.stringContaining(
+            "Rejected invalid [providers] entry 'acme' and retained its last valid value",
+          ),
+        }),
+        expect.objectContaining({
+          domain: MODELS_SECTION,
+          message: expect.stringContaining(
+            "Rejected invalid [models] entry 'acme/m1' and retained its last valid value",
+          ),
+        }),
+      ]),
+    );
+
+    disposables.dispose();
+  });
+
+  it('falls back to the section-level diagnostic when the section value is not a keyed record', async () => {
+    const { config, disposables } = await createConfig('providers = "acme"\n');
+
+    expect(config.get(PROVIDERS_SECTION)).toEqual({});
+    expect(config.diagnostics()).toContainEqual({
+      domain: PROVIDERS_SECTION,
+      severity: 'warning',
+      message: expect.stringContaining("Ignored invalid config section 'providers'"),
+    });
+
+    disposables.dispose();
+  });
+
+  it('still rejects writes that carry an invalid entry', async () => {
+    const { config, disposables, readText } = await createConfig(
+      '[providers.acme]\ntype = "openai"\napi_key = "sk-acme"\n',
+    );
+
+    await expect(config.set(PROVIDERS_SECTION, { bad: { type: 123 } })).rejects.toThrow();
+    await expect(config.replace(PROVIDERS_SECTION, { bad: { type: 123 } })).rejects.toThrow();
+    await expect(
+      config.replaceSections({ [PROVIDERS_SECTION]: { bad: { type: 123 } } }),
+    ).rejects.toThrow();
+
+    expect(await readText()).toBe('[providers.acme]\ntype = "openai"\napi_key = "sk-acme"\n');
+    expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
+      acme: { type: 'openai', apiKey: 'sk-acme' },
+    });
+
+    disposables.dispose();
+  });
+
+  it('keeps a salvaged-out entry on disk when another section is written', async () => {
+    const { config, disposables, readText } = await createConfig(
+      '[providers.bad]\ntype = 123\n\n[thinking]\nenabled = true\n',
+    );
+
+    await config.set(THINKING_SECTION, { enabled: false });
+
+    expect(await readText()).toContain('type = 123');
+    expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ enabled: false });
+    expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({});
+
+    disposables.dispose();
+  });
+});
+
 describe('retry config section', () => {
   async function createConfig(toml: string) {
     const disposables = new DisposableStore();

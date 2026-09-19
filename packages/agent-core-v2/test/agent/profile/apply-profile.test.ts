@@ -29,6 +29,10 @@ import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import type { PromptConfig } from '#/app/prompt/configSection';
+import {
+  ISessionAgentProfileCatalog,
+  type ISessionAgentProfileCatalog as SessionAgentProfileCatalog,
+} from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 
 import { stubAgentIdentity } from '../../app/agentIdentity/stubs';
 
@@ -176,6 +180,47 @@ describe('AgentProfileService.applyProfile', () => {
     expect(svc.getSystemPrompt()).not.toContain('GLOBAL_NEW');
   });
 
+  it('restores a bound replace-mode file profile without resolving the current default profile', async () => {
+    const getDefault = vi.fn(() => {
+      throw new Error('Default agent profile is unavailable');
+    });
+    const catalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as SessionAgentProfileCatalog['onDidChange'],
+      get: () => undefined,
+      getDefault,
+      list: () => [],
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: () => {
+        throw new Error('No live profile is available');
+      },
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    } satisfies SessionAgentProfileCatalog;
+    const { profile: svc } = buildContext(sessionService(ISessionAgentProfileCatalog, catalog));
+    const definition = parseAgentFileText({
+      path: join(workDir, 'stored.md'),
+      source: 'explicit',
+      text: '---\nname: frozen-worker\ndescription: Fixture stored profile\n---\nStored role',
+      definitionId: 'frozen-source',
+      contributionRoot: workDir,
+    });
+    const selected = agentProfileFromFile(definition, () => {
+      throw new Error('base prompt should not render');
+    });
+    await svc.applyProfile(selected);
+    const snapshot = { ...svc.data(), systemPrompt: 'HISTORIC_FROZEN_PROMPT', boundProfile: freezeBoundProfile(selected) };
+    svc.applyBindingSnapshot(snapshot);
+
+    await expect(svc.refreshSystemPrompt()).resolves.toBeUndefined();
+
+    expect(svc.getSystemPrompt()).toContain('Stored role');
+    expect(getDefault).not.toHaveBeenCalled();
+  });
+
   it('reports an unavailable saved source instead of silently keeping stale configured variables', async () => {
     const { ctx: host, profile: svc } = buildContext();
     const config = host.get(IConfigService);
@@ -233,7 +278,23 @@ describe('AgentProfileService.applyProfile', () => {
 
     expect(svc.data().systemPrompt).toContain('project instructions');
     expect(svc.data().systemPrompt).toContain(`<!-- From: ${join(workDir, 'AGENTS.md')} -->`);
+    expect(svc.data().agentsMdPaths).toEqual([join(workDir, 'AGENTS.md')]);
     expect(svc.getAgentsMdWarning()).toBeUndefined();
+  });
+
+  it('does not mark discovered AGENTS.md as disclosed when a custom prompt omits it', async () => {
+    await writeFile(join(workDir, 'AGENTS.md'), 'project instructions', 'utf-8');
+    const { profile: svc } = buildContext();
+    const custom = normalizeAgentProfile({
+      name: 'custom-without-instructions',
+      systemPrompt: () => 'Custom role only',
+      tools: [],
+    });
+
+    await svc.applyProfile(custom);
+
+    expect(svc.data().systemPrompt).toBe('Custom role only');
+    expect(svc.data().agentsMdPaths).toEqual([]);
   });
 
   it('renders the complete runtime context exactly', async () => {
