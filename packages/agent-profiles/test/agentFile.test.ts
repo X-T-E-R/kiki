@@ -542,6 +542,33 @@ body
     );
   });
 
+  it('normalizes explicit subagent policies without changing legacy files', () => {
+    const legacy = parse('---\nname: solo\ndescription: d\nsubagents: [explore]\n---\n\nbody\n');
+    expect(legacy.subagentPolicy).toBeUndefined();
+    expect(legacy.subagentDeclaration).toBeUndefined();
+    expect(legacy.subagents).toEqual(['explore']);
+
+    const advisory = parse('---\nname: solo\ndescription: d\nsubagent_policy: advisory\nsubagents: [explore]\n---\n\nbody\n');
+    expect(advisory.subagentPolicy).toBe('advisory');
+    expect(advisory.subagentDeclaration).toEqual({ kind: 'set', names: ['explore'] });
+
+    const inherited = parse('---\nname: solo\ndescription: d\nsubagent_policy: strict\n---\n\nbody\n');
+    expect(inherited.subagentDeclaration).toEqual({ kind: 'inherit' });
+
+    const all = parse('---\nname: solo\ndescription: d\nsubagent_policy: advisory\nsubagents: ["*"]\n---\n\nbody\n');
+    expect(all.subagentDeclaration).toEqual({ kind: 'all' });
+    expect(all.subagents).toBeUndefined();
+  });
+
+  it.each([
+    'subagent_policy: advisory\nsubagents: null',
+    'subagent_policy: strict\nsubagents: ""',
+    'subagent_policy: advisory\nsubagents: ["*", explore]',
+    'subagent_policy: permissive\nsubagents: [explore]',
+  ])('rejects invalid explicit subagent policy declarations: %s', (fields) => {
+    expect(() => parse(`---\nname: solo\ndescription: d\n${fields}\n---\n\nbody\n`)).toThrow();
+  });
+
   it('rejects a non-string, non-list tools field', () => {
     expect(() => parse('---\nname: solo\ndescription: d\ntools: 42\n---\n\nbody\n')).toThrow(
       /"tools"/,

@@ -30,6 +30,8 @@ export function agentProfileFromFile(
     tools: definition.tools,
     disallowedTools: definition.disallowedTools,
     disabledToolGroups: definition.disabledToolGroups,
+    subagentPolicy: definition.subagentPolicy,
+    subagentDeclaration: definition.subagentDeclaration,
     subagents: definition.subagents,
     subagentLeases: definition.subagentLeases,
     spawnConstraints: definition.spawnConstraints,

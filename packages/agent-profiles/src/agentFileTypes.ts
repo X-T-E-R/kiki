@@ -1,9 +1,11 @@
 import type {
   AgentModelProfile,
   AgentProfileRouteDefinition,
+  AgentSubagentPolicy,
   AgentSystemPromptMode,
   RequestParams,
   ServiceTier,
+  SubagentDeclaration,
 } from './agentProfile';
 import type { SkippedAgentFile } from './agentProfileContribution';
 import type { PromptOverrides } from './promptOverrides';
@@ -35,6 +37,8 @@ export interface AgentFileDefinition {
   readonly tools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly disabledToolGroups?: readonly ToolGroupId[];
+  readonly subagentPolicy?: AgentSubagentPolicy;
+  readonly subagentDeclaration?: SubagentDeclaration;
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;

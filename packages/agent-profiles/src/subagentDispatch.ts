@@ -1,7 +1,10 @@
 import type {
   AgentProfile,
   AgentProfileRouteCatalogEntry,
+  AgentSubagentPolicy,
+  EffectiveAgentSubagentPolicy,
   ResolvedAgentProfileRoute,
+  SubagentDeclaration,
 } from './agentProfile';
 import {
   aliasIdentity,
@@ -14,14 +17,34 @@ import {
   modelAliasResolverForExecutor,
   type ModelAliasResolver,
 } from './ports';
-import { subagentAllowlistFor } from './profileShared';
 import type { AgentProfileCatalogSnapshot } from './scopedAgentProfile';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
 
 export interface SubagentDispatchCaller {
   readonly profileDefinitionId?: string;
   readonly profileName?: string;
+  readonly subagentPolicy?: AgentSubagentPolicy;
+  readonly subagentDeclaration?: SubagentDeclaration;
   readonly subagents?: readonly string[];
+}
+
+export type SubagentSelectionKind = 'profile' | 'route' | 'scoped' | 'profile_file';
+export type SubagentSelectionOrigin = 'explicit' | 'recommended-default' | 'configured-fallback';
+export type SubagentRecommendationStatus = 'preferred' | 'allowed_nonpreferred' | 'blocked' | 'unconfigured';
+export type SubagentRecommendationFallback = 'no-recommendations' | 'recommended-unavailable';
+
+export interface SubagentDispatchDecision {
+  readonly version: 1;
+  readonly policyMode: EffectiveAgentSubagentPolicy;
+  readonly policySource: 'profile' | 'legacy';
+  readonly declaration: SubagentDeclaration;
+  readonly selectionKind: SubagentSelectionKind;
+  readonly selectionOrigin: SubagentSelectionOrigin;
+  readonly requestedProfile: string;
+  readonly recommendationStatus: SubagentRecommendationStatus;
+  readonly advisoryDeviation: boolean;
+  readonly allowed: boolean;
+  readonly fallback?: SubagentRecommendationFallback;
 }
 
 export interface SubagentDispatchSelection {
@@ -45,11 +68,15 @@ export interface ResolveSubagentDispatchInput {
   readonly profileName?: string;
   readonly routeId?: string;
   readonly snapshot?: AgentProfileCatalogSnapshot;
+  readonly selectionKind?: SubagentSelectionKind;
+  readonly selectionOrigin?: SubagentSelectionOrigin;
+  readonly fallback?: SubagentRecommendationFallback;
 }
 
 export interface ResolvedSubagentDispatch {
   readonly selection: SubagentDispatchSelection;
   readonly scoped: boolean;
+  readonly decision: SubagentDispatchDecision;
   readonly snapshot?: AgentProfileCatalogSnapshot;
 }
 
@@ -64,13 +91,54 @@ export interface AvailableSubagentTargets {
   readonly routes: readonly AgentProfileRouteCatalogEntry[];
 }
 
+export function evaluateSubagentDispatchDecision(
+  catalog: Pick<SubagentDispatchCatalog, 'getDefault'>,
+  caller: SubagentDispatchCaller,
+  profileName: string,
+  options: {
+    readonly selectionKind?: SubagentSelectionKind;
+    readonly selectionOrigin?: SubagentSelectionOrigin;
+    readonly fallback?: SubagentRecommendationFallback;
+  } = {},
+): SubagentDispatchDecision {
+  const configured = caller.profileName === undefined ? catalog.getDefault() : caller;
+  const policyMode: EffectiveAgentSubagentPolicy = configured.subagentPolicy ?? 'legacy';
+  const declaration = configured.subagentDeclaration ?? (
+    configured.subagents === undefined
+      ? { kind: 'all' as const }
+      : { kind: 'set' as const, names: configured.subagents }
+  );
+  const recommended = declaration.kind === 'set' && declaration.names.includes(profileName);
+  const constrained = declaration.kind === 'set';
+  const allowed = policyMode === 'advisory' || !constrained || recommended;
+  const recommendationStatus: SubagentRecommendationStatus = !constrained
+    ? 'unconfigured'
+    : recommended
+      ? 'preferred'
+      : allowed
+        ? 'allowed_nonpreferred'
+        : 'blocked';
+  return {
+    version: 1,
+    policyMode,
+    policySource: configured.subagentPolicy === undefined ? 'legacy' : 'profile',
+    declaration,
+    selectionKind: options.selectionKind ?? 'profile',
+    selectionOrigin: options.selectionOrigin ?? 'explicit',
+    requestedProfile: profileName,
+    recommendationStatus,
+    advisoryDeviation: policyMode === 'advisory' && recommendationStatus === 'allowed_nonpreferred',
+    allowed,
+    fallback: options.fallback,
+  };
+}
+
 export function subagentDispatchAllowed(
   catalog: Pick<SubagentDispatchCatalog, 'getDefault'>,
   caller: SubagentDispatchCaller,
   profileName: string,
 ): boolean {
-  const allowlist = subagentAllowlistFor(catalog, caller);
-  return allowlist === undefined || allowlist.includes(profileName);
+  return evaluateSubagentDispatchDecision(catalog, caller, profileName).allowed;
 }
 
 export function resolveSnapshotProfileDefinition(
@@ -159,5 +227,25 @@ export function listAvailableSubagentTargets(
     ).profile;
     return routePermittedByProfile(route, effective, resolver);
   });
-  return { profiles: [...publicProfiles, ...scopedProfiles], routes };
+  return {
+    profiles: [...publicProfiles, ...scopedProfiles].toSorted((left, right) =>
+      recommendationRank(evaluateSubagentDispatchDecision(catalog, caller, left.name))
+      - recommendationRank(evaluateSubagentDispatchDecision(catalog, caller, right.name))),
+    routes: routes.toSorted((left, right) =>
+      recommendationRank(evaluateSubagentDispatchDecision(catalog, caller, left.profile))
+      - recommendationRank(evaluateSubagentDispatchDecision(catalog, caller, right.profile))),
+  };
+}
+
+function recommendationRank(decision: SubagentDispatchDecision): number {
+  switch (decision.recommendationStatus) {
+    case 'preferred':
+      return 0;
+    case 'unconfigured':
+      return 1;
+    case 'allowed_nonpreferred':
+      return 2;
+    case 'blocked':
+      return 3;
+  }
 }

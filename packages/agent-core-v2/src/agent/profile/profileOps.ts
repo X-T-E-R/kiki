@@ -43,8 +43,11 @@ export interface ProfileModelState {
   readonly agentsMdPaths?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly disabledToolGroups?: readonly ToolGroupId[];
+  readonly subagentPolicy?: import('#/app/agentProfileCatalog/agentProfileCatalog').AgentSubagentPolicy;
+  readonly subagentDeclaration?: import('#/app/agentProfileCatalog/agentProfileCatalog').SubagentDeclaration;
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
   readonly spawnPolicy?: SpawnConstraints;
   readonly appliedLease?: SubagentLease;
   readonly boundProfile?: import('./boundProfile').BoundProfile;
@@ -75,8 +78,11 @@ const profileBindSchema = z.object({
   toolAllowPolicies: z.array(z.array(z.string()).readonly()).readonly().optional(),
   disallowedTools: z.array(z.string()).readonly(),
   disabledToolGroups: z.array(TOOL_GROUP_ID_SCHEMA).readonly().optional(),
+  subagentPolicy: z.enum(['advisory', 'strict']).optional(),
+  subagentDeclaration: z.custom<import('#/app/agentProfileCatalog/agentProfileCatalog').SubagentDeclaration>().optional(),
   subagents: z.array(z.string()).readonly().optional(),
   subagentLeases: z.custom<Readonly<Record<string, SubagentLease>>>().optional(),
+  dispatchDecision: z.custom<import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision>().optional(),
   spawnPolicy: z.custom<SpawnConstraints>().optional(),
   appliedLease: z.custom<SubagentLease>().optional(),
   boundProfile: z.custom<import('./boundProfile').BoundProfile>().optional(),
@@ -173,8 +179,11 @@ export const profileKey = defineState(
     agentsMdPaths: e.agentsMdPaths ?? s.agentsMdPaths,
     disallowedTools: e.disallowedTools,
     disabledToolGroups: e.disabledToolGroups,
+    subagentPolicy: e.subagentPolicy,
+    subagentDeclaration: e.subagentDeclaration,
     subagents: e.subagents,
     subagentLeases: e.subagentLeases,
+    dispatchDecision: e.dispatchDecision,
     spawnPolicy: e.spawnPolicy,
     appliedLease: e.appliedLease,
     boundProfile: e.boundProfile,

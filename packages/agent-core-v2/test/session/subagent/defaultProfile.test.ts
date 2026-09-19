@@ -139,18 +139,20 @@ describe('materialized default target resolves through the file catalog', () => 
 
     const agent = projection.resolvableProfiles.get('agent');
     expect(agent?.main).toBe(true);
+    expect(agent?.subagentPolicy).toBe('advisory');
     expect(agent?.subagents).toBeUndefined();
     expect(agent?.tools).toContain('AgentRun');
 
     const general = projection.resolvableProfiles.get('general');
     expect(general).toBeDefined();
+    expect(general?.subagentPolicy).toBe('strict');
     expect(general?.subagents).toEqual([]);
     expect(general?.tools).toEqual(
       expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash', 'Skill']),
     );
     expect(general?.tools).not.toContain('AgentRun');
 
-    expect(projection.resolvableProfiles.has('explore')).toBe(true);
+    expect(projection.resolvableProfiles.get('explore')?.subagentPolicy).toBe('advisory');
     expect(projection.resolvableProfiles.has('coder')).toBe(false);
     expect(projection.resolvableProfiles.has('plan')).toBe(false);
     expect(projection.snapshot.defaultProfile?.name).toBe('agent');

@@ -115,6 +115,13 @@ function loadUpgradedSystemMd(
       disallowedTools: Object.hasOwn(parsed.data, 'disallowedTools')
         ? definition.disallowedTools
         : builtinDefault.disallowedTools,
+      subagentDeclaration: definition.subagentPolicy === undefined
+        ? undefined
+        : Object.hasOwn(parsed.data, 'subagents')
+          ? definition.subagentDeclaration
+          : builtinDefault.subagentDeclaration ?? (builtinDefault.subagents === undefined
+            ? { kind: 'all' }
+            : { kind: 'set', names: builtinDefault.subagents }),
       subagents: Object.hasOwn(parsed.data, 'subagents')
         ? definition.subagents
         : builtinDefault.subagents,

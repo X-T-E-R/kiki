@@ -78,6 +78,25 @@ describe('profile file runtime isolation', () => {
       await ctx.dispose();
     }
   });
+  it('does not freeze advisory recommendations into a pinned file hard ceiling', async () => {
+    const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => '' });
+    const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
+    const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
+    Object.defineProperty(fake, 'fs', { value: {
+      realpath: async (path: string) => path,
+      readText: async () => '---\nname: reviewer\ndescription: File role\nsubagent_policy: advisory\nsubagents: [researcher]\n---\nFile role',
+    } as unknown as IHostFileSystem });
+    const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
+      thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
+      subagentPolicy: 'advisory', subagentDeclaration: { kind: 'set', names: ['explore'] },
+      subagents: ['explore'],
+    });
+    expect(loaded.snapshot.publicProfiles.get('reviewer')).toMatchObject({
+      subagentPolicy: 'advisory',
+      subagents: ['researcher'],
+    });
+  });
+
   it('rejects a canonical root that escapes the isolated workspace before reading content', async () => {
     const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => '' });
     const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;

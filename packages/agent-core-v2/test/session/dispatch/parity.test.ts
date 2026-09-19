@@ -746,7 +746,10 @@ function createLane(
       activeToolNames: resolved.tools,
       disallowedTools: resolved.disallowedTools,
       executorId: resolved.executor,
+      subagentPolicy: resolved.subagentPolicy,
+      subagentDeclaration: resolved.subagentDeclaration,
       subagents: resolved.subagents,
+      dispatchDecision: binding?.dispatchDecision,
       spawnPolicy: binding?.spawnPolicy,
       appliedLease: binding?.lease,
     });
@@ -1261,6 +1264,69 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(denied.isError).toBe(true);
     expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
     await expect(lane.ix.get(ISubagentTool).resolveExecution({ profile_file: '/outside/custom.md', prompt: 'fail', description: 'Outside path' })).rejects.toMatchObject({ code: 'fs.path_escapes' });
+  });
+
+  it('allows advisory profile_file deviations, records them, and keeps strict profile_file admission', async () => {
+    const lane = createLane(disposables, 'internal');
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    Object.defineProperty(runtime, 'fs', { value: {
+      realpath: async (path: string) => path,
+      readText: async () => '---\nname: reviewer\ndescription: File reviewer\nmodel_alias: parity-model\nsubagent_policy: strict\nsubagents: []\n---\nREVIEW',
+    } });
+    const caller = lane.handles.get('main')!.accessor.get(IAgentProfileService).data();
+    Object.assign(caller, {
+      subagentPolicy: 'advisory',
+      subagentDeclaration: { kind: 'set', names: ['explore'] },
+      subagents: ['explore'],
+    });
+    const allowed = await lane.runInternal({
+      profile_file: 'reviewer.md', prompt: 'review', description: 'Review', background: true,
+    });
+    expect(allowed.isError).not.toBe(true);
+    expect(allowed.output).toContain('dispatch_policy: advisory');
+    expect(allowed.output).toContain('recommendation_status: allowed_nonpreferred');
+    expect(allowed.output).toContain('recommendation_deviation: true');
+    expect(allowed.output).toContain('selection_kind: profile_file');
+
+    Object.assign(caller, {
+      subagentPolicy: 'strict',
+      subagentDeclaration: { kind: 'set', names: ['explore'] },
+      subagents: ['explore'],
+    });
+    const blocked = await lane.runInternal({
+      profile_file: 'reviewer.md', prompt: 'review', description: 'Review', background: true,
+    });
+    expect(blocked.isError).toBe(true);
+    expect(blocked.output).toContain('strict subagent policy');
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers a legal recommendation for omitted targets and reports fallback when it is unavailable', async () => {
+    const lane = createLane(disposables, 'internal');
+    const caller = lane.handles.get('main')!.accessor.get(IAgentProfileService).data();
+    Object.assign(caller, {
+      subagentPolicy: 'advisory',
+      subagentDeclaration: { kind: 'set', names: ['coder'] },
+      subagents: ['coder'],
+    });
+    const preferred = await lane.runInternal({
+      prompt: 'work', description: 'Preferred default', background: true,
+    });
+    expect(preferred.isError).not.toBe(true);
+    expect(preferred.output).toContain('actual_profile: coder');
+    expect(preferred.output).toContain('selection_origin: recommended-default');
+    expect(preferred.output).toContain('recommendation_status: preferred');
+
+    Object.assign(caller, {
+      subagentDeclaration: { kind: 'set', names: ['missing-profile'] },
+      subagents: ['missing-profile'],
+    });
+    const fallback = await lane.runInternal({
+      prompt: 'work', description: 'Fallback default', background: true,
+    });
+    expect(fallback.isError).not.toBe(true);
+    expect(fallback.output).toContain('selection_origin: configured-fallback');
+    expect(fallback.output).toContain('recommendation_fallback: recommended-unavailable');
   });
 
   it('blocks concurrent creation before side effects, and releases only when execution settles', async () => {
@@ -1951,6 +2017,10 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(outputText(result.output)).toBe([
       'agent_id: agent_child_1',
       'actual_profile: coder',
+      'dispatch_policy: legacy',
+      'selection_kind: profile',
+      'selection_origin: explicit',
+      'recommendation_status: preferred',
       'status: completed',
       '',
       '[summary]',

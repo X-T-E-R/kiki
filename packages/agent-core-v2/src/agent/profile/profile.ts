@@ -76,8 +76,11 @@ export interface ProfileData extends AgentConfigData {
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly disabledToolGroups?: readonly ToolGroupId[];
+  readonly subagentPolicy?: AgentProfile['subagentPolicy'];
+  readonly subagentDeclaration?: AgentProfile['subagentDeclaration'];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
   readonly spawnPolicy?: SpawnConstraints;
   readonly appliedLease?: SubagentLease;
   readonly boundProfile?: import('./boundProfile').BoundProfile;
@@ -125,8 +128,11 @@ export interface ProfileBindingSnapshot {
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly disabledToolGroups?: readonly ToolGroupId[];
+  readonly subagentPolicy?: AgentProfile['subagentPolicy'];
+  readonly subagentDeclaration?: AgentProfile['subagentDeclaration'];
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
   readonly spawnPolicy?: SpawnConstraints;
   readonly appliedLease?: SubagentLease;
   readonly boundProfile?: import('./boundProfile').BoundProfile;
@@ -170,6 +176,7 @@ export interface BindAgentInput {
   readonly delegationPosition?: 'main' | 'sub' | 'independent';
   readonly lease?: SubagentLease;
   readonly spawnPolicy?: SpawnConstraints;
+  readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
 }
 
 export interface IAgentProfileService {

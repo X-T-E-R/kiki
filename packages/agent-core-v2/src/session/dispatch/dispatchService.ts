@@ -145,6 +145,9 @@ export class SessionDispatchService implements ISessionDispatchService {
       {
         profileName: input.profileName,
         routeId: input.routeId,
+        selectionKind: input.selectionKind,
+        selectionOrigin: input.selectionOrigin,
+        fallback: input.recommendationFallback,
         snapshot: inheritProfileFileSources(requesterData, this.profiles, input.snapshot),
       },
       this.models,
@@ -203,6 +206,7 @@ export class SessionDispatchService implements ISessionDispatchService {
           inheritedUserToolNames: researchReadonly ? undefined : requesterUserTools.list().map((tool) => tool.name),
           lease: target.lease,
           spawnPolicy: target.spawnPolicy,
+          dispatchDecision: target.decision,
         },
         labels: {
           ...relationshipLabels,
@@ -559,6 +563,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       thinkingEffortSource: data.thinkingEffortSource,
       routeDetached: data.routeDetached,
       profileSource: data.profileSource,
+      dispatchDecision: data.dispatchDecision,
       effectiveProfile,
       meta,
     };

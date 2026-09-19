@@ -92,6 +92,52 @@ describe('subagent capability final bindings', () => {
     expect(unrestricted.aliases).toContain('expensive');
   });
 
+  it('projects advisory deviations while strict mode retains legacy target visibility', () => {
+    const preferred = helper({ name: 'preferred' });
+    const alternate = helper({ name: 'alternate' });
+    const catalog = {
+      get: (name: string) => [preferred, alternate].find((profile) => profile.name === name),
+      list: () => [preferred, alternate],
+      getDefault: () => preferred,
+      resolveSelection: ({ profile }: { readonly profile?: string }) => {
+        const selected = [preferred, alternate].find((candidate) => candidate.name === profile)!;
+        return { profile: selected, baseProfile: selected };
+      },
+    };
+    const base = { catalog, profiles: [preferred, alternate], routes: [] };
+    const advisory = projectSubagentCapabilities({
+      ...base,
+      caller: {
+        profileName: 'lead',
+        subagentPolicy: 'advisory',
+        subagentDeclaration: { kind: 'set', names: ['preferred'] },
+        subagents: ['preferred'],
+      },
+    }, services);
+    expect(advisory.find((target) => target.profile === 'preferred')).toMatchObject({
+      dispatchPolicy: 'advisory', recommendationStatus: 'preferred', dispatchAllowed: true,
+    });
+    expect(advisory.find((target) => target.profile === 'alternate')).toMatchObject({
+      dispatchPolicy: 'advisory', recommendationStatus: 'allowed_nonpreferred',
+      advisoryDeviation: true, dispatchAllowed: true,
+    });
+
+    const strict = projectSubagentCapabilities({
+      ...base,
+      caller: {
+        profileName: 'lead',
+        subagentPolicy: 'strict',
+        subagentDeclaration: { kind: 'set', names: ['preferred'] },
+        subagents: ['preferred'],
+      },
+    }, services);
+    expect(strict.find((target) => target.profile === 'preferred')).toMatchObject({
+      dispatchPolicy: 'strict', recommendationStatus: 'preferred', dispatchAllowed: true,
+      defaultsAvailable: true,
+    });
+    expect(strict.find((target) => target.profile === 'alternate')).toBeUndefined();
+  });
+
   it('CAP-R1 rejects a normalized model default outside the effort allowlist and keeps the visible target', () => {
     const [conflict] = project(helper({ allowedEfforts: ['high'] }));
     expect(conflict).toMatchObject({ profile: 'helper', defaultsAvailable: false });

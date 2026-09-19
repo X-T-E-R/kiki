@@ -2,9 +2,15 @@ import { Error2, ErrorCodes } from '#/errors';
 import type { IModelService } from '#/kosong/model/model';
 import { resolveProfileThinkingDefault } from './modelProfileOverlay';
 import {
+  evaluateSubagentDispatchDecision,
   listAvailableSubagentTargets as listTargets,
   resolveSnapshotProfileDefinition as resolveSnapshotDefinition,
   subagentDispatchAllowed as dispatchAllowed,
+  type SubagentDispatchDecision,
+  type SubagentRecommendationFallback,
+  type SubagentRecommendationStatus,
+  type SubagentSelectionKind,
+  type SubagentSelectionOrigin,
 } from '@kiki/agent-profiles/subagentDispatch';
 
 import type {
@@ -19,10 +25,7 @@ import {
   type CallerLeaseOwner,
 } from './applySubagentLease';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
-import {
-  subagentAllowlistFor,
-  profileNotAllowedMessage,
-} from './profile-shared';
+import { profileNotAllowedMessage } from './profile-shared';
 import {
   scopedBinding,
   type AgentProfileCatalogSnapshot,
@@ -31,6 +34,8 @@ import {
 export interface SubagentDispatchCaller {
   readonly profileDefinitionId?: string;
   readonly profileName?: string;
+  readonly subagentPolicy?: AgentProfile['subagentPolicy'];
+  readonly subagentDeclaration?: AgentProfile['subagentDeclaration'];
   readonly subagents?: readonly string[];
 }
 
@@ -55,11 +60,15 @@ export interface ResolveSubagentDispatchInput {
   readonly profileName?: string;
   readonly routeId?: string;
   readonly snapshot?: AgentProfileCatalogSnapshot;
+  readonly selectionKind?: SubagentSelectionKind;
+  readonly selectionOrigin?: SubagentSelectionOrigin;
+  readonly fallback?: SubagentRecommendationFallback;
 }
 
 export interface ResolvedSubagentDispatch {
   readonly selection: SubagentDispatchSelection;
   readonly scoped: boolean;
+  readonly decision: SubagentDispatchDecision;
   readonly snapshot?: AgentProfileCatalogSnapshot;
 }
 
@@ -74,6 +83,15 @@ export interface AvailableSubagentTargets {
   readonly routes: readonly AgentProfileRouteCatalogEntry[];
 }
 
+export { evaluateSubagentDispatchDecision };
+export type {
+  SubagentDispatchDecision,
+  SubagentRecommendationFallback,
+  SubagentRecommendationStatus,
+  SubagentSelectionKind,
+  SubagentSelectionOrigin,
+};
+
 export function subagentDispatchAllowed(
   catalog: Pick<SubagentDispatchCatalog, 'getDefault'>,
   caller: SubagentDispatchCaller,
@@ -83,16 +101,28 @@ export function subagentDispatchAllowed(
 }
 
 export function assertSubagentDispatchAllowed(
-  catalog: Pick<SubagentDispatchCatalog, 'getDefault'>,
-  caller: SubagentDispatchCaller,
-  profileName: string,
+  decision: SubagentDispatchDecision,
 ): void {
-  const allowlist = subagentAllowlistFor(catalog, caller);
-  if (allowlist === undefined || allowlist.includes(profileName)) return;
+  if (decision.allowed) return;
+  const names = decision.declaration.kind === 'set' ? decision.declaration.names : [];
+  if (decision.policyMode === 'legacy') {
+    throw new Error2(
+      ErrorCodes.AGENT_TYPE_NOT_ALLOWED,
+      profileNotAllowedMessage(decision.requestedProfile, names),
+      { details: { profileName: decision.requestedProfile, allowlist: names } },
+    );
+  }
+  const allowed = names.length === 0 ? 'none' : names.join(', ');
   throw new Error2(
     ErrorCodes.AGENT_TYPE_NOT_ALLOWED,
-    profileNotAllowedMessage(profileName, allowlist),
-    { details: { profileName, allowlist } },
+    `Profile "${decision.requestedProfile}" is not allowed by strict subagent policy. Allowed profiles: ${allowed}.`,
+    {
+      details: {
+        profileName: decision.requestedProfile,
+        allowlist: names,
+        dispatchDecision: decision,
+      },
+    },
   );
 }
 
@@ -193,8 +223,18 @@ export function resolveSubagentDispatch(
       route,
     };
   }
-  assertSubagentDispatchAllowed(catalog, caller, selection.baseProfile.name);
-  return { selection, scoped, snapshot };
+  const decision = evaluateSubagentDispatchDecision(
+    catalog,
+    caller,
+    selection.baseProfile.name,
+    {
+      selectionKind: input.selectionKind ?? (selection.route !== undefined ? 'route' : scoped ? 'scoped' : 'profile'),
+      selectionOrigin: input.selectionOrigin,
+      fallback: input.fallback,
+    },
+  );
+  assertSubagentDispatchAllowed(decision);
+  return { selection, scoped, decision, snapshot };
 }
 
 export function resolveSubagentTarget(

@@ -11,6 +11,7 @@ import {
   DEFAULT_AGENT_PROFILE_NAME,
   type EnvironmentDisclosureSnapshot,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { evaluateSubagentDispatchDecision } from '#/app/agentProfileCatalog/subagentDispatch';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -407,6 +408,38 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       await readRecords(),
     );
     expect(activeToolsOf(replay.agentState)).toBeUndefined();
+    replay.ix.dispose();
+  });
+
+  it('replays a legacy profile bind without reinterpreting its allowlist as advisory', async () => {
+    svc.applyBindingSnapshot({
+      profileName: 'legacy-parent',
+      thinkingLevel: 'off',
+      systemPrompt: 'legacy',
+      subagents: ['explore'],
+    });
+    const records = await readRecords();
+    expect(records).toContainEqual(expect.objectContaining({
+      type: 'profile.bind',
+      subagents: ['explore'],
+    }));
+    const replayKey = 'profile-replay-legacy-subagent-policy';
+    const replay = buildHost(replayKey);
+    await restoreTestEventDispatcher(
+      replay.dispatcher,
+      replay.log,
+      testWireScope(SCOPE, replayKey),
+      records,
+    );
+    const data = replay.svc.data();
+    expect(data.subagentPolicy).toBeUndefined();
+    expect(data.subagentDeclaration).toBeUndefined();
+    expect(data.subagents).toEqual(['explore']);
+    expect(evaluateSubagentDispatchDecision(
+      { getDefault: () => data as never },
+      data,
+      'reviewer',
+    )).toMatchObject({ policyMode: 'legacy', recommendationStatus: 'blocked', allowed: false });
     replay.ix.dispose();
   });
 

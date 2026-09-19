@@ -1,6 +1,7 @@
 ---
 name: general
 description: Bounded general-purpose subagent for analysis, implementation, verification, and writing. Cannot spawn further agents.
+subagent_policy: strict
 whenToUse: 'Use this agent when the delegated task does not name a more specific role: bounded analysis, code changes, command execution, verification, research synthesis, or writing. It has file-editing and shell tools but no agent-coordination tools, so it cannot delegate further.'
 tools:
   - Read

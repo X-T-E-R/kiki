@@ -1663,6 +1663,15 @@ export interface AgentStateSnapshot {
     readonly agentsMdPaths?: readonly string[];
     readonly disallowedTools?: readonly string[];
     readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+    readonly subagentPolicy?: 'strict' | 'advisory';
+    readonly subagentDeclaration?: {
+      readonly kind: 'inherit';
+    } | {
+      readonly kind: 'all';
+    } | {
+      readonly kind: 'set';
+      readonly names: readonly string[];
+    };
     readonly subagents?: readonly string[];
     readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
       readonly source?: undefined;
@@ -1733,6 +1742,26 @@ export interface AgentStateSnapshot {
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
       }[];
     }>>;
+    readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
+      readonly version: 1;
+      readonly policyMode: /* EffectiveAgentSubagentPolicy — packages/agent-profiles/src/agentProfile.ts */ 'strict' | 'advisory' | 'legacy';
+      readonly policySource: 'profile' | 'legacy';
+      readonly declaration: /* SubagentDeclaration — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly kind: 'inherit';
+      } | {
+        readonly kind: 'all';
+      } | {
+        readonly kind: 'set';
+        readonly names: readonly string[];
+      };
+      readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'route' | 'scoped' | 'profile_file';
+      readonly selectionOrigin: /* SubagentSelectionOrigin — packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
+      readonly requestedProfile: string;
+      readonly recommendationStatus: /* SubagentRecommendationStatus — packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
+      readonly advisoryDeviation: boolean;
+      readonly allowed: boolean;
+      readonly fallback?: 'no-recommendations' | 'recommended-unavailable';
+    };
     readonly spawnPolicy?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
       readonly allowedModels?: readonly string[];
       readonly denyModels?: readonly string[];
@@ -1857,6 +1886,15 @@ export interface AgentStateSnapshot {
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
         readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+        readonly subagentPolicy?: 'strict' | 'advisory';
+        readonly subagentDeclaration?: {
+          readonly kind: 'inherit';
+        } | {
+          readonly kind: 'all';
+        } | {
+          readonly kind: 'set';
+          readonly names: readonly string[];
+        };
         readonly subagents?: readonly string[];
         readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
           readonly source?: undefined;
@@ -1962,10 +2000,10 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
-        readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
+        readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
         readonly prompt: string;
         readonly path: string;
-        readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
+        readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
         readonly delegationNotice?: 'off' | 'auto';
       };
       readonly routeDefinition?: /* AgentProfileRouteDefinition — packages/agent-profiles/src/agentProfile.ts */ {
@@ -1973,7 +2011,7 @@ export interface AgentStateSnapshot {
         readonly profile: string;
         readonly description: string;
         readonly whenToUse?: string;
-        readonly promptMode: /* AgentProfileRoutePromptMode — packages/agent-profiles/src/agentProfile.ts */ 'prepend' | 'append' | 'wrap' | 'inherit';
+        readonly promptMode: /* AgentProfileRoutePromptMode — packages/agent-profiles/src/agentProfile.ts */ 'inherit' | 'prepend' | 'append' | 'wrap';
         readonly prompt: string;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
@@ -1998,6 +2036,15 @@ export interface AgentStateSnapshot {
       readonly toolAllowPolicies?: readonly readonly string[][];
       readonly disallowedTools?: readonly string[];
       readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+      readonly subagentPolicy?: 'strict' | 'advisory';
+      readonly subagentDeclaration?: {
+        readonly kind: 'inherit';
+      } | {
+        readonly kind: 'all';
+      } | {
+        readonly kind: 'set';
+        readonly names: readonly string[];
+      };
       readonly subagents?: readonly string[];
       readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
         readonly source?: undefined;
@@ -2107,7 +2154,7 @@ export interface AgentStateSnapshot {
         readonly files?: readonly string[];
         readonly fields?: Readonly<Record<string, string>>;
       }[];
-      readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
+      readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
       readonly systemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
         readonly cwd?: string;
         readonly cwdListing?: string;
@@ -2184,6 +2231,15 @@ export interface AgentStateSnapshot {
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
           readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly subagentPolicy?: 'strict' | 'advisory';
+          readonly subagentDeclaration?: {
+            readonly kind: 'inherit';
+          } | {
+            readonly kind: 'all';
+          } | {
+            readonly kind: 'set';
+            readonly names: readonly string[];
+          };
           readonly subagents?: readonly string[];
           readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;
@@ -2289,10 +2345,10 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
-          readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
+          readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
           readonly prompt: string;
           readonly path: string;
-          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
+          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
           readonly delegationNotice?: 'off' | 'auto';
         };
         readonly callerCeiling?: Pick</* ProfileData — packages/agent-core-v2/src/agent/profile/profile.ts */ {
@@ -2310,6 +2366,15 @@ export interface AgentStateSnapshot {
           readonly toolAllowPolicies?: readonly readonly string[][];
           readonly disallowedTools?: readonly string[];
           readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly subagentPolicy?: 'strict' | 'advisory';
+          readonly subagentDeclaration?: {
+            readonly kind: 'inherit';
+          } | {
+            readonly kind: 'all';
+          } | {
+            readonly kind: 'set';
+            readonly names: readonly string[];
+          };
           readonly subagents?: readonly string[];
           readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;
@@ -2380,6 +2445,26 @@ export interface AgentStateSnapshot {
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             }[];
           }>>;
+          readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
+            readonly version: 1;
+            readonly policyMode: /* EffectiveAgentSubagentPolicy — packages/agent-profiles/src/agentProfile.ts */ 'strict' | 'advisory' | 'legacy';
+            readonly policySource: 'profile' | 'legacy';
+            readonly declaration: /* SubagentDeclaration — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly kind: 'inherit';
+            } | {
+              readonly kind: 'all';
+            } | {
+              readonly kind: 'set';
+              readonly names: readonly string[];
+            };
+            readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'route' | 'scoped' | 'profile_file';
+            readonly selectionOrigin: /* SubagentSelectionOrigin — packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
+            readonly requestedProfile: string;
+            readonly recommendationStatus: /* SubagentRecommendationStatus — packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
+            readonly advisoryDeviation: boolean;
+            readonly allowed: boolean;
+            readonly fallback?: 'no-recommendations' | 'recommended-unavailable';
+          };
           readonly spawnPolicy?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
@@ -2489,7 +2574,7 @@ export interface AgentStateSnapshot {
           readonly lockedThinkingEffort?: string;
           thinkingLevel: string;
           systemPrompt: string;
-        }, 'activeToolNames' | 'toolAllowPolicies' | 'disallowedTools' | 'subagents'>;
+        }, 'activeToolNames' | 'toolAllowPolicies' | 'disallowedTools' | 'subagentPolicy' | 'subagentDeclaration' | 'subagents'>;
         readonly scopedBindings: Readonly<Record<string, Readonly<Record<string, /* AgentFileScopedBinding — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly parentDefinitionId: string;
           readonly alias: string;
@@ -2545,6 +2630,15 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[];
             readonly disallowedTools?: readonly string[];
             readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+            readonly subagentPolicy?: 'strict' | 'advisory';
+            readonly subagentDeclaration?: {
+              readonly kind: 'inherit';
+            } | {
+              readonly kind: 'all';
+            } | {
+              readonly kind: 'set';
+              readonly names: readonly string[];
+            };
             readonly subagents?: readonly string[];
             readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
               readonly source?: undefined;
@@ -2650,10 +2744,10 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
-            readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
+            readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
             readonly prompt: string;
             readonly path: string;
-            readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
+            readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
             readonly delegationNotice?: 'off' | 'auto';
           };
           readonly diagnostic?: /* AgentProfileDiagnostic — packages/agent-profiles/src/scopedAgentProfile.ts */ {
@@ -2680,6 +2774,15 @@ export interface AgentStateSnapshot {
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
           readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly subagentPolicy?: 'strict' | 'advisory';
+          readonly subagentDeclaration?: {
+            readonly kind: 'inherit';
+          } | {
+            readonly kind: 'all';
+          } | {
+            readonly kind: 'set';
+            readonly names: readonly string[];
+          };
           readonly subagents?: readonly string[];
           readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;
@@ -2785,10 +2888,10 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
-          readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
+          readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
           readonly prompt: string;
           readonly path: string;
-          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit';
+          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
           readonly delegationNotice?: 'off' | 'auto';
         }>>;
         readonly dependencyIndex: Readonly<Record<string, readonly string[]>>;

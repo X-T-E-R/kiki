@@ -109,8 +109,8 @@ export async function agentCapabilities(
       const admission = evaluateDispatchAdmission(policy, 'spawn', target.executor);
       return {
         ...target,
-        launch_allowed: available && admission.allowed,
-        launch_unavailable_reason: unavailable_reason ?? admission.reason,
+        launch_allowed: target.launch_allowed !== false && available && admission.allowed,
+        launch_unavailable_reason: target.launch_unavailable_reason ?? unavailable_reason ?? admission.reason,
         execution_restriction: admission.executionRestriction,
       };
     });
@@ -136,6 +136,7 @@ export async function agentCapabilities(
     const input: SubagentCapabilityCatalog = {
       catalog: workspace.catalog,
       caller: { profileName: profile.name, profileDefinitionId: profile.definitionId,
+        subagentPolicy: profile.subagentPolicy, subagentDeclaration: profile.subagentDeclaration,
         subagents: profile.subagents, subagentLeases: profile.subagentLeases,
         spawnPolicy: profile.spawnConstraints },
       profiles: workspace.catalog.list().filter((candidate) => candidate.main !== true),
@@ -145,7 +146,8 @@ export async function agentCapabilities(
     return {
       context: 'draft', owner: { profile: profile.name }, available, unavailable_reason,
       targets: project(core, input).map((target) => ({ ...target,
-        launch_allowed: available ? undefined : false, launch_unavailable_reason: unavailable_reason })),
+        launch_allowed: target.launch_allowed === false || !available ? false : undefined,
+        launch_unavailable_reason: target.launch_unavailable_reason ?? unavailable_reason })),
       profile: {
         name: profile.name, description: profile.description,
         source: workspace.catalog.inspect(profile.name)?.sourceId,
@@ -155,6 +157,7 @@ export async function agentCapabilities(
         tools: profile.tools === undefined ? undefined : [...profile.tools],
         disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
         disabled_tool_groups: profile.disabledToolGroups === undefined ? undefined : [...profile.disabledToolGroups],
+        subagent_policy: profile.subagentPolicy ?? 'legacy',
       },
       tools: getAgentToolContributions().map(({ options }) => {
         const active = isToolActiveComposed(policy, options.name, options.source);
@@ -202,6 +205,10 @@ function project(core: Pick<Scope, 'accessor'>, input: SubagentCapabilityCatalog
     profile: target.profile, route: target.route, description: target.description, executor: target.executor,
     model_alias: target.modelAlias, model_source: target.modelSource,
     thinking_effort: target.thinkingEffort, effort_source: target.effortSource,
+    dispatch_policy: target.dispatchPolicy, recommendation_status: target.recommendationStatus,
+    advisory_deviation: target.advisoryDeviation,
     defaults_available: target.defaultsAvailable, unavailable_reason: target.unavailableReason,
+    launch_allowed: target.dispatchAllowed,
+    launch_unavailable_reason: target.dispatchAllowed ? undefined : 'Blocked by strict subagent policy',
   }));
 }

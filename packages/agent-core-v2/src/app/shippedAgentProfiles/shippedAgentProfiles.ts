@@ -4,7 +4,7 @@ import EXPLORE_PROFILE_TEXT from './explore.md?raw';
 import GENERAL_PROFILE_TEXT from './general.md?raw';
 import PLAN_PROFILE_TEXT from './plan.md?raw';
 
-export const SHIPPED_AGENT_PROFILE_BUNDLE_VERSION = 1;
+export const SHIPPED_AGENT_PROFILE_BUNDLE_VERSION = 2;
 
 export interface ShippedAgentProfileTemplate {
   readonly id: string;

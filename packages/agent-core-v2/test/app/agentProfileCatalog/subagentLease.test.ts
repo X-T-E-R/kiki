@@ -245,7 +245,57 @@ describe('resolveSubagentDispatch', () => {
       expect(isError2(error)).toBe(true);
       if (!isError2(error)) return;
       expect(error.code).toBe(ErrorCodes.AGENT_TYPE_NOT_ALLOWED);
+      expect(error.message).toBe('Profile "writer" is not allowed for this agent. Allowed profiles: none.');
       expect(error.details).toEqual({ profileName: 'writer', allowlist: [] });
+    }
+  });
+
+  it('allows an advisory named-profile deviation and records the machine decision', () => {
+    const resolved = resolveSubagentDispatch(
+      catalog,
+      {
+        profileName: 'parent',
+        subagentPolicy: 'advisory',
+        subagentDeclaration: { kind: 'set', names: ['explore'] },
+        subagents: ['explore'],
+      },
+      { profileName: 'writer' },
+    );
+    expect(resolved.decision).toEqual({
+      version: 1,
+      policyMode: 'advisory',
+      policySource: 'profile',
+      declaration: { kind: 'set', names: ['explore'] },
+      selectionKind: 'profile',
+      selectionOrigin: 'explicit',
+      requestedProfile: 'writer',
+      recommendationStatus: 'allowed_nonpreferred',
+      advisoryDeviation: true,
+      allowed: true,
+      fallback: undefined,
+    });
+  });
+
+  it.each([
+    [{ profileName: 'parent', subagentPolicy: 'strict' as const, subagents: ['explore'] }, 'strict'],
+    [{ profileName: 'parent', subagents: ['explore'] }, 'legacy'],
+  ])('keeps %s policy strict for named-profile deviations', (caller, mode) => {
+    expect(() => resolveSubagentDispatch(catalog, caller, { profileName: 'writer' })).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }),
+    );
+    try {
+      resolveSubagentDispatch(catalog, caller, { profileName: 'writer' });
+    } catch (error) {
+      expect(isError2(error)).toBe(true);
+      if (!isError2(error)) return;
+      if (mode === 'strict') {
+        expect(error.details?.['dispatchDecision']).toMatchObject({
+          policyMode: 'strict',
+          recommendationStatus: 'blocked',
+        });
+      } else {
+        expect(error.details).toEqual({ profileName: 'writer', allowlist: ['explore'] });
+      }
     }
   });
 });

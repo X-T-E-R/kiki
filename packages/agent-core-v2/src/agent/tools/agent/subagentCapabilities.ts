@@ -3,7 +3,7 @@ import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
 import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import { fillLeasePins, spawnConstraintOrigin, type CallerLeaseOwner } from '#/app/agentProfileCatalog/applySubagentLease';
-import { listAvailableSubagentTargets, resolveSubagentTarget, type SubagentDispatchCaller, type SubagentDispatchCatalog } from '#/app/agentProfileCatalog/subagentDispatch';
+import { evaluateSubagentDispatchDecision, listAvailableSubagentTargets, resolveSubagentTarget, type SubagentDispatchCaller, type SubagentDispatchCatalog, type SubagentRecommendationStatus } from '#/app/agentProfileCatalog/subagentDispatch';
 import type { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import type { IConfigService } from '#/app/config/config';
 import { ErrorCodes, isError2 } from '#/errors';
@@ -32,6 +32,10 @@ export interface SubagentCapabilityTarget {
   readonly modelSource?: 'caller-lease' | 'route' | 'profile';
   readonly thinkingEffort?: string;
   readonly effortSource?: 'caller-lease' | 'route' | 'profile' | 'model-profile' | 'model' | 'config' | 'executor';
+  readonly dispatchPolicy: 'advisory' | 'strict' | 'legacy';
+  readonly recommendationStatus: SubagentRecommendationStatus;
+  readonly advisoryDeviation: boolean;
+  readonly dispatchAllowed: boolean;
   readonly defaultsAvailable: boolean;
   readonly unavailableReason?: string;
 }
@@ -64,7 +68,19 @@ export function projectSubagentCapabilities(
   ];
 
   function projectTarget(profileName: string, routeId?: string, description?: string, executorId?: string): SubagentCapabilityTarget {
-    const identity = { profile: profileName, route: routeId, description, executor: executorId ?? 'native' };
+    const decision = evaluateSubagentDispatchDecision(input.catalog, input.caller, profileName, {
+      selectionKind: routeId === undefined ? 'profile' : 'route',
+    });
+    const identity = {
+      profile: profileName,
+      route: routeId,
+      description,
+      executor: executorId ?? 'native',
+      dispatchPolicy: decision.policyMode,
+      recommendationStatus: decision.recommendationStatus,
+      advisoryDeviation: decision.advisoryDeviation,
+      dispatchAllowed: decision.allowed,
+    };
     try {
       const target = resolveSubagentTarget(input.catalog, input.caller, {
         profileName,

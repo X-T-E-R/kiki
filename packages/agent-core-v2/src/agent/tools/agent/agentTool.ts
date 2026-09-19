@@ -36,6 +36,12 @@ import type {
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
+import {
+  evaluateSubagentDispatchDecision,
+  listAvailableSubagentTargets,
+  type SubagentRecommendationFallback,
+  type SubagentSelectionOrigin,
+} from '#/app/agentProfileCatalog/subagentDispatch';
 import { projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProjection';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
@@ -322,6 +328,50 @@ export class SubagentTool implements ISubagentTool {
     );
   }
 
+  private defaultDispatchSelection(snapshot: AgentProfileCatalogSnapshot | undefined): {
+    readonly profileName: string;
+    readonly selectionOrigin: SubagentSelectionOrigin;
+    readonly fallback?: SubagentRecommendationFallback;
+  } {
+    const caller = this.profile.data();
+    if (caller.subagentPolicy === undefined) {
+      return {
+        profileName: this.requireDefaultProfileName(),
+        selectionOrigin: 'configured-fallback',
+        fallback: 'no-recommendations',
+      };
+    }
+    const targets = listAvailableSubagentTargets(
+      this.catalog,
+      caller,
+      {
+        profiles: this.catalogProfiles(),
+        routes: this.catalogRoutes(),
+        snapshot,
+      },
+      this.models,
+    ).profiles;
+    const preferred = targets.find((profile) =>
+      evaluateSubagentDispatchDecision(this.catalog, caller, profile.name).recommendationStatus === 'preferred');
+    if (preferred !== undefined) {
+      return { profileName: preferred.name, selectionOrigin: 'recommended-default' };
+    }
+    const configured = this.requireDefaultProfileName();
+    const hasRecommendations = caller.subagentDeclaration?.kind === 'set'
+      ? caller.subagentDeclaration.names.length > 0
+      : (caller.subagents?.length ?? 0) > 0;
+    const fallback = hasRecommendations ? 'recommended-unavailable' : 'no-recommendations';
+    const selected = targets.find((profile) => profile.name === configured) ?? targets[0];
+    if (selected !== undefined) {
+      return { profileName: selected.name, selectionOrigin: 'configured-fallback', fallback };
+    }
+    throw new Error2(
+      ErrorCodes.PROFILE_UNKNOWN,
+      `No legal subagent target is available. Configured fallback: "${configured}".`,
+      { details: { configuredProfile: configured, fallback } },
+    );
+  }
+
   private async resumeProfileName(ref: string): Promise<string | undefined> {
     const target = this.lifecycle.get(ref);
     if (target !== undefined) return target.accessor.get(IAgentProfileService).data().profileName;
@@ -357,6 +407,12 @@ export class SubagentTool implements ISubagentTool {
     const resumeRef = args.resume?.trim();
     const fileTarget = args.profile_file === undefined ? undefined
       : await loadDispatchProfileFile(args.profile_file, runtime, this.workspace, this.catalog, this.profile.data(), snapshot);
+    const defaultTarget = resumeRef !== undefined && resumeRef.length > 0
+      || fileTarget !== undefined
+      || (args.profile?.length ?? 0) > 0
+      || args.route !== undefined
+      ? undefined
+      : this.defaultDispatchSelection(snapshot);
     const run: DispatchRun =
       resumeRef !== undefined && resumeRef.length > 0
         ? await this.dispatch.runOnExisting(
@@ -377,8 +433,11 @@ export class SubagentTool implements ISubagentTool {
             delegator: { kind: 'agent', agentId: this.callerAgentId },
             requesterAgentId: this.callerAgentId,
             requesterProfileData: this.profile.data(),
-            profileName: fileTarget?.profileName ?? (args.profile?.length ? args.profile : args.route === undefined ? this.requireDefaultProfileName() : undefined),
+            profileName: fileTarget?.profileName ?? (args.profile?.length ? args.profile : defaultTarget?.profileName),
             routeId: args.route,
+            selectionKind: fileTarget === undefined ? undefined : 'profile_file',
+            selectionOrigin: defaultTarget?.selectionOrigin,
+            recommendationFallback: defaultTarget?.fallback,
             snapshot: fileTarget?.snapshot ?? snapshot,
             message: args.prompt,
             name: args.name?.trim(),
@@ -411,6 +470,7 @@ export class SubagentTool implements ISubagentTool {
       thinkingEffortSource: run.child.thinkingEffortSource,
       routeDetached: run.child.routeDetached,
       profileSource: run.child.profileSource,
+      dispatchDecision: run.child.dispatchDecision,
       completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
     };
   }
@@ -581,6 +641,16 @@ function bindingResultLines(handle: SubagentHandle): string[] {
   return [
     `actual_profile: ${handle.profileName}`,
     ...(handle.profileSource === 'profile-file' ? ['profile_source: profile_file'] : []),
+    ...(handle.dispatchDecision === undefined ? [] : [
+      `dispatch_policy: ${handle.dispatchDecision.policyMode}`,
+      `selection_kind: ${handle.dispatchDecision.selectionKind}`,
+      `selection_origin: ${handle.dispatchDecision.selectionOrigin}`,
+      `recommendation_status: ${handle.dispatchDecision.recommendationStatus}`,
+      ...(handle.dispatchDecision.advisoryDeviation ? ['recommendation_deviation: true'] : []),
+      ...(handle.dispatchDecision.fallback === undefined
+        ? []
+        : [`recommendation_fallback: ${handle.dispatchDecision.fallback}`]),
+    ]),
     ...(handle.thinkingEffortSource === undefined || handle.thinkingEffort === undefined
       ? []
       : [

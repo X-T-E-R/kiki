@@ -543,8 +543,11 @@ interface ProfileBindPayload {
   toolAllowPolicies?: string[][];
   disallowedTools: string[];
   disabledToolGroups?: TOOL_GROUP_ID_SCHEMA[];
+  subagentPolicy?: 'advisory' | 'strict';
+  subagentDeclaration?: import('#/app/agentProfileCatalog/agentProfileCatalog').SubagentDeclaration;
   subagents?: string[];
   subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
   spawnPolicy?: SpawnConstraints;
   appliedLease?: SubagentLease;
   boundProfile?: import('./boundProfile').BoundProfile;

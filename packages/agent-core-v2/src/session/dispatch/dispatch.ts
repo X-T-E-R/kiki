@@ -21,6 +21,9 @@ export interface DispatchLaunchInput {
   readonly requesterProfileData?: ProfileData;
   readonly profileName?: string;
   readonly routeId?: string;
+  readonly selectionKind?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentSelectionKind;
+  readonly selectionOrigin?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentSelectionOrigin;
+  readonly recommendationFallback?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentRecommendationFallback;
   readonly snapshot?: AgentProfileCatalogSnapshot;
   readonly message: string;
   readonly name?: string;
@@ -76,6 +79,7 @@ export interface DispatchChild {
   readonly thinkingEffortSource?: ProfileData['thinkingEffortSource'];
   readonly routeDetached?: boolean;
   readonly profileSource?: ProfileData['profileSource'];
+  readonly dispatchDecision?: ProfileData['dispatchDecision'];
   readonly effectiveProfile?: AgentProfile;
   readonly meta?: AgentMeta;
 }

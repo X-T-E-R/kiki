@@ -93,6 +93,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
       tools: data.activeToolNames === undefined ? undefined : [...data.activeToolNames],
       disallowed_tools: data.disallowedTools === undefined ? undefined : [...data.disallowedTools],
       disabled_tool_groups: data.disabledToolGroups === undefined ? undefined : [...data.disabledToolGroups],
+      subagent_policy: data.subagentPolicy ?? 'legacy',
       execution_restriction: data.executionRestriction,
       locked_model: data.lockedModelAlias, locked_effort: data.lockedThinkingEffort,
       tool_allow_policies: data.toolAllowPolicies?.map((policy) => [...policy]),

@@ -1,6 +1,6 @@
 import { dirname } from 'pathe';
 
-import { AgentSystemPromptModeSchema } from './agentProfile';
+import { AgentSubagentPolicySchema, AgentSystemPromptModeSchema } from './agentProfile';
 import type { AgentFileDefinition, AgentFileSource } from './agentFileTypes';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
 import { parsePromptOverrides, type PromptOverrides } from './promptOverrides';
@@ -43,6 +43,7 @@ const AGENT_FILE_KEYS = new Set([
   'tools',
   'disallowedTools',
   'disabled-tool-groups',
+  'subagent_policy',
   'subagents',
   'spawn_constraints',
   'executor',
@@ -155,10 +156,11 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     options.path,
   );
   const disabledToolGroups = parseDisabledToolGroups(frontmatter['disabled-tool-groups'], options.path);
+  const subagentPolicy = parseSubagentPolicy(frontmatter['subagent_policy'], options.path);
   let parsedSubagents;
   let spawnConstraints;
   try {
-    parsedSubagents = parseSubagentList(frontmatter['subagents'], options.path);
+    parsedSubagents = parseSubagentList(frontmatter['subagents'], options.path, subagentPolicy);
     spawnConstraints = parseSpawnConstraints(frontmatter['spawn_constraints'], options.path);
   } catch (error) {
     if (error instanceof SubagentLeaseParseError) {
@@ -166,6 +168,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     }
     throw error;
   }
+  const subagentDeclaration = parsedSubagents.declaration;
   const subagents = parsedSubagents.subagents;
   const subagentLeases = parsedSubagents.subagentLeases;
   const executor = optionalNonEmptyStringField(
@@ -281,6 +284,8 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     tools,
     disallowedTools,
     disabledToolGroups,
+    ...(subagentPolicy === undefined ? {} : { subagentPolicy }),
+    ...(subagentDeclaration === undefined ? {} : { subagentDeclaration }),
     subagents,
     subagentLeases,
     spawnConstraints,
@@ -596,6 +601,18 @@ function parseDelegationNotice(
   if (value === 'auto' || value === 'off') return value;
   throw new AgentFileParseError(
     `Frontmatter field "delegation_notice" in ${filePath} must be "auto" or "off"`,
+  );
+}
+
+function parseSubagentPolicy(
+  value: unknown,
+  filePath: string,
+): AgentFileDefinition['subagentPolicy'] {
+  if (value === undefined) return undefined;
+  const parsed = AgentSubagentPolicySchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  throw new AgentFileParseError(
+    `Frontmatter field "subagent_policy" in ${filePath} must be "advisory" or "strict"`,
   );
 }
 

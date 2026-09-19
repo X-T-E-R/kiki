@@ -1,8 +1,10 @@
 import type {
   AgentModelProfile,
   AgentModelProfilePromptMode,
+  AgentSubagentPolicy,
   RequestParams,
   ServiceTier,
+  SubagentDeclaration,
 } from './agentProfile';
 
 export class SubagentLeaseParseError extends Error {
@@ -56,6 +58,7 @@ export interface SpawnConstraints {
 }
 
 export interface ParsedSubagentField {
+  readonly declaration?: SubagentDeclaration;
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
 }
@@ -106,11 +109,29 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'max_completion_tokens',
 ]);
 
-export function parseSubagentList(value: unknown, filePath: string): ParsedSubagentField {
-  if (value === undefined || value === null) return {};
+export function parseSubagentList(
+  value: unknown,
+  filePath: string,
+  policy?: AgentSubagentPolicy,
+): ParsedSubagentField {
+  if (value === undefined) {
+    return policy === undefined ? {} : { declaration: { kind: 'inherit' } };
+  }
+  if (value === null) {
+    if (policy === undefined) return {};
+    throw new SubagentLeaseParseError(
+      `Frontmatter field "subagents" in ${filePath} cannot be null when subagent_policy is set; omit it to inherit, use [] for none, or ["*"] for all`,
+    );
+  }
   if (typeof value === 'string') {
     const names = splitCommaList(value);
-    return names === undefined ? {} : { subagents: normalizeAllowlist(names) };
+    if (names === undefined) {
+      if (policy === undefined) return {};
+      throw new SubagentLeaseParseError(
+        `Frontmatter field "subagents" in ${filePath} cannot be empty when subagent_policy is set; omit it to inherit, use [] for none, or ["*"] for all`,
+      );
+    }
+    return parsedSubagentNames(names, undefined, filePath, policy);
   }
   if (!Array.isArray(value)) {
     throw new SubagentLeaseParseError(
@@ -137,7 +158,7 @@ export function parseSubagentList(value: unknown, filePath: string): ParsedSubag
         `Frontmatter field "subagents[${index}]" in ${filePath} must be a non-empty string or a mapping`,
       );
     }
-    const lease = parseLeaseMapping(item, filePath, index);
+    const lease = parseLeaseMapping(item, filePath, index, policy !== undefined);
     recordName(lease.name, seen, filePath, index);
     names.push(lease.name);
     Object.defineProperty(leases, lease.name, {
@@ -147,9 +168,30 @@ export function parseSubagentList(value: unknown, filePath: string): ParsedSubag
       writable: true,
     });
   }
+  return parsedSubagentNames(names, leases, filePath, policy);
+}
+
+function parsedSubagentNames(
+  names: readonly string[],
+  leases: Readonly<Record<string, SubagentLease>> | undefined,
+  filePath: string,
+  policy: AgentSubagentPolicy | undefined,
+): ParsedSubagentField {
+  const hasWildcard = names.includes('*');
+  if (policy !== undefined && hasWildcard && names.length !== 1) {
+    throw new SubagentLeaseParseError(
+      `Frontmatter field "subagents" in ${filePath} cannot mix "*" with named recommendations when subagent_policy is set`,
+    );
+  }
+  const declaration: SubagentDeclaration | undefined = policy === undefined
+    ? undefined
+    : hasWildcard
+      ? { kind: 'all' }
+      : { kind: 'set', names };
   return {
+    ...(declaration === undefined ? {} : { declaration }),
     subagents: normalizeAllowlist(names),
-    ...(Object.keys(leases).length === 0 ? {} : { subagentLeases: leases }),
+    ...(leases === undefined || Object.keys(leases).length === 0 ? {} : { subagentLeases: leases }),
   };
 }
 
@@ -202,6 +244,7 @@ function parseLeaseMapping(
   item: Record<string, unknown>,
   filePath: string,
   index: number,
+  strictSyntax: boolean,
 ): SubagentLease {
   for (const key of Object.keys(item)) {
     if (FORBIDDEN_LEASE_KEYS.has(key)) {
@@ -261,7 +304,20 @@ function parseLeaseMapping(
   const allowedEfforts = openIfEmpty(
     parseStringList(item['allowed_efforts'], `${prefix}.allowed_efforts`, filePath),
   );
-  const rawSubagents = parseStringList(item['subagents'], `${prefix}.subagents`, filePath);
+  const rawSubagentValue = item['subagents'];
+  const rawSubagents = parseStringList(rawSubagentValue, `${prefix}.subagents`, filePath);
+  if (strictSyntax && Object.hasOwn(item, 'subagents')) {
+    if (rawSubagentValue === null || rawSubagents === undefined) {
+      throw new SubagentLeaseParseError(
+        `Frontmatter field "${prefix}.subagents" in ${filePath} cannot be null or empty when subagent_policy is set`,
+      );
+    }
+    if (rawSubagents.includes('*') && rawSubagents.length !== 1) {
+      throw new SubagentLeaseParseError(
+        `Frontmatter field "${prefix}.subagents" in ${filePath} cannot mix "*" with named entries when subagent_policy is set`,
+      );
+    }
+  }
   const subagents =
     rawSubagents === undefined ? undefined : rawSubagents.includes('*') ? null : rawSubagents;
   return {

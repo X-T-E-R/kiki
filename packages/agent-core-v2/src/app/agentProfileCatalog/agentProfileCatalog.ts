@@ -18,9 +18,12 @@ export {
   type AgentProfileRoutePromptMode,
   type AgentProfileSummaryPolicy,
   type AgentRecommendedModel,
+  type AgentSubagentPolicy,
   type AgentSystemPromptMode,
+  type EffectiveAgentSubagentPolicy,
   type EnvironmentDisclosureSnapshot,
   type ResolvedAgentProfileRoute,
+  type SubagentDeclaration,
   type SystemPromptRenderResult,
 } from '@kiki/agent-profiles/agentProfile';
 

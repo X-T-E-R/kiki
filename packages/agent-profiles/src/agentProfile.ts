@@ -13,6 +13,14 @@ export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
 export const AgentSystemPromptModeSchema = z.enum(['replace', 'prepend', 'append', 'inherit']);
 export type AgentSystemPromptMode = z.infer<typeof AgentSystemPromptModeSchema>;
 
+export const AgentSubagentPolicySchema = z.enum(['advisory', 'strict']);
+export type AgentSubagentPolicy = z.infer<typeof AgentSubagentPolicySchema>;
+export type EffectiveAgentSubagentPolicy = AgentSubagentPolicy | 'legacy';
+export type SubagentDeclaration =
+  | { readonly kind: 'inherit' }
+  | { readonly kind: 'all' }
+  | { readonly kind: 'set'; readonly names: readonly string[] };
+
 export type AgentModelProfilePromptMode = 'prepend' | 'append' | 'wrap';
 
 export interface AgentModelParameters {
@@ -88,6 +96,8 @@ export interface AgentProfile extends AgentModelParameters {
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly disabledToolGroups?: readonly ToolGroupId[];
+  readonly subagentPolicy?: AgentSubagentPolicy;
+  readonly subagentDeclaration?: SubagentDeclaration;
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;

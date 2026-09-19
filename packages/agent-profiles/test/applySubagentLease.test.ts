@@ -132,6 +132,26 @@ describe('applyLease', () => {
     expect(applied.subagents).toBeUndefined();
   });
 
+  it('keeps legacy replacement while preventing explicit strict policy widening', () => {
+    expect(applyLease(child({ subagents: [] }), { name: 'explore', subagents: null }).subagents)
+      .toBeUndefined();
+    expect(applyLease(child({ subagentPolicy: 'strict', subagents: [] }), {
+      name: 'explore', subagents: null,
+    })).toMatchObject({ subagentPolicy: 'strict', subagents: [] });
+    expect(applyLease(child({ subagentPolicy: 'advisory', subagents: ['explore'] }), {
+      name: 'explore', subagents: ['reviewer'],
+    })).toMatchObject({
+      subagentPolicy: 'advisory',
+      subagentDeclaration: { kind: 'set', names: ['reviewer'] },
+      subagents: ['reviewer'],
+    });
+    const routed = resolveAgentProfileRoute({
+      id: 'explore.open', profile: 'explore', description: 'open', promptMode: 'inherit', prompt: '',
+      subagents: undefined, overriddenFields: ['subagents'], path: '/agents/.routes/explore/open.md',
+    }, child({ subagentPolicy: 'strict', subagents: [] }));
+    expect(routed.effectiveProfile).toMatchObject({ subagentPolicy: 'strict', subagents: [] });
+  });
+
   it('overrides a child model pin with the lease pin', () => {
     const applied = applyLease(child({ modelAlias: 'gpt-5.6-sol' }), {
       name: 'explore',

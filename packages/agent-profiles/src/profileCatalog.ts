@@ -231,20 +231,32 @@ function resolveInheritedCandidate(
 ): AgentProfile {
   const candidate = candidates[index]?.profile;
   if (candidate === undefined) throw new AgentProfileInheritanceError('unknown');
-  if (candidate.systemPromptMode !== 'inherit') return candidate;
+  const inheritsPrompt = candidate.systemPromptMode === 'inherit';
+  const inheritsSubagents = candidate.subagentDeclaration?.kind === 'inherit';
+  if (!inheritsPrompt && !inheritsSubagents) return candidate;
   const lower = candidates[index + 1] === undefined
     ? undefined
     : resolveInheritedCandidate(candidates, index + 1);
-  if (lower === undefined) throw new AgentProfileInheritanceError(candidate.name);
-  const lowerLayers = lower.promptOverrideLayers
-    ?? (lower.promptOverrides === undefined ? [] : [lower.promptOverrides]);
+  if (inheritsPrompt && lower === undefined) throw new AgentProfileInheritanceError(candidate.name);
+  let resolved = candidate;
+  if (inheritsSubagents && lower !== undefined) {
+    resolved = {
+      ...resolved,
+      subagentDeclaration: lower.subagentDeclaration,
+      subagents: lower.subagents,
+      subagentLeases: lower.subagentLeases,
+    };
+  }
+  if (!inheritsPrompt) return resolved;
+  const lowerLayers = lower!.promptOverrideLayers
+    ?? (lower!.promptOverrides === undefined ? [] : [lower!.promptOverrides]);
   const promptOverrideLayers = candidate.promptOverrides === undefined
     ? lowerLayers
     : [...lowerLayers, candidate.promptOverrides];
   return {
-    ...candidate,
+    ...resolved,
     promptOverrideLayers,
-    systemPrompt: lower.systemPrompt,
-    renderSystemPrompt: lower.renderSystemPrompt,
+    systemPrompt: lower!.systemPrompt,
+    renderSystemPrompt: lower!.renderSystemPrompt,
   };
 }

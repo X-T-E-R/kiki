@@ -48,12 +48,21 @@ export function applyLease(
   const toolAllowPolicies = toolsDeclared ? undefined : profile.toolAllowPolicies;
   const disallowedTools =
     lease.disallowedTools !== undefined ? lease.disallowedTools : profile.disallowedTools;
-  const subagents =
+  const subagentsDeclared = lease.subagents !== undefined;
+  const overlaidSubagents =
     lease.subagents === null
       ? undefined
       : lease.subagents !== undefined
         ? lease.subagents
         : profile.subagents;
+  const subagents = profile.subagentPolicy === 'strict' && subagentsDeclared
+    ? intersectAllowlists(profile.subagents, overlaidSubagents)
+    : overlaidSubagents;
+  const subagentDeclaration = profile.subagentPolicy === undefined || !subagentsDeclared
+    ? profile.subagentDeclaration
+    : subagents === undefined
+      ? { kind: 'all' as const }
+      : { kind: 'set' as const, names: subagents };
   const serviceTier =
     lease.serviceTier === undefined
       ? profile.serviceTier
@@ -68,6 +77,7 @@ export function applyLease(
     tools,
     toolAllowPolicies,
     disallowedTools,
+    subagentDeclaration,
     subagents,
     modelAlias: lease.modelAlias ?? profile.modelAlias,
     thinkingEffort: lease.thinkingEffort ?? (lease.modelAlias === undefined ? profile.thinkingEffort

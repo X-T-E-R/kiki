@@ -1,6 +1,7 @@
 ---
 name: coder
 description: General software engineering agent — the only subagent type with file-editing tools; use it for any delegated task that must modify code.
+subagent_policy: strict
 whenToUse: Use this agent for non-trivial software engineering work that may require reading files, editing code, running commands, and returning a compact but technically complete summary to the parent agent.
 tools:
   - Bash

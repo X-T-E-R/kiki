@@ -23,6 +23,7 @@ export type SubagentHandle = {
   readonly thinkingEffortSource?: import('#/agent/profile/profile').ThinkingEffortSource;
   readonly routeDetached?: boolean;
   readonly profileSource?: import('#/agent/profile/profile').ProfileBindingSource;
+  readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
   readonly completion: Promise<SubagentCompletion>;
 };
 
