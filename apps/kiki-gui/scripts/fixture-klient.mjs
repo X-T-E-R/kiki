@@ -17,6 +17,55 @@ const terminalControls = {
   terminal_resize: terminalWire.terminalResizeMessageSchema,
 };
 
+const GOAL_SWARM_AGENT_PANEL = {
+  context: 'live',
+  owner: { profile: 'agent', agent_id: 'main' },
+  available: true,
+  profile: {
+    name: 'agent',
+    description: 'Fixture release coordinator.',
+    source: 'builtin',
+    model: 'fixture/kiki-pro',
+    thinking_effort: 'high',
+    profile_source: 'registered',
+    subagent_policy: 'advisory',
+  },
+  targets: [
+    {
+      profile: 'researcher',
+      route: 'researcher',
+      description: 'Research release evidence.',
+      executor: 'native',
+      model_alias: 'fixture/kiki-lite',
+      model_source: 'profile',
+      thinking_effort: 'low',
+      effort_source: 'model',
+      dispatch_policy: 'advisory',
+      recommendation_status: 'preferred',
+      advisory_deviation: false,
+      defaults_available: true,
+      launch_allowed: true,
+    },
+    {
+      profile: 'reviewer',
+      route: 'reviewer',
+      description: 'Review release evidence.',
+      executor: 'native',
+      model_alias: 'fixture/kiki-pro',
+      model_source: 'profile',
+      thinking_effort: 'high',
+      effort_source: 'profile',
+      dispatch_policy: 'strict',
+      recommendation_status: 'allowed_nonpreferred',
+      advisory_deviation: true,
+      defaults_available: true,
+      launch_allowed: true,
+    },
+  ],
+  tools: [],
+  skills: [],
+};
+
 function invalid(message, code = 40001) { return Object.assign(new Error(message), { code }); }
 function parse(schema, value) {
   const parsed = schema.safeParse(value);
@@ -59,7 +108,15 @@ export class FixtureKlient {
     try {
       if (url.pathname === '/api/klient/call' && method === 'POST') {
         const { procedure, params } = codec.parseKlientCallRequest(body);
-        if (procedure.scope !== 'core') {
+        const agentPanelRead =
+          procedure.scope === 'agent' &&
+          procedure.service === 'agentPanelService' &&
+          procedure.method === 'read';
+        const agentPlanStatus =
+          procedure.scope === 'agent' &&
+          procedure.service === 'agentPlanService' &&
+          procedure.method === 'status';
+        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus) {
           throw invalid(`Unsupported fixture procedure scope: ${procedure.scope}`, 40401);
         }
         const serviceContract = globalContract[procedure.service];
@@ -133,11 +190,16 @@ export class FixtureKlient {
     }));
     const key = `${procedure.service}.${procedure.method}`;
     switch (key) {
+      case 'agentPlanService.status':
+        return null;
       case 'agentPanelService.read': {
         const [query] = args;
         const session = query.session_id === undefined ? undefined : server.sessions.get(query.session_id);
         if (query.session_id !== undefined && session === undefined) throw invalid('session not found', 40401);
-        return server.scenario?.data.agentPanel ?? {
+        const seeded = server.scenario?.data.agentPanel;
+        if (seeded !== undefined) return seeded;
+        if (server.scenario?.name === 'goal-swarm') return GOAL_SWARM_AGENT_PANEL;
+        return {
           context: session === undefined ? 'draft' : 'live',
           owner: { profile: query.profile, agent_id: query.agent_id },
           available: false,
