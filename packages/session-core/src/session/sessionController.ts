@@ -85,6 +85,19 @@ interface VisibilityDocument {
   readonly removeEventListener?: (type: string, listener: () => void) => void;
 }
 
+/**
+ * The browser globals this module probes, read through `globalThis` so the file
+ * typechecks in compilation units without the DOM lib while runtime access and
+ * the `typeof` guards stay identical to a bare global reference.
+ */
+interface BrowserGlobal {
+  readonly requestAnimationFrame?: (callback: () => void) => number;
+  readonly cancelAnimationFrame?: (handle: number) => void;
+  readonly document?: VisibilityDocument;
+}
+
+const browserGlobal = globalThis as unknown as BrowserGlobal;
+
 interface PendingTranscriptBatch {
   readonly ops: TranscriptOperation[];
   cursor: TranscriptCursor;
@@ -120,10 +133,12 @@ interface RewriteHold {
 
 const browserScheduler: PublicationScheduler = {
   schedule(callback) {
+    const { requestAnimationFrame } = browserGlobal;
     if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(callback);
     return setTimeout(callback, 24);
   },
   cancel(handle) {
+    const { cancelAnimationFrame } = browserGlobal;
     if (typeof cancelAnimationFrame === 'function' && typeof handle === 'number') {
       cancelAnimationFrame(handle);
     } else {
@@ -133,7 +148,7 @@ const browserScheduler: PublicationScheduler = {
 };
 
 function browserVisibilityDocument(): VisibilityDocument | undefined {
-  return typeof document === 'undefined' ? undefined : document;
+  return browserGlobal.document;
 }
 
 function errorMessage(error: unknown, fallback: string): string {
