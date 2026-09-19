@@ -1,5 +1,119 @@
 # @moonshot-ai/kimi-code
 
+## 0.2.0
+
+### Minor Changes
+
+- [`477946a`](https://github.com/X-T-E-R/kiki/commit/477946a415efd74bf33713091fa5e0baea2004e8) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Queued agent-to-agent messages (AgentSend/AgentNotify) survive restarts, and messages whose target agent no longer exists or whose session was deleted are dropped and recorded as mailbox activity.
+
+- [`e0a6bda`](https://github.com/X-T-E-R/kiki/commit/e0a6bdaccf85add076d6d52b86e67ded0e8312e2) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - AgentSend now steers a message into the target agent's active turn when that agent is running, instead of leaving it queued until the turn ends.
+
+- [`fbf6ab2`](https://github.com/X-T-E-R/kiki/commit/fbf6ab262e3d6096dda98c95960e827b196318f4) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show messages injected into a running subagent (AgentSend) in the main timeline with a sender badge and delivery state, instead of dropping them silently.
+
+- [`7a9c1e0`](https://github.com/X-T-E-R/kiki/commit/7a9c1e0b9016f074c44dbbd42e650f146903938d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Task board cards in a terminal status (done, cancelled, superseded) can be reopened to active, in_progress, or paused through BoardWrite, the board UI status editor, and drag and drop; reopening clears the card's completedAt.
+
+- [`8ef2114`](https://github.com/X-T-E-R/kiki/commit/8ef2114f20e8876628084f01d993f8185529c513) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Trim resident transcript history and speed up session restore behind experimental flags; session idle eviction ships disabled by default.
+
+- [`9f6be46`](https://github.com/X-T-E-R/kiki/commit/9f6be463fbb98786b25abc9ebca182a43956e96e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Ship built-in agent profiles as editable files under ~/.kiki/agents/shipped/, and use a default subagent profile when none is specified.
+
+- [`b3a31fd`](https://github.com/X-T-E-R/kiki/commit/b3a31fdc539b62efd7a6bc94debf35ef07df3a4c) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Move agent communication, thread messaging, and token accounting switches out of Advanced into a dedicated Communication settings page.
+
+- [`1ab12f3`](https://github.com/X-T-E-R/kiki/commit/1ab12f3b5cfe8b2d9256792ecc3161c8cd0ece89) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add `loop_control.compaction_max_attempts` to configure the compaction retry ceiling, and fix the retry counter so alternating failure modes can no longer exceed the ceiling.
+
+- [`1ab12f3`](https://github.com/X-T-E-R/kiki/commit/1ab12f3b5cfe8b2d9256792ecc3161c8cd0ece89) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Warn at load time about `[models]` entries missing a wire-facing model name and about configuration keys for removed sections (`[secondary_model]`, legacy subagent default model keys), with pointers to the replacement settings.
+
+- [`d72ec0e`](https://github.com/X-T-E-R/kiki/commit/d72ec0e7a7a37fbe8fd6b6d9dbefefa20486dedc) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Agent detail surfaces are now fully readable: skills show their SKILL.md content on demand with type, manual-only, slash-command, and argument-hint badges plus clickable file paths; tools display their real parameter schemas instead of a hardcoded "no parameters"; and profiles get a dedicated detail view with identity, intent, declared-vs-effective model provenance, tool policies, derived capabilities, and the raw source file.
+
+- [`89c30c6`](https://github.com/X-T-E-R/kiki/commit/89c30c627c495fb61595eb8b88090287dff64d90) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Failures are now visible and actionable across the GUI: subagent cards, event rows, and the agent tree show the actual failure reason; failed turns get a danger banner with the full error and a copy button; error toasts carry code/request ID, copyable details, and retry; stopped tool calls explain why; and sidebar search initial-load failures offer retry.
+
+- [`125eaa8`](https://github.com/X-T-E-R/kiki/commit/125eaa8f6caa759f0c924153bd2e863c45ec233a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Page through glob matches with `offset` and `head_limit` instead of being limited to the first 100 matches.
+
+- [`9ded8e6`](https://github.com/X-T-E-R/kiki/commit/9ded8e6f898f1dd7e51dae999bfa4e4776d4dbaa) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add a global scheduled-tasks panel, and run scheduled tasks even when their session is not open.
+
+- [`1ab12f3`](https://github.com/X-T-E-R/kiki/commit/1ab12f3b5cfe8b2d9256792ecc3161c8cd0ece89) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Remove the 24-hour cap on goal time budgets while clamping deadline timers so very long budgets no longer risk a busy retry loop.
+
+- [`7b24b29`](https://github.com/X-T-E-R/kiki/commit/7b24b297fdcc380c6fb5333d8da2f8da4bac06b6) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add goal mode: start a message with /goal (or mark it as a goal) to get a goal card with edit, pause, and cancel controls, and choose when queued follow-up messages are appended.
+
+- [`97d01db`](https://github.com/X-T-E-R/kiki/commit/97d01dbbf2d057814669a8668a893eccc5ca7eee) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Accept HEIC, HEIF, and BMP images for providers that support them (including iPhone photos for Kimi models, also over the Anthropic protocol) instead of rejecting them as unsupported; other providers keep the previous behavior with the original bytes preserved.
+
+- [`6fffbe4`](https://github.com/X-T-E-R/kiki/commit/6fffbe4c33bec959e6292b091a523222485bde47) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Consolidate Kiki product guidance, first-run setup, configuration, search and retrieval, sessions, subagents, tasks, MCP, themes, and imports into `/kiki-ops`, while keeping profile authoring in the narrowly scoped `/kiki-profile` skill.
+
+- [`392c0c9`](https://github.com/X-T-E-R/kiki/commit/392c0c9b03fe94f5c47d5012c987f297dfc6ea83) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add entity-level editing for model providers and models in settings: each provider or model saves independently with conflict detection, so concurrent edits no longer silently overwrite each other.
+
+- [`537d5ce`](https://github.com/X-T-E-R/kiki/commit/537d5ce4d8ea11f8ea3327df1fb2f29455f97626) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add a first-run setup wizard that connects a model provider, picks language, theme and default permission mode, then lands in a session pre-filled with a `/kiki-ops` guided-configuration prompt; it can be replayed from Settings → About.
+
+- [`1ab12f3`](https://github.com/X-T-E-R/kiki/commit/1ab12f3b5cfe8b2d9256792ecc3161c8cd0ece89) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add the `KIKI_PERMISSION_MODE_REMINDER` environment variable to disable the repeated auto permission mode reminder (set it to `0`).
+
+- [`9c7bde0`](https://github.com/X-T-E-R/kiki/commit/9c7bde0895c9272b789eca44f71fa11828a02031) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show file previews and subagent panels in a tabbed workspace with fullscreen support.
+
+- [`fac8ed2`](https://github.com/X-T-E-R/kiki/commit/fac8ed2ed4fd9697f219f623f75e6fa7b55ec543) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add queued prompt reordering and remove never-started aborted prompts from the conversation timeline.
+
+- [`09fee4b`](https://github.com/X-T-E-R/kiki/commit/09fee4b1268dced3c8de4eb06131444540e83fe5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Convert images automatically when a provider accepts only certain formats, and configure each provider's accepted image formats in Settings.
+
+- [`eca3a2c`](https://github.com/X-T-E-R/kiki/commit/eca3a2c449b78cec5cdce7dda2adf8f551e4b224) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Rework the queued-message strip: editing sends the text back to the composer (send becomes confirm), removal requires a second click, and items can be reordered by drag handle or arrow keys.
+
+- [`5cf0824`](https://github.com/X-T-E-R/kiki/commit/5cf082406c3b9f14a442e0eab3a4e5632d3b7669) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add a `[retry]` config section with `max_attempts` and per-error `policies` that match an error code or name to override the attempt budget and backoff, or to opt an error out of retrying.
+
+- [`125eaa8`](https://github.com/X-T-E-R/kiki/commit/125eaa8f6caa759f0c924153bd2e863c45ec233a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Delete a session from the session picker with Ctrl+X (with an inline confirmation step).
+
+- [`97d01db`](https://github.com/X-T-E-R/kiki/commit/97d01dbbf2d057814669a8668a893eccc5ca7eee) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - AI session titles are enabled by default with a settings opt-out, and a `[session_title] model` setting (also editable in Settings) pins a model alias for title generation instead of the managed title service.
+
+- [`125eaa8`](https://github.com/X-T-E-R/kiki/commit/125eaa8f6caa759f0c924153bd2e863c45ec233a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Interrupt a running TaskWait immediately when you steer with new input instead of blocking until the wait times out; the wait returns an interrupted status and the background tasks keep running.
+
+- [`24c9413`](https://github.com/X-T-E-R/kiki/commit/24c94139ddf68453bec4ae6307632c4b2a4c6d52) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Subagents can no longer call `AskUserQuestion` and instead receive the `AgentNotify` tool to message their parent agent, and agent profiles gain a `disabled-tool-groups` field to turn off built-in tool groups.
+
+- [`5a74839`](https://github.com/X-T-E-R/kiki/commit/5a7483970bc8a547c50f4956d166fc14b2ec6f25) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Align the bundled Tavily provider with the official API, adding crawl and research lanes, and remove the local credential ACL gate so nb-search works when launched from any environment.
+
+### Patch Changes
+
+- [`b4e03cc`](https://github.com/X-T-E-R/kiki/commit/b4e03cc9c73dcd24fb041cd46fd78ea592bf751f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - The agent panel now shows cache hit rate per agent and for the whole agent tree, with the raw cache read/write token counts available on hover.
+
+- [`97d01db`](https://github.com/X-T-E-R/kiki/commit/97d01dbbf2d057814669a8668a893eccc5ca7eee) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Attachment file names now survive compression, session-media offload, and transcript replay.
+
+- [`d3853ba`](https://github.com/X-T-E-R/kiki/commit/d3853bab84620779fef2d814814052973fed21ce) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Board card descriptions clamp to two lines with an inline show more/less toggle when they overflow.
+
+- [`7b337b3`](https://github.com/X-T-E-R/kiki/commit/7b337b355dbc3401f26a1cb7fa5cec122d2bc778) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - The task board now shows the real migration reason when a workspace's board storage needs a one-time cutover, instead of a generic unavailability message.
+
+- [`771d1d1`](https://github.com/X-T-E-R/kiki/commit/771d1d135e0b9a4d5e2cd86ab51e463f2c75c2b4) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Bound in-memory transcript and message-history retention so server memory stays flatter across long sessions.
+
+- [`7edfdcf`](https://github.com/X-T-E-R/kiki/commit/7edfdcf470c26d5e1188b68305d12510cb07ad10) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix the GUI to insert dropped file paths at the cursor and keep plain slash-prefixed user messages as text.
+
+- [`1ab12f3`](https://github.com/X-T-E-R/kiki/commit/1ab12f3b5cfe8b2d9256792ecc3161c8cd0ece89) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Release disposed agent scopes from the dependency graph so repeated subagent lifecycles no longer grow memory, and skip stray non-directory files when scanning the session index instead of degrading it.
+
+- [`76f04ff`](https://github.com/X-T-E-R/kiki/commit/76f04ff47c40751294acde8b281db8e90bf9ab0e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix message overlap and excess spacing when reopening timeline rows.
+
+- [`1ab12f3`](https://github.com/X-T-E-R/kiki/commit/1ab12f3b5cfe8b2d9256792ecc3161c8cd0ece89) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix the plan usage panel showing no data after the platform switched its usage payload to the quota model; both the new and legacy payload shapes are parsed.
+
+- [`97d01db`](https://github.com/X-T-E-R/kiki/commit/97d01dbbf2d057814669a8668a893eccc5ca7eee) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - MCP content the model cannot receive (unsupported media formats, oversized or undeliverable blobs) is now saved into session media with a readable path and reference instead of being dropped.
+
+- [`09fee4b`](https://github.com/X-T-E-R/kiki/commit/09fee4b1268dced3c8de4eb06131444540e83fe5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep provider and model edits from being silently lost when the catalog changes while the editor is open.
+
+- [`25127ef`](https://github.com/X-T-E-R/kiki/commit/25127ef012be934385a97a9876cd82701c100315) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fixed a crash-loop where an ambiguous model id (one name matching several configured models) re-logged its resolution warning on every lookup — over a million lines could flood the backend log, build native write-back pressure, and trip the memory watchdog into restarting the server. Resolutions are now memoized per model catalog generation and the warning logs once per id.
+
+- [`cfedc39`](https://github.com/X-T-E-R/kiki/commit/cfedc39e3554994cd5a2406c3d0b98f78a75cb25) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix WebSearch/FetchURL staying disabled on Windows when the parent process carries a polluted PSModulePath.
+
+- [`6f3b4da`](https://github.com/X-T-E-R/kiki/commit/6f3b4dabb1ca144447bb706a652438b33d2c4410) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Remove the local ACL/symlink gate on nb-search credential files; config and secrets now load without OS permission inspection.
+
+- [`125eaa8`](https://github.com/X-T-E-R/kiki/commit/125eaa8f6caa759f0c924153bd2e863c45ec233a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Silence task notifications that settle after an agent is torn down, verify search hits against their session source so deleted sessions no longer appear, highlight diff code blocks, open the browser on localhost for wildcard web binds, fix a crash with --host ::, drop stale streamed attempt state on LLM retries, and merge text deltas split by empty reasoning parts.
+
+- [`97d01db`](https://github.com/X-T-E-R/kiki/commit/97d01dbbf2d057814669a8668a893eccc5ca7eee) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Plugin marketplace version lookups time out at 5 seconds and the plugins panel paints immediately without waiting on the network.
+
+- [`97d01db`](https://github.com/X-T-E-R/kiki/commit/97d01dbbf2d057814669a8668a893eccc5ca7eee) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Print mode flushes session wire journals before exiting so trailing records are not lost on shutdown.
+
+- [`74b00d9`](https://github.com/X-T-E-R/kiki/commit/74b00d9d42deabebff045b805576a10fdc287346) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Removed the `kiki-ops.goal` built-in skill and its slash command; goal-writing guidance now lives in the `CreateGoal` tool description.
+
+- [`97d01db`](https://github.com/X-T-E-R/kiki/commit/97d01dbbf2d057814669a8668a893eccc5ca7eee) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Search sync runs under byte and time budgets with per-session failure cooldowns and escalation, and store rebuilds acquire the database lock first instead of wiping a live database out from under another process.
+
+- [`70d4c92`](https://github.com/X-T-E-R/kiki/commit/70d4c9262d96414d642ab11cd499cbee56627d1e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Opening or switching to a large cold session no longer stalls on a hidden full-session resume from the capabilities and skills panels, and agent-panel token metrics are cached per agent instead of re-scanning every agent's log on each refresh.
+
+- [`5506587`](https://github.com/X-T-E-R/kiki/commit/550658780ea75d7c10c157130bfd6f539082628a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add terminal-style task details, subagent controls, and multi-select questions with optional notes.
+
+- [`97d01db`](https://github.com/X-T-E-R/kiki/commit/97d01dbbf2d057814669a8668a893eccc5ca7eee) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - The trust prompt now defaults to "Trust this folder", and the WebBridge plugin is displayed as Kimi Browser Extension.
+
+- [`125eaa8`](https://github.com/X-T-E-R/kiki/commit/125eaa8f6caa759f0c924153bd2e863c45ec233a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Batch and cache TUI subagent progress rendering so the grid no longer recomputes every member on every frame as the member count grows.
+
+- [`a2fb108`](https://github.com/X-T-E-R/kiki/commit/a2fb108b58e19f4480a24b3e33eb309cd3884c2b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Usage accounting preserves known subtotals when some records are incomplete.
+
 ## 0.1.0
 
 ### Major Changes

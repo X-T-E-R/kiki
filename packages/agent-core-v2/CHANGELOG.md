@@ -1,5 +1,11 @@
 # @moonshot-ai/agent-core-v2
 
+## 0.4.1
+
+### Patch Changes
+
+- [`cfcc6bb`](https://github.com/X-T-E-R/kiki/commit/cfcc6bb995157fe722af341cc4562f11ff806df3) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Prevent recursive file watchers from retrying indefinitely on persistent filesystem errors.
+
 ## 0.4.0
 
 ### Minor Changes
