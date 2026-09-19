@@ -139,6 +139,24 @@ it('queries the selected identity, keeps missing billing unknown and does not re
   expect(element.textContent).not.toContain('$0');
 });
 
+it('labels forced effort, detached routes and temporary profile files', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'child' }, available: true, targets: [], tools: [], skills: [],
+    profile: {
+      name: 'temporary-reviewer', model: 'review-model', thinking_effort: 'max',
+      thinking_effort_source: 'forced', route_detached: true, profile_source: 'profile-file',
+    },
+    metrics: { child: UNKNOWN_AGENT_PANEL_METRICS },
+  });
+  harness.agents['child'] = viewState();
+
+  await render('child');
+
+  expect(element.querySelector('[data-thinking-effort-source="forced"]')?.textContent).toBe('强制');
+  expect(element.querySelector('[data-route-status="detached"]')?.textContent).toBe('路由已脱离');
+  expect(element.querySelector('[data-profile-source="profile-file"]')?.textContent).toBe('临时文件');
+});
+
 it('reports unknown instead of the routed agent todo when the tab agent has no data', async () => {
   getAgentCapabilities.mockResolvedValue({
     context: 'live', owner: { agent_id: 'ghost' }, available: false, targets: [], tools: [], skills: [], metrics: {},

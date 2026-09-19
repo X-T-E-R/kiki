@@ -107,6 +107,22 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
             >
               {identity.profile}
             </button>
+            {identity.profileSource === 'profile-file' ? (
+              <span
+                data-profile-source="profile-file"
+                className="rounded-sm border border-accent/30 bg-accent-soft px-1 text-[9px] text-accent"
+              >
+                {t('agentPanel.profileFileBadge')}
+              </span>
+            ) : null}
+            {identity.routeDetached === true ? (
+              <span
+                data-route-status="detached"
+                className="rounded-sm border border-amber-rule/40 bg-amber-card px-1 text-[9px] text-amber-ink"
+              >
+                {t('agentPanel.routeDetachedBadge')}
+              </span>
+            ) : null}
           </div>
 
           <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-ink-faint">
@@ -119,6 +135,14 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
                 <span className="truncate text-ink-faint">
                   {t('agentPanel.thinkingEffort', { value: String(effortValue) })}
                 </span>
+                {identity.thinkingEffortSource !== undefined ? (
+                  <span
+                    data-thinking-effort-source={identity.thinkingEffortSource}
+                    className="rounded-sm border border-amber-rule/40 bg-amber-card px-1 text-[9px] text-amber-ink"
+                  >
+                    {t(`agentPanel.effortSource.${identity.thinkingEffortSource}`)}
+                  </span>
+                ) : null}
               </>
             ) : null}
           </div>

@@ -10,6 +10,9 @@ export interface AgentIdentity {
   readonly label: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortSource?: 'forced' | 'adjusted';
+  readonly routeDetached?: boolean;
+  readonly profileSource?: 'registered' | 'profile-file';
   readonly status: AgentStatus;
   readonly summary?: string;
   readonly description?: string;
