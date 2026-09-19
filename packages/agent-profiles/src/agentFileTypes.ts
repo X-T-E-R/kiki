@@ -18,6 +18,7 @@ export type AgentFileSource = 'plugin' | 'project' | 'user' | 'extra' | 'explici
 export interface AgentFileRoot {
   readonly path: string;
   readonly source: AgentFileSource;
+  readonly lowPrioritySubdirectories?: readonly string[];
 }
 
 export interface AgentFileDefinition {

@@ -70,6 +70,16 @@ describe('projectAgentProfileCatalog', () => {
     expect(warnings).toHaveLength(0);
   });
 
+  it('diagnoses both paths when a contribution overrides a same-name file', () => {
+    const scanned = { ...profile('agent'), sourcePath: '/agents/agent.md' };
+    const system = { ...profile('agent'), sourcePath: '/SYSTEM.md' };
+    const { result, warnings } = project([
+      { sourceId: 'user', priority: 10, contribution: { profiles: [scanned, system] } },
+    ]);
+    expect(result.snapshot.defaultProfile?.sourcePath).toBe('/SYSTEM.md');
+    expect(warnings).toEqual([expect.stringContaining('/agents/agent.md; keeping higher-priority /SYSTEM.md')]);
+  });
+
   it('anchors the main flag on the default agent profile name', () => {
     const named = profile('agent');
     const { result } = project([

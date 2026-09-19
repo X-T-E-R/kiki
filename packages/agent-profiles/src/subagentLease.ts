@@ -170,7 +170,7 @@ export function parseSpawnConstraints(
       );
     }
   }
-  const allowedModels = openIfEmpty(
+  const allowedModels = normalizeModelAllowlist(
     parseStringList(value['allowed_models'], 'spawn_constraints.allowed_models', filePath),
   );
   const denyModels = openIfEmpty(
@@ -252,7 +252,7 @@ function parseLeaseMapping(
     `${prefix}.thinking_effort`,
     filePath,
   );
-  const allowedModels = openIfEmpty(
+  const allowedModels = normalizeModelAllowlist(
     parseStringList(item['allowed_models'], `${prefix}.allowed_models`, filePath),
   );
   const denyModels = openIfEmpty(
@@ -316,6 +316,10 @@ function recordName(name: string, seen: Set<string>, filePath: string, index: nu
 function normalizeAllowlist(names: readonly string[]): readonly string[] | undefined {
   if (names.includes('*')) return undefined;
   return names;
+}
+
+export function normalizeModelAllowlist(list: readonly string[] | undefined): readonly string[] | undefined {
+  return list?.includes('*') ? undefined : list;
 }
 
 export function openIfEmpty(list: readonly string[] | undefined): readonly string[] | undefined {

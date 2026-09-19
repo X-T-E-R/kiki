@@ -800,9 +800,16 @@ body
     ).toThrow(/unknown key "rank"/);
   });
 
-  it('coerces an empty allowed_models list to unrestricted', () => {
-    const def = parse('---\nname: solo\ndescription: d\nallowed_models: []\n---\n\nbody\n');
-    expect(def.allowedModels).toBeUndefined();
+  it.each([
+    ['[]', []],
+    ['"*"', undefined],
+    ['["*"]', undefined],
+    ['[example]', ['example']],
+  ])('preserves allowed_models %s semantics for profiles, leases, and spawn constraints', (value, expected) => {
+    const def = parse(`---\nname: solo\ndescription: d\nallowed_models: ${value}\nspawn_constraints:\n  allowed_models: ${value}\nsubagents:\n  - name: worker\n    allowed_models: ${value}\n---\n\nbody\n`);
+    expect(def.allowedModels).toEqual(expected);
+    expect(def.spawnConstraints?.allowedModels).toEqual(expected);
+    expect(def.subagentLeases?.['worker']?.allowedModels).toEqual(expected);
   });
 
   it('parses profile and model-profile prompt overrides', () => {

@@ -4,7 +4,7 @@ import { AgentSystemPromptModeSchema } from './agentProfile';
 import type { AgentFileDefinition, AgentFileSource } from './agentFileTypes';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
 import { parsePromptOverrides, type PromptOverrides } from './promptOverrides';
-import { openIfEmpty, parseSpawnConstraints, parseSubagentList, SubagentLeaseParseError } from './subagentLease';
+import { normalizeModelAllowlist, openIfEmpty, parseSpawnConstraints, parseSubagentList, SubagentLeaseParseError } from './subagentLease';
 import { isToolGroupId } from './toolGroups';
 
 export class AgentFileParseError extends Error {
@@ -198,7 +198,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     'thinking_effort',
     options.path,
   );
-  const allowedModels = openIfEmpty(
+  const allowedModels = normalizeModelAllowlist(
     parseStringList(frontmatter['allowed_models'], 'allowed_models', options.path),
   );
   const denyModels = openIfEmpty(parseStringList(frontmatter['deny_models'], 'deny_models', options.path));

@@ -80,7 +80,13 @@ export function projectAgentProfileCatalog(input: {
   const ordered = [...input.entries].toSorted((a, b) => b.priority - a.priority);
   for (const entry of ordered) {
     const entryProfiles = new Map<string, AgentProfile>();
-    for (const profile of entry.contribution.profiles) entryProfiles.set(profile.name, profile);
+    for (const profile of entry.contribution.profiles) {
+      const prior = entryProfiles.get(profile.name);
+      if (prior?.sourcePath !== undefined && profile.sourcePath !== undefined && prior.sourcePath !== profile.sourcePath) {
+        input.warn(`Duplicate agent profile "${profile.name}" at ${prior.sourcePath}; keeping higher-priority ${profile.sourcePath}`);
+      }
+      entryProfiles.set(profile.name, profile);
+    }
     for (const declared of entryProfiles.values()) {
       const profile = declared.name === DEFAULT_AGENT_PROFILE_NAME && declared.main === undefined
         ? { ...declared, main: true as const }

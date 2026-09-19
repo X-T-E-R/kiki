@@ -27,6 +27,9 @@ export async function userAgentRoots(
 ): Promise<readonly AgentFileRoot[]> {
   const roots: AgentFileRoot[] = [];
   await pushFirstExisting(fs, roots, USER_BRAND_DIRS, homeDir, 'user', warn);
+  if (roots[0] !== undefined) {
+    roots[0] = { ...roots[0], lowPrioritySubdirectories: ['builtin'] };
+  }
   await pushFirstExisting(fs, roots, USER_GENERIC_DIRS, osHomeDir, 'user', warn);
   return roots;
 }

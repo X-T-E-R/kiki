@@ -112,8 +112,10 @@ describe('parseSpawnConstraints', () => {
     );
   });
 
-  it('coerces empty lists to omitted fields', () => {
-    expect(parseSpawnConstraints({ allowed_models: [] }, PATH)).toBeUndefined();
+  it('keeps empty model allowlists as deny-all and wildcards as open', () => {
+    expect(parseSpawnConstraints({ allowed_models: [] }, PATH)).toEqual({ allowedModels: [] });
+    expect(parseSpawnConstraints({ allowed_models: '*' }, PATH)).toBeUndefined();
+    expect(parseSpawnConstraints({ deny_models: [] }, PATH)).toBeUndefined();
   });
 });
 

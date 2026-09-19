@@ -29,6 +29,7 @@ export async function discoverAgentFiles(
   const byName = new Map<string, AgentFileDefinition>();
   const byRouteId = new Map<string, AgentFileDiscoveryResult['routes'][number]>();
   const skipped: SkippedAgentFile[] = [];
+  const deferredDirectories: Array<{ path: string; root: AgentFileRoot }> = [];
 
   let emittedWarnings = 0;
   let suppressedWarnings = 0;
@@ -57,8 +58,12 @@ export async function discoverAgentFiles(
         contributionRoot,
         warn: (message) => warn?.(message),
       });
-      if (!byName.has(agent.name)) {
+      const prior = byName.get(agent.name);
+      if (prior === undefined) {
         byName.set(agent.name, agent);
+      } else if (prior.path !== agent.path) {
+        const reason = `Duplicate agent profile "${agent.name}" at ${agent.path}; keeping higher-priority ${prior.path}`;
+        warnCapped(agent.path, reason);
       }
     } catch (error) {
       if (isHostFsUnavailable(error)) throw error;
@@ -94,7 +99,11 @@ export async function discoverAgentFiles(
       const entryPath = join(dirPath, entry);
       try {
         if (await isDirectoryPath(fs, entryPath)) {
-          await walk(entryPath, root, depth + 1);
+          if (depth === 0 && root.lowPrioritySubdirectories?.includes(entry)) {
+            deferredDirectories.push({ path: entryPath, root });
+          } else {
+            await walk(entryPath, root, depth + 1);
+          }
           continue;
         }
         if (!entry.endsWith('.md') || !(await isFilePath(fs, entryPath))) continue;
@@ -166,6 +175,10 @@ export async function discoverAgentFiles(
       if (isHostFsUnavailable(error)) throw error;
       warnCapped(root.path, `Skipping unreadable agent root ${root.path}: ${errorMessage(error)}`, error);
     }
+  }
+
+  for (const { path, root } of deferredDirectories) {
+    await walk(path, root, 1);
   }
 
   if (suppressedWarnings > 0) {

@@ -92,6 +92,31 @@ describe('discoverAgentFiles', () => {
     }
   });
 
+  it('scans managed subdirectories after ordinary files in every user root', async () => {
+    const brand = join(root, 'brand');
+    const generic = join(root, 'generic');
+    await mkdir(join(brand, 'builtin'), { recursive: true });
+    await mkdir(generic, { recursive: true });
+    await writeFile(join(brand, 'builtin', 'aaa.md'), agentMd('general'));
+    await writeFile(join(brand, 'builtin', 'bbb.md'), agentMd('explore'));
+    await writeFile(join(brand, 'zzz.md'), agentMd('general'));
+    await writeFile(join(generic, 'zzz.md'), agentMd('explore'));
+    const warnings: string[] = [];
+    const result = await discoverAgentFiles(hostFs, [
+      { ...fileRoot(brand, 'user'), lowPrioritySubdirectories: ['builtin'] },
+      fileRoot(generic, 'user'),
+    ], (message) => warnings.push(message));
+
+    expect(result.agents.find((agent) => agent.name === 'general')?.path).toBe(join(brand, 'zzz.md'));
+    expect(result.agents.find((agent) => agent.name === 'explore')?.path).toBe(join(generic, 'zzz.md'));
+    expect(result.skipped).toEqual([]);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain(join(brand, 'builtin', 'aaa.md'));
+    expect(warnings[0]).toContain(join(brand, 'zzz.md'));
+    expect(warnings[1]).toContain(join(brand, 'builtin', 'bbb.md'));
+    expect(warnings[1]).toContain(join(generic, 'zzz.md'));
+  });
+
   it('ignores non-markdown files', async () => {
     await writeFile(join(root, 'notes.txt'), agentMd('notes'));
 

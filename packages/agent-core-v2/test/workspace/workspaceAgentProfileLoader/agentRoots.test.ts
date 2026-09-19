@@ -89,6 +89,7 @@ describe('agentRoots', () => {
       const roots = await userAgentRoots(hostFs, root, root);
 
       expect(roots.some((r) => r.path.endsWith('/agents') && r.source === 'user')).toBe(true);
+      expect(roots[0]?.lowPrioritySubdirectories).toEqual(['builtin']);
     });
 
     it('falls back to the generic .agents/agents under osHomeDir', async () => {

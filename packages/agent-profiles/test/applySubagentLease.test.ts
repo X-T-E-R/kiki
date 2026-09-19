@@ -13,6 +13,8 @@ import {
   routePermittedByProfile,
 } from '#/applySubagentLease';
 import type { SubagentLease } from '#/subagentLease';
+import { parseAgentFileText } from '#/agentFile';
+import { agentProfileFromFile } from '#/agentProfileFromFile';
 
 function child(overrides: Partial<AgentProfile> = {}): AgentProfile {
   return normalizeAgentProfile({
@@ -110,6 +112,19 @@ describe('applyLease', () => {
     });
     expect(applied.allowedModels).toEqual([]);
     expect(isDispatchBlocked(applied)).toBe(true);
+  });
+
+  it.each([
+    'allowed_models: []',
+    'subagents:\n  - name: explore\n    allowed_models: []',
+    'spawn_constraints:\n  allowed_models: []',
+  ])('blocks parsed empty model allowlists at every policy boundary: %s', (fields) => {
+    const definition = parseAgentFileText({ path: '/agents/explore.md', source: 'user', text: `---\nname: explore\ndescription: test\n${fields}\n---\nBODY` });
+    const base = agentProfileFromFile(definition, (context) => child().renderSystemPrompt(context));
+    const applied = applySpawnPolicy(applyLease(base, definition.subagentLeases?.['explore']), definition.spawnConstraints);
+    expect(applied.allowedModels).toEqual([]);
+    expect(isDispatchBlocked(applied)).toBe(true);
+    expect(routePermittedByProfile({ modelAlias: 'example' }, applied)).toBe(false);
   });
 
   it('makes a * subagents overlay unrestricted', () => {
