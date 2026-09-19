@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
 import { basenameOf, formatBytes, previewKindOf, type FileReference } from '@kiki/session-core/composer/media';
+import type { AgentForest, SessionViewState } from '@kiki/session-core/session';
 import { useHost, type HostAdapter } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
@@ -23,21 +24,30 @@ import {
   HostFileEditorController,
   type HostFileEditorSnapshot,
 } from '../state/hostFileEditor';
+import {
+  normalizeTabInput,
+  previewTabKey,
+  type PreviewTab as PreviewTabModel,
+} from '../state/previewWorkspace';
+import { AgentPanelContainer } from './AgentPanelContainer';
 import { CodeEditor } from './CodeEditor';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Markdown } from './Markdown';
 
 export interface PreviewWorkspaceProps {
-  readonly tabs: readonly string[];
+  readonly tabs: readonly (string | PreviewTabModel)[];
   readonly active: string | null;
   readonly navigation?: FileReference;
   readonly dirtyPaths: ReadonlySet<string>;
   readonly width: number;
-  readonly onActivate: (path: string) => void;
-  readonly onClose: (path: string) => void;
-  readonly onCloseOthers: (path: string) => void;
+  readonly sessionViewState?: SessionViewState;
+  readonly agentForest?: AgentForest;
+  readonly onOpenSubagent?: (agentId: string) => void;
+  readonly onActivate: (key: string) => void;
+  readonly onClose: (key: string) => void;
+  readonly onCloseOthers: (key: string) => void;
   readonly onCloseAll: () => void;
-  readonly onMove: (path: string, targetIndex: number) => void;
+  readonly onMove: (key: string, targetIndex: number) => void;
   readonly onCollapse: () => void;
   readonly onWidthChange: (width: number, final: boolean) => void;
   readonly onOpenImage: (src: string, name?: string) => void;
@@ -92,6 +102,9 @@ export function PreviewWorkspace({
   navigation,
   dirtyPaths,
   width,
+  sessionViewState,
+  agentForest,
+  onOpenSubagent,
   onActivate,
   onClose,
   onCloseOthers,
@@ -106,10 +119,29 @@ export function PreviewWorkspace({
   sessionId,
 }: PreviewWorkspaceProps) {
   const { t } = useI18n();
-  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
-  const dragPathRef = useRef<string | null>(null);
+  const [menu, setMenu] = useState<{ tab: PreviewTabModel; x: number; y: number } | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const dragKeyRef = useRef<string | null>(null);
+
+  const normalizedTabs = useMemo(
+    () => tabs.map(normalizeTabInput),
+    [tabs],
+  );
+
+  // Esc exits fullscreen
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); };
+  }, [isFullscreen]);
 
   const startResize = (event: React.PointerEvent) => {
+    if (isFullscreen) return;
     event.preventDefault();
     const handle = event.currentTarget;
     handle.setPointerCapture(event.pointerId);
@@ -127,44 +159,88 @@ export function PreviewWorkspace({
     handle.addEventListener('pointerup', onUp);
   };
 
+  if (normalizedTabs.length === 0) {
+    return null;
+  }
+
+  const containerClasses = isFullscreen
+    ? 'fixed inset-0 z-40 flex h-screen w-screen flex-col bg-panel'
+    : `preview-workspace ${overlay ? 'preview-workspace--overlay' : ''}`;
+
+  const containerStyle = isFullscreen ? undefined : { width };
+
   return (
     <aside
       data-preview-workspace
       aria-label={t('preview.title')}
-      className={`preview-workspace ${overlay ? 'preview-workspace--overlay' : ''}`}
-      style={{ width }}
+      className={containerClasses}
+      style={containerStyle}
     >
-      <div
-        className="preview-workspace__resizer"
-        aria-hidden
-        onPointerDown={startResize}
-      />
+      {!isFullscreen ? (
+        <div
+          className="preview-workspace__resizer"
+          aria-hidden
+          onPointerDown={startResize}
+        />
+      ) : null}
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-hairline pl-2 pr-1">
         <div role="tablist" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          {tabs.map((path, index) => (
-            <PreviewTab
-              key={path}
-              path={path}
-              active={path === active}
-              dirty={dirtyPaths.has(path)}
-              mentionable={sessionId !== undefined}
-              onMention={
-                sessionId === undefined
-                  ? undefined
-                  : () => { appendToDraft(sessionId, mentionTokenFor(path, cwd)); }
-              }
-              onActivate={() => { onActivate(path); }}
-              onClose={() => { onClose(path); }}
-              onContextMenu={(x, y) => { setMenu({ path, x, y }); }}
-              onDragStart={() => { dragPathRef.current = path; }}
-              onDrop={() => {
-                const dragged = dragPathRef.current;
-                dragPathRef.current = null;
-                if (dragged !== null && dragged !== path) onMove(dragged, index);
-              }}
-            />
-          ))}
+          {normalizedTabs.map((tab, index) => {
+            const key = previewTabKey(tab);
+            const isTabActive = key === active;
+            return tab.kind === 'file' ? (
+              <PreviewFileTab
+                key={key}
+                tabKey={key}
+                path={tab.path}
+                active={isTabActive}
+                dirty={dirtyPaths.has(tab.path)}
+                mentionable={sessionId !== undefined}
+                onMention={
+                  sessionId === undefined
+                    ? undefined
+                    : () => { appendToDraft(sessionId, mentionTokenFor(tab.path, cwd)); }
+                }
+                onActivate={() => { onActivate(key); }}
+                onClose={() => { onClose(key); }}
+                onContextMenu={(x, y) => { setMenu({ tab, x, y }); }}
+                onDragStart={() => { dragKeyRef.current = key; }}
+                onDrop={() => {
+                  const dragged = dragKeyRef.current;
+                  dragKeyRef.current = null;
+                  if (dragged !== null && dragged !== key) onMove(dragged, index);
+                }}
+              />
+            ) : (
+              <PreviewPanelTab
+                key={key}
+                tabKey={key}
+                tab={tab}
+                forest={agentForest}
+                active={isTabActive}
+                onActivate={() => { onActivate(key); }}
+                onClose={() => { onClose(key); }}
+                onContextMenu={(x, y) => { setMenu({ tab, x, y }); }}
+                onDragStart={() => { dragKeyRef.current = key; }}
+                onDrop={() => {
+                  const dragged = dragKeyRef.current;
+                  dragKeyRef.current = null;
+                  if (dragged !== null && dragged !== key) onMove(dragged, index);
+                }}
+              />
+            );
+          })}
         </div>
+        <button
+          type="button"
+          onClick={() => { setIsFullscreen(!isFullscreen); }}
+          title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+          aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+          data-preview-fullscreen-toggle
+          className="shrink-0 rounded-md px-1.5 py-0.5 text-[12px] text-ink-faint transition-colors hover:text-ink"
+        >
+          {isFullscreen ? '⤢' : '⛶'}
+        </button>
         <button
           type="button"
           onClick={onCollapse}
@@ -175,29 +251,50 @@ export function PreviewWorkspace({
           »
         </button>
       </div>
-      {tabs.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center px-6 text-center text-[12px] text-ink-faint">
-          {t('preview.empty')}
-        </div>
-      ) : (
-        tabs.map((path) => (
+      {normalizedTabs.map((tab) => {
+        const key = previewTabKey(tab);
+        const isTabActive = key === active;
+        if (tab.kind === 'panel') {
+          return (
+            <div
+              key={key}
+              role="tabpanel"
+              hidden={!isTabActive}
+              className={`min-h-0 flex-1 overflow-auto p-3 ${isTabActive ? 'flex flex-col' : 'hidden'}`}
+              data-preview-tabpanel={key}
+            >
+              {sessionViewState && agentForest ? (
+                <AgentPanelContainer
+                  state={sessionViewState}
+                  forest={agentForest}
+                  agentId={tab.agentId}
+                />
+              ) : (
+                <div className="p-4 text-center text-[12px] text-ink-faint">
+                  Agent: {tab.title ?? tab.agentId}
+                </div>
+              )}
+            </div>
+          );
+        }
+        return (
           <PreviewTabView
-            key={path}
-            path={path}
-            visible={path === active}
-            navigation={navigation?.path === path && active === path ? navigation : undefined}
+            key={key}
+            path={tab.path}
+            visible={isTabActive}
+            navigation={navigation?.path === tab.path && isTabActive ? navigation : undefined}
             onOpenImage={onOpenImage}
             reportDirty={reportDirty}
           />
-        ))
-      )}
+        );
+      })}
       {menu !== null ? (
         <TabContextMenu
           menu={menu}
           cwd={cwd}
           onCloseMenu={() => { setMenu(null); }}
-          onCloseTab={() => { onClose(menu.path); }}
-          onCloseOthers={() => { onCloseOthers(menu.path); }}
+          onCloseTab={() => { onClose(previewTabKey(menu.tab)); }}
+          onCloseOthers={() => { onCloseOthers(previewTabKey(menu.tab)); }}
           onCloseAll={onCloseAll}
         />
       ) : null}
@@ -205,7 +302,8 @@ export function PreviewWorkspace({
   );
 }
 
-function PreviewTab({
+function PreviewFileTab({
+  tabKey,
   path,
   active,
   dirty,
@@ -217,6 +315,7 @@ function PreviewTab({
   onDragStart,
   onDrop,
 }: {
+  readonly tabKey: string;
   readonly path: string;
   readonly active: boolean;
   readonly dirty: boolean;
@@ -238,9 +337,10 @@ function PreviewTab({
       title={path}
       draggable
       data-preview-tab={path}
+      data-preview-tab-key={tabKey}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', path);
+        event.dataTransfer.setData('text/plain', tabKey);
         onDragStart();
       }}
       onDragOver={(event) => {
@@ -304,6 +404,87 @@ function PreviewTab({
   );
 }
 
+function PreviewPanelTab({
+  tabKey,
+  tab,
+  forest,
+  active,
+  onActivate,
+  onClose,
+  onContextMenu,
+  onDragStart,
+  onDrop,
+}: {
+  readonly tabKey: string;
+  readonly tab: Extract<PreviewTabModel, { kind: 'panel' }>;
+  readonly forest?: AgentForest;
+  readonly active: boolean;
+  readonly onActivate: () => void;
+  readonly onClose: () => void;
+  readonly onContextMenu: (x: number, y: number) => void;
+  readonly onDragStart: () => void;
+  readonly onDrop: () => void;
+}) {
+  const { t } = useI18n();
+  const node = forest?.byId[tab.agentId];
+  const name = tab.title ?? node?.label ?? tab.agentId;
+  const isBusy = node?.busy ?? false;
+
+  return (
+    <div
+      role="tab"
+      aria-selected={active}
+      title={`Agent: ${name} (${tab.agentId})`}
+      draggable
+      data-preview-tab={tabKey}
+      data-preview-tab-key={tabKey}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', tabKey);
+        onDragStart();
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        onDrop();
+      }}
+      onClick={onActivate}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onContextMenu(event.clientX, event.clientY);
+      }}
+      className={`group flex h-7 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none ${
+        active
+          ? 'border-hairline bg-paper font-medium text-ink'
+          : 'border-transparent text-ink-faint hover:text-ink-soft'
+      }`}
+    >
+      <span
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+          isBusy ? 'status-dot-busy bg-accent' : node?.status === 'failed' ? 'bg-danger' : 'bg-ink-faint/60'
+        }`}
+      />
+      <span className="min-w-0 truncate">{name}</span>
+      <button
+        type="button"
+        aria-label={`${t('common.close')} ${name}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClose();
+        }}
+        className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+        }`}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 function TabContextMenu({
   menu,
   cwd,
@@ -312,7 +493,7 @@ function TabContextMenu({
   onCloseOthers,
   onCloseAll,
 }: {
-  readonly menu: { path: string; x: number; y: number };
+  readonly menu: { tab: PreviewTabModel; x: number; y: number };
   readonly cwd: string | undefined;
   readonly onCloseMenu: () => void;
   readonly onCloseTab: () => void;
@@ -321,11 +502,6 @@ function TabContextMenu({
 }) {
   const host = useHost();
   const { t } = useI18n();
-  // Stable single attach: the parent passes inline callbacks, so depending on
-  // `onCloseMenu` would churn detach/attach on every parent render and an
-  // Escape landing in the gap would be swallowed (observed live: the trusted
-  // keydown missed the just-reattached listener). A ref keeps the handler
-  // current without re-subscribing.
   const closeRef = useRef(onCloseMenu);
   closeRef.current = onCloseMenu;
   useEffect(() => {
@@ -358,9 +534,9 @@ function TabContextMenu({
     onCloseMenu();
     runToastAction(label, action);
   };
-  const path = menu.path;
-  const relative = relativeToCwd(path, cwd);
-  const openers = host.revealPath !== undefined && host.openPath !== undefined;
+
+  const tab = menu.tab;
+
   return (
     <div
       data-preview-tab-menu
@@ -377,47 +553,69 @@ function TabContextMenu({
       <button type="button" role="menuitem" className={itemClass} onClick={() => { pick(onCloseAll); }}>
         {t('preview.closeAll')}
       </button>
-      <div className="mx-1 my-1 border-t border-hairline" />
-      <button
-        type="button"
-        role="menuitem"
-        data-menu-item="copy-relative"
-        className={itemClass}
-        onClick={() => { pickAction(t('file.copyRelativePath'), () => copyTextToClipboard(relative)); }}
-      >
-        {t('file.copyRelativePath')}
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        data-menu-item="copy-absolute"
-        className={itemClass}
-        onClick={() => { pickAction(t('file.copyAbsolutePath'), () => copyTextToClipboard(path)); }}
-      >
-        {t('file.copyAbsolutePath')}
-      </button>
-      {openers ? (
+      {tab.kind === 'file' ? (
         <>
+          <div className="mx-1 my-1 border-t border-hairline" />
           <button
             type="button"
             role="menuitem"
-            data-menu-item="show-in-folder"
+            data-menu-item="copy-relative"
             className={itemClass}
-            onClick={() => { pickAction(t('file.showInFolder'), () => host.revealPath!(path)); }}
+            onClick={() => {
+              const rel = relativeToCwd(tab.path, cwd);
+              pickAction(t('file.copyRelativePath'), () => copyTextToClipboard(rel));
+            }}
           >
-            {t('file.showInFolder')}
+            {t('file.copyRelativePath')}
           </button>
           <button
             type="button"
             role="menuitem"
-            data-menu-item="open-default-app"
+            data-menu-item="copy-absolute"
             className={itemClass}
-            onClick={() => { pickAction(t('file.openDefaultApp'), () => host.openPath!(path)); }}
+            onClick={() => { pickAction(t('file.copyAbsolutePath'), () => copyTextToClipboard(tab.path)); }}
           >
-            {t('file.openDefaultApp')}
+            {t('file.copyAbsolutePath')}
+          </button>
+          {host.revealPath !== undefined && host.openPath !== undefined ? (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                data-menu-item="show-in-folder"
+                className={itemClass}
+                onClick={() => { pickAction(t('file.showInFolder'), () => host.revealPath!(tab.path)); }}
+              >
+                {t('file.showInFolder')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-menu-item="open-default-app"
+                className={itemClass}
+                onClick={() => { pickAction(t('file.openDefaultApp'), () => host.openPath!(tab.path)); }}
+              >
+                {t('file.openDefaultApp')}
+              </button>
+            </>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <div className="mx-1 my-1 border-t border-hairline" />
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="copy-agent-id"
+            className={itemClass}
+            onClick={() => {
+              pickAction(t('preview.copyAgentId'), () => copyTextToClipboard(tab.agentId));
+            }}
+          >
+            {t('preview.copyAgentId')}
           </button>
         </>
-      ) : null}
+      )}
     </div>
   );
 }

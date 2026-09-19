@@ -98,7 +98,7 @@ describe('Markdown link menus', () => {
     const api: MediaPreviewApi = {
       cwd: 'C:/work', sessionId: undefined, openFile,
       openImage: vi.fn(), openAttachment: vi.fn(), previewTabCount: 0,
-      previewPanelOpen: false, togglePreviewPanel: vi.fn(),
+      previewPanelOpen: false, togglePreviewPanel: vi.fn(), openAgentPanel: vi.fn(),
     };
     const probe = makeRoot();
     await renderSettled(probe.root,

@@ -500,6 +500,76 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
     await openFile(probe.container, '/work/src/server.ts');
     expect(workspace().querySelector('[data-mention-file]')).toBeNull();
   });
+
+  it('supports opening and closing subagent panel tabs, auto-hiding when all tabs closed', async () => {
+    const probe = makeRoot();
+    function OpenPanelButton({ agentId, title }: { agentId: string; title?: string }) {
+      const preview = useMediaPreview();
+      return (
+        <button
+          type="button"
+          data-open-panel={agentId}
+          onClick={() => preview?.openAgentPanel(agentId, title)}
+        >
+          open panel
+        </button>
+      );
+    }
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="s1">
+        <OpenPanelButton agentId="sub-123" title="Subagent Worker" />
+      </MediaPreviewProvider>,
+    );
+    // Initially no tabs, workspace is not rendered
+    expect(document.querySelector('[data-preview-workspace]')).toBeNull();
+
+    // Open subagent panel tab
+    await act(async () => {
+      probe.container
+        .querySelector('[data-open-panel="sub-123"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(workspace()).not.toBeNull();
+    expect(tabs()).toEqual(['panel:sub-123']);
+    expect(workspace().textContent).toContain('Subagent Worker');
+
+    // Close the panel tab
+    const closeBtn = workspace().querySelector('[data-preview-tab="panel:sub-123"] button')!;
+    await act(async () => {
+      closeBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    // Auto-hidden when empty
+    expect(document.querySelector('[data-preview-workspace]')).toBeNull();
+  });
+
+  it('toggles fullscreen in preview workspace', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="s1">
+        <OpenButton path="/work/src/server.ts" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/src/server.ts');
+    const ws = workspace();
+    expect(ws.classList.contains('fixed')).toBe(false);
+
+    const toggleBtn = ws.querySelector('[data-preview-fullscreen-toggle]')!;
+    // Toggle into fullscreen
+    await act(async () => {
+      toggleBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(workspace().classList.contains('fixed')).toBe(true);
+    expect(workspace().classList.contains('inset-0')).toBe(true);
+
+    // Escape exits fullscreen
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(workspace().classList.contains('fixed')).toBe(false);
+  });
 });
 
 describe('relativeToCwd', () => {

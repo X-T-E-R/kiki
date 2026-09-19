@@ -4,9 +4,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
   markRestartRequired,
+  readSettings,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
   validateDesktopConfigDraft,
+  writeSettings,
+  type SubagentPanelOpenMode,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -17,6 +20,49 @@ import { PRIMARY_BUTTON } from '../ui';
 import { NamedAgentProfilesCard, SubagentGovernanceCard } from './AgentsSection';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
+
+function SubagentOpenModeCard() {
+  const { t } = useI18n();
+  const [settings, setSettings] = useState(readSettings);
+
+  const updateMode = (mode: SubagentPanelOpenMode) => {
+    setSettings((prev) => ({ ...prev, subagentPanelOpenMode: mode }));
+    writeSettings({ subagentPanelOpenMode: mode });
+  };
+
+  const currentMode = settings.subagentPanelOpenMode ?? 'tab';
+
+  return (
+    <SectionCard id="st-card-subagent-open-mode" title={t('st.subagentOpenMode.title')}>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <span id="subagent-open-mode-label" className="text-[12.5px] font-medium text-ink">
+            {t('st.subagentOpenMode.label')}
+          </span>
+          <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="subagent-open-mode-label">
+            {(['tab', 'fullscreen'] as SubagentPanelOpenMode[]).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                data-open-mode-choice={mode}
+                aria-pressed={currentMode === mode}
+                onClick={() => { updateMode(mode); }}
+                className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
+                  currentMode === mode
+                    ? 'border-accent bg-accent-soft text-accent'
+                    : 'border-hairline text-ink-soft hover:border-hairline-strong'
+                }`}
+              >
+                {t(`st.subagentOpenMode.${mode}`)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <Hint>{t('st.subagentOpenMode.hint')}</Hint>
+      </div>
+    </SectionCard>
+  );
+}
 
 /**
  * Subagent timeout (from the dissolved sidecar card, redesign §10.3): a
@@ -109,6 +155,7 @@ function SubagentTimeoutCard() {
 export function SubagentsSection() {
   return (
     <div className="space-y-4">
+      <SubagentOpenModeCard />
       <NamedAgentProfilesCard bucket="sub" />
       <SubagentGovernanceCard />
       <ExperimentalSection

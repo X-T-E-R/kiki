@@ -19,6 +19,8 @@ export interface MediaPreviewApi {
    * are never URI-decoded or stripped of citation suffixes; Markdown resolves
    * its href before calling this API. */
   readonly openFile: (reference: string | FileReference) => void;
+  /** Open a subagent panel tab in the preview workspace. */
+  readonly openAgentPanel: (agentId: string, title?: string) => void;
   /** Open an attachment backed by a canonical session media id. */
   readonly openAttachment: (item: MediaRef) => void;
   /** Number of open preview tabs (0 → the header toggle hides itself). */

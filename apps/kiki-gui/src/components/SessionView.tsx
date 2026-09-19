@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
-import type { PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
+import type { DeferredAppendTiming, PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
 
 import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
 import { revealSubagentCard } from './ActivityHistory';
@@ -22,6 +22,7 @@ import {
   type ConversationPhase,
   type ConversationSeat,
 } from './ConversationShell';
+import { GoalCard, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
@@ -30,6 +31,7 @@ import { SubagentDetailActions } from './SubagentDetailActions';
 import { TerminalPanel } from './TerminalPanel';
 import { Transcript, useStableForest, type TranscriptRowActions } from './Transcript';
 import { MediaPreviewProvider, PreviewToggleButton } from './mediaPreview';
+import type { MediaPreviewApi } from './mediaPreviewContext';
 import { KikiMark } from './Wordmark';
 import {
   SESSION_REWRITTEN_EVENT,
@@ -98,7 +100,7 @@ import {
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
-import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
+import { API_CODES, ApiError, isSessionNotFoundMessage, type UpdateAgentGoalInput } from '../lib/client';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { useConnection, useControllerRegistry } from '../state/connection';
@@ -1179,7 +1181,9 @@ export function SessionView({
   const [goalObjective, setGoalObjective] = useState(
     restoredComposer.goalObjective ?? initialOptionsRef.current.goalObjective ?? '',
   );
-  const [goalControl, setGoalControl] = useState<'pause' | 'resume' | 'cancel' | undefined>();
+  // Goal mode (composer toggle): the next plain message becomes the goal. A
+  // successful goal send disarms it; run-state control lives on the GoalCard.
+  const [goalMode, setGoalMode] = useState(false);
   const [modelOverride, setModelOverride] = useState(() =>
     restoredComposer.modelOverride ??
     resolveSessionModelOverride(initialOptionsRef.current.model),
@@ -1704,7 +1708,7 @@ export function SessionView({
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
-      send: (text: string, composerAttachments: readonly ComposerAttachment[]) => {
+      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string }) => {
         // Selection carry-overs ride the prompt text as plain-text prefixes —
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
@@ -1729,6 +1733,9 @@ export function SessionView({
           model: effectiveModel,
           thinking: effectiveEffort,
         });
+        // A `/goal …` prefix or an armed goal mode overrides the mode panel's
+        // objective field for this send.
+        const effectiveGoalObjective = options?.goalObjective ?? goalObjective;
         // Returned to the composer: it holds its send latch until this round
         // settles, which is what blocks a rapid duplicate send (and releases
         // for a retry when the submit fails).
@@ -1745,8 +1752,8 @@ export function SessionView({
             planMode,
             planGate,
             swarmMode,
-            goalObjective,
-            goalControl,
+            goalObjective: effectiveGoalObjective,
+            appendTiming: liveSettings.defaultAppendTiming,
           })
           .then(() => {
             writeDraft(sessionId, '');
@@ -1754,7 +1761,13 @@ export function SessionView({
             setAttachments([]);
             setQuote(null);
             setAnnotations([]);
-            setGoalControl(undefined);
+            if (options?.goalObjective !== undefined) {
+              // The sent objective is now the session goal: sync the mode
+              // panel's field with reality so a follow-up plain send does not
+              // re-assert a stale one.
+              setGoalObjective(options.goalObjective);
+            }
+            setGoalMode(false);
             if (profileSwitch.profile !== undefined) {
               setPendingProfile(undefined);
               setProfileModelTouched(false);
@@ -1944,7 +1957,7 @@ export function SessionView({
     planGate,
     swarmMode,
     goalObjective,
-    goalControl,
+    liveSettings.defaultAppendTiming,
     quote,
     annotations,
     sessionId,
@@ -2166,15 +2179,35 @@ export function SessionView({
     [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, handleRegenerate, handleForkMessage],
   );
 
+  const forestRaw = useMemo(
+    () => controller?.getForest() ?? sessionAgentForest(state),
+    [controller, state],
+  );
+  // Content-stabilized forest: rebuilt per publish above, but identical in
+  // content across streaming deltas — keep the previous object so downstream
+  // derivations (mainTranscriptBlocks) and Transcript's row/page memos are
+  // not broken by unrelated state publishes.
+  const forest = useStableForest(forestRaw);
+
+  const previewRef = useRef<MediaPreviewApi | null>(null);
+
   const openAgent = useCallback(
     (agentId: string) => {
       if (agentId === MAIN_AGENT_ID) {
         void navigate(`/s/${sessionId}`);
         return;
       }
-      void navigate(agentDetailPath(sessionId, agentId));
+      const isNarrow = typeof window !== 'undefined' && window.innerWidth < 1024;
+      const mode = liveSettings.subagentPanelOpenMode;
+      if (mode === 'fullscreen' || isNarrow || previewRef.current === null) {
+        void navigate(agentDetailPath(sessionId, agentId));
+        return;
+      }
+      const node = forest.byId[agentId];
+      const title = node?.label ?? agentId;
+      previewRef.current.openAgentPanel(agentId, title);
     },
-    [navigate, sessionId],
+    [forest, liveSettings.subagentPanelOpenMode, navigate, sessionId],
   );
   const handleLoadOlderAgent = useCallback(async (): Promise<boolean> => {
     if (selectedAgentId === undefined || controller === null) return false;
@@ -2274,6 +2307,18 @@ export function SessionView({
         pushToast({
           tone: 'error',
           text: t('queue.moveFailed', {
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        });
+      }) ?? Promise.resolve(),
+    [controller, t],
+  );
+  const handleQueuedTiming = useCallback(
+    (promptId: string, timing: DeferredAppendTiming) =>
+      controller?.setQueuedTiming(promptId, timing).catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('queue.timingFailed', {
             detail: error instanceof Error ? error.message : String(error),
           }),
         });
@@ -2400,11 +2445,74 @@ export function SessionView({
   );
   const handleCompactContext = useCallback(() => { runSessionAction('compact'); }, [runSessionAction]);
   const handleComposerSend = useCallback(
-    (text: string, composerAttachments: readonly ComposerAttachment[]) =>
-      actions?.send(text, composerAttachments),
+    (
+      text: string,
+      composerAttachments: readonly ComposerAttachment[],
+      options?: { readonly goalObjective?: string },
+    ) => actions?.send(text, composerAttachments, options),
     [actions],
   );
   const handleComposerAbort = useCallback(() => void actions?.abort(), [actions]);
+
+  // ---- goal card + recovered-queue gate (main view dock) ----
+  const handleGoalRefresh = useCallback(
+    () => client.getSessionGoal(sessionId),
+    [client, sessionId],
+  );
+  const handleGoalUpdate = useCallback(
+    (input: UpdateAgentGoalInput) => client.updateAgentGoal(sessionId, input),
+    [client, sessionId],
+  );
+  const handleGoalPause = useCallback(() => client.pauseAgentGoal(sessionId), [client, sessionId]);
+  const handleGoalResume = useCallback(() => client.resumeAgentGoal(sessionId), [client, sessionId]);
+  const handleGoalCancel = useCallback(() => client.cancelAgentGoal(sessionId), [client, sessionId]);
+
+  // Cold-recovery hold: the engine parks a queue restored from disk until a
+  // client calls resumeRecoveredQueue. There is no wire flag for the hold, so
+  // the view infers it once per mount: a cold-open queue that contains an
+  // agent_idle prompt while the agent sits idle is being held (a live queue
+  // would have drained it). Deferred-timing leftovers never trigger it, and a
+  // false positive is harmless — the confirm click is a documented no-op then.
+  // The gate is transcriptReady, not loaded: the session shell lands first
+  // with an empty queue and would latch a wrong "not held" verdict.
+  const [recoveryHold, setRecoveryHold] = useState(false);
+  const [recoveryPending, setRecoveryPending] = useState(false);
+  const recoveryEvaluatedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (recoveryEvaluatedRef.current === sessionId) {
+      // Already offered for this mount: clear as soon as the queue drains or
+      // a turn starts (another client released the hold).
+      if (recoveryHold && (state.queuedPromptIds.length === 0 || state.busy)) setRecoveryHold(false);
+      return;
+    }
+    if (!state.loaded || !state.transcriptReady || state.resyncing) return;
+    recoveryEvaluatedRef.current = sessionId;
+    const held =
+      state.queuedPromptIds.length > 0 &&
+      !state.busy &&
+      queuedItems.some((item) => (item.appendTiming ?? 'agent_idle') === 'agent_idle');
+    setRecoveryHold(held);
+  }, [sessionId, state.loaded, state.transcriptReady, state.resyncing, state.busy, state.queuedPromptIds, recoveryHold, queuedItems]);
+  const handleRecoveryConfirm = useCallback(() => {
+    setRecoveryPending(true);
+    void client
+      .resumeRecoveredQueue(sessionId)
+      .then(() => {
+        setRecoveryHold(false);
+      })
+      .catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('sv.queueRecovered.failed', {
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        });
+      })
+      .finally(() => {
+        setRecoveryPending(false);
+      });
+  }, [client, sessionId, t]);
+  const handleRecoveryDismiss = useCallback(() => { setRecoveryHold(false); }, []);
 
   const composerBusy = state.busy && state.activePromptId !== undefined;
   // The subagent page is read-only chrome over the same session: active
@@ -2441,8 +2549,7 @@ export function SessionView({
             planGate={planGate}
             swarmMode={swarmMode}
             goalObjective={goalObjective}
-            goalStatus={state.goal?.status}
-            goalControl={goalControl}
+            goalMode={goalMode}
             efforts={supportedEfforts}
             effort={effectiveEffort}
             contextUsage={
@@ -2472,7 +2579,7 @@ export function SessionView({
             onChangePlanGate={setPlanGateOverride}
             onChangeSwarmMode={setSwarmOverride}
             onChangeGoalObjective={setGoalObjective}
-            onChangeGoalControl={setGoalControl}
+            onChangeGoalMode={setGoalMode}
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}
             onAbort={handleComposerAbort}
@@ -2488,7 +2595,6 @@ export function SessionView({
     state.loaded,
     state.resyncing,
     state.resyncFailed,
-    state.goal?.status,
     state.contextBreakdown,
     composerBusy,
     composerDisabled,
@@ -2506,7 +2612,7 @@ export function SessionView({
     planGate,
     swarmMode,
     goalObjective,
-    goalControl,
+    goalMode,
     supportedEfforts,
     effectiveEffort,
     contextUsed,
@@ -2542,15 +2648,6 @@ export function SessionView({
   // below lg the rail becomes a fixed overlay (see .app-rail in index.css).
   // The app-level sidebar renders its own backdrop from App.
   const showBackdrop = railIsOverlay && railOpen;
-  const forestRaw = useMemo(
-    () => controller?.getForest() ?? sessionAgentForest(state),
-    [controller, state],
-  );
-  // Content-stabilized forest: rebuilt per publish above, but identical in
-  // content across streaming deltas — keep the previous object so downstream
-  // derivations (mainTranscriptBlocks) and Transcript's row/page memos are
-  // not broken by unrelated state publishes.
-  const forest = useStableForest(forestRaw);
   // Main-transcript projection, memoized so unrelated publishes don't rescan
   // the full block list; per-delta publishes reuse it when blocks/forest are
   // untouched.
@@ -2666,7 +2763,14 @@ export function SessionView({
       pendingInteraction: 'none',
     };
     return (
-      <MediaPreviewProvider sessionId={sessionId} cwd={state.session?.metadata?.cwd}>
+      <MediaPreviewProvider
+        sessionId={sessionId}
+        cwd={state.session?.metadata?.cwd}
+        sessionViewState={agentState}
+        agentForest={forest}
+        onOpenSubagent={openAgent}
+        apiRef={previewRef}
+      >
         {slots.header !== null
           ? createPortal(
               <>
@@ -2884,7 +2988,14 @@ export function SessionView({
   }
 
   return (
-    <MediaPreviewProvider sessionId={sessionId} cwd={state.session?.metadata?.cwd}>
+    <MediaPreviewProvider
+      sessionId={sessionId}
+      cwd={state.session?.metadata?.cwd}
+      sessionViewState={state}
+      agentForest={forest}
+      onOpenSubagent={openAgent}
+      apiRef={previewRef}
+    >
       {slots.header !== null
         ? createPortal(
             <Header
@@ -2936,6 +3047,24 @@ export function SessionView({
                 error={state.resyncError}
                 onRetry={controller === null ? undefined : () => { void controller.resync(); }}
               />
+              {state.goal !== undefined && state.goal !== null ? (
+                <GoalCard
+                  goal={state.goal}
+                  onRefresh={handleGoalRefresh}
+                  onUpdate={handleGoalUpdate}
+                  onPause={handleGoalPause}
+                  onResume={handleGoalResume}
+                  onCancel={handleGoalCancel}
+                />
+              ) : null}
+              {recoveryHold ? (
+                <RecoveryHoldBar
+                  count={state.queuedPromptIds.length}
+                  pending={recoveryPending}
+                  onConfirm={handleRecoveryConfirm}
+                  onDismiss={handleRecoveryDismiss}
+                />
+              ) : null}
               {queuedItems.length > 0 ? (
                 <QueueStrip
                   items={queuedItems}
@@ -2943,6 +3072,7 @@ export function SessionView({
                   onRemove={handleCancelQueued}
                   onEdit={handleStartQueueEdit}
                   onMove={handleMoveQueued}
+                  onChangeTiming={handleQueuedTiming}
                   editingPromptId={queueEdit?.promptId}
                   onClearAll={handleClearQueue}
                   sendNowDisabled={state.resyncing || state.resyncFailed}

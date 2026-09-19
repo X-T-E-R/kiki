@@ -28,8 +28,11 @@ import {
   EMPTY_PREVIEW_TABS,
   movePreviewTab,
   openPreviewTab,
+  previewTabKey,
+  type PreviewTab,
   type PreviewTabsState,
 } from '../state/previewWorkspace';
+import type { AgentForest, SessionViewState } from '@kiki/session-core/session';
 import { useOptionalConversationShell } from './ConversationShell';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
@@ -63,40 +66,55 @@ function readStoredWidth(): number {
 }
 
 type CloseAction =
-  | { readonly kind: 'tab'; readonly path: string }
-  | { readonly kind: 'others'; readonly path: string }
+  | { readonly kind: 'tab'; readonly key: string }
+  | { readonly kind: 'others'; readonly key: string }
   | { readonly kind: 'all' };
 
 function applyCloseAction(state: PreviewTabsState, action: CloseAction): PreviewTabsState {
   switch (action.kind) {
     case 'tab':
-      return closePreviewTab(state, action.path);
+      return closePreviewTab(state, action.key);
     case 'others':
-      return closeOtherPreviewTabs(state, action.path);
+      return closeOtherPreviewTabs(state, action.key);
     case 'all':
       return closeAllPreviewTabs();
   }
 }
 
-/** Paths an action would close; used to decide whether to confirm first. */
+/** Paths an action would close; used to decide whether to confirm first (panel tabs are not files). */
 export function affectedByClose(state: PreviewTabsState, action: CloseAction): readonly string[] {
+  const getFilePath = (tab: PreviewTab): string | undefined => (tab.kind === 'file' ? tab.path : undefined);
   switch (action.kind) {
-    case 'tab':
-      return state.tabs.includes(action.path) ? [action.path] : [];
+    case 'tab': {
+      const match = state.tabs.find((tab) => previewTabKey(tab) === action.key);
+      const path = match ? getFilePath(match) : undefined;
+      return path !== undefined ? [path] : [];
+    }
     case 'others':
-      return state.tabs.filter((tab) => tab !== action.path);
+      return state.tabs
+        .filter((tab) => previewTabKey(tab) !== action.key)
+        .map(getFilePath)
+        .filter((p): p is string => p !== undefined);
     case 'all':
-      return state.tabs;
+      return state.tabs.map(getFilePath).filter((p): p is string => p !== undefined);
   }
 }
 
 export function MediaPreviewProvider({
   cwd,
   sessionId,
+  sessionViewState,
+  agentForest,
+  onOpenSubagent,
+  apiRef,
   children,
 }: {
   cwd?: string;
   sessionId?: string;
+  sessionViewState?: SessionViewState;
+  agentForest?: AgentForest;
+  onOpenSubagent?: (agentId: string) => void;
+  apiRef?: React.Ref<MediaPreviewApi>;
   children: ReactNode;
 }) {
   const [image, setImage] = useState<{ src: string; name?: string } | null>(null);
@@ -117,6 +135,11 @@ export function MediaPreviewProvider({
     const reference = { ...raw, path: normalizeRawPath(raw.path) };
     setTabsState((state) => openPreviewTab(state, reference.path));
     setNavigation(reference);
+    setPanelOpen(true);
+  }, []);
+
+  const openAgentPanel = useCallback((agentId: string, title?: string) => {
+    setTabsState((state) => openPreviewTab(state, { kind: 'panel', agentId, title }));
     setPanelOpen(true);
   }, []);
 
@@ -141,7 +164,11 @@ export function MediaPreviewProvider({
         setConfirmClose({ dirty, action });
         return;
       }
-      setTabsState((state) => applyCloseAction(state, action));
+      setTabsState((state) => {
+        const next = applyCloseAction(state, action);
+        if (next.tabs.length === 0) setPanelOpen(false);
+        return next;
+      });
     },
     [tabsState, dirtyPaths],
   );
@@ -149,14 +176,18 @@ export function MediaPreviewProvider({
   const confirmCloseRun = useCallback(() => {
     setConfirmClose((pending) => {
       if (pending !== null) {
-        setTabsState((state) => applyCloseAction(state, pending.action));
+        setTabsState((state) => {
+          const next = applyCloseAction(state, pending.action);
+          if (next.tabs.length === 0) setPanelOpen(false);
+          return next;
+        });
       }
       return null;
     });
   }, []);
 
-  const handleMove = useCallback((path: string, targetIndex: number) => {
-    setTabsState((state) => movePreviewTab(state, path, targetIndex));
+  const handleMove = useCallback((key: string, targetIndex: number) => {
+    setTabsState((state) => movePreviewTab(state, key, targetIndex));
   }, []);
 
   const handleWidthChange = useCallback((next: number, final: boolean) => {
@@ -188,23 +219,36 @@ export function MediaPreviewProvider({
       openImage: (src, name) => { setImage({ src, name }); },
       openFile,
       openAttachment: (item) => { setAttachment(item); },
+      openAgentPanel,
       previewTabCount: tabsState.tabs.length,
       previewPanelOpen: panelOpen,
       togglePreviewPanel: togglePanel,
     }),
-    [cwd, sessionId, openFile, tabsState.tabs.length, panelOpen, togglePanel],
+    [cwd, sessionId, openFile, openAgentPanel, tabsState.tabs.length, panelOpen, togglePanel],
   );
 
-  const panel = panelOpen ? (
+  useEffect(() => {
+    if (!apiRef) return;
+    if (typeof apiRef === 'function') {
+      apiRef(api);
+    } else {
+      (apiRef as React.MutableRefObject<MediaPreviewApi | null>).current = api;
+    }
+  }, [api, apiRef]);
+
+  const panel = panelOpen && tabsState.tabs.length > 0 ? (
     <PreviewWorkspace
       tabs={tabsState.tabs}
       active={tabsState.active}
       navigation={navigation}
       dirtyPaths={dirtyPaths}
       width={width}
-      onActivate={(path) => { setTabsState((state) => ({ ...state, active: path })); }}
-      onClose={(path) => { requestClose({ kind: 'tab', path }); }}
-      onCloseOthers={(path) => { requestClose({ kind: 'others', path }); }}
+      sessionViewState={sessionViewState}
+      agentForest={agentForest}
+      onOpenSubagent={onOpenSubagent}
+      onActivate={(key) => { setTabsState((state) => ({ ...state, active: key })); }}
+      onClose={(key) => { requestClose({ kind: 'tab', key }); }}
+      onCloseOthers={(key) => { requestClose({ kind: 'others', key }); }}
       onCloseAll={() => { requestClose({ kind: 'all' }); }}
       onMove={handleMove}
       onCollapse={() => { setPanelOpen(false); }}
