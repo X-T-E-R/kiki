@@ -147,4 +147,18 @@ describe('prompt field inspection', () => {
     });
     expect(report.fields.find((field) => field.id === 'system.shared')?.status).toBe('effective');
   });
+
+  it('resolves the shipped built-in profiles without any on-disk agent files', async () => {
+    const report = await inspectPromptFields({ homeDir, cwd: workDir, osHomeDir });
+
+    expect(report.profile).toBe('agent');
+    expect(report.validation.systemMdLoaded).toBe(false);
+    expect(report.fields.find((field) => field.id === 'system.language')).toMatchObject({
+      status: 'effective',
+    });
+
+    const explore = await inspectPromptFields({ homeDir, cwd: workDir, osHomeDir, profile: 'explore' });
+    expect(explore.profile).toBe('explore');
+    expect(explore.validation.profileCount).toBeGreaterThanOrEqual(5);
+  });
 });

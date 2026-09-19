@@ -320,7 +320,7 @@ describe('Session.prompt events', () => {
         type: 'subagent.spawned',
         sessionId: session.id,
         agentId: 'main',
-        subagentName: 'coder',
+        subagentName: 'general',
         parentToolCallId: 'generate-agents-md',
       });
       expect(events).toContainEqual(

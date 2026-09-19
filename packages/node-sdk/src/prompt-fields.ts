@@ -10,7 +10,6 @@ import {
   ConfigRegistry,
   HostFileSystem,
   PromptFieldRegistryService,
-  getAgentProfileContributions,
   resolveModelId,
   type AgentModelProfile,
   type AgentProfile,
@@ -26,6 +25,7 @@ import { Event } from '@kiki/agent-core-v2/_base/event';
 import { transformTomlData } from '@kiki/agent-core-v2/app/config/toml';
 import { ModelsSectionSchema } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { PromptConfigSchema, type PromptConfig } from '@kiki/agent-core-v2/app/prompt/configSection';
+import { ShippedAgentProfileSourceService } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfileSourceService';
 import { discoverAgentFiles } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentFileDiscovery';
 import {
   configuredAgentRoots,
@@ -332,8 +332,9 @@ async function loadProfiles(
   config: ParsedInspectionConfig,
   warnings: string[],
 ): Promise<LoadedProfileSet> {
-  const builtins = getAgentProfileContributions().map(fromAgentProfile);
-  const builtinDefault = getAgentProfileContributions().find((profile) => profile.name === 'agent');
+  const shipped = new ShippedAgentProfileSourceService();
+  const builtins = shipped.list().map(fromShippedAgentProfile);
+  const builtinDefault = shipped.get('agent');
   if (builtinDefault === undefined) throw new Error('Built-in agent profile "agent" is unavailable.');
 
   const roots = await Promise.all([
@@ -421,6 +422,19 @@ function fromAgentProfile(profile: AgentProfile): InspectionProfile {
     promptOverrideLayers: profile.promptOverrideLayers,
     modelProfiles: profile.modelProfiles,
     fileBacked: profile.fileDefinition !== undefined || profile.sourcePath !== undefined,
+  };
+}
+
+function fromShippedAgentProfile(profile: AgentProfile): InspectionProfile {
+  return {
+    name: profile.name,
+    override: profile.override,
+    systemPromptMode: profile.systemPromptMode,
+    executor: profile.executor,
+    promptOverrides: profile.promptOverrides,
+    promptOverrideLayers: profile.promptOverrideLayers,
+    modelProfiles: profile.modelProfiles,
+    fileBacked: false,
   };
 }
 

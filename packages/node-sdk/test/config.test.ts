@@ -544,7 +544,7 @@ describe('KimiHarness config API', () => {
       extraSkillDirs: [],
       loopControl: { compactionSoftContextSize: 0 },
       background: {},
-      subagent: { timeoutMs: 7_200_000, maxDirectChildren: 16, maxTotalSubagents: 0 },
+      subagent: { timeoutMs: 7_200_000, maxDirectChildren: 16, maxTotalSubagents: 0, defaultProfile: 'general' },
       mcp: {},
       image: {},
     });
@@ -573,6 +573,7 @@ describe('KimiHarness config API', () => {
       'tool-select',
       'subagent_release_idle',
       'persistence_minidb_readmodel',
+      'image_format_conversion',
       'external_delegation_mcp',
     ]);
     // Every entry carries the full metadata a client needs to render a toggle.
